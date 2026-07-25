@@ -108,10 +108,14 @@ duplicate surfaces are independent presentations of it.
 
 `NavigationService.open_contextually(source_surface_id, request)` is an opt-in
 path for a resource-aware surface that wants to reuse a neighboring
-presentation. It is currently used only for Agent Session opens from Graph,
-Garden, and Inbox. The service derives normalized bounds from the persisted
-split tree and considers only active tabs in panes that share a non-zero edge
-with the source pane. The longest shared edge wins; tree order resolves a tie.
+presentation. Graph, Garden, and Inbox first use the same adjacent-pane lookup
+to target an active neighboring `agents-overview` surface: the App updates its
+surface-local `focused_agent_id`, focuses that pane, and selects the agent in
+the shared roster state. If no such Agents surface exists, the navigation
+service reuses an adjoining Agent Session. The lookup derives normalized bounds
+from the persisted split tree and considers only active tabs in panes that
+share a non-zero edge with the source pane. The longest shared edge wins; tree
+order resolves a tie.
 
 The service falls back to the ordinary open policy when no eligible target
 exists, when the workbench is zoomed to one pane, or when the request is not a

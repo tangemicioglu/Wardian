@@ -175,11 +175,12 @@ Click inside a terminal, or focus it and press `Enter` or `Space`, to explicitly
 
 ### Contextual agent opens
 
-When Graph, Garden, or Inbox is visible beside an Agent Session, opening an
-agent from that surface retargets the adjoining session instead of adding a new
-tab. The session becomes focused and keeps its place in the pane layout. If no
-active Agent Session is directly beside the invoking surface, Wardian uses the
-usual focus-or-open behavior.
+When Graph, Garden, or Inbox is visible beside **Agents**, opening an agent
+from that surface focuses the adjoining Agents pane, selects that agent, and
+brings its card into view instead of adding a tab. If no active Agents surface
+is directly beside the invoking surface, Wardian next retargets an adjoining
+Agent Session. If neither neighbor is available, Wardian uses the usual
+focus-or-open behavior.
 
 This only applies to visible neighboring panes. If you zoom one pane, use the
 normal open action; Wardian will not retarget a hidden pane. The roster remains

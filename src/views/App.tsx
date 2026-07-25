@@ -60,6 +60,7 @@ import {
   normalizeAgentsOverviewSurfaceState,
 } from "../features/workbench/surfaces/AgentsOverviewSurface";
 import { createCoreWorkbenchSurfaceRegistry } from "../features/workbench/coreSurfaceRegistry";
+import { findAdjacentActiveSurface } from "../features/workbench/adjacentSurfaceTargeting";
 import { createWorkbenchNavigationService } from "../features/workbench/navigationService";
 import { SurfaceRecoveryPlaceholder } from "../features/workbench/SurfaceRecoveryPlaceholder";
 import { AgentSessionSurface } from "../features/workbench/surfaces/AgentSessionSurface";
@@ -1017,14 +1018,52 @@ function AppBody() {
     });
   }, [workbenchNavigation]);
 
+  const scheduleAgentOverviewScroll = useCallback((sessionId: string) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollAgentCardWithinOverview(sessionId);
+      });
+    });
+  }, []);
+
+  const focusAgentInOverviewSurface = useCallback((surfaceId: string, sessionId: string): boolean => {
+    const store = workbenchPersistence.store;
+    const overviewSurface = store.getState().document.surfaces[surfaceId];
+    if (overviewSurface?.surface_type !== "agents-overview") return false;
+
+    setSelectedAgentIds(new Set([sessionId]));
+    const currentState = normalizeAgentsOverviewSurfaceState(overviewSurface.state);
+    workbenchNavigation.focus(overviewSurface.surface_id);
+    store.getState().apply_commands([{
+      type: "update_surface_state",
+      surface_id: overviewSurface.surface_id,
+      state_schema_version: overviewSurface.state_schema_version,
+      state: { ...currentState, focused_agent_id: sessionId },
+    }]);
+    scheduleAgentOverviewScroll(sessionId);
+    return true;
+  }, [scheduleAgentOverviewScroll, setSelectedAgentIds, workbenchNavigation, workbenchPersistence.store]);
+
   const openAgentFromSurface = useCallback((sourceSurfaceId: string, sessionId: string) => {
+    const state = workbenchPersistence.store.getState();
+    if (state.zoomed_group_id === null) {
+      const overviewSurfaceId = findAdjacentActiveSurface(
+        state.document,
+        sourceSurfaceId,
+        "agents-overview",
+      );
+      if (overviewSurfaceId && focusAgentInOverviewSurface(overviewSurfaceId, sessionId)) {
+        return;
+      }
+    }
+
     void workbenchNavigation.open_contextually(sourceSurfaceId, {
       surface_type: "agent-session",
       resource_key: sessionId,
     }).catch((error) => {
       console.error("contextual agent open failed", error);
     });
-  }, [workbenchNavigation]);
+  }, [focusAgentInOverviewSurface, workbenchNavigation, workbenchPersistence.store]);
 
   const openAgentToSide = useCallback((sessionId: string) => {
     workbenchNavigation.open_to_side({
@@ -1034,7 +1073,6 @@ function AppBody() {
   }, [workbenchNavigation]);
 
   const revealAgentInOverview = useCallback((sessionId: string) => {
-    setSelectedAgentIds(new Set([sessionId]));
     const store = workbenchPersistence.store;
     const snapshot = store.getState();
     const overviewSurface = snapshot.surface_mru
@@ -1044,6 +1082,7 @@ function AppBody() {
         .find((surface) => surface.surface_type === "agents-overview");
 
     if (!overviewSurface) {
+      setSelectedAgentIds(new Set([sessionId]));
       workbenchNavigation.open({
         surface_type: "agents-overview",
         state: {
@@ -1053,23 +1092,12 @@ function AppBody() {
           focused_agent_id: sessionId,
         },
       });
-    } else {
-      const currentState = normalizeAgentsOverviewSurfaceState(overviewSurface.state);
-      workbenchNavigation.focus(overviewSurface.surface_id);
-      store.getState().apply_commands([{
-        type: "update_surface_state",
-        surface_id: overviewSurface.surface_id,
-        state_schema_version: overviewSurface.state_schema_version,
-        state: { ...currentState, focused_agent_id: sessionId },
-      }]);
+      scheduleAgentOverviewScroll(sessionId);
+      return;
     }
 
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        scrollAgentCardWithinOverview(sessionId);
-      });
-    });
-  }, [setSelectedAgentIds, workbenchNavigation, workbenchPersistence.store, workbenchRegistry]);
+    focusAgentInOverviewSurface(overviewSurface.surface_id, sessionId);
+  }, [focusAgentInOverviewSurface, scheduleAgentOverviewScroll, setSelectedAgentIds, workbenchNavigation, workbenchPersistence.store, workbenchRegistry]);
 
   const workbenchNotice = [
     workbenchPersistence.notice,

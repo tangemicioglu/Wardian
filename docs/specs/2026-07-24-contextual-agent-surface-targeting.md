@@ -5,13 +5,16 @@
 
 ## Decision
 
-Agent-open actions from Graph, Garden, and Inbox reuse a directly adjoining,
-visible Agent Session when one exists. The target presentation is rebound to
-the selected agent and focused, rather than adding another session tab.
+Agent-open actions from Graph, Garden, and Inbox first reuse a directly
+adjoining, visible **Agents** surface. Wardian focuses that pane, selects the
+requested agent, persists it as the surface's focused agent, and scrolls the
+card into view without adding an Agent Session tab. If no adjoining Agents
+surface is available, a directly adjoining visible Agent Session remains the
+fallback target and is rebound to the selected agent.
 
 This makes a two-pane investigation layout behave as one working context:
 choose an agent in a discovery or notification surface, then inspect that
-agent in the session already placed beside it.
+agent in the Agents or session presentation already placed beside it.
 
 ## Eligibility
 
@@ -32,7 +35,7 @@ If there is no eligible target, Wardian uses the existing resource-aware
 focus-or-open behavior. A contextual open does not alter the pane tree, create
 a duplicate presentation, or issue any agent lifecycle command.
 
-Rebinding uses the same guarded close transaction as an explicit Agent Session
+Agent Session rebinding uses the same guarded close transaction as an explicit
 rebind. If that transaction is cancelled or becomes stale, the existing
 presentation remains unchanged and Wardian does not create a replacement tab.
 
@@ -50,5 +53,6 @@ presentation remains unchanged and Wardian does not create a replacement tab.
   deterministic selection among multiple neighbors.
 - Navigation tests cover rebind-without-new-tab, ordinary fallback, and the
   zoomed-pane fallback.
-- App integration verifies a Graph action retargets an adjoining Agent Session
-  without triggering an agent lifecycle operation.
+- App and browser integration verify that a Graph action selects an adjoining
+  Agents surface before falling back to an adjoining Agent Session, without
+  triggering an agent lifecycle operation.

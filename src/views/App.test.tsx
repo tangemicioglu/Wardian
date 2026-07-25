@@ -959,6 +959,85 @@ describe("Workbench persistence boot integration", () => {
     expect(mockInvoke).not.toHaveBeenCalledWith("kill_agent", expect.anything());
   });
 
+  it("reveals an agent in an adjacent Agents surface when Graph opens an agent", async () => {
+    setupDefaultMocks(sampleAgents, defaultClasses);
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    const graph = makeSurface("graph-targeting", {
+      surface_type: "graph",
+      state: {
+        enabled_reasons: [],
+        inspected_agent_id: "agent-1",
+        inspector_open: true,
+        selected_edge_id: null,
+        picker_search: "",
+      },
+    });
+    const agentsOverview = makeSurface("agents-overview-targeting", {
+      surface_type: "agents-overview",
+      state: {
+        mode: "grid",
+        last_multi_agent_mode: "grid",
+        focused_agent_id: null,
+        search_query: "",
+        status_filter: [],
+      },
+    });
+    const workbenchDocument = {
+      ...makeSingleGroupDocument(),
+      root: {
+        kind: "split" as const,
+        node_id: "graph-agents-split",
+        direction: "horizontal" as const,
+        ratio: 0.5,
+        first: { kind: "group" as const, group_id: "graph-group" },
+        second: { kind: "group" as const, group_id: "agents-group" },
+      },
+      groups: {
+        "graph-group": {
+          group_id: "graph-group",
+          surface_ids: [graph.surface_id],
+          active_surface_id: graph.surface_id,
+        },
+        "agents-group": {
+          group_id: "agents-group",
+          surface_ids: [agentsOverview.surface_id],
+          active_surface_id: agentsOverview.surface_id,
+        },
+      },
+      surfaces: {
+        [graph.surface_id]: graph,
+        [agentsOverview.surface_id]: agentsOverview,
+      },
+      active_group_id: "graph-group",
+    };
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "load_workbench_state") {
+        return Promise.resolve({
+          source: "primary",
+          document: workbenchDocument,
+          notice: null,
+          durable_revision: 0,
+          durable_token: "test-durable-zero",
+        });
+      }
+      return defaultInvoke?.(command, args) ?? Promise.resolve(null);
+    });
+
+    render(<App />);
+    await screen.findByTestId("graph-view");
+    await screen.findByTestId("agent-grid");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open graph agent" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true");
+      expect(document.getElementById("agent-card-agent-1")?.className).toContain("ring-1");
+    });
+    expect(screen.getAllByTestId("workbench-group")).toHaveLength(2);
+    expect(screen.queryByTestId("agent-session-surface")).not.toBeInTheDocument();
+    expect(mockInvoke).not.toHaveBeenCalledWith("kill_agent", expect.anything());
+  });
+
   it("rejects roster Open to Side when the active pane is measured too narrow", async () => {
     setupDefaultMocks(sampleAgents, defaultClasses);
     render(<App />);
