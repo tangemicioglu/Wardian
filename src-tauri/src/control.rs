@@ -6528,7 +6528,18 @@ mod tests {
     async fn multi_ask_timeout_records_a_terminal_reply() {
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
-        let request_id = create_pending_ask_request(&state, "agent-1").await.unwrap();
+        let request_id = new_ask_request_id();
+        state
+            .interactions
+            .create_task_with_id(
+                request_id.clone(),
+                None,
+                "agent-1".to_string(),
+                InteractionBodyRef::Inline {
+                    body: "review this".to_string(),
+                },
+            )
+            .await;
 
         let reply = fail_structured_ask_request(
             &state,
