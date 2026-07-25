@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { WorkbenchDocumentV1, WorkbenchGroupV1, WorkbenchNodeV1, WorkbenchSurfaceV1 } from "../../types";
-import { findAdjacentActiveSurface } from "./adjacentSurfaceTargeting";
+import { findAdjacentActiveSurface, findExistingSurface } from "./adjacentSurfaceTargeting";
 import { DEFAULT_TEST_SHELL, makeSurface } from "./workbenchTestUtils";
 
 function documentWithLayout(
@@ -93,6 +93,42 @@ describe("findAdjacentActiveSurface", () => {
 
     expect(findAdjacentActiveSurface(document, graph.surface_id, "agent-session"))
       .toBeUndefined();
+  });
+
+  it("finds an existing matching surface even when its tab is inactive", () => {
+    const graph = makeSurface("graph", { surface_type: "graph" });
+    const agents = makeSurface("agents", { surface_type: "agents-overview" });
+    const dashboard = makeSurface("dashboard", { surface_type: "dashboard" });
+    const document = documentWithLayout(
+      {
+        kind: "split",
+        node_id: "split-root",
+        direction: "horizontal",
+        ratio: 0.5,
+        first: { kind: "group", group_id: "graph-group" },
+        second: { kind: "group", group_id: "overview-group" },
+      },
+      {
+        "graph-group": {
+          group_id: "graph-group",
+          surface_ids: [graph.surface_id],
+          active_surface_id: graph.surface_id,
+        },
+        "overview-group": {
+          group_id: "overview-group",
+          surface_ids: [agents.surface_id, dashboard.surface_id],
+          active_surface_id: dashboard.surface_id,
+        },
+      },
+      [graph, agents, dashboard],
+      "graph-group",
+    );
+
+    expect(findExistingSurface(
+      document,
+      [graph.surface_id, dashboard.surface_id, agents.surface_id],
+      "agents-overview",
+    )).toBe(agents.surface_id);
   });
 
   it("prefers the adjacent surface sharing the longest edge", () => {

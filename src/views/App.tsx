@@ -60,7 +60,7 @@ import {
   normalizeAgentsOverviewSurfaceState,
 } from "../features/workbench/surfaces/AgentsOverviewSurface";
 import { createCoreWorkbenchSurfaceRegistry } from "../features/workbench/coreSurfaceRegistry";
-import { findAdjacentActiveSurface } from "../features/workbench/adjacentSurfaceTargeting";
+import { findExistingSurface } from "../features/workbench/adjacentSurfaceTargeting";
 import { createWorkbenchNavigationService } from "../features/workbench/navigationService";
 import { SurfaceRecoveryPlaceholder } from "../features/workbench/SurfaceRecoveryPlaceholder";
 import { AgentSessionSurface } from "../features/workbench/surfaces/AgentSessionSurface";
@@ -1046,15 +1046,21 @@ function AppBody() {
 
   const openAgentFromSurface = useCallback((sourceSurfaceId: string, sessionId: string) => {
     const state = workbenchPersistence.store.getState();
-    if (state.zoomed_group_id === null) {
-      const overviewSurfaceId = findAdjacentActiveSurface(
-        state.document,
-        sourceSurfaceId,
-        "agents-overview",
-      );
-      if (overviewSurfaceId && focusAgentInOverviewSurface(overviewSurfaceId, sessionId)) {
-        return;
-      }
+    const overviewSurfaceId = findExistingSurface(
+      state.document,
+      state.surface_mru,
+      "agents-overview",
+    );
+    const overviewIsVisibleInZoom = overviewSurfaceId !== undefined && (
+      state.zoomed_group_id === null
+      || state.document.groups[state.zoomed_group_id]?.surface_ids.includes(overviewSurfaceId)
+    );
+    if (
+      overviewSurfaceId
+      && overviewIsVisibleInZoom
+      && focusAgentInOverviewSurface(overviewSurfaceId, sessionId)
+    ) {
+      return;
     }
 
     void workbenchNavigation.open_contextually(sourceSurfaceId, {
@@ -1075,13 +1081,13 @@ function AppBody() {
   const revealAgentInOverview = useCallback((sessionId: string) => {
     const store = workbenchPersistence.store;
     const snapshot = store.getState();
-    const overviewSurface = snapshot.surface_mru
-      .map((surfaceId) => snapshot.document.surfaces[surfaceId])
-      .find((surface) => surface?.surface_type === "agents-overview")
-      ?? Object.values(snapshot.document.surfaces)
-        .find((surface) => surface.surface_type === "agents-overview");
+    const overviewSurfaceId = findExistingSurface(
+      snapshot.document,
+      snapshot.surface_mru,
+      "agents-overview",
+    );
 
-    if (!overviewSurface) {
+    if (!overviewSurfaceId) {
       setSelectedAgentIds(new Set([sessionId]));
       workbenchNavigation.open({
         surface_type: "agents-overview",
@@ -1096,7 +1102,7 @@ function AppBody() {
       return;
     }
 
-    focusAgentInOverviewSurface(overviewSurface.surface_id, sessionId);
+    focusAgentInOverviewSurface(overviewSurfaceId, sessionId);
   }, [focusAgentInOverviewSurface, scheduleAgentOverviewScroll, setSelectedAgentIds, workbenchNavigation, workbenchPersistence.store, workbenchRegistry]);
 
   const workbenchNotice = [

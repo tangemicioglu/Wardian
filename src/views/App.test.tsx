@@ -923,9 +923,32 @@ describe("Workbench persistence boot integration", () => {
 
   it("retargets an adjacent Agent Session when Graph opens an agent", async () => {
     setupDefaultMocks(sampleAgents, defaultClasses);
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    const graph = makeSurface("graph-session-fallback", {
+      surface_type: "graph",
+      state: {
+        enabled_reasons: [],
+        inspected_agent_id: "agent-1",
+        inspector_open: true,
+        selected_edge_id: null,
+        picker_search: "",
+      },
+    });
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "load_workbench_state") {
+        return Promise.resolve({
+          source: "primary",
+          document: makeSingleGroupDocument([graph]),
+          notice: null,
+          durable_revision: 0,
+          durable_token: "test-durable-zero",
+        });
+      }
+      return defaultInvoke?.(command, args) ?? Promise.resolve(null);
+    });
+
     render(<App />);
-    await screen.findByTestId("agent-grid");
-    await openWorkbenchSurface("graph");
+    await screen.findByTestId("graph-view");
 
     const betaRow = await waitFor(() => {
       const row = screen.getAllByText("Beta")
@@ -1034,6 +1057,72 @@ describe("Workbench persistence boot integration", () => {
       expect(document.getElementById("agent-card-agent-1")?.className).toContain("ring-1");
     });
     expect(screen.getAllByTestId("workbench-group")).toHaveLength(2);
+    expect(screen.queryByTestId("agent-session-surface")).not.toBeInTheDocument();
+    expect(mockInvoke).not.toHaveBeenCalledWith("kill_agent", expect.anything());
+  });
+
+  it("reveals an agent in an inactive Agents tab in Graph's own pane", async () => {
+    setupDefaultMocks(sampleAgents, defaultClasses);
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    const graph = makeSurface("graph-same-pane-targeting", {
+      surface_type: "graph",
+      state: {
+        enabled_reasons: [],
+        inspected_agent_id: "agent-1",
+        inspector_open: true,
+        selected_edge_id: null,
+        picker_search: "",
+      },
+    });
+    const agentsOverview = makeSurface("agents-same-pane-targeting", {
+      surface_type: "agents-overview",
+      state: {
+        mode: "grid",
+        last_multi_agent_mode: "grid",
+        focused_agent_id: null,
+        search_query: "",
+        status_filter: [],
+      },
+    });
+    const workbenchDocument = {
+      ...makeSingleGroupDocument(),
+      groups: {
+        "group-1": {
+          group_id: "group-1",
+          surface_ids: [graph.surface_id, agentsOverview.surface_id],
+          active_surface_id: graph.surface_id,
+        },
+      },
+      surfaces: {
+        [graph.surface_id]: graph,
+        [agentsOverview.surface_id]: agentsOverview,
+      },
+      active_group_id: "group-1",
+    };
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "load_workbench_state") {
+        return Promise.resolve({
+          source: "primary",
+          document: workbenchDocument,
+          notice: null,
+          durable_revision: 0,
+          durable_token: "test-durable-zero",
+        });
+      }
+      return defaultInvoke?.(command, args) ?? Promise.resolve(null);
+    });
+
+    render(<App />);
+    await screen.findByTestId("graph-view");
+    expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open graph agent" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true");
+      expect(document.getElementById("agent-card-agent-1")?.className).toContain("ring-1");
+    });
+    expect(screen.getAllByTestId("workbench-group")).toHaveLength(1);
     expect(screen.queryByTestId("agent-session-surface")).not.toBeInTheDocument();
     expect(mockInvoke).not.toHaveBeenCalledWith("kill_agent", expect.anything());
   });

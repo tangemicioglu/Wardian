@@ -110,3 +110,24 @@ export function findAdjacentActiveSurface(
 
   return target?.surfaceId;
 }
+
+/**
+ * Finds an existing surface of the requested type, preferring the user's most
+ * recently focused presentation. Unlike adjacent targeting, inactive tabs are
+ * eligible because callers use this for singleton views they intentionally
+ * want to activate.
+ */
+export function findExistingSurface(
+  document: ReadonlyWorkbenchDocumentV1,
+  surfaceMru: readonly string[],
+  surfaceType: string,
+): string | undefined {
+  const seen = new Set<string>();
+  const candidateIds = [...surfaceMru, ...Object.keys(document.surfaces)];
+  for (const surfaceId of candidateIds) {
+    if (seen.has(surfaceId)) continue;
+    seen.add(surfaceId);
+    if (document.surfaces[surfaceId]?.surface_type === surfaceType) return surfaceId;
+  }
+  return undefined;
+}
