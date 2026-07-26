@@ -44,10 +44,35 @@ Normal sends retain the sender attribution when Wardian knows it. Inspect the
 returned `delivery[]`; errors contain per-target delivery details including
 runtime state, delivery state, input mode, and channel errors.
 
-`--queue-policy queue-if-busy` is the default and queues delivery when the
-provider cannot safely accept it. `live-only` fails instead of queueing, while
-`mailbox-only` queues without attempting a live submit. Use the policy that
-matches whether the work can wait for a safe provider turn.
+`--queue-policy queue-if-busy` is the default. It delivers through a live
+provider surface when one is safe; for an off or errored target, an ordinary
+message runs through that agent's headless provider transport instead. Wardian
+leases the target agent while the headless turn runs and reports it as
+`Headless` in the roster; a saved provider conversation is resumed when one
+exists, while a fresh run does not invent a provider session. The completed
+response is available through `wardian agent watch` and the conversation
+archive. `--timeout` bounds the headless run (up to 15 minutes); a concurrent
+sender that loses the lease race is queued rather than failing. Timeout or
+cancellation terminates the provider's complete process tree before its exact
+lease acquisition is released, so a shell wrapper cannot leave a hidden turn
+running in the target workspace.
+
+Headless delivery and lifecycle changes use the same durable conversation
+lease, acquired before their local lifecycle gate. Resume, clear, pause, and
+remove stop before changing the agent when an active headless turn already owns
+that lease; wait for the turn to finish and try again.
+
+For a single offline target, `send --wait-until idle` completes when the
+headless turn records `provider_applied`. The target's returned status remains
+`off`: Wardian does not manufacture a live Idle session merely to satisfy a
+completion wait.
+
+`live-only` fails instead of falling back. `mailbox-only` is the explicit
+deferred-delivery choice: it queues work without launching a provider process.
+Provider slash commands sent with `--as-command` remain mailbox-delivered when
+the target is off because they require an interactive provider surface. Use the
+policy that matches whether the work should run now or wait for a later live
+turn.
 
 ## Inspect Conversations
 

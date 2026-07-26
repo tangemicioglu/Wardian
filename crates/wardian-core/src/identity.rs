@@ -146,7 +146,10 @@ fn row_to_identity(row: AgentRow) -> AgentIdentity {
                 "unknown".to_string()
             }
         });
-    let status = active_conversation_lease_status(&row.session_id).unwrap_or(status);
+    let status = (row.is_off || matches!(status.as_str(), "off" | "error"))
+        .then(|| active_conversation_lease_status(&row.session_id))
+        .flatten()
+        .unwrap_or(status);
 
     AgentIdentity {
         name: row.session_name,
@@ -166,7 +169,7 @@ fn row_to_identity(row: AgentRow) -> AgentIdentity {
 fn active_conversation_lease_status(agent_id: &str) -> Option<String> {
     let leases = crate::conversation_lease::load_leases();
     let now = chrono::Utc::now().to_rfc3339();
-    crate::conversation_lease::find_active_conflict(&leases, agent_id, "", &now)
+    crate::conversation_lease::find_active_execution_conflict(&leases, agent_id, "", &now)
         .map(|_| "headless".to_string())
 }
 

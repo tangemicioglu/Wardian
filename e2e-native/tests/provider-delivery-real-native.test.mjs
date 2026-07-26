@@ -12,7 +12,9 @@ import {
   waitForAppShell,
 } from "../lib/harness.mjs";
 
-export const PROVIDERS = ["codex", "claude", "gemini", "opencode", "antigravity"];
+// Gemini is deprecated. Keep the real delivery matrix aligned with the
+// providers Wardian currently supports for new agent sessions.
+export const PROVIDERS = ["codex", "claude", "opencode", "antigravity"];
 
 export const INPUT_CASES = [
   {
@@ -35,7 +37,6 @@ export const INPUT_CASES = [
 const DEFAULT_CASES = ["mailbox-short"];
 const DEFAULT_PROVIDER_MODELS = {
   claude: "haiku",
-  gemini: "gemini-2.5-flash",
   opencode: "opencode/deepseek-v4-flash-free",
 };
 
@@ -130,15 +131,6 @@ function providerModel(provider) {
 function providerCustomArgs(provider) {
   const envName = `WARDIAN_E2E_DELIVERY_${provider.toUpperCase()}_ARGS`;
   return process.env[envName]?.trim() || null;
-}
-
-function expectedMarkerOccurrencesForProvider(provider) {
-  return provider === "gemini" ? 2 : 1;
-}
-
-function markerOccurrenceCount(text, marker) {
-  if (!marker) return 0;
-  return text.split(marker).length - 1;
 }
 
 function configOverrideForProvider(provider) {
@@ -293,13 +285,45 @@ async function runRealDeliveryCase({ cliPath, harness, provider, agentName, inpu
     const transcript = watchJson.transcript?.latest_text ?? "";
     const output = watchJson.output?.text ?? "";
     const combinedOutput = `${transcript}\n${output}`;
-    const occurrenceCount = markerOccurrenceCount(combinedOutput, expected);
-    const requiredOccurrences = expectedMarkerOccurrencesForProvider(provider);
     assert.ok(
-      occurrenceCount >= requiredOccurrences,
-      `${provider} output contained ${occurrenceCount} occurrence(s) of ${expected}; expected at least ${requiredOccurrences}`,
+      combinedOutput.includes(expected),
+      `${provider} output did not include ${expected}: ${combinedOutput}`,
     );
   }
+}
+
+async function enableIsolatedCodexWorkspaceTrust(harness) {
+  const settingsDir = path.join(harness.isolatedHome, "settings");
+  await fs.mkdir(settingsDir, { recursive: true });
+  await fs.writeFile(
+    path.join(settingsDir, "shell.json"),
+    JSON.stringify({
+      schema_version: 2,
+      overrides: {
+        codex_runtime_policy: {
+          trust_workspaces: true,
+        },
+      },
+    }),
+    "utf8",
+  );
+}
+
+async function readProviderTerminalTail(driver, sessionId) {
+  const result = await driver.executeAsyncScript((sid, done) => {
+    window.__TAURI_INTERNALS__.invoke("read_agent_pty", {
+      sessionId: sid,
+      options: { max_bytes: 32768, peek: true },
+    }).then(
+      (output) => done({ ok: true, output }),
+      (error) => done({ ok: false, error: String(error) }),
+    );
+  }, sessionId);
+
+  if (!result.ok) {
+    return `Unable to read provider terminal output: ${result.error}`;
+  }
+  return result.output || "<provider terminal emitted no readable output>";
 }
 
 test("real provider delivery case parser expands all only as the sole entry", () => {
@@ -308,11 +332,6 @@ test("real provider delivery case parser expands all only as the sole entry", ()
     INPUT_CASES.map((inputCase) => inputCase.name),
   );
   assert.deepEqual(parseDeliveryCases("all,mailbox-short"), ["all", "mailbox-short"]);
-});
-
-test("Gemini delivery output must include the marker beyond the prompt echo", () => {
-  assert.equal(expectedMarkerOccurrencesForProvider("gemini"), 2);
-  assert.equal(expectedMarkerOccurrencesForProvider("codex"), 1);
 });
 
 test("real provider delivery validation uses actual provider CLIs", { timeout: 900000 }, async (t) => {
@@ -357,6 +376,7 @@ test("real provider delivery validation uses actual provider CLIs", { timeout: 9
   }
 
   prepareIsolatedHome(harness);
+  await enableIsolatedCodexWorkspaceTrust(harness);
   const cliPath = buildCli(harness);
   const runId = `${process.pid}_${Date.now()}`;
 
@@ -379,6 +399,7 @@ test("real provider delivery validation uses actual provider CLIs", { timeout: 9
     const agentName = `E2E-RealDelivery-${provider}-${runId}`;
     let agent = null;
     let providerError = null;
+    let providerTerminalTail = null;
     try {
       agent = await spawnRealProviderAgent(session.driver, provider, agentName, workspacePath);
       for (const inputCase of selectedCases) {
@@ -393,6 +414,9 @@ test("real provider delivery validation uses actual provider CLIs", { timeout: 9
       }
     } catch (error) {
       providerError = error;
+      if (agent?.session_id) {
+        providerTerminalTail = await readProviderTerminalTail(session.driver, agent.session_id);
+      }
     } finally {
       if (agent?.session_id) {
         try {
@@ -409,6 +433,7 @@ test("real provider delivery validation uses actual provider CLIs", { timeout: 9
         `Real provider delivery failed for ${provider}: ${providerError.message}\n\n` +
           `Model: ${providerModel(provider) ?? "<provider default>"}\n` +
           `Custom args: ${providerCustomArgs(provider) ?? "<none>"}\n` +
+          `--- Provider terminal tail ---\n${providerTerminalTail ?? "<unavailable>"}\n` +
           `--- Wardian debug tail ---\n${debugTail}`,
       );
     }

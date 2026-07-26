@@ -29,9 +29,9 @@ export const RemoteAgentActions: React.FC<{ agent: RemoteAgentSummary; compact?:
           Pause
         </button>
       )}
-      <button type="button" title="Starts a new provider session while keeping the Wardian agent, habitat, and saved history." onClick={() => confirmAndRun("clear", `Start a fresh provider session for ${agent.session_name}? Wardian keeps the agent, habitat, and saved history.`)} className={actionButtonClass}>
+      <button type="button" title="Create a new provider session while keeping the Wardian agent, habitat, and saved history." onClick={() => confirmAndRun("clear", `Create a new provider session for ${agent.session_name}? Wardian keeps the agent, habitat, and saved history.`)} className={actionButtonClass}>
         <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-        Start Fresh
+        New Session
       </button>
       <button type="button" title="Permanently removes this Wardian agent, its habitat, and its session history." onClick={() => confirmAndRun("kill", `Delete ${agent.session_name}? This permanently removes its Wardian habitat and session history; project files remain.`)} className={actionButtonClass}>
         <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />

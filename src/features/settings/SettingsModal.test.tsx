@@ -121,6 +121,23 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("dialog", { name: "Settings" }).parentElement).toHaveClass("z-[60]");
   });
 
+  it("uses the app-level updater state without starting a second automatic check", () => {
+    render(
+      <SettingsModal
+        appUpdate={appUpdateState({
+          availableUpdate: { version: "0.4.4" },
+          status: "available",
+        })}
+        isOpen
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(mockUseAppUpdate).toHaveBeenCalledWith({ autoCheck: false });
+    expect(screen.getByText("Update 0.4.4 is available.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Install update" })).toBeInTheDocument();
+  });
+
   it("renders Codex-style category navigation and concise setting details", () => {
     render(<SettingsModal isOpen onClose={vi.fn()} />);
 

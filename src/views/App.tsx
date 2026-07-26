@@ -31,6 +31,8 @@ import { SidebarContentPane } from "../layout/SidebarContentPane";
 import { CustomTitleBar } from "../layout/titlebar/CustomTitleBar";
 import { UserTerminalPanel } from "../features/terminal/UserTerminalPanel";
 import { SettingsModal } from "../features/settings/SettingsModal";
+import { UpdateAvailableNotice } from "../features/settings/UpdateAvailableNotice";
+import { useAppUpdate } from "../features/settings/useAppUpdate";
 import { useSelectedAgentGitStatus } from "../features/git/useSelectedAgentGitStatus";
 import { useQueueStore } from "../store/useQueueStore";
 import { completionPreviewFromTranscript } from "../features/queue/completionPreview";
@@ -429,8 +431,20 @@ function AppBody() {
     setSettingsOpen,
     toggleSettings,
   } = useSettingsStore();
+  const appUpdate = useAppUpdate();
+  const [updateNoticeDismissed, setUpdateNoticeDismissed] = useState(false);
   const resolvedTitlebarTelemetryVisible = app_settings_loaded && titlebarTelemetryVisible;
   const resolvedWorkbenchNewTabAction = app_settings_loaded ? workbenchNewTabAction : "home";
+
+  useEffect(() => {
+    setUpdateNoticeDismissed(false);
+  }, [appUpdate.availableUpdate?.version]);
+
+  const updateAvailable = appUpdate.status === "available" && appUpdate.availableUpdate !== null;
+  const reviewUpdate = () => {
+    setUpdateNoticeDismissed(true);
+    setSettingsOpen(true);
+  };
 
   const [watchlists, setWatchlists] = useState<Watchlist[]>([]);
   const [teams, setTeams] = useState<AgentTeam[]>([]);
@@ -1469,20 +1483,31 @@ function AppBody() {
         titlebarTelemetryVisible={resolvedTitlebarTelemetryVisible}
           />}
 
-          status={workbenchNotice ? (
-        <div
-          role="status"
-          aria-live="polite"
-          data-testid="workbench-persistence-notice"
-          className="pointer-events-none fixed right-4 top-12 z-40 max-w-md rounded border px-3 py-2 text-xs shadow-lg"
-          style={{
-            background: "var(--color-wardian-card)",
-            borderColor: "var(--color-wardian-border)",
-            color: "var(--color-wardian-text-muted)",
-          }}
-        >
-          {workbenchNotice}
-        </div>
+          status={workbenchNotice || (updateAvailable && !updateNoticeDismissed) ? (
+            <>
+              {workbenchNotice ? (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  data-testid="workbench-persistence-notice"
+                  className="pointer-events-none fixed right-4 top-12 z-40 max-w-md rounded border px-3 py-2 text-xs shadow-lg"
+                  style={{
+                    background: "var(--color-wardian-card)",
+                    borderColor: "var(--color-wardian-border)",
+                    color: "var(--color-wardian-text-muted)",
+                  }}
+                >
+                  {workbenchNotice}
+                </div>
+              ) : null}
+              {updateAvailable && !updateNoticeDismissed && appUpdate.availableUpdate ? (
+                <UpdateAvailableNotice
+                  update={appUpdate.availableUpdate}
+                  onDismiss={() => setUpdateNoticeDismissed(true)}
+                  onReview={reviewUpdate}
+                />
+              ) : null}
+            </>
           ) : null}
 
           conflictDialog={(workbenchPersistence.conflict === "revision_conflict"
@@ -1502,6 +1527,7 @@ function AppBody() {
           setCollapsed={setLeftCollapsed}
           userTerminalOpen={userTerminalOpen}
           settingsOpen={settingsOpen}
+          updateAvailable={updateAvailable}
           sourceControlChangeCount={sourceControlStatus.changeCount}
           sourceControlBusy={sourceControlStatus.loading}
           onToggleUserTerminal={toggleUserTerminal}
@@ -1566,7 +1592,7 @@ function AppBody() {
             />
             )}
             {settingsOpen && (
-            <SettingsModal isOpen={true} onClose={() => setSettingsOpen(false)} />
+            <SettingsModal appUpdate={appUpdate} isOpen={true} onClose={() => setSettingsOpen(false)} />
             )}
           </>}
 

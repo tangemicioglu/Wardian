@@ -103,6 +103,7 @@ function gridProps(
   options: {
     selectedAgentIds?: Set<string>;
     offAgentIds?: Set<string>;
+    telemetry?: Record<string, AgentTelemetry>;
     onDelete?: (agentId: string) => void;
   } = {},
 ): React.ComponentProps<typeof AgentsOverviewView> {
@@ -110,7 +111,7 @@ function gridProps(
     surfaceId: 'overview-surface',
     mode: maximizedAgentId ? 'single' : 'grid',
     filteredAgents,
-    telemetry,
+    telemetry: options.telemetry ?? telemetry,
     terminalTitles: {},
     currentThoughts: {},
     selectedAgentIds: options.selectedAgentIds ?? new Set(),
@@ -153,6 +154,7 @@ function renderGrid(
   options: {
     selectedAgentIds?: Set<string>;
     offAgentIds?: Set<string>;
+    telemetry?: Record<string, AgentTelemetry>;
     onDelete?: (agentId: string) => void;
   } = {},
 ) {
@@ -597,6 +599,26 @@ describe('AgentsOverviewView maximize behavior', () => {
 
     expect(screen.queryByTestId('terminal-agent-1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('terminal-agent-2')).toBeInTheDocument();
+  });
+
+  it('keeps an off agent visible in the grid while it is headless', () => {
+    renderGrid(null, agents, vi.fn(), {
+      offAgentIds: new Set(['agent-1']),
+      telemetry: {
+        'agent-1': {
+          session_id: 'agent-1',
+          cpu_usage: 0,
+          memory_mb: 0,
+          uptime_seconds: 0,
+          query_count: 0,
+          init_timestamp: null,
+          current_status: 'Headless',
+          log_path: null,
+        },
+      },
+    });
+
+    expect(screen.getByTestId('terminal-agent-1')).toBeInTheDocument();
   });
 
   it('falls back to the remaining active agent in Single mode when focus is off', () => {

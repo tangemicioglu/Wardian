@@ -5,6 +5,11 @@ use crate::state::conversation_archive::effective_conversation_logging;
 use crate::state::{ActiveAgent, AppState};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 use wardian_core::conversations::{ConversationBoundaryReason, ConversationLoggingSetting};
 use wardian_core::models::{
@@ -186,14 +191,7 @@ async fn lock_agent_lifecycle(
     state: &AppState,
     session_id: &str,
 ) -> tokio::sync::OwnedMutexGuard<()> {
-    let lifecycle_lock = {
-        let mut locks = state.agent_lifecycle_locks.lock().await;
-        locks
-            .entry(session_id.to_string())
-            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
-    };
-    lifecycle_lock.lock_owned().await
+    state.lock_agent_lifecycle(session_id).await
 }
 
 async fn acquire_agent_lifecycle_guard(
@@ -207,10 +205,187 @@ async fn acquire_agent_lifecycle_guard(
     }
 }
 
+const LIFECYCLE_LEASE_DURATION: chrono::Duration = chrono::Duration::minutes(20);
+const LIFECYCLE_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Keeps a long lifecycle operation from outliving the persisted exclusion
+/// lease that protects it. If renewal fails, callers must stop before the next
+/// destructive or replacement step rather than continuing without ownership.
+struct LifecycleLeaseHeartbeat {
+    owner: wardian_core::conversation_lease::ConversationLeaseOwner,
+    active: Arc<AtomicBool>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl LifecycleLeaseHeartbeat {
+    fn start(owner: wardian_core::conversation_lease::ConversationLeaseOwner) -> Self {
+        let active = Arc::new(AtomicBool::new(true));
+        let active_for_task = Arc::clone(&active);
+        let owner_for_task = owner.clone();
+        let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut heartbeat = tokio::time::interval_at(
+                tokio::time::Instant::now() + LIFECYCLE_LEASE_HEARTBEAT_INTERVAL,
+                LIFECYCLE_LEASE_HEARTBEAT_INTERVAL,
+            );
+
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => break,
+                    _ = heartbeat.tick() => {
+                        let now = chrono::Utc::now();
+                        match renew_agent_lifecycle_transition_lease(&owner_for_task, now) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                active_for_task.store(false, Ordering::Release);
+                                manager::log_debug(&format!(
+                                    "[WARDIAN] lifecycle lease was lost before renewal for {} {}",
+                                    owner_for_task.owner_kind, owner_for_task.owner_id
+                                ));
+                                break;
+                            }
+                            Err(error) => {
+                                active_for_task.store(false, Ordering::Release);
+                                manager::log_debug(&format!(
+                                    "[WARDIAN] lifecycle lease renewal failed for {} {}: {error}",
+                                    owner_for_task.owner_kind, owner_for_task.owner_id
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Self {
+            owner,
+            active,
+            shutdown: Some(shutdown),
+            task,
+        }
+    }
+
+    fn ensure_active(&self, operation: &str) -> Result<(), String> {
+        if !self.active.load(Ordering::Acquire) {
+            return Err(format!(
+                "cannot {operation} agent because its lifecycle conversation lease was lost"
+            ));
+        }
+
+        // A periodic heartbeat is not enough at a destructive boundary: renew
+        // synchronously so this exact acquisition remains fenced for the next
+        // lifecycle mutation even if a background renewal failed moments ago.
+        match renew_agent_lifecycle_transition_lease(&self.owner, chrono::Utc::now()) {
+            Ok(true) => Ok(()),
+            Ok(false) | Err(_) => {
+                self.active.store(false, Ordering::Release);
+                Err(format!(
+                    "cannot {operation} agent because its lifecycle conversation lease was lost"
+                ))
+            }
+        }
+    }
+}
+
+impl Drop for LifecycleLeaseHeartbeat {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        self.task.abort();
+    }
+}
+
+fn renew_agent_lifecycle_transition_lease(
+    owner: &wardian_core::conversation_lease::ConversationLeaseOwner,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<bool, String> {
+    wardian_core::conversation_lease::renew_lease_owner_persisted(
+        owner,
+        &now.to_rfc3339(),
+        &(now + LIFECYCLE_LEASE_DURATION).to_rfc3339(),
+    )
+}
+
+async fn lifecycle_config_for_session(
+    state: &AppState,
+    session_id: &str,
+) -> Result<AgentConfig, String> {
+    let agents = state.agents.lock().await;
+    let agent = agents
+        .get(session_id)
+        .ok_or_else(|| format!("Agent {} not found", session_id))?;
+    let config = agent.config.lock().unwrap().clone();
+    Ok(config)
+}
+
+/// Claims the persisted conversation exclusion lease before a lifecycle
+/// operation can start, replace, pause, or destroy an agent runtime. The
+/// in-process lifecycle gate prevents local overlap; this second guard closes
+/// the same race for a workflow or control request running in another Wardian
+/// process against the same home.
+fn acquire_agent_lifecycle_transition_lease(
+    config: &AgentConfig,
+    operation: &str,
+) -> Result<wardian_core::conversation_lease::PersistedConversationLeaseGuard, String> {
+    let now = chrono::Utc::now();
+    let now_rfc3339 = now.to_rfc3339();
+    let resume_session = config
+        .resume_session
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let lease = wardian_core::conversation_lease::ConversationLease {
+        agent_id: config.session_id.clone(),
+        provider: config.provider.clone(),
+        resume_session,
+        owner_kind: "agent_lifecycle".to_string(),
+        owner_id: format!("{operation}:{}", uuid::Uuid::new_v4()),
+        acquisition_id: uuid::Uuid::new_v4().to_string(),
+        owner_node_id: None,
+        mode: "lifecycle_transition".to_string(),
+        started_at: now_rfc3339.clone(),
+        heartbeat_at: now_rfc3339.clone(),
+        expires_at: (now + LIFECYCLE_LEASE_DURATION).to_rfc3339(),
+    };
+
+    match wardian_core::conversation_lease::try_acquire_lease(lease.clone(), &now_rfc3339) {
+        Ok(wardian_core::conversation_lease::ConversationLeaseAcquireOutcome::Acquired) => {
+            Ok(wardian_core::conversation_lease::PersistedConversationLeaseGuard::new(&lease))
+        }
+        Ok(wardian_core::conversation_lease::ConversationLeaseAcquireOutcome::Conflict(
+            conflict,
+        )) => Err(format!(
+            "cannot {operation} agent {} while its saved conversation is in use by {} {} ({})",
+            config.session_name, conflict.owner_kind, conflict.owner_id, conflict.mode
+        )),
+        Err(error) => Err(format!(
+            "cannot {operation} agent {} because its conversation lease could not be acquired: {error}",
+            config.session_name
+        )),
+    }
+}
+
+/// Acquires the durable guard before a caller waits for the local lifecycle
+/// gate. Headless workflows and direct delivery use this same ordering.
+async fn acquire_agent_lifecycle_transition_lease_for_session(
+    state: &AppState,
+    session_id: &str,
+    operation: &str,
+) -> Result<wardian_core::conversation_lease::PersistedConversationLeaseGuard, String> {
+    let config = lifecycle_config_for_session(state, session_id).await?;
+    acquire_agent_lifecycle_transition_lease(&config, operation)
+}
+
 struct PreparedAgentClear {
     termination: ActiveAgent,
     config: AgentConfig,
     init_timestamp: Option<String>,
+    status_arc: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
 fn take_agent_runtime_for_termination(agent: &mut ActiveAgent) -> ActiveAgent {
@@ -234,6 +409,21 @@ fn take_agent_runtime_for_termination(agent: &mut ActiveAgent) -> ActiveAgent {
     }
 }
 
+/// Starts a new status incarnation before a runtime is stopped or replaced.
+///
+/// Provider event tasks retain the status Arc from the runtime they started
+/// with. Replacing the Arc makes a late event from that runtime fail the
+/// identity check in `manager::set_agent_status` instead of overwriting the
+/// status of the runtime currently installed in the agent map.
+fn replace_agent_status_incarnation(
+    agent: &mut ActiveAgent,
+    initial_status: &str,
+) -> std::sync::Arc<std::sync::Mutex<String>> {
+    let status_arc = std::sync::Arc::new(std::sync::Mutex::new(initial_status.to_string()));
+    agent.current_status = status_arc.clone();
+    status_arc
+}
+
 fn prepare_agent_for_clear(agent: &mut ActiveAgent) -> PreparedAgentClear {
     let termination = take_agent_runtime_for_termination(agent);
     let config = agent.config.lock().unwrap().clone();
@@ -242,7 +432,7 @@ fn prepare_agent_for_clear(agent: &mut ActiveAgent) -> PreparedAgentClear {
     if let Ok(mut title) = agent.terminal_title.lock() {
         title.clear();
     }
-    agent.current_status = std::sync::Arc::new(std::sync::Mutex::new("Processing...".to_string()));
+    let status_arc = replace_agent_status_incarnation(agent, "Processing...");
     if let Ok(mut count) = agent.query_count.lock() {
         *count = 0;
     }
@@ -260,6 +450,7 @@ fn prepare_agent_for_clear(agent: &mut ActiveAgent) -> PreparedAgentClear {
         termination,
         config,
         init_timestamp,
+        status_arc,
     }
 }
 
@@ -967,6 +1158,7 @@ struct ResumeRuntimeSnapshot {
     init_timestamp: Option<String>,
     query_count: usize,
     log_path: Option<std::path::PathBuf>,
+    current_status: String,
 }
 
 fn capture_resume_runtime_snapshot(agent: &crate::state::ActiveAgent) -> ResumeRuntimeSnapshot {
@@ -975,6 +1167,28 @@ fn capture_resume_runtime_snapshot(agent: &crate::state::ActiveAgent) -> ResumeR
         init_timestamp: agent.init_timestamp.lock().unwrap().clone(),
         query_count: agent.query_count.lock().map(|count| *count).unwrap_or(0),
         log_path: agent.log_path.lock().ok().and_then(|path| path.clone()),
+        current_status: agent
+            .current_status
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_else(|_| "Off".to_string()),
+    }
+}
+
+async fn restore_agent_status_after_failed_runtime_start(
+    state: &AppState,
+    app: &AppHandle,
+    session_id: &str,
+    status: &str,
+) {
+    let status_arc = {
+        let mut agents = state.agents.lock().await;
+        agents
+            .get_mut(session_id)
+            .map(|agent| replace_agent_status_incarnation(agent, status))
+    };
+    if let Some(status_arc) = status_arc {
+        manager::publish_agent_status(app, session_id, &status_arc);
     }
 }
 
@@ -2381,10 +2595,15 @@ pub async fn kill_agent(
         "[WARDIAN] kill_agent called for session: {}",
         session_id
     ));
+    let _lifecycle_lease =
+        acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "remove").await?;
+    let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(_lifecycle_lease.owner().clone());
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
+    lifecycle_heartbeat.ensure_active("remove")?;
     let (agent, state_snapshot, remaining_agent_ids) = {
         let mut agents = state.agents.lock().await;
         let mut order = state.agent_order.lock().await;
+        lifecycle_heartbeat.ensure_active("remove")?;
         let agent = detach_agent_for_kill(&mut agents, &mut order, &session_id);
         let state_snapshot = agent
             .is_some()
@@ -2408,6 +2627,7 @@ pub async fn kill_agent(
     #[allow(unused_mut)]
     if let Some(mut agent) = agent {
         if let Some(runtime_generation) = agent.runtime_generation {
+            lifecycle_heartbeat.ensure_active("remove")?;
             if let Err(error) = state
                 .terminal_sessions
                 .terminate_and_remove_runtime(&session_id, runtime_generation)
@@ -2418,9 +2638,11 @@ pub async fn kill_agent(
                 ));
             }
         }
+        lifecycle_heartbeat.ensure_active("remove")?;
         manager::terminate_active_agent_process(&mut agent);
 
         // Phase 2: Remove from SQLite
+        lifecycle_heartbeat.ensure_active("remove")?;
         let _ = wardian_core::db::delete_agent(&session_id);
         let _ = app.emit("agents-updated", ());
 
@@ -2445,6 +2667,7 @@ pub async fn kill_agent(
 
             let agent_dir = home.join("agents").join(&session_id);
             if agent_dir.exists() {
+                lifecycle_heartbeat.ensure_active("remove")?;
                 if let Err(e) = std::fs::remove_dir_all(&agent_dir) {
                     manager::log_debug(&format!(
                         "[WARDIAN] Failed to remove agent directory {:?}: {}",
@@ -2477,7 +2700,11 @@ pub async fn pause_agent(
         "[WARDIAN] pause_agent called for session: {}",
         session_id
     ));
+    let _lifecycle_lease =
+        acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "pause").await?;
+    let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(_lifecycle_lease.owner().clone());
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
+    lifecycle_heartbeat.ensure_active("pause")?;
     let (mut termination, state_snapshot, status_arc) = {
         let mut agents = state.agents.lock().await;
         let order = state.agent_order.lock().await;
@@ -2486,8 +2713,9 @@ pub async fn pause_agent(
             return Err(format!("Agent {} not found", session_id));
         };
 
+        lifecycle_heartbeat.ensure_active("pause")?;
         let termination = take_agent_runtime_for_termination(agent);
-        let status_arc = agent.current_status.clone();
+        let status_arc = replace_agent_status_incarnation(agent, "Off");
         {
             let mut config = agent.config.lock().unwrap();
             config.is_off = true;
@@ -2497,9 +2725,10 @@ pub async fn pause_agent(
         (termination, state_snapshot, status_arc)
     };
     manager::save_state_snapshot(&app, &state_snapshot);
-    manager::set_agent_status(&app, &session_id, &status_arc, "Off");
+    manager::publish_agent_status(&app, &session_id, &status_arc);
 
     if let Some(runtime_generation) = termination.runtime_generation {
+        lifecycle_heartbeat.ensure_active("pause")?;
         if let Err(error) = state
             .terminal_sessions
             .pause_runtime(&session_id, runtime_generation)
@@ -2511,6 +2740,7 @@ pub async fn pause_agent(
         }
     }
 
+    lifecycle_heartbeat.ensure_active("pause")?;
     manager::terminate_active_agent_process(&mut termination);
 
     let state_snapshot = {
@@ -2534,6 +2764,9 @@ pub async fn resume_agent(
         "[WARDIAN] resume_agent called for session: {}",
         session_id
     ));
+    let _lifecycle_lease =
+        acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "resume").await?;
+    let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(_lifecycle_lease.owner().clone());
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
     let snapshot = {
         let agents = state.agents.lock().await;
@@ -2542,17 +2775,74 @@ pub async fn resume_agent(
             .ok_or_else(|| format!("Agent {} not found", session_id))?;
         capture_resume_runtime_snapshot(agent)
     };
+    lifecycle_heartbeat.ensure_active("resume")?;
 
+    // Detach the paused runtime's status incarnation before a new provider is
+    // spawned. A late event from the old PTY must not become current while the
+    // replacement is bootstrapping.
+    let staged_status_arc = {
+        let mut agents = state.agents.lock().await;
+        let agent = agents
+            .get_mut(&session_id)
+            .ok_or_else(|| format!("Agent {} not found", session_id))?;
+        lifecycle_heartbeat.ensure_active("resume")?;
+        replace_agent_status_incarnation(agent, "Processing...")
+    };
+    manager::publish_agent_status(&app, &session_id, &staged_status_arc);
+
+    let status_before_resume = snapshot.current_status.clone();
     let mut config = snapshot.config;
-    prepare_resume_config_for_runtime(&mut config, snapshot.query_count)?;
-    prepare_provider_owned_fresh_identity(&mut config).await?;
-    let mut new_active = manager::spawn_agent(
+    if let Err(error) = prepare_resume_config_for_runtime(&mut config, snapshot.query_count) {
+        restore_agent_status_after_failed_runtime_start(
+            &state,
+            &app,
+            &session_id,
+            &status_before_resume,
+        )
+        .await;
+        return Err(error);
+    }
+    if let Err(error) = prepare_provider_owned_fresh_identity(&mut config).await {
+        restore_agent_status_after_failed_runtime_start(
+            &state,
+            &app,
+            &session_id,
+            &status_before_resume,
+        )
+        .await;
+        return Err(error);
+    }
+    let mut new_active = match manager::spawn_agent(
         app.clone(),
         config.clone(),
         true,
         snapshot.init_timestamp.clone(),
     )
-    .await?;
+    .await
+    {
+        Ok(active) => active,
+        Err(error) => {
+            restore_agent_status_after_failed_runtime_start(
+                &state,
+                &app,
+                &session_id,
+                &status_before_resume,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = lifecycle_heartbeat.ensure_active("resume") {
+        manager::terminate_active_agent_process(&mut new_active);
+        restore_agent_status_after_failed_runtime_start(
+            &state,
+            &app,
+            &session_id,
+            &status_before_resume,
+        )
+        .await;
+        return Err(error);
+    }
     restore_runtime_state_snapshot_after_resume(
         &mut new_active,
         snapshot.query_count,
@@ -2561,7 +2851,21 @@ pub async fn resume_agent(
     );
     promote_fresh_provider_session_after_resume(&config.provider, &mut new_active);
 
+    let new_status_arc = new_active.current_status.clone();
     let mut pending_new_active = Some(new_active);
+    if let Err(error) = lifecycle_heartbeat.ensure_active("resume") {
+        if let Some(mut active) = pending_new_active.take() {
+            manager::terminate_active_agent_process(&mut active);
+        }
+        restore_agent_status_after_failed_runtime_start(
+            &state,
+            &app,
+            &session_id,
+            &status_before_resume,
+        )
+        .await;
+        return Err(error);
+    }
     let (mut old_agent, state_snapshot) = {
         let mut agents = state.agents.lock().await;
         let order = state.agent_order.lock().await;
@@ -2573,6 +2877,7 @@ pub async fn resume_agent(
             }
             return Err(format!("Agent {} not found", session_id));
         };
+        lifecycle_heartbeat.ensure_active("resume")?;
         let inserted = pending_new_active
             .take()
             .expect("new active agent should still be pending");
@@ -2582,6 +2887,7 @@ pub async fn resume_agent(
         (old_agent, manager::state_configs_snapshot(&agents, &order))
     };
     manager::save_state_snapshot(&app, &state_snapshot);
+    manager::publish_agent_status(&app, &session_id, &new_status_arc);
 
     manager::terminate_active_agent_process(&mut old_agent);
 
@@ -2680,7 +2986,22 @@ pub async fn clear_agent_session_with_reason(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    clear_agent_session_inner(session_id, reason, state, app, None, None).await
+    clear_agent_session_inner(
+        session_id,
+        reason,
+        state,
+        app,
+        None,
+        ClearAgentLifecycle::default(),
+    )
+    .await
+}
+
+#[derive(Default)]
+struct ClearAgentLifecycle {
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    lease: Option<wardian_core::conversation_lease::PersistedConversationLeaseGuard>,
+    heartbeat: Option<LifecycleLeaseHeartbeat>,
 }
 
 async fn clear_agent_session_inner(
@@ -2689,14 +3010,33 @@ async fn clear_agent_session_inner(
     state: State<'_, AppState>,
     app: AppHandle,
     archive_snapshot: Option<crate::commands::chat::AgentArchiveCaptureSnapshot>,
-    lifecycle_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    lifecycle: ClearAgentLifecycle,
 ) -> Result<(), String> {
     manager::log_debug(&format!(
         "[WARDIAN] clear_agent_session called for session: {}",
         session_id
     ));
+    let lifecycle_lease = match lifecycle.lease {
+        Some(lease) => lease,
+        None => {
+            acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "clear")
+                .await?
+        }
+    };
+    let lifecycle_heartbeat = lifecycle
+        .heartbeat
+        .unwrap_or_else(|| LifecycleLeaseHeartbeat::start(lifecycle_lease.owner().clone()));
     let _lifecycle_guard =
-        acquire_agent_lifecycle_guard(&state, &session_id, lifecycle_guard).await;
+        acquire_agent_lifecycle_guard(&state, &session_id, lifecycle.guard).await;
+    let original_config = {
+        let agents = state.agents.lock().await;
+        let agent = agents
+            .get(&session_id)
+            .ok_or_else(|| format!("Agent {} not found", session_id))?;
+        let config = agent.config.lock().unwrap().clone();
+        config
+    };
+    lifecycle_heartbeat.ensure_active("clear")?;
     let boundary_reason = conversation_boundary_for_clear_reason(reason.as_deref());
     let archive_result = if let Some(snapshot) = archive_snapshot {
         archive_agent_lifecycle_boundary_from_snapshot(
@@ -2717,14 +3057,6 @@ async fn clear_agent_session_inner(
 
     // Establish the fresh provider identity before touching the current runtime.
     // If exact bootstrap evidence is unavailable, clear fails with the live agent intact.
-    let original_config = {
-        let agents = state.agents.lock().await;
-        let agent = agents
-            .get(&session_id)
-            .ok_or_else(|| format!("Agent {} not found", session_id))?;
-        let config = agent.config.lock().unwrap().clone();
-        config
-    };
     let previous_codex_provider_sessions = if original_config.provider == "codex" {
         let mut sessions = codex_cleared_provider_sessions(&original_config);
         if let Some(provider_session_id) = original_config
@@ -2791,6 +3123,7 @@ async fn clear_agent_session_inner(
         let provider = config.provider.clone();
         manager::apply_provider_identity(&provider, &mut config, &new_provider_session_id)?;
     }
+    lifecycle_heartbeat.ensure_active("clear")?;
 
     let mut prepared = {
         let mut agents = state.agents.lock().await;
@@ -2798,11 +3131,14 @@ async fn clear_agent_session_inner(
             return Err(format!("Agent {} not found", session_id));
         };
 
+        lifecycle_heartbeat.ensure_active("clear")?;
         prepare_agent_for_clear(agent)
     };
+    manager::publish_agent_status(&app, &session_id, &prepared.status_arc);
 
     // 1. Terminate the old agent's process tree outside the global agent lock.
     if let Some(runtime_generation) = prepared.termination.runtime_generation {
+        lifecycle_heartbeat.ensure_active("clear")?;
         if let Err(error) = state
             .terminal_sessions
             .pause_runtime(&session_id, runtime_generation)
@@ -2813,6 +3149,7 @@ async fn clear_agent_session_inner(
             ));
         }
     }
+    lifecycle_heartbeat.ensure_active("clear")?;
     manager::terminate_active_agent_process(&mut prepared.termination);
 
     let _ = app.emit(
@@ -2822,8 +3159,12 @@ async fn clear_agent_session_inner(
 
     // 5. Spawn a FRESH process (is_restored = false) outside the global agent lock.
     // This ensures Claude uses --session-id and others start clean.
-    let new_active =
+    let mut new_active =
         manager::spawn_agent(app.clone(), config, false, prepared.init_timestamp.clone()).await?;
+    if let Err(error) = lifecycle_heartbeat.ensure_active("clear") {
+        manager::terminate_active_agent_process(&mut new_active);
+        return Err(error);
+    }
 
     {
         let mut new_config = new_active.config.lock().unwrap();
@@ -2853,7 +3194,9 @@ async fn clear_agent_session_inner(
         )
     };
 
+    let new_status_arc = new_active.current_status.clone();
     let mut pending_new_active = Some(new_active);
+    lifecycle_heartbeat.ensure_active("clear")?;
     let (state_snapshot, mut displaced_agent) = {
         let mut agents = state.agents.lock().await;
         let order = state.agent_order.lock().await;
@@ -2865,6 +3208,7 @@ async fn clear_agent_session_inner(
             }
             return Err(format!("Agent {} not found", session_id));
         };
+        lifecycle_heartbeat.ensure_active("clear")?;
         let inserted = pending_new_active
             .take()
             .expect("new active agent should still be pending");
@@ -2877,6 +3221,7 @@ async fn clear_agent_session_inner(
     };
     manager::terminate_active_agent_process(&mut displaced_agent);
     manager::save_state_snapshot(&app, &state_snapshot);
+    manager::publish_agent_status(&app, &session_id, &new_status_arc);
 
     // 7. Update agent metadata in SQLite after the replacement is committed.
     let _ = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
@@ -3226,7 +3571,11 @@ pub async fn enable_agent_worktree(
     if session_id.is_empty() {
         return Err("Session id is required".to_string());
     }
+    let lifecycle_lease =
+        acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "clear").await?;
+    let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(lifecycle_lease.owner().clone());
     let lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
+    lifecycle_heartbeat.ensure_active("clear")?;
     let archive_snapshot =
         crate::commands::chat::agent_archive_capture_snapshot(&state, &session_id)
             .await
@@ -3267,6 +3616,7 @@ pub async fn enable_agent_worktree(
     };
 
     let workspace_path = std::path::PathBuf::from(&workspace_folder);
+    lifecycle_heartbeat.ensure_active("clear")?;
     if worktree_path.exists() {
         ensure_existing_worktree_is_git_registered(&workspace_path, &worktree_path)?;
         crate::commands::git::setup_worktree_build_caches(&worktree_path, &workspace_path)?;
@@ -3281,10 +3631,12 @@ pub async fn enable_agent_worktree(
         }
     }
 
+    lifecycle_heartbeat.ensure_active("clear")?;
     {
         let mut agents = state.agents.lock().await;
         let order = state.agent_order.lock().await;
         if let Some(agent) = agents.get_mut(&session_id) {
+            lifecycle_heartbeat.ensure_active("clear")?;
             {
                 let mut config = agent.config.lock().unwrap();
                 enable_worktree_config(&mut config, &worktree_path);
@@ -3296,8 +3648,16 @@ pub async fn enable_agent_worktree(
         }
     }
 
-    clear_agent_after_worktree_mutation(session_id, state, app, archive_snapshot, lifecycle_guard)
-        .await
+    clear_agent_after_worktree_mutation(
+        session_id,
+        state,
+        app,
+        archive_snapshot,
+        lifecycle_guard,
+        lifecycle_lease,
+        lifecycle_heartbeat,
+    )
+    .await
 }
 
 async fn clear_agent_after_worktree_mutation(
@@ -3306,6 +3666,8 @@ async fn clear_agent_after_worktree_mutation(
     app: AppHandle,
     archive_snapshot: Option<crate::commands::chat::AgentArchiveCaptureSnapshot>,
     lifecycle_guard: tokio::sync::OwnedMutexGuard<()>,
+    lifecycle_lease: wardian_core::conversation_lease::PersistedConversationLeaseGuard,
+    lifecycle_heartbeat: LifecycleLeaseHeartbeat,
 ) -> Result<(), String> {
     let reason = Some("worktree_switch".to_string());
     clear_agent_session_inner(
@@ -3314,7 +3676,11 @@ async fn clear_agent_after_worktree_mutation(
         state,
         app,
         archive_snapshot,
-        Some(lifecycle_guard),
+        ClearAgentLifecycle {
+            guard: Some(lifecycle_guard),
+            lease: Some(lifecycle_lease),
+            heartbeat: Some(lifecycle_heartbeat),
+        },
     )
     .await
 }
@@ -3351,7 +3717,11 @@ pub async fn assign_agent_worktree(
     if session_id.is_empty() {
         return Err("Session id is required".to_string());
     }
+    let lifecycle_lease =
+        acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "clear").await?;
+    let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(lifecycle_lease.owner().clone());
     let lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
+    lifecycle_heartbeat.ensure_active("clear")?;
     let archive_snapshot =
         crate::commands::chat::agent_archive_capture_snapshot(&state, &session_id)
             .await
@@ -3374,10 +3744,12 @@ pub async fn assign_agent_worktree(
     let managed_worktree =
         find_assignable_worktree(&configs, &wardian_home, &worktree_folder, discovered)
             .ok_or_else(|| "Worktree is not managed by Wardian".to_string())?;
+    lifecycle_heartbeat.ensure_active("clear")?;
     {
         let mut agents = state.agents.lock().await;
         let order = state.agent_order.lock().await;
         if let Some(agent) = agents.get_mut(&session_id) {
+            lifecycle_heartbeat.ensure_active("clear")?;
             {
                 let mut config = agent.config.lock().unwrap();
                 let source_folder = config
@@ -3401,8 +3773,16 @@ pub async fn assign_agent_worktree(
         }
     }
 
-    clear_agent_after_worktree_mutation(session_id, state, app, archive_snapshot, lifecycle_guard)
-        .await
+    clear_agent_after_worktree_mutation(
+        session_id,
+        state,
+        app,
+        archive_snapshot,
+        lifecycle_guard,
+        lifecycle_lease,
+        lifecycle_heartbeat,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -3423,6 +3803,17 @@ pub async fn delete_agent_worktree(
     }
     let wardian_home = crate::utils::fs::get_wardian_home()
         .ok_or_else(|| "Unable to resolve Wardian home".to_string())?;
+    // Claim the exclusive guard before snapshotting assigned agents. Otherwise
+    // an assignment and its direct offline delivery could begin between the
+    // member-agent check and deletion, leaving a provider pointed at a
+    // worktree that this command has already approved for removal.
+    let _headless_execution_mutation =
+        wardian_core::workflow_execution_lock::try_acquire_worktree_mutation_guard()?.ok_or_else(
+            || {
+                "Cannot delete a worktree while a headless provider execution is active."
+                    .to_string()
+            },
+        )?;
     let configs = {
         let agents = state.agents.lock().await;
         agents
@@ -3488,16 +3879,22 @@ pub async fn disable_agent_worktree(
     if session_id.is_empty() {
         return Err("Session id is required".to_string());
     }
+    let lifecycle_lease =
+        acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "clear").await?;
+    let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(lifecycle_lease.owner().clone());
     let lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
+    lifecycle_heartbeat.ensure_active("clear")?;
     let archive_snapshot =
         crate::commands::chat::agent_archive_capture_snapshot(&state, &session_id)
             .await
             .ok();
 
+    lifecycle_heartbeat.ensure_active("clear")?;
     {
         let mut agents = state.agents.lock().await;
         let order = state.agent_order.lock().await;
         if let Some(agent) = agents.get_mut(&session_id) {
+            lifecycle_heartbeat.ensure_active("clear")?;
             {
                 let mut config = agent.config.lock().unwrap();
                 disable_worktree_config(&mut config)?;
@@ -3509,8 +3906,16 @@ pub async fn disable_agent_worktree(
         }
     }
 
-    clear_agent_after_worktree_mutation(session_id, state, app, archive_snapshot, lifecycle_guard)
-        .await
+    clear_agent_after_worktree_mutation(
+        session_id,
+        state,
+        app,
+        archive_snapshot,
+        lifecycle_guard,
+        lifecycle_lease,
+        lifecycle_heartbeat,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -3530,12 +3935,14 @@ pub async fn reorder_agents(
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_agent_lifecycle_guard, agent_status_update_payload, apply_agent_update_fields,
-        archive_agent_lifecycle_boundary, archive_agent_lifecycle_boundary_from_snapshot,
-        assign_worktree_config, build_agent_cli_command_for_session_id_with_shells,
-        build_agent_cli_command_with_shells, build_agent_clone_preview,
-        capture_resume_runtime_snapshot, clone_cleanup_created_profile_dirs,
-        clone_collect_eligible_file_tree, clone_copy_agent_profile_files, clone_copy_profile_plan,
+        acquire_agent_lifecycle_guard, acquire_agent_lifecycle_transition_lease,
+        acquire_agent_lifecycle_transition_lease_for_session, agent_status_update_payload,
+        apply_agent_update_fields, archive_agent_lifecycle_boundary,
+        archive_agent_lifecycle_boundary_from_snapshot, assign_worktree_config,
+        build_agent_cli_command_for_session_id_with_shells, build_agent_cli_command_with_shells,
+        build_agent_clone_preview, capture_resume_runtime_snapshot,
+        clone_cleanup_created_profile_dirs, clone_collect_eligible_file_tree,
+        clone_copy_agent_profile_files, clone_copy_profile_plan,
         clone_copy_selected_agent_profile_files, clone_copy_selected_agent_skills,
         clone_ensure_profile_destination_available, clone_match_selected_agent_skills,
         clone_refresh_profile_system_include_directories, clone_remove_existing_path,
@@ -3555,7 +3962,8 @@ mod tests {
         persisted_resume_session_for_provider, prepare_agent_for_clear, prepare_clear_config,
         prepare_restored_config_for_spawn, prepare_resume_config,
         prepare_resume_config_for_runtime, promote_fresh_provider_session_after_resume,
-        provider_needs_obtain_session_id_on_clear, reserve_spawn_session_name,
+        provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
+        replace_agent_status_incarnation, reserve_spawn_session_name,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
         resolve_requested_spawn_session_name, restore_agent_config_in_state,
         restore_antigravity_workspace_conversation_from_home,
@@ -6417,6 +6825,124 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         waiter.await.unwrap();
     }
 
+    #[test]
+    fn lifecycle_transition_lease_blocks_mutations_during_headless_execution() {
+        let _lock = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp wardian home");
+        std::env::set_var("WARDIAN_HOME", temp.path());
+        let _home = WardianHomeGuard;
+        let config = AgentConfig {
+            session_id: "agent-1".to_string(),
+            session_name: "CoderOne".to_string(),
+            provider: "mock".to_string(),
+            resume_session: Some("provider-session-1".to_string()),
+            ..Default::default()
+        };
+        let now = chrono::Utc::now();
+        wardian_core::conversation_lease::acquire_lease(
+            wardian_core::conversation_lease::ConversationLease {
+                agent_id: config.session_id.clone(),
+                provider: config.provider.clone(),
+                resume_session: "provider-session-1".to_string(),
+                owner_kind: "message_delivery".to_string(),
+                owner_id: "interaction-1".to_string(),
+                acquisition_id: "test-acquisition-1".to_string(),
+                owner_node_id: None,
+                mode: "background_resume".to_string(),
+                started_at: now.to_rfc3339(),
+                heartbeat_at: now.to_rfc3339(),
+                expires_at: (now + chrono::Duration::minutes(5)).to_rfc3339(),
+            },
+            &now.to_rfc3339(),
+        )
+        .expect("headless lease");
+
+        for operation in ["resume", "clear", "pause", "remove"] {
+            let error = acquire_agent_lifecycle_transition_lease(&config, operation)
+                .expect_err("lifecycle mutation must not overlap headless execution");
+            assert!(error.contains("saved conversation is in use"), "{error}");
+        }
+    }
+
+    #[test]
+    fn lifecycle_transition_lease_renewal_keeps_its_owner_active() {
+        let _lock = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp wardian home");
+        std::env::set_var("WARDIAN_HOME", temp.path());
+        let _home = WardianHomeGuard;
+        let config = AgentConfig {
+            session_id: "agent-1".to_string(),
+            session_name: "CoderOne".to_string(),
+            provider: "mock".to_string(),
+            ..Default::default()
+        };
+        let lease =
+            acquire_agent_lifecycle_transition_lease(&config, "clear").expect("lifecycle lease");
+        let owner = lease.owner().clone();
+        let heartbeat_at = chrono::Utc::now() + chrono::Duration::minutes(1);
+
+        assert!(
+            renew_agent_lifecycle_transition_lease(&owner, heartbeat_at)
+                .expect("renew lifecycle lease"),
+            "the lifecycle heartbeat must not silently lose a current lease"
+        );
+        let leases = wardian_core::conversation_lease::load_leases();
+        let active = wardian_core::conversation_lease::find_active_conflict(
+            &leases,
+            "agent-1",
+            "",
+            &heartbeat_at.to_rfc3339(),
+        );
+        assert!(
+            active.is_some(),
+            "renewed lifecycle lease should remain active"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn lifecycle_transition_claims_the_persisted_lease_before_waiting_for_the_local_gate() {
+        let _lock = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp wardian home");
+        std::env::set_var("WARDIAN_HOME", temp.path());
+        let _home = WardianHomeGuard;
+        let state = AppState::new();
+        let agent = make_test_agent();
+        {
+            let mut config = agent.config.lock().unwrap();
+            config.session_id = "agent-1".to_string();
+            config.session_name = "CoderOne".to_string();
+            config.provider = "mock".to_string();
+        }
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
+
+        let local_gate = lock_agent_lifecycle(&state, "agent-1").await;
+        let lifecycle_lease = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            acquire_agent_lifecycle_transition_lease_for_session(&state, "agent-1", "resume"),
+        )
+        .await
+        .expect("persisted lease acquisition must not wait for the local lifecycle gate")
+        .expect("lifecycle lease");
+
+        assert!(
+            wardian_core::conversation_lease::find_active_conflict(
+                &wardian_core::conversation_lease::load_leases(),
+                "agent-1",
+                "",
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .is_some(),
+            "the durable lease should be visible before the local gate is acquired"
+        );
+        drop(local_gate);
+        drop(lifecycle_lease);
+    }
+
     #[tokio::test]
     async fn existing_lifecycle_guard_is_reused_without_self_deadlock() {
         let state = AppState::new();
@@ -6489,6 +7015,14 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             !Arc::ptr_eq(&runtime_status, &active.current_status),
             "clear must detach stale runtime status writers before replacement spawn"
         );
+        assert!(
+            Arc::ptr_eq(&runtime_status, &prepared.termination.current_status),
+            "the detached runtime must retain its original status Arc"
+        );
+        assert!(
+            Arc::ptr_eq(&prepared.status_arc, &active.current_status),
+            "the replacement status must be the incarnation installed in the agent map"
+        );
         assert_eq!(active.terminal_title.lock().unwrap().as_str(), "");
         assert_eq!(
             active.current_status.lock().unwrap().as_str(),
@@ -6505,6 +7039,21 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             .expect("watch snapshot after clear");
         assert!(watch_snapshot.output.text.is_empty());
         assert!(watch_snapshot.transcript.messages.is_empty());
+    }
+
+    #[test]
+    fn runtime_replacement_status_incarnation_rejects_late_runtime_writers() {
+        let mut active = make_test_agent();
+        let old_status = active.current_status.clone();
+
+        let replacement_status = replace_agent_status_incarnation(&mut active, "Off");
+
+        assert!(
+            !Arc::ptr_eq(&old_status, &active.current_status),
+            "late events must keep the old status Arc"
+        );
+        assert!(Arc::ptr_eq(&replacement_status, &active.current_status));
+        assert_eq!(replacement_status.lock().unwrap().as_str(), "Off");
     }
 
     #[test]
@@ -6551,6 +7100,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             snapshot.log_path.as_deref(),
             Some(std::path::Path::new("D:/tmp/agent.log"))
         );
+        assert_eq!(snapshot.current_status, "Idle");
     }
 
     #[test]

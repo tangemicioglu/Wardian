@@ -389,12 +389,19 @@ export function useAgentResourceController(
   const agentStatuses = useMemo(() => {
     const statuses: Record<string, string> = {};
     for (const agent of agents) {
-      statuses[agent.session_id] = offAgentIds.has(agent.session_id)
-        ? "Off"
-        : telemetry[agent.session_id]?.current_status ?? "Idle";
+      const metricStatus = telemetry[agent.session_id]?.current_status;
+      statuses[agent.session_id] = metricStatus === "Headless"
+        ? "Headless"
+        : offAgentIds.has(agent.session_id)
+          ? "Off"
+          : metricStatus ?? "Idle";
     }
     for (const [session_id, metric] of Object.entries(telemetry)) {
-      statuses[session_id] = offAgentIds.has(session_id) ? "Off" : metric.current_status;
+      statuses[session_id] = metric.current_status === "Headless"
+        ? "Headless"
+        : offAgentIds.has(session_id)
+          ? "Off"
+          : metric.current_status;
     }
     return statuses;
   }, [agents, offAgentIds, telemetry]);

@@ -512,6 +512,8 @@ pub async fn drive_started_run_with_catalog_and_assignments(
     assignments: WorkflowAssignments,
     agent_catalog: HashMap<String, AgentBinding>,
 ) -> Result<(), String> {
+    let _headless_execution =
+        wardian_core::workflow_execution_lock::acquire_headless_execution_guard()?;
     let owner_id = format!("{}/{}", blueprint.id, state.run_id);
     let exec = if let Some(app) = app {
         live_executor_with_catalog_assignments_and_app(
@@ -567,6 +569,8 @@ pub async fn drive_resume_with_catalog(
     bindings: HashMap<String, String>,
     agent_catalog: HashMap<String, AgentBinding>,
 ) -> Result<(), String> {
+    let _headless_execution =
+        wardian_core::workflow_execution_lock::acquire_headless_execution_guard()?;
     let assignments = wardian_core::workflow::assignment::normalize_assignments(
         None,
         &bindings,

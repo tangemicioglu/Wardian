@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use wardian_core::control::{
     InteractionBodyRef, ProviderInputReadiness, ProviderReadyEvidence, ReplyStatus,
 };
+use wardian_core::conversation_lease::ConversationLeaseOwner;
 use wardian_core::models::AgentConfig;
 
 type AgentRunFuture<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
@@ -20,9 +21,18 @@ pub struct AgentRunSpec {
     pub provider: String,
     pub cwd: PathBuf,
     pub prompt: String,
+    /// Process-scoped identity used by a fresh background workflow. This may
+    /// intentionally differ from the registered agent below so providers do
+    /// not resume or write into the visible session's conversation.
     pub session_id: String,
+    /// The registered agent whose lifecycle gate, lease, and status belong to
+    /// this headless run. Ephemeral provider workers have no registered agent.
+    pub agent_session_id: Option<String>,
     pub resume_session: Option<String>,
     pub config_override: Option<AgentConfig>,
+    /// Owned by registered background workflow paths. It lets the shared
+    /// headless process keep the persisted conversation lease alive.
+    pub lease_owner: Option<ConversationLeaseOwner>,
 }
 
 /// What the executor needs to route one prompt into an already-running agent.
@@ -65,6 +75,8 @@ impl AgentRunner for HeadlessAgentRunner {
                     output_format: "json",
                     provider_name: &spec.provider,
                     config_override: spec.config_override.as_ref(),
+                    timeout: crate::manager::DEFAULT_HEADLESS_RUN_TIMEOUT,
+                    lease_owner: spec.lease_owner.clone(),
                 })
                 .await?;
 
@@ -95,7 +107,82 @@ impl AgentRunner for TauriHeadlessAgentRunner {
     fn run(&self, spec: AgentRunSpec) -> AgentRunFuture<'_> {
         Box::pin(async move {
             let state = self.app.state::<crate::state::AppState>();
-            crate::delivery::run_headless_process_prompt(
+            let registered_agent_session_id = spec.agent_session_id.clone();
+            // Registered background workflow runs acquire the persisted lease
+            // before they get here. They then share the local lifecycle gate
+            // with direct delivery and resume/clear/pause/kill. Fresh runs use
+            // a synthetic provider session id, so the gate must key off the
+            // registered agent rather than `spec.session_id`.
+            let _lifecycle_guard = if spec.lease_owner.is_some() {
+                let agent_session_id = registered_agent_session_id.as_deref().ok_or_else(|| {
+                    "registered background workflow run is missing its agent session id"
+                        .to_string()
+                })?;
+                Some(state.lock_agent_lifecycle(agent_session_id).await)
+            } else {
+                None
+            };
+            let (config_override, emit_headless_status) = if spec.lease_owner.is_some() {
+                let agent_session_id = registered_agent_session_id
+                    .as_deref()
+                    .expect("registered background workflow id was validated before lock");
+                let current_config = {
+                    let agents = state.agents.lock().await;
+                    let agent = agents.get(agent_session_id).ok_or_else(|| {
+                        format!(
+                            "agent {} was removed before its background workflow could start",
+                            agent_session_id
+                        )
+                    })?;
+                    let config = agent
+                        .config
+                        .lock()
+                        .map_err(|_| "agent config lock poisoned".to_string())?
+                        .clone();
+                    let current_status = agent
+                        .current_status
+                        .lock()
+                        .map_err(|_| "agent status lock poisoned".to_string())?
+                        .clone();
+                    (config, current_status)
+                };
+                let (current_config, current_status) = current_config;
+                let current_resume = current_config
+                    .resume_session
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let expected_resume = spec
+                    .resume_session
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let resumes_visible_conversation = expected_resume.is_some();
+                if current_config.provider != spec.provider
+                    || (resumes_visible_conversation
+                        && (!current_config.is_off || current_resume != expected_resume))
+                {
+                    return Err(format!(
+                        "agent {} changed before its background workflow could start",
+                        agent_session_id
+                    ));
+                }
+                let emit_headless_status = current_config.is_off || is_offline_agent_status(&current_status);
+                if emit_headless_status {
+                    let _ = self.app.emit(
+                        "agent-status-updated",
+                        serde_json::json!({
+                            "session_id": agent_session_id,
+                            "current_status": "Headless",
+                        }),
+                    );
+                }
+                (Some(current_config), emit_headless_status)
+            } else {
+                (spec.config_override.clone(), false)
+            };
+            let lease_owner = spec.lease_owner.clone();
+            let result = crate::delivery::run_headless_process_prompt(
                 &state,
                 crate::delivery::HeadlessProcessPromptRequest {
                     node: spec.node,
@@ -104,14 +191,63 @@ impl AgentRunner for TauriHeadlessAgentRunner {
                     prompt: spec.prompt,
                     session_id: spec.session_id,
                     resume_session: spec.resume_session,
-                    config_override: spec.config_override,
+                    config_override,
                     interaction_id: None,
+                    timeout: crate::manager::DEFAULT_HEADLESS_RUN_TIMEOUT,
+                    lease_owner: spec.lease_owner,
                 },
             )
             .await
-            .map(|result| result.response)
+            .map(|result| result.response);
+
+            // `run_background_resume` also owns an idempotent persisted-lease
+            // guard. Release here, while this runner still owns the local
+            // lifecycle gate, so a local resume/clear/pause/remove cannot slip
+            // between provider completion and lease cleanup.
+            if let Some(owner) = lease_owner {
+                match wardian_core::conversation_lease::release_lease_owner_persisted(&owner) {
+                    Ok(()) => {
+                        if emit_headless_status {
+                            if let Some(agent_session_id) = registered_agent_session_id.as_deref() {
+                                let restored_status = {
+                                    let agents = state.agents.lock().await;
+                                    agents.get(agent_session_id).and_then(|agent| {
+                                        agent
+                                            .current_status
+                                            .lock()
+                                            .ok()
+                                            .map(|status| status.clone())
+                                    })
+                                };
+                                if let Some(restored_status) = restored_status {
+                                    let _ = self.app.emit(
+                                        "agent-status-updated",
+                                        serde_json::json!({
+                                            "session_id": agent_session_id,
+                                            "current_status": restored_status,
+                                        }),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => crate::manager::log_debug(&format!(
+                        "[workflow] headless lifecycle-gate lease release failed for {}: {error}",
+                        registered_agent_session_id.as_deref().unwrap_or("<ephemeral>")
+                    )),
+                }
+            }
+
+            result
         })
     }
+}
+
+fn is_offline_agent_status(status: &str) -> bool {
+    matches!(
+        wardian_core::identity::normalize_status(status).as_str(),
+        "off" | "error"
+    )
 }
 
 #[derive(Clone)]
@@ -589,8 +725,10 @@ mod tests {
             cwd: std::path::PathBuf::from("."),
             prompt: "do".into(),
             session_id: String::new(),
+            agent_session_id: None,
             resume_session: None,
             config_override: None,
+            lease_owner: None,
         };
         let out = runner.run(spec).await.unwrap();
         assert!(out.contains("ok"));

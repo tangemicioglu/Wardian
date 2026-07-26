@@ -7,6 +7,8 @@ use crate::providers::ProviderFactory;
 use crate::utils::fs::*;
 use crate::utils::process::new_headless_command;
 use crate::utils::shell::build_program_launch;
+use std::time::Duration;
+use wardian_core::conversation_lease::ConversationLeaseOwner;
 use wardian_core::models::{AgentConfig, AgentEvent, AgentProvider};
 
 use super::codex::{
@@ -49,6 +51,12 @@ pub(crate) fn headless_provider_launch(
     build_program_launch(bin, provider_args)
 }
 
+pub const DEFAULT_HEADLESS_RUN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+const HEADLESS_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const HEADLESS_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+const HEADLESS_LEASE_DURATION: chrono::Duration = chrono::Duration::minutes(20);
+
 pub struct HeadlessRunOptions<'a> {
     pub cwd: &'a std::path::Path,
     pub prompt: &'a str,
@@ -57,6 +65,12 @@ pub struct HeadlessRunOptions<'a> {
     pub output_format: &'a str,
     pub provider_name: &'a str,
     pub config_override: Option<&'a AgentConfig>,
+    /// A hard ceiling ensures a stuck provider cannot retain a conversation
+    /// lease indefinitely.
+    pub timeout: Duration,
+    /// Present only when this run owns a persisted provider-conversation lease.
+    /// The manager renews it while the provider process is still alive.
+    pub lease_owner: Option<ConversationLeaseOwner>,
 }
 
 #[derive(Debug)]
@@ -65,6 +79,63 @@ struct HeadlessProviderContext {
     command_cwd: std::path::PathBuf,
     args_cwd: std::path::PathBuf,
     habitat_root: Option<std::path::PathBuf>,
+}
+
+/// Owns the provider's full process tree while an async headless run is in
+/// flight. `kill_on_drop` only reaches Tokio's direct child; this guard closes
+/// the shell-wrapper/descendant gap when the enclosing future is cancelled.
+struct HeadlessProcessTreeGuard {
+    pid: Option<u32>,
+}
+
+impl HeadlessProcessTreeGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    fn disarm(&mut self) {
+        self.pid = None;
+    }
+}
+
+impl Drop for HeadlessProcessTreeGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            terminate_headless_process_tree(pid);
+        }
+    }
+}
+
+fn terminate_headless_process_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        if let Err(error) = crate::utils::process::force_kill_process_tree(pid) {
+            log_debug(&format!(
+                "[Wardian] Failed to terminate headless process tree rooted at PID {pid}: {error}"
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        // `run_headless_with_options` starts the provider as a process-group
+        // leader. Signalling the negative PID reaches shell wrappers and every
+        // descendant before the direct child can be reaped.
+        let result = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log_debug(&format!(
+                    "[Wardian] Failed to terminate headless process group rooted at PID {pid}: {error}"
+                ));
+            }
+        }
+    }
+
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = pid;
+    }
 }
 
 fn headless_provider_context(
@@ -112,7 +183,7 @@ pub(crate) fn headless_provider_args(
             provider_args.push("--cd".to_string());
             provider_args.push(provider_cwd.to_string_lossy().to_string());
             if let Some(config) = config_override {
-                CodexProvider::new().append_common_args(&mut provider_args, config, true);
+                CodexProvider::new().append_headless_global_args(&mut provider_args, config);
                 if let Some(custom) = config.custom_args.as_ref() {
                     if let Some(parsed) = shlex::split(custom) {
                         provider_args.extend(parsed);
@@ -124,6 +195,7 @@ pub(crate) fn headless_provider_args(
                 provider_args.push("resume".to_string());
                 provider_args.push(resume_id.to_string());
             }
+            CodexProvider::new().append_headless_exec_args(&mut provider_args, config_override);
             provider_args.push("--json".to_string());
             provider_args.push(prompt.to_string());
         }
@@ -337,6 +409,9 @@ pub async fn run_headless_with_options(
     #[cfg(target_os = "macos")]
     cmd.env("PATH", macos_extended_path());
 
+    #[cfg(unix)]
+    cmd.process_group(0);
+
     cmd.current_dir(&provider_context.command_cwd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -360,7 +435,11 @@ pub async fn run_headless_with_options(
         resume_session.is_some_and(|value| !value.trim().is_empty())
     ));
 
+    // If the control request is cancelled, dropping the child must terminate
+    // the provider rather than leaving it running against a leased session.
+    cmd.kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let mut process_tree_guard = HeadlessProcessTreeGuard::new(child.id());
 
     // Read stdout and stderr concurrently to avoid deadlock when stderr buffer fills.
     let stdout_handle = {
@@ -401,11 +480,21 @@ pub async fn run_headless_with_options(
         })
     };
 
+    let status = wait_for_headless_child(
+        &mut child,
+        provider_name,
+        options.timeout,
+        options.lease_owner.as_ref(),
+    )
+    .await;
+    if status.is_ok() {
+        process_tree_guard.disarm();
+    }
+
     let (output, err_output) = tokio::join!(stdout_handle, stderr_handle);
     let output = output.unwrap_or_default();
     let err_output = err_output.unwrap_or_default();
-
-    let status = child.wait().await.map_err(|error| error.to_string())?;
+    let status = status?;
 
     if !err_output.is_empty() {
         log_debug(&format!(
@@ -466,26 +555,26 @@ pub async fn run_headless_with_options(
         if output_format == "json" {
             Ok(serde_json::json!({
                 "thread_id": wardian_session_id,
-                "response": last_message.unwrap_or_default(),
+                "response": last_message.unwrap_or_else(|| output.clone()),
                 "raw": output,
             }))
         } else {
             Ok(serde_json::json!({ "text": last_message.unwrap_or(output) }))
         }
+    } else if provider_name == "claude" {
+        normalize_claude_headless_output(&output, output_format)
     } else if provider_name == "opencode" {
         let summary = OpenCodeProvider::summarize_run_output(&output);
+        let response = summary.last_text.unwrap_or_else(|| output.clone());
 
         if output_format == "json" {
-            let session_id = summary.session_id.ok_or_else(|| {
-                "opencode did not return an exact session identity for this run".to_string()
-            })?;
             Ok(serde_json::json!({
-                "session_id": session_id,
-                "response": summary.last_text.clone().unwrap_or_default(),
+                "session_id": summary.session_id,
+                "response": response,
                 "raw": output,
             }))
         } else {
-            Ok(serde_json::json!({ "text": summary.last_text.unwrap_or(output) }))
+            Ok(serde_json::json!({ "text": response }))
         }
     } else if provider_name == "antigravity" {
         let conversation_id = resume_session
@@ -512,10 +601,6 @@ pub async fn run_headless_with_options(
             .unwrap_or_else(|| output.clone());
 
         if output_format == "json" {
-            let conversation_id = conversation_id.ok_or_else(|| {
-                "antigravity did not produce a new workspace conversation mapping for this run"
-                    .to_string()
-            })?;
             Ok(serde_json::json!({
                 "session_id": conversation_id,
                 "response": response,
@@ -530,6 +615,120 @@ pub async fn run_headless_with_options(
     } else {
         Ok(serde_json::json!({ "text": output }))
     }
+}
+
+async fn wait_for_headless_child(
+    child: &mut tokio::process::Child,
+    provider_name: &str,
+    timeout: Duration,
+    lease_owner: Option<&ConversationLeaseOwner>,
+) -> Result<std::process::ExitStatus, String> {
+    wait_for_headless_child_with_intervals(
+        child,
+        provider_name,
+        timeout,
+        lease_owner,
+        HEADLESS_PROCESS_POLL_INTERVAL,
+        HEADLESS_LEASE_HEARTBEAT_INTERVAL,
+    )
+    .await
+}
+
+async fn wait_for_headless_child_with_intervals(
+    child: &mut tokio::process::Child,
+    provider_name: &str,
+    timeout: Duration,
+    lease_owner: Option<&ConversationLeaseOwner>,
+    process_poll_interval: Duration,
+    lease_heartbeat_interval: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut process_poll = tokio::time::interval_at(
+        tokio::time::Instant::now() + process_poll_interval,
+        process_poll_interval,
+    );
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + lease_heartbeat_interval,
+        lease_heartbeat_interval,
+    );
+
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => {
+                terminate_headless_child(child).await;
+                return Err(format!(
+                    "Headless provider {provider_name} exceeded its {} second execution limit",
+                    timeout.as_secs()
+                ));
+            }
+            _ = process_poll.tick() => {
+                if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+                    return Ok(status);
+                }
+            }
+            _ = heartbeat.tick(), if lease_owner.is_some() => {
+                let owner = lease_owner.expect("lease owner checked by select guard");
+                let now = chrono::Utc::now();
+                let renewed = wardian_core::conversation_lease::renew_lease_owner_persisted(
+                    owner,
+                    &now.to_rfc3339(),
+                    &(now + HEADLESS_LEASE_DURATION).to_rfc3339(),
+                )?;
+                if !renewed {
+                    terminate_headless_child(child).await;
+                    return Err(format!(
+                        "Headless provider {provider_name} lost its conversation lease before completion"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+async fn terminate_headless_child(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        terminate_headless_process_tree(pid);
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
+fn normalize_claude_headless_output(
+    output: &str,
+    output_format: &str,
+) -> Result<serde_json::Value, String> {
+    let parsed = serde_json::from_str::<serde_json::Value>(output.trim())
+        .map_err(|error| format!("Failed to parse Claude JSON output: {error}. Raw: {output}"))?;
+    let response = claude_headless_response(&parsed).unwrap_or_else(|| output.to_string());
+
+    if output_format == "json" {
+        Ok(serde_json::json!({
+            "session_id": parsed.get("session_id").and_then(|value| value.as_str()),
+            "response": response,
+            "raw": output,
+        }))
+    } else {
+        Ok(serde_json::json!({ "text": response }))
+    }
+}
+
+fn claude_headless_response(value: &serde_json::Value) -> Option<String> {
+    for key in ["result", "response", "text"] {
+        if let Some(text) = value.get(key).and_then(|value| value.as_str()) {
+            let text = text.trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToString::to_string)
 }
 
 fn append_codex_bootstrap_args(
@@ -550,15 +749,7 @@ fn append_codex_bootstrap_args(
     }
 
     provider_args.push("exec".to_string());
-    if let Some(config) = config {
-        let codex = config.codex_config();
-        if codex.skip_git_repo_check.unwrap_or(true) {
-            provider_args.push("--skip-git-repo-check".to_string());
-        }
-        if codex.ephemeral.unwrap_or(false) {
-            provider_args.push("--ephemeral".to_string());
-        }
-    }
+    CodexProvider::new().append_headless_exec_args(provider_args, config);
 
     provider_args.push("--json".to_string());
     provider_args.push(session_bootstrap_prompt().to_string());
@@ -950,7 +1141,218 @@ fn apply_headless_identity_env(cmd: &mut tokio::process::Command, wardian_sessio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::path::{Path, PathBuf};
+
+    struct TestWardianHome {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous_home: Option<OsString>,
+        _home: tempfile::TempDir,
+    }
+
+    impl TestWardianHome {
+        fn new() -> Self {
+            let lock = crate::utils::wardian_test_env_lock();
+            let home = tempfile::tempdir().expect("temp wardian home");
+            let previous_home = std::env::var_os("WARDIAN_HOME");
+            std::env::set_var("WARDIAN_HOME", home.path());
+            Self {
+                _lock: lock,
+                previous_home,
+                _home: home,
+            }
+        }
+    }
+
+    impl Drop for TestWardianHome {
+        fn drop(&mut self) {
+            match self.previous_home.take() {
+                Some(value) => std::env::set_var("WARDIAN_HOME", value),
+                None => std::env::remove_var("WARDIAN_HOME"),
+            }
+        }
+    }
+
+    fn node_available() -> bool {
+        std::process::Command::new(if cfg!(windows) { "node.exe" } else { "node" })
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn headless_wait_heartbeats_an_active_conversation_lease() {
+        if !node_available() {
+            return;
+        }
+        let _home = TestWardianHome::new();
+        let now = chrono::Utc::now();
+        let original_expires_at = (now + chrono::Duration::minutes(2)).to_rfc3339();
+        let lease = wardian_core::conversation_lease::ConversationLease {
+            agent_id: "agent-1".to_string(),
+            provider: "mock".to_string(),
+            resume_session: "provider-session-1".to_string(),
+            owner_kind: "message_delivery".to_string(),
+            owner_id: "interaction-1".to_string(),
+            acquisition_id: "test-acquisition-1".to_string(),
+            owner_node_id: None,
+            mode: "background_resume".to_string(),
+            started_at: now.to_rfc3339(),
+            heartbeat_at: now.to_rfc3339(),
+            expires_at: original_expires_at.clone(),
+        };
+        wardian_core::conversation_lease::acquire_lease(lease.clone(), &now.to_rfc3339())
+            .expect("lease");
+        let owner = lease.owner();
+
+        let mut command = crate::utils::process::new_headless_command(if cfg!(windows) {
+            "node.exe"
+        } else {
+            "node"
+        });
+        command
+            .arg("-e")
+            .arg("setTimeout(() => process.exit(0), 75)");
+        command.kill_on_drop(true);
+        let mut child = command.spawn().expect("spawn node");
+
+        let status = wait_for_headless_child_with_intervals(
+            &mut child,
+            "mock",
+            Duration::from_secs(1),
+            Some(&owner),
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+        )
+        .await
+        .expect("headless child completed");
+
+        assert!(status.success());
+        let renewed = wardian_core::conversation_lease::load_leases()
+            .into_iter()
+            .next()
+            .expect("renewed lease");
+        assert_ne!(renewed.expires_at, original_expires_at);
+        wardian_core::conversation_lease::release_owner_persisted(
+            &owner.owner_kind,
+            &owner.owner_id,
+        )
+        .expect("release lease");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn headless_timeout_terminates_shell_descendants_before_releasing_lease() {
+        if !node_available() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().expect("temp process marker directory");
+        let marker = temp.path().join("headless-descendant.pid");
+        let marker_arg = marker.to_string_lossy().to_string();
+        let child_script = r#"
+            const { spawn } = require('node:child_process');
+            const { writeFileSync } = require('node:fs');
+            const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+                stdio: 'ignore',
+            });
+            writeFileSync(process.argv[1], String(descendant.pid));
+            setInterval(() => {}, 1000);
+        "#;
+
+        let mut command = crate::utils::process::new_headless_command("node.exe");
+        command.arg("-e").arg(child_script).arg(marker_arg);
+        command.kill_on_drop(true);
+        let mut child = command.spawn().expect("spawn headless wrapper");
+
+        let mut descendant_pid = None;
+        for _ in 0..40 {
+            if let Ok(value) = std::fs::read_to_string(&marker) {
+                if let Ok(pid) = value.trim().parse::<u32>() {
+                    descendant_pid = Some(pid);
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let descendant_pid = descendant_pid.expect("wrapper recorded descendant PID");
+
+        let error = wait_for_headless_child_with_intervals(
+            &mut child,
+            "mock",
+            Duration::from_millis(25),
+            None,
+            Duration::from_millis(5),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("long-running wrapper should time out");
+        assert!(error.contains("exceeded"));
+
+        for _ in 0..40 {
+            if !crate::utils::process::process_exists(descendant_pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !crate::utils::process::process_exists(descendant_pid),
+            "headless timeout must terminate a shell/provider descendant"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn dropped_headless_run_terminates_descendants_before_lease_cleanup() {
+        if !node_available() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().expect("temp process marker directory");
+        let marker = temp.path().join("cancelled-headless-descendant.pid");
+        let marker_arg = marker.to_string_lossy().to_string();
+        let child_script = r#"
+            const { spawn } = require('node:child_process');
+            const { writeFileSync } = require('node:fs');
+            const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+                stdio: 'ignore',
+            });
+            writeFileSync(process.argv[1], String(descendant.pid));
+            setInterval(() => {}, 1000);
+        "#;
+
+        let mut command = crate::utils::process::new_headless_command("node.exe");
+        command.arg("-e").arg(child_script).arg(marker_arg);
+        command.kill_on_drop(true);
+        let mut child = command.spawn().expect("spawn cancellable headless wrapper");
+        let tree_guard = HeadlessProcessTreeGuard::new(child.id());
+
+        let mut descendant_pid = None;
+        for _ in 0..40 {
+            if let Ok(value) = std::fs::read_to_string(&marker) {
+                if let Ok(pid) = value.trim().parse::<u32>() {
+                    descendant_pid = Some(pid);
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let descendant_pid = descendant_pid.expect("wrapper recorded descendant PID");
+
+        drop(tree_guard);
+        let _ = child.wait().await;
+        for _ in 0..40 {
+            if !crate::utils::process::process_exists(descendant_pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !crate::utils::process::process_exists(descendant_pid),
+            "cancelling a headless run must terminate its provider descendants"
+        );
+    }
 
     #[test]
     fn codex_bootstrap_uses_thread_started_from_current_output() {
@@ -1029,6 +1431,49 @@ mod tests {
         assert!(args.contains(&"exec".to_string()));
         assert!(!args.contains(&"resume".to_string()));
         assert!(!args.contains(&"ses_source".to_string()));
+        let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
+        let skip_index = args
+            .iter()
+            .position(|arg| arg == "--skip-git-repo-check")
+            .expect("headless Codex defaults to the repository bypass");
+        assert!(skip_index > exec_index);
+    }
+
+    #[test]
+    fn codex_headless_args_keep_exec_only_flags_after_exec() {
+        let provider = crate::providers::ProviderFactory::resolve("codex").unwrap();
+        let config = AgentConfig {
+            provider: "codex".into(),
+            provider_config: wardian_core::models::ProviderConfig::Codex(
+                wardian_core::models::CodexProviderConfig {
+                    skip_git_repo_check: Some(true),
+                    ephemeral: Some(true),
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        };
+        let args = headless_provider_args(
+            "codex",
+            provider.as_ref(),
+            Path::new("/workspace"),
+            "task",
+            "json",
+            None,
+            Some(&config),
+        );
+
+        let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
+        let skip_index = args
+            .iter()
+            .position(|arg| arg == "--skip-git-repo-check")
+            .unwrap();
+        let ephemeral_index = args.iter().position(|arg| arg == "--ephemeral").unwrap();
+        assert!(skip_index > exec_index);
+        assert!(ephemeral_index > exec_index);
+        assert!(!args[..exec_index].contains(&"--skip-git-repo-check".to_string()));
+        assert!(!args[..exec_index].contains(&"--ephemeral".to_string()));
+        assert!(!args.contains(&"--no-alt-screen".to_string()));
     }
 
     #[cfg(windows)]
@@ -1204,6 +1649,29 @@ mod tests {
             .unwrap();
         assert!(approval_index < exec_index);
         assert!(args[exec_index + 1..].contains(&"--json".to_string()));
+        assert!(args[exec_index + 1..].contains(&"--skip-git-repo-check".to_string()));
+    }
+
+    #[test]
+    fn claude_headless_output_exposes_result_text_for_workflows() {
+        let output =
+            r#"{"type":"result","session_id":"claude-session-1","result":"workflow complete"}"#;
+
+        let normalized = normalize_claude_headless_output(output, "json").unwrap();
+
+        assert_eq!(normalized["session_id"], "claude-session-1");
+        assert_eq!(normalized["response"], "workflow complete");
+        assert_eq!(normalized["raw"], output);
+    }
+
+    #[test]
+    fn claude_headless_output_falls_back_to_assistant_message_content() {
+        let output =
+            r#"{"session_id":"claude-session-2","message":{"content":"assistant response"}}"#;
+
+        let normalized = normalize_claude_headless_output(output, "text").unwrap();
+
+        assert_eq!(normalized["text"], "assistant response");
     }
 
     #[test]

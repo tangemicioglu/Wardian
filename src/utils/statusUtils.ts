@@ -9,13 +9,16 @@ export function deriveEffectiveStatus(
   metricsStatus: string | undefined,
   isOff?: boolean,
 ): "Idle" | "Processing..." | "Action Needed" | "Pending..." | "Off" | "Headless" | "Restoring" {
-  if (isOff) return "Off";
-
   let effectiveStatus: string = metricsStatus || "Pending...";
 
   // Backend "Headless" and "Restoring" statuses are authoritative — pass them through unchanged.
   if (effectiveStatus === "Headless") return "Headless";
   if (effectiveStatus === "Restoring") return "Restoring";
+
+  // An agent remains configured as off while Wardian runs a one-shot provider
+  // process for it. That lease-derived Headless state must be visible instead
+  // of being hidden by the persisted off flag.
+  if (isOff) return "Off";
 
   // Title-based overrides. "Action Required" always upgrades status.
   // "◇ / Ready / Idle" can only set Idle when the backend hasn't reported an active state —
@@ -70,13 +73,18 @@ export function deriveCurrentThought(
 ): { thought: string; status: "Idle" | "Processing..." | "Action Needed" | "Pending..." | "Off" | "Headless" | "Restoring" } {
   let effectiveStatus = deriveEffectiveStatus(rawTitle, liveThought, metrics?.current_status, isOff);
   let currentThought = cleanThought(liveThought || rawTitle.trim());
+  const isHeadless = metrics?.current_status === "Headless";
 
   if (!liveThought && rawTitle.startsWith("OC | ")) {
     currentThought = cleanThought(rawTitle.slice(5).trim());
   }
 
-  if (isOff) {
+  if (isOff && !isHeadless) {
     return { thought: "Off", status: "Off" };
+  }
+
+  if (isHeadless) {
+    return { thought: "Headless", status: "Headless" };
   }
 
   // Restoring placeholders have no live PTY yet — skip the uptime-based

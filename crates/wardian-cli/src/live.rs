@@ -64,6 +64,15 @@ pub struct SendMessageAndWatchConditionOptions<'a> {
     pub target_scope: Option<&'a str>,
 }
 
+pub struct SendMessageDeliveryOptions<'a> {
+    pub thread: Option<&'a str>,
+    pub input_mode: MessageInputMode,
+    pub queue_policy: QueuePolicy,
+    pub approval_action: Option<ApprovalAction>,
+    pub target_scope: Option<&'a str>,
+    pub timeout: Duration,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ControlOperation {
     AgentList,
@@ -86,7 +95,9 @@ enum ControlOperation {
     ArtifactReviewShow,
     WatchlistsChanged,
     WorkflowRun,
-    SendMessage,
+    SendMessage {
+        requested: Duration,
+    },
     NotifyCreate,
     NotifyWait {
         requested: Duration,
@@ -543,16 +554,20 @@ pub fn workflow_run(request: WorkflowRunRequest) -> io::Result<WorkflowRunRespon
 pub fn send_message_with_delivery_and_scope_options(
     target: &str,
     message: &str,
-    thread: Option<&str>,
-    input_mode: MessageInputMode,
-    queue_policy: QueuePolicy,
-    approval_action: Option<ApprovalAction>,
-    target_scope: Option<&str>,
+    options: SendMessageDeliveryOptions<'_>,
 ) -> io::Result<SendMessageResponse> {
+    let SendMessageDeliveryOptions {
+        thread,
+        input_mode,
+        queue_policy,
+        approval_action,
+        target_scope,
+        timeout,
+    } = options;
     let runtime = build_runtime()?;
     let value = timeout_block(
         &runtime,
-        ControlOperation::SendMessage,
+        ControlOperation::SendMessage { requested: timeout },
         send_request(ControlRequest::SendMessage {
             target: target.to_string(),
             message: message.to_string(),
@@ -562,6 +577,7 @@ pub fn send_message_with_delivery_and_scope_options(
             approval_action,
             origin: current_message_origin(),
             target_scope: target_scope.map(str::to_string),
+            headless_timeout_ms: Some(timeout.as_millis().try_into().unwrap_or(u64::MAX)),
         }),
     )?;
     serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))
@@ -857,16 +873,20 @@ fn send_message_and_watch_condition_with_output_echo_guard(
     let sent = send_message_with_delivery_and_scope_options(
         request.target,
         request.message,
-        request.thread,
-        request.input_mode,
-        request.queue_policy,
-        request.approval_action,
-        request.target_scope,
+        SendMessageDeliveryOptions {
+            thread: request.thread,
+            input_mode: request.input_mode,
+            queue_policy: request.queue_policy,
+            approval_action: request.approval_action,
+            target_scope: request.target_scope,
+            timeout: request.timeout,
+        },
     )?;
     let started_at = Instant::now();
+    let condition = effective_send_watch_condition(request.condition, &sent.delivery);
     let queued_message_ids = queued_delivery_message_ids(&sent.delivery);
     let condition_since = if !queued_message_ids.is_empty()
-        && condition_requires_queued_delivery_submission(request.condition)
+        && condition_requires_queued_delivery_submission(&condition)
     {
         wait_for_queued_delivery_submission(
             request.target,
@@ -877,7 +897,7 @@ fn send_message_and_watch_condition_with_output_echo_guard(
                 request.timeout,
                 started_at,
                 request.target,
-                request.condition,
+                &condition,
             )?,
         )?
     } else {
@@ -886,7 +906,7 @@ fn send_message_and_watch_condition_with_output_echo_guard(
     let watch = agent_watch_with_output_echo_guard(AgentWatchRequest {
         target: request.target,
         since: Some(&condition_since),
-        until: Some(request.condition),
+        until: Some(&condition),
         include: vec![
             "status".to_string(),
             "transcript".to_string(),
@@ -899,7 +919,7 @@ fn send_message_and_watch_condition_with_output_echo_guard(
             request.timeout,
             started_at,
             request.target,
-            request.condition,
+            &condition,
         )?,
         output_echo_guard: request.output_echo_guard,
     })?;
@@ -969,9 +989,9 @@ fn operation_timeout(operation: &ControlOperation) -> Duration {
         | ControlOperation::AgentWorktreeDisable
         | ControlOperation::WorkflowRun
         | ControlOperation::ArtifactPresent
-        | ControlOperation::SendMessage
         | ControlOperation::SubmitReply
         | ControlOperation::NotifyCreate => CONTROL_MUTATION_TIMEOUT,
+        ControlOperation::SendMessage { requested } => watch_timeout_for(*requested),
         ControlOperation::AgentWorktreeList => CONTROL_GIT_DISCOVERY_TIMEOUT,
         ControlOperation::Ask { requested, .. } => watch_timeout_for(*requested),
         ControlOperation::AgentWatch { requested, .. } => watch_timeout_for(*requested),
@@ -1006,6 +1026,23 @@ fn queued_delivery_message_ids(delivery: &[DeliveryDetail]) -> Vec<String> {
 
 fn condition_requires_queued_delivery_submission(condition: &str) -> bool {
     condition.starts_with("output:") || condition.starts_with("status:")
+}
+
+/// A headless delivery is synchronous: by the time `send` returns with
+/// `provider_applied`, there is no live session that can transition to Idle.
+/// Preserve the familiar `send --wait-until idle` contract by waiting for that
+/// specific delivery completion instead of fabricating an Idle status for an
+/// offline agent.
+fn effective_send_watch_condition(condition: &str, delivery: &[DeliveryDetail]) -> String {
+    if condition == "status:idle" && delivery.iter().any(is_completed_headless_delivery) {
+        "delivery:provider_applied".to_string()
+    } else {
+        condition.to_string()
+    }
+}
+
+fn is_completed_headless_delivery(detail: &DeliveryDetail) -> bool {
+    detail.runtime_state == "headless_process" && detail.delivery_state == "provider_applied"
 }
 
 fn wait_for_queued_delivery_submission(
@@ -1291,10 +1328,11 @@ mod tests {
     }
 
     #[test]
-    fn send_message_uses_mutation_timeout() {
+    fn send_message_uses_requested_timeout_plus_slack() {
+        let requested = Duration::from_secs(30);
         assert_eq!(
-            operation_timeout(&ControlOperation::SendMessage),
-            CONTROL_MUTATION_TIMEOUT
+            operation_timeout(&ControlOperation::SendMessage { requested }),
+            watch_timeout_for(requested)
         );
     }
 
@@ -1428,6 +1466,30 @@ mod tests {
         assert!(!condition_requires_queued_delivery_submission(
             "event:custom"
         ));
+    }
+
+    #[test]
+    fn headless_idle_wait_uses_the_delivery_completion_event() {
+        let delivery = vec![DeliveryDetail {
+            runtime_state: "headless_process".to_string(),
+            ..delivery_detail("provider_applied", Some("int_1"))
+        }];
+
+        assert_eq!(
+            effective_send_watch_condition("status:idle", &delivery),
+            "delivery:provider_applied"
+        );
+        assert_eq!(
+            effective_send_watch_condition("status:headless", &delivery),
+            "status:headless"
+        );
+        assert_eq!(
+            effective_send_watch_condition(
+                "status:idle",
+                &[delivery_detail("submit_sent_unconfirmed", Some("int_2"))]
+            ),
+            "status:idle"
+        );
     }
 
     #[test]

@@ -18,6 +18,8 @@
  *   failure       — init → user → generating → exit(1)
  *   long_output   — init → user → 200 lines of text → model_response → turn_completed
  *   headless      — single JSON response object, then exit
+ *   headless_delayed — waits for the configured delay, then emits the headless response
+ *   headless_structured_reply — completes a structured Wardian request through the CLI
  *   multi_turn    — init → [user → generating → model_response → turn_completed] × 3
  *   interactive_multi_turn — init → action_required → stdin-driven responses × 2
  *   interactive_echo_then_response — init → action_required → prompt echo → response
@@ -27,6 +29,7 @@
 "use strict";
 
 const readline = require("node:readline");
+const { spawnSync } = require("node:child_process");
 
 const scenario = process.env.WARDIAN_MOCK_SCENARIO || "basic";
 const delay = parseInt(process.env.WARDIAN_MOCK_DELAY_MS || "100", 10);
@@ -183,6 +186,43 @@ async function runHeadless() {
   });
 }
 
+async function runHeadlessDelayed() {
+  await sleep(delay);
+  await runHeadless();
+}
+
+async function runHeadlessStructuredReply() {
+  await sleep(delay);
+  const prompt = process.argv.at(-1) || "";
+  const requestId = prompt.match(/Wardian request id:\s*(ask_[a-f0-9]+)/i)?.[1];
+  const cliPath = process.env.WARDIAN_E2E_CLI_PATH;
+  if (!requestId || !cliPath) {
+    throw new Error("headless structured-reply mock requires a request id and WARDIAN_E2E_CLI_PATH");
+  }
+
+  const reply = spawnSync(
+    cliPath,
+    ["reply", requestId, "--status", "done", "--stdin"],
+    {
+      cwd: process.cwd(),
+      env: process.env,
+      encoding: "utf8",
+      input: "Mock structured headless reply.",
+    },
+  );
+  if (reply.status !== 0) {
+    throw new Error(
+      `mock structured reply failed: ${reply.stderr || reply.stdout || `exit ${reply.status}`}`,
+    );
+  }
+
+  emit({
+    response: "Mock structured headless reply completed.",
+    status: "ok",
+    result: "Structured reply recorded.",
+  });
+}
+
 async function runMultiTurn() {
   emit(events.init());
   await sleep(delay);
@@ -252,9 +292,16 @@ async function runAnsiOutput() {
 }
 
 async function main() {
-  // Headless mode: --print flag overrides scenario
+  // Headless mode: --print normally returns the standard response, while the
+  // delayed variant lets native tests observe the active headless interval.
   if (isPrint) {
-    await runHeadless();
+    if (scenario === "headless_delayed") {
+      await runHeadlessDelayed();
+    } else if (scenario === "headless_structured_reply") {
+      await runHeadlessStructuredReply();
+    } else {
+      await runHeadless();
+    }
     process.exit(0);
   }
 
@@ -267,6 +314,8 @@ async function main() {
     failure: runFailure,
     long_output: runLongOutput,
     headless: runHeadless,
+    headless_delayed: runHeadlessDelayed,
+    headless_structured_reply: runHeadlessStructuredReply,
     multi_turn: runMultiTurn,
     interactive_multi_turn: runInteractiveMultiTurn,
     interactive_echo_then_response: runInteractiveEchoThenResponse,

@@ -128,7 +128,7 @@ Use an agent's open menu to choose the presentation action separately from lifec
 Hover over an agent in the roster or use its context menu for runtime controls:
 - **Pause / Start Session**: Suspend the PTY process to save CPU, then start it again.
 - **Restart Session**: Re-spawn the provider while retaining the agent, habitat, and saved history.
-- **Start Fresh**: Create a new provider context while retaining the Wardian agent, habitat, and saved history.
+- **New Session**: Create a new provider context while retaining the Wardian agent, habitat, and saved history.
 - **Delete Agent**: Permanently remove the Wardian agent, habitat, and saved history; project files remain.
 
 Closing an agent-session tab is not a lifecycle action. It detaches that presentation while the agent and PTY continue running. Use lifecycle controls only when you intend to affect the runtime.

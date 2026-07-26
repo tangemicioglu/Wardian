@@ -15,6 +15,7 @@ pub mod schedule;
 pub mod topology;
 pub mod workbench;
 pub mod workflow;
+pub mod workflow_execution_lock;
 
 #[cfg(test)]
 mod tests {

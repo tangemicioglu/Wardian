@@ -389,6 +389,7 @@ struct AgentSnapshot {
     session_id: String,
     provider: String,
     folder: String,
+    is_off: bool,
     resume_session: Option<String>,
     provider_generation: u64,
     process_id: Option<u32>,
@@ -903,6 +904,7 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                     session_id: sid.clone(),
                     provider: config.provider.clone(),
                     folder: config.folder.clone(),
+                    is_off: config.is_off,
                     resume_session: config.resume_session.clone(),
                     provider_generation: 0,
                     process_id: agent.process_id,
@@ -1355,17 +1357,24 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                 set_snapshot_status(snap, "Off");
             }
 
-            let current_status = if wardian_core::conversation_lease::find_active_conflict(
-                &active_leases,
-                &snap.session_id,
-                snap.resume_session.as_deref().unwrap_or_default(),
-                &lease_now,
-            )
-            .is_some()
+            let observed_status = snap.current_status.lock().unwrap().clone();
+            let is_offline = snap.is_off
+                || matches!(
+                    wardian_core::identity::normalize_status(&observed_status).as_str(),
+                    "off" | "error"
+                );
+            let current_status = if is_offline
+                && wardian_core::conversation_lease::find_active_execution_conflict(
+                    &active_leases,
+                    &snap.session_id,
+                    snap.resume_session.as_deref().unwrap_or_default(),
+                    &lease_now,
+                )
+                .is_some()
             {
                 "Headless".to_string()
             } else {
-                snap.current_status.lock().unwrap().clone()
+                observed_status
             };
             provider_statuses.push(TelemetryProviderStatus {
                 session_id: snap.session_id.clone(),
@@ -1553,6 +1562,7 @@ mod tests {
             session_id: "agent-1".to_string(),
             provider: "opencode".to_string(),
             folder: "D:/work".to_string(),
+            is_off: false,
             resume_session: None,
             provider_generation: 0,
             process_id: Some(1234),

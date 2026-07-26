@@ -261,14 +261,14 @@ export const AgentContextMenu: React.FC<AgentContextMenuProps> = ({
       <button
         data-testid="context-clear"
         className="context-menu-item"
-        title="Start a new provider session while keeping this Wardian agent, habitat, and saved history."
+        title="Create a new provider session while keeping this Wardian agent, habitat, and saved history."
         onClick={async () => {
           await forEachTarget(onClear);
           onClose();
         }}
       >
         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 15l8-8a2 2 0 012.8 0l4.2 4.2a2 2 0 010 2.8l-5 5H8l-4-4zM13 19h7" /></svg>
-        {isTeam ? 'Start Fresh Team' : isBulk ? 'Start Fresh Selected' : 'Start Fresh'}
+        {isTeam ? 'New Sessions for Team' : isBulk ? 'New Sessions for Selected' : 'New Session'}
       </button>
 
       <div className="context-menu-divider" />
