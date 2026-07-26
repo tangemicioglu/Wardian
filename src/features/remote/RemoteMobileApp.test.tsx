@@ -1828,7 +1828,7 @@ describe("RemoteMobileApp", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
     expect(await screen.findByText("Clear me from the PWA chat.")).toBeVisible();
 
-    await userEvent.click(screen.getByRole("button", { name: "Start Fresh" }));
+    await userEvent.click(screen.getByRole("button", { name: "New Session" }));
     await waitFor(() => {
       const actionCall = fetchMock.mock.calls.find(([url, init]) => url === "/remote/api/agents/action" && init?.method === "POST");
       expect(actionCall).toBeTruthy();
@@ -4296,7 +4296,7 @@ describe("RemoteMobileApp", () => {
 
     const runningRow = await screen.findByRole("button", { name: /Open Running Coder details/i });
     expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Start Fresh" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New Session" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete Agent" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Start Session" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Clone" })).not.toBeInTheDocument();

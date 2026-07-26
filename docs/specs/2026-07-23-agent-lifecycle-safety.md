@@ -6,7 +6,7 @@ Wardian uses distinct lifecycle terms for distinct data effects:
 
 - **Restart Session** restarts the provider while retaining the agent identity,
   habitat, and saved session history.
-- **Start Fresh** creates a new provider context while retaining the Wardian
+- **New Session** creates a new provider context while retaining the Wardian
   agent, habitat, and saved history.
 - **Delete Agent** permanently removes the Wardian agent, its habitat, and its
   session history. It does not remove project workspace files.

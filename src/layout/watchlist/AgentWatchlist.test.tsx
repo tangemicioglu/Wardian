@@ -294,7 +294,7 @@ describe('AgentWatchlist', () => {
     expect(screen.getByText('Rename')).toBeInTheDocument();
     expect(screen.getByText('Pause')).toBeInTheDocument();
     expect(screen.getByText('Restart Session')).toBeInTheDocument();
-    expect(within(screen.getByTestId('agent-context-menu')).getByRole('button', { name: 'Start Fresh' })).toBeInTheDocument();
+    expect(within(screen.getByTestId('agent-context-menu')).getByRole('button', { name: 'New Session' })).toBeInTheDocument();
     expect(screen.getByText('Delete')).toBeInTheDocument();
   });
 
@@ -303,7 +303,7 @@ describe('AgentWatchlist', () => {
     const agentRow = screen.getByText('Alpha').closest('.watchlist-row');
 
     fireEvent.contextMenu(agentRow!);
-    fireEvent.click(within(screen.getByTestId('agent-context-menu')).getByRole('button', { name: 'Start Fresh' }));
+    fireEvent.click(within(screen.getByTestId('agent-context-menu')).getByRole('button', { name: 'New Session' }));
 
     expect(mockOnClear).toHaveBeenCalledWith('agent-1');
   });
@@ -356,10 +356,10 @@ describe('AgentWatchlist', () => {
 
     const menu = screen.getByTestId('agent-context-menu');
     expect(within(menu).getByRole('button', { name: 'Rename' })).toBeDisabled();
-    expect(within(menu).getByRole('button', { name: 'Start Fresh Selected' })).toBeInTheDocument();
+    expect(within(menu).getByRole('button', { name: 'New Sessions for Selected' })).toBeInTheDocument();
     expect(within(menu).queryByRole('button', { name: 'Clone' })).not.toBeInTheDocument();
 
-    fireEvent.click(within(menu).getByRole('button', { name: 'Start Fresh Selected' }));
+    fireEvent.click(within(menu).getByRole('button', { name: 'New Sessions for Selected' }));
 
     await waitFor(() => {
       expect(mockOnClear).toHaveBeenCalledWith('agent-1');
