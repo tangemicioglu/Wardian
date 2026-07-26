@@ -1,4 +1,5 @@
 use crate::manager;
+use crate::providers::antigravity::AntigravityProvider;
 use crate::providers::ProviderFactory;
 use crate::state::conversation_archive::effective_conversation_logging;
 use crate::state::{ActiveAgent, AppState};
@@ -1834,6 +1835,17 @@ fn clear_codex_cleared_provider_sessions(config: &mut AgentConfig) {
     config.codex_cleared_provider_sessions.clear();
 }
 
+fn antigravity_cleared_conversations(config: &AgentConfig) -> Vec<String> {
+    config.antigravity_config().cleared_conversations
+}
+
+fn add_antigravity_cleared_conversation(conversations: &mut Vec<String>, conversation: String) {
+    let conversation = conversation.trim();
+    if !conversation.is_empty() && !conversations.iter().any(|known| known == conversation) {
+        conversations.push(conversation.to_string());
+    }
+}
+
 fn prepare_resume_config(config: &mut AgentConfig) -> Result<(), String> {
     let mut prepared = config.clone();
     prepare_resume_config_in_place(&mut prepared)?;
@@ -1861,6 +1873,8 @@ fn prepare_resume_config_in_place(config: &mut AgentConfig) -> Result<(), String
         return Ok(());
     }
 
+    restore_antigravity_workspace_conversation(config)?;
+
     let Some(resume_session) = config
         .resume_session
         .clone()
@@ -1880,6 +1894,36 @@ fn prepare_resume_config_in_place(config: &mut AgentConfig) -> Result<(), String
     config.is_off = false;
 
     Ok(())
+}
+
+fn restore_antigravity_workspace_conversation(config: &mut AgentConfig) -> Result<(), String> {
+    if config.provider != "antigravity"
+        || config
+            .resume_session
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Ok(());
+    }
+
+    let Some(home) = AntigravityProvider::antigravity_home() else {
+        return Ok(());
+    };
+    restore_antigravity_workspace_conversation_from_home(config, &home)
+}
+
+fn restore_antigravity_workspace_conversation_from_home(
+    config: &mut AgentConfig,
+    home: &Path,
+) -> Result<(), String> {
+    let workspace = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id);
+    let excluded = config.antigravity_config().cleared_conversations;
+    let Some(conversation_id) =
+        AntigravityProvider::verified_conversation_for_workspace(home, &workspace, &excluded)
+    else {
+        return Ok(());
+    };
+    manager::apply_provider_identity("antigravity", config, &conversation_id).map(|_| ())
 }
 
 pub(crate) fn prepare_restored_config_for_spawn(config: &mut AgentConfig) -> Result<(), String> {
@@ -1911,13 +1955,10 @@ pub(crate) async fn prepare_provider_owned_fresh_identity(
     }
 
     let cwd = crate::utils::fs::resolve_cwd(&config.folder, "");
-    let provider_session_id = manager::obtain_session_id(
-        &cwd,
-        Some(&config.agent_class),
-        Some(config),
-    )
-    .await
-    .map_err(|error| format!("Failed to initialize the provider session: {error}"))?;
+    let provider_session_id =
+        manager::obtain_session_id(&cwd, Some(&config.agent_class), Some(config))
+            .await
+            .map_err(|error| format!("Failed to initialize the provider session: {error}"))?;
     let provider = config.provider.clone();
     manager::apply_provider_identity(&provider, config, &provider_session_id)?;
     Ok(())
@@ -2702,6 +2743,29 @@ async fn clear_agent_session_inner(
     } else {
         Vec::new()
     };
+    let previous_antigravity_conversations = if original_config.provider == "antigravity" {
+        let mut conversations = antigravity_cleared_conversations(&original_config);
+        if let Some(conversation_id) = original_config
+            .resume_session
+            .clone()
+            .filter(|conversation_id| !conversation_id.trim().is_empty())
+        {
+            add_antigravity_cleared_conversation(&mut conversations, conversation_id);
+        } else if let Some(home) = AntigravityProvider::antigravity_home() {
+            let workspace =
+                crate::utils::fs::resolve_cwd(&original_config.folder, &original_config.session_id);
+            if let Some(conversation_id) = AntigravityProvider::verified_conversation_for_workspace(
+                &home,
+                &workspace,
+                &conversations,
+            ) {
+                add_antigravity_cleared_conversation(&mut conversations, conversation_id);
+            }
+        }
+        conversations
+    } else {
+        Vec::new()
+    };
     let mut config = original_config;
     prepare_clear_config(&mut config)?;
     if config.provider == "codex" {
@@ -2709,6 +2773,14 @@ async fn clear_agent_session_inner(
             .codex_config_mut_preserve_encoding()
             .cleared_provider_sessions = previous_codex_provider_sessions.clone();
         config.codex_cleared_provider_sessions = previous_codex_provider_sessions;
+    }
+    if config.provider == "antigravity" {
+        // The exclusion is a provider-owned safety boundary. Promote legacy
+        // configs to the nested encoding so it survives an app restart.
+        config.mark_provider_config_nested_for_save();
+        config
+            .antigravity_config_mut_preserve_encoding()
+            .cleared_conversations = previous_antigravity_conversations;
     }
     if provider_needs_obtain_session_id_on_clear(&config.provider) {
         let cwd = crate::utils::fs::resolve_cwd(&config.folder, "");
@@ -3474,27 +3546,28 @@ mod tests {
         discover_git_worktrees_for_configs, discover_git_worktrees_for_sources_with,
         enable_worktree_config, ensure_existing_worktree_is_git_registered,
         ensure_provider_available_before_session_bootstrap, find_assignable_worktree,
-        flatten_clone_file_paths, generated_agent_name, insert_new_agent_order,
-        is_under_managed_agent_worktree_root, is_under_wardian_agent_worktree_root,
-        lock_agent_lifecycle, mark_agent_paused_off, new_agent_order_placement_for_setting,
-        normalize_clone_folder_override, normalize_discovered_git_worktree_path,
-        normalize_existing_workspace_record_path, normalize_spawn_folder,
-        normalize_workspace_record_path, persisted_resume_session_for_provider,
-        prepare_agent_for_clear, prepare_clear_config, prepare_restored_config_for_spawn,
-        prepare_resume_config, prepare_resume_config_for_runtime,
-        promote_fresh_provider_session_after_resume, provider_needs_obtain_session_id_on_clear,
-        reserve_spawn_session_name, resolve_agent_worktree_branch_name,
-        resolve_agent_worktree_path, resolve_requested_spawn_session_name,
-        restore_agent_config_in_state, restore_runtime_state_snapshot_after_resume,
-        strip_claude_embedded_stream_flags, take_agent_runtime_for_termination,
-        terminal_cleared_payload, update_agent_fields_in_state,
-        find_deletable_worktree_for_source, validate_assignable_worktree_for_agent,
-        validate_deletable_agent_worktree, worktree_deletion_is_already_complete,
-        workspace_paths_match, AgentOrderPlacement, AgentWorktreeSummary, CloneProfileCopyPlan,
-        CloneProfileSelection, DeletedAgentReferenceCleanup, DiscoveredGitWorktree,
-        GIT_WORKTREE_DISCOVERY_CONCURRENCY,
+        find_deletable_worktree_for_source, flatten_clone_file_paths, generated_agent_name,
+        insert_new_agent_order, is_under_managed_agent_worktree_root,
+        is_under_wardian_agent_worktree_root, lock_agent_lifecycle, mark_agent_paused_off,
+        new_agent_order_placement_for_setting, normalize_clone_folder_override,
+        normalize_discovered_git_worktree_path, normalize_existing_workspace_record_path,
+        normalize_spawn_folder, normalize_workspace_record_path,
+        persisted_resume_session_for_provider, prepare_agent_for_clear, prepare_clear_config,
+        prepare_restored_config_for_spawn, prepare_resume_config,
+        prepare_resume_config_for_runtime, promote_fresh_provider_session_after_resume,
+        provider_needs_obtain_session_id_on_clear, reserve_spawn_session_name,
+        resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
+        resolve_requested_spawn_session_name, restore_agent_config_in_state,
+        restore_antigravity_workspace_conversation_from_home,
+        restore_runtime_state_snapshot_after_resume, strip_claude_embedded_stream_flags,
+        take_agent_runtime_for_termination, terminal_cleared_payload, update_agent_fields_in_state,
+        validate_assignable_worktree_for_agent, validate_deletable_agent_worktree,
+        workspace_paths_match, worktree_deletion_is_already_complete, AgentOrderPlacement,
+        AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
+        DeletedAgentReferenceCleanup, DiscoveredGitWorktree, GIT_WORKTREE_DISCOVERY_CONCURRENCY,
     };
     use crate::providers::GeminiProvider;
+    use crate::providers::antigravity::AntigravityProvider;
     use crate::state::{ActiveAgent, AppState};
     use crate::utils::fs::create_directory_link;
     use crate::utils::{ShellOption, ShellSettings};
@@ -5838,7 +5911,10 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
 
     #[test]
     fn completed_worktree_deletion_is_idempotent() {
-        let missing_worktree = tempfile::tempdir().expect("temp dir").path().join("deleted");
+        let missing_worktree = tempfile::tempdir()
+            .expect("temp dir")
+            .path()
+            .join("deleted");
 
         assert!(worktree_deletion_is_already_complete(
             &normalize_workspace_record_path(&missing_worktree),
@@ -7244,6 +7320,64 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert_eq!(config.resume_session.as_deref(), Some("claude-session"));
         assert!(!config.is_off);
         std::env::remove_var("WARDIAN_HOME");
+    }
+
+    #[test]
+    fn antigravity_restores_the_verified_workspace_conversation_and_skips_cleared_history() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let home = temp.path();
+        std::fs::create_dir_all(home.join("cache")).expect("cache dir");
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace dir");
+        let conversation_id = "conversation-123";
+        let workspace_cache_key = workspace.to_string_lossy().to_string();
+        let workspace_uri = format!(
+            "file:///{}",
+            workspace.to_string_lossy().replace('\\', "/")
+        );
+        std::fs::write(
+            home.join("cache").join("last_conversations.json"),
+            serde_json::json!({ (workspace_cache_key): conversation_id }).to_string(),
+        )
+        .expect("cache");
+        std::fs::write(
+            home.join("cache").join("conversation_metadata.json"),
+            serde_json::json!({
+                "conversations": {
+                    (conversation_id): { "summary": { "WorkspaceURIs": [workspace_uri] } }
+                }
+            })
+            .to_string(),
+        )
+        .expect("metadata");
+        let transcript = AntigravityProvider::transcript_path(home, conversation_id);
+        std::fs::create_dir_all(transcript.parent().expect("transcript parent"))
+            .expect("transcript dir");
+        std::fs::write(&transcript, "{}\n").expect("legacy transcript");
+
+        let mut config = AgentConfig {
+            provider: "antigravity".to_string(),
+            session_id: "wardian-agent".to_string(),
+            folder: workspace.to_string_lossy().to_string(),
+            provider_config: ProviderConfig::Antigravity(AntigravityProviderConfig::default()),
+            ..Default::default()
+        };
+
+        restore_antigravity_workspace_conversation_from_home(&mut config, home)
+            .expect("restore workspace conversation");
+        assert_eq!(config.resume_session.as_deref(), Some(conversation_id));
+        assert_eq!(
+            AntigravityProvider::new().get_spawn_args(&config, true),
+            vec!["--conversation", conversation_id]
+        );
+
+        config.resume_session = None;
+        config
+            .antigravity_config_mut_preserve_encoding()
+            .cleared_conversations = vec![conversation_id.to_string()];
+        restore_antigravity_workspace_conversation_from_home(&mut config, home)
+            .expect("cleared history is skipped");
+        assert_eq!(config.resume_session, None);
     }
 
     #[test]

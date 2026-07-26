@@ -13,9 +13,7 @@ use wardian_core::control::ProviderInputReadiness;
 use wardian_core::models::{AgentConfig, AgentEvent, ProviderConfig};
 
 use super::claude::{claude_permission_hook_matches_session, claude_project_dir_name};
-use super::codex::{
-    codex_provider_session_is_excluded, codex_session_file_path,
-};
+use super::codex::{codex_provider_session_is_excluded, codex_session_file_path};
 use super::opencode::{opencode_interactive_env, opencode_status_from_title};
 use super::session_identity::{
     apply_provider_identity, expected_caller_owned_identity, ProviderIdentityOutcome,
@@ -357,8 +355,10 @@ pub async fn spawn_agent(
             .as_deref()
             .is_none_or(|value| value.trim().is_empty())
     {
-        AntigravityProvider::antigravity_home()
-            .and_then(|home| AntigravityProvider::conversation_for_workspace(&home, &cwd))
+        let excluded = config.antigravity_config().cleared_conversations;
+        AntigravityProvider::antigravity_home().and_then(|home| {
+            AntigravityProvider::verified_conversation_for_workspace(&home, &cwd, &excluded)
+        })
     } else {
         None
     };
@@ -1387,10 +1387,12 @@ pub async fn spawn_agent(
                     if existing.is_some() {
                         (existing, false)
                     } else {
+                        let excluded = cfg.antigravity_config().cleared_conversations;
                         let discovered = home.as_ref().and_then(|home| {
-                            AntigravityProvider::conversation_for_workspace(
+                            AntigravityProvider::verified_conversation_for_workspace(
                                 home,
                                 &watcher_workspace,
+                                &excluded,
                             )
                         });
                         let captured = changed_workspace_conversation(
@@ -1398,12 +1400,8 @@ pub async fn spawn_agent(
                             discovered.as_deref(),
                         );
                         if let Some(conversation_id) = captured.as_deref() {
-                            if apply_provider_identity(
-                                "antigravity",
-                                &mut cfg,
-                                conversation_id,
-                            )
-                            .is_err()
+                            if apply_provider_identity("antigravity", &mut cfg, conversation_id)
+                                .is_err()
                             {
                                 (None, false)
                             } else {
@@ -1418,13 +1416,18 @@ pub async fn spawn_agent(
                     persist_runtime_agent_configs(&watcher_app);
                 }
 
-                let path = home
-                    .as_ref()
-                    .zip(conversation_id.as_deref())
-                    .map(|(home, conversation_id)| {
-                        AntigravityProvider::transcript_path(home, conversation_id)
+                let path = conversation_id.as_deref().and_then(|conversation_id| {
+                    let cached = watcher_log_path
+                        .lock()
+                        .ok()
+                        .and_then(|path| path.clone())
+                        .filter(|path| last_conversation_id == conversation_id && path.is_file());
+                    cached.or_else(|| {
+                        home.as_ref().and_then(|home| {
+                            AntigravityProvider::conversation_log_path(home, conversation_id)
+                        })
                     })
-                    .filter(|path| path.exists());
+                });
 
                 if let (Some(conversation_id), Some(path)) = (conversation_id, path) {
                     if last_conversation_id != conversation_id {
@@ -1435,6 +1438,13 @@ pub async fn spawn_agent(
 
                     if let Ok(mut out) = watcher_log_path.lock() {
                         *out = Some(path.clone());
+                    }
+                    // Antigravity 1.1.7 keeps interactive history in SQLite.
+                    // Chat reads that database directly; the streaming watcher
+                    // below remains for the legacy JSONL format.
+                    if path.extension().is_some_and(|extension| extension == "db") {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        continue;
                     }
                     if let Ok(mut file) = std::fs::File::open(&path) {
                         if let Ok(metadata) = file.metadata() {
@@ -1784,5 +1794,4 @@ mod tests {
 
         assert!(responses.is_empty());
     }
-
 }

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::manager::{self, opencode::opencode_database_path};
+use crate::providers::antigravity::AntigravityProvider;
 use crate::providers::chat_transcript::{normalize_chat_lines, visible_chat_text};
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
@@ -382,6 +383,9 @@ fn load_provider_log_chat_events(
     if provider_log_path_is_cleared(provider, path, cleared_provider_sessions) {
         return Vec::new();
     }
+    if provider == "antigravity" && path.extension().is_some_and(|extension| extension == "db") {
+        return load_antigravity_database_chat_events(session_id, provider, path);
+    }
     let Ok(content) = read_provider_log_tail(path) else {
         return Vec::new();
     };
@@ -396,6 +400,49 @@ fn load_provider_log_chat_events(
                 "log_path",
                 path.to_string_lossy().to_string(),
             );
+            event.id = stable_provider_log_event_id(&event, path);
+            event
+        })
+        .collect()
+}
+
+fn load_antigravity_database_chat_events(
+    session_id: &str,
+    provider: &str,
+    path: &Path,
+) -> Vec<AgentChatEvent> {
+    let Ok(messages) = AntigravityProvider::conversation_messages_from_database(path) else {
+        return Vec::new();
+    };
+
+    messages
+        .into_iter()
+        .enumerate()
+        .map(|(index, message)| {
+            let mut event = AgentChatEvent {
+                id: String::new(),
+                session_id: session_id.to_string(),
+                provider: provider.to_string(),
+                kind: AgentChatEventKind::Message,
+                role: Some(message.role),
+                text: Some(message.text),
+                title: None,
+                status: None,
+                turn_id: Some(message.step_index.to_string()),
+                source: Some("conversation_database".to_string()),
+                command: None,
+                exit_code: None,
+                path: None,
+                language: None,
+                created_at: None,
+                sequence: Some(index as u64 + 1),
+                metadata: serde_json::json!({
+                    "provider_log": true,
+                    "log_source": "antigravity_conversation_database",
+                    "log_path": path.to_string_lossy(),
+                    "step_index": message.step_index,
+                }),
+            };
             event.id = stable_provider_log_event_id(&event, path);
             event
         })
@@ -1639,6 +1686,46 @@ Do you want to proceed?
         let chat_events = merge_chat_events(Vec::new(), vec![first, second]);
 
         assert_eq!(chat_events.len(), 2);
+    }
+
+    #[test]
+    fn antigravity_sqlite_conversation_renders_user_and_assistant_history() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database = temp.path().join("conversation.db");
+        let connection = rusqlite::Connection::open(&database).expect("open db");
+        connection
+            .execute_batch(
+                "CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB);",
+            )
+            .expect("create steps");
+        // field 19.2 is the current Antigravity user message; field 20.1 is
+        // the completed planner response in its SQLite step payload.
+        let user = vec![0x9a, 0x01, 0x05, 0x12, 0x03, b'h', b'i', b'!'];
+        let assistant = vec![0xa2, 0x01, 0x05, 0x0a, 0x03, b'o', b'k', b'!'];
+        connection
+            .execute(
+                "INSERT INTO steps VALUES (0, 14, ?1)",
+                rusqlite::params![user],
+            )
+            .expect("insert user");
+        connection
+            .execute(
+                "INSERT INTO steps VALUES (1, 15, ?1)",
+                rusqlite::params![assistant],
+            )
+            .expect("insert assistant");
+
+        let events = load_antigravity_database_chat_events("agent-1", "antigravity", &database);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].role, Some(AgentChatRole::User));
+        assert_eq!(events[0].text.as_deref(), Some("hi!"));
+        assert_eq!(events[1].role, Some(AgentChatRole::Assistant));
+        assert_eq!(events[1].text.as_deref(), Some("ok!"));
+        assert_eq!(
+            events[1].metadata["log_source"],
+            "antigravity_conversation_database"
+        );
     }
 
     #[test]

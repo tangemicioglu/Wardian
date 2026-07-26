@@ -1330,6 +1330,7 @@ mod tests {
                     print_timeout: Some("90s".into()),
                     sandbox: Some(true),
                     dangerously_skip_permissions: Some(true),
+                    ..Default::default()
                 },
             ),
             ..Default::default()

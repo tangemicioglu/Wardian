@@ -52,8 +52,9 @@ Antigravity runs directly in the real target workspace. Wardian does not use a p
 - Antigravity may write the useful assistant response only to `brain/<conversation-id>/.system_generated/logs/transcript.jsonl`.
 - Start Fresh starts Antigravity fresh without sending a bootstrap prompt. Wardian records the first conversation mapping that differs from the pre-launch workspace mapping, then stores it as `resume_session`.
 - Until a real prompt creates that mapping, no provider identity exists to resume; a restart starts a fresh conversation again.
-- Wardian parses completed `MODEL` `PLANNER_RESPONSE` transcript records for status and `wardian agent watch` transcript text.
-- The Chat view replays Wardian's durable conversation archive before the bounded live transcript, so captured chat rows remain visible when an Antigravity transcript is unavailable or rotates.
+- Wardian verifies Antigravity's exact workspace-cache mapping against `conversation_metadata.json`, then resumes that conversation with `--conversation`. A conversation explicitly detached by **Clear** is excluded from recovery.
+- Antigravity 1.1.7 persists interactive turns in `conversations/<conversation-id>.db`; Wardian reads its user and completed planner-response steps for Chat. The older `brain/<conversation-id>/.system_generated/logs/transcript.jsonl` remains a legacy fallback.
+- The Chat view also replays Wardian's durable conversation archive before the bounded live provider data, so already captured rows remain visible when a provider artifact is temporarily unavailable.
 - The real-provider rendering audit uses a short exact marker prompt for Antigravity, submits it through Wardian's provider-aware prompt delivery path, and treats the post-clear respawn as marker-optional. This avoids mistaking echoed prompt text for the model response while still proving initial live rendering, resize, pause, and resume behavior.
 
 ### Practical implications
