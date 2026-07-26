@@ -1924,6 +1924,9 @@ async fn wait_for_codex_prompt_echo_since(
 
 fn codex_output_has_ready_prompt(output: &str) -> bool {
     let cleaned = strip_ansi_controls(output).replace('\r', "\n");
+    if codex_output_has_workspace_trust_prompt(&cleaned) {
+        return false;
+    }
     let mut trailing_metadata_lines = 0usize;
     for line in cleaned.lines().rev().map(str::trim) {
         if line.is_empty() {
@@ -1939,6 +1942,15 @@ fn codex_output_has_ready_prompt(output: &str) -> bool {
         return false;
     }
     false
+}
+
+fn codex_output_has_workspace_trust_prompt(output: &str) -> bool {
+    output
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+        .contains("do you trust the contents of this directory?")
 }
 
 fn codex_output_has_prompt_echo(output: &str, prompt: &str) -> bool {
@@ -4323,6 +4335,13 @@ mod tests {
             "\r\n› Explain this codebase\r\n\r\n  gpt-5.5 high · Context 100% left · C:\\projects\\sample\r\n"
         ));
         assert!(!codex_output_has_ready_prompt("Booting MCP server"));
+    }
+
+    #[test]
+    fn codex_ready_prompt_rejects_workspace_trust_modal() {
+        assert!(!codex_output_has_ready_prompt(
+            "\r\n› 1. Yes, continue\r\n  2. No, quit\r\n\r\nDo you trust the contents of this directory?\r\nPress enter to continue"
+        ));
     }
 
     #[test]

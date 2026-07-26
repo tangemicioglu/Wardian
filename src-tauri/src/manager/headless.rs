@@ -112,7 +112,7 @@ pub(crate) fn headless_provider_args(
             provider_args.push("--cd".to_string());
             provider_args.push(provider_cwd.to_string_lossy().to_string());
             if let Some(config) = config_override {
-                CodexProvider::new().append_common_args(&mut provider_args, config, true);
+                CodexProvider::new().append_headless_global_args(&mut provider_args, config);
                 if let Some(custom) = config.custom_args.as_ref() {
                     if let Some(parsed) = shlex::split(custom) {
                         provider_args.extend(parsed);
@@ -124,6 +124,7 @@ pub(crate) fn headless_provider_args(
                 provider_args.push("resume".to_string());
                 provider_args.push(resume_id.to_string());
             }
+            CodexProvider::new().append_headless_exec_args(&mut provider_args, config_override);
             provider_args.push("--json".to_string());
             provider_args.push(prompt.to_string());
         }
@@ -466,26 +467,26 @@ pub async fn run_headless_with_options(
         if output_format == "json" {
             Ok(serde_json::json!({
                 "thread_id": wardian_session_id,
-                "response": last_message.unwrap_or_default(),
+                "response": last_message.unwrap_or_else(|| output.clone()),
                 "raw": output,
             }))
         } else {
             Ok(serde_json::json!({ "text": last_message.unwrap_or(output) }))
         }
+    } else if provider_name == "claude" {
+        normalize_claude_headless_output(&output, output_format)
     } else if provider_name == "opencode" {
         let summary = OpenCodeProvider::summarize_run_output(&output);
+        let response = summary.last_text.unwrap_or_else(|| output.clone());
 
         if output_format == "json" {
-            let session_id = summary.session_id.ok_or_else(|| {
-                "opencode did not return an exact session identity for this run".to_string()
-            })?;
             Ok(serde_json::json!({
-                "session_id": session_id,
-                "response": summary.last_text.clone().unwrap_or_default(),
+                "session_id": summary.session_id,
+                "response": response,
                 "raw": output,
             }))
         } else {
-            Ok(serde_json::json!({ "text": summary.last_text.unwrap_or(output) }))
+            Ok(serde_json::json!({ "text": response }))
         }
     } else if provider_name == "antigravity" {
         let conversation_id = resume_session
@@ -512,10 +513,6 @@ pub async fn run_headless_with_options(
             .unwrap_or_else(|| output.clone());
 
         if output_format == "json" {
-            let conversation_id = conversation_id.ok_or_else(|| {
-                "antigravity did not produce a new workspace conversation mapping for this run"
-                    .to_string()
-            })?;
             Ok(serde_json::json!({
                 "session_id": conversation_id,
                 "response": response,
@@ -530,6 +527,44 @@ pub async fn run_headless_with_options(
     } else {
         Ok(serde_json::json!({ "text": output }))
     }
+}
+
+fn normalize_claude_headless_output(
+    output: &str,
+    output_format: &str,
+) -> Result<serde_json::Value, String> {
+    let parsed = serde_json::from_str::<serde_json::Value>(output.trim())
+        .map_err(|error| format!("Failed to parse Claude JSON output: {error}. Raw: {output}"))?;
+    let response = claude_headless_response(&parsed).unwrap_or_else(|| output.to_string());
+
+    if output_format == "json" {
+        Ok(serde_json::json!({
+            "session_id": parsed.get("session_id").and_then(|value| value.as_str()),
+            "response": response,
+            "raw": output,
+        }))
+    } else {
+        Ok(serde_json::json!({ "text": response }))
+    }
+}
+
+fn claude_headless_response(value: &serde_json::Value) -> Option<String> {
+    for key in ["result", "response", "text"] {
+        if let Some(text) = value.get(key).and_then(|value| value.as_str()) {
+            let text = text.trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToString::to_string)
 }
 
 fn append_codex_bootstrap_args(
@@ -550,15 +585,7 @@ fn append_codex_bootstrap_args(
     }
 
     provider_args.push("exec".to_string());
-    if let Some(config) = config {
-        let codex = config.codex_config();
-        if codex.skip_git_repo_check.unwrap_or(true) {
-            provider_args.push("--skip-git-repo-check".to_string());
-        }
-        if codex.ephemeral.unwrap_or(false) {
-            provider_args.push("--ephemeral".to_string());
-        }
-    }
+    CodexProvider::new().append_headless_exec_args(provider_args, config);
 
     provider_args.push("--json".to_string());
     provider_args.push(session_bootstrap_prompt().to_string());
@@ -1029,6 +1056,49 @@ mod tests {
         assert!(args.contains(&"exec".to_string()));
         assert!(!args.contains(&"resume".to_string()));
         assert!(!args.contains(&"ses_source".to_string()));
+        let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
+        let skip_index = args
+            .iter()
+            .position(|arg| arg == "--skip-git-repo-check")
+            .expect("headless Codex defaults to the repository bypass");
+        assert!(skip_index > exec_index);
+    }
+
+    #[test]
+    fn codex_headless_args_keep_exec_only_flags_after_exec() {
+        let provider = crate::providers::ProviderFactory::resolve("codex").unwrap();
+        let config = AgentConfig {
+            provider: "codex".into(),
+            provider_config: wardian_core::models::ProviderConfig::Codex(
+                wardian_core::models::CodexProviderConfig {
+                    skip_git_repo_check: Some(true),
+                    ephemeral: Some(true),
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        };
+        let args = headless_provider_args(
+            "codex",
+            provider.as_ref(),
+            Path::new("/workspace"),
+            "task",
+            "json",
+            None,
+            Some(&config),
+        );
+
+        let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
+        let skip_index = args
+            .iter()
+            .position(|arg| arg == "--skip-git-repo-check")
+            .unwrap();
+        let ephemeral_index = args.iter().position(|arg| arg == "--ephemeral").unwrap();
+        assert!(skip_index > exec_index);
+        assert!(ephemeral_index > exec_index);
+        assert!(!args[..exec_index].contains(&"--skip-git-repo-check".to_string()));
+        assert!(!args[..exec_index].contains(&"--ephemeral".to_string()));
+        assert!(!args.contains(&"--no-alt-screen".to_string()));
     }
 
     #[cfg(windows)]
@@ -1204,6 +1274,29 @@ mod tests {
             .unwrap();
         assert!(approval_index < exec_index);
         assert!(args[exec_index + 1..].contains(&"--json".to_string()));
+        assert!(args[exec_index + 1..].contains(&"--skip-git-repo-check".to_string()));
+    }
+
+    #[test]
+    fn claude_headless_output_exposes_result_text_for_workflows() {
+        let output =
+            r#"{"type":"result","session_id":"claude-session-1","result":"workflow complete"}"#;
+
+        let normalized = normalize_claude_headless_output(output, "json").unwrap();
+
+        assert_eq!(normalized["session_id"], "claude-session-1");
+        assert_eq!(normalized["response"], "workflow complete");
+        assert_eq!(normalized["raw"], output);
+    }
+
+    #[test]
+    fn claude_headless_output_falls_back_to_assistant_message_content() {
+        let output =
+            r#"{"session_id":"claude-session-2","message":{"content":"assistant response"}}"#;
+
+        let normalized = normalize_claude_headless_output(output, "text").unwrap();
+
+        assert_eq!(normalized["text"], "assistant response");
     }
 
     #[test]
