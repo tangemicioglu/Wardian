@@ -87,6 +87,14 @@ pub fn visible_chat_text(role: &AgentChatRole, text: &str) -> Option<String> {
     visible = remove_tag_block(&visible, "USER_SETTINGS_CHANGE");
     visible = remove_tag_block(&visible, "subagent_notification");
 
+    // Codex appends this internal provenance block to completed assistant
+    // responses. Its lightweight `agent_message` event contains the same
+    // visible response without the block, so retaining it would both expose
+    // implementation metadata and prevent the two records from deduplicating.
+    if *role == AgentChatRole::Assistant {
+        visible = remove_tag_block(&visible, "oai-mem-citation");
+    }
+
     if *role == AgentChatRole::User {
         if let Some(user_request) = extract_tag_block(trimmed, "USER_REQUEST") {
             visible = user_request;
@@ -1527,6 +1535,16 @@ mod tests {
         assert_eq!(approval.text.as_deref(), Some("Need git status"));
         assert_eq!(approval.metadata["raw_type"], "function_call");
         assert_eq!(approval.metadata["tool_name"], "shell_command");
+    }
+
+    #[test]
+    fn codex_assistant_memory_citation_is_not_visible_chat_text() {
+        let message = one(
+            "codex",
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Answer for the user.\n\n<oai-mem-citation>\n<citation_entries>\nMEMORY.md:1-1|note=[internal]\n</citation_entries>\n</oai-mem-citation>"}]}}"#,
+        );
+
+        assert_eq!(message.text.as_deref(), Some("Answer for the user."));
     }
 
     #[test]

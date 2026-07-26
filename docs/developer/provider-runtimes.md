@@ -103,6 +103,10 @@ bash -lc "wardian --version"
 
 ## Codex
 
+### Chat history
+
+- Codex emits a lightweight `agent_message` and a completed `response_item` for the same visible assistant response. The completed record can append an internal `<oai-mem-citation>` block. Wardian removes that block before storing or rendering the message, and applies the same normalization while replaying older archived rows, so one user-visible answer appears once.
+
 ### Working-root model
 
 Codex must run with the real project workspace as its effective working root. Wardian now enforces this by passing `--cd <real workspace>` for interactive spawn, headless resume, and bootstrap session creation.

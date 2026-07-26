@@ -712,7 +712,8 @@ fn merge_chat_events(
     let mut provider_message_indexes_by_text = HashMap::new();
     let mut merged = Vec::with_capacity(watch_events.len() + provider_events.len());
 
-    for event in provider_events {
+    for mut event in provider_events {
+        normalize_chat_event_visible_text(&mut event);
         let key = chat_event_dedupe_key(&event);
         if seen.insert(key) {
             if let Some(message_key) = chat_message_text_key(&event) {
@@ -735,7 +736,8 @@ fn merge_chat_events(
         }
     }
 
-    for event in watch_events {
+    for mut event in watch_events {
+        normalize_chat_event_visible_text(&mut event);
         if chat_message_text_key(&event)
             .as_ref()
             .is_some_and(|key| provider_message_text_seen.contains(key))
@@ -754,6 +756,19 @@ fn merge_chat_events(
     }
 
     merged
+}
+
+/// Normalizes archived records written before provider adapters learned to
+/// remove their internal wrappers. This keeps archive replay on the same
+/// visible-text contract as newly parsed provider events.
+fn normalize_chat_event_visible_text(event: &mut AgentChatEvent) {
+    if event.kind != AgentChatEventKind::Message {
+        return;
+    }
+    let (Some(role), Some(text)) = (event.role.as_ref(), event.text.as_deref()) else {
+        return;
+    };
+    event.text = visible_chat_text(role, text);
 }
 
 fn should_collapse_provider_message_duplicate(
@@ -1503,6 +1518,9 @@ Do you want to proceed?
         };
         let mut completed = first.clone();
         completed.id = "agent-1:provider:2".to_string();
+        completed.text = Some(
+        "Created #daily-task-list under General.\n\n<oai-mem-citation>\n<citation_entries>\nMEMORY.md:1-1|note=[internal]\n</citation_entries>\n</oai-mem-citation>".to_string(),
+    );
         completed.turn_id =
             Some("msg_003d4bf15d017fea016a460ea8668481938d3c49f567fe9108".to_string());
         completed.source = Some("response_item".to_string());

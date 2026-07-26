@@ -1116,7 +1116,7 @@ describe("Workbench persistence boot integration", () => {
     await screen.findByTestId("graph-view");
     expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "false");
 
-    fireEvent.click(screen.getByRole("button", { name: "Open graph agent" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open graph agent" }));
 
     await waitFor(() => {
       expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true");
