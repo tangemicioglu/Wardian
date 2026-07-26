@@ -189,6 +189,10 @@ jobs:
         env:
           WARDIAN_HOME: ${{ github.workspace }}\.tmp\e2e-native\wardian-e2e-native-workbench
           WARDIAN_E2E_NATIVE_HOME: ${{ github.workspace }}\.tmp\e2e-native\wardian-e2e-native-workbench
+          # WebView2 can intermittently refuse the first native-driver session
+          # on elevated GitHub runners. Retry only session startup; test failures
+          # still fail immediately.
+          WARDIAN_NATIVE_SESSION_START_ATTEMPTS: "3"
       - name: Upload native failure artifacts
         if: failure()
         uses: actions/upload-artifact@v7
