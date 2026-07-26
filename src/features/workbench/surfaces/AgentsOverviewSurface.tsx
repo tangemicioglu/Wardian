@@ -76,6 +76,31 @@ function matchesSearch(agent: AgentConfig, normalizedQuery: string): boolean {
   ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
 }
 
+/**
+ * Focuses an agent without leaving it hidden behind surface-local filters.
+ * Filters that already include the target are preserved so contextual
+ * navigation does not unnecessarily discard the user's view.
+ */
+export function revealAgentInOverviewState(
+  state: AgentsOverviewSurfaceState,
+  agent: AgentConfig,
+  status: string,
+): AgentsOverviewSurfaceState {
+  const normalizedQuery = state.search_query.trim().toLocaleLowerCase();
+  const normalizedStatuses = new Set(
+    state.status_filter.map((candidate) => candidate.toLocaleLowerCase()),
+  );
+  const matchesStatus = normalizedStatuses.size === 0
+    || normalizedStatuses.has(status.toLocaleLowerCase());
+
+  return {
+    ...state,
+    focused_agent_id: agent.session_id.toString(),
+    search_query: matchesSearch(agent, normalizedQuery) ? state.search_query : "",
+    status_filter: matchesStatus ? state.status_filter : [],
+  };
+}
+
 /** Adapts persisted workbench state to the existing multi-agent view boundary. */
 export function AgentsOverviewSurface({
   surface_id,

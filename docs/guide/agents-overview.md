@@ -20,6 +20,10 @@ inactive Agents tab in the same pane or another pane, select the requested
 card, and scroll it into view. If the target is hidden by a zoomed pane,
 Wardian restores the split layout before moving focus there.
 
+If the view's local agent search or status filter would hide the requested
+card, Wardian clears only that blocking filter before revealing it. Filters
+that already include the requested agent stay in place.
+
 The roster's explicit **Open** and **Open to Side** controls remain terminal
 actions: they open or focus Agent Session tabs instead of changing the
 contextual Agents destination.

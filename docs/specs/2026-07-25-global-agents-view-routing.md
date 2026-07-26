@@ -19,9 +19,11 @@ Agent Session tab.
 
 1. Find an existing Agents surface anywhere in the Workbench.
 2. Restore pane zoom only when it hides that surface.
-3. Focus its pane and tab, select the requested agent, persist the focused
+3. Clear only a surface-local search or status filter that would hide the
+   requested agent.
+4. Focus its pane and tab, select the requested agent, persist the focused
    agent ID, and scroll its card into view.
-4. If no Agents surface exists, retain contextual Agent Session rebinding for
+5. If no Agents surface exists, retain contextual Agent Session rebinding for
    a visible adjoining session; otherwise use the ordinary Agent Session open
    policy.
 
@@ -38,7 +40,8 @@ Agent Session tab.
 ## Verification
 
 - App integration covers inactive Agents tabs in both the invoking pane and a
-  different pane, plus an Agents target hidden by source-pane zoom.
+  different pane, an Agents target hidden by source-pane zoom, and filters
+  that would otherwise hide the requested card.
 - Browser E2E clicks Graph's real **Open Agent** control after zooming its
   pane, then verifies the layout is restored, the existing Agents tab is
   active, the requested card is focused, and no Agent Session tab was added.

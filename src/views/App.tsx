@@ -60,6 +60,7 @@ import { useRosterController } from "../features/agents/useRosterController";
 import {
   AgentsOverviewSurface,
   normalizeAgentsOverviewSurfaceState,
+  revealAgentInOverviewState,
 } from "../features/workbench/surfaces/AgentsOverviewSurface";
 import { createCoreWorkbenchSurfaceRegistry } from "../features/workbench/coreSurfaceRegistry";
 import { findExistingSurface } from "../features/workbench/adjacentSurfaceTargeting";
@@ -1061,16 +1062,29 @@ function AppBody() {
 
     setSelectedAgentIds(new Set([sessionId]));
     const currentState = normalizeAgentsOverviewSurfaceState(overviewSurface.state);
+    const targetAgent = agents.find((agent) => agent.session_id === sessionId);
+    const nextState = targetAgent
+      ? revealAgentInOverviewState(
+        currentState,
+        targetAgent,
+        deriveCurrentThought(
+          terminalTitles[sessionId] ?? "",
+          currentThoughts[sessionId] ?? "",
+          telemetry[sessionId],
+          offAgentIds.has(sessionId),
+        ).status,
+      )
+      : { ...currentState, focused_agent_id: sessionId };
     workbenchNavigation.focus(overviewSurface.surface_id);
     store.getState().apply_commands([{
       type: "update_surface_state",
       surface_id: overviewSurface.surface_id,
       state_schema_version: overviewSurface.state_schema_version,
-      state: { ...currentState, focused_agent_id: sessionId },
+      state: nextState,
     }]);
     scheduleAgentOverviewScroll(sessionId);
     return true;
-  }, [scheduleAgentOverviewScroll, setSelectedAgentIds, workbenchNavigation, workbenchPersistence.store]);
+  }, [agents, currentThoughts, offAgentIds, scheduleAgentOverviewScroll, setSelectedAgentIds, telemetry, terminalTitles, workbenchNavigation, workbenchPersistence.store]);
 
   const openAgentFromSurface = useCallback((sourceSurfaceId: string, sessionId: string) => {
     const state = workbenchPersistence.store.getState();

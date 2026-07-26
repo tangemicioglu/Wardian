@@ -298,8 +298,8 @@ test("reveals an agent in an adjoining Agents surface when Graph opens an agent"
       mode: "grid",
       last_multi_agent_mode: "grid",
       focused_agent_id: null,
-      search_query: "",
-      status_filter: [],
+      search_query: "Beta",
+      status_filter: ["Processing"],
     },
   });
   const document = makeWorkbenchDocument({
@@ -338,14 +338,26 @@ test("reveals an agent in an adjoining Agents surface when Graph opens an agent"
 
   await expect(surfaceTab(page, "agents-overview")).toHaveAttribute("aria-selected", "true");
   await expect(overviewPanel.locator(`#agent-card-${ALPHA_AGENT.session_id}`)).toHaveClass(/ring-1/);
+  await expect(overviewPanel.getByRole("searchbox", { name: "Filter Agents" })).toHaveValue("");
   await expect(page.getByTestId("workbench-group")).toHaveCount(2);
   await expect(surfaceTab(page, "agent-session", ALPHA_AGENT.session_id)).toHaveCount(0);
   await expect.poll(async () => {
     const snapshot = await ipc.snapshot();
-    return (snapshot.load_result.document.surfaces[agentsOverview.surface_id]?.state as {
+    const state = snapshot.load_result.document.surfaces[agentsOverview.surface_id]?.state as {
       focused_agent_id?: string | null;
-    }).focused_agent_id;
-  }).toBe(ALPHA_AGENT.session_id);
+      search_query?: string;
+      status_filter?: string[];
+    };
+    return {
+      focused_agent_id: state.focused_agent_id,
+      search_query: state.search_query,
+      status_filter: state.status_filter,
+    };
+  }).toEqual({
+    focused_agent_id: ALPHA_AGENT.session_id,
+    search_query: "",
+    status_filter: [],
+  });
   expect(await ipc.calls("kill_agent")).toEqual([]);
 
   const screenshotPath = path.resolve(

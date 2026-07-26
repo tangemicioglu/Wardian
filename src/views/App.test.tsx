@@ -1001,8 +1001,8 @@ describe("Workbench persistence boot integration", () => {
         mode: "grid",
         last_multi_agent_mode: "grid",
         focused_agent_id: null,
-        search_query: "",
-        status_filter: [],
+        search_query: "Beta",
+        status_filter: ["Processing"],
       },
     });
     const workbenchDocument = {
@@ -1056,6 +1056,7 @@ describe("Workbench persistence boot integration", () => {
       expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true");
       expect(document.getElementById("agent-card-agent-1")?.className).toContain("ring-1");
     });
+    expect(screen.getByRole("searchbox", { name: "Filter Agents" })).toHaveValue("");
     expect(screen.getAllByTestId("workbench-group")).toHaveLength(2);
     expect(screen.queryByTestId("agent-session-surface")).not.toBeInTheDocument();
     expect(mockInvoke).not.toHaveBeenCalledWith("kill_agent", expect.anything());
