@@ -1042,8 +1042,22 @@ function AppBody() {
 
   const focusAgentInOverviewSurface = useCallback((surfaceId: string, sessionId: string): boolean => {
     const store = workbenchPersistence.store;
-    const overviewSurface = store.getState().document.surfaces[surfaceId];
+    const state = store.getState();
+    const overviewSurface = state.document.surfaces[surfaceId];
     if (overviewSurface?.surface_type !== "agents-overview") return false;
+    const overviewGroup = Object.values(state.document.groups).find((group) => (
+      group.surface_ids.includes(overviewSurface.surface_id)
+    ));
+    if (!overviewGroup) return false;
+
+    // An existing Agents view is the destination even when another pane is
+    // zoomed. Restore the layout first so focusing the tab can reveal it.
+    if (
+      state.zoomed_group_id !== null
+      && state.zoomed_group_id !== overviewGroup.group_id
+    ) {
+      state.set_zoomed_group_id(null);
+    }
 
     setSelectedAgentIds(new Set([sessionId]));
     const currentState = normalizeAgentsOverviewSurfaceState(overviewSurface.state);
@@ -1065,15 +1079,7 @@ function AppBody() {
       state.surface_mru,
       "agents-overview",
     );
-    const overviewIsVisibleInZoom = overviewSurfaceId !== undefined && (
-      state.zoomed_group_id === null
-      || state.document.groups[state.zoomed_group_id]?.surface_ids.includes(overviewSurfaceId)
-    );
-    if (
-      overviewSurfaceId
-      && overviewIsVisibleInZoom
-      && focusAgentInOverviewSurface(overviewSurfaceId, sessionId)
-    ) {
+    if (overviewSurfaceId && focusAgentInOverviewSurface(overviewSurfaceId, sessionId)) {
       return;
     }
 
