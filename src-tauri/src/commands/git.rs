@@ -1338,8 +1338,7 @@ pub(crate) fn setup_worktree_build_caches(
     }
 
     if workspace_path.join("package.json").is_file() {
-        let target = ensure_shared_cache_dir(&workspace_path.join("node_modules"))?;
-        ensure_worktree_cache_link(&target, &worktree_path.join("node_modules"))?;
+        setup_worktree_node_modules(&worktree_path, &workspace_path)?;
     }
 
     if workspace_path.join("pyproject.toml").is_file()
@@ -1353,6 +1352,54 @@ pub(crate) fn setup_worktree_build_caches(
     }
 
     Ok(())
+}
+
+fn setup_worktree_node_modules(worktree_path: &Path, workspace_path: &Path) -> Result<(), String> {
+    let source_node_modules = workspace_path.join("node_modules");
+    let worktree_node_modules = worktree_path.join("node_modules");
+
+    if !node_dependency_manifests_match(worktree_path, workspace_path)? {
+        // A generated link is safe only while both checkouts describe the same
+        // dependency graph. Remove our own link, but never replace a local
+        // node_modules directory created by the user or an agent.
+        remove_generated_cache_link(&worktree_node_modules, &source_node_modules)?;
+        return Ok(());
+    }
+
+    let target = ensure_shared_cache_dir(&source_node_modules)?;
+    ensure_worktree_cache_link(&target, &worktree_node_modules)
+}
+
+fn node_dependency_manifests_match(
+    worktree_path: &Path,
+    workspace_path: &Path,
+) -> Result<bool, String> {
+    ["package.json", "package-lock.json", "npm-shrinkwrap.json"]
+        .into_iter()
+        .try_fold(true, |matches, file_name| {
+            if !matches {
+                return Ok(false);
+            }
+            dependency_manifest_matches(
+                &worktree_path.join(file_name),
+                &workspace_path.join(file_name),
+            )
+        })
+}
+
+fn dependency_manifest_matches(
+    worktree_file: &Path,
+    workspace_file: &Path,
+) -> Result<bool, String> {
+    match (worktree_file.exists(), workspace_file.exists()) {
+        (false, false) => Ok(true),
+        (true, true) => {
+            let worktree = std::fs::read(worktree_file).map_err(|error| error.to_string())?;
+            let workspace = std::fs::read(workspace_file).map_err(|error| error.to_string())?;
+            Ok(worktree == workspace)
+        }
+        _ => Ok(false),
+    }
 }
 
 fn write_cargo_worktree_config(worktree_path: &Path, workspace_path: &Path) -> Result<(), String> {
@@ -3443,6 +3490,7 @@ bare
         std::fs::create_dir_all(&venv).unwrap();
         std::fs::create_dir_all(&worktree).unwrap();
         std::fs::write(workspace.join("package.json"), "{}\n").unwrap();
+        std::fs::write(worktree.join("package.json"), "{}\n").unwrap();
         std::fs::write(
             workspace.join("pyproject.toml"),
             "[project]\nname = \"sample\"\n",
@@ -3459,6 +3507,65 @@ bare
             normalize_canonical_path(&worktree.join(".venv")).unwrap(),
             normalize_canonical_path(&venv).unwrap()
         );
+    }
+
+    #[test]
+    fn setup_worktree_build_caches_does_not_share_node_modules_for_different_locks() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let worktree = temp.path().join("worktree");
+        let node_modules = workspace.join("node_modules");
+
+        std::fs::create_dir_all(&node_modules).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(workspace.join("package.json"), "{\"name\":\"sample\"}\n").unwrap();
+        std::fs::write(worktree.join("package.json"), "{\"name\":\"sample\"}\n").unwrap();
+        std::fs::write(
+            workspace.join("package-lock.json"),
+            "{\"lockfileVersion\":3}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            worktree.join("package-lock.json"),
+            "{\"lockfileVersion\":2}\n",
+        )
+        .unwrap();
+
+        setup_worktree_build_caches(&worktree, &workspace).unwrap();
+
+        assert!(node_modules.exists());
+        assert!(!worktree.join("node_modules").symlink_metadata().is_ok());
+    }
+
+    #[test]
+    fn setup_worktree_build_caches_unlinks_stale_shared_node_modules_when_lock_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let worktree = temp.path().join("worktree");
+        let node_modules = workspace.join("node_modules");
+
+        std::fs::create_dir_all(&node_modules).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        for root in [&workspace, &worktree] {
+            std::fs::write(root.join("package.json"), "{\"name\":\"sample\"}\n").unwrap();
+            std::fs::write(root.join("package-lock.json"), "{\"lockfileVersion\":3}\n").unwrap();
+        }
+
+        setup_worktree_build_caches(&worktree, &workspace).unwrap();
+        assert!(link_matches_target(
+            &worktree.join("node_modules"),
+            &node_modules
+        ));
+
+        std::fs::write(
+            worktree.join("package-lock.json"),
+            "{\"lockfileVersion\":2}\n",
+        )
+        .unwrap();
+        setup_worktree_build_caches(&worktree, &workspace).unwrap();
+
+        assert!(!worktree.join("node_modules").symlink_metadata().is_ok());
+        assert!(node_modules.exists());
     }
 
     #[test]
