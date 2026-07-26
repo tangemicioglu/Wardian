@@ -60,6 +60,7 @@ import { useRosterController } from "../features/agents/useRosterController";
 import {
   AgentsOverviewSurface,
   normalizeAgentsOverviewSurfaceState,
+  revealAgentInOverviewState,
 } from "../features/workbench/surfaces/AgentsOverviewSurface";
 import { createCoreWorkbenchSurfaceRegistry } from "../features/workbench/coreSurfaceRegistry";
 import { findExistingSurface } from "../features/workbench/adjacentSurfaceTargeting";
@@ -1042,21 +1043,48 @@ function AppBody() {
 
   const focusAgentInOverviewSurface = useCallback((surfaceId: string, sessionId: string): boolean => {
     const store = workbenchPersistence.store;
-    const overviewSurface = store.getState().document.surfaces[surfaceId];
+    const state = store.getState();
+    const overviewSurface = state.document.surfaces[surfaceId];
     if (overviewSurface?.surface_type !== "agents-overview") return false;
+    const overviewGroup = Object.values(state.document.groups).find((group) => (
+      group.surface_ids.includes(overviewSurface.surface_id)
+    ));
+    if (!overviewGroup) return false;
+
+    // An existing Agents view is the destination even when another pane is
+    // zoomed. Restore the layout first so focusing the tab can reveal it.
+    if (
+      state.zoomed_group_id !== null
+      && state.zoomed_group_id !== overviewGroup.group_id
+    ) {
+      state.set_zoomed_group_id(null);
+    }
 
     setSelectedAgentIds(new Set([sessionId]));
     const currentState = normalizeAgentsOverviewSurfaceState(overviewSurface.state);
+    const targetAgent = agents.find((agent) => agent.session_id === sessionId);
+    const nextState = targetAgent
+      ? revealAgentInOverviewState(
+        currentState,
+        targetAgent,
+        deriveCurrentThought(
+          terminalTitles[sessionId] ?? "",
+          currentThoughts[sessionId] ?? "",
+          telemetry[sessionId],
+          offAgentIds.has(sessionId),
+        ).status,
+      )
+      : { ...currentState, focused_agent_id: sessionId };
     workbenchNavigation.focus(overviewSurface.surface_id);
     store.getState().apply_commands([{
       type: "update_surface_state",
       surface_id: overviewSurface.surface_id,
       state_schema_version: overviewSurface.state_schema_version,
-      state: { ...currentState, focused_agent_id: sessionId },
+      state: nextState,
     }]);
     scheduleAgentOverviewScroll(sessionId);
     return true;
-  }, [scheduleAgentOverviewScroll, setSelectedAgentIds, workbenchNavigation, workbenchPersistence.store]);
+  }, [agents, currentThoughts, offAgentIds, scheduleAgentOverviewScroll, setSelectedAgentIds, telemetry, terminalTitles, workbenchNavigation, workbenchPersistence.store]);
 
   const openAgentFromSurface = useCallback((sourceSurfaceId: string, sessionId: string) => {
     const state = workbenchPersistence.store.getState();
@@ -1065,15 +1093,7 @@ function AppBody() {
       state.surface_mru,
       "agents-overview",
     );
-    const overviewIsVisibleInZoom = overviewSurfaceId !== undefined && (
-      state.zoomed_group_id === null
-      || state.document.groups[state.zoomed_group_id]?.surface_ids.includes(overviewSurfaceId)
-    );
-    if (
-      overviewSurfaceId
-      && overviewIsVisibleInZoom
-      && focusAgentInOverviewSurface(overviewSurfaceId, sessionId)
-    ) {
+    if (overviewSurfaceId && focusAgentInOverviewSurface(overviewSurfaceId, sessionId)) {
       return;
     }
 

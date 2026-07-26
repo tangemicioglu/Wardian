@@ -298,8 +298,8 @@ test("reveals an agent in an adjoining Agents surface when Graph opens an agent"
       mode: "grid",
       last_multi_agent_mode: "grid",
       focused_agent_id: null,
-      search_query: "",
-      status_filter: [],
+      search_query: "Beta",
+      status_filter: ["Processing"],
     },
   });
   const document = makeWorkbenchDocument({
@@ -338,14 +338,26 @@ test("reveals an agent in an adjoining Agents surface when Graph opens an agent"
 
   await expect(surfaceTab(page, "agents-overview")).toHaveAttribute("aria-selected", "true");
   await expect(overviewPanel.locator(`#agent-card-${ALPHA_AGENT.session_id}`)).toHaveClass(/ring-1/);
+  await expect(overviewPanel.getByRole("searchbox", { name: "Filter Agents" })).toHaveValue("");
   await expect(page.getByTestId("workbench-group")).toHaveCount(2);
   await expect(surfaceTab(page, "agent-session", ALPHA_AGENT.session_id)).toHaveCount(0);
   await expect.poll(async () => {
     const snapshot = await ipc.snapshot();
-    return (snapshot.load_result.document.surfaces[agentsOverview.surface_id]?.state as {
+    const state = snapshot.load_result.document.surfaces[agentsOverview.surface_id]?.state as {
       focused_agent_id?: string | null;
-    }).focused_agent_id;
-  }).toBe(ALPHA_AGENT.session_id);
+      search_query?: string;
+      status_filter?: string[];
+    };
+    return {
+      focused_agent_id: state.focused_agent_id,
+      search_query: state.search_query,
+      status_filter: state.status_filter,
+    };
+  }).toEqual({
+    focused_agent_id: ALPHA_AGENT.session_id,
+    search_query: "",
+    status_filter: [],
+  });
   expect(await ipc.calls("kill_agent")).toEqual([]);
 
   const screenshotPath = path.resolve(
@@ -423,6 +435,82 @@ test("reveals an agent in an inactive Agents tab in another pane when Graph open
 
   const screenshotPath = path.resolve(
     "e2e/screenshots/contextual-agent-targeting/2026-07-25/graph-targets-inactive-agents-tab.png",
+  );
+  mkdirSync(path.dirname(screenshotPath), { recursive: true });
+  await page.screenshot({ path: screenshotPath, animations: "disabled" });
+});
+
+test("reveals an existing Agents surface when Graph opens an agent from a zoomed pane", async ({ page }) => {
+  const graph = makeWorkbenchSurface("graph-zoomed-agents-targeting", "graph", {
+    state: {
+      enabled_reasons: [],
+      inspected_agent_id: ALPHA_AGENT.session_id,
+      inspector_open: true,
+      selected_edge_id: null,
+      picker_search: "",
+    },
+  });
+  const agentsOverview = makeWorkbenchSurface("agents-zoomed-targeting", "agents-overview", {
+    state: {
+      mode: "grid",
+      last_multi_agent_mode: "grid",
+      focused_agent_id: null,
+      search_query: "",
+      status_filter: [],
+    },
+  });
+  const document = makeWorkbenchDocument({
+    root: {
+      kind: "split",
+      node_id: "graph-zoomed-agents-split",
+      direction: "horizontal",
+      ratio: 0.5,
+      first: { kind: "group", group_id: "graph-group" },
+      second: { kind: "group", group_id: "agents-group" },
+    },
+    groups: {
+      "graph-group": {
+        group_id: "graph-group",
+        surface_ids: [graph.surface_id],
+        active_surface_id: graph.surface_id,
+      },
+      "agents-group": {
+        group_id: "agents-group",
+        surface_ids: [agentsOverview.surface_id],
+        active_surface_id: agentsOverview.surface_id,
+      },
+    },
+    surfaces: [graph, agentsOverview],
+    active_group_id: "graph-group",
+  });
+
+  await page.setViewportSize({ width: 1600, height: 960 });
+  const ipc = await bootWorkbench(page, document, [ALPHA_AGENT, BETA_AGENT]);
+  const graphGroup = workbenchGroup(page, "graph-group");
+  const graphPanel = surfacePanel(page, "graph");
+  await expect(graphPanel.getByRole("button", { name: "Open Agent", exact: true })).toBeVisible();
+  await choosePaneAction(page, graphGroup, "Zoom pane");
+  await expect(page.getByTestId("workbench-host"))
+    .toHaveAttribute("data-zoomed-group-id", "graph-group");
+
+  await graphPanel.getByRole("button", { name: "Open Agent", exact: true }).click();
+
+  await expect(page.getByTestId("workbench-host"))
+    .toHaveAttribute("data-zoomed-group-id", "none");
+  await expect(surfaceTab(page, "agents-overview")).toHaveAttribute("aria-selected", "true");
+  await expect(surfacePanel(page, "agents-overview").locator(`#agent-card-${ALPHA_AGENT.session_id}`))
+    .toHaveClass(/ring-1/);
+  await expect(surfaceTab(page, "agent-session", ALPHA_AGENT.session_id)).toHaveCount(0);
+  await expect.poll(async () => {
+    const snapshot = await ipc.snapshot();
+    return (snapshot.load_result.document.surfaces[agentsOverview.surface_id]?.state as {
+      focused_agent_id?: string | null;
+    }).focused_agent_id;
+  }).toBe(ALPHA_AGENT.session_id);
+  expect(await ipc.calls("kill_agent")).toEqual([]);
+
+  const screenshotPath = path.resolve(
+    "e2e/screenshots/contextual-agent-targeting/2026-07-25/graph-reveals-agents-after-zoom.png",
   );
   mkdirSync(path.dirname(screenshotPath), { recursive: true });
   await page.screenshot({ path: screenshotPath, animations: "disabled" });

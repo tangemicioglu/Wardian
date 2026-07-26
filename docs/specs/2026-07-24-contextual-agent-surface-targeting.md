@@ -20,9 +20,10 @@ agent in the Agents or session presentation already placed beside it.
 ## Eligibility
 
 The existing Agents surface can be in the invoking pane or in any other pane,
-and it can be an inactive tab. When the Workbench is zoomed, only an Agents
-tab in the zoomed pane is eligible, so an open action does not unexpectedly
-switch to a hidden pane.
+and it can be an inactive tab. When another pane is zoomed, an Agents tab in
+any pane remains eligible. Wardian restores the ordinary split layout before
+focusing an Agents tab outside the zoomed pane, so the selected destination is
+visible rather than silently falling back to a new session.
 
 The Agent Session fallback derives normalized pane bounds from the persisted
 split tree. Its target must meet every condition below:
@@ -58,8 +59,9 @@ presentation remains unchanged and Wardian does not create a replacement tab.
 - Unit tests cover adjacent-pane detection, inactive-tab exclusion for the
   Agent Session fallback, existing Agents lookup, and deterministic selection
   among multiple neighbors.
-- Navigation tests cover rebind-without-new-tab, ordinary fallback, and the
-  zoomed-pane fallback.
+- Navigation tests cover rebind-without-new-tab, ordinary fallback, inactive
+  Agents tabs in another pane, and revealing an existing Agents tab from a
+  zoomed source pane.
 - App and browser integration verify that a Graph action activates an existing
   Agents tab in both the invoking and another pane before falling back to an
   adjoining Agent Session, without triggering an agent lifecycle operation.

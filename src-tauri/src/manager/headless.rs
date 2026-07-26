@@ -1181,6 +1181,22 @@ mod tests {
             .unwrap_or(false)
     }
 
+    #[cfg(windows)]
+    async fn wait_for_descendant_pid(marker: &Path) -> u32 {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(value) = std::fs::read_to_string(marker) {
+                    if let Ok(pid) = value.trim().parse::<u32>() {
+                        return pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("wrapper recorded descendant PID")
+    }
+
     #[tokio::test]
     async fn headless_wait_heartbeats_an_active_conversation_lease() {
         if !node_available() {
@@ -1266,17 +1282,7 @@ mod tests {
         command.kill_on_drop(true);
         let mut child = command.spawn().expect("spawn headless wrapper");
 
-        let mut descendant_pid = None;
-        for _ in 0..40 {
-            if let Ok(value) = std::fs::read_to_string(&marker) {
-                if let Ok(pid) = value.trim().parse::<u32>() {
-                    descendant_pid = Some(pid);
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let descendant_pid = descendant_pid.expect("wrapper recorded descendant PID");
+        let descendant_pid = wait_for_descendant_pid(&marker).await;
 
         let error = wait_for_headless_child_with_intervals(
             &mut child,
@@ -1328,17 +1334,7 @@ mod tests {
         let mut child = command.spawn().expect("spawn cancellable headless wrapper");
         let tree_guard = HeadlessProcessTreeGuard::new(child.id());
 
-        let mut descendant_pid = None;
-        for _ in 0..40 {
-            if let Ok(value) = std::fs::read_to_string(&marker) {
-                if let Ok(pid) = value.trim().parse::<u32>() {
-                    descendant_pid = Some(pid);
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let descendant_pid = descendant_pid.expect("wrapper recorded descendant PID");
+        let descendant_pid = wait_for_descendant_pid(&marker).await;
 
         drop(tree_guard);
         let _ = child.wait().await;

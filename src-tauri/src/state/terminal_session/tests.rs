@@ -1680,13 +1680,10 @@ async fn shutdown_timeout_aborts_actor_and_cancels_pending_calls() {
         runtime_generation: generation,
         lease_epoch: active.broker_state.lease_epoch,
     };
-    broker
-        .send_input(TerminalInputRequest {
-            lease: lease.clone(),
-            bytes: b"fills input channel".to_vec(),
-        })
+    let release = broker
+        .block_actor_for_test("session-1")
         .await
-        .expect("first input");
+        .expect("block actor");
 
     let blocked_broker = broker.clone();
     let blocked_input = tokio::spawn(async move {
@@ -1697,9 +1694,10 @@ async fn shutdown_timeout_aborts_actor_and_cancels_pending_calls() {
             })
             .await
     });
-    tokio::task::yield_now().await;
+    wait_for_external_capacity(&broker, TERMINAL_SESSION_ACTOR_CAPACITY - 1).await;
     let state_broker = broker.clone();
     let pending_state = tokio::spawn(async move { state_broker.broker_state("session-1").await });
+    wait_for_external_capacity(&broker, TERMINAL_SESSION_ACTOR_CAPACITY - 2).await;
     let terminate_broker = broker.clone();
     let terminate = tokio::spawn(async move {
         terminate_broker
@@ -1713,6 +1711,7 @@ async fn shutdown_timeout_aborts_actor_and_cancels_pending_calls() {
         .await
         .expect("terminate task")
         .expect("timed abort");
+    let _ = release.send(());
     assert!(matches!(
         blocked_input.await.expect("blocked input task"),
         Err(TerminalBrokerError::RuntimeTerminated)

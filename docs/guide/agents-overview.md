@@ -12,6 +12,22 @@ Press `Ctrl+P` / `Cmd+P`, select a pane's **+** button, or use the empty-pane Ho
 
 The right roster controls which agents auxiliary tools target. It does not filter Agents automatically. Use **Filter agents** in the surface to narrow the visible cards by agent name, class, provider, or workspace.
 
+### Open an Agent from Another View
+
+When **Graph**, **Garden**, or **Inbox** uses **Open Agent**, Wardian first
+targets an existing Agents view anywhere in the Workbench. It can activate an
+inactive Agents tab in the same pane or another pane, select the requested
+card, and scroll it into view. If the target is hidden by a zoomed pane,
+Wardian restores the split layout before moving focus there.
+
+If the view's local agent search or status filter would hide the requested
+card, Wardian clears only that blocking filter before revealing it. Filters
+that already include the requested agent stay in place.
+
+The roster's explicit **Open** and **Open to Side** controls remain terminal
+actions: they open or focus Agent Session tabs instead of changing the
+contextual Agents destination.
+
 ## Choose a Layout Mode
 
 The surface header provides three modes:

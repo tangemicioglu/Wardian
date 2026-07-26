@@ -6,6 +6,7 @@ import type { AgentsOverviewViewProps } from "../../../views/AgentsOverviewView"
 import {
   AgentsOverviewSurface,
   normalizeAgentsOverviewSurfaceState,
+  revealAgentInOverviewState,
   type AgentsOverviewSurfaceProps,
 } from "./AgentsOverviewSurface";
 
@@ -95,6 +96,30 @@ describe("AgentsOverviewSurface", () => {
       status_filter: [],
     });
     expect(normalizeAgentsOverviewSurfaceState(null)).toEqual(state);
+  });
+
+  it("clears only local filters that hide a contextually revealed agent", () => {
+    expect(revealAgentInOverviewState({
+      ...state,
+      search_query: "alpha",
+      status_filter: ["processing"],
+    }, agents[0], "Idle")).toEqual({
+      ...state,
+      focused_agent_id: "agent-1",
+      search_query: "alpha",
+      status_filter: [],
+    });
+
+    expect(revealAgentInOverviewState({
+      ...state,
+      search_query: "beta",
+      status_filter: ["idle"],
+    }, agents[0], "Idle")).toEqual({
+      ...state,
+      focused_agent_id: "agent-1",
+      search_query: "",
+      status_filter: ["idle"],
+    });
   });
 
   it("persists the last multi-agent mode and restores it when explicit Single exits", () => {
