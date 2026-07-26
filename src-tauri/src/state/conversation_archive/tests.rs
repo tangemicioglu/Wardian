@@ -2467,6 +2467,38 @@ fn show_conversation_archive_reads_manifest_and_records_from_agent_owned_path() 
 }
 
 #[test]
+fn chat_event_replay_reads_every_archived_conversation_for_the_agent() {
+    let (_guard, _temp) = isolated_home();
+    let archive = ConversationArchiveState::default();
+    archive
+        .append_delivered_input("agent-1", "First archived prompt.", None)
+        .expect("append first prompt");
+    archive
+        .append_lifecycle_boundary("agent-1", ConversationBoundaryReason::Clear)
+        .expect("close first conversation");
+    archive
+        .append_delivered_input("agent-1", "Second archived prompt.", None)
+        .expect("append second prompt");
+    archive
+        .append_delivered_input("agent-2", "Other agent prompt.", None)
+        .expect("append other prompt");
+
+    let events = archive
+        .chat_events_for_agent("agent-1")
+        .expect("read agent archive events");
+
+    assert_eq!(events.len(), 3);
+    assert!(events.iter().all(|event| event.session_id == "agent-1"));
+    assert_eq!(events[0].text.as_deref(), Some("First archived prompt."));
+    assert_eq!(events[2].text.as_deref(), Some("Second archived prompt."));
+    assert!(events.iter().all(|event| event
+        .metadata
+        .get("conversation_archive_id")
+        .and_then(|value| value.as_str())
+        .is_some()));
+}
+
+#[test]
 fn terminal_output_events_are_skipped_and_do_not_create_conversation_files() {
     let (_guard, _temp) = isolated_home();
     let archive = ConversationArchiveState::default();

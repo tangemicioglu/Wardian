@@ -60,7 +60,20 @@ pub async fn load_agent_chat_transcript_for_state(
     }
 
     let result = archive_agent_chat_events_for_state(state, &session_id).await?;
-    Ok(result.events)
+    let archived_events = state
+        .conversation_archive
+        .chat_events_for_agent(&session_id)
+        .unwrap_or_else(|error| {
+            manager::log_debug(&format!(
+                "[WARDIAN] conversation archive chat replay failed for {session_id}: {error}"
+            ));
+            Vec::new()
+        });
+
+    // Provider logs and the watch snapshot are live, bounded sources. Replay
+    // the durable archive first so a restart or Antigravity log rotation does
+    // not erase previously captured chat rows from the view.
+    Ok(merge_chat_events(result.events, archived_events))
 }
 
 pub(crate) async fn agent_archive_capture_snapshot(
@@ -797,6 +810,14 @@ fn source_rank(source: Option<&str>) -> u8 {
 }
 
 fn chat_event_dedupe_key(event: &AgentChatEvent) -> String {
+    if let Some(conversation_id) = event
+        .metadata
+        .get("conversation_archive_id")
+        .and_then(|value| value.as_str())
+    {
+        return format!("archive|{conversation_id}|{}", event.id);
+    }
+
     if event.kind == AgentChatEventKind::Message {
         return format!(
             "{:?}|{:?}|{}|{}",
@@ -1584,6 +1605,38 @@ Do you want to proceed?
         repeated.turn_id = Some("turn-2".to_string());
 
         let chat_events = merge_chat_events(Vec::new(), vec![first, repeated]);
+
+        assert_eq!(chat_events.len(), 2);
+    }
+
+    #[test]
+    fn merge_preserves_repeated_archived_messages_from_distinct_conversations() {
+        let mut first = AgentChatEvent {
+            id: "generated:conversation-one:1".to_string(),
+            session_id: "agent-1".to_string(),
+            provider: "antigravity".to_string(),
+            kind: AgentChatEventKind::Message,
+            role: Some(AgentChatRole::User),
+            text: Some("Repeat this prompt.".to_string()),
+            title: None,
+            status: None,
+            turn_id: None,
+            source: Some("wardian_input".to_string()),
+            command: None,
+            exit_code: None,
+            path: None,
+            language: None,
+            created_at: None,
+            sequence: Some(1),
+            metadata: serde_json::json!({"conversation_archive_id": "conversation-one"}),
+        };
+        let mut second = first.clone();
+        second.id = "generated:conversation-two:1".to_string();
+        second.metadata = serde_json::json!({"conversation_archive_id": "conversation-two"});
+        first.sequence = Some(1);
+        second.sequence = Some(2);
+
+        let chat_events = merge_chat_events(Vec::new(), vec![first, second]);
 
         assert_eq!(chat_events.len(), 2);
     }

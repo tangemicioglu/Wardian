@@ -53,6 +53,7 @@ Antigravity runs directly in the real target workspace. Wardian does not use a p
 - Start Fresh starts Antigravity fresh without sending a bootstrap prompt. Wardian records the first conversation mapping that differs from the pre-launch workspace mapping, then stores it as `resume_session`.
 - Until a real prompt creates that mapping, no provider identity exists to resume; a restart starts a fresh conversation again.
 - Wardian parses completed `MODEL` `PLANNER_RESPONSE` transcript records for status and `wardian agent watch` transcript text.
+- The Chat view replays Wardian's durable conversation archive before the bounded live transcript, so captured chat rows remain visible when an Antigravity transcript is unavailable or rotates.
 - The real-provider rendering audit uses a short exact marker prompt for Antigravity, submits it through Wardian's provider-aware prompt delivery path, and treats the post-clear respawn as marker-optional. This avoids mistaking echoed prompt text for the model response while still proving initial live rendering, resize, pause, and resume behavior.
 
 ### Practical implications
