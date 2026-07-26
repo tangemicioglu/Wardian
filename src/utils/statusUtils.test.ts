@@ -74,6 +74,10 @@ describe("deriveEffectiveStatus", () => {
   it("returns Off when isOff is true regardless of title", () => {
     expect(deriveEffectiveStatus("Working", "Active thought", "Processing...", true)).toBe("Off");
   });
+
+  it("keeps a lease-derived Headless status visible for an off agent", () => {
+    expect(deriveEffectiveStatus("", undefined, "Headless", true)).toBe("Headless");
+  });
 });
 
 // ── cleanThought ───────────────────────────────────────────────────────
@@ -215,6 +219,14 @@ describe("deriveCurrentThought", () => {
     const result = deriveCurrentThought("Working", "Generating code", baseMetrics, true);
     expect(result.thought).toBe("Off");
     expect(result.status).toBe("Off");
+  });
+
+  it("shows Headless thought and status while an off agent has a headless lease", () => {
+    const result = deriveCurrentThought("", undefined, {
+      ...baseMetrics,
+      current_status: "Headless",
+    }, true);
+    expect(result).toEqual({ thought: "Headless", status: "Headless" });
   });
 });
 

@@ -27,6 +27,8 @@ const ASK_STRUCTURED_SESSION_NAME = `E2E-CLI-ASK-STRUCTURED-${RUN_ID}`;
 const WATCH_READABLE_SESSION_NAME = `E2E-CLI-WATCH-READABLE-${RUN_ID}`;
 const ROUTE_QUEUE_SESSION_NAME = `E2E-CLI-ROUTE-QUEUE-${RUN_ID}`;
 const ROUTE_LIVE_ONLY_SESSION_NAME = `E2E-CLI-ROUTE-LIVE-${RUN_ID}`;
+const HEADLESS_SEND_SESSION_NAME = `E2E-CLI-HEADLESS-SEND-${RUN_ID}`;
+const HEADLESS_STRUCTURED_ASK_SESSION_NAME = `E2E-CLI-HEADLESS-ASK-${RUN_ID}`;
 
 function commandName(name) {
   return process.platform === "win32" ? `${name}.exe` : name;
@@ -280,6 +282,32 @@ async function waitForCliField(cliPath, harness, target, field, expected, timeou
   );
 }
 
+async function waitForTelemetryStatus(driver, sessionId, expected, timeoutMs = 30000) {
+  const startedAt = Date.now();
+  let lastResult = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    lastResult = await driver.executeAsyncScript((targetSessionId, done) => {
+      window.__TAURI_INTERNALS__.invoke("list_agent_metrics").then(
+        (metrics) => done({ ok: true, metrics }),
+        (error) => done({ ok: false, error: String(error) }),
+      );
+    }, sessionId);
+
+    if (lastResult.ok) {
+      const agent = lastResult.metrics.find((entry) => entry.session_id === sessionId);
+      if (agent?.current_status?.toLowerCase() === expected.toLowerCase()) {
+        return agent;
+      }
+    }
+    await delay(250);
+  }
+
+  assert.fail(
+    `Timed out waiting for telemetry ${sessionId} status=${expected}; last result: ${JSON.stringify(lastResult)}`,
+  );
+}
+
 async function createMockAgent(
   driver,
   workspacePath,
@@ -348,6 +376,44 @@ async function pushAgentOutput(driver, sessionId, output, transcriptText = null)
   }, sessionId, output, transcriptText);
 
   assert.equal(result.ok, true, `debug_push_agent_watch_output failed: ${result.error}`);
+}
+
+async function invokeWorkflowRun(driver, payload) {
+  const result = await driver.executeAsyncScript((workflowPayload, done) => {
+    window.__TAURI_INTERNALS__.invoke("workflow_run", workflowPayload).then(
+      (value) => done({ ok: true, value }),
+      (error) => done({ ok: false, error: String(error) }),
+    );
+  }, payload);
+
+  assert.equal(result.ok, true, `workflow_run failed: ${result.error}`);
+  assert.equal(result.value?.ok, true, `workflow_run did not start: ${JSON.stringify(result.value)}`);
+  return result.value;
+}
+
+async function waitForCompletedWorkflow(runDir, timeoutMs = 30000) {
+  const statePath = path.join(runDir, "state.json");
+  const startedAt = Date.now();
+  let lastState = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (existsSync(statePath)) {
+      try {
+        lastState = JSON.parse(readFileSync(statePath, "utf8"));
+        if (lastState.status === "completed") {
+          return lastState;
+        }
+        if (lastState.status === "failed") {
+          assert.fail(`workflow failed: ${JSON.stringify(lastState)}`);
+        }
+      } catch {
+        // The workflow engine may still be writing its checkpoint.
+      }
+    }
+    await delay(150);
+  }
+
+  assert.fail(`Timed out waiting for completed workflow: ${JSON.stringify(lastState)}`);
 }
 
 test("native app-created agent is readable through the CLI", { timeout: 180000 }, async (t) => {
@@ -483,6 +549,303 @@ test("native app-created off agent is readable through the CLI", { timeout: 1800
   ]);
   assert.equal(statusResult.status, 0, statusResult.stderr);
   assert.equal(statusResult.stdout, "off\n");
+});
+
+test("native CLI send runs an off agent headlessly and retains its response", { timeout: 180000 }, async (t) => {
+  await withMockScenario("headless_delayed", async () => {
+    const harness = await createNativeHarness();
+    assert.ok(harness.appPath);
+
+    try {
+      if (!skipNativeBuild) {
+        ensureNativeAppBuilt(harness);
+      }
+    } catch (error) {
+      t.skip(String(error));
+      return;
+    }
+
+    prepareIsolatedHome(harness);
+
+    const cliPath = buildCli(harness);
+    const workspacePath = path.join(harness.repoRoot, "e2e-native");
+
+    let session;
+    try {
+      session = await startNativeSession(harness);
+    } catch (error) {
+      t.skip(String(error));
+      return;
+    }
+
+    t.after(async () => {
+      await session.close();
+    });
+
+    await waitForAppShell(session.driver, 20000);
+    const requestedResumeSession = `e2e-cli-headless-send-${RUN_ID}`;
+    const agent = await createMockAgent(session.driver, workspacePath, {
+      sessionId: requestedResumeSession,
+      sessionName: HEADLESS_SEND_SESSION_NAME,
+      isOff: true,
+    });
+    const configsResult = await session.driver.executeAsyncScript((done) => {
+      window.__TAURI_INTERNALS__.invoke("list_agents").then(
+        (agents) => done({ ok: true, agents }),
+        (error) => done({ ok: false, error: String(error) }),
+      );
+    });
+    assert.equal(configsResult.ok, true, `list_agents failed: ${configsResult.error}`);
+    const config = configsResult.agents.find((entry) => entry.session_id === agent.session_id);
+    assert.equal(config?.resume_session, requestedResumeSession);
+    await waitForCliField(cliPath, harness, HEADLESS_SEND_SESSION_NAME, "status", "off");
+
+    const sendPromise = runCliAsync(cliPath, harness, [
+      "send",
+      "HEADLESS_DELIVERY_MARKER",
+      "--to",
+      HEADLESS_SEND_SESSION_NAME,
+      "--wait-until",
+      "idle",
+      "--timeout",
+      "30s",
+    ]);
+
+    await waitForCliField(cliPath, harness, HEADLESS_SEND_SESSION_NAME, "status", "headless");
+    const headlessTelemetry = await waitForTelemetryStatus(
+      session.driver,
+      agent.session_id,
+      "headless",
+    );
+    assert.equal(headlessTelemetry.current_status, "Headless");
+
+    const sendResult = await sendPromise;
+    assert.equal(
+      sendResult.status,
+      0,
+      `wardian send failed\nstdout:\n${sendResult.stdout}\nstderr:\n${sendResult.stderr}`,
+    );
+    const send = JSON.parse(sendResult.stdout);
+    // A headless turn completes synchronously. `--wait-until idle` therefore
+    // waits for its provider_applied delivery evidence, while the truthful
+    // agent snapshot remains off instead of inventing a live Idle session.
+    assert.equal(send.status, "off");
+    const delivery = send.delivery[0];
+    assert.equal(delivery.runtime_state, "headless_process");
+    assert.equal(delivery.delivery_state, "provider_applied");
+    assert.equal(delivery.delivery_phase, "process_completed");
+    assert.match(delivery.message_id, /^int_/);
+
+    const watchResult = runCliOk(cliPath, harness, [
+      "agent",
+      "watch",
+      HEADLESS_SEND_SESSION_NAME,
+      "--until",
+      "output:Mock headless execution completed successfully.",
+      "--include",
+      "delivery,output,transcript",
+      "--timeout",
+      "30s",
+    ]);
+    const watch = JSON.parse(watchResult.stdout);
+    assert.match(watch.output.text, /Mock headless execution completed successfully\./);
+    assert.match(watch.transcript.latest_text, /Mock headless execution completed successfully\./);
+    const watchedDelivery = deliveryDetailFromWatch(watch, "provider_applied", delivery.message_id);
+    assert.equal(watchedDelivery.runtime_state, "headless_process");
+    assert.equal(watchedDelivery.delivery_phase, "process_completed");
+
+    await waitForCliField(cliPath, harness, HEADLESS_SEND_SESSION_NAME, "status", "off");
+    assert.equal(agent.session_name, HEADLESS_SEND_SESSION_NAME);
+  }, "2500");
+});
+
+test("native CLI structured ask runs an off agent headlessly and records its reply", { timeout: 180000 }, async (t) => {
+  await withMockScenario("headless_structured_reply", async () => {
+    const harness = await createNativeHarness();
+    assert.ok(harness.appPath);
+
+    try {
+      if (!skipNativeBuild) {
+        ensureNativeAppBuilt(harness);
+      }
+    } catch (error) {
+      t.skip(String(error));
+      return;
+    }
+
+    prepareIsolatedHome(harness);
+
+    const cliPath = buildCli(harness);
+    const workspacePath = path.join(harness.repoRoot, "e2e-native");
+    const previousReplyCli = process.env.WARDIAN_E2E_CLI_PATH;
+    process.env.WARDIAN_E2E_CLI_PATH = cliPath;
+
+    let session;
+    try {
+      session = await startNativeSession(harness);
+    } catch (error) {
+      t.skip(String(error));
+      return;
+    } finally {
+      if (previousReplyCli === undefined) {
+        delete process.env.WARDIAN_E2E_CLI_PATH;
+      } else {
+        process.env.WARDIAN_E2E_CLI_PATH = previousReplyCli;
+      }
+    }
+
+    t.after(async () => {
+      await session.close();
+    });
+
+    await waitForAppShell(session.driver, 20000);
+    const agent = await createMockAgent(session.driver, workspacePath, {
+      sessionId: `e2e-cli-headless-ask-${RUN_ID}`,
+      sessionName: HEADLESS_STRUCTURED_ASK_SESSION_NAME,
+      isOff: true,
+    });
+    await waitForCliField(cliPath, harness, HEADLESS_STRUCTURED_ASK_SESSION_NAME, "status", "off");
+
+    const askPromise = runCliAsync(cliPath, harness, [
+      "ask",
+      HEADLESS_STRUCTURED_ASK_SESSION_NAME,
+      "Complete this offline structured request.",
+      "--until",
+      "reply",
+      "--timeout",
+      "30s",
+    ]);
+
+    await waitForCliField(cliPath, harness, HEADLESS_STRUCTURED_ASK_SESSION_NAME, "status", "headless");
+    const headlessTelemetry = await waitForTelemetryStatus(
+      session.driver,
+      agent.session_id,
+      "headless",
+    );
+    assert.equal(headlessTelemetry.current_status, "Headless");
+
+    const askResult = await askPromise;
+    assert.equal(
+      askResult.status,
+      0,
+      `wardian ask failed\nstdout:\n${askResult.stdout}\nstderr:\n${askResult.stderr}`,
+    );
+    const ask = JSON.parse(askResult.stdout);
+    assert.equal(ask.ok, true);
+    assert.equal(ask.target, HEADLESS_STRUCTURED_ASK_SESSION_NAME);
+    assert.equal(ask.condition, "reply");
+    assert.match(ask.request_id, /^ask_/);
+    assert.equal(ask.reply.status, "done");
+    assert.equal(ask.reply.body, "Mock structured headless reply.");
+    assert.equal(ask.delivery[0].runtime_state, "headless_process");
+    assert.equal(ask.delivery[0].delivery_state, "provider_applied");
+    assert.equal(ask.delivery[0].delivery_phase, "process_completed");
+
+    await waitForCliField(cliPath, harness, HEADLESS_STRUCTURED_ASK_SESSION_NAME, "status", "off");
+  }, "750");
+});
+
+test("native workflows run off agents headlessly for resumed and fresh conversations", { timeout: 180000 }, async (t) => {
+  await withMockScenario("headless_delayed", async () => {
+    const harness = await createNativeHarness();
+    assert.ok(harness.appPath);
+
+    try {
+      if (!skipNativeBuild) {
+        ensureNativeAppBuilt(harness);
+      }
+    } catch (error) {
+      t.skip(String(error));
+      return;
+    }
+
+    prepareIsolatedHome(harness);
+
+    const cliPath = buildCli(harness);
+    const workspacePath = path.join(harness.repoRoot, "e2e-native");
+    const workflowId = `native-offline-workflow-${RUN_ID}`;
+    const workflowsDir = path.join(harness.isolatedHome, "library", "workflows");
+    const workflowPath = path.join(workflowsDir, `${workflowId}.md`);
+    mkdirSync(workflowsDir, { recursive: true });
+    writeFileSync(
+      workflowPath,
+      `---
+schema: 2
+id: ${workflowId}
+name: Native Offline Agent Workflow
+nodes:
+  - id: trigger
+    type: manual_trigger
+  - id: worker-turn
+    type: task
+    fields:
+      agent: role:worker
+      prompt: Complete the offline workflow task.
+edges:
+  - from: trigger
+    to: worker-turn
+---
+
+# Native Offline Agent Workflow
+`,
+      "utf8",
+    );
+
+    let session;
+    try {
+      session = await startNativeSession(harness);
+    } catch (error) {
+      t.skip(String(error));
+      return;
+    }
+
+    t.after(async () => {
+      await session.close();
+    });
+
+    await waitForAppShell(session.driver, 20000);
+
+    for (const mode of ["resumed", "fresh"]) {
+      const agent = await createMockAgent(session.driver, workspacePath, {
+        sessionId: mode === "resumed" ? `provider-${mode}-${RUN_ID}` : null,
+        sessionName: `E2E-CLI-HEADLESS-WORKFLOW-${mode}-${RUN_ID}`,
+        isOff: true,
+      });
+      await waitForCliField(cliPath, harness, agent.session_name, "status", "off");
+
+      const run = await invokeWorkflowRun(session.driver, {
+        path: workflowPath,
+        provider: "mock",
+        workspace: workspacePath,
+        input: {},
+        assignments: {
+          worker: {
+            target_type: "agent",
+            agent_id: agent.session_id,
+            conversation: "current",
+            busy_policy: "wait",
+          },
+        },
+      });
+
+      const headlessTelemetry = await waitForTelemetryStatus(
+        session.driver,
+        agent.session_id,
+        "headless",
+      );
+      assert.equal(headlessTelemetry.current_status, "Headless");
+
+      const workflowState = await waitForCompletedWorkflow(run.run_dir);
+      assert.equal(workflowState.status, "completed");
+      assert.equal(workflowState.nodes?.["worker-turn"], "completed");
+      assert.match(
+        workflowState.registry?.nodes?.["worker-turn"]?.output?.text || "",
+        /Mock headless execution completed successfully/,
+      );
+
+      await waitForCliField(cliPath, harness, agent.session_name, "status", "off");
+    }
+  }, "1200");
 });
 
 test("native CLI control commands operate through the running app", { timeout: 180000 }, async (t) => {
@@ -645,7 +1008,7 @@ test("native CLI control commands operate through the running app", { timeout: 1
     await waitForCliField(cliPath, harness, CONTROL_CLONE_NAME, "status", "action_required");
 
     await watchStep(harness, `Killing ${CONTROL_CLONE_NAME} through the CLI`);
-    runCliOk(cliPath, harness, ["agent", "kill", CONTROL_CLONE_NAME]);
+    runCliOk(cliPath, harness, ["agent", "kill", CONTROL_CLONE_NAME, "--confirm"]);
     const killedShow = runCli(cliPath, harness, ["agent", CONTROL_CLONE_NAME]);
     assert.equal(killedShow.status, 2, killedShow.stderr);
     assert.match(killedShow.stderr, /"code":"not_found"/);

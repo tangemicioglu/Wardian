@@ -16,7 +16,7 @@ Wardian does not install provider accounts, complete browser sign-in, create pro
 
 ## Credential and Session Identity Safety
 
-Wardian keeps its stable agent UUID separate from the provider's conversation identifier. Claude and Gemini receive a distinct caller-owned provider ID. Codex creates a distinct local rollout UUID and resumes it exactly, OpenCode binds the exact `ses_...` ID returned by its current run, and Antigravity records only the workspace mapping proven to have changed after the first real user prompt. Structured initialization events can confirm that bound ID, but they cannot replace it.
+Wardian keeps its stable agent UUID separate from the provider's conversation identifier. Claude receives a distinct caller-owned provider ID. Codex creates a distinct local rollout UUID and resumes it exactly, OpenCode binds the exact `ses_...` ID returned by its current run, and Antigravity records only the workspace mapping proven to have changed after the first real user prompt. Structured initialization events can confirm that bound ID, but they cannot replace it.
 
 Before a provider starts, Wardian rejects session identifiers that match credential-bearing environment values such as API keys, tokens, secrets, or passwords. It also rejects provider IDs that equal the Wardian agent UUID, have the wrong provider-specific shape, or conflict with the already-bound ID. Wardian records launch argument counts and resume presence in debug logs instead of raw arguments or provider-supplied identifiers.
 
@@ -34,25 +34,53 @@ If Wardian reports that a session identifier matches a credential environment va
 
 You can choose a preferred launch provider in [Settings](./settings.md). `Auto` keeps the Claude-first default when Claude is installed, then falls back to the first installed supported provider.
 
-## Opt-In Delivery Validation
+## Opt-In Provider Execution Validation
 
-Maintainers can run the real-provider delivery matrix after all provider CLIs are installed, authenticated, and trusted for the target workspace. This validation is opt-in because it sends prompts to live provider accounts. Provider-runtime claims must use this real-provider layer or another real-provider native E2E test; mock-provider tests are only valid for Wardian-owned routing, state, queueing, UI, and deterministic terminal plumbing.
+Maintainers can run real-provider workflow and delivery matrices after all provider CLIs are installed, authenticated, and trusted for the target workspace. This validation is opt-in because it sends prompts to live provider accounts. Provider-runtime claims must use this real-provider layer or another real-provider native E2E test; mock-provider tests are only valid for Wardian-owned routing, state, queueing, UI, and deterministic terminal plumbing.
 
-The full delivery matrix includes Codex, Claude, Gemini, OpenCode, and Antigravity:
+The maintained matrix includes Codex, Claude, OpenCode, and Antigravity. Deprecated Gemini is intentionally excluded.
+
+Run the temporary-provider workflow matrix to prove that each provider can launch headlessly, execute a workflow task, and return readable node output. The Codex leg deliberately uses an isolated non-Git workspace so the `codex exec --skip-git-repo-check` path is exercised:
 
 ```bash
-WARDIAN_E2E_REAL_DELIVERY=1 WARDIAN_E2E_DELIVERY_PROVIDERS=codex,claude,gemini,opencode,antigravity npm run test:e2e:native:fast -- e2e-native/tests/provider-delivery-real-native.test.mjs
+WARDIAN_E2E_REAL_HEADLESS_PROVIDERS=1 \
+WARDIAN_E2E_HEADLESS_PROVIDERS=codex,claude,opencode,antigravity \
+WARDIAN_E2E_REAL_WORKSPACE="<absolute-workspace-path>" \
+npm run test:e2e:native:fast -- e2e-native/tests/provider-headless-workflow-real-native.test.mjs
+```
+
+PowerShell:
+
+```powershell
+$env:WARDIAN_E2E_REAL_HEADLESS_PROVIDERS = "1"
+$env:WARDIAN_E2E_HEADLESS_PROVIDERS = "codex,claude,opencode,antigravity"
+$env:WARDIAN_E2E_REAL_WORKSPACE = "<absolute-workspace-path>"
+npm run test:e2e:native:fast -- e2e-native/tests/provider-headless-workflow-real-native.test.mjs
+Remove-Item Env:\WARDIAN_E2E_REAL_HEADLESS_PROVIDERS
+Remove-Item Env:\WARDIAN_E2E_HEADLESS_PROVIDERS
+Remove-Item Env:\WARDIAN_E2E_REAL_WORKSPACE
+```
+
+Run the delivery matrix to prove that each provider can launch as an agent, receive a mailbox-delivered `wardian send`, and expose the reply through `wardian agent watch`:
+
+```bash
+WARDIAN_E2E_REAL_DELIVERY=1 WARDIAN_E2E_DELIVERY_PROVIDERS=codex,claude,opencode,antigravity npm run test:e2e:native:fast -- e2e-native/tests/provider-delivery-real-native.test.mjs
 ```
 
 PowerShell:
 
 ```powershell
 $env:WARDIAN_E2E_REAL_DELIVERY = "1"
-$env:WARDIAN_E2E_DELIVERY_PROVIDERS = "codex,claude,gemini,opencode,antigravity"
+$env:WARDIAN_E2E_DELIVERY_PROVIDERS = "codex,claude,opencode,antigravity"
 npm run test:e2e:native:fast -- e2e-native/tests/provider-delivery-real-native.test.mjs
 Remove-Item Env:\WARDIAN_E2E_REAL_DELIVERY
 Remove-Item Env:\WARDIAN_E2E_DELIVERY_PROVIDERS
 ```
+
+The delivery test enables Codex workspace trust only inside its isolated
+`WARDIAN_HOME`; it does not alter the user's Codex configuration or approval
+policy. Authentication and any other provider-specific first-run requirements
+must still be completed before running the matrix.
 
 To limit a local run while debugging one provider, set `WARDIAN_E2E_DELIVERY_PROVIDERS` and explicitly allow a partial matrix:
 
@@ -72,11 +100,11 @@ Remove-Item Env:\WARDIAN_E2E_DELIVERY_ALLOW_PARTIAL
 Remove-Item Env:\WARDIAN_E2E_DELIVERY_PROVIDERS
 ```
 
-When `WARDIAN_E2E_REAL_DELIVERY=1` is set, unknown provider names fail the test. Antigravity is required in the matrix unless `WARDIAN_E2E_DELIVERY_ALLOW_PARTIAL=1` is also set.
+When either real-provider environment switch is set, unknown provider names fail the corresponding test. The complete four-provider matrix is required unless its matching `*_ALLOW_PARTIAL=1` flag is also set.
 
 By default the real delivery test runs one short mailbox-only prompt per selected provider. Use `WARDIAN_E2E_DELIVERY_CASES=all` for the full input case set, or a comma list such as `mailbox-short,mailbox-multiline`.
 
-Use cheap or fast model overrides where the provider exposes a model flag. The test defaults Claude to `haiku`, Gemini to `gemini-2.5-flash`, and OpenCode to `opencode/deepseek-v4-flash-free`. Override these with provider-specific environment variables:
+Use cheap or fast model overrides where the provider exposes a model flag. The delivery test defaults Claude to `haiku` and OpenCode to `opencode/deepseek-v4-flash-free`. Override these with provider-specific environment variables:
 
 ```bash
 WARDIAN_E2E_DELIVERY_CLAUDE_MODEL=haiku WARDIAN_E2E_REAL_DELIVERY=1 WARDIAN_E2E_DELIVERY_ALLOW_PARTIAL=1 WARDIAN_E2E_DELIVERY_PROVIDERS=claude npm run test:e2e:native:fast -- e2e-native/tests/provider-delivery-real-native.test.mjs
@@ -108,7 +136,6 @@ npm --version
 Confirm provider commands are visible:
 
 ```bash
-command -v gemini
 command -v agy
 command -v claude
 command -v codex
@@ -120,29 +147,14 @@ PowerShell:
 ```powershell
 node --version
 npm --version
-Get-Command gemini, agy, claude, codex, opencode -ErrorAction SilentlyContinue
+Get-Command agy, claude, codex, opencode -ErrorAction SilentlyContinue
 ```
 
 If a command appears only after a shell startup script modifies `PATH`, make that path available to the app process as well. The agent default shell setting controls shell-hosted commands; interactive provider spawning resolves the provider executable before that shell runs.
 
-## Gemini CLI
+## Gemini CLI (Deprecated)
 
-Install:
-
-```bash
-npm install -g @google/gemini-cli
-```
-
-Verify:
-
-```bash
-gemini --version
-gemini
-```
-
-Complete the Gemini CLI sign-in or API-key flow in the terminal. After it reaches the interactive prompt, exit and spawn a Gemini agent from Wardian.
-
-Gemini CLI remains supported, but consumer/free Gemini CLI access is scheduled to cut off on June 18, 2026. Antigravity is a separate provider and uses the `agy` command.
+Gemini is a legacy provider and is not included in Wardian's maintained real-provider execution matrix. Use Codex, Claude, OpenCode, or Antigravity for new workflows and provider-runtime verification. Antigravity remains a separate provider and uses the `agy` command.
 
 ## Antigravity
 
@@ -162,7 +174,7 @@ agy --version
 agy
 ```
 
-Complete Antigravity authentication in the terminal. Wardian checks the `agy` executable before launch, then binds the exact workspace conversation mapping created by that launch under `~/.gemini/antigravity-cli`. An absent or unchanged mapping is an error; Wardian does not select the newest conversation directory.
+Complete Antigravity authentication in the terminal. Wardian checks the `agy` executable before launch, then binds the exact workspace conversation mapping created by that launch in Antigravity's local CLI data. An absent or unchanged mapping is an error; Wardian does not select the newest conversation directory.
 
 ## Claude Code
 
@@ -267,7 +279,6 @@ When the command is found but startup still fails:
 - Run the provider directly in the target workspace and read its first error.
 - Check whether the provider requires project trust, API credits, model access, or a newer Node.js version.
 - For OpenCode on Windows, try WSL if the native terminal path fails.
-- For Gemini skill discovery issues, run the Gemini patch from Settings before changing project files.
 - For deeper runtime differences, compare the provider behavior in [Provider Runtimes](../providers.md).
 
 ## Related Links

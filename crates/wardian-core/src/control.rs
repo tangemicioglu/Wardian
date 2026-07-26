@@ -99,6 +99,9 @@ pub enum ControlRequest {
         /// Target resolution scope: "neighbors" (default) or "all" — for agent senders only
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_scope: Option<String>,
+        /// Upper bound for a provider process started for an offline target.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        headless_timeout_ms: Option<u64>,
     },
     NotifyCreate {
         notification: InboxNotificationPayload,
@@ -981,6 +984,7 @@ mod tests {
             approval_action: None,
             origin: None,
             target_scope: None,
+            headless_timeout_ms: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains(r#""command":"send_message""#));
@@ -1001,6 +1005,7 @@ mod tests {
                 session_id: "source-1".to_string(),
             }),
             target_scope: None,
+            headless_timeout_ms: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1023,6 +1028,7 @@ mod tests {
                 session_id: "source-1".to_string(),
             }),
             target_scope: None,
+            headless_timeout_ms: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1043,6 +1049,7 @@ mod tests {
             }),
             origin: None,
             target_scope: None,
+            headless_timeout_ms: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1071,6 +1078,7 @@ mod tests {
                 approval_action: None,
                 origin: None,
                 target_scope: None,
+                headless_timeout_ms: None,
             }
         );
     }

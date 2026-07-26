@@ -158,8 +158,10 @@ impl LiveStepExecutor {
                 cwd: resolved.cwd,
                 prompt,
                 session_id: resolved.session_id,
+                agent_session_id: None,
                 resume_session: resolved.resume_session,
                 config_override: resolved.config,
+                lease_owner: None,
             })
             .await
             .map_err(StepError::new)
@@ -189,8 +191,10 @@ impl LiveStepExecutor {
                         cwd,
                         prompt,
                         session_id: String::new(),
+                        agent_session_id: None,
                         resume_session: None,
                         config_override: None,
+                        lease_owner: None,
                     })
                     .await
                     .map_err(StepError::new)
@@ -271,18 +275,7 @@ impl LiveStepExecutor {
                 crate::utils::logging::log_debug(&format!(
                     "[workflow] node {node}: running assigned agent {agent_id} as a fresh background conversation"
                 ));
-                self.runner
-                    .run(AgentRunSpec {
-                        node: node.to_string(),
-                        provider: agent.provider.clone(),
-                        cwd: agent.cwd.clone(),
-                        prompt,
-                        session_id: fresh_background_session_id(&self.owner_id, node),
-                        resume_session: None,
-                        config_override: agent.config.clone(),
-                    })
-                    .await
-                    .map_err(StepError::new)
+                self.run_background_fresh(node, agent, prompt).await
             }
             PlannedAgentRoute::WaitForAgent => Err(StepError::new(format!(
                 "workflow role {role} is assigned to busy agent {agent_id}; wait policy is not implemented yet"
@@ -315,13 +308,16 @@ impl LiveStepExecutor {
                     agent.session_id
                 ))
             })?;
-        let lease = acquire_background_resume_lease(
+        let lease = acquire_background_agent_lease(
             agent,
             &resume_session,
             &format!("{}/{}", self.owner_id, node),
             node,
+            "background_resume",
         )
         .map_err(StepError::new)?;
+        let mut lease_guard =
+            wardian_core::conversation_lease::PersistedConversationLeaseGuard::new(&lease);
 
         let result = self
             .runner
@@ -331,16 +327,71 @@ impl LiveStepExecutor {
                 cwd: agent.cwd.clone(),
                 prompt,
                 session_id: agent.session_id.clone(),
+                agent_session_id: Some(agent.session_id.clone()),
                 resume_session: Some(resume_session),
                 config_override: agent.config.clone(),
+                lease_owner: Some(lease_guard.owner().clone()),
             })
             .await;
 
-        let release_result = release_background_resume_lease(&lease.owner_kind, &lease.owner_id);
+        let release_result = lease_guard.release();
         match (result, release_result) {
-            (Ok(_), Err(error)) => Err(StepError::new(format!(
-                "background resume completed but failed to release conversation lease: {error}"
+            (Ok(response), Err(error)) => {
+                crate::utils::logging::log_debug(&format!(
+                    "[workflow] background resume completed but lease cleanup remains pending until the guard retries it or the lease expires: {error}"
+                ));
+                Ok(response)
+            }
+            (Err(run_error), Err(release_error)) => Err(StepError::new(format!(
+                "{run_error}; additionally failed to release conversation lease: {release_error}"
             ))),
+            (result, Ok(())) => result.map_err(StepError::new),
+        }
+    }
+
+    async fn run_background_fresh(
+        &self,
+        node: &str,
+        agent: &AgentBinding,
+        prompt: String,
+    ) -> Result<String, StepError> {
+        let lease = acquire_background_agent_lease(
+            agent,
+            "",
+            &format!("{}/{}", self.owner_id, node),
+            node,
+            "background_fresh",
+        )
+        .map_err(StepError::new)?;
+        let mut lease_guard =
+            wardian_core::conversation_lease::PersistedConversationLeaseGuard::new(&lease);
+
+        let result = self
+            .runner
+            .run(AgentRunSpec {
+                node: node.to_string(),
+                provider: agent.provider.clone(),
+                cwd: agent.cwd.clone(),
+                prompt,
+                // Keep the provider conversation distinct from the registered
+                // agent while the lease and lifecycle gate remain attached to
+                // that agent's real session id.
+                session_id: fresh_background_session_id(&self.owner_id, node),
+                agent_session_id: Some(agent.session_id.clone()),
+                resume_session: None,
+                config_override: agent.config.clone(),
+                lease_owner: Some(lease_guard.owner().clone()),
+            })
+            .await;
+
+        let release_result = lease_guard.release();
+        match (result, release_result) {
+            (Ok(response), Err(error)) => {
+                crate::utils::logging::log_debug(&format!(
+                    "[workflow] fresh background run completed but lease cleanup remains pending until the guard retries it or the lease expires: {error}"
+                ));
+                Ok(response)
+            }
             (Err(run_error), Err(release_error)) => Err(StepError::new(format!(
                 "{run_error}; additionally failed to release conversation lease: {release_error}"
             ))),
@@ -396,11 +447,12 @@ fn sanitize_session_component(value: &str) -> String {
     }
 }
 
-fn acquire_background_resume_lease(
+fn acquire_background_agent_lease(
     agent: &AgentBinding,
     resume_session: &str,
     owner_id: &str,
     node: &str,
+    mode: &str,
 ) -> Result<wardian_core::conversation_lease::ConversationLease, String> {
     let now = chrono::Utc::now();
     let now_rfc3339 = now.to_rfc3339();
@@ -411,18 +463,15 @@ fn acquire_background_resume_lease(
         resume_session: resume_session.to_string(),
         owner_kind: "workflow_run".to_string(),
         owner_id: owner_id.to_string(),
+        acquisition_id: uuid::Uuid::new_v4().to_string(),
         owner_node_id: Some(node.to_string()),
-        mode: "background_resume".to_string(),
+        mode: mode.to_string(),
         started_at: now_rfc3339.clone(),
         heartbeat_at: now_rfc3339,
         expires_at,
     };
     wardian_core::conversation_lease::acquire_lease(lease.clone(), &lease.started_at)?;
     Ok(lease)
-}
-
-fn release_background_resume_lease(owner_kind: &str, owner_id: &str) -> Result<(), String> {
-    wardian_core::conversation_lease::release_owner_persisted(owner_kind, owner_id)
 }
 
 impl StepExecutor for LiveStepExecutor {
@@ -815,6 +864,26 @@ mod tests {
                         spec.resume_session.is_none(),
                         "fresh background runs must not resume the visible provider conversation"
                     );
+                    assert_eq!(
+                        spec.agent_session_id.as_deref(),
+                        Some("agent-123"),
+                        "the real agent identity owns lifecycle exclusion even when the provider session is synthetic"
+                    );
+                    assert!(
+                        spec.lease_owner.is_some(),
+                        "fresh background runs must retain a durable lifecycle lease"
+                    );
+                    let leases = wardian_core::conversation_lease::load_leases();
+                    assert!(
+                        wardian_core::conversation_lease::find_active_conflict(
+                            &leases,
+                            "agent-123",
+                            "",
+                            &chrono::Utc::now().to_rfc3339(),
+                        )
+                        .is_some(),
+                        "fresh background runs must serialize against the registered agent"
+                    );
                     let config = spec
                         .config_override
                         .expect("fresh background should keep the assigned agent profile");
@@ -824,6 +893,8 @@ mod tests {
                 })
             }
         }
+
+        let _home = TestWardianHome::new();
 
         let mut assignments = WorkflowAssignments::new();
         assignments.insert(
@@ -876,6 +947,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(out.0["ok"], true);
+        assert!(wardian_core::conversation_lease::load_leases().is_empty());
     }
 
     #[tokio::test]

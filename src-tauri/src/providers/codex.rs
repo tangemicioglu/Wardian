@@ -116,11 +116,63 @@ impl CodexProvider {
         self.append_common_args_with_runtime_policy(args, config, is_exec_mode, &runtime_policy);
     }
 
+    /// Append the flags that are valid before the `exec` subcommand.
+    ///
+    /// Interactive Codex sessions accept these at the top level. Headless
+    /// launches reuse the same set before adding `exec`, while its exec-only
+    /// flags must be appended after that subcommand.
+    pub(crate) fn append_headless_global_args(&self, args: &mut Vec<String>, config: &AgentConfig) {
+        let runtime_policy = crate::utils::load_codex_runtime_policy().unwrap_or_default();
+        self.append_shared_args_with_runtime_policy(args, config, &runtime_policy);
+    }
+
+    /// Append flags owned by `codex exec` (or `codex exec resume`).
+    ///
+    /// Codex rejects these when they appear at the top command level. The
+    /// repository bypass defaults on for headless execution so temporary
+    /// workflow providers can run in a workspace that is not a Git checkout.
+    pub(crate) fn append_headless_exec_args(
+        &self,
+        args: &mut Vec<String>,
+        config: Option<&AgentConfig>,
+    ) {
+        if config
+            .and_then(|config| config.codex_config().skip_git_repo_check)
+            .unwrap_or(true)
+        {
+            args.push("--skip-git-repo-check".into());
+        }
+        if config
+            .and_then(|config| config.codex_config().ephemeral)
+            .unwrap_or(false)
+        {
+            args.push("--ephemeral".into());
+        }
+    }
+
     fn append_common_args_with_runtime_policy(
         &self,
         args: &mut Vec<String>,
         config: &AgentConfig,
         is_exec_mode: bool,
+        runtime_policy: &CodexRuntimePolicy,
+    ) {
+        self.append_shared_args_with_runtime_policy(args, config, runtime_policy);
+
+        if is_exec_mode {
+            self.append_headless_exec_args(args, Some(config));
+        } else {
+            // Codex documents this as inline TUI mode that preserves terminal
+            // scrollback. Wardian embeds the TUI inside xterm, so interactive
+            // sessions should prefer scrollback-friendly output.
+            args.push("--no-alt-screen".into());
+        }
+    }
+
+    fn append_shared_args_with_runtime_policy(
+        &self,
+        args: &mut Vec<String>,
+        config: &AgentConfig,
         runtime_policy: &CodexRuntimePolicy,
     ) {
         let codex = config.codex_config();
@@ -171,21 +223,6 @@ impl CodexProvider {
 
         if codex.search.unwrap_or(false) {
             args.push("--search".into());
-        }
-
-        if is_exec_mode {
-            if codex.skip_git_repo_check.unwrap_or(true) {
-                args.push("--skip-git-repo-check".into());
-            }
-
-            if codex.ephemeral.unwrap_or(false) {
-                args.push("--ephemeral".into());
-            }
-        } else {
-            // Codex documents this as inline TUI mode that preserves terminal
-            // scrollback. Wardian embeds the TUI inside xterm, so interactive
-            // sessions should prefer scrollback-friendly output.
-            args.push("--no-alt-screen".into());
         }
 
         let mut explicit_includes = Vec::new();

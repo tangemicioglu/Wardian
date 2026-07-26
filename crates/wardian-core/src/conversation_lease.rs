@@ -1,8 +1,25 @@
+use fs2::FileExt;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::{
+    fs::{File, OpenOptions},
+    sync::Mutex,
+};
 
 static LEASE_FILE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// Process-local coordination avoids redundant attempts to acquire the OS lock
+/// in one runtime. The lock file itself is authoritative across Wardian
+/// processes sharing a home.
+struct ConversationLeaseFileLock {
+    file: File,
+}
+
+impl Drop for ConversationLeaseFileLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConversationLease {
@@ -11,12 +28,77 @@ pub struct ConversationLease {
     pub resume_session: String,
     pub owner_kind: String,
     pub owner_id: String,
+    /// Unique for each successful acquisition attempt. A stale process must
+    /// never be able to renew or release a later lease that reused the same
+    /// human-readable owner id (for example after a workflow run resumes).
+    #[serde(default)]
+    pub acquisition_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_node_id: Option<String>,
     pub mode: String,
     pub started_at: String,
     pub heartbeat_at: String,
     pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationLeaseOwner {
+    pub owner_kind: String,
+    pub owner_id: String,
+    pub acquisition_id: String,
+}
+
+impl ConversationLease {
+    pub fn owner(&self) -> ConversationLeaseOwner {
+        ConversationLeaseOwner {
+            owner_kind: self.owner_kind.clone(),
+            owner_id: self.owner_id.clone(),
+            acquisition_id: self.acquisition_id.clone(),
+        }
+    }
+}
+
+/// Releases a persisted lease when its owning operation ends or is cancelled.
+///
+/// The guard deliberately performs a best-effort release in `Drop`: dropping an
+/// async request must not leave a provider conversation blocked until expiry.
+#[derive(Debug)]
+pub struct PersistedConversationLeaseGuard {
+    owner: ConversationLeaseOwner,
+    released: bool,
+}
+
+impl PersistedConversationLeaseGuard {
+    pub fn new(lease: &ConversationLease) -> Self {
+        Self {
+            owner: lease.owner(),
+            released: false,
+        }
+    }
+
+    pub fn owner(&self) -> &ConversationLeaseOwner {
+        &self.owner
+    }
+
+    pub fn release(&mut self) -> Result<(), String> {
+        release_lease_owner_persisted(&self.owner)?;
+        self.released = true;
+        Ok(())
+    }
+}
+
+impl Drop for PersistedConversationLeaseGuard {
+    fn drop(&mut self) {
+        if !self.released {
+            let _ = release_lease_owner_persisted(&self.owner);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConversationLeaseAcquireOutcome {
+    Acquired,
+    Conflict(Box<ConversationLease>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -38,11 +120,42 @@ pub fn find_active_conflict<'a>(
     now_rfc3339: &str,
 ) -> Option<&'a ConversationLease> {
     let now = parse_rfc3339_utc(now_rfc3339).unwrap_or_else(chrono::Utc::now);
+    leases
+        .iter()
+        .find(|lease| lease_conflicts(lease, agent_id, resume_session, now))
+}
+
+/// Finds an active provider-execution lease. Lifecycle transition leases use
+/// the same exclusion mechanism but must not make an agent appear purple
+/// `headless` while it is merely being restarted, cleared, paused, or removed.
+pub fn find_active_execution_conflict<'a>(
+    leases: &'a [ConversationLease],
+    agent_id: &str,
+    resume_session: &str,
+    now_rfc3339: &str,
+) -> Option<&'a ConversationLease> {
+    let now = parse_rfc3339_utc(now_rfc3339).unwrap_or_else(chrono::Utc::now);
     leases.iter().find(|lease| {
-        parse_rfc3339_utc(&lease.expires_at).is_some_and(|expires_at| expires_at > now)
-            && (lease.agent_id == agent_id
-                || (!resume_session.trim().is_empty() && lease.resume_session == resume_session))
+        is_headless_execution_lease(lease) && lease_conflicts(lease, agent_id, resume_session, now)
     })
+}
+
+/// Whether a lease represents a provider process actively using the saved
+/// conversation, rather than a short lifecycle transition that excludes such a
+/// process from starting.
+pub fn is_headless_execution_lease(lease: &ConversationLease) -> bool {
+    matches!(lease.mode.as_str(), "background_resume" | "background_fresh")
+}
+
+fn lease_conflicts(
+    lease: &ConversationLease,
+    agent_id: &str,
+    resume_session: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    parse_rfc3339_utc(&lease.expires_at).is_some_and(|expires_at| expires_at > now)
+        && (lease.agent_id == agent_id
+            || (!resume_session.trim().is_empty() && lease.resume_session == resume_session))
 }
 
 fn parse_rfc3339_utc(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -60,8 +173,41 @@ pub fn release_owner(leases: &mut Vec<ConversationLease>, owner_kind: &str, owne
     leases.retain(|lease| lease.owner_kind != owner_kind || lease.owner_id != owner_id);
 }
 
+fn release_lease_owner(leases: &mut Vec<ConversationLease>, owner: &ConversationLeaseOwner) {
+    leases.retain(|lease| !lease_matches_owner(lease, owner));
+}
+
+fn lease_matches_owner(lease: &ConversationLease, owner: &ConversationLeaseOwner) -> bool {
+    lease.owner_kind == owner.owner_kind
+        && lease.owner_id == owner.owner_id
+        && lease.acquisition_id == owner.acquisition_id
+}
+
 pub fn lease_path() -> Option<std::path::PathBuf> {
     crate::paths::wardian_home().map(|home| home.join("runtime").join("conversation-leases.json"))
+}
+
+fn lease_lock_path() -> Option<std::path::PathBuf> {
+    lease_path().map(|path| path.with_file_name("conversation-leases.lock"))
+}
+
+fn acquire_lease_file_lock() -> Result<ConversationLeaseFileLock, String> {
+    let path = lease_lock_path()
+        .ok_or_else(|| "failed to resolve conversation lease lock path".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create conversation lease lock directory: {error}"))?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|error| format!("failed to open conversation lease lock: {error}"))?;
+    FileExt::lock_exclusive(&file)
+        .map_err(|error| format!("failed to lock conversation leases: {error}"))?;
+    Ok(ConversationLeaseFileLock { file })
 }
 
 pub fn load_leases() -> Vec<ConversationLease> {
@@ -94,31 +240,116 @@ pub fn save_leases(leases: &[ConversationLease]) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn acquire_lease(lease: ConversationLease, now_rfc3339: &str) -> Result<(), String> {
-    let _guard = LEASE_FILE_LOCK
+pub fn try_acquire_lease(
+    lease: ConversationLease,
+    now_rfc3339: &str,
+) -> Result<ConversationLeaseAcquireOutcome, String> {
+    if lease.acquisition_id.trim().is_empty() {
+        return Err("conversation lease acquisition id is required".to_string());
+    }
+    let _process_guard = LEASE_FILE_LOCK
         .lock()
         .map_err(|_| "conversation lease lock poisoned".to_string())?;
+    let _file_guard = acquire_lease_file_lock()?;
     let mut leases = load_leases();
     if let Some(conflict) =
         find_active_conflict(&leases, &lease.agent_id, &lease.resume_session, now_rfc3339)
     {
-        return Err(format!(
-            "agent {} saved conversation is already leased by {} {}",
-            lease.agent_id, conflict.owner_kind, conflict.owner_id
-        ));
+        return Ok(ConversationLeaseAcquireOutcome::Conflict(Box::new(conflict.clone())));
     }
     add_or_replace_owner(&mut leases, lease);
-    save_leases(&leases).map_err(|error| format!("failed to save conversation lease: {error}"))
+    save_leases(&leases).map_err(|error| format!("failed to save conversation lease: {error}"))?;
+    Ok(ConversationLeaseAcquireOutcome::Acquired)
+}
+
+pub fn acquire_lease(lease: ConversationLease, now_rfc3339: &str) -> Result<(), String> {
+    let agent_id = lease.agent_id.clone();
+    match try_acquire_lease(lease, now_rfc3339)? {
+        ConversationLeaseAcquireOutcome::Acquired => Ok(()),
+        ConversationLeaseAcquireOutcome::Conflict(conflict) => Err(format!(
+            "agent {agent_id} saved conversation is already leased by {} {}",
+            conflict.owner_kind, conflict.owner_id
+        )),
+    }
 }
 
 pub fn release_owner_persisted(owner_kind: &str, owner_id: &str) -> Result<(), String> {
-    let _guard = LEASE_FILE_LOCK
+    let _process_guard = LEASE_FILE_LOCK
         .lock()
         .map_err(|_| "conversation lease lock poisoned".to_string())?;
+    let _file_guard = acquire_lease_file_lock()?;
     let mut leases = load_leases();
     release_owner(&mut leases, owner_kind, owner_id);
     save_leases(&leases)
         .map_err(|error| format!("failed to save conversation lease release: {error}"))
+}
+
+/// Releases exactly one acquisition attempt. Unlike the legacy owner-id-only
+/// cleanup helper, this cannot remove a newer lease that reused the same owner
+/// id after the earlier attempt expired.
+pub fn release_lease_owner_persisted(owner: &ConversationLeaseOwner) -> Result<(), String> {
+    let _process_guard = LEASE_FILE_LOCK
+        .lock()
+        .map_err(|_| "conversation lease lock poisoned".to_string())?;
+    let _file_guard = acquire_lease_file_lock()?;
+    let mut leases = load_leases();
+    release_lease_owner(&mut leases, owner);
+    save_leases(&leases)
+        .map_err(|error| format!("failed to save conversation lease release: {error}"))
+}
+
+/// Extends a currently-owned lease without ever reviving one that has expired.
+///
+/// Returning `Ok(false)` means the owner no longer has an active lease and the
+/// caller must stop using the provider conversation before another operation
+/// can overlap it.
+pub fn renew_owner_persisted(
+    owner_kind: &str,
+    owner_id: &str,
+    heartbeat_at: &str,
+    expires_at: &str,
+) -> Result<bool, String> {
+    renew_lease_owner_persisted(
+        &ConversationLeaseOwner {
+            owner_kind: owner_kind.to_string(),
+            owner_id: owner_id.to_string(),
+            acquisition_id: String::new(),
+        },
+        heartbeat_at,
+        expires_at,
+    )
+}
+
+/// Renews exactly one acquisition attempt without ever reviving an expired
+/// lease. Callers that started provider work must use this fenced form rather
+/// than the legacy owner-id-only helper above.
+pub fn renew_lease_owner_persisted(
+    owner: &ConversationLeaseOwner,
+    heartbeat_at: &str,
+    expires_at: &str,
+) -> Result<bool, String> {
+    let now = parse_rfc3339_utc(heartbeat_at).unwrap_or_else(chrono::Utc::now);
+    let _process_guard = LEASE_FILE_LOCK
+        .lock()
+        .map_err(|_| "conversation lease lock poisoned".to_string())?;
+    let _file_guard = acquire_lease_file_lock()?;
+    let mut leases = load_leases();
+    let Some(lease) = leases
+        .iter_mut()
+        .find(|lease| lease_matches_owner(lease, owner))
+    else {
+        return Ok(false);
+    };
+    let active = parse_rfc3339_utc(&lease.expires_at).is_some_and(|expires| expires > now);
+    if !active {
+        return Ok(false);
+    }
+
+    lease.heartbeat_at = heartbeat_at.to_string();
+    lease.expires_at = expires_at.to_string();
+    save_leases(&leases)
+        .map_err(|error| format!("failed to save conversation lease renewal: {error}"))?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -132,6 +363,7 @@ mod tests {
             resume_session: resume_session.to_string(),
             owner_kind: "workflow_run".to_string(),
             owner_id: "wf/run-1".to_string(),
+            acquisition_id: "test-acquisition".to_string(),
             owner_node_id: Some("agent-1".to_string()),
             mode: "background_resume".to_string(),
             started_at: "2026-06-01T00:00:00Z".to_string(),
@@ -159,6 +391,24 @@ mod tests {
         let leases = vec![lease("agent-1", "resume-1")];
         let conflict = find_active_conflict(&leases, "agent-1", "resume-1", "2026-06-01T00:11:00Z");
         assert!(conflict.is_none());
+    }
+
+    #[test]
+    fn lifecycle_transition_excludes_execution_without_reporting_headless() {
+        let mut lifecycle = lease("agent-1", "resume-1");
+        lifecycle.owner_kind = "agent_lifecycle".to_string();
+        lifecycle.mode = "lifecycle_transition".to_string();
+        let leases = vec![lifecycle];
+
+        assert!(find_active_conflict(&leases, "agent-1", "resume-1", "2026-06-01T00:05:00Z")
+            .is_some());
+        assert!(find_active_execution_conflict(
+            &leases,
+            "agent-1",
+            "resume-1",
+            "2026-06-01T00:05:00Z"
+        )
+        .is_none());
     }
 
     #[test]
@@ -205,6 +455,151 @@ mod tests {
             .expect_err("second lease should conflict");
 
         assert!(err.contains("already leased"));
+        std::env::remove_var("WARDIAN_HOME");
+    }
+
+    #[test]
+    fn try_acquire_lease_reports_conflicting_owner_without_error() {
+        let _guard = crate::tests::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("WARDIAN_HOME", dir.path());
+        acquire_lease(lease("agent-1", "resume-1"), "2026-06-01T00:05:00Z").expect("first lease");
+
+        let outcome = try_acquire_lease(lease("agent-1", "resume-2"), "2026-06-01T00:05:00Z")
+            .expect("conflict is a routing outcome");
+
+        assert!(matches!(
+            outcome,
+            ConversationLeaseAcquireOutcome::Conflict(ref conflict)
+                if conflict.owner_id == "wf/run-1"
+        ));
+        std::env::remove_var("WARDIAN_HOME");
+    }
+
+    #[test]
+    fn lease_file_lock_blocks_mutation_from_another_process() {
+        const CHILD_ENV: &str = "WARDIAN_TEST_CONVERSATION_LEASE_LOCK_CHILD";
+        const TEST_NAME: &str =
+            "conversation_lease::tests::lease_file_lock_blocks_mutation_from_another_process";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            try_acquire_lease(lease("agent-1", "resume-1"), "2026-06-01T00:05:00Z")
+                .expect("child should acquire after parent releases the file lock");
+            return;
+        }
+
+        let _guard = crate::tests::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("WARDIAN_HOME");
+        std::env::set_var("WARDIAN_HOME", dir.path());
+        let file_lock = acquire_lease_file_lock().expect("parent file lock");
+        let mut child = std::process::Command::new(
+            std::env::current_exe().expect("current test executable"),
+        )
+        .arg("--exact")
+        .arg(TEST_NAME)
+        .env(CHILD_ENV, "1")
+        .env("WARDIAN_HOME", dir.path())
+        .spawn()
+        .expect("spawn child lease attempt");
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            child
+                .try_wait()
+                .expect("poll child lease attempt")
+                .is_none(),
+            "a second Wardian process acquired the lease while the file lock was held"
+        );
+
+        drop(file_lock);
+        assert!(
+            child
+                .wait()
+                .expect("wait for child lease attempt")
+                .success(),
+            "child should complete once the parent releases the file lock"
+        );
+        assert_eq!(load_leases().len(), 1);
+        match previous_home {
+            Some(home) => std::env::set_var("WARDIAN_HOME", home),
+            None => std::env::remove_var("WARDIAN_HOME"),
+        }
+    }
+
+    #[test]
+    fn fenced_renewal_extends_only_its_active_lease() {
+        let _guard = crate::tests::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("WARDIAN_HOME", dir.path());
+        let lease = lease("agent-1", "resume-1");
+        let owner = lease.owner();
+        acquire_lease(lease, "2026-06-01T00:05:00Z").expect("lease");
+
+        assert!(renew_lease_owner_persisted(
+            &owner,
+            "2026-06-01T00:06:00Z",
+            "2026-06-01T00:16:00Z",
+        )
+        .expect("renewal"));
+        assert_eq!(load_leases()[0].expires_at, "2026-06-01T00:16:00Z");
+
+        assert!(!renew_lease_owner_persisted(
+            &owner,
+            "2026-06-01T00:17:00Z",
+            "2026-06-01T00:27:00Z",
+        )
+        .expect("expired lease is not revived"));
+        std::env::remove_var("WARDIAN_HOME");
+    }
+
+    #[test]
+    fn stale_acquisition_cannot_renew_or_release_a_replacement_lease() {
+        let _guard = crate::tests::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("WARDIAN_HOME", dir.path());
+
+        let mut stale = lease("agent-1", "resume-1");
+        stale.acquisition_id = "attempt-old".to_string();
+        stale.expires_at = "2026-06-01T00:04:00Z".to_string();
+        let stale_owner = stale.owner();
+        acquire_lease(stale, "2026-06-01T00:05:00Z").expect("expired predecessor lease");
+
+        let mut replacement = lease("agent-1", "resume-1");
+        replacement.acquisition_id = "attempt-new".to_string();
+        replacement.started_at = "2026-06-01T00:05:00Z".to_string();
+        replacement.heartbeat_at = "2026-06-01T00:05:00Z".to_string();
+        replacement.expires_at = "2026-06-01T00:15:00Z".to_string();
+        let replacement_owner = replacement.owner();
+        acquire_lease(replacement, "2026-06-01T00:05:00Z").expect("replacement lease");
+
+        assert!(
+            !renew_lease_owner_persisted(
+                &stale_owner,
+                "2026-06-01T00:06:00Z",
+                "2026-06-01T00:16:00Z",
+            )
+            .expect("stale renewal should be a clean loss")
+        );
+        release_lease_owner_persisted(&stale_owner).expect("stale release is harmless");
+
+        let leases = load_leases();
+        assert_eq!(leases.len(), 1);
+        assert!(lease_matches_owner(&leases[0], &replacement_owner));
+        std::env::remove_var("WARDIAN_HOME");
+    }
+
+    #[test]
+    fn guard_releases_lease_when_dropped() {
+        let _guard = crate::tests::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("WARDIAN_HOME", dir.path());
+        let lease = lease("agent-1", "resume-1");
+        acquire_lease(lease.clone(), "2026-06-01T00:05:00Z").expect("lease");
+
+        drop(PersistedConversationLeaseGuard::new(&lease));
+
+        assert!(load_leases().is_empty());
         std::env::remove_var("WARDIAN_HOME");
     }
 }
