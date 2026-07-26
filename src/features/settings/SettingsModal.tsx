@@ -10,7 +10,7 @@ import {
   normalizeTerminalFontSize,
   useSettingsStore,
 } from "../../store/useSettingsStore";
-import { useAppUpdate } from "./useAppUpdate";
+import { useAppUpdate, type AppUpdateState } from "./useAppUpdate";
 import { RemoteAccessSettings } from "./RemoteAccessSettings";
 import { OnboardingTour } from "../../components/OnboardingTour";
 import { useOnboardingStore } from "../../store/useOnboardingStore";
@@ -28,6 +28,7 @@ import type {
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  appUpdate?: AppUpdateState;
 }
 
 type SettingsCategory =
@@ -383,7 +384,7 @@ const renderRowsWithSubgroups = (
   });
 };
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, appUpdate: sharedAppUpdate }) => {
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>("General");
@@ -396,7 +397,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const [advancedStatus, setAdvancedStatus] = useState<"idle" | "copied" | "error">("idle");
   const [terminalFontSizeDraft, setTerminalFontSizeDraft] = useState("14");
   const [onboardingTourOpen, setOnboardingTourOpen] = useState(false);
-  const appUpdate = useAppUpdate();
+  const localAppUpdate = useAppUpdate({ autoCheck: sharedAppUpdate === undefined });
+  const appUpdate = sharedAppUpdate ?? localAppUpdate;
 
   const {
     theme,
