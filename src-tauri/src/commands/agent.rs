@@ -3894,10 +3894,9 @@ mod tests {
         restore_runtime_state_snapshot_after_resume, strip_claude_embedded_stream_flags,
         take_agent_runtime_for_termination, terminal_cleared_payload, update_agent_fields_in_state,
         validate_assignable_worktree_for_agent, validate_deletable_agent_worktree,
-        worktree_deletion_is_already_complete,
-        workspace_paths_match, AgentOrderPlacement, AgentWorktreeSummary, CloneProfileCopyPlan,
-        CloneProfileSelection, DeletedAgentReferenceCleanup, DiscoveredGitWorktree,
-        GIT_WORKTREE_DISCOVERY_CONCURRENCY,
+        workspace_paths_match, worktree_deletion_is_already_complete, AgentOrderPlacement,
+        AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
+        DeletedAgentReferenceCleanup, DiscoveredGitWorktree, GIT_WORKTREE_DISCOVERY_CONCURRENCY,
     };
     use crate::providers::GeminiProvider;
     use crate::state::{ActiveAgent, AppState};

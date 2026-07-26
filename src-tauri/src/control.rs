@@ -2948,7 +2948,7 @@ async fn handle_structured_ask_many(
         }
         push_watch_event_for_agent(&state, &target_uuid, "request", payload).await?;
 
-        match deliver_message_to_target(
+        match deliver_message_to_target_with_headless_timeout(
             Some(app),
             &state,
             target,
@@ -2959,6 +2959,7 @@ async fn handle_structured_ask_many(
             None,
             origin,
             false,
+            timeout.min(MAX_HEADLESS_DELIVERY_TIMEOUT),
         )
         .await
         {
