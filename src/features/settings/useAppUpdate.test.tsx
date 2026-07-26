@@ -42,8 +42,8 @@ const setTauriRuntime = (available: boolean) => {
   }
 };
 
-const Probe = () => {
-  const update = useAppUpdate();
+const Probe = ({ autoCheck = true }: { autoCheck?: boolean }) => {
+  const update = useAppUpdate({ autoCheck });
   return (
     <div>
       <div data-testid="version">{update.currentVersion}</div>
@@ -289,6 +289,14 @@ describe('useAppUpdate', () => {
       'Updates are only available in official installed release builds.',
     );
     expect(screen.getByTestId('updates-enabled')).toHaveTextContent('false');
+    expect(mockCheck).not.toHaveBeenCalled();
+  });
+
+  it('does not start a second check when a shared app-level updater owns discovery', async () => {
+    render(<Probe autoCheck={false} />);
+
+    expect(mockGetVersion).not.toHaveBeenCalled();
+    expect(mockInvoke).not.toHaveBeenCalled();
     expect(mockCheck).not.toHaveBeenCalled();
   });
 });

@@ -37,6 +37,10 @@ export interface AppUpdateState {
   relaunchApp: () => Promise<void>;
 }
 
+interface UseAppUpdateOptions {
+  autoCheck?: boolean;
+}
+
 type TauriUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
 
 const NON_DESKTOP_UPDATE_REASON = 'Updates are unavailable outside the Wardian desktop runtime.';
@@ -66,7 +70,7 @@ const errorMessageFrom = (error: unknown) => {
   return String(error);
 };
 
-export const useAppUpdate = (): AppUpdateState => {
+export const useAppUpdate = ({ autoCheck = true }: UseAppUpdateOptions = {}): AppUpdateState => {
   const updateRef = useRef<TauriUpdate | null>(null);
   const updatesEnabledRef = useRef<boolean | null>(null);
   const windowsUpdateHandoffRef = useRef(false);
@@ -178,6 +182,10 @@ export const useAppUpdate = (): AppUpdateState => {
   }, [loadUpdateEligibility, resetDownloadProgress]);
 
   useEffect(() => {
+    if (!autoCheck) {
+      return;
+    }
+
     let cancelled = false;
 
     const loadVersionAndCheck = async () => {
@@ -217,7 +225,7 @@ export const useAppUpdate = (): AppUpdateState => {
     return () => {
       cancelled = true;
     };
-  }, [checkNow, loadUpdateEligibility]);
+  }, [autoCheck, checkNow, loadUpdateEligibility]);
 
   const downloadAndInstall = useCallback(async () => {
     const update = updateRef.current;

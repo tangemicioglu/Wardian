@@ -107,4 +107,28 @@ describe("SidebarIconRail density", () => {
       "Source control is refreshing",
     );
   });
+
+  it("marks Settings when an update is available", () => {
+    render(
+      <SidebarIconRail
+        activeTab="explorer"
+        setActiveTab={vi.fn()}
+        setCollapsed={vi.fn()}
+        userTerminalOpen={false}
+        settingsOpen={false}
+        updateAvailable
+        onToggleUserTerminal={vi.fn()}
+        onToggleSettings={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("sidebar-tab-settings-update-badge")).toHaveAttribute(
+      "aria-label",
+      "Update available",
+    );
+    expect(screen.getByTestId("sidebar-tab-settings")).toHaveAttribute(
+      "aria-label",
+      "Application Settings (update available)",
+    );
+  });
 });

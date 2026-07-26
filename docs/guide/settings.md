@@ -69,10 +69,16 @@ The **General** category controls optional in-app guidance:
 - **Guided tour** opens a short, non-blocking overview of core Wardian work
   loops. It remains available even when contextual tips are hidden.
 
-Wardian checks for updates silently when Settings loads. If no newer stable
-release is available, Settings shows that Wardian is up to date. If a newer
-release is available, use **Install update** to fetch and install it from
-inside the app.
+Wardian checks for updates silently when the desktop app starts. If a newer
+stable release is available, Wardian shows one in-app **Review update** notice
+and marks the Settings gear. Choose **Review update** to open the update row in
+Settings. Choose **Later** to hide the notice for the current session; the
+Settings marker remains so the update stays discoverable. Wardian does not use
+an operating-system notification for updates.
+
+If no newer stable release is available, Settings shows that Wardian is up to
+date. If a newer release is available, use **Install update** to fetch and
+install it from inside the app.
 
 ![Settings General section showing contextual tip controls and the guided tour](../assets/screenshots/settings/onboarding-guidance.png)
 
