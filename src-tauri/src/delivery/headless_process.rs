@@ -76,7 +76,7 @@ pub async fn run_headless_process_prompt(
                     "provider_applied",
                     Some("process_completed".to_string()),
                     Some("stdout_parsed".to_string()),
-                    Some(format!("workflow node {}", request.node)),
+                    Some(format!("headless run {}", request.node)),
                     None,
                 )
                 .await?;
@@ -97,7 +97,7 @@ pub async fn run_headless_process_prompt(
                     "failed",
                     Some("process_failed".to_string()),
                     None,
-                    Some(format!("workflow node {}", request.node)),
+                    Some(format!("headless run {}", request.node)),
                     Some(DeliveryErrorDetail {
                         code: "headless_process_failed".to_string(),
                         message: sanitize_headless_error(&error, &request.prompt),
@@ -109,7 +109,7 @@ pub async fn run_headless_process_prompt(
     }
 }
 
-fn sanitize_headless_error(error: &str, prompt: &str) -> String {
+pub(crate) fn sanitize_headless_error(error: &str, prompt: &str) -> String {
     let mut diagnostic = error.replace(['\r', '\n'], " ");
     let trimmed_prompt = prompt.trim();
     if !trimmed_prompt.is_empty() {

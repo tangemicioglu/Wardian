@@ -27,6 +27,7 @@ const ASK_STRUCTURED_SESSION_NAME = `E2E-CLI-ASK-STRUCTURED-${RUN_ID}`;
 const WATCH_READABLE_SESSION_NAME = `E2E-CLI-WATCH-READABLE-${RUN_ID}`;
 const ROUTE_QUEUE_SESSION_NAME = `E2E-CLI-ROUTE-QUEUE-${RUN_ID}`;
 const ROUTE_LIVE_ONLY_SESSION_NAME = `E2E-CLI-ROUTE-LIVE-${RUN_ID}`;
+const HEADLESS_SEND_SESSION_NAME = `E2E-CLI-HEADLESS-SEND-${RUN_ID}`;
 
 function commandName(name) {
   return process.platform === "win32" ? `${name}.exe` : name;
@@ -280,6 +281,32 @@ async function waitForCliField(cliPath, harness, target, field, expected, timeou
   );
 }
 
+async function waitForTelemetryStatus(driver, sessionId, expected, timeoutMs = 30000) {
+  const startedAt = Date.now();
+  let lastResult = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    lastResult = await driver.executeAsyncScript((targetSessionId, done) => {
+      window.__TAURI_INTERNALS__.invoke("list_agent_metrics").then(
+        (metrics) => done({ ok: true, metrics }),
+        (error) => done({ ok: false, error: String(error) }),
+      );
+    }, sessionId);
+
+    if (lastResult.ok) {
+      const agent = lastResult.metrics.find((entry) => entry.session_id === sessionId);
+      if (agent?.current_status?.toLowerCase() === expected.toLowerCase()) {
+        return agent;
+      }
+    }
+    await delay(250);
+  }
+
+  assert.fail(
+    `Timed out waiting for telemetry ${sessionId} status=${expected}; last result: ${JSON.stringify(lastResult)}`,
+  );
+}
+
 async function createMockAgent(
   driver,
   workspacePath,
@@ -485,6 +512,105 @@ test("native app-created off agent is readable through the CLI", { timeout: 1800
   assert.equal(statusResult.stdout, "off\n");
 });
 
+test("native CLI send runs an off agent headlessly and retains its response", { timeout: 180000 }, async (t) => {
+  await withMockScenario("headless_delayed", async () => {
+    const harness = await createNativeHarness();
+    assert.ok(harness.appPath);
+
+    try {
+      if (!skipNativeBuild) {
+        ensureNativeAppBuilt(harness);
+      }
+    } catch (error) {
+      t.skip(String(error));
+      return;
+    }
+
+    prepareIsolatedHome(harness);
+
+    const cliPath = buildCli(harness);
+    const workspacePath = path.join(harness.repoRoot, "e2e-native");
+
+    let session;
+    try {
+      session = await startNativeSession(harness);
+    } catch (error) {
+      t.skip(String(error));
+      return;
+    }
+
+    t.after(async () => {
+      await session.close();
+    });
+
+    await waitForAppShell(session.driver, 20000);
+    const requestedResumeSession = `e2e-cli-headless-send-${RUN_ID}`;
+    const agent = await createMockAgent(session.driver, workspacePath, {
+      sessionId: requestedResumeSession,
+      sessionName: HEADLESS_SEND_SESSION_NAME,
+      isOff: true,
+    });
+    const configsResult = await session.driver.executeAsyncScript((done) => {
+      window.__TAURI_INTERNALS__.invoke("list_agents").then(
+        (agents) => done({ ok: true, agents }),
+        (error) => done({ ok: false, error: String(error) }),
+      );
+    });
+    assert.equal(configsResult.ok, true, `list_agents failed: ${configsResult.error}`);
+    const config = configsResult.agents.find((entry) => entry.session_id === agent.session_id);
+    assert.equal(config?.resume_session, requestedResumeSession);
+    await waitForCliField(cliPath, harness, HEADLESS_SEND_SESSION_NAME, "status", "off");
+
+    const sendPromise = runCliAsync(cliPath, harness, [
+      "send",
+      "HEADLESS_DELIVERY_MARKER",
+      "--to",
+      HEADLESS_SEND_SESSION_NAME,
+    ]);
+
+    await waitForCliField(cliPath, harness, HEADLESS_SEND_SESSION_NAME, "status", "headless");
+    const headlessTelemetry = await waitForTelemetryStatus(
+      session.driver,
+      agent.session_id,
+      "headless",
+    );
+    assert.equal(headlessTelemetry.current_status, "Headless");
+
+    const sendResult = await sendPromise;
+    assert.equal(
+      sendResult.status,
+      0,
+      `wardian send failed\nstdout:\n${sendResult.stdout}\nstderr:\n${sendResult.stderr}`,
+    );
+    const delivery = JSON.parse(sendResult.stdout).delivery[0];
+    assert.equal(delivery.runtime_state, "headless_process");
+    assert.equal(delivery.delivery_state, "provider_applied");
+    assert.equal(delivery.delivery_phase, "process_completed");
+    assert.match(delivery.message_id, /^int_/);
+
+    const watchResult = runCliOk(cliPath, harness, [
+      "agent",
+      "watch",
+      HEADLESS_SEND_SESSION_NAME,
+      "--until",
+      "output:Mock headless execution completed successfully.",
+      "--include",
+      "delivery,output,transcript",
+      "--timeout",
+      "30s",
+    ]);
+    const watch = JSON.parse(watchResult.stdout);
+    assert.match(watch.output.text, /Mock headless execution completed successfully\./);
+    assert.match(watch.transcript.latest_text, /Mock headless execution completed successfully\./);
+    const watchedDelivery = deliveryDetailFromWatch(watch, "provider_applied", delivery.message_id);
+    assert.equal(watchedDelivery.runtime_state, "headless_process");
+    assert.equal(watchedDelivery.delivery_phase, "process_completed");
+
+    await waitForCliField(cliPath, harness, HEADLESS_SEND_SESSION_NAME, "status", "off");
+    assert.equal(agent.session_name, HEADLESS_SEND_SESSION_NAME);
+  }, "2500");
+});
+
 test("native CLI control commands operate through the running app", { timeout: 180000 }, async (t) => {
   await withMockScenario("action_needed", async () => {
     const harness = await createNativeHarness();
@@ -645,7 +771,7 @@ test("native CLI control commands operate through the running app", { timeout: 1
     await waitForCliField(cliPath, harness, CONTROL_CLONE_NAME, "status", "action_required");
 
     await watchStep(harness, `Killing ${CONTROL_CLONE_NAME} through the CLI`);
-    runCliOk(cliPath, harness, ["agent", "kill", CONTROL_CLONE_NAME]);
+    runCliOk(cliPath, harness, ["agent", "kill", CONTROL_CLONE_NAME, "--confirm"]);
     const killedShow = runCli(cliPath, harness, ["agent", CONTROL_CLONE_NAME]);
     assert.equal(killedShow.status, 2, killedShow.stderr);
     assert.match(killedShow.stderr, /"code":"not_found"/);

@@ -18,6 +18,7 @@
  *   failure       — init → user → generating → exit(1)
  *   long_output   — init → user → 200 lines of text → model_response → turn_completed
  *   headless      — single JSON response object, then exit
+ *   headless_delayed — waits for the configured delay, then emits the headless response
  *   multi_turn    — init → [user → generating → model_response → turn_completed] × 3
  *   interactive_multi_turn — init → action_required → stdin-driven responses × 2
  *   interactive_echo_then_response — init → action_required → prompt echo → response
@@ -183,6 +184,11 @@ async function runHeadless() {
   });
 }
 
+async function runHeadlessDelayed() {
+  await sleep(delay);
+  await runHeadless();
+}
+
 async function runMultiTurn() {
   emit(events.init());
   await sleep(delay);
@@ -252,9 +258,14 @@ async function runAnsiOutput() {
 }
 
 async function main() {
-  // Headless mode: --print flag overrides scenario
+  // Headless mode: --print normally returns the standard response, while the
+  // delayed variant lets native tests observe the active headless interval.
   if (isPrint) {
-    await runHeadless();
+    if (scenario === "headless_delayed") {
+      await runHeadlessDelayed();
+    } else {
+      await runHeadless();
+    }
     process.exit(0);
   }
 
@@ -267,6 +278,7 @@ async function main() {
     failure: runFailure,
     long_output: runLongOutput,
     headless: runHeadless,
+    headless_delayed: runHeadlessDelayed,
     multi_turn: runMultiTurn,
     interactive_multi_turn: runInteractiveMultiTurn,
     interactive_echo_then_response: runInteractiveEchoThenResponse,

@@ -5,9 +5,10 @@
 
 ## Context
 
-Temporary-provider workflow nodes execute provider CLIs without a persistent
-agent session. That path must be held to the same launch, execution, and
-readable-output contract as an active agent receiving `wardian send`.
+Temporary-provider workflow nodes and messages to off agents execute provider
+CLIs without a visible persistent terminal. Those paths must be held to the
+same launch, execution, and readable-output contract as an active agent
+receiving `wardian send`.
 
 Issue #680 exposed one breach of that contract: Wardian placed Codex
 `exec`-specific flags before the `exec` subcommand. Current Codex rejects that
@@ -33,8 +34,16 @@ For headless execution:
 - Exact provider session identities remain mandatory when Wardian needs to
   resume or manage a persistent agent. The relaxed workflow behavior does not
   infer, invent, or substitute a session identifier.
+- An ordinary `wardian send` to an off or errored agent uses the same headless
+  process transport by default. If that agent has a saved provider session,
+  Wardian acquires a conversation lease for the run, exposing the purple
+  `Headless` status while the process owns the conversation. Its normalized
+  response is retained as readable `agent watch` output. Explicit
+  `mailbox-only` sends remain deferred, and provider slash commands remain
+  deferred while their target has no interactive surface.
 
-The native E2E suite has two opt-in real-account tests:
+The native E2E suite has two opt-in real-account tests and one deterministic
+mock coverage case:
 
 1. `provider-headless-workflow-real-native.test.mjs` launches a temporary
    provider from a workflow and asserts a completed node with readable output.
@@ -44,10 +53,14 @@ The native E2E suite has two opt-in real-account tests:
    reply through `wardian agent watch`. Its isolated test home marks only the
    chosen Codex workspace trusted; it does not change a user's Codex settings
    or approval policy.
+3. `cli-shared-state-native.test.mjs` creates an off mock agent, sends it a
+   normal message, observes its `Headless` telemetry status, and verifies the
+   normalized response through `agent watch`.
 
-Both tests require an explicit environment switch because they invoke real
-provider accounts. The default test selection is the complete four-provider
-matrix; local single-provider debugging needs an explicit partial-matrix flag.
+The two real-account tests require an explicit environment switch because they
+invoke provider accounts. The default test selection is the complete
+four-provider matrix; local single-provider debugging needs an explicit
+partial-matrix flag.
 
 ## Consequences
 

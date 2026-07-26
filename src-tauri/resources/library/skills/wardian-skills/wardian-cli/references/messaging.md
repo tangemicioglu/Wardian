@@ -44,10 +44,19 @@ Normal sends retain the sender attribution when Wardian knows it. Inspect the
 returned `delivery[]`; errors contain per-target delivery details including
 runtime state, delivery state, input mode, and channel errors.
 
-`--queue-policy queue-if-busy` is the default and queues delivery when the
-provider cannot safely accept it. `live-only` fails instead of queueing, while
-`mailbox-only` queues without attempting a live submit. Use the policy that
-matches whether the work can wait for a safe provider turn.
+`--queue-policy queue-if-busy` is the default. It delivers through a live
+provider surface when one is safe; for an off or errored target, an ordinary
+message runs through that agent's headless provider transport instead. When the
+agent has a saved provider conversation, Wardian leases it while the headless
+turn runs and reports the agent as `Headless` in the roster. The completed
+response is available through `wardian agent watch`.
+
+`live-only` fails instead of falling back. `mailbox-only` is the explicit
+deferred-delivery choice: it queues work without launching a provider process.
+Provider slash commands sent with `--as-command` remain mailbox-delivered when
+the target is off because they require an interactive provider surface. Use the
+policy that matches whether the work should run now or wait for a later live
+turn.
 
 ## Inspect Conversations
 

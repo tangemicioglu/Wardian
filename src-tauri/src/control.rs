@@ -1281,7 +1281,8 @@ async fn deliver_message_to_target(
             || matches!(queue_policy, QueuePolicy::MailboxOnly)
         {
             decide_delivery_route(&info.status, input_mode, queue_policy, approval_action)
-        } else if provider_input_has_known_not_ready_state(state, &info.uuid).await
+        } else if !status_uses_headless_delivery(&info.status)
+            && provider_input_has_known_not_ready_state(state, &info.uuid).await
             && !provider_idle_status_allows_live_delivery(&info, queue_policy)
         {
             match queue_policy {
@@ -1405,6 +1406,31 @@ async fn deliver_message_to_target(
                     }
                 }
             }
+            DeliveryRoute::Headless => {
+                let detail = deliver_headless_message(
+                    state,
+                    info,
+                    interaction_id,
+                    outbound_message,
+                    input_mode,
+                    queue_policy,
+                )
+                .await;
+                if detail.delivery_state == "provider_applied" {
+                    delivered += 1;
+                } else {
+                    failures.push(format!(
+                        "{}: {}",
+                        detail.uuid,
+                        detail
+                            .error
+                            .as_ref()
+                            .map(|error| error.message.as_str())
+                            .unwrap_or("headless delivery failed")
+                    ));
+                }
+                delivery.push(detail);
+            }
         }
     }
     if delivered + queued == 0 {
@@ -1438,6 +1464,7 @@ fn provider_idle_status_allows_live_delivery(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeliveryRoute {
     Live,
+    Headless,
     Mailbox { runtime_state: &'static str },
     Reject { failure: &'static str },
 }
@@ -1488,6 +1515,9 @@ fn decide_delivery_route(
             }
         }
         "off" | "error" => match queue_policy {
+            QueuePolicy::QueueIfBusy if input_mode == MessageInputMode::Message => {
+                DeliveryRoute::Headless
+            }
             QueuePolicy::QueueIfBusy | QueuePolicy::MailboxOnly => DeliveryRoute::Mailbox {
                 runtime_state: "queued_not_live",
             },
@@ -1499,6 +1529,10 @@ fn decide_delivery_route(
             failure: "not_input_ready",
         },
     }
+}
+
+fn status_uses_headless_delivery(status: &str) -> bool {
+    matches!(status, "off" | "error")
 }
 
 fn approval_action_bytes(provider: &str, action: &ApprovalAction) -> Vec<u8> {
@@ -1592,6 +1626,237 @@ async fn enqueue_mailbox_delivery(
         profile: None,
         error: None,
     }
+}
+
+async fn deliver_headless_message(
+    state: &AppState,
+    info: DeliveryTargetInfo,
+    interaction_id: String,
+    prompt: String,
+    input_mode: MessageInputMode,
+    queue_policy: QueuePolicy,
+) -> DeliveryDetail {
+    let lease = match acquire_headless_message_lease(&info, &interaction_id) {
+        Ok(lease) => lease,
+        Err(error) => {
+            let detail = headless_message_failure_detail(
+                &info,
+                &interaction_id,
+                input_mode,
+                queue_policy,
+                "lease_unavailable",
+                error,
+            );
+            persist_interaction_delivery_attempt(
+                state,
+                &interaction_id,
+                &info.uuid,
+                DeliveryTransportKind::HeadlessProcess,
+                &detail,
+            )
+            .await;
+            record_delivery_attempt(state, &detail).await;
+            return detail;
+        }
+    };
+
+    let prompt_for_redaction = prompt.clone();
+    let result = crate::delivery::run_headless_process_prompt(
+        state,
+        crate::delivery::HeadlessProcessPromptRequest {
+            node: "message_delivery".to_string(),
+            provider: info.provider.clone(),
+            cwd: info.cwd.clone(),
+            prompt,
+            session_id: info.uuid.clone(),
+            resume_session: info.resume_session.clone(),
+            config_override: Some(info.config.clone()),
+            interaction_id: Some(interaction_id.clone()),
+        },
+    )
+    .await;
+
+    let release_result = lease
+        .as_ref()
+        .map(|lease| {
+            wardian_core::conversation_lease::release_owner_persisted(
+                &lease.owner_kind,
+                &lease.owner_id,
+            )
+        })
+        .unwrap_or(Ok(()));
+
+    match (result, release_result) {
+        (Ok(result), Ok(())) => {
+            let detail = DeliveryDetail {
+                uuid: info.uuid.clone(),
+                name: info.name.clone(),
+                provider: info.provider.clone(),
+                runtime_state: "headless_process".to_string(),
+                delivery_state: "provider_applied".to_string(),
+                input_mode,
+                queue_policy,
+                message_id: Some(interaction_id.clone()),
+                delivery_phase: Some("process_completed".to_string()),
+                observed_state: Some("stdout_parsed".to_string()),
+                reason: Some("target was not live; ran provider headlessly".to_string()),
+                profile: Some(
+                    crate::utils::delivery_profile::delivery_profile(&info.provider).provider,
+                ),
+                error: None,
+            };
+            record_headless_message_response(state, &info, &interaction_id, &result.response)
+                .await;
+            record_delivery_attempt(state, &detail).await;
+            detail
+        }
+        (Ok(result), Err(error)) => {
+            record_headless_message_response(state, &info, &interaction_id, &result.response)
+                .await;
+            let detail = headless_message_failure_detail(
+                &info,
+                &interaction_id,
+                input_mode,
+                queue_policy,
+                "lease_release_failed",
+                format!(
+                    "provider completed but the conversation lease could not be released: {error}"
+                ),
+            );
+            persist_interaction_delivery_attempt(
+                state,
+                &interaction_id,
+                &info.uuid,
+                DeliveryTransportKind::HeadlessProcess,
+                &detail,
+            )
+            .await;
+            record_delivery_attempt(state, &detail).await;
+            detail
+        }
+        (Err(error), Ok(())) => {
+            let detail = headless_message_failure_detail(
+                &info,
+                &interaction_id,
+                input_mode,
+                queue_policy,
+                "headless_process_failed",
+                crate::delivery::headless_process::sanitize_headless_error(
+                    &error,
+                    &prompt_for_redaction,
+                ),
+            );
+            record_delivery_attempt(state, &detail).await;
+            detail
+        }
+        (Err(run_error), Err(release_error)) => {
+            let detail = headless_message_failure_detail(
+                &info,
+                &interaction_id,
+                input_mode,
+                queue_policy,
+                "headless_process_failed",
+                format!(
+                    "{}; additionally failed to release the conversation lease: {release_error}",
+                    crate::delivery::headless_process::sanitize_headless_error(
+                        &run_error,
+                        &prompt_for_redaction,
+                    )
+                ),
+            );
+            persist_interaction_delivery_attempt(
+                state,
+                &interaction_id,
+                &info.uuid,
+                DeliveryTransportKind::HeadlessProcess,
+                &detail,
+            )
+            .await;
+            record_delivery_attempt(state, &detail).await;
+            detail
+        }
+    }
+}
+
+fn acquire_headless_message_lease(
+    info: &DeliveryTargetInfo,
+    interaction_id: &str,
+) -> Result<Option<wardian_core::conversation_lease::ConversationLease>, String> {
+    let Some(resume_session) = info
+        .resume_session
+        .as_deref()
+        .filter(|session| !session.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let now = chrono::Utc::now();
+    let now_rfc3339 = now.to_rfc3339();
+    let lease = wardian_core::conversation_lease::ConversationLease {
+        agent_id: info.uuid.clone(),
+        provider: info.provider.clone(),
+        resume_session: resume_session.to_string(),
+        owner_kind: "message_delivery".to_string(),
+        owner_id: interaction_id.to_string(),
+        owner_node_id: None,
+        mode: "background_resume".to_string(),
+        started_at: now_rfc3339.clone(),
+        heartbeat_at: now_rfc3339.clone(),
+        expires_at: (now + chrono::Duration::minutes(20)).to_rfc3339(),
+    };
+    wardian_core::conversation_lease::acquire_lease(lease.clone(), &now_rfc3339)?;
+    Ok(Some(lease))
+}
+
+fn headless_message_failure_detail(
+    info: &DeliveryTargetInfo,
+    interaction_id: &str,
+    input_mode: MessageInputMode,
+    queue_policy: QueuePolicy,
+    code: &str,
+    message: impl Into<String>,
+) -> DeliveryDetail {
+    DeliveryDetail {
+        uuid: info.uuid.clone(),
+        name: info.name.clone(),
+        provider: info.provider.clone(),
+        runtime_state: "headless_process".to_string(),
+        delivery_state: "failed".to_string(),
+        input_mode,
+        queue_policy,
+        message_id: Some(interaction_id.to_string()),
+        delivery_phase: Some("process_failed".to_string()),
+        observed_state: None,
+        reason: Some("target was not live; headless provider execution failed".to_string()),
+        profile: Some(crate::utils::delivery_profile::delivery_profile(&info.provider).provider),
+        error: Some(DeliveryErrorDetail {
+            code: code.to_string(),
+            message: message.into(),
+        }),
+    }
+}
+
+async fn record_headless_message_response(
+    state: &AppState,
+    info: &DeliveryTargetInfo,
+    interaction_id: &str,
+    response: &str,
+) {
+    let agents = state.agents.lock().await;
+    let Some(agent) = agents.get(&info.uuid) else {
+        return;
+    };
+    let Ok(mut watch_state) = agent.watch_state.lock() else {
+        return;
+    };
+    watch_state.push_output(format!("{response}\r\n").as_bytes());
+    watch_state.push_transcript(wardian_core::control::WatchTranscriptMessage {
+        role: "assistant".to_string(),
+        text: response.to_string(),
+        provider: info.provider.clone(),
+        turn_id: Some(interaction_id.to_string()),
+        source: Some("headless_process".to_string()),
+    });
 }
 
 async fn message_with_origin(
@@ -3372,6 +3637,8 @@ struct DeliveryTargetInfo {
     name: String,
     provider: String,
     resume_session: Option<String>,
+    cwd: PathBuf,
+    config: wardian_core::models::AgentConfig,
     status: String,
 }
 
@@ -3399,6 +3666,8 @@ async fn delivery_target_infos(
                 name: config.session_name.clone(),
                 provider: config.provider.clone(),
                 resume_session: config.resume_session.clone(),
+                cwd: PathBuf::from(&config.folder),
+                config: config.clone(),
                 status: normalize_status(&status),
             })
         })
@@ -3557,7 +3826,7 @@ async fn record_conversation_delivery(
 fn conversation_delivery_state_is_recordable(delivery_state: &str) -> bool {
     matches!(
         delivery_state,
-        "submitted" | "submit_sent_unverified" | "submit_sent_unconfirmed"
+        "submitted" | "submit_sent_unverified" | "submit_sent_unconfirmed" | "provider_applied"
     )
 }
 
@@ -4026,19 +4295,21 @@ async fn live_agent_snapshots(app: &AppHandle) -> Vec<AgentIdentity> {
     let state = app.state::<AppState>();
     let agents = state.agents.lock().await;
     let order = state.agent_order.lock().await.clone();
+    let active_leases = wardian_core::conversation_lease::load_leases();
+    let lease_now = chrono::Utc::now().to_rfc3339();
     let mut snapshots = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for session_id in order {
         if let Some(agent) = agents.get(&session_id) {
-            snapshots.push(snapshot_agent(agent));
+            snapshots.push(snapshot_agent_with_leases(agent, &active_leases, &lease_now));
             seen.insert(session_id);
         }
     }
 
     for (session_id, agent) in agents.iter() {
         if !seen.contains(session_id) {
-            snapshots.push(snapshot_agent(agent));
+            snapshots.push(snapshot_agent_with_leases(agent, &active_leases, &lease_now));
         }
     }
 
@@ -4046,6 +4317,16 @@ async fn live_agent_snapshots(app: &AppHandle) -> Vec<AgentIdentity> {
 }
 
 fn snapshot_agent(agent: &crate::state::ActiveAgent) -> AgentIdentity {
+    let active_leases = wardian_core::conversation_lease::load_leases();
+    let lease_now = chrono::Utc::now().to_rfc3339();
+    snapshot_agent_with_leases(agent, &active_leases, &lease_now)
+}
+
+fn snapshot_agent_with_leases(
+    agent: &crate::state::ActiveAgent,
+    active_leases: &[wardian_core::conversation_lease::ConversationLease],
+    lease_now: &str,
+) -> AgentIdentity {
     let config = agent
         .config
         .lock()
@@ -4056,6 +4337,18 @@ fn snapshot_agent(agent: &crate::state::ActiveAgent) -> AgentIdentity {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
+    let effective_status = if wardian_core::conversation_lease::find_active_conflict(
+        active_leases,
+        &config.session_id,
+        config.resume_session.as_deref().unwrap_or_default(),
+        lease_now,
+    )
+    .is_some()
+    {
+        "Headless".to_string()
+    } else {
+        status
+    };
     let started_at = agent
         .init_timestamp
         .lock()
@@ -4072,7 +4365,7 @@ fn snapshot_agent(agent: &crate::state::ActiveAgent) -> AgentIdentity {
         uuid: config.session_id,
         class: config.agent_class,
         provider: config.provider,
-        status: normalize_status(&status),
+        status: normalize_status(&effective_status),
         pid: agent.process_id,
         started_at,
         workspace: (!config.folder.trim().is_empty()).then_some(config.folder),
@@ -4607,6 +4900,11 @@ mod tests {
             .is_none());
     }
 
+    #[test]
+    fn conversation_delivery_records_completed_headless_message_input() {
+        assert!(conversation_delivery_state_is_recordable("provider_applied"));
+    }
+
     #[tokio::test]
     async fn message_delivery_queues_when_current_conversation_is_leased() {
         let _home = TestWardianHome::new();
@@ -4673,6 +4971,37 @@ mod tests {
             route,
             DeliveryRoute::Mailbox {
                 runtime_state: "target_processing"
+            }
+        );
+    }
+
+    #[test]
+    fn delivery_route_runs_offline_message_headlessly_when_queue_if_busy() {
+        for status in ["off", "error"] {
+            let route = decide_delivery_route(
+                status,
+                MessageInputMode::Message,
+                QueuePolicy::QueueIfBusy,
+                None,
+            );
+
+            assert_eq!(route, DeliveryRoute::Headless, "status={status}");
+        }
+    }
+
+    #[test]
+    fn delivery_route_keeps_off_provider_command_in_the_mailbox() {
+        let route = decide_delivery_route(
+            "off",
+            MessageInputMode::Command,
+            QueuePolicy::QueueIfBusy,
+            None,
+        );
+
+        assert_eq!(
+            route,
+            DeliveryRoute::Mailbox {
+                runtime_state: "queued_not_live"
             }
         );
     }
@@ -7000,5 +7329,37 @@ mod tests {
         );
         assert_eq!(snapshot.workspace, None);
         assert_eq!(snapshot.status_source, StatusSource::Live);
+    }
+
+    #[test]
+    fn snapshot_agent_reports_headless_while_its_saved_conversation_is_leased() {
+        let _home = TestWardianHome::new();
+        let agent = test_agent("agent-1", "CoderOne", "Coder");
+        {
+            let mut config = agent.config.lock().unwrap();
+            config.resume_session = Some("provider-session-1".to_string());
+            *agent.current_status.lock().unwrap() = "Off".to_string();
+        }
+        let now = chrono::Utc::now();
+        wardian_core::conversation_lease::acquire_lease(
+            wardian_core::conversation_lease::ConversationLease {
+                agent_id: "agent-1".to_string(),
+                provider: "mock".to_string(),
+                resume_session: "provider-session-1".to_string(),
+                owner_kind: "message_delivery".to_string(),
+                owner_id: "int-1".to_string(),
+                owner_node_id: None,
+                mode: "background_resume".to_string(),
+                started_at: now.to_rfc3339(),
+                heartbeat_at: now.to_rfc3339(),
+                expires_at: (now + chrono::Duration::minutes(5)).to_rfc3339(),
+            },
+            &now.to_rfc3339(),
+        )
+        .expect("lease");
+
+        let snapshot = snapshot_agent(&agent);
+
+        assert_eq!(snapshot.status, "headless");
     }
 }
