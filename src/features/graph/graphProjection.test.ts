@@ -116,6 +116,24 @@ describe("buildAgentGraph", () => {
     });
   });
 
+  it("keeps a headless execution visible for an otherwise off agent", () => {
+    const graph = buildAgentGraph({
+      agents: [agent({ session_id: "a", session_name: "Alpha", is_off: true })],
+      telemetry: { a: metric("a", "Headless") },
+      teams: [],
+      activeList: null,
+      interactions: {},
+      selectedAgentIds: new Set(),
+      enabledReasons: allReasons(),
+      offAgentIds: new Set(["a"]),
+    });
+
+    expect(graph.nodes[0]).toMatchObject({
+      status: "Headless",
+      color: "var(--color-wardian-headless)",
+    });
+  });
+
   it("uses active watchlist scope without creating watchlist edges", () => {
     const agents = [
       agent({ session_id: "a", folder: "C:/one" }),

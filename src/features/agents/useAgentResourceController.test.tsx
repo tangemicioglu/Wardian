@@ -216,6 +216,20 @@ describe("useAgentResourceController", () => {
     });
   });
 
+  it("keeps a headless status visible for an agent configured off", async () => {
+    const { result } = renderHook(() => useAgentResourceController());
+    await waitFor(() => expect(result.current.agents).toHaveLength(2));
+    expect(result.current.off_agent_ids.has("agent-2")).toBe(true);
+
+    act(() => {
+      emit("agent-status-updated", { session_id: "agent-2", current_status: "Headless" });
+    });
+
+    expect(result.current.telemetry["agent-2"].current_status).toBe("Headless");
+    expect(result.current.agent_statuses["agent-2"]).toBe("Headless");
+    expect(result.current.off_agent_ids.has("agent-2")).toBe(true);
+  });
+
   it("reports explicit provider turn completions separately from status changes", async () => {
     const on_agent_turn_completed = vi.fn();
     const { result } = renderHook(() => useAgentResourceController({ on_agent_turn_completed }));

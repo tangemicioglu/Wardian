@@ -97,6 +97,18 @@ describe('DashboardView', () => {
     expect(screen.getByText('No Active Instances')).toBeInTheDocument();
   });
 
+  it('keeps an off agent visible while its provider turn is headless', () => {
+    renderDashboard({
+      filteredAgents: [agent({ session_id: 'off-1', session_name: 'Headless Agent' })],
+      telemetry: { 'off-1': telemetry({ session_id: 'off-1', current_status: 'Headless' }) },
+      terminalTitles: {},
+      currentThoughts: {},
+      offAgentIds: new Set(['off-1']),
+    });
+
+    expect(screen.getByText('Headless Agent')).toBeInTheDocument();
+  });
+
   it('routes card and control interactions to agent callbacks', async () => {
     const user = userEvent.setup();
     const props = renderDashboard();

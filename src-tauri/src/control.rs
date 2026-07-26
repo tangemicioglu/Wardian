@@ -24,10 +24,12 @@ use wardian_core::control::{
 };
 use wardian_core::conversations::ConversationLoggingSetting;
 use wardian_core::identity::{normalize_status, AgentIdentity, StatusSource};
+use wardian_core::models::{AgentChatEvent, AgentChatEventKind, AgentChatRole};
 
 const STRUCTURED_ASK_INLINE_MESSAGE_MAX_BYTES: usize = 4096;
 const STRUCTURED_ASK_REQUESTS_DIR: &str = "requests";
 const CODEX_PAYLOAD_ECHO_TIMEOUT_MS: u64 = 750;
+const MAX_HEADLESS_DELIVERY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 async fn rollback_agent_update(
     state: &AppState,
@@ -516,10 +518,11 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             approval_action,
             origin,
             target_scope,
+            headless_timeout_ms,
         } => {
             let state = app.state::<AppState>();
             let scope_all = target_scope.as_deref() == Some("all");
-            let delivery = deliver_message_to_target(
+            let delivery = deliver_message_to_target_with_headless_timeout(
                 Some(app),
                 &state,
                 &target,
@@ -530,6 +533,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 approval_action.as_ref(),
                 origin.as_ref(),
                 scope_all,
+                bounded_headless_delivery_timeout(headless_timeout_ms),
             )
             .await?;
             record_conversation_delivery(&state, &delivery, &message, origin.as_ref()).await;
@@ -584,7 +588,9 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                     .interactions
                     .expire_notification_if_needed(&notification_id)
                     .await
-                    .ok_or_else(|| ControlError::coded("not_found", "notification was not found"))?;
+                    .ok_or_else(|| {
+                        ControlError::coded("not_found", "notification was not found")
+                    })?;
                 if record.sender_session_id.as_deref() != Some(session_id.as_str()) {
                     return Err(ControlError::coded(
                         "unauthorized",
@@ -593,7 +599,10 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 }
                 match record.status {
                     InteractionStatus::Completed | InteractionStatus::Expired => {
-                        let decision = state.interactions.notification_decision(&notification_id).await;
+                        let decision = state
+                            .interactions
+                            .notification_decision(&notification_id)
+                            .await;
                         let _ = app.emit("inbox-updated", ());
                         return ok_json(&InboxNotificationResponse {
                             schema: wardian_core::control::CONTROL_SCHEMA,
@@ -1222,6 +1231,7 @@ async fn resolve_send_targets_scoped(
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn deliver_message_to_target(
     app: Option<&AppHandle>,
@@ -1234,6 +1244,36 @@ async fn deliver_message_to_target(
     approval_action: Option<&ApprovalAction>,
     origin: Option<&MessageOrigin>,
     scope_all: bool,
+) -> Result<Vec<DeliveryDetail>, ControlError> {
+    deliver_message_to_target_with_headless_timeout(
+        app,
+        state,
+        target,
+        message,
+        thread,
+        input_mode,
+        queue_policy,
+        approval_action,
+        origin,
+        scope_all,
+        crate::manager::DEFAULT_HEADLESS_RUN_TIMEOUT,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn deliver_message_to_target_with_headless_timeout(
+    app: Option<&AppHandle>,
+    state: &AppState,
+    target: &str,
+    message: &str,
+    thread: Option<&str>,
+    input_mode: MessageInputMode,
+    queue_policy: QueuePolicy,
+    approval_action: Option<&ApprovalAction>,
+    origin: Option<&MessageOrigin>,
+    scope_all: bool,
+    headless_timeout: Duration,
 ) -> Result<Vec<DeliveryDetail>, ControlError> {
     validate_send_message_options(target, thread, input_mode)?;
     let sender_session_id = origin
@@ -1407,29 +1447,74 @@ async fn deliver_message_to_target(
                 }
             }
             DeliveryRoute::Headless => {
-                let detail = deliver_headless_message(
+                match deliver_headless_message(
                     state,
-                    info,
-                    interaction_id,
-                    outbound_message,
-                    input_mode,
-                    queue_policy,
+                    HeadlessMessageDeliveryRequest {
+                        app,
+                        info: &info,
+                        interaction_id: &interaction_id,
+                        prompt: &outbound_message,
+                        input_mode,
+                        queue_policy,
+                        origin,
+                        timeout: headless_timeout,
+                    },
                 )
-                .await;
-                if detail.delivery_state == "provider_applied" {
-                    delivered += 1;
-                } else {
-                    failures.push(format!(
-                        "{}: {}",
-                        detail.uuid,
-                        detail
-                            .error
-                            .as_ref()
-                            .map(|error| error.message.as_str())
-                            .unwrap_or("headless delivery failed")
-                    ));
+                .await
+                {
+                    HeadlessMessageDelivery::Completed(detail) => {
+                        if detail.delivery_state == "provider_applied" {
+                            delivered += 1;
+                        } else {
+                            failures.push(format!(
+                                "{}: {}",
+                                detail.uuid,
+                                detail
+                                    .error
+                                    .as_ref()
+                                    .map(|error| error.message.as_str())
+                                    .unwrap_or("headless delivery failed")
+                            ));
+                        }
+                        delivery.push(*detail);
+                    }
+                    HeadlessMessageDelivery::Busy(current_info) => {
+                        // The preflight lease check is intentionally only an
+                        // optimization. A competing sender or lifecycle
+                        // operation can claim the agent after it; QueueIfBusy
+                        // must still queue rather than start a second provider
+                        // process against the same conversation.
+                        queued += 1;
+                        let current_info = *current_info;
+                        let queued_uuid = current_info.uuid.clone();
+                        let queued_status = current_info.status.clone();
+                        let detail = enqueue_mailbox_delivery(
+                            state,
+                            interaction_id.clone(),
+                            current_info,
+                            outbound_message,
+                            input_mode,
+                            queue_policy,
+                            approval_action,
+                            origin,
+                            "conversation_leased",
+                        )
+                        .await;
+                        persist_interaction_delivery_attempt(
+                            state,
+                            &interaction_id,
+                            &detail.uuid,
+                            DeliveryTransportKind::LiveSurface,
+                            &detail,
+                        )
+                        .await;
+                        record_delivery_attempt(state, &detail).await;
+                        if let Some(app) = app {
+                            spawn_mailbox_drain_if_idle(app, &queued_uuid, &queued_status);
+                        }
+                        delivery.push(detail);
+                    }
                 }
-                delivery.push(detail);
             }
         }
     }
@@ -1535,6 +1620,14 @@ fn status_uses_headless_delivery(status: &str) -> bool {
     matches!(status, "off" | "error")
 }
 
+fn bounded_headless_delivery_timeout(timeout_ms: Option<u64>) -> Duration {
+    timeout_ms
+        .map(Duration::from_millis)
+        .unwrap_or(crate::manager::DEFAULT_HEADLESS_RUN_TIMEOUT)
+        .max(Duration::from_secs(1))
+        .min(MAX_HEADLESS_DELIVERY_TIMEOUT)
+}
+
 fn approval_action_bytes(provider: &str, action: &ApprovalAction) -> Vec<u8> {
     match action {
         ApprovalAction::Accept => {
@@ -1628,20 +1721,87 @@ async fn enqueue_mailbox_delivery(
     }
 }
 
-async fn deliver_headless_message(
-    state: &AppState,
-    info: DeliveryTargetInfo,
-    interaction_id: String,
-    prompt: String,
+enum HeadlessMessageDelivery {
+    Completed(Box<DeliveryDetail>),
+    Busy(Box<DeliveryTargetInfo>),
+}
+
+struct HeadlessMessageDeliveryRequest<'a> {
+    app: Option<&'a AppHandle>,
+    info: &'a DeliveryTargetInfo,
+    interaction_id: &'a str,
+    prompt: &'a str,
     input_mode: MessageInputMode,
     queue_policy: QueuePolicy,
-) -> DeliveryDetail {
-    let lease = match acquire_headless_message_lease(&info, &interaction_id) {
+    origin: Option<&'a MessageOrigin>,
+    timeout: Duration,
+}
+
+#[derive(Debug)]
+enum HeadlessMessageLeaseError {
+    Busy,
+    Failed(String),
+}
+
+async fn deliver_headless_message(
+    state: &AppState,
+    request: HeadlessMessageDeliveryRequest<'_>,
+) -> HeadlessMessageDelivery {
+    let HeadlessMessageDeliveryRequest {
+        app,
+        info,
+        interaction_id,
+        prompt,
+        input_mode,
+        queue_policy,
+        origin,
+        timeout,
+    } = request;
+    // Direct offline delivery runs a provider against the target agent's
+    // workspace. Hold the same home-wide shared guard as workflow drives
+    // before taking a conversation lease, so a managed-worktree deletion
+    // cannot remove that workspace before or during provider execution.
+    let _headless_execution =
+        match wardian_core::workflow_execution_lock::acquire_headless_execution_guard() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let detail = headless_message_failure_detail(
+                    info,
+                    interaction_id,
+                    input_mode,
+                    queue_policy,
+                    "headless_execution_blocked",
+                    error,
+                );
+                persist_interaction_delivery_attempt(
+                    state,
+                    interaction_id,
+                    &info.uuid,
+                    DeliveryTransportKind::HeadlessProcess,
+                    &detail,
+                )
+                .await;
+                record_delivery_attempt(state, &detail).await;
+                return HeadlessMessageDelivery::Completed(Box::new(detail));
+            }
+        };
+    // Every headless path claims the persisted lease before the in-process
+    // lifecycle gate. Workflows and lifecycle mutations use the same order, so
+    // a local waiter never holds the gate while another Wardian process holds
+    // the lease it needs to finish.
+    let lease = match acquire_headless_message_lease(info, interaction_id) {
         Ok(lease) => lease,
-        Err(error) => {
+        Err(HeadlessMessageLeaseError::Busy) => {
+            return HeadlessMessageDelivery::Busy(Box::new(
+                delivery_target_info(state, &info.uuid)
+                    .await
+                    .unwrap_or_else(|_| info.clone()),
+            ))
+        }
+        Err(HeadlessMessageLeaseError::Failed(error)) => {
             let detail = headless_message_failure_detail(
-                &info,
-                &interaction_id,
+                info,
+                interaction_id,
                 input_mode,
                 queue_policy,
                 "lease_unavailable",
@@ -1649,131 +1809,144 @@ async fn deliver_headless_message(
             );
             persist_interaction_delivery_attempt(
                 state,
-                &interaction_id,
+                interaction_id,
                 &info.uuid,
                 DeliveryTransportKind::HeadlessProcess,
                 &detail,
             )
             .await;
             record_delivery_attempt(state, &detail).await;
-            return detail;
+            return HeadlessMessageDelivery::Completed(Box::new(detail));
         }
     };
+    let mut lease_guard =
+        wardian_core::conversation_lease::PersistedConversationLeaseGuard::new(&lease);
+    let Some(_lifecycle_guard) = state.try_lock_agent_lifecycle(&info.uuid).await else {
+        return HeadlessMessageDelivery::Busy(Box::new(
+            delivery_target_info(state, &info.uuid)
+                .await
+                .unwrap_or_else(|_| info.clone()),
+        ));
+    };
+    let current_info = match delivery_target_info(state, &info.uuid).await {
+        Ok(current_info) => current_info,
+        Err(error) => {
+            let detail = headless_message_failure_detail(
+                info,
+                interaction_id,
+                input_mode,
+                queue_policy,
+                "target_replaced",
+                error.message,
+            );
+            persist_interaction_delivery_attempt(
+                state,
+                interaction_id,
+                &info.uuid,
+                DeliveryTransportKind::HeadlessProcess,
+                &detail,
+            )
+            .await;
+            record_delivery_attempt(state, &detail).await;
+            return HeadlessMessageDelivery::Completed(Box::new(detail));
+        }
+    };
+    if !same_delivery_target_incarnation(info, &current_info)
+        || !status_uses_headless_delivery(&current_info.status)
+    {
+        return HeadlessMessageDelivery::Busy(Box::new(current_info));
+    }
+    record_headless_status_observation(app, state, &current_info).await;
 
-    let prompt_for_redaction = prompt.clone();
     let result = crate::delivery::run_headless_process_prompt(
         state,
         crate::delivery::HeadlessProcessPromptRequest {
             node: "message_delivery".to_string(),
-            provider: info.provider.clone(),
-            cwd: info.cwd.clone(),
-            prompt,
-            session_id: info.uuid.clone(),
-            resume_session: info.resume_session.clone(),
-            config_override: Some(info.config.clone()),
-            interaction_id: Some(interaction_id.clone()),
+            provider: current_info.provider.clone(),
+            cwd: current_info.cwd.clone(),
+            prompt: prompt.to_string(),
+            session_id: current_info.uuid.clone(),
+            resume_session: current_info.resume_session.clone(),
+            config_override: Some(current_info.config.clone()),
+            interaction_id: Some(interaction_id.to_string()),
+            timeout,
+            lease_owner: Some(lease_guard.owner().clone()),
         },
     )
     .await;
 
-    let release_result = lease
-        .as_ref()
-        .map(|lease| {
-            wardian_core::conversation_lease::release_owner_persisted(
-                &lease.owner_kind,
-                &lease.owner_id,
+    match result {
+        Ok(result) => {
+            record_headless_message_response(
+                state,
+                &current_info,
+                interaction_id,
+                &result.response,
             )
-        })
-        .unwrap_or(Ok(()));
-
-    match (result, release_result) {
-        (Ok(result), Ok(())) => {
-            let detail = DeliveryDetail {
-                uuid: info.uuid.clone(),
-                name: info.name.clone(),
-                provider: info.provider.clone(),
+            .await;
+            record_headless_message_exchange(
+                state,
+                &current_info,
+                interaction_id,
+                prompt,
+                &result.response,
+                origin,
+            )
+            .await;
+            let mut detail = DeliveryDetail {
+                uuid: current_info.uuid.clone(),
+                name: current_info.name.clone(),
+                provider: current_info.provider.clone(),
                 runtime_state: "headless_process".to_string(),
                 delivery_state: "provider_applied".to_string(),
                 input_mode,
                 queue_policy,
-                message_id: Some(interaction_id.clone()),
+                message_id: Some(interaction_id.to_string()),
                 delivery_phase: Some("process_completed".to_string()),
                 observed_state: Some("stdout_parsed".to_string()),
                 reason: Some("target was not live; ran provider headlessly".to_string()),
                 profile: Some(
-                    crate::utils::delivery_profile::delivery_profile(&info.provider).provider,
+                    crate::utils::delivery_profile::delivery_profile(&current_info.provider)
+                        .provider,
                 ),
                 error: None,
             };
-            record_headless_message_response(state, &info, &interaction_id, &result.response)
-                .await;
             record_delivery_attempt(state, &detail).await;
-            detail
+            let release_error = lease_guard.release().err();
+            if let Some(error) = release_error {
+                detail.reason = Some(format!(
+                    "target was not live; ran provider headlessly (lease cleanup is pending until it can be released or expires: {error})"
+                ));
+            } else {
+                record_headless_status_observation(app, state, &current_info).await;
+            }
+            HeadlessMessageDelivery::Completed(Box::new(detail))
         }
-        (Ok(result), Err(error)) => {
-            record_headless_message_response(state, &info, &interaction_id, &result.response)
-                .await;
-            let detail = headless_message_failure_detail(
-                &info,
-                &interaction_id,
-                input_mode,
-                queue_policy,
-                "lease_release_failed",
-                format!(
-                    "provider completed but the conversation lease could not be released: {error}"
-                ),
-            );
-            persist_interaction_delivery_attempt(
-                state,
-                &interaction_id,
-                &info.uuid,
-                DeliveryTransportKind::HeadlessProcess,
-                &detail,
-            )
-            .await;
-            record_delivery_attempt(state, &detail).await;
-            detail
-        }
-        (Err(error), Ok(())) => {
-            let detail = headless_message_failure_detail(
-                &info,
-                &interaction_id,
+        Err(error) => {
+            let diagnostic =
+                crate::delivery::headless_process::sanitize_headless_error(&error, prompt);
+            let mut detail = headless_message_failure_detail(
+                &current_info,
+                interaction_id,
                 input_mode,
                 queue_policy,
                 "headless_process_failed",
-                crate::delivery::headless_process::sanitize_headless_error(
-                    &error,
-                    &prompt_for_redaction,
-                ),
+                diagnostic,
             );
+            // The process runner already persisted this attempt. This watch
+            // record is intentionally not another durable delivery attempt.
             record_delivery_attempt(state, &detail).await;
-            detail
-        }
-        (Err(run_error), Err(release_error)) => {
-            let detail = headless_message_failure_detail(
-                &info,
-                &interaction_id,
-                input_mode,
-                queue_policy,
-                "headless_process_failed",
-                format!(
-                    "{}; additionally failed to release the conversation lease: {release_error}",
-                    crate::delivery::headless_process::sanitize_headless_error(
-                        &run_error,
-                        &prompt_for_redaction,
-                    )
-                ),
-            );
-            persist_interaction_delivery_attempt(
-                state,
-                &interaction_id,
-                &info.uuid,
-                DeliveryTransportKind::HeadlessProcess,
-                &detail,
-            )
-            .await;
-            record_delivery_attempt(state, &detail).await;
-            detail
+            let release_error = lease_guard.release().err();
+            if let Some(release_error) = release_error {
+                if let Some(error) = detail.error.as_mut() {
+                    error.message.push_str(&format!(
+                        "; additionally failed to release the conversation lease: {release_error}"
+                    ));
+                }
+            } else {
+                record_headless_status_observation(app, state, &current_info).await;
+            }
+            HeadlessMessageDelivery::Completed(Box::new(detail))
         }
     }
 }
@@ -1781,31 +1954,42 @@ async fn deliver_headless_message(
 fn acquire_headless_message_lease(
     info: &DeliveryTargetInfo,
     interaction_id: &str,
-) -> Result<Option<wardian_core::conversation_lease::ConversationLease>, String> {
-    let Some(resume_session) = info
-        .resume_session
-        .as_deref()
-        .filter(|session| !session.trim().is_empty())
-    else {
-        return Ok(None);
-    };
-
+) -> Result<wardian_core::conversation_lease::ConversationLease, HeadlessMessageLeaseError> {
     let now = chrono::Utc::now();
     let now_rfc3339 = now.to_rfc3339();
+    let resume_session = info
+        .resume_session
+        .as_deref()
+        .map(str::trim)
+        .filter(|session| !session.is_empty())
+        .unwrap_or_default()
+        .to_string();
     let lease = wardian_core::conversation_lease::ConversationLease {
         agent_id: info.uuid.clone(),
         provider: info.provider.clone(),
-        resume_session: resume_session.to_string(),
+        resume_session: resume_session.clone(),
         owner_kind: "message_delivery".to_string(),
         owner_id: interaction_id.to_string(),
+        acquisition_id: uuid::Uuid::new_v4().to_string(),
         owner_node_id: None,
-        mode: "background_resume".to_string(),
+        mode: if resume_session.is_empty() {
+            "background_fresh".to_string()
+        } else {
+            "background_resume".to_string()
+        },
         started_at: now_rfc3339.clone(),
         heartbeat_at: now_rfc3339.clone(),
         expires_at: (now + chrono::Duration::minutes(20)).to_rfc3339(),
     };
-    wardian_core::conversation_lease::acquire_lease(lease.clone(), &now_rfc3339)?;
-    Ok(Some(lease))
+    match wardian_core::conversation_lease::try_acquire_lease(lease.clone(), &now_rfc3339) {
+        Ok(wardian_core::conversation_lease::ConversationLeaseAcquireOutcome::Acquired) => {
+            Ok(lease)
+        }
+        Ok(wardian_core::conversation_lease::ConversationLeaseAcquireOutcome::Conflict(_)) => {
+            Err(HeadlessMessageLeaseError::Busy)
+        }
+        Err(error) => Err(HeadlessMessageLeaseError::Failed(error)),
+    }
 }
 
 fn headless_message_failure_detail(
@@ -1836,6 +2020,51 @@ fn headless_message_failure_detail(
     }
 }
 
+/// Records the lease-derived status that the roster, telemetry, and CLI
+/// snapshots expose during a headless run. The underlying persisted status is
+/// left intact: a completed run returns an offline agent to `off` rather than
+/// inventing a live `idle` session.
+async fn record_headless_status_observation(
+    app: Option<&AppHandle>,
+    state: &AppState,
+    info: &DeliveryTargetInfo,
+) {
+    let observed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let agents = state.agents.lock().await;
+    let Some(agent) = agents.get(&info.uuid) else {
+        return;
+    };
+    if !delivery_target_matches_current_agent(agent, info) {
+        return;
+    };
+    let status = snapshot_agent(agent).status;
+    if let Ok(mut last_status_at) = agent.last_status_at.lock() {
+        *last_status_at = Some(observed_at.clone());
+    }
+    if let Ok(mut watch_state) = agent.watch_state.lock() {
+        watch_state.push_event(
+            "status",
+            serde_json::json!({
+                "status": status,
+                "observed_at": observed_at,
+                "source": "headless_process",
+            }),
+        );
+    };
+    drop(agents);
+
+    if let Some(app) = app {
+        let display_status = display_status_for_agent_event(&status);
+        let _ = app.emit(
+            "agent-status-updated",
+            serde_json::json!({
+                "session_id": info.uuid,
+                "current_status": display_status,
+            }),
+        );
+    }
+}
+
 async fn record_headless_message_response(
     state: &AppState,
     info: &DeliveryTargetInfo,
@@ -1846,6 +2075,13 @@ async fn record_headless_message_response(
     let Some(agent) = agents.get(&info.uuid) else {
         return;
     };
+    if !delivery_target_matches_current_agent(agent, info) {
+        manager::log_debug(&format!(
+            "[WARDIAN] ignoring stale headless response for replaced agent {}",
+            info.uuid
+        ));
+        return;
+    }
     let Ok(mut watch_state) = agent.watch_state.lock() else {
         return;
     };
@@ -1857,6 +2093,138 @@ async fn record_headless_message_response(
         turn_id: Some(interaction_id.to_string()),
         source: Some("headless_process".to_string()),
     });
+}
+
+async fn record_headless_message_exchange(
+    state: &AppState,
+    info: &DeliveryTargetInfo,
+    interaction_id: &str,
+    prompt: &str,
+    response: &str,
+    origin: Option<&MessageOrigin>,
+) {
+    let is_current = {
+        let agents = state.agents.lock().await;
+        agents
+            .get(&info.uuid)
+            .is_some_and(|agent| delivery_target_matches_current_agent(agent, info))
+    };
+    if !is_current {
+        manager::log_debug(&format!(
+            "[WARDIAN] ignoring stale headless conversation archive for replaced agent {}",
+            info.uuid
+        ));
+        return;
+    }
+    let global_conversation_logging = crate::utils::shell::load_shell_settings()
+        .unwrap_or_default()
+        .conversation_logging;
+    if effective_conversation_logging(
+        global_conversation_logging,
+        info.config.conversation_logging,
+    ) != ConversationLoggingSetting::Enabled
+    {
+        return;
+    }
+
+    let context = headless_conversation_archive_context(info);
+    let provider_session_id = context.provider_session_ids.first().cloned();
+    let sender_agent_id = origin.map(|MessageOrigin::WardianAgent { session_id }| session_id);
+    let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let source = Some("headless_process".to_string());
+    let events = vec![
+        AgentChatEvent {
+            id: format!("headless:{interaction_id}:user"),
+            session_id: info.uuid.clone(),
+            provider: info.provider.clone(),
+            kind: AgentChatEventKind::Message,
+            role: Some(AgentChatRole::User),
+            text: Some(prompt.to_string()),
+            title: None,
+            status: None,
+            turn_id: Some(interaction_id.to_string()),
+            source: source.clone(),
+            command: None,
+            exit_code: None,
+            path: None,
+            language: None,
+            created_at: Some(created_at.clone()),
+            sequence: None,
+            metadata: serde_json::json!({
+                "provider_session_id": provider_session_id,
+                "headless": true,
+                "interaction_id": interaction_id,
+                "sender_agent_id": sender_agent_id,
+            }),
+        },
+        AgentChatEvent {
+            id: format!("headless:{interaction_id}:assistant"),
+            session_id: info.uuid.clone(),
+            provider: info.provider.clone(),
+            kind: AgentChatEventKind::Message,
+            role: Some(AgentChatRole::Assistant),
+            text: Some(response.to_string()),
+            title: None,
+            status: None,
+            turn_id: Some(interaction_id.to_string()),
+            source,
+            command: None,
+            exit_code: None,
+            path: None,
+            language: None,
+            created_at: Some(created_at),
+            sequence: None,
+            metadata: serde_json::json!({
+                "provider_session_id": context.provider_session_ids.first(),
+                "headless": true,
+                "interaction_id": interaction_id,
+            }),
+        },
+    ];
+    let agent_id = context.agent_id.clone();
+    if let Err(error) = state
+        .conversation_archive
+        .append_chat_events_with_context(context, &events)
+    {
+        manager::log_debug(&format!(
+            "[WARDIAN] headless conversation archive append failed for {agent_id}: {error}"
+        ));
+    }
+}
+
+fn headless_conversation_archive_context(info: &DeliveryTargetInfo) -> ConversationArchiveContext {
+    let config = &info.config;
+    let workspace = config
+        .git_worktree_folder
+        .clone()
+        .unwrap_or_else(|| config.folder.clone());
+    let provider_session_ids = [
+        config.resume_session.as_deref(),
+        config.fresh_provider_session_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(ToString::to_string)
+    .collect::<Vec<_>>();
+    let provider_source_key = provider_session_ids
+        .first()
+        .map(|session| format!("{}:session:{session}", config.provider));
+
+    ConversationArchiveContext {
+        agent_id: info.uuid.clone(),
+        agent_name: if config.session_name.trim().is_empty() {
+            info.uuid.clone()
+        } else {
+            config.session_name.clone()
+        },
+        agent_class: config.agent_class.clone(),
+        workspace,
+        provider: config.provider.clone(),
+        provider_session_ids,
+        provider_source_key,
+    }
 }
 
 async fn message_with_origin(
@@ -2419,7 +2787,7 @@ async fn handle_structured_ask(
         }
     }
     push_watch_event_for_agent(&state, &target_uuid, "request", payload).await?;
-    let delivery = match deliver_message_to_target(
+    let delivery = match deliver_message_to_target_with_headless_timeout(
         Some(app),
         &state,
         target,
@@ -2430,6 +2798,7 @@ async fn handle_structured_ask(
         None,
         origin,
         false,
+        timeout.min(MAX_HEADLESS_DELIVERY_TIMEOUT),
     )
     .await
     {
@@ -3639,6 +4008,10 @@ struct DeliveryTargetInfo {
     resume_session: Option<String>,
     cwd: PathBuf,
     config: wardian_core::models::AgentConfig,
+    /// Stable Arc identity for the active-agent incarnation this delivery was
+    /// resolved against. Clear, resume, and re-create replace the Arc, so a
+    /// late headless completion cannot write into the successor agent.
+    config_identity: Arc<Mutex<wardian_core::models::AgentConfig>>,
     status: String,
 }
 
@@ -3646,32 +4019,60 @@ async fn delivery_target_infos(
     state: &AppState,
     session_ids: &[String],
 ) -> Result<Vec<DeliveryTargetInfo>, ControlError> {
+    let mut infos = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids {
+        infos.push(delivery_target_info(state, session_id).await?);
+    }
+    Ok(infos)
+}
+
+async fn delivery_target_info(
+    state: &AppState,
+    session_id: &str,
+) -> Result<DeliveryTargetInfo, ControlError> {
     let agents = state.agents.lock().await;
-    session_ids
-        .iter()
-        .map(|session_id| {
-            let agent = agents.get(session_id).ok_or_else(|| {
-                ControlError::not_found(format!("agent not found after resolution: {session_id}"))
-            })?;
-            let config = agent
-                .config
-                .lock()
-                .map_err(|_| ControlError::request_failed("agent config lock poisoned"))?;
-            let status = agent
-                .current_status
-                .lock()
-                .map_err(|_| ControlError::request_failed("agent status lock poisoned"))?;
-            Ok(DeliveryTargetInfo {
-                uuid: session_id.clone(),
-                name: config.session_name.clone(),
-                provider: config.provider.clone(),
-                resume_session: config.resume_session.clone(),
-                cwd: PathBuf::from(&config.folder),
-                config: config.clone(),
-                status: normalize_status(&status),
-            })
-        })
-        .collect()
+    let agent = agents.get(session_id).ok_or_else(|| {
+        ControlError::not_found(format!("agent not found after resolution: {session_id}"))
+    })?;
+    let config = agent
+        .config
+        .lock()
+        .map_err(|_| ControlError::request_failed("agent config lock poisoned"))?;
+    let status = agent
+        .current_status
+        .lock()
+        .map_err(|_| ControlError::request_failed("agent status lock poisoned"))?;
+    Ok(DeliveryTargetInfo {
+        uuid: session_id.to_string(),
+        name: config.session_name.clone(),
+        provider: config.provider.clone(),
+        resume_session: config.resume_session.clone(),
+        cwd: PathBuf::from(&config.folder),
+        config: config.clone(),
+        config_identity: agent.config.clone(),
+        status: normalize_status(&status),
+    })
+}
+
+fn same_delivery_target_incarnation(left: &DeliveryTargetInfo, right: &DeliveryTargetInfo) -> bool {
+    left.uuid == right.uuid && Arc::ptr_eq(&left.config_identity, &right.config_identity)
+}
+
+fn delivery_target_matches_current_agent(
+    agent: &crate::state::ActiveAgent,
+    info: &DeliveryTargetInfo,
+) -> bool {
+    Arc::ptr_eq(&agent.config, &info.config_identity)
+}
+
+fn display_status_for_agent_event(status: &str) -> &'static str {
+    match status {
+        "headless" => "Headless",
+        "idle" => "Idle",
+        "processing" => "Processing...",
+        "action_required" => "Action Needed",
+        _ => "Off",
+    }
 }
 
 fn failed_delivery_detail(
@@ -3826,7 +4227,7 @@ async fn record_conversation_delivery(
 fn conversation_delivery_state_is_recordable(delivery_state: &str) -> bool {
     matches!(
         delivery_state,
-        "submitted" | "submit_sent_unverified" | "submit_sent_unconfirmed" | "provider_applied"
+        "submitted" | "submit_sent_unverified" | "submit_sent_unconfirmed"
     )
 }
 
@@ -4094,7 +4495,9 @@ async fn agent_config_to_identity(
 // Serialization helpers
 // ---------------------------------------------------------------------------
 
-fn validate_inbox_notification(notification: &InboxNotificationPayload) -> Result<(), ControlError> {
+fn validate_inbox_notification(
+    notification: &InboxNotificationPayload,
+) -> Result<(), ControlError> {
     let valid_text = |text: &str, max: usize| !text.trim().is_empty() && text.len() <= max;
     if !valid_text(&notification.title, 160) || !valid_text(&notification.body, 4_000) {
         return Err(ControlError::bad_request(
@@ -4124,7 +4527,10 @@ fn validate_inbox_notification(notification: &InboxNotificationPayload) -> Resul
                     .is_some_and(|value| valid_text(value, 1_000))
                 || notification.choices.len() < 2
                 || notification.choices.len() > 5
-                || notification.choices.iter().any(|choice| !valid_text(choice, 120))
+                || notification
+                    .choices
+                    .iter()
+                    .any(|choice| !valid_text(choice, 120))
                 || notification
                     .expires_at
                     .as_deref()
@@ -4302,14 +4708,22 @@ async fn live_agent_snapshots(app: &AppHandle) -> Vec<AgentIdentity> {
 
     for session_id in order {
         if let Some(agent) = agents.get(&session_id) {
-            snapshots.push(snapshot_agent_with_leases(agent, &active_leases, &lease_now));
+            snapshots.push(snapshot_agent_with_leases(
+                agent,
+                &active_leases,
+                &lease_now,
+            ));
             seen.insert(session_id);
         }
     }
 
     for (session_id, agent) in agents.iter() {
         if !seen.contains(session_id) {
-            snapshots.push(snapshot_agent_with_leases(agent, &active_leases, &lease_now));
+            snapshots.push(snapshot_agent_with_leases(
+                agent,
+                &active_leases,
+                &lease_now,
+            ));
         }
     }
 
@@ -4337,13 +4751,19 @@ fn snapshot_agent_with_leases(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    let effective_status = if wardian_core::conversation_lease::find_active_conflict(
-        active_leases,
-        &config.session_id,
-        config.resume_session.as_deref().unwrap_or_default(),
-        lease_now,
-    )
-    .is_some()
+    let is_offline = config.is_off
+        || matches!(
+            wardian_core::identity::normalize_status(&status).as_str(),
+            "off" | "error"
+        );
+    let effective_status = if is_offline
+        && wardian_core::conversation_lease::find_active_execution_conflict(
+            active_leases,
+            &config.session_id,
+            config.resume_session.as_deref().unwrap_or_default(),
+            lease_now,
+        )
+        .is_some()
     {
         "Headless".to_string()
     } else {
@@ -4419,6 +4839,36 @@ mod tests {
                 None => std::env::remove_var("WARDIAN_HOME"),
             }
         }
+    }
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn node_available() -> bool {
+        std::process::Command::new(if cfg!(windows) { "node.exe" } else { "node" })
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
     }
 
     /// Regression test for the silent release-build crash where `claim_control_endpoint`
@@ -4901,8 +5351,92 @@ mod tests {
     }
 
     #[test]
-    fn conversation_delivery_records_completed_headless_message_input() {
-        assert!(conversation_delivery_state_is_recordable("provider_applied"));
+    fn generic_conversation_delivery_leaves_headless_exchanges_to_their_durable_recorder() {
+        assert!(!conversation_delivery_state_is_recordable(
+            "provider_applied"
+        ));
+    }
+
+    #[tokio::test]
+    async fn completed_headless_exchange_is_archived_once_with_provider_context() {
+        let _home = TestWardianHome::new();
+        crate::utils::save_shell_settings(&crate::utils::ShellSettings {
+            conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Disabled,
+            ..Default::default()
+        })
+        .expect("save shell settings");
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").expect("agent");
+            let mut config = agent.config.lock().expect("config");
+            config.resume_session = Some("provider-session-1".to_string());
+            config.conversation_logging =
+                wardian_core::conversations::AgentConversationLoggingSetting::Enabled;
+        }
+        let info = delivery_target_infos(&state, &["agent-1".to_string()])
+            .await
+            .expect("delivery info")
+            .remove(0);
+        let origin = MessageOrigin::WardianAgent {
+            session_id: "source-agent".to_string(),
+        };
+
+        record_headless_message_exchange(
+            &state,
+            &info,
+            "interaction-1",
+            "From Source: review this change.",
+            "I reviewed it.",
+            Some(&origin),
+        )
+        .await;
+        // Stable event ids make a retry idempotent rather than duplicating the
+        // user prompt or the provider response.
+        record_headless_message_exchange(
+            &state,
+            &info,
+            "interaction-1",
+            "From Source: review this change.",
+            "I reviewed it.",
+            Some(&origin),
+        )
+        .await;
+
+        let conversation_id = state
+            .conversation_archive
+            .active_conversation_id_for_test("agent-1")
+            .expect("active conversation id");
+        let conversation_dir =
+            wardian_core::paths::agent_conversation_dir("agent-1", &conversation_id)
+                .expect("conversation dir");
+        let records: Vec<wardian_core::conversations::ConversationNarrativeRecord> =
+            wardian_core::conversations::read_jsonl_records(
+                &conversation_dir.join("conversation.jsonl"),
+            )
+            .expect("conversation records");
+        let events: Vec<AgentChatEvent> =
+            wardian_core::conversations::read_jsonl_records(&conversation_dir.join("events.jsonl"))
+                .expect("event records");
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[0].text.as_deref(),
+            Some("From Source: review this change.")
+        );
+        assert_eq!(
+            records[0].speaker_type,
+            Some(wardian_core::conversations::ConversationSpeakerType::Agent)
+        );
+        assert_eq!(records[1].text.as_deref(), Some("I reviewed it."));
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, "headless:interaction-1:user");
+        assert_eq!(events[1].id, "headless:interaction-1:assistant");
+        assert_eq!(
+            events[1].metadata["provider_session_id"].as_str(),
+            Some("provider-session-1")
+        );
     }
 
     #[tokio::test]
@@ -4928,6 +5462,7 @@ mod tests {
                 resume_session: "resume-1".to_string(),
                 owner_kind: "workflow_run".to_string(),
                 owner_id: "wf/run-1/node-1".to_string(),
+                acquisition_id: "test-acquisition-1".to_string(),
                 owner_node_id: Some("node-1".to_string()),
                 mode: "background_resume".to_string(),
                 started_at: "2026-06-01T00:00:00Z".to_string(),
@@ -4956,6 +5491,425 @@ mod tests {
         assert_eq!(delivery[0].delivery_state, "queued");
         assert_eq!(delivery[0].runtime_state, "conversation_leased");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn fresh_headless_message_lease_marks_the_off_agent_headless() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").expect("agent");
+            *agent.current_status.lock().expect("status") = "Off".to_string();
+        }
+        let info = delivery_target_infos(&state, &["agent-1".to_string()])
+            .await
+            .expect("delivery info")
+            .remove(0);
+
+        let lease = acquire_headless_message_lease(&info, "interaction-1").expect("lease");
+
+        assert!(lease.resume_session.is_empty());
+        assert_eq!(lease.mode, "background_fresh");
+        let snapshot = {
+            let agents = state.agents.lock().await;
+            snapshot_agent(agents.get("agent-1").expect("agent"))
+        };
+        assert_eq!(snapshot.status, "headless");
+        wardian_core::conversation_lease::release_owner_persisted(
+            &lease.owner_kind,
+            &lease.owner_id,
+        )
+        .expect("release lease");
+    }
+
+    #[tokio::test]
+    async fn offline_message_does_not_start_while_worktree_mutation_is_active() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").expect("agent");
+            *agent.current_status.lock().expect("status") = "Off".to_string();
+        }
+        let _mutation =
+            wardian_core::workflow_execution_lock::try_acquire_worktree_mutation_guard()
+                .expect("worktree mutation lock")
+                .expect("exclusive worktree mutation lock");
+
+        let error = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "do not start a provider",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect_err("active deletion must block direct headless delivery");
+
+        assert_eq!(error.code(), "request_failed");
+        let detail = error
+            .details()
+            .and_then(|details| details.get("delivery"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|delivery| delivery.first())
+            .expect("failed delivery detail");
+        assert_eq!(detail["delivery_state"], "failed");
+        assert_eq!(detail["error"]["code"], "headless_execution_blocked");
+        assert!(wardian_core::conversation_lease::load_leases().is_empty());
+
+        let status = {
+            let agents = state.agents.lock().await;
+            snapshot_agent(agents.get("agent-1").expect("agent")).status
+        };
+        assert_eq!(status, "off");
+    }
+
+    #[tokio::test]
+    async fn headless_status_observations_follow_the_lease_lifecycle() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").expect("agent");
+            *agent.current_status.lock().expect("status") = "Off".to_string();
+        }
+        let cursor = {
+            let agents = state.agents.lock().await;
+            let cursor = agents
+                .get("agent-1")
+                .expect("agent")
+                .watch_state
+                .lock()
+                .expect("watch state")
+                .latest_cursor();
+            cursor
+        };
+        let info = delivery_target_infos(&state, &["agent-1".to_string()])
+            .await
+            .expect("delivery info")
+            .remove(0);
+
+        let lease = acquire_headless_message_lease(&info, "interaction-1").expect("lease");
+        record_headless_status_observation(None, &state, &info).await;
+        wardian_core::conversation_lease::release_owner_persisted(
+            &lease.owner_kind,
+            &lease.owner_id,
+        )
+        .expect("release lease");
+        record_headless_status_observation(None, &state, &info).await;
+
+        let events = {
+            let agents = state.agents.lock().await;
+            let events = agents
+                .get("agent-1")
+                .expect("agent")
+                .watch_state
+                .lock()
+                .expect("watch state")
+                .snapshot_since(Some(&cursor), None)
+                .expect("watch snapshot")
+                .events;
+            events
+        };
+        let statuses: Vec<_> = events
+            .iter()
+            .filter(|event| event.kind == "status")
+            .filter_map(|event| event.payload["status"].as_str())
+            .collect();
+
+        assert_eq!(statuses, ["headless", "off"]);
+    }
+
+    #[tokio::test]
+    async fn headless_message_queues_while_a_resume_lifecycle_gate_is_held() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").expect("agent");
+            *agent.current_status.lock().expect("status") = "Off".to_string();
+        }
+
+        let lifecycle_guard = state.lock_agent_lifecycle("agent-1").await;
+        let delivery = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "do not overlap a resume",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("queue while lifecycle transition owns the gate");
+
+        assert_eq!(delivery[0].delivery_state, "queued");
+        assert_eq!(delivery[0].runtime_state, "conversation_leased");
+        drop(lifecycle_guard);
+    }
+
+    #[tokio::test]
+    async fn late_headless_completion_skips_a_replaced_agent_incarnation() {
+        let _home = TestWardianHome::new();
+        crate::utils::save_shell_settings(&crate::utils::ShellSettings {
+            conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Enabled,
+            ..Default::default()
+        })
+        .expect("save shell settings");
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").expect("agent");
+            agent.config.lock().expect("config").conversation_logging =
+                wardian_core::conversations::AgentConversationLoggingSetting::Enabled;
+        }
+        let stale_info = delivery_target_infos(&state, &["agent-1".to_string()])
+            .await
+            .expect("delivery info")
+            .remove(0);
+
+        // Clear and resume replace the ActiveAgent entry with a new runtime
+        // incarnation. A late completion from the old process must not appear
+        // in the successor's watch stream or conversation archive.
+        state.agents.lock().await.insert(
+            "agent-1".to_string(),
+            test_agent("agent-1", "CoderOne", "Coder"),
+        );
+
+        record_headless_message_response(
+            &state,
+            &stale_info,
+            "old-interaction",
+            "stale provider response",
+        )
+        .await;
+        record_headless_message_exchange(
+            &state,
+            &stale_info,
+            "old-interaction",
+            "stale prompt",
+            "stale provider response",
+            None,
+        )
+        .await;
+
+        let snapshot = {
+            let agents = state.agents.lock().await;
+            let snapshot = agents
+                .get("agent-1")
+                .expect("replacement agent")
+                .watch_state
+                .lock()
+                .expect("watch state")
+                .snapshot_since(None, None)
+                .expect("watch snapshot");
+            snapshot
+        };
+        assert!(snapshot.output.text.is_empty());
+        assert!(snapshot.transcript.messages.is_empty());
+        assert!(state
+            .conversation_archive
+            .active_conversation_id_for_test("agent-1")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn late_headless_completion_skips_an_agent_removed_by_kill() {
+        let _home = TestWardianHome::new();
+        crate::utils::save_shell_settings(&crate::utils::ShellSettings {
+            conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Enabled,
+            ..Default::default()
+        })
+        .expect("save shell settings");
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").expect("agent");
+            agent.config.lock().expect("config").conversation_logging =
+                wardian_core::conversations::AgentConversationLoggingSetting::Enabled;
+        }
+        let stale_info = delivery_target_infos(&state, &["agent-1".to_string()])
+            .await
+            .expect("delivery info")
+            .remove(0);
+
+        state.agents.lock().await.remove("agent-1");
+        record_headless_message_response(
+            &state,
+            &stale_info,
+            "removed-interaction",
+            "stale provider response",
+        )
+        .await;
+        record_headless_message_exchange(
+            &state,
+            &stale_info,
+            "removed-interaction",
+            "stale prompt",
+            "stale provider response",
+            None,
+        )
+        .await;
+
+        assert!(state
+            .conversation_archive
+            .active_conversation_id_for_test("agent-1")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_offline_messages_queue_instead_of_failing_on_a_lease_race() {
+        if !node_available() {
+            return;
+        }
+        let _home = TestWardianHome::new();
+        let _scenario = ScopedEnvVar::set("WARDIAN_MOCK_SCENARIO", "headless_delayed");
+        let _delay = ScopedEnvVar::set("WARDIAN_MOCK_DELAY_MS", "250");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").expect("agent");
+            let mut config = agent.config.lock().expect("config");
+            config.provider = "mock".to_string();
+            config.folder = workspace.path().to_string_lossy().to_string();
+            *agent.current_status.lock().expect("status") = "Off".to_string();
+        }
+
+        let (first, second) = tokio::join!(
+            deliver_message_to_target(
+                None,
+                &state,
+                "CoderOne",
+                "first offline message",
+                None,
+                MessageInputMode::Message,
+                QueuePolicy::QueueIfBusy,
+                None,
+                None,
+                false,
+            ),
+            deliver_message_to_target(
+                None,
+                &state,
+                "CoderOne",
+                "second offline message",
+                None,
+                MessageInputMode::Message,
+                QueuePolicy::QueueIfBusy,
+                None,
+                None,
+                false,
+            ),
+        );
+        let delivery = [
+            first.expect("first delivery").remove(0),
+            second.expect("second delivery").remove(0),
+        ];
+
+        assert_eq!(
+            delivery
+                .iter()
+                .filter(|detail| detail.delivery_state == "provider_applied")
+                .count(),
+            1
+        );
+        assert_eq!(
+            delivery
+                .iter()
+                .filter(|detail| {
+                    detail.delivery_state == "queued"
+                        && detail.runtime_state == "conversation_leased"
+                })
+                .count(),
+            1
+        );
+        assert!(delivery
+            .iter()
+            .all(|detail| detail.delivery_state != "failed"));
+    }
+
+    #[tokio::test]
+    async fn successful_headless_target_archives_before_a_mixed_send_reports_failure() {
+        if !node_available() {
+            return;
+        }
+        let _home = TestWardianHome::new();
+        let _scenario = ScopedEnvVar::set("WARDIAN_MOCK_SCENARIO", "headless");
+        let workspace = tempfile::tempdir().expect("workspace");
+        crate::utils::save_shell_settings(&crate::utils::ShellSettings {
+            conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Enabled,
+            ..Default::default()
+        })
+        .expect("save shell settings");
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-success", "Success", "Coder").await;
+        insert_test_agent(&state, "agent-failure", "Failure", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let success = agents.get("agent-success").expect("success agent");
+            let mut success_config = success.config.lock().expect("success config");
+            success_config.provider = "mock".to_string();
+            success_config.folder = workspace.path().to_string_lossy().to_string();
+            *success.current_status.lock().expect("success status") = "Off".to_string();
+
+            let failure = agents.get("agent-failure").expect("failure agent");
+            failure.config.lock().expect("failure config").provider = "not-a-provider".to_string();
+            *failure.current_status.lock().expect("failure status") = "Off".to_string();
+        }
+
+        let error = deliver_message_to_target(
+            None,
+            &state,
+            "all",
+            "record this before aggregate failure",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            true,
+        )
+        .await
+        .expect_err("one target cannot launch");
+
+        assert_eq!(error.code, "request_failed");
+        let conversation_id = state
+            .conversation_archive
+            .active_conversation_id_for_test("agent-success")
+            .expect("successful target archive");
+        let records: Vec<wardian_core::conversations::ConversationNarrativeRecord> =
+            wardian_core::conversations::read_jsonl_records(
+                &wardian_core::paths::agent_conversation_dir("agent-success", &conversation_id)
+                    .expect("conversation dir")
+                    .join("conversation.jsonl"),
+            )
+            .expect("conversation records");
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[0].text.as_deref(),
+            Some("record this before aggregate failure")
+        );
+        assert_eq!(
+            records[1].text.as_deref(),
+            Some("Mock headless execution completed successfully.")
+        );
     }
 
     #[test]
@@ -4987,6 +5941,22 @@ mod tests {
 
             assert_eq!(route, DeliveryRoute::Headless, "status={status}");
         }
+    }
+
+    #[test]
+    fn headless_delivery_timeout_is_bounded_for_control_requests() {
+        assert_eq!(
+            bounded_headless_delivery_timeout(None),
+            crate::manager::DEFAULT_HEADLESS_RUN_TIMEOUT
+        );
+        assert_eq!(
+            bounded_headless_delivery_timeout(Some(0)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            bounded_headless_delivery_timeout(Some(20 * 60 * 1000)),
+            MAX_HEADLESS_DELIVERY_TIMEOUT
+        );
     }
 
     #[test]
@@ -6269,6 +7239,7 @@ mod tests {
                 resume_session: "resume-1".to_string(),
                 owner_kind: "workflow_run".to_string(),
                 owner_id: "wf/run-1/node-1".to_string(),
+                acquisition_id: "test-acquisition-2".to_string(),
                 owner_node_id: Some("node-1".to_string()),
                 mode: "background_resume".to_string(),
                 started_at: "2026-06-01T00:00:00Z".to_string(),
@@ -7338,6 +8309,7 @@ mod tests {
         {
             let mut config = agent.config.lock().unwrap();
             config.resume_session = Some("provider-session-1".to_string());
+            config.is_off = true;
             *agent.current_status.lock().unwrap() = "Off".to_string();
         }
         let now = chrono::Utc::now();
@@ -7348,6 +8320,7 @@ mod tests {
                 resume_session: "provider-session-1".to_string(),
                 owner_kind: "message_delivery".to_string(),
                 owner_id: "int-1".to_string(),
+                acquisition_id: "test-acquisition-3".to_string(),
                 owner_node_id: None,
                 mode: "background_resume".to_string(),
                 started_at: now.to_rfc3339(),
@@ -7361,5 +8334,38 @@ mod tests {
         let snapshot = snapshot_agent(&agent);
 
         assert_eq!(snapshot.status, "headless");
+    }
+
+    #[test]
+    fn snapshot_agent_keeps_a_live_agent_status_while_a_fresh_background_run_is_leased() {
+        let _home = TestWardianHome::new();
+        let agent = test_agent("agent-1", "CoderOne", "Coder");
+        {
+            let mut config = agent.config.lock().unwrap();
+            config.is_off = false;
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        let now = chrono::Utc::now();
+        wardian_core::conversation_lease::acquire_lease(
+            wardian_core::conversation_lease::ConversationLease {
+                agent_id: "agent-1".to_string(),
+                provider: "mock".to_string(),
+                resume_session: String::new(),
+                owner_kind: "workflow_run".to_string(),
+                owner_id: "workflow/fresh".to_string(),
+                acquisition_id: "test-acquisition-4".to_string(),
+                owner_node_id: Some("plan".to_string()),
+                mode: "background_fresh".to_string(),
+                started_at: now.to_rfc3339(),
+                heartbeat_at: now.to_rfc3339(),
+                expires_at: (now + chrono::Duration::minutes(5)).to_rfc3339(),
+            },
+            &now.to_rfc3339(),
+        )
+        .expect("lease");
+
+        let snapshot = snapshot_agent(&agent);
+
+        assert_eq!(snapshot.status, "idle");
     }
 }

@@ -17,7 +17,7 @@ pub use classes::{
     get_agent_class_default_instruction, get_all_agent_classes, init_agent_classes, save_classes,
 };
 pub use headless::{
-    obtain_session_id, run_headless_with_options, HeadlessRunOptions,
+    obtain_session_id, run_headless_with_options, HeadlessRunOptions, DEFAULT_HEADLESS_RUN_TIMEOUT,
 };
 pub(crate) use opencode::opencode_last_assistant_text;
 pub(crate) use session_identity::{
@@ -204,91 +204,125 @@ pub(crate) fn set_agent_status(
     if let Ok(mut status) = current_status.lock() {
         if *status != next_status {
             *status = next_status.to_string();
-            let observed_at =
-                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-            let status_app = app.clone();
-            let status_session_id = session_id.to_string();
-            let status = next_status.to_string();
-            let current_status = current_status.clone();
-            let status_sequence = app
-                .state::<AppState>()
-                .next_status_observation_sequence(session_id);
-            tauri::async_runtime::spawn(async move {
-                let state = status_app.state::<AppState>();
-                if !status_arc_belongs_to_current_agent(&state, &status_session_id, &current_status)
-                    .await
-                {
-                    log_debug(&format!(
-                        "[Wardian] Ignoring stale status '{}' for replaced session {}",
-                        status, status_session_id
-                    ));
-                    return;
-                }
-
-                // Phase 2: Persist status change to SQLite after confirming the
-                // reporting runtime still owns the active agent slot.
-                let _ = wardian_core::db::update_agent_status(&status_session_id, &status, None);
-
-                record_provider_input_from_status_state(
-                    &state,
-                    &status_session_id,
-                    &status,
-                    status_sequence,
-                )
-                .await;
-                let agents = state.agents.lock().await;
-                if let Some(agent) = agents.get(&status_session_id) {
-                    if let Ok(mut last_status_at) = agent.last_status_at.lock() {
-                        *last_status_at = Some(observed_at.clone());
-                    }
-                    if let Ok(mut watch_state) = agent.watch_state.lock() {
-                        watch_state.push_event(
-                            "status",
-                            serde_json::json!({
-                                "status": wardian_core::identity::normalize_status(&status),
-                                "observed_at": observed_at,
-                            }),
-                        );
-                    }
-                }
-                drop(agents);
-
-                let normalized_status = wardian_core::identity::normalize_status(&status);
-                if matches!(normalized_status.as_str(), "idle" | "action_required") {
-                    let archive_app = status_app.clone();
-                    let archive_session_id = status_session_id.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let state = archive_app.state::<AppState>();
-                        if let Err(error) =
-                            crate::commands::chat::archive_agent_chat_events_for_state(
-                                state.inner(),
-                                &archive_session_id,
-                            )
-                            .await
-                        {
-                            log_debug(&format!(
-                                "[WARDIAN] conversation archive status sync failed for {archive_session_id}: {error}"
-                            ));
-                        }
-                    });
-                }
-
-                let _ = status_app.emit(
-                    "agent-status-updated",
-                    serde_json::json!({
-                        "session_id": status_session_id.clone(),
-                        "current_status": status.clone(),
-                    }),
-                );
-                crate::control::spawn_mailbox_drain_if_idle(
-                    &status_app,
-                    &status_session_id,
-                    &status,
-                );
-            });
+            schedule_agent_status_observation(app, session_id, current_status, next_status.to_string());
         }
     }
+}
+
+/// Persists and emits an already-current status. Runtime replacement uses this
+/// after atomically installing a new status Arc: providers can set the Arc
+/// before it enters the agent map, so no ordinary transition may remain to
+/// publish once the incarnation becomes current.
+pub(crate) fn publish_agent_status(
+    app: &AppHandle,
+    session_id: &str,
+    current_status: &std::sync::Arc<std::sync::Mutex<String>>,
+) {
+    let Ok(status) = current_status.lock().map(|status| status.clone()) else {
+        return;
+    };
+    schedule_agent_status_observation(app, session_id, current_status, status);
+}
+
+fn schedule_agent_status_observation(
+    app: &AppHandle,
+    session_id: &str,
+    current_status: &std::sync::Arc<std::sync::Mutex<String>>,
+    status: String,
+) {
+    let observed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let status_app = app.clone();
+    let status_session_id = session_id.to_string();
+    let current_status = current_status.clone();
+    let status_sequence = app
+        .state::<AppState>()
+        .next_status_observation_sequence(session_id);
+    tauri::async_runtime::spawn(async move {
+        let state = status_app.state::<AppState>();
+        // Keep the map lock through the synchronous durable write. A runtime
+        // replacement must wait until this observation is either rejected or
+        // committed, which prevents an old Arc from winning the database race
+        // after the replacement installs its own status incarnation.
+        let agents = state.agents.lock().await;
+        let belongs_to_current_agent = agents
+            .get(&status_session_id)
+            .is_some_and(|agent| std::sync::Arc::ptr_eq(&agent.current_status, &current_status));
+        if !belongs_to_current_agent {
+            log_debug(&format!(
+                "[Wardian] Ignoring stale status '{}' for replaced session {}",
+                status, status_session_id
+            ));
+            return;
+        }
+
+        // Phase 2: Persist while the reporting runtime still owns the active
+        // agent slot. `update_agent_status` is synchronous, so no await can
+        // let a replacement interleave between the identity check and write.
+        let _ = wardian_core::db::update_agent_status(&status_session_id, &status, None);
+        if let Some(agent) = agents.get(&status_session_id) {
+            if let Ok(mut last_status_at) = agent.last_status_at.lock() {
+                *last_status_at = Some(observed_at.clone());
+            }
+            if let Ok(mut watch_state) = agent.watch_state.lock() {
+                watch_state.push_event(
+                    "status",
+                    serde_json::json!({
+                        "status": wardian_core::identity::normalize_status(&status),
+                        "observed_at": observed_at,
+                    }),
+                );
+            }
+        }
+        drop(agents);
+
+        // Provider-input readiness and UI events are asynchronous side
+        // effects. Revalidate after each await so a late observation cannot
+        // publish a status after its runtime was replaced.
+        if !status_arc_belongs_to_current_agent(&state, &status_session_id, &current_status).await {
+            return;
+        }
+        record_provider_input_from_status_state(
+            &state,
+            &status_session_id,
+            &status,
+            status_sequence,
+        )
+        .await;
+        if !status_arc_belongs_to_current_agent(&state, &status_session_id, &current_status).await {
+            return;
+        }
+
+        let normalized_status = wardian_core::identity::normalize_status(&status);
+        if matches!(normalized_status.as_str(), "idle" | "action_required") {
+            let archive_app = status_app.clone();
+            let archive_session_id = status_session_id.clone();
+            tauri::async_runtime::spawn(async move {
+                let state = archive_app.state::<AppState>();
+                if let Err(error) = crate::commands::chat::archive_agent_chat_events_for_state(
+                    state.inner(),
+                    &archive_session_id,
+                )
+                .await
+                {
+                    log_debug(&format!(
+                        "[WARDIAN] conversation archive status sync failed for {archive_session_id}: {error}"
+                    ));
+                }
+            });
+        }
+
+        if !status_arc_belongs_to_current_agent(&state, &status_session_id, &current_status).await {
+            return;
+        }
+        let _ = status_app.emit(
+            "agent-status-updated",
+            serde_json::json!({
+                "session_id": status_session_id.clone(),
+                "current_status": status.clone(),
+            }),
+        );
+        crate::control::spawn_mailbox_drain_if_idle(&status_app, &status_session_id, &status);
+    });
 }
 
 async fn status_arc_belongs_to_current_agent(

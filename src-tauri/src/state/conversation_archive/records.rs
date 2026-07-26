@@ -25,7 +25,15 @@ pub fn narrative_from_chat_event(
             .unwrap_or_else(current_rfc3339_millis),
         kind,
         role,
-        speaker_type: event.role.as_ref().map(speaker_type_from_role),
+        speaker_type: event.role.as_ref().map(|role| {
+            if role == &AgentChatRole::User
+                && metadata_string(&event.metadata, "sender_agent_id").is_some()
+            {
+                ConversationSpeakerType::Agent
+            } else {
+                speaker_type_from_role(role)
+            }
+        }),
         text: event.text.clone(),
         tool: tool_name_from_chat_event(event),
         status: event.status.as_ref().map(status_to_string),
@@ -41,6 +49,22 @@ pub(super) fn source_record_from_chat_event(
     event: &AgentChatEvent,
     seq: u64,
 ) -> Option<ConversationSourceRecord> {
+    if let Some(sender_agent_id) = metadata_string(&event.metadata, "sender_agent_id") {
+        return Some(ConversationSourceRecord {
+            schema: CONVERSATION_SCHEMA,
+            source_id: format!("agent:{sender_agent_id}"),
+            provider: "wardian".to_string(),
+            provider_session_id: Some(sender_agent_id),
+            source_kind: "wardian_agent".to_string(),
+            source_path: None,
+            cursor: Some(seq.to_string()),
+            offset: None,
+            row_id: None,
+            provider_event_type: Some("delivered_input".to_string()),
+            hash: None,
+            artifact_ref: None,
+        });
+    }
     let source_kind = event
         .source
         .clone()

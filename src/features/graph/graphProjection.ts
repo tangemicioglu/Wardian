@@ -151,9 +151,11 @@ export function buildAgentGraph(input: BuildAgentGraphInput): AgentGraphProjecti
 
   const nodes = visibleAgents.map((agent) => {
     const telemetry = input.telemetry[agent.session_id];
-    const status = agent.is_off || input.offAgentIds?.has(agent.session_id)
-      ? "Off"
-      : telemetry?.current_status ?? "Idle";
+    const status = telemetry?.current_status === "Headless"
+      ? "Headless"
+      : agent.is_off || input.offAgentIds?.has(agent.session_id)
+        ? "Off"
+        : telemetry?.current_status ?? "Idle";
     const position = positions.get(agent.session_id) ?? { x: 0, y: 0 };
 
     return {
@@ -698,7 +700,8 @@ function statusToColor(status: string) {
   if (normalized.includes("off")) return "var(--color-wardian-off)";
   if (normalized.includes("action")) return "var(--color-wardian-warning)";
   if (normalized.includes("error") || normalized.includes("fail")) return "var(--color-wardian-error)";
-  if (normalized.includes("process") || normalized.includes("headless")) return "var(--color-wardian-processing)";
+  if (normalized.includes("headless")) return "var(--color-wardian-headless)";
+  if (normalized.includes("process")) return "var(--color-wardian-processing)";
   if (normalized.includes("idle")) return "var(--color-wardian-success)";
   return "var(--color-wardian-text-muted)";
 }

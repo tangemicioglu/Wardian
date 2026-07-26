@@ -221,15 +221,20 @@ pub fn assign_pid_to_job(job: &win32job::Job, pid: u32, context: &str) -> Result
 pub fn process_exists(pid: u32) -> bool {
     unsafe {
         use winapi::um::handleapi::CloseHandle;
-        use winapi::um::processthreadsapi::OpenProcess;
+        use winapi::um::processthreadsapi::{GetExitCodeProcess, OpenProcess};
         use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
 
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {
             return false;
         }
+        // OpenProcess can still succeed for a terminated process while another
+        // handle keeps its kernel object alive. Treat only STILL_ACTIVE (259)
+        // as a live descendant, otherwise timeout cleanup reports a false leak.
+        let mut exit_code = 0u32;
+        let active = GetExitCodeProcess(handle, &mut exit_code) != 0 && exit_code == 259;
         CloseHandle(handle);
-        true
+        active
     }
 }
 

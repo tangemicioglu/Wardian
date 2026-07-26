@@ -462,6 +462,16 @@ pub async fn workflow_resume(
     let owner_id = format!("{}/{}", blueprint.id, run_id);
 
     tokio::spawn(async move {
+        let _headless_execution =
+            match wardian_core::workflow_execution_lock::acquire_headless_execution_guard() {
+                Ok(guard) => guard,
+                Err(error) => {
+                    crate::utils::logging::log_debug(&format!(
+                        "[workflow] resume could not lock execution: {error}"
+                    ));
+                    return;
+                }
+            };
         let exec = runs::live_executor_with_catalog_assignments_and_app(
             app,
             workspace,
@@ -534,6 +544,8 @@ pub async fn workflow_approve(
             &provider,
         )
         .await;
+        let _headless_execution =
+            wardian_core::workflow_execution_lock::acquire_headless_execution_guard()?;
         let exec = runs::live_executor_with_catalog_assignments_and_app(
             app.clone(),
             workspace,

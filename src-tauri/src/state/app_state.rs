@@ -115,6 +115,38 @@ impl AppState {
             .clone()
     }
 
+    /// Returns the gate shared by agent lifecycle transitions and headless
+    /// provider runs for one registered agent. Keeping this ownership in
+    /// `AppState` prevents a resumed live session from overlapping an in-flight
+    /// headless use of the same saved provider conversation.
+    pub async fn agent_lifecycle_lock_for(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.agent_lifecycle_locks.lock().await;
+        locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    pub async fn lock_agent_lifecycle(
+        &self,
+        session_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.agent_lifecycle_lock_for(session_id).await.lock_owned().await
+    }
+
+    /// Tries to claim an agent's lifecycle gate without waiting. Headless
+    /// message delivery uses this to preserve QueueIfBusy behavior when a
+    /// lifecycle operation or another headless request already owns the agent.
+    pub async fn try_lock_agent_lifecycle(
+        &self,
+        session_id: &str,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        self.agent_lifecycle_lock_for(session_id)
+            .await
+            .try_lock_owned()
+            .ok()
+    }
+
     pub async fn remove_agent_delivery_state(&self, target_session_id: &str) {
         self.delivery_locks.lock().await.remove(target_session_id);
         if let Ok(mut sequences) = self.status_observation_sequences.lock() {

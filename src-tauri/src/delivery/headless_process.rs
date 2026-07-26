@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use wardian_core::control::{
     DeliveryErrorDetail, DeliveryTransportKind, InteractionBodyRef, InteractionRecord,
 };
+use wardian_core::conversation_lease::ConversationLeaseOwner;
 use wardian_core::models::AgentConfig;
 
 #[derive(Debug, Clone)]
@@ -15,6 +16,8 @@ pub struct HeadlessProcessPromptRequest {
     pub resume_session: Option<String>,
     pub config_override: Option<AgentConfig>,
     pub interaction_id: Option<String>,
+    pub timeout: Duration,
+    pub lease_owner: Option<ConversationLeaseOwner>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +57,8 @@ pub async fn run_headless_process_prompt(
         output_format: "json",
         provider_name: &request.provider,
         config_override: request.config_override.as_ref(),
+        timeout: request.timeout,
+        lease_owner: request.lease_owner.clone(),
     })
     .await;
 
@@ -142,6 +147,7 @@ mod tests {
         previous_home: Option<std::ffi::OsString>,
         previous_script: Option<std::ffi::OsString>,
         previous_scenario: Option<std::ffi::OsString>,
+        previous_delay: Option<std::ffi::OsString>,
         _home: tempfile::TempDir,
     }
 
@@ -152,6 +158,7 @@ mod tests {
             let previous_home = std::env::var_os("WARDIAN_HOME");
             let previous_script = std::env::var_os("WARDIAN_MOCK_SCRIPT");
             let previous_scenario = std::env::var_os("WARDIAN_MOCK_SCENARIO");
+            let previous_delay = std::env::var_os("WARDIAN_MOCK_DELAY_MS");
             std::env::set_var("WARDIAN_HOME", home.path());
             wardian_core::db::init_db_at_path(&home.path().join("state.db"))
                 .expect("init test database");
@@ -162,6 +169,7 @@ mod tests {
                 previous_home,
                 previous_script,
                 previous_scenario,
+                previous_delay,
                 _home: home,
             }
         }
@@ -180,6 +188,10 @@ mod tests {
             match self.previous_scenario.take() {
                 Some(value) => std::env::set_var("WARDIAN_MOCK_SCENARIO", value),
                 None => std::env::remove_var("WARDIAN_MOCK_SCENARIO"),
+            }
+            match self.previous_delay.take() {
+                Some(value) => std::env::set_var("WARDIAN_MOCK_DELAY_MS", value),
+                None => std::env::remove_var("WARDIAN_MOCK_DELAY_MS"),
             }
         }
     }
@@ -203,6 +215,8 @@ mod tests {
             resume_session: None,
             config_override: None,
             interaction_id: Some("int-1".to_string()),
+            timeout: crate::manager::DEFAULT_HEADLESS_RUN_TIMEOUT,
+            lease_owner: None,
         };
 
         assert_eq!(request.provider, "mock");
@@ -229,6 +243,8 @@ mod tests {
                 resume_session: None,
                 config_override: None,
                 interaction_id: None,
+                timeout: crate::manager::DEFAULT_HEADLESS_RUN_TIMEOUT,
+                lease_owner: None,
             },
         )
         .await
@@ -288,6 +304,8 @@ mod tests {
                 resume_session: None,
                 config_override: None,
                 interaction_id: Some(interaction.id.clone()),
+                timeout: crate::manager::DEFAULT_HEADLESS_RUN_TIMEOUT,
+                lease_owner: None,
             },
         )
         .await
@@ -306,6 +324,55 @@ mod tests {
         assert_eq!(persisted_error.code, "headless_process_failed");
         assert!(!persisted_error.message.contains("secret prompt"));
         assert!(persisted_error.message.contains("[redacted prompt]"));
+    }
+
+    #[tokio::test]
+    async fn headless_process_times_out_and_persists_a_failed_attempt() {
+        if !node_available() {
+            return;
+        }
+        let _env = TestEnv::new();
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::env::set_var("WARDIAN_MOCK_SCENARIO", "headless_delayed");
+        std::env::set_var("WARDIAN_MOCK_DELAY_MS", "1000");
+        let state = crate::state::AppState::new();
+        let interaction = state
+            .interactions
+            .create_message_durable(
+                None,
+                vec!["agent-1".to_string()],
+                InteractionBodyRef::Inline {
+                    body: "take too long".to_string(),
+                },
+            )
+            .await
+            .expect("interaction");
+
+        let started = std::time::Instant::now();
+        let error = run_headless_process_prompt(
+            &state,
+            HeadlessProcessPromptRequest {
+                node: "timeout".to_string(),
+                provider: "mock".to_string(),
+                cwd: workspace.path().to_path_buf(),
+                prompt: "take too long".to_string(),
+                session_id: "agent-1".to_string(),
+                resume_session: None,
+                config_override: None,
+                interaction_id: Some(interaction.id.clone()),
+                timeout: Duration::from_millis(25),
+                lease_owner: None,
+            },
+        )
+        .await
+        .expect_err("headless process should time out");
+
+        assert!(error.contains("exceeded its"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let attempts = wardian_core::db::list_interaction_delivery_attempts(&interaction.id)
+            .expect("attempts");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].delivery_state, "failed");
     }
 
     #[test]

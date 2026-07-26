@@ -212,9 +212,10 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
     setContextMenu({ visible: true, x: e.clientX, y: e.clientY, agentId });
   };
 
-  const renderableAgents = filteredAgents.filter(
-    (agent: AgentConfig) => !offAgentIds.has(agent.session_id.toString()),
-  );
+  const renderableAgents = filteredAgents.filter((agent: AgentConfig) => {
+    const agentId = agent.session_id.toString();
+    return !offAgentIds.has(agentId) || telemetry[agentId]?.current_status === "Headless";
+  });
   const cardModeForAgent = (agentId: string): GridCardMode => cardModeOverrides[agentId] ?? gridCardDisplayMode;
   const layoutAgents = useMemo(() => renderableAgents.map((agent) => ({
     id: agent.session_id.toString(),

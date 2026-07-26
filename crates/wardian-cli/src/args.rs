@@ -479,7 +479,7 @@ pub struct SendArgs {
     #[arg(long = "wait-until")]
     pub wait_until: Option<String>,
 
-    /// Maximum time to wait, e.g. 30s, 10m, or 1000ms
+    /// Maximum time to wait for a headless delivery or --wait-until, e.g. 30s, 10m, or 1000ms
     #[arg(long, default_value = "10m")]
     pub timeout: String,
 
