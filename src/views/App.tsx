@@ -60,6 +60,7 @@ import {
   normalizeAgentsOverviewSurfaceState,
 } from "../features/workbench/surfaces/AgentsOverviewSurface";
 import { createCoreWorkbenchSurfaceRegistry } from "../features/workbench/coreSurfaceRegistry";
+import { findExistingSurface } from "../features/workbench/adjacentSurfaceTargeting";
 import { createWorkbenchNavigationService } from "../features/workbench/navigationService";
 import { SurfaceRecoveryPlaceholder } from "../features/workbench/SurfaceRecoveryPlaceholder";
 import { AgentSessionSurface } from "../features/workbench/surfaces/AgentSessionSurface";
@@ -1017,6 +1018,59 @@ function AppBody() {
     });
   }, [workbenchNavigation]);
 
+  const scheduleAgentOverviewScroll = useCallback((sessionId: string) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollAgentCardWithinOverview(sessionId);
+      });
+    });
+  }, []);
+
+  const focusAgentInOverviewSurface = useCallback((surfaceId: string, sessionId: string): boolean => {
+    const store = workbenchPersistence.store;
+    const overviewSurface = store.getState().document.surfaces[surfaceId];
+    if (overviewSurface?.surface_type !== "agents-overview") return false;
+
+    setSelectedAgentIds(new Set([sessionId]));
+    const currentState = normalizeAgentsOverviewSurfaceState(overviewSurface.state);
+    workbenchNavigation.focus(overviewSurface.surface_id);
+    store.getState().apply_commands([{
+      type: "update_surface_state",
+      surface_id: overviewSurface.surface_id,
+      state_schema_version: overviewSurface.state_schema_version,
+      state: { ...currentState, focused_agent_id: sessionId },
+    }]);
+    scheduleAgentOverviewScroll(sessionId);
+    return true;
+  }, [scheduleAgentOverviewScroll, setSelectedAgentIds, workbenchNavigation, workbenchPersistence.store]);
+
+  const openAgentFromSurface = useCallback((sourceSurfaceId: string, sessionId: string) => {
+    const state = workbenchPersistence.store.getState();
+    const overviewSurfaceId = findExistingSurface(
+      state.document,
+      state.surface_mru,
+      "agents-overview",
+    );
+    const overviewIsVisibleInZoom = overviewSurfaceId !== undefined && (
+      state.zoomed_group_id === null
+      || state.document.groups[state.zoomed_group_id]?.surface_ids.includes(overviewSurfaceId)
+    );
+    if (
+      overviewSurfaceId
+      && overviewIsVisibleInZoom
+      && focusAgentInOverviewSurface(overviewSurfaceId, sessionId)
+    ) {
+      return;
+    }
+
+    void workbenchNavigation.open_contextually(sourceSurfaceId, {
+      surface_type: "agent-session",
+      resource_key: sessionId,
+    }).catch((error) => {
+      console.error("contextual agent open failed", error);
+    });
+  }, [focusAgentInOverviewSurface, workbenchNavigation, workbenchPersistence.store]);
+
   const openAgentToSide = useCallback((sessionId: string) => {
     workbenchNavigation.open_to_side({
       surface_type: "agent-session",
@@ -1025,16 +1079,16 @@ function AppBody() {
   }, [workbenchNavigation]);
 
   const revealAgentInOverview = useCallback((sessionId: string) => {
-    setSelectedAgentIds(new Set([sessionId]));
     const store = workbenchPersistence.store;
     const snapshot = store.getState();
-    const overviewSurface = snapshot.surface_mru
-      .map((surfaceId) => snapshot.document.surfaces[surfaceId])
-      .find((surface) => surface?.surface_type === "agents-overview")
-      ?? Object.values(snapshot.document.surfaces)
-        .find((surface) => surface.surface_type === "agents-overview");
+    const overviewSurfaceId = findExistingSurface(
+      snapshot.document,
+      snapshot.surface_mru,
+      "agents-overview",
+    );
 
-    if (!overviewSurface) {
+    if (!overviewSurfaceId) {
+      setSelectedAgentIds(new Set([sessionId]));
       workbenchNavigation.open({
         surface_type: "agents-overview",
         state: {
@@ -1044,23 +1098,12 @@ function AppBody() {
           focused_agent_id: sessionId,
         },
       });
-    } else {
-      const currentState = normalizeAgentsOverviewSurfaceState(overviewSurface.state);
-      workbenchNavigation.focus(overviewSurface.surface_id);
-      store.getState().apply_commands([{
-        type: "update_surface_state",
-        surface_id: overviewSurface.surface_id,
-        state_schema_version: overviewSurface.state_schema_version,
-        state: { ...currentState, focused_agent_id: sessionId },
-      }]);
+      scheduleAgentOverviewScroll(sessionId);
+      return;
     }
 
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        scrollAgentCardWithinOverview(sessionId);
-      });
-    });
-  }, [setSelectedAgentIds, workbenchNavigation, workbenchPersistence.store, workbenchRegistry]);
+    focusAgentInOverviewSurface(overviewSurfaceId, sessionId);
+  }, [focusAgentInOverviewSurface, scheduleAgentOverviewScroll, setSelectedAgentIds, workbenchNavigation, workbenchPersistence.store, workbenchRegistry]);
 
   const workbenchNotice = [
     workbenchPersistence.notice,
@@ -1245,7 +1288,7 @@ function AppBody() {
           surface_id={surface.surface_id}
           state={{}}
           visibility={visibility}
-          onOpenAgent={openAgent}
+          onOpenAgent={(sessionId) => openAgentFromSurface(surface.surface_id, sessionId)}
           onSendAgentPrompt={sendCommand}
         />
       );
@@ -1269,7 +1312,7 @@ function AppBody() {
           teams={teams}
           interactions={agentInteractions}
           onSelectionChange={setSelectedAgentIds}
-          onOpenAgent={openAgent}
+          onOpenAgent={(sessionId) => openAgentFromSurface(surface.surface_id, sessionId)}
           on_state_change={(state) => {
             workbenchPersistence.store.getState().apply_commands([{
               type: "update_surface_state",
@@ -1315,7 +1358,7 @@ function AppBody() {
           selectedAgentIds={selectedAgentIds}
           offAgentIds={offAgentIds}
           onSelectionChange={setSelectedAgentIds}
-          onOpenAgent={openAgent}
+          onOpenAgent={(sessionId) => openAgentFromSurface(surface.surface_id, sessionId)}
           on_state_change={(state) => {
             workbenchPersistence.store.getState().apply_commands([{
               type: "update_surface_state",

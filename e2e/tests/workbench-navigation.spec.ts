@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import path from "node:path";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import type { WorkbenchDocumentV1 } from "../../src/types";
@@ -14,6 +16,7 @@ import {
   activeWorkbenchGroup,
   dragSurfaceTab,
   openSurface,
+  surfacePanel,
   surfaceTab,
   waitForStableBoundingBoxes,
   type CoreWorkbenchSurfaceType,
@@ -216,6 +219,213 @@ test("opens every migrated surface and focuses an existing singleton", async ({ 
   await openSurface(page, "inbox");
   await expect(surfaceTab(page, "inbox")).toHaveCount(1);
   await expect(surfaceTab(page, "inbox")).toHaveAttribute("aria-selected", "true");
+});
+
+test("retargets an adjoining Agent Session when Graph opens an agent", async ({ page }) => {
+  const graph = makeWorkbenchSurface("graph-targeting", "graph", {
+    state: {
+      enabled_reasons: [],
+      inspected_agent_id: ALPHA_AGENT.session_id,
+      inspector_open: true,
+      selected_edge_id: null,
+      picker_search: "",
+    },
+  });
+  const betaSession = makeWorkbenchSurface("agent-session-targeting", "agent-session", {
+    resource_key: BETA_AGENT.session_id,
+  });
+  const document = makeWorkbenchDocument({
+    root: {
+      kind: "split",
+      node_id: "graph-agent-split",
+      direction: "horizontal",
+      ratio: 0.5,
+      first: { kind: "group", group_id: "graph-group" },
+      second: { kind: "group", group_id: "agent-group" },
+    },
+    groups: {
+      "graph-group": {
+        group_id: "graph-group",
+        surface_ids: [graph.surface_id],
+        active_surface_id: graph.surface_id,
+      },
+      "agent-group": {
+        group_id: "agent-group",
+        surface_ids: [betaSession.surface_id],
+        active_surface_id: betaSession.surface_id,
+      },
+    },
+    surfaces: [graph, betaSession],
+    active_group_id: "graph-group",
+  });
+
+  await page.setViewportSize({ width: 1600, height: 960 });
+  const ipc = await bootWorkbench(page, document, [ALPHA_AGENT, BETA_AGENT]);
+  const graphPanel = surfacePanel(page, "graph");
+  await expect(graphPanel.getByRole("button", { name: "Open Agent", exact: true })).toBeVisible();
+
+  await graphPanel.getByRole("button", { name: "Open Agent", exact: true }).click();
+
+  await expect(surfaceTab(page, "agent-session", ALPHA_AGENT.session_id)).toHaveCount(1);
+  await expect(surfaceTab(page, "agent-session", BETA_AGENT.session_id)).toHaveCount(0);
+  await expect(surfacePanel(page, "agent-session", ALPHA_AGENT.session_id)).toBeVisible();
+  await expect(page.getByTestId("workbench-group")).toHaveCount(2);
+  await expect.poll(async () => {
+    const snapshot = await ipc.snapshot();
+    return snapshot.load_result.document.surfaces[betaSession.surface_id]?.resource_key;
+  }).toBe(ALPHA_AGENT.session_id);
+  expect(await ipc.calls("kill_agent")).toEqual([]);
+
+  const screenshotPath = path.resolve(
+    "e2e/screenshots/contextual-agent-targeting/2026-07-24/graph-targets-adjacent-agent-session.png",
+  );
+  mkdirSync(path.dirname(screenshotPath), { recursive: true });
+  await page.screenshot({ path: screenshotPath, animations: "disabled" });
+});
+
+test("reveals an agent in an adjoining Agents surface when Graph opens an agent", async ({ page }) => {
+  const graph = makeWorkbenchSurface("graph-agents-targeting", "graph", {
+    state: {
+      enabled_reasons: [],
+      inspected_agent_id: ALPHA_AGENT.session_id,
+      inspector_open: true,
+      selected_edge_id: null,
+      picker_search: "",
+    },
+  });
+  const agentsOverview = makeWorkbenchSurface("agents-overview-targeting", "agents-overview", {
+    state: {
+      mode: "grid",
+      last_multi_agent_mode: "grid",
+      focused_agent_id: null,
+      search_query: "",
+      status_filter: [],
+    },
+  });
+  const document = makeWorkbenchDocument({
+    root: {
+      kind: "split",
+      node_id: "graph-agents-overview-split",
+      direction: "horizontal",
+      ratio: 0.5,
+      first: { kind: "group", group_id: "graph-group" },
+      second: { kind: "group", group_id: "agents-group" },
+    },
+    groups: {
+      "graph-group": {
+        group_id: "graph-group",
+        surface_ids: [graph.surface_id],
+        active_surface_id: graph.surface_id,
+      },
+      "agents-group": {
+        group_id: "agents-group",
+        surface_ids: [agentsOverview.surface_id],
+        active_surface_id: agentsOverview.surface_id,
+      },
+    },
+    surfaces: [graph, agentsOverview],
+    active_group_id: "graph-group",
+  });
+
+  await page.setViewportSize({ width: 1600, height: 960 });
+  const ipc = await bootWorkbench(page, document, [ALPHA_AGENT, BETA_AGENT]);
+  const graphPanel = surfacePanel(page, "graph");
+  const overviewPanel = surfacePanel(page, "agents-overview");
+  await expect(graphPanel.getByRole("button", { name: "Open Agent", exact: true })).toBeVisible();
+  await expect(overviewPanel).toBeVisible();
+
+  await graphPanel.getByRole("button", { name: "Open Agent", exact: true }).click();
+
+  await expect(surfaceTab(page, "agents-overview")).toHaveAttribute("aria-selected", "true");
+  await expect(overviewPanel.locator(`#agent-card-${ALPHA_AGENT.session_id}`)).toHaveClass(/ring-1/);
+  await expect(page.getByTestId("workbench-group")).toHaveCount(2);
+  await expect(surfaceTab(page, "agent-session", ALPHA_AGENT.session_id)).toHaveCount(0);
+  await expect.poll(async () => {
+    const snapshot = await ipc.snapshot();
+    return (snapshot.load_result.document.surfaces[agentsOverview.surface_id]?.state as {
+      focused_agent_id?: string | null;
+    }).focused_agent_id;
+  }).toBe(ALPHA_AGENT.session_id);
+  expect(await ipc.calls("kill_agent")).toEqual([]);
+
+  const screenshotPath = path.resolve(
+    "e2e/screenshots/contextual-agent-targeting/2026-07-25/graph-targets-adjacent-agents-surface.png",
+  );
+  mkdirSync(path.dirname(screenshotPath), { recursive: true });
+  await page.screenshot({ path: screenshotPath, animations: "disabled" });
+});
+
+test("reveals an agent in an inactive Agents tab in another pane when Graph opens an agent", async ({ page }) => {
+  const graph = makeWorkbenchSurface("graph-inactive-agents-targeting", "graph", {
+    state: {
+      enabled_reasons: [],
+      inspected_agent_id: ALPHA_AGENT.session_id,
+      inspector_open: true,
+      selected_edge_id: null,
+      picker_search: "",
+    },
+  });
+  const agentsOverview = makeWorkbenchSurface("agents-inactive-targeting", "agents-overview", {
+    state: {
+      mode: "grid",
+      last_multi_agent_mode: "grid",
+      focused_agent_id: null,
+      search_query: "",
+      status_filter: [],
+    },
+  });
+  const dashboard = makeWorkbenchSurface("dashboard-inactive-targeting", "dashboard");
+  const document = makeWorkbenchDocument({
+    root: {
+      kind: "split",
+      node_id: "graph-inactive-agents-split",
+      direction: "horizontal",
+      ratio: 0.5,
+      first: { kind: "group", group_id: "graph-group" },
+      second: { kind: "group", group_id: "agents-group" },
+    },
+    groups: {
+      "graph-group": {
+        group_id: "graph-group",
+        surface_ids: [graph.surface_id],
+        active_surface_id: graph.surface_id,
+      },
+      "agents-group": {
+        group_id: "agents-group",
+        surface_ids: [agentsOverview.surface_id, dashboard.surface_id],
+        active_surface_id: dashboard.surface_id,
+      },
+    },
+    surfaces: [graph, agentsOverview, dashboard],
+    active_group_id: "graph-group",
+  });
+
+  await page.setViewportSize({ width: 1600, height: 960 });
+  const ipc = await bootWorkbench(page, document, [ALPHA_AGENT, BETA_AGENT]);
+  const graphPanel = surfacePanel(page, "graph");
+  await expect(graphPanel.getByRole("button", { name: "Open Agent", exact: true })).toBeVisible();
+  await expect(surfaceTab(page, "agents-overview")).toHaveAttribute("aria-selected", "false");
+
+  await graphPanel.getByRole("button", { name: "Open Agent", exact: true }).click();
+
+  await expect(surfaceTab(page, "agents-overview")).toHaveAttribute("aria-selected", "true");
+  await expect(surfacePanel(page, "agents-overview").locator(`#agent-card-${ALPHA_AGENT.session_id}`))
+    .toHaveClass(/ring-1/);
+  await expect(page.getByTestId("workbench-group")).toHaveCount(2);
+  await expect(surfaceTab(page, "agent-session", ALPHA_AGENT.session_id)).toHaveCount(0);
+  await expect.poll(async () => {
+    const snapshot = await ipc.snapshot();
+    return (snapshot.load_result.document.surfaces[agentsOverview.surface_id]?.state as {
+      focused_agent_id?: string | null;
+    }).focused_agent_id;
+  }).toBe(ALPHA_AGENT.session_id);
+  expect(await ipc.calls("kill_agent")).toEqual([]);
+
+  const screenshotPath = path.resolve(
+    "e2e/screenshots/contextual-agent-targeting/2026-07-25/graph-targets-inactive-agents-tab.png",
+  );
+  mkdirSync(path.dirname(screenshotPath), { recursive: true });
+  await page.screenshot({ path: screenshotPath, animations: "disabled" });
 });
 
 test("uses real top-edge tab groups as responsive window chrome", async ({ page }) => {
