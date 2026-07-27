@@ -448,7 +448,14 @@ fn normalize_path_key(path: &Path) -> String {
 }
 
 fn normalize_path_text(path: &str) -> String {
-    path.replace('\\', "/")
+    let normalized = path.replace('\\', "/");
+    let normalized = normalized
+        .strip_prefix("//?/UNC/")
+        .map(|path| format!("//{path}"))
+        .unwrap_or(normalized);
+    normalized
+        .strip_prefix("//?/")
+        .unwrap_or(&normalized)
         .trim_end_matches('/')
         .to_ascii_lowercase()
 }
@@ -664,6 +671,14 @@ SET dp0=%~dp0
         assert_eq!(
             file_uri_path_text("file:///C:/Workspace/Wardian"),
             Some("C:/Workspace/Wardian")
+        );
+        assert_eq!(
+            normalize_path_text(r"\\?\C:\Workspace\Wardian"),
+            normalize_path_text("C:/Workspace/Wardian")
+        );
+        assert_eq!(
+            normalize_path_text(r"\\?\UNC\server\share\Wardian"),
+            normalize_path_text("//server/share/Wardian")
         );
     }
 
