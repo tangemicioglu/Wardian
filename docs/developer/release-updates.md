@@ -55,7 +55,7 @@ Configure these GitHub Actions secrets for macOS release jobs:
 
 The certificate private key, its export password, the app-specific password, and the Tauri updater private key are distinct secrets. Back up each outside the repository. Do not commit them, send them in chat, or substitute the normal Apple ID password for `APPLE_PASSWORD`.
 
-Real release builds fail before publication when any required macOS secret is missing. Dry runs require only the signing certificate and verify signatures without submitting notarization tickets. Real releases verify the signed app inside each DMG with `codesign`, validate stapled tickets with `xcrun stapler`, assess the DMG and app with Gatekeeper, and check the signed app inside each Tauri updater `.app.tar.gz` archive.
+Real release builds fail before publication when any required macOS secret is missing. Dry runs require only the signing certificate and verify signatures without submitting notarization tickets. Real releases verify the signed app inside each DMG with `codesign`, validate stapled tickets with `xcrun stapler`, assess each DMG with Gatekeeper's primary-signature context, assess the bundled app, and check the signed app inside each Tauri updater `.app.tar.gz` archive.
 
 For an end-to-end release check, install the produced DMG on a clean macOS
 machine by copying the app to `/Applications`, ejecting the DMG, launching the
