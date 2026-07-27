@@ -7880,7 +7880,21 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         let workspace = home.join("workspace");
         std::fs::create_dir_all(&workspace).expect("workspace dir");
         let conversation_id = "conversation-123";
-        let workspace_cache_key = workspace.to_string_lossy().to_string();
+
+        let mut config = AgentConfig {
+            provider: "antigravity".to_string(),
+            session_id: "wardian-agent".to_string(),
+            folder: workspace.to_string_lossy().to_string(),
+            provider_config: ProviderConfig::Antigravity(AntigravityProviderConfig::default()),
+            ..Default::default()
+        };
+
+        // The provider cache is keyed by the resolved workspace path. On
+        // Windows, `canonicalize` can expand a short temporary-directory name,
+        // so seed this fixture with the same identity the restore path uses.
+        let workspace_cache_key = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id)
+            .to_string_lossy()
+            .to_string();
         std::fs::write(
             home.join("cache").join("last_conversations.json"),
             serde_json::json!({ (workspace_cache_key): conversation_id }).to_string(),
@@ -7890,14 +7904,6 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         std::fs::create_dir_all(transcript.parent().expect("transcript parent"))
             .expect("transcript dir");
         std::fs::write(&transcript, "{}\n").expect("legacy transcript");
-
-        let mut config = AgentConfig {
-            provider: "antigravity".to_string(),
-            session_id: "wardian-agent".to_string(),
-            folder: workspace.to_string_lossy().to_string(),
-            provider_config: ProviderConfig::Antigravity(AntigravityProviderConfig::default()),
-            ..Default::default()
-        };
 
         restore_antigravity_workspace_conversation_from_home(&mut config, home)
             .expect("restore workspace conversation");
