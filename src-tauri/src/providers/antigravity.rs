@@ -655,6 +655,18 @@ SET dp0=%~dp0
         assert_eq!(conversation.as_deref(), Some("conversation-123"));
     }
 
+    #[test]
+    fn file_uri_paths_preserve_posix_and_windows_workspace_paths() {
+        assert_eq!(
+            file_uri_path_text("file:///tmp/wardian-workspace"),
+            Some("/tmp/wardian-workspace")
+        );
+        assert_eq!(
+            file_uri_path_text("file:///C:/Workspace/Wardian"),
+            Some("C:/Workspace/Wardian")
+        );
+    }
+
     fn protobuf_varint(value: u64) -> Vec<u8> {
         let mut value = value;
         let mut bytes = Vec::new();

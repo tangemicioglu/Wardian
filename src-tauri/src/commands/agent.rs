@@ -7881,10 +7881,12 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         std::fs::create_dir_all(&workspace).expect("workspace dir");
         let conversation_id = "conversation-123";
         let workspace_cache_key = workspace.to_string_lossy().to_string();
-        let workspace_uri = format!(
-            "file:///{}",
-            workspace.to_string_lossy().replace('\\', "/")
-        );
+        let workspace_uri_path = workspace.to_string_lossy().replace('\\', "/");
+        let workspace_uri = if workspace_uri_path.starts_with('/') {
+            format!("file://{workspace_uri_path}")
+        } else {
+            format!("file:///{workspace_uri_path}")
+        };
         std::fs::write(
             home.join("cache").join("last_conversations.json"),
             serde_json::json!({ (workspace_cache_key): conversation_id }).to_string(),
