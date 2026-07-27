@@ -25,6 +25,10 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
 
   const actionRequests: Array<{ headers: Record<string, string>; body: unknown }> = [];
   let statusStream: WebSocketRoute | null = null;
+  const recoveryScrollback = Array.from(
+    { length: 160 },
+    (_, index) => `recovery scrollback line ${String(index + 1).padStart(3, "0")}`,
+  );
 
   await page.route("**/remote/api/session", async (route) => {
     await route.fulfill({
@@ -138,6 +142,8 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   });
   await page.routeWebSocket("**/remote/api/agents/agent-1/terminal-stream", async (ws) => {
     let seeded = false;
+    let recoverySnapshotSent = false;
+    let liveEventSent = false;
     ws.onMessage((message) => {
       const payload = JSON.parse(String(message));
       if (!seeded) {
@@ -185,28 +191,51 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
             },
           }),
         );
-        ws.send(
-          JSON.stringify({
-            type: "events",
-            batch: {
-              status: "events",
-              runtime_generation: 1,
-              events: [{
-                type: "output",
-                sequence: 1,
-                runtime_generation: 1,
-                bytes_base64: Buffer.from("Finished remote e2e update.", "utf8").toString("base64"),
-              }],
-              next_sequence: 1,
-              available_from_sequence: 1,
-              latest_sequence: 1,
-              recovery_snapshot: null,
-            },
-          }),
-        );
         return;
       }
-      if (payload.type === "begin_activation") {
+      if (payload.type === "request_events" && !recoverySnapshotSent) {
+        recoverySnapshotSent = true;
+        ws.send(JSON.stringify({
+          type: "events",
+          batch: {
+            status: "gap",
+            runtime_generation: 1,
+            events: [],
+            next_sequence: 10,
+            available_from_sequence: 10,
+            latest_sequence: 10,
+            recovery_snapshot: {
+              snapshot_id: "recovery-snapshot-e2e",
+              session_id: "agent-1",
+              runtime_generation: 1,
+              sequence_barrier: 10,
+              geometry: { cols: 80, rows: 24 },
+              terminal_state_base64: Buffer.from("recovered current viewport", "utf8").toString("base64"),
+              visible_grid: "recovered current viewport",
+              scrollback: recoveryScrollback,
+            },
+          },
+        }));
+      } else if (payload.type === "request_events" && !liveEventSent) {
+        liveEventSent = true;
+        ws.send(JSON.stringify({
+          type: "events",
+          batch: {
+            status: "events",
+            runtime_generation: 1,
+            events: [{
+              type: "output",
+              sequence: 11,
+              runtime_generation: 1,
+              bytes_base64: Buffer.from("Finished remote e2e update.", "utf8").toString("base64"),
+            }],
+            next_sequence: 11,
+            available_from_sequence: 11,
+            latest_sequence: 11,
+            recovery_snapshot: null,
+          },
+        }));
+      } else if (payload.type === "begin_activation") {
         ws.send(JSON.stringify({
           type: "activation_begin",
           result: {
@@ -293,10 +322,24 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await page.getByRole("button", { name: "Open Remote Coder details" }).click();
   await expect(page.locator('[data-testid="remote-agent-detail"]')).toBeVisible();
   await expect(page.getByRole("button", { name: "Terminal", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByText("terminal ready from e2e")).toBeVisible();
+  await expect(page.getByText("recovered current viewport")).toBeVisible();
   await expect(page.getByRole("button", { name: "Take terminal control" })).toHaveCount(0);
   await captureFeatureScreenshot("lifecycle-actions.png", page.locator('[data-testid="remote-agent-detail"]'));
   await captureFeatureScreenshot("terminal-detail.png", page.locator('[data-testid="remote-agent-detail"]'));
+  const terminalScreen = page.locator('[data-testid="remote-terminal-scroll-surface"] .xterm-screen');
+  const terminalScrollThumb = page.locator(
+    '[data-testid="remote-terminal-scroll-surface"] .scrollbar.vertical .slider',
+  );
+  const scrollTopBefore = await terminalScrollThumb.evaluate(
+    (element) => Number.parseFloat((element as HTMLElement).style.top),
+  );
+  expect(scrollTopBefore).toBeGreaterThan(0);
+  await terminalScreen.hover();
+  await page.mouse.wheel(0, -2_000);
+  await expect.poll(async () => terminalScrollThumb.evaluate(
+    (element) => Number.parseFloat((element as HTMLElement).style.top),
+  )).toBeLessThan(scrollTopBefore);
+  await captureFeatureScreenshot("terminal-recovery-scrollback.png", page.locator('[data-testid="remote-agent-detail"]'));
   await expect.poll(() => statusStream !== null).toBe(true);
   statusStream?.send(
     JSON.stringify({

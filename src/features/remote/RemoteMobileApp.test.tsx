@@ -109,7 +109,11 @@ function remoteTerminalRegisteredMessage(options: { owner?: boolean; generation?
   };
 }
 
-function remoteTerminalSnapshotMessage(state: string, sequenceBarrier = 2) {
+function remoteTerminalSnapshotMessage(
+  state: string,
+  sequenceBarrier = 2,
+  scrollback: string[] = [],
+) {
   return {
     type: "snapshot",
     snapshot: {
@@ -120,7 +124,7 @@ function remoteTerminalSnapshotMessage(state: string, sequenceBarrier = 2) {
       geometry: { cols: 80, rows: 24 },
       terminal_state_base64: btoa(state),
       visible_grid: state,
-      scrollback: [],
+      scrollback,
     },
   };
 }
@@ -2951,12 +2955,18 @@ describe("RemoteMobileApp", () => {
         data: JSON.stringify(remoteTerminalRegisteredMessage({ owner: true, state: "history line 1\r\nhistory line 2\r\n" })),
       });
       MockWebSocket.instances[1]?.emit("message", {
-        data: JSON.stringify(remoteTerminalSnapshotMessage("current viewport", 2)),
+        data: JSON.stringify(remoteTerminalSnapshotMessage("current viewport", 2, [
+          "history line 1",
+          "history line 2",
+        ])),
       });
     });
 
     await waitFor(() => expect(terminalInstance.reset).toHaveBeenCalledTimes(2));
     expect(terminalInstance.write).toHaveBeenCalledTimes(2);
+    expect(terminalInstance.write.mock.calls[1]?.[0]).toContain(
+      "history line 1\r\nhistory line 2\r\ncurrent viewport",
+    );
   });
 
   it("renders Codex repaint frames natively without journaling in the remote terminal", async () => {

@@ -1027,18 +1027,22 @@ function base64ToTerminalString(value: string) {
 }
 
 function decodeRemoteTerminalSnapshot(snapshot: TerminalSnapshot) {
+  const scrollback = snapshot.formatted_scrollback?.length === snapshot.scrollback?.length
+    ? snapshot.formatted_scrollback
+    : snapshot.scrollback ?? [];
+  let visibleState = snapshot.visible_grid;
   if (snapshot.terminal_state_base64) {
     try {
-      return base64ToTerminalString(snapshot.terminal_state_base64);
+      visibleState = base64ToTerminalString(snapshot.terminal_state_base64);
     } catch {
       // The broker omits oversized formatted state atomically. A malformed
       // payload follows the same bounded plain-text recovery path.
     }
   }
-  const scrollback = snapshot.formatted_scrollback?.length === snapshot.scrollback?.length
-    ? snapshot.formatted_scrollback
-    : snapshot.scrollback ?? [];
-  return [...scrollback, snapshot.visible_grid]
+  // Formatted terminal state is only the geometry-bound visible frame. Keep
+  // the broker's oldest-first scrollback ahead of it so a recovery snapshot
+  // cannot turn a remote terminal into a single unscrollable viewport.
+  return [...scrollback, visibleState]
     .filter(Boolean)
     .join("\r\n");
 }
