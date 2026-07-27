@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::manager::{self, opencode::opencode_database_path};
+use crate::providers::antigravity::AntigravityProvider;
 use crate::providers::chat_transcript::{normalize_chat_lines, visible_chat_text};
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
@@ -60,7 +61,20 @@ pub async fn load_agent_chat_transcript_for_state(
     }
 
     let result = archive_agent_chat_events_for_state(state, &session_id).await?;
-    Ok(result.events)
+    let archived_events = state
+        .conversation_archive
+        .chat_events_for_agent(&session_id)
+        .unwrap_or_else(|error| {
+            manager::log_debug(&format!(
+                "[WARDIAN] conversation archive chat replay failed for {session_id}: {error}"
+            ));
+            Vec::new()
+        });
+
+    // Provider logs and the watch snapshot are live, bounded sources. Replay
+    // the durable archive first so a restart or Antigravity log rotation does
+    // not erase previously captured chat rows from the view.
+    Ok(merge_chat_events(result.events, archived_events))
 }
 
 pub(crate) async fn agent_archive_capture_snapshot(
@@ -96,7 +110,7 @@ pub(crate) async fn agent_archive_capture_snapshot(
         .lock()
         .map_err(|_| "agent status timestamp lock poisoned".to_string())?
         .clone();
-    let log_path = agent
+    let mut log_path = agent
         .log_path
         .lock()
         .map_err(|_| "agent log path lock poisoned".to_string())?
@@ -105,6 +119,30 @@ pub(crate) async fn agent_archive_capture_snapshot(
         .git_worktree_folder
         .clone()
         .unwrap_or_else(|| config.folder.clone());
+
+    // Chat may be requested before the provider watcher has performed its
+    // first discovery pass, or for an agent restored while off. Resolve the
+    // provider-owned workspace mapping here as well so rendering does not
+    // depend on watcher timing or on persisting a resume identity.
+    if provider == "antigravity" && log_path.is_none() {
+        let resolved_workspace = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id);
+        let excluded = config.antigravity_config().cleared_conversations;
+        if let Some(path) = AntigravityProvider::antigravity_home().and_then(|home| {
+            AntigravityProvider::verified_conversation_for_workspace(
+                &home,
+                &resolved_workspace,
+                &excluded,
+            )
+            .and_then(|conversation_id| {
+                AntigravityProvider::conversation_log_path(&home, &conversation_id)
+            })
+        }) {
+            log_path = Some(path.clone());
+            if let Ok(mut agent_log_path) = agent.log_path.lock() {
+                *agent_log_path = Some(path);
+            }
+        }
+    }
 
     Ok(AgentArchiveCaptureSnapshot {
         session_id,
@@ -369,6 +407,9 @@ fn load_provider_log_chat_events(
     if provider_log_path_is_cleared(provider, path, cleared_provider_sessions) {
         return Vec::new();
     }
+    if provider == "antigravity" && path.extension().is_some_and(|extension| extension == "db") {
+        return load_antigravity_database_chat_events(session_id, provider, path);
+    }
     let Ok(content) = read_provider_log_tail(path) else {
         return Vec::new();
     };
@@ -383,6 +424,49 @@ fn load_provider_log_chat_events(
                 "log_path",
                 path.to_string_lossy().to_string(),
             );
+            event.id = stable_provider_log_event_id(&event, path);
+            event
+        })
+        .collect()
+}
+
+fn load_antigravity_database_chat_events(
+    session_id: &str,
+    provider: &str,
+    path: &Path,
+) -> Vec<AgentChatEvent> {
+    let Ok(messages) = AntigravityProvider::conversation_messages_from_database(path) else {
+        return Vec::new();
+    };
+
+    messages
+        .into_iter()
+        .enumerate()
+        .map(|(index, message)| {
+            let mut event = AgentChatEvent {
+                id: String::new(),
+                session_id: session_id.to_string(),
+                provider: provider.to_string(),
+                kind: AgentChatEventKind::Message,
+                role: Some(message.role),
+                text: Some(message.text),
+                title: None,
+                status: None,
+                turn_id: Some(message.step_index.to_string()),
+                source: Some("conversation_database".to_string()),
+                command: None,
+                exit_code: None,
+                path: None,
+                language: None,
+                created_at: None,
+                sequence: Some(index as u64 + 1),
+                metadata: serde_json::json!({
+                    "provider_log": true,
+                    "log_source": "antigravity_conversation_database",
+                    "log_path": path.to_string_lossy(),
+                    "step_index": message.step_index,
+                }),
+            };
             event.id = stable_provider_log_event_id(&event, path);
             event
         })
@@ -812,6 +896,14 @@ fn source_rank(source: Option<&str>) -> u8 {
 }
 
 fn chat_event_dedupe_key(event: &AgentChatEvent) -> String {
+    if let Some(conversation_id) = event
+        .metadata
+        .get("conversation_archive_id")
+        .and_then(|value| value.as_str())
+    {
+        return format!("archive|{conversation_id}|{}", event.id);
+    }
+
     if event.kind == AgentChatEventKind::Message {
         return format!(
             "{:?}|{:?}|{}|{}",
@@ -1604,6 +1696,78 @@ Do you want to proceed?
         let chat_events = merge_chat_events(Vec::new(), vec![first, repeated]);
 
         assert_eq!(chat_events.len(), 2);
+    }
+
+    #[test]
+    fn merge_preserves_repeated_archived_messages_from_distinct_conversations() {
+        let mut first = AgentChatEvent {
+            id: "generated:conversation-one:1".to_string(),
+            session_id: "agent-1".to_string(),
+            provider: "antigravity".to_string(),
+            kind: AgentChatEventKind::Message,
+            role: Some(AgentChatRole::User),
+            text: Some("Repeat this prompt.".to_string()),
+            title: None,
+            status: None,
+            turn_id: None,
+            source: Some("wardian_input".to_string()),
+            command: None,
+            exit_code: None,
+            path: None,
+            language: None,
+            created_at: None,
+            sequence: Some(1),
+            metadata: serde_json::json!({"conversation_archive_id": "conversation-one"}),
+        };
+        let mut second = first.clone();
+        second.id = "generated:conversation-two:1".to_string();
+        second.metadata = serde_json::json!({"conversation_archive_id": "conversation-two"});
+        first.sequence = Some(1);
+        second.sequence = Some(2);
+
+        let chat_events = merge_chat_events(Vec::new(), vec![first, second]);
+
+        assert_eq!(chat_events.len(), 2);
+    }
+
+    #[test]
+    fn antigravity_sqlite_conversation_renders_user_and_assistant_history() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database = temp.path().join("conversation.db");
+        let connection = rusqlite::Connection::open(&database).expect("open db");
+        connection
+            .execute_batch(
+                "CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB);",
+            )
+            .expect("create steps");
+        // field 19.2 is the current Antigravity user message; field 20.1 is
+        // the completed planner response in its SQLite step payload.
+        let user = vec![0x9a, 0x01, 0x05, 0x12, 0x03, b'h', b'i', b'!'];
+        let assistant = vec![0xa2, 0x01, 0x05, 0x0a, 0x03, b'o', b'k', b'!'];
+        connection
+            .execute(
+                "INSERT INTO steps VALUES (0, 14, ?1)",
+                rusqlite::params![user],
+            )
+            .expect("insert user");
+        connection
+            .execute(
+                "INSERT INTO steps VALUES (1, 15, ?1)",
+                rusqlite::params![assistant],
+            )
+            .expect("insert assistant");
+
+        let events = load_antigravity_database_chat_events("agent-1", "antigravity", &database);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].role, Some(AgentChatRole::User));
+        assert_eq!(events[0].text.as_deref(), Some("hi!"));
+        assert_eq!(events[1].role, Some(AgentChatRole::Assistant));
+        assert_eq!(events[1].text.as_deref(), Some("ok!"));
+        assert_eq!(
+            events[1].metadata["log_source"],
+            "antigravity_conversation_database"
+        );
     }
 
     #[test]

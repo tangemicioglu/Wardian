@@ -8,9 +8,7 @@ use wardian_core::models::{AgentTelemetry, AppTelemetry};
 use crate::providers::transcript::extract_transcript_message;
 
 use super::claude::{claude_is_real_user_query, claude_project_dir_name, claude_status_from_log};
-use super::codex::{
-    codex_log_lookup_session_id, codex_session_file_path, codex_status_from_log,
-};
+use super::codex::{codex_log_lookup_session_id, codex_session_file_path, codex_status_from_log};
 use super::display_log_path;
 use super::opencode::{
     apply_opencode_log_metrics, opencode_last_assistant_text, opencode_log_dirs,
@@ -1035,19 +1033,19 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                             snap.log_last_modified.lock().ok().and_then(|last| *last);
                         let stale_gemini_log = gemini_session_id.is_none()
                             || log_path_lock.as_ref().is_some_and(|path| {
-                            let current_mtime = std::fs::metadata(path)
-                                .and_then(|meta| meta.modified())
-                                .ok();
-                            match (current_mtime, last_parsed_mtime) {
-                                (Some(current), Some(last)) if current == last => false,
-                                _ => std::fs::read_to_string(path).ok().is_none_or(|content| {
-                                    !gemini_log_matches_session(
-                                        &content,
-                                        gemini_session_id.unwrap_or_default(),
-                                    )
-                                }),
-                            }
-                        });
+                                let current_mtime = std::fs::metadata(path)
+                                    .and_then(|meta| meta.modified())
+                                    .ok();
+                                match (current_mtime, last_parsed_mtime) {
+                                    (Some(current), Some(last)) if current == last => false,
+                                    _ => std::fs::read_to_string(path).ok().is_none_or(|content| {
+                                        !gemini_log_matches_session(
+                                            &content,
+                                            gemini_session_id.unwrap_or_default(),
+                                        )
+                                    }),
+                                }
+                            });
                         if stale_gemini_log {
                             *log_path_lock = None;
                             if let Ok(mut last_modified) = snap.log_last_modified.lock() {
@@ -1061,15 +1059,15 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                         let mut discovered_log = None;
                         if let Some(opencode_session_id) = opencode_session_id {
                             for dir in opencode_log_dirs() {
-                                if let Some(path) = opencode_log_path_in(&dir, opencode_session_id) {
-                                        discovered_log = Some(path);
-                                        break;
+                                if let Some(path) = opencode_log_path_in(&dir, opencode_session_id)
+                                {
+                                    discovered_log = Some(path);
+                                    break;
                                 }
                             }
                         }
-                        *log_path_lock = discovered_log.or_else(|| {
-                            opencode_session_id.map(opencode_session_diff_path)
-                        });
+                        *log_path_lock = discovered_log
+                            .or_else(|| opencode_session_id.map(opencode_session_diff_path));
                     } else if snap.provider == "antigravity" {
                         let conversation_id = snap
                             .resume_session
@@ -1079,9 +1077,9 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                         if let (Some(home), Some(conversation_id)) =
                             (AntigravityProvider::antigravity_home(), conversation_id)
                         {
-                            let candidate =
-                                AntigravityProvider::transcript_path(&home, &conversation_id);
-                            if candidate.exists() {
+                            if let Some(candidate) =
+                                AntigravityProvider::conversation_log_path(&home, &conversation_id)
+                            {
                                 *log_path_lock = Some(candidate);
                             }
                         }
@@ -1130,10 +1128,9 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                                         .filter(|_| gemini_fallback_scan_due(&snap.session_id))
                                     {
                                         let tmp_dir = home.join(".gemini").join("tmp");
-                                        if let Some(path) = discover_gemini_log_in_tmp(
-                                            &tmp_dir,
-                                            gemini_session_id,
-                                        ) {
+                                        if let Some(path) =
+                                            discover_gemini_log_in_tmp(&tmp_dir, gemini_session_id)
+                                        {
                                             *log_path_lock = Some(path);
                                         }
                                     }

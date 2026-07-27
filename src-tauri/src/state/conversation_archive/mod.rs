@@ -198,6 +198,44 @@ impl ConversationArchiveState {
         Ok((manifest, conversation))
     }
 
+    /// Returns the persisted chat events for every archived conversation owned
+    /// by one agent, oldest conversation first. The live chat surface uses
+    /// this as durable history when a provider log rotates or is unavailable.
+    pub fn chat_events_for_agent(&self, agent_id: &str) -> io::Result<Vec<AgentChatEvent>> {
+        let agent_id = agent_id.trim();
+        if agent_id.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "agent_id is required",
+            ));
+        }
+
+        let mut entries = read_agent_index(agent_id)?;
+        entries.sort_by(|left, right| {
+            left.started_at
+                .cmp(&right.started_at)
+                .then_with(|| left.conversation_id.cmp(&right.conversation_id))
+        });
+
+        let mut events = Vec::new();
+        for entry in entries {
+            let directory = conversation_dir(&entry.agent_id, &entry.conversation_id)?;
+            let mut conversation_events: Vec<AgentChatEvent> =
+                read_jsonl_records(&directory.join("events.jsonl"))?;
+            for event in &mut conversation_events {
+                if let Some(metadata) = event.metadata.as_object_mut() {
+                    metadata.insert(
+                        "conversation_archive_id".to_string(),
+                        serde_json::Value::String(entry.conversation_id.clone()),
+                    );
+                }
+            }
+            events.extend(conversation_events);
+        }
+
+        Ok(events)
+    }
+
     pub fn append_chat_events(
         &self,
         agent_id: &str,

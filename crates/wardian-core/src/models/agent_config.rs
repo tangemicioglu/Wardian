@@ -138,6 +138,10 @@ pub struct AntigravityProviderConfig {
     pub dangerously_skip_permissions: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub print_timeout: Option<String>,
+    /// Conversations deliberately detached by Wardian's Clear action. These
+    /// must never be recovered from Antigravity's workspace cache.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cleared_conversations: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -637,6 +641,19 @@ impl AgentConfig {
                 config.clone()
             }
             _ => AntigravityProviderConfig::default(),
+        }
+    }
+
+    pub fn antigravity_config_mut_preserve_encoding(&mut self) -> &mut AntigravityProviderConfig {
+        let encoding = self.provider_config_encoding;
+        if !matches!(self.provider_config, ProviderConfig::Antigravity(_)) {
+            self.provider_config =
+                ProviderConfig::Antigravity(AntigravityProviderConfig::default());
+        }
+        self.provider_config_encoding = encoding;
+        match &mut self.provider_config {
+            ProviderConfig::Antigravity(config) => config,
+            _ => unreachable!("provider_config was normalized to antigravity"),
         }
     }
 
@@ -1257,6 +1274,7 @@ mod tests {
                 sandbox: Some(true),
                 dangerously_skip_permissions: Some(true),
                 print_timeout: Some("2m".into()),
+                ..Default::default()
             }),
             ..Default::default()
         };

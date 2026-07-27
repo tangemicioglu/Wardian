@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use rusqlite::{Connection, OpenFlags};
+use wardian_core::models::chat::AgentChatRole;
 use wardian_core::models::provider::{AgentEvent, AgentProvider};
 use wardian_core::models::AgentConfig;
 
@@ -11,6 +13,15 @@ pub struct AntigravityTranscriptSummary {
 }
 
 pub struct AntigravityProvider;
+
+/// A user or model message stored in Antigravity's current SQLite
+/// conversation format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntigravityConversationMessage {
+    pub step_index: u64,
+    pub role: AgentChatRole,
+    pub text: String,
+}
 
 pub(crate) fn changed_workspace_conversation(
     before: Option<&str>,
@@ -43,6 +54,11 @@ impl AntigravityProvider {
             .join("transcript.jsonl")
     }
 
+    pub fn conversation_database_path(home: &Path, conversation_id: &str) -> PathBuf {
+        home.join("conversations")
+            .join(format!("{conversation_id}.db"))
+    }
+
     pub fn conversation_for_workspace(home: &Path, workspace: &Path) -> Option<String> {
         let cache = home.join("cache").join("last_conversations.json");
         let content = std::fs::read_to_string(cache).ok()?;
@@ -54,6 +70,108 @@ impl AntigravityProvider {
                 .then(|| value.as_str().map(str::to_string))
                 .flatten()
         })
+    }
+
+    /// Resolves only the cache entry that Antigravity explicitly associates
+    /// with this workspace. Newer Antigravity builds also record the workspace
+    /// URI in conversation metadata; require that match when it is available.
+    /// There is intentionally no newest-file fallback here.
+    pub fn verified_conversation_for_workspace(
+        home: &Path,
+        workspace: &Path,
+        excluded_conversations: &[String],
+    ) -> Option<String> {
+        let conversation_id = Self::conversation_for_workspace(home, workspace)?;
+        if excluded_conversations
+            .iter()
+            .any(|excluded| excluded.trim() == conversation_id)
+        {
+            return None;
+        }
+
+        match conversation_metadata_matches_workspace(home, &conversation_id, workspace) {
+            Some(true) => {}
+            Some(false) => return None,
+            // Older CLI builds do not have metadata. Their JSONL transcript is
+            // the only compatible evidence we can accept.
+            None if !Self::transcript_path(home, &conversation_id).is_file() => return None,
+            None => {}
+        }
+
+        Self::conversation_log_path(home, &conversation_id).map(|_| conversation_id)
+    }
+
+    /// Returns the durable log for one verified provider conversation. Version
+    /// 1.1.7 stores interactive turns in SQLite and leaves the legacy JSONL
+    /// transcript empty, so prefer a database that actually contains messages.
+    pub fn conversation_log_path(home: &Path, conversation_id: &str) -> Option<PathBuf> {
+        let database = Self::conversation_database_path(home, conversation_id);
+        if Self::conversation_messages_from_database(&database)
+            .map(|messages| !messages.is_empty())
+            .unwrap_or(false)
+        {
+            return Some(database);
+        }
+
+        let transcript = Self::transcript_path(home, conversation_id);
+        transcript.is_file().then_some(transcript)
+    }
+
+    pub fn conversation_messages_from_database(
+        path: &Path,
+    ) -> Result<Vec<AntigravityConversationMessage>, String> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| format!("failed to open Antigravity conversation database: {error}"))?;
+        let mut statement = connection
+            .prepare("SELECT idx, step_type, step_payload FROM steps ORDER BY idx")
+            .map_err(|error| format!("failed to read Antigravity conversation steps: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(|error| format!("failed to query Antigravity conversation steps: {error}"))?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            let (step_index, step_type, payload) = row.map_err(|error| {
+                format!("failed to decode Antigravity conversation step: {error}")
+            })?;
+            let (role, text) = match step_type {
+                // USER_MESSAGE: payload.user_message.text
+                14 => (
+                    AgentChatRole::User,
+                    protobuf_string_at_path(&payload, &[19, 2]),
+                ),
+                // PLANNER_RESPONSE: prefer the final response; progress prose
+                // is the only visible response for intermediate planner steps.
+                15 => (
+                    AgentChatRole::Assistant,
+                    protobuf_string_at_path(&payload, &[20, 1])
+                        .or_else(|| protobuf_string_at_path(&payload, &[20, 3])),
+                ),
+                _ => continue,
+            };
+            let Some(text) = text
+                .map(|text| text.trim().to_string())
+                .filter(|text| !text.is_empty())
+            else {
+                continue;
+            };
+            messages.push(AntigravityConversationMessage {
+                step_index: step_index.max(0) as u64,
+                role,
+                text,
+            });
+        }
+
+        Ok(messages)
     }
 
     pub fn summarize_conversation(
@@ -91,6 +209,89 @@ impl AntigravityProvider {
         }
         summary
     }
+}
+
+fn conversation_metadata_matches_workspace(
+    home: &Path,
+    conversation_id: &str,
+    workspace: &Path,
+) -> Option<bool> {
+    let metadata =
+        std::fs::read_to_string(home.join("cache").join("conversation_metadata.json")).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).ok()?;
+    let workspace_uris = parsed
+        .get("conversations")?
+        .get(conversation_id)?
+        .get("summary")?
+        .get("WorkspaceURIs")?
+        .as_array()?;
+    let workspace_key = normalize_path_key(workspace);
+    Some(workspace_uris.iter().any(|value| {
+        value
+            .as_str()
+            .and_then(file_uri_path_text)
+            .is_some_and(|path| normalize_path_text(path) == workspace_key)
+    }))
+}
+
+fn file_uri_path_text(uri: &str) -> Option<&str> {
+    let path = uri.strip_prefix("file://")?;
+    if path.len() >= 3 && path.starts_with('/') && path.as_bytes()[2] == b':' {
+        Some(&path[1..])
+    } else {
+        Some(path)
+    }
+}
+
+fn protobuf_string_at_path(bytes: &[u8], fields: &[u32]) -> Option<String> {
+    let mut current = bytes;
+    for field in fields {
+        current = protobuf_length_delimited_field(current, *field)?;
+    }
+    String::from_utf8(current.to_vec()).ok()
+}
+
+fn protobuf_length_delimited_field(bytes: &[u8], wanted_field: u32) -> Option<&[u8]> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let key = protobuf_varint(bytes, &mut offset)?;
+        let field = (key >> 3) as u32;
+        match key & 0x07 {
+            0 => {
+                protobuf_varint(bytes, &mut offset)?;
+            }
+            1 => offset = offset.checked_add(8)?,
+            2 => {
+                let length = usize::try_from(protobuf_varint(bytes, &mut offset)?).ok()?;
+                let end = offset.checked_add(length)?;
+                let value = bytes.get(offset..end)?;
+                offset = end;
+                if field == wanted_field {
+                    return Some(value);
+                }
+            }
+            5 => offset = offset.checked_add(4)?,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn protobuf_varint(bytes: &[u8], offset: &mut usize) -> Option<u64> {
+    let mut value = 0_u64;
+    for index in 0..10 {
+        let byte = *bytes.get(*offset)?;
+        *offset += 1;
+        let shift = index * 7;
+        if shift >= 64 || (shift == 63 && (byte & 0x7f) > 1) {
+            return None;
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+    }
+    None
 }
 
 impl AgentProvider for AntigravityProvider {
@@ -247,7 +448,14 @@ fn normalize_path_key(path: &Path) -> String {
 }
 
 fn normalize_path_text(path: &str) -> String {
-    path.replace('\\', "/")
+    let normalized = path.replace('\\', "/");
+    let normalized = normalized
+        .strip_prefix("//?/UNC/")
+        .map(|path| format!("//{path}"))
+        .unwrap_or(normalized);
+    normalized
+        .strip_prefix("//?/")
+        .unwrap_or(&normalized)
         .trim_end_matches('/')
         .to_ascii_lowercase()
 }
@@ -255,6 +463,7 @@ fn normalize_path_text(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
 
     #[test]
     fn bootstrap_requires_a_changed_workspace_mapping() {
@@ -451,5 +660,121 @@ SET dp0=%~dp0
             AntigravityProvider::conversation_for_workspace(home, Path::new("C:/Project/Wardian"));
 
         assert_eq!(conversation.as_deref(), Some("conversation-123"));
+    }
+
+    #[test]
+    fn file_uri_paths_preserve_posix_and_windows_workspace_paths() {
+        assert_eq!(
+            file_uri_path_text("file:///tmp/wardian-workspace"),
+            Some("/tmp/wardian-workspace")
+        );
+        assert_eq!(
+            file_uri_path_text("file:///C:/Workspace/Wardian"),
+            Some("C:/Workspace/Wardian")
+        );
+        assert_eq!(
+            normalize_path_text(r"\\?\C:\Workspace\Wardian"),
+            normalize_path_text("C:/Workspace/Wardian")
+        );
+        assert_eq!(
+            normalize_path_text(r"\\?\UNC\server\share\Wardian"),
+            normalize_path_text("//server/share/Wardian")
+        );
+    }
+
+    fn protobuf_varint(value: u64) -> Vec<u8> {
+        let mut value = value;
+        let mut bytes = Vec::new();
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            bytes.push(byte);
+            if value == 0 {
+                return bytes;
+            }
+        }
+    }
+
+    fn protobuf_string_field(field: u32, text: &str) -> Vec<u8> {
+        let mut bytes = protobuf_varint(u64::from(field << 3 | 2));
+        bytes.extend(protobuf_varint(text.len() as u64));
+        bytes.extend(text.as_bytes());
+        bytes
+    }
+
+    fn protobuf_message_field(field: u32, value: Vec<u8>) -> Vec<u8> {
+        let mut bytes = protobuf_varint(u64::from(field << 3 | 2));
+        bytes.extend(protobuf_varint(value.len() as u64));
+        bytes.extend(value);
+        bytes
+    }
+
+    #[test]
+    fn verified_workspace_conversation_prefers_current_sqlite_messages() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let home = temp.path();
+        let conversation_id = "conversation-123";
+        std::fs::create_dir_all(home.join("cache")).expect("cache dir");
+        std::fs::create_dir_all(home.join("conversations")).expect("conversation dir");
+        std::fs::write(
+            home.join("cache").join("last_conversations.json"),
+            r#"{"C:\\Project\\Wardian":"conversation-123"}"#,
+        )
+        .expect("cache");
+        std::fs::write(
+            home.join("cache").join("conversation_metadata.json"),
+            r#"{"conversations":{"conversation-123":{"summary":{"WorkspaceURIs":["file:///C:/Project/Wardian"]}}}}"#,
+        )
+        .expect("metadata");
+
+        let database = AntigravityProvider::conversation_database_path(home, conversation_id);
+        let connection = Connection::open(&database).expect("open database");
+        connection
+            .execute_batch(
+                "CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB);",
+            )
+            .expect("create steps");
+        let user = protobuf_message_field(19, protobuf_string_field(2, "Make brownies."));
+        let assistant = protobuf_message_field(20, protobuf_string_field(1, "Brownies made."));
+        connection
+            .execute(
+                "INSERT INTO steps (idx, step_type, step_payload) VALUES (?1, ?2, ?3)",
+                params![0_i64, 14_i64, user],
+            )
+            .expect("insert user");
+        connection
+            .execute(
+                "INSERT INTO steps (idx, step_type, step_payload) VALUES (?1, ?2, ?3)",
+                params![1_i64, 15_i64, assistant],
+            )
+            .expect("insert assistant");
+        drop(connection);
+
+        let workspace = Path::new("C:/Project/Wardian");
+        assert_eq!(
+            AntigravityProvider::verified_conversation_for_workspace(home, workspace, &[])
+                .as_deref(),
+            Some(conversation_id)
+        );
+        assert_eq!(
+            AntigravityProvider::conversation_log_path(home, conversation_id),
+            Some(database.clone())
+        );
+        let messages = AntigravityProvider::conversation_messages_from_database(&database)
+            .expect("read conversation database");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, AgentChatRole::User);
+        assert_eq!(messages[0].text, "Make brownies.");
+        assert_eq!(messages[1].role, AgentChatRole::Assistant);
+        assert_eq!(messages[1].text, "Brownies made.");
+        assert!(AntigravityProvider::verified_conversation_for_workspace(
+            home,
+            workspace,
+            &[conversation_id.to_string()],
+        )
+        .is_none());
     }
 }
