@@ -90,7 +90,7 @@ describe("release workflow contract", () => {
   });
 
   it("signs, notarizes, and validates macOS release artifacts before publication", () => {
-    expect(releaseWorkflow).toContain("Require macOS signing and notarization secrets");
+    expect(releaseWorkflow).toContain("Require macOS release credentials");
     expect(releaseWorkflow).toContain("APPLE_CERTIFICATE");
     expect(releaseWorkflow).toContain("APPLE_CERTIFICATE_PASSWORD");
     expect(releaseWorkflow).toContain("APPLE_ID");
@@ -98,7 +98,19 @@ describe("release workflow contract", () => {
     expect(releaseWorkflow).toContain("APPLE_TEAM_ID");
     expect(releaseWorkflow).toContain("Import macOS Developer ID certificate");
     expect(releaseWorkflow).toContain("Developer ID Application identity was not available after import");
-    expect(releaseWorkflow).toContain("Verify notarized macOS release artifacts");
+    expect(releaseWorkflow).toContain("Notarize and replace final macOS DMGs");
+    expect(releaseWorkflow).toContain("xcrun notarytool submit");
+    expect(releaseWorkflow).toContain("Expected preliminary DMG release asset is missing");
+    expect(releaseWorkflow).toContain('gh release upload "$RELEASE_TAG" "$dmg" --clobber --repo "$GITHUB_REPOSITORY"');
+    expect(releaseWorkflow).toContain("Verify macOS release artifacts");
+    expect(releaseWorkflow).toContain("NOTARIZATION_REQUIRED: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != 'true' }}");
+    expect(releaseWorkflow).toContain('if [[ "$NOTARIZATION_REQUIRED" == "true" ]]; then');
+    const dryRunBuild = releaseWorkflow.match(/- name: Build \(dry run\)[\s\S]*?(?=      - name: Notarize and replace final macOS DMGs)/)?.[0];
+    expect(dryRunBuild).toBeDefined();
+    const dryRunBuildText = dryRunBuild ?? "";
+    expect(dryRunBuildText).not.toContain("APPLE_ID:");
+    expect(dryRunBuildText).not.toContain("APPLE_PASSWORD:");
+    expect(dryRunBuildText).not.toContain("APPLE_TEAM_ID:");
     expect(releaseWorkflow).toContain("xcrun stapler validate");
     expect(releaseWorkflow).toContain("spctl --assess --type open");
     expect(releaseWorkflow).toContain("spctl --assess --type execute");
@@ -180,7 +192,6 @@ describe("release workflow contract", () => {
     expect(releaseWorkflow).not.toContain("wardian-cli-aarch64-macos");
     expect(releaseWorkflow).not.toContain("wardian-cli-x86_64-macos");
     expect(releaseWorkflow).not.toContain("wardian-cli-x86_64-linux");
-    expect(releaseWorkflow).not.toContain("gh release upload");
     expect(releaseWorkflow).not.toContain("Upload CLI dry-run artifact");
     expect(releaseWorkflow).toContain("crates/wardian-cli");
     expect(releaseWorkflow).toContain("WARDIAN_CLI_TARGET: ${{ matrix.platform.rust-target || '' }}");

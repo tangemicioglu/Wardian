@@ -39,7 +39,7 @@ If the private key or password is lost, existing updater-enabled installs cannot
 
 ## macOS Signing and Notarization
 
-Stable and prerelease macOS release builds use a Developer ID Application certificate, Apple notarization, and stapling. The release workflow imports the certificate into an ephemeral runner keychain, signs the app and nested code, submits the macOS artifacts to Apple, and validates the stapled DMG and updater archive before the draft release can publish. The bundled `resources/bin/wardian-cli` file is a separate Mach-O executable, so release staging signs it with hardened runtime and a secure timestamp before Tauri signs the app bundle. `wardian-core` is statically linked into the app and CLI executables and does not have a separate code-signing identity.
+Stable and prerelease macOS release builds use a Developer ID Application certificate, Apple notarization, and stapling. The release workflow imports the certificate into an ephemeral runner keychain, signs the app and nested code, and lets Tauri notarize and staple the app bundle. Because Tauri creates the final signed DMG afterward, the workflow separately submits and staples that DMG, replaces the preliminary draft-release asset, and only then validates the DMG and updater archive before publication. The bundled `resources/bin/wardian-cli` file is a separate Mach-O executable, so release staging signs it with hardened runtime and a secure timestamp before Tauri signs the app bundle. `wardian-core` is statically linked into the app and CLI executables and does not have a separate code-signing identity.
 
 The release-distribution decision and its operational invariants are recorded
 in the repository-internal [macOS Notarized Release Distribution
@@ -55,7 +55,7 @@ Configure these GitHub Actions secrets for macOS release jobs:
 
 The certificate private key, its export password, the app-specific password, and the Tauri updater private key are distinct secrets. Back up each outside the repository. Do not commit them, send them in chat, or substitute the normal Apple ID password for `APPLE_PASSWORD`.
 
-The workflow fails macOS builds before artifact publication when any required secret is missing. It verifies the signed app inside each DMG with `codesign`, validates stapled tickets with `xcrun stapler`, assesses the DMG and app with Gatekeeper, and checks the signed app inside each Tauri updater `.app.tar.gz` archive.
+Real release builds fail before publication when any required macOS secret is missing. Dry runs require only the signing certificate and verify signatures without submitting notarization tickets. Real releases verify the signed app inside each DMG with `codesign`, validate stapled tickets with `xcrun stapler`, assess the DMG and app with Gatekeeper, and check the signed app inside each Tauri updater `.app.tar.gz` archive.
 
 For an end-to-end release check, install the produced DMG on a clean macOS
 machine by copying the app to `/Applications`, ejecting the DMG, launching the
