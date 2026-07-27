@@ -4,6 +4,15 @@ All notable changes to Wardian will be documented in this file. The format is ba
 
 Entries from `0.3.0` onward are generated automatically by release-please from Conventional Commits. Entries for `0.1.0` through `0.2.1` were backfilled from git history and are thematic summaries rather than exhaustive commit lists.
 
+## [0.5.1](https://github.com/wardian-app/Wardian/compare/v0.5.0...v0.5.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **macos:** repair native chrome and updater validation ([#771](https://github.com/wardian-app/Wardian/issues/771)) ([ee08a14](https://github.com/wardian-app/Wardian/commit/ee08a149f688dbf1e18920cf268991431d013993))
+* **release:** assess notarized DMGs with primary-signature context ([#769](https://github.com/wardian-app/Wardian/issues/769)) ([f3dc60e](https://github.com/wardian-app/Wardian/commit/f3dc60e477c26e94d1e5b7eb8f4986aab89757a5))
+* **release:** notarize final macOS DMG assets ([#766](https://github.com/wardian-app/Wardian/issues/766)) ([d2db4dc](https://github.com/wardian-app/Wardian/commit/d2db4dc7f3bb12f21fa4b14685709eb0797c6a87))
+
 ## [0.5.0](https://github.com/wardian-app/Wardian/compare/v0.4.3...v0.5.0) (2026-07-27)
 
 
