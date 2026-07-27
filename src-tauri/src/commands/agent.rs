@@ -7274,10 +7274,13 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
 
     #[test]
     fn antigravity_resume_without_conversation_id_starts_fresh() {
-        let (_guard, _temp) = use_isolated_resume_setting();
+        let (_guard, temp) = use_isolated_resume_setting();
         let mut config = AgentConfig {
             provider: "antigravity".to_string(),
             session_id: "22ff532b-007a-44c9-a4b4-9b7c0f546274".to_string(),
+            // Keep this fixture independent of a real Antigravity workspace that
+            // may be configured for the repository running the test.
+            folder: temp.path().to_string_lossy().to_string(),
             resume_session: None,
             is_off: true,
             ..Default::default()

@@ -164,8 +164,9 @@ describe("release workflow contract", () => {
   it("dispatches package repository workflows after stable releases publish", () => {
     expect(releaseWorkflow).toContain("dispatch-package-workflows:");
     expect(releaseWorkflow).toContain("Dispatch package workflows");
-    expect(releaseWorkflow).toContain("needs: [create-release, resolve-release, publish]");
+    expect(releaseWorkflow).toContain("needs: [create-release, resolve-release, publish, validate-published-updater-endpoint]");
     expect(releaseWorkflow).toContain("needs.publish.result == 'success'");
+    expect(releaseWorkflow).toContain("needs.validate-published-updater-endpoint.result == 'success'");
     expect(releaseWorkflow).toContain("needs.create-release.outputs.is_prerelease == 'false'");
     expect(releaseWorkflow).toContain("needs.resolve-release.outputs.is_prerelease == 'false'");
     expect(releaseWorkflow).toContain("actions/create-github-app-token@v3.2.0");
@@ -183,6 +184,15 @@ describe("release workflow contract", () => {
     expect(releaseWorkflow).not.toContain("wardian-release-published");
     expect(releaseWorkflow).not.toContain("update-apt-repository:");
     expect(releaseWorkflow).not.toContain("uses: ./.github/workflows/apt-repository.yml");
+  });
+
+  it("checks the public updater endpoint before dispatching stable package updates", () => {
+    expect(releaseWorkflow).toContain("validate-published-updater-endpoint:");
+    expect(releaseWorkflow).toContain("Validate published updater endpoint");
+    expect(releaseWorkflow).toContain("releases/latest/download/latest.json");
+    expect(releaseWorkflow).toContain("const attempts = 10;");
+    expect(releaseWorkflow).toContain("darwin-aarch64");
+    expect(releaseWorkflow).toContain("darwin-x86_64");
   });
 
   it("publishes unified installers that carry the staged CLI", () => {

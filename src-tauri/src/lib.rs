@@ -2,6 +2,8 @@ pub mod artifact_service;
 pub mod commands;
 pub mod control;
 pub mod delivery;
+#[cfg(target_os = "macos")]
+mod macos_window;
 pub mod manager;
 pub mod providers;
 pub mod remote;
@@ -252,6 +254,9 @@ pub fn run() {
     let app = builder
         .manage(AppState::new())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            crate::macos_window::configure_main_window(app)?;
+
             {
                 let state = app.state::<AppState>();
                 state.file_resources.attach_app_handle(app.handle().clone());
