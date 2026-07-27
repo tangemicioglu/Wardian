@@ -41,3 +41,8 @@ portable-pty = { path = "vendor/portable-pty" }
 [profile.dev.package."*"]
 debug = false
 opt-level = 1
+
+# Keep local release builds responsive after ordinary Rust edits. CI explicitly
+# disables incremental compilation for reproducible coverage and release jobs.
+[profile.release]
+incremental = true
