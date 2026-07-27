@@ -4,6 +4,73 @@ All notable changes to Wardian will be documented in this file. The format is ba
 
 Entries from `0.3.0` onward are generated automatically by release-please from Conventional Commits. Entries for `0.1.0` through `0.2.1` were backfilled from git history and are thematic summaries rather than exhaustive commit lists.
 
+## [0.5.0](https://github.com/wardian-app/Wardian/compare/v0.4.3...v0.5.0) (2026-07-27)
+
+
+### Features
+
+* **ask:** support accountable multi-target requests ([#742](https://github.com/wardian-app/Wardian/issues/742)) ([f1cdcf7](https://github.com/wardian-app/Wardian/commit/f1cdcf795650ce727f0c6c174dacafd4f716d277))
+* **cli:** add Library agent capabilities ([#664](https://github.com/wardian-app/Wardian/issues/664)) ([2a05580](https://github.com/wardian-app/Wardian/commit/2a0558089db384f15d2684af4fd60c75a876491f))
+* **files:** add secure editor and artifact lifecycle ([#673](https://github.com/wardian-app/Wardian/issues/673)) ([dbd80fe](https://github.com/wardian-app/Wardian/commit/dbd80feb78011ea9cc4677b5cf82e3a55237af6c))
+* **inbox:** add durable agent notifications ([#710](https://github.com/wardian-app/Wardian/issues/710)) ([e6748e8](https://github.com/wardian-app/Wardian/commit/e6748e8132ff2821806b1641693c3ee637794cf1))
+* **onboarding:** add dismissible contextual guidance ([#736](https://github.com/wardian-app/Wardian/issues/736)) ([9a14f3f](https://github.com/wardian-app/Wardian/commit/9a14f3fe2a0eff2d67c468f9c519eed4cb3d5241))
+* **updates:** surface available releases during normal use ([#747](https://github.com/wardian-app/Wardian/issues/747)) ([d84f79b](https://github.com/wardian-app/Wardian/commit/d84f79b198b1d1609625a3c808c0e74406919717))
+* **workbench:** replace fixed navigation with restorable surface tabs ([#667](https://github.com/wardian-app/Wardian/issues/667)) ([3aa0f56](https://github.com/wardian-app/Wardian/commit/3aa0f5633547f03c9d6cedc15b121e8c127813c8))
+* **workbench:** reuse existing Agents view ([#741](https://github.com/wardian-app/Wardian/issues/741)) ([567258c](https://github.com/wardian-app/Wardian/commit/567258cfa884f7d0f2201afb5a744d51bf0e214a))
+* **workflows:** add adaptive monitor cards ([#672](https://github.com/wardian-app/Wardian/issues/672)) ([1e3e5d2](https://github.com/wardian-app/Wardian/commit/1e3e5d25151c8755c707e5b2bcb24d306b57cdfc))
+
+
+### Bug Fixes
+
+* **agent:** distinguish restart from destructive deletion ([#733](https://github.com/wardian-app/Wardian/issues/733)) ([94108cf](https://github.com/wardian-app/Wardian/commit/94108cf37916303794e36994b695ffd8293b59e8))
+* **agents:** create clear sessions without bootstrap prompts ([#694](https://github.com/wardian-app/Wardian/issues/694)) ([6f1a064](https://github.com/wardian-app/Wardian/commit/6f1a064f6a49d654470edf40b185cab8d73a91b5))
+* **agents:** distinguish new provider sessions ([#753](https://github.com/wardian-app/Wardian/issues/753)) ([157691f](https://github.com/wardian-app/Wardian/commit/157691f646dd5f8d4bcad52ad094141ef011b9a4))
+* **antigravity:** recover SQLite conversation history ([#751](https://github.com/wardian-app/Wardian/issues/751)) ([741cb01](https://github.com/wardian-app/Wardian/commit/741cb014f33706823fcacdf4f3178a099a25654a))
+* **build:** isolate worktree Rust targets ([#704](https://github.com/wardian-app/Wardian/issues/704)) ([656ee4b](https://github.com/wardian-app/Wardian/commit/656ee4be3820f536dd1f59006121cb5c04290a3f))
+* **chat:** deduplicate Codex final messages ([#755](https://github.com/wardian-app/Wardian/issues/755)) ([b1bea6d](https://github.com/wardian-app/Wardian/commit/b1bea6d6a87a33b5f0bcbb656c06234f511bda23))
+* **codex:** preserve per-agent plugin pass-through ([#678](https://github.com/wardian-app/Wardian/issues/678)) ([83de585](https://github.com/wardian-app/Wardian/commit/83de585b005416c7e42a7297c96f259860ae5105))
+* **context-menu:** anchor menus to cursor ([#687](https://github.com/wardian-app/Wardian/issues/687)) ([71bbdee](https://github.com/wardian-app/Wardian/commit/71bbdeed94aac82739904ab0f43c770348ac3049))
+* **deps:** remediate security advisories ([#685](https://github.com/wardian-app/Wardian/issues/685)) ([99fd7a9](https://github.com/wardian-app/Wardian/commit/99fd7a94492f0686b39a15756ecf08b844d6be8f))
+* **git:** target worktree deletion by source ([#697](https://github.com/wardian-app/Wardian/issues/697)) ([decb800](https://github.com/wardian-app/Wardian/commit/decb8006108e211108cc29de41559cda5647a8f7))
+* **graph:** reconcile dangling topology references ([#737](https://github.com/wardian-app/Wardian/issues/737)) ([94d620e](https://github.com/wardian-app/Wardian/commit/94d620e1b5aad8acb9976b212d87d9708681f20d))
+* **graph:** smooth zoom in split panes ([#699](https://github.com/wardian-app/Wardian/issues/699)) ([3f243ef](https://github.com/wardian-app/Wardian/commit/3f243efae37bffe4a79f06cbf788ad8996a2dc55))
+* **headless:** harden offline provider execution ([#745](https://github.com/wardian-app/Wardian/issues/745)) ([0306e83](https://github.com/wardian-app/Wardian/commit/0306e83925fae2240cdb65f5ed6ac1150ab87759))
+* **macos:** integrate native window chrome ([#713](https://github.com/wardian-app/Wardian/issues/713)) ([e0800e3](https://github.com/wardian-app/Wardian/commit/e0800e3dea7163ead912d7055e29cac0bbcb3cf5))
+* **queue:** restore unread badge on Workbench tab ([#683](https://github.com/wardian-app/Wardian/issues/683)) ([02c7523](https://github.com/wardian-app/Wardian/commit/02c7523af131ad2087c2fcdfcf86cc75a4230e5f))
+* **release:** sign and notarize macOS artifacts ([#714](https://github.com/wardian-app/Wardian/issues/714)) ([82b438e](https://github.com/wardian-app/Wardian/commit/82b438e321ce8ba517c3aeeeea267e3c152b93bd))
+* **release:** sign embedded macOS CLI resource ([#716](https://github.com/wardian-app/Wardian/issues/716)) ([594d4a8](https://github.com/wardian-app/Wardian/commit/594d4a83d6b24b07568367110f81c6808f219c63))
+* **remote:** activate mobile terminal implicitly ([#702](https://github.com/wardian-app/Wardian/issues/702)) ([04d14d4](https://github.com/wardian-app/Wardian/commit/04d14d4420c35c0c983dc5ef433a5d5bd86d1921))
+* **remote:** preserve terminal scrollback across snapshot recovery ([#761](https://github.com/wardian-app/Wardian/issues/761)) ([87bf312](https://github.com/wardian-app/Wardian/commit/87bf312623620e3108e33ff60669bf6da0c90751))
+* **security:** enforce provider session identity provenance ([#674](https://github.com/wardian-app/Wardian/issues/674)) ([163cb3d](https://github.com/wardian-app/Wardian/commit/163cb3d23e121e0fca1226ef16ae4b0d41c0188b))
+* **settings:** dim titlebar behind settings modal ([#706](https://github.com/wardian-app/Wardian/issues/706)) ([8d51ea1](https://github.com/wardian-app/Wardian/commit/8d51ea1b7c93006b411ad10b98fc2f66687ba06e))
+* **terminal:** preserve scrollback across snapshots ([#708](https://github.com/wardian-app/Wardian/issues/708)) ([4b52269](https://github.com/wardian-app/Wardian/commit/4b52269391bdcbe0d620e0db862dd3fc0d427f03))
+* **terminal:** restore regular OpenCode interactions ([#660](https://github.com/wardian-app/Wardian/issues/660)) ([340f7f5](https://github.com/wardian-app/Wardian/commit/340f7f563533a2181cd5cda1ad7811edeb77b41e))
+* **terminal:** resync streams after app foreground ([#759](https://github.com/wardian-app/Wardian/issues/759)) ([28dd9b5](https://github.com/wardian-app/Wardian/commit/28dd9b5dd9a72bc4b0097d9a9acc7ca51848fd66))
+* **terminal:** retain snapshot scrollback across card geometry ([#734](https://github.com/wardian-app/Wardian/issues/734)) ([8f434c2](https://github.com/wardian-app/Wardian/commit/8f434c2188fcca1fa0c2e554b402f2319ade6c57))
+* **terminal:** suppress fragmented Codex color probes ([#718](https://github.com/wardian-app/Wardian/issues/718)) ([2a6a500](https://github.com/wardian-app/Wardian/commit/2a6a50077a8d52aa6c9b82802983a8acdb1aba6b))
+* **watchlist:** preserve collapse state across restarts ([#689](https://github.com/wardian-app/Wardian/issues/689)) ([97025fc](https://github.com/wardian-app/Wardian/commit/97025fc266534768cb72836f0886065e730769b2))
+* **watchlist:** reveal agents on single click ([#721](https://github.com/wardian-app/Wardian/issues/721)) ([6c7f1da](https://github.com/wardian-app/Wardian/commit/6c7f1da5605b18a2d4e68d48fab08a268b99ad3b))
+* **workbench:** reveal Agents view from zoomed panes ([#744](https://github.com/wardian-app/Wardian/issues/744)) ([cf7f55c](https://github.com/wardian-app/Wardian/commit/cf7f55c696412e9438c0d725268162055ab76b5f))
+* **worktrees:** isolate Node dependencies by lockfile ([#749](https://github.com/wardian-app/Wardian/issues/749)) ([c7b9341](https://github.com/wardian-app/Wardian/commit/c7b9341e2bcfcfdc884e7b69146608e3d5ee945c))
+* **worktrees:** restore force deletion and branch reuse ([#740](https://github.com/wardian-app/Wardian/issues/740)) ([10b8737](https://github.com/wardian-app/Wardian/commit/10b8737810662090cd0d2609e29d71ec8488d30b))
+
+
+### Performance
+
+* **build:** speed up repeated local release builds ([#757](https://github.com/wardian-app/Wardian/issues/757)) ([aa63cd3](https://github.com/wardian-app/Wardian/commit/aa63cd35dc91d8439feb6ad437e8197219f392de))
+
+
+### Documentation
+
+* frame durable agent work ([#670](https://github.com/wardian-app/Wardian/issues/670)) ([1a2ca70](https://github.com/wardian-app/Wardian/commit/1a2ca708f2a88aef4de42c5eb92c8f7c1edd8aba))
+* improve navigation and explain core concepts ([#722](https://github.com/wardian-app/Wardian/issues/722)) ([408db57](https://github.com/wardian-app/Wardian/commit/408db575545edc155a1df87c2c3dcb570410c98b))
+* refresh roadmap and post-0.4 docs ([#662](https://github.com/wardian-app/Wardian/issues/662)) ([bbf50b1](https://github.com/wardian-app/Wardian/commit/bbf50b1060df9962ab571a4fe3c02b7c2d7c4430))
+
+
+### Miscellaneous
+
+* **release:** request 0.5.0 ([#764](https://github.com/wardian-app/Wardian/issues/764)) ([cf6de6f](https://github.com/wardian-app/Wardian/commit/cf6de6f6c7a16b7511fbd8c092a029ba68e3bf9d))
+
 ## [0.4.3](https://github.com/wardian-app/Wardian/compare/v0.4.2...v0.4.3) (2026-07-08)
 
 
