@@ -23,6 +23,7 @@ import type {
 const MAX_EVENTS_PER_BATCH = 256;
 const MAX_BYTES_PER_BATCH = 256 * 1024;
 const MAX_BATCHES_PER_TURN = 32;
+let terminalApplicationVisible = true;
 
 export type TerminalPresentationCallbacks = {
   applySnapshot: (snapshot: TerminalSnapshot) => void | Promise<void>;
@@ -94,6 +95,9 @@ export class TerminalSessionClient {
   #drainInFlight = false;
   #drainQueued = false;
   #destroyed = false;
+  #applicationVisible = terminalApplicationVisible;
+  #foregroundSnapshotRequired = !terminalApplicationVisible;
+  #applicationVisibilityEpoch = 0;
   #operation = Promise.resolve();
   #inputOperation = Promise.resolve();
 
@@ -132,7 +136,7 @@ export class TerminalSessionClient {
     if (registration.session_id !== this.sessionId) {
       throw new Error("Presentation registration targets a different terminal session");
     }
-    return this.#serialize(async () => {
+    const result = await this.#serialize(async () => {
       await this.#ensureListeners();
       this.#destroyed = false;
       const binding: PresentationBinding = {
@@ -173,6 +177,8 @@ export class TerminalSessionClient {
         throw error;
       }
     });
+    this.#scheduleForegroundResumeIfNeeded();
+    return result;
   }
 
   async updatePresentation(
@@ -182,7 +188,7 @@ export class TerminalSessionClient {
       "presentation_id" | "session_id" | "client_kind"
     >,
   ) {
-    return this.#serialize(async () => {
+    const result = await this.#serialize(async () => {
       const binding = this.#presentations.get(presentationId);
       if (!binding) {
         throw new Error(`Terminal presentation not registered: ${presentationId}`);
@@ -225,6 +231,8 @@ export class TerminalSessionClient {
       this.#setBrokerState(result.broker_state);
       return result;
     });
+    this.#scheduleForegroundResumeIfNeeded();
+    return result;
   }
 
   async unregisterPresentation(presentationId: string) {
@@ -414,8 +422,105 @@ export class TerminalSessionClient {
     return presentation;
   }
 
+  /**
+   * Pauses or resumes this client's browser-side event consumption for a real
+   * desktop application background transition. It deliberately leaves the
+   * native PTY, broker subscription, presentation lifecycle, and geometry
+   * untouched. Foreground recovery is completed by
+   * `resumeAfterApplicationForeground`, which advances the shared cursor from
+   * an authoritative snapshot barrier before draining live output again.
+   */
+  setApplicationVisibility(visible: boolean) {
+    if (!visible) {
+      if (!this.#applicationVisible && this.#foregroundSnapshotRequired) {
+        return;
+      }
+      this.#applicationVisible = false;
+      this.#foregroundSnapshotRequired = true;
+      this.#applicationVisibilityEpoch += 1;
+      this.#drainQueued = false;
+      return;
+    }
+    if (this.#applicationVisible) {
+      return;
+    }
+    this.#applicationVisible = true;
+    this.#applicationVisibilityEpoch += 1;
+  }
+
+  get foregroundResumePriority() {
+    let priority = 0;
+    for (const [presentationId, binding] of this.#presentations) {
+      if (
+        binding.state?.visibility !== "visible" ||
+        binding.state.render_state !== "mounted"
+      ) {
+        continue;
+      }
+      if (
+        this.#brokerState?.owner_presentation_id === presentationId &&
+        binding.state.interaction_capability === "interactive"
+      ) {
+        return 2;
+      }
+      priority = 1;
+    }
+    return priority;
+  }
+
+  /**
+   * Resynchronizes an application-backgrounded client from a snapshot barrier.
+   * This is intentionally separate from renderer-only snapshots and owner
+   * resynchronization: neither of those may advance the shared event cursor.
+   */
+  async resumeAfterApplicationForeground() {
+    if (!this.#needsForegroundResume()) {
+      return;
+    }
+    return this.#serialize(async () => {
+      if (!this.#needsForegroundResume() || this.#runtimeTransitionPending) {
+        return;
+      }
+      const state = this.#brokerState;
+      if (!state) {
+        return;
+      }
+      const visibilityEpoch = this.#applicationVisibilityEpoch;
+      await this.#ensureSubscription(state.runtime_generation);
+      if (!this.#foregroundResyncIsCurrent(visibilityEpoch)) {
+        return;
+      }
+      const snapshot = await invoke<TerminalSnapshot>("request_terminal_snapshot", {
+        request: { session_id: this.sessionId },
+      });
+      if (!this.#foregroundResyncIsCurrent(visibilityEpoch)) {
+        return;
+      }
+      if (snapshot.runtime_generation < this.#runtimeGeneration) {
+        return;
+      }
+      if (snapshot.runtime_generation > this.#runtimeGeneration) {
+        this.#subscription = null;
+        this.#runtimeGeneration = snapshot.runtime_generation;
+        await this.#ensureSubscription(snapshot.runtime_generation);
+      } else {
+        await this.#applySnapshotToAll(snapshot);
+        this.#cursor = snapshot.sequence_barrier;
+      }
+      if (!this.#foregroundResyncIsCurrent(visibilityEpoch)) {
+        return;
+      }
+      await this.#ackCursor();
+      if (!this.#foregroundResyncIsCurrent(visibilityEpoch)) {
+        return;
+      }
+      this.#foregroundSnapshotRequired = false;
+      this.queueDrain();
+    });
+  }
+
   queueDrain() {
-    if (this.#destroyed || this.#presentations.size === 0) {
+    if (!this.#canDrainEvents() || this.#presentations.size === 0) {
       return;
     }
     if (this.#drainInFlight) {
@@ -577,6 +682,7 @@ export class TerminalSessionClient {
       await this.#ensureSubscription(this.#brokerState.runtime_generation).catch(() => undefined);
       await this.#restorePreviousOwner(previousOwnerPresentationId);
       this.queueDrain();
+      this.#scheduleForegroundResumeIfNeeded();
     }
     if (recoveredPresentations === this.#presentations.size) {
       this.#runtimeTransitionPending = false;
@@ -697,12 +803,15 @@ export class TerminalSessionClient {
 
   async #drain() {
     const state = this.#brokerState;
-    if (!state || this.#destroyed) {
+    if (!state || !this.#canDrainEvents()) {
       return;
     }
     await this.#ensureSubscription(state.runtime_generation);
+    if (!this.#canDrainEvents()) {
+      return;
+    }
     let batches = 0;
-    while (!this.#destroyed && batches < MAX_BATCHES_PER_TURN) {
+    while (this.#canDrainEvents() && batches < MAX_BATCHES_PER_TURN) {
       batches += 1;
       const batch = await invoke<TerminalEventBatch>("read_terminal_events", {
         request: {
@@ -714,6 +823,9 @@ export class TerminalSessionClient {
           max_bytes: MAX_BYTES_PER_BATCH,
         },
       });
+      if (!this.#canDrainEvents()) {
+        return;
+      }
       if (batch.runtime_generation < this.#runtimeGeneration) {
         return;
       }
@@ -741,20 +853,29 @@ export class TerminalSessionClient {
           ),
         );
       }
+      if (!this.#canDrainEvents()) {
+        return;
+      }
       this.#cursor = Math.max(this.#cursor, batch.next_sequence);
-      await invoke("ack_terminal_events", {
-        request: {
-          session_id: this.sessionId,
-          consumer_id: this.#consumerId,
-          runtime_generation: this.#runtimeGeneration,
-          applied_sequence: this.#cursor,
-        },
-      });
+      await this.#ackCursor();
       if (this.#cursor >= batch.latest_sequence || batch.events.length === 0) {
         return;
       }
     }
-    this.#drainQueued = true;
+    if (this.#canDrainEvents()) {
+      this.#drainQueued = true;
+    }
+  }
+
+  async #ackCursor() {
+    await invoke("ack_terminal_events", {
+      request: {
+        session_id: this.sessionId,
+        consumer_id: this.#consumerId,
+        runtime_generation: this.#runtimeGeneration,
+        applied_sequence: this.#cursor,
+      },
+    });
   }
 
   async #applySnapshotToAll(snapshot: TerminalSnapshot) {
@@ -890,6 +1011,35 @@ export class TerminalSessionClient {
     }
   }
 
+  #canDrainEvents() {
+    return (
+      !this.#destroyed &&
+      terminalApplicationVisible &&
+      this.#applicationVisible &&
+      !this.#foregroundSnapshotRequired
+    );
+  }
+
+  #needsForegroundResume() {
+    return (
+      !this.#destroyed &&
+      terminalApplicationVisible &&
+      this.#applicationVisible &&
+      this.#foregroundSnapshotRequired &&
+      this.foregroundResumePriority > 0
+    );
+  }
+
+  #foregroundResyncIsCurrent(visibilityEpoch: number) {
+    return this.#needsForegroundResume() && this.#applicationVisibilityEpoch === visibilityEpoch;
+  }
+
+  #scheduleForegroundResumeIfNeeded() {
+    if (this.#needsForegroundResume()) {
+      enqueueTerminalForegroundResume(this);
+    }
+  }
+
   #currentLocalOwnerPresentationId() {
     const ownerPresentationId = this.#brokerState?.owner_presentation_id ?? null;
     return ownerPresentationId !== null && this.#presentations.has(ownerPresentationId)
@@ -924,6 +1074,70 @@ export class TerminalSessionClient {
 }
 
 const terminalSessionClients = new Map<string, TerminalSessionClient>();
+let terminalForegroundResumeEpoch = 0;
+let terminalForegroundResumeQueue = Promise.resolve();
+const queuedTerminalForegroundResumes = new Set<TerminalSessionClient>();
+
+function yieldTerminalForegroundResume() {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
+function enqueueTerminalForegroundResume(client: TerminalSessionClient) {
+  if (
+    !terminalApplicationVisible ||
+    client.foregroundResumePriority === 0 ||
+    queuedTerminalForegroundResumes.has(client)
+  ) {
+    return terminalForegroundResumeQueue;
+  }
+  const resumeEpoch = terminalForegroundResumeEpoch;
+  queuedTerminalForegroundResumes.add(client);
+  terminalForegroundResumeQueue = terminalForegroundResumeQueue
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        if (terminalApplicationVisible && resumeEpoch === terminalForegroundResumeEpoch) {
+          await client.resumeAfterApplicationForeground();
+        }
+      } catch (error) {
+        if (terminalApplicationVisible && resumeEpoch === terminalForegroundResumeEpoch) {
+          console.warn("Terminal foreground resynchronization failed; keeping the client paused.", error);
+        }
+      } finally {
+        queuedTerminalForegroundResumes.delete(client);
+      }
+      if (terminalApplicationVisible && resumeEpoch === terminalForegroundResumeEpoch) {
+        await yieldTerminalForegroundResume();
+      }
+    });
+  return terminalForegroundResumeQueue;
+}
+
+/**
+ * Coordinates true desktop application visibility across every local terminal
+ * broker client. Visible presentations resume one at a time so foregrounding
+ * cannot fan out snapshot parsing and renderer writes in the same UI turn.
+ */
+export function setTerminalApplicationVisibility(visible: boolean) {
+  const changed = terminalApplicationVisible !== visible;
+  terminalApplicationVisible = visible;
+  if (changed) {
+    terminalForegroundResumeEpoch += 1;
+  }
+  const clients = Array.from(terminalSessionClients.values());
+  for (const client of clients) {
+    client.setApplicationVisibility(visible);
+  }
+  if (!visible) {
+    return Promise.resolve();
+  }
+  for (const client of clients.sort(
+    (left, right) => right.foregroundResumePriority - left.foregroundResumePriority,
+  )) {
+    enqueueTerminalForegroundResume(client);
+  }
+  return terminalForegroundResumeQueue;
+}
 
 export function terminalSessionClientFor(sessionId: string) {
   const existing = terminalSessionClients.get(sessionId);
@@ -938,6 +1152,10 @@ export function terminalSessionClientFor(sessionId: string) {
 export async function resetTerminalSessionClientsForTesting() {
   const clients = Array.from(terminalSessionClients.values());
   terminalSessionClients.clear();
+  terminalApplicationVisible = true;
+  terminalForegroundResumeEpoch += 1;
+  terminalForegroundResumeQueue = Promise.resolve();
+  queuedTerminalForegroundResumes.clear();
   await Promise.all(clients.map((client) => client.destroy()));
 }
 
@@ -947,4 +1165,5 @@ export const __terminalSessionClientTesting = {
   MAX_EVENTS_PER_BATCH,
   consumerId,
   clientCount: () => terminalSessionClients.size,
+  terminalApplicationVisible: () => terminalApplicationVisible,
 };

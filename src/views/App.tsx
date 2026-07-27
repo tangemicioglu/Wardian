@@ -30,6 +30,7 @@ import { SidebarIconRail, SidebarTab } from "../layout/SidebarIconRail";
 import { SidebarContentPane } from "../layout/SidebarContentPane";
 import { CustomTitleBar } from "../layout/titlebar/CustomTitleBar";
 import { UserTerminalPanel } from "../features/terminal/UserTerminalPanel";
+import { useTerminalApplicationVisibility } from "../features/terminal/useTerminalApplicationVisibility";
 import { SettingsModal } from "../features/settings/SettingsModal";
 import { UpdateAvailableNotice } from "../features/settings/UpdateAvailableNotice";
 import { useAppUpdate } from "../features/settings/useAppUpdate";
@@ -260,6 +261,7 @@ export function scrollAgentCardWithinOverview(
 }
 
 function App() {
+  useTerminalApplicationVisibility();
   return (
     <ErrorBoundary>
       <AppBody />
