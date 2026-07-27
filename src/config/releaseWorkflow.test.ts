@@ -112,7 +112,7 @@ describe("release workflow contract", () => {
     expect(dryRunBuildText).not.toContain("APPLE_PASSWORD:");
     expect(dryRunBuildText).not.toContain("APPLE_TEAM_ID:");
     expect(releaseWorkflow).toContain("xcrun stapler validate");
-    expect(releaseWorkflow).toContain("spctl --assess --type open");
+    expect(releaseWorkflow).toContain("spctl --assess --type open --verbose=4 --context context:primary-signature");
     expect(releaseWorkflow).toContain("spctl --assess --type execute");
     expect(releaseWorkflow).toContain("*.app.tar.gz");
     expect(stageCliScript).toContain("signMacReleaseResource");

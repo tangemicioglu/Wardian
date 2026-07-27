@@ -339,7 +339,7 @@ jobs:
             dmg_count=$((dmg_count + 1))
             if [[ "$NOTARIZATION_REQUIRED" == "true" ]]; then
               xcrun stapler validate "$dmg"
-              spctl --assess --type open --verbose=4 "$dmg"
+              spctl --assess --type open --verbose=4 --context context:primary-signature "$dmg"
             fi
 
             mount_path="$(mktemp -d)"
