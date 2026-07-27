@@ -110,7 +110,7 @@ pub(crate) async fn agent_archive_capture_snapshot(
         .lock()
         .map_err(|_| "agent status timestamp lock poisoned".to_string())?
         .clone();
-    let log_path = agent
+    let mut log_path = agent
         .log_path
         .lock()
         .map_err(|_| "agent log path lock poisoned".to_string())?
@@ -119,6 +119,30 @@ pub(crate) async fn agent_archive_capture_snapshot(
         .git_worktree_folder
         .clone()
         .unwrap_or_else(|| config.folder.clone());
+
+    // Chat may be requested before the provider watcher has performed its
+    // first discovery pass, or for an agent restored while off. Resolve the
+    // provider-owned workspace mapping here as well so rendering does not
+    // depend on watcher timing or on persisting a resume identity.
+    if provider == "antigravity" && log_path.is_none() {
+        let resolved_workspace = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id);
+        let excluded = config.antigravity_config().cleared_conversations;
+        if let Some(path) = AntigravityProvider::antigravity_home().and_then(|home| {
+            AntigravityProvider::verified_conversation_for_workspace(
+                &home,
+                &resolved_workspace,
+                &excluded,
+            )
+            .and_then(|conversation_id| {
+                AntigravityProvider::conversation_log_path(&home, &conversation_id)
+            })
+        }) {
+            log_path = Some(path.clone());
+            if let Ok(mut agent_log_path) = agent.log_path.lock() {
+                *agent_log_path = Some(path);
+            }
+        }
+    }
 
     Ok(AgentArchiveCaptureSnapshot {
         session_id,

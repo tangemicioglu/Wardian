@@ -29,6 +29,24 @@ use crate::providers::gemini::gemini_status_from_title;
 
 const OUTPUT_READY_EMIT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
+/// Selects the verified Antigravity conversation used for log discovery and
+/// whether that conversation is new enough to persist as the resume identity.
+/// A pre-existing workspace mapping is valid chat/telemetry evidence, but is
+/// not promoted to a resume identity until the provider replaces it.
+fn antigravity_watcher_conversation(
+    existing: Option<String>,
+    workspace_before: Option<&str>,
+    discovered: Option<String>,
+) -> (Option<String>, bool) {
+    if existing.is_some() {
+        return (existing, false);
+    }
+
+    let capture_identity = changed_workspace_conversation(workspace_before, discovered.as_deref())
+        .is_some();
+    (discovered, capture_identity)
+}
+
 #[derive(Default)]
 struct OutputReadyEmitGate {
     last_emit_at: Option<std::time::Instant>,
@@ -1384,32 +1402,33 @@ pub async fn spawn_agent(
                         .as_ref()
                         .map(|value| value.trim().to_string())
                         .filter(|value| !value.is_empty());
-                    if existing.is_some() {
-                        (existing, false)
-                    } else {
-                        let excluded = cfg.antigravity_config().cleared_conversations;
-                        let discovered = home.as_ref().and_then(|home| {
-                            AntigravityProvider::verified_conversation_for_workspace(
-                                home,
-                                &watcher_workspace,
-                                &excluded,
-                            )
-                        });
-                        let captured = changed_workspace_conversation(
-                            watcher_workspace_before.as_deref(),
-                            discovered.as_deref(),
-                        );
-                        if let Some(conversation_id) = captured.as_deref() {
+                    let excluded = cfg.antigravity_config().cleared_conversations;
+                    let discovered = home.as_ref().and_then(|home| {
+                        AntigravityProvider::verified_conversation_for_workspace(
+                            home,
+                            &watcher_workspace,
+                            &excluded,
+                        )
+                    });
+                    let (conversation_id, capture_identity) = antigravity_watcher_conversation(
+                        existing,
+                        watcher_workspace_before.as_deref(),
+                        discovered,
+                    );
+                    if capture_identity {
+                        if let Some(conversation_id) = conversation_id.as_deref() {
                             if apply_provider_identity("antigravity", &mut cfg, conversation_id)
-                                .is_err()
+                                .is_ok()
                             {
-                                (None, false)
+                                (Some(conversation_id.to_string()), true)
                             } else {
-                                (captured, true)
+                                (Some(conversation_id.to_string()), false)
                             }
                         } else {
                             (None, false)
                         }
+                    } else {
+                        (conversation_id, false)
                     }
                 };
                 if captured_identity {
@@ -1745,6 +1764,18 @@ mod tests {
         let mut gate = AntigravityTurnCompletionGate::default();
 
         assert!(!gate.observe_output("antigravity", "Idle", "\r\n>\r\n? for shortcuts\r\n",));
+    }
+
+    #[test]
+    fn antigravity_preexisting_mapping_remains_available_for_log_discovery() {
+        let (conversation_id, capture_identity) = antigravity_watcher_conversation(
+            None,
+            Some("conversation-123"),
+            Some("conversation-123".to_string()),
+        );
+
+        assert_eq!(conversation_id.as_deref(), Some("conversation-123"));
+        assert!(!capture_identity);
     }
 
     #[test]
