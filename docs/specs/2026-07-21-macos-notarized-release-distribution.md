@@ -20,8 +20,8 @@ Each release workflow macOS build must:
 1. import a password-protected Developer ID Application certificate into an
    ephemeral runner keychain;
 2. sign the application and nested code using that identity;
-3. submit the release artifacts to Apple notarization and staple the resulting
-   ticket;
+3. notarize and staple the app bundle, then separately notarize and staple
+   each final signed DMG before replacing its preliminary draft-release asset;
 4. fail before publication if any Apple signing or notarization secret is
    missing; and
 5. verify the final DMG and updater archive with `codesign`, `stapler`, and
