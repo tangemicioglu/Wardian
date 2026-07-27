@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title>Wardian</title>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#183F32"/>
+      <stop offset="1" stop-color="#0B211A"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="32%" r="72%">
+      <stop offset="0" stop-color="#2D6A4F" stop-opacity=".72"/>
+      <stop offset="1" stop-color="#16382C" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#background)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+  <g transform="translate(112 82) scale(8)">
+    <path d="M 32 83 C 20 83 18 55 32 48 C 44 55 42 83 32 83 Z" fill="#00C853"/>
+    <circle cx="27.5" cy="65" r="1.5" fill="#FFFFFF"/>
+    <circle cx="34.5" cy="65" r="1.5" fill="#FFFFFF"/>
+    <path d="M 68 83 C 80 83 82 55 68 48 C 56 55 58 83 68 83 Z" fill="#00C853"/>
+    <circle cx="72.5" cy="65" r="1.5" fill="#FFFFFF"/>
+    <circle cx="65.5" cy="65" r="1.5" fill="#FFFFFF"/>
+    <path d="M 50 83 C 32 83 34 42 50 32 C 66 42 68 83 50 83 Z" fill="#00E676"/>
+    <circle cx="45" cy="56" r="2.5" fill="#FFFFFF"/>
+    <circle cx="55" cy="56" r="2.5" fill="#FFFFFF"/>
+    <line x1="10" y1="83" x2="90" y2="83" stroke="#D4AF37" stroke-width="6" stroke-linecap="round"/>
+    <path d="M 14 83 L 86 83 L 80 93 L 20 93 Z" fill="#D4AF37"/>
+    <circle cx="50" cy="15" r="5" fill="none" stroke="#D4AF37" stroke-width="4"/>
+    <path d="M 16 83 L 16 57 A 34 34 0 0 1 84 57 L 84 83" fill="none" stroke="#D4AF37" stroke-width="6"/>
+  </g>
+</svg>

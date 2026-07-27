@@ -15,6 +15,7 @@ dependencies = [
  "hmac",
  "libc",
  "notify",
+ "objc2-app-kit",
  "once_cell",
  "p256",
  "portable-pty",
