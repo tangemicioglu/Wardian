@@ -26,6 +26,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 import {
   __terminalSessionClientTesting,
   resetTerminalSessionClientsForTesting,
+  setTerminalApplicationVisibility,
   terminalSessionClientFor,
 } from "./terminalSessionClient";
 
@@ -186,6 +187,132 @@ describe("TerminalSessionClient", () => {
       request: { session_id: "agent-1", consumer_id: "desktop:agent-1" },
     });
     expect(__terminalSessionClientTesting.clientCount()).toBe(0);
+  });
+
+  it("resumes from a snapshot barrier without replaying background output or changing geometry", async () => {
+    const appliedEvents: number[][] = [];
+    const appliedSnapshots: string[] = [];
+    const commands: string[] = [];
+    tauri.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      commands.push(command);
+      if (command === "register_terminal_presentation") {
+        return registeredResult("pane-a");
+      }
+      if (command === "subscribe_terminal_events") {
+        return {
+          broker_state: brokerState(1, 4),
+          initial_snapshot: snapshot(1, 4),
+        };
+      }
+      if (command === "request_terminal_snapshot") {
+        return snapshot(1, 100);
+      }
+      if (command === "read_terminal_events") {
+        expect((args as { request: { after_sequence: number } }).request.after_sequence).toBe(100);
+        return eventsBatch([
+          {
+            sequence: 101,
+            runtime_generation: 1,
+            type: "output",
+            bytes: [65],
+          },
+        ], 101);
+      }
+      if (command === "ack_terminal_events") {
+        return { runtime_generation: 1, acknowledged_sequence: 101 };
+      }
+      if (command === "unregister_terminal_presentation") {
+        return brokerState();
+      }
+      if (command === "unsubscribe_terminal_events") {
+        return undefined;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const client = terminalSessionClientFor("agent-1");
+    await client.registerPresentation(registration("pane-a"), {
+      applySnapshot: (value) => {
+        appliedSnapshots.push(value.snapshot_id);
+      },
+      applyEvents: (events) => {
+        appliedEvents.push(events.map((event) => event.sequence));
+      },
+    });
+
+    await setTerminalApplicationVisibility(false);
+    emit("terminal-session-events-ready", {
+      session_id: "agent-1",
+      runtime_generation: 1,
+    });
+    await settle();
+    expect(commands.filter((command) => command === "read_terminal_events")).toHaveLength(0);
+
+    await setTerminalApplicationVisibility(true);
+    await vi.waitFor(() => expect(appliedEvents).toEqual([[101]]));
+
+    const foregroundSnapshot = commands.lastIndexOf("request_terminal_snapshot");
+    const foregroundAcknowledge = commands.findIndex(
+      (command, index) => index > foregroundSnapshot && command === "ack_terminal_events",
+    );
+    const foregroundRead = commands.findIndex(
+      (command, index) => index > foregroundSnapshot && command === "read_terminal_events",
+    );
+    expect(appliedSnapshots).toContain("snapshot-1-100");
+    expect(foregroundSnapshot).toBeGreaterThan(-1);
+    expect(foregroundAcknowledge).toBeGreaterThan(foregroundSnapshot);
+    expect(foregroundRead).toBeGreaterThan(foregroundAcknowledge);
+    expect(commands).not.toEqual(expect.arrayContaining([
+      "resize_terminal_presentation",
+      "report_terminal_presentation_viewport",
+      "begin_terminal_owner_resync",
+      "ack_terminal_owner_resync",
+      "update_terminal_presentation",
+    ]));
+  });
+
+  it("keeps a backgrounded client paused when its foreground snapshot fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === "register_terminal_presentation") {
+        return registeredResult("pane-a");
+      }
+      if (command === "subscribe_terminal_events") {
+        return { broker_state: brokerState(1, 4), initial_snapshot: snapshot(1, 4) };
+      }
+      if (command === "request_terminal_snapshot") {
+        throw new Error("snapshot unavailable");
+      }
+      if (command === "read_terminal_events") {
+        throw new Error("stale output must not drain after failed resync");
+      }
+      if (command === "unregister_terminal_presentation") {
+        return brokerState();
+      }
+      if (command === "unsubscribe_terminal_events") {
+        return undefined;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const client = terminalSessionClientFor("agent-1");
+    await client.registerPresentation(registration("pane-a"), {
+      applySnapshot: () => undefined,
+      applyEvents: () => undefined,
+    });
+
+    await setTerminalApplicationVisibility(false);
+    await setTerminalApplicationVisibility(true);
+
+    expect(tauri.invoke).toHaveBeenCalledWith("request_terminal_snapshot", {
+      request: { session_id: "agent-1" },
+    });
+    expect(tauri.invoke).not.toHaveBeenCalledWith("read_terminal_events", expect.anything());
+    expect(warn).toHaveBeenCalledWith(
+      "Terminal foreground resynchronization failed; keeping the client paused.",
+      expect.any(Error),
+    );
+    warn.mockRestore();
   });
 
   it("filters shared feed events through each presentation snapshot barrier", async () => {
