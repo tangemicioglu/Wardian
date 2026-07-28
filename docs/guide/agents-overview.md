@@ -24,6 +24,8 @@ not change the agent's instructions, skills, permissions, or provider session,
 and saving one does not restart the agent. New agents start without a
 description, so the spawn workflow has no additional required step.
 
+![Agent Configuration showing an optional purpose description while the same agent remains visible in the roster](../assets/screenshots/agent-lifecycle/purpose-description.png)
+
 ### Open an Agent from Another View
 
 When **Graph**, **Garden**, or **Inbox** uses **Open Agent**, Wardian first
