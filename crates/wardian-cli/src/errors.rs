@@ -102,7 +102,7 @@ impl CliError {
             exit_code: ExitCode::Generic,
             code: "invalid_field",
             message: format!("Unknown field: {field}"),
-            hint: Some("Use one of: name, uuid, class, provider, workspace, status, status_source, pid, started_at, last_status_at.".to_string()),
+            hint: Some("Use one of: name, uuid, description, class, provider, workspace, status, status_source, pid, started_at, last_status_at, visibility.".to_string()),
             details: Some(Box::new(serde_json::json!({ "field": field }))),
         }
     }

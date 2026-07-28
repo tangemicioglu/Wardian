@@ -274,6 +274,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             target,
             class,
             workspace,
+            description,
         } => {
             let uuid = resolve_target_uuid(app, &target)
                 .await
@@ -299,6 +300,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 &uuid,
                 class.as_deref(),
                 workspace.as_deref(),
+                description.as_deref(),
                 &classes,
             )
             .await
@@ -322,6 +324,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             let metadata_error = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
                 session_id: &outcome.config.session_id,
                 session_name: &outcome.config.session_name,
+                description: &outcome.config.description,
                 agent_class: &outcome.config.agent_class,
                 provider: &outcome.config.provider,
                 workspace: Some(&workspace),
@@ -343,7 +346,8 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 )));
             }
             let _ = app.emit("agents-updated", ());
-            let restart_required = !outcome.updated_fields.is_empty() && !outcome.config.is_off;
+            let restart_required =
+                agent_update_requires_restart(&outcome.updated_fields, outcome.config.is_off);
             let identity = agent_config_to_identity(&outcome.config, app).await;
             ok_json(&AgentUpdateResponse {
                 schema: wardian_core::control::CONTROL_SCHEMA,
@@ -4479,6 +4483,7 @@ async fn agent_config_to_identity(
         AgentIdentity {
             name: config.session_name.clone(),
             uuid: config.session_id.clone(),
+            description: config.description.clone(),
             class: config.agent_class.clone(),
             provider: config.provider.clone(),
             status: "idle".to_string(),
@@ -4784,6 +4789,7 @@ fn snapshot_agent_with_leases(
     AgentIdentity {
         name: config.session_name,
         uuid: config.session_id,
+        description: config.description,
         class: config.agent_class,
         provider: config.provider,
         status: normalize_status(&effective_status),
@@ -4794,6 +4800,13 @@ fn snapshot_agent_with_leases(
         status_source: StatusSource::Live,
         visibility: None,
     }
+}
+
+fn agent_update_requires_restart(updated_fields: &[String], is_off: bool) -> bool {
+    !is_off
+        && updated_fields
+            .iter()
+            .any(|field| matches!(field.as_str(), "class" | "workspace"))
 }
 
 #[cfg(test)]
@@ -4840,6 +4853,19 @@ mod tests {
                 None => std::env::remove_var("WARDIAN_HOME"),
             }
         }
+    }
+
+    #[test]
+    fn agent_description_update_does_not_require_restart() {
+        assert!(!agent_update_requires_restart(
+            &["description".to_string()],
+            false
+        ));
+        assert!(agent_update_requires_restart(&["class".to_string()], false));
+        assert!(!agent_update_requires_restart(
+            &["workspace".to_string()],
+            true
+        ));
     }
 
     struct ScopedEnvVar {

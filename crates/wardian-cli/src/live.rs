@@ -356,6 +356,7 @@ pub fn agent_update(
     target: &str,
     class: Option<&str>,
     workspace: Option<&str>,
+    description: Option<&str>,
 ) -> io::Result<AgentUpdateResponse> {
     let runtime = build_runtime()?;
     let value = timeout_block(
@@ -365,6 +366,7 @@ pub fn agent_update(
             target: target.to_string(),
             class: class.map(str::to_string),
             workspace: workspace.map(str::to_string),
+            description: description.map(str::to_string),
         }),
     )?;
     serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))
@@ -1502,6 +1504,7 @@ mod tests {
         AgentIdentity {
             name: "reviewer-a1".to_string(),
             uuid: "uuid-1".to_string(),
+            description: String::new(),
             class: "Reviewer".to_string(),
             provider: "codex".to_string(),
             status: status.to_string(),

@@ -472,6 +472,7 @@ mod tests {
         AgentIdentity {
             name: name.to_string(),
             uuid: uuid.to_string(),
+            description: String::new(),
             class: "Coder".to_string(),
             provider: "codex".to_string(),
             status: "Idle".to_string(),

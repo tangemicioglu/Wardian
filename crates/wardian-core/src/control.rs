@@ -34,6 +34,7 @@ pub enum ControlRequest {
         target: String,
         class: Option<String>,
         workspace: Option<String>,
+        description: Option<String>,
     },
     AgentDoctor {
         target: String,
@@ -891,6 +892,7 @@ mod tests {
             target: "coder-a1".to_string(),
             class: Some("Reviewer".to_string()),
             workspace: Some("D:/Development/Wardian".to_string()),
+            description: Some("Reviews release changes".to_string()),
         };
         let request_json = serde_json::to_string(&req).unwrap();
 
@@ -898,6 +900,7 @@ mod tests {
         assert!(request_json.contains(r#""target":"coder-a1""#));
         assert!(request_json.contains(r#""class":"Reviewer""#));
         assert!(request_json.contains(r#""workspace":"D:/Development/Wardian""#));
+        assert!(request_json.contains(r#""description":"Reviews release changes""#));
 
         let response = AgentUpdateResponse {
             schema: CONTROL_SCHEMA,
@@ -905,6 +908,7 @@ mod tests {
             agent: AgentIdentity {
                 name: "coder-a1".to_string(),
                 uuid: "uuid-1".to_string(),
+                description: "Reviews release changes".to_string(),
                 class: "Reviewer".to_string(),
                 provider: "codex".to_string(),
                 status: "idle".to_string(),
@@ -915,12 +919,16 @@ mod tests {
                 status_source: crate::identity::StatusSource::Live,
                 visibility: None,
             },
-            updated_fields: vec!["class".to_string(), "workspace".to_string()],
+            updated_fields: vec![
+                "class".to_string(),
+                "workspace".to_string(),
+                "description".to_string(),
+            ],
             restart_required: true,
         };
         let response_json = serde_json::to_string(&response).unwrap();
 
-        assert!(response_json.contains(r#""updated_fields":["class","workspace"]"#));
+        assert!(response_json.contains(r#""updated_fields":["class","workspace","description"]"#));
         assert!(response_json.contains(r#""restart_required":true"#));
     }
 
@@ -938,6 +946,7 @@ mod tests {
             agent: AgentIdentity {
                 name: "Electrical".to_string(),
                 uuid: "agent-1".to_string(),
+                description: String::new(),
                 class: "Electrical Engineer".to_string(),
                 provider: "codex".to_string(),
                 status: "idle".to_string(),
@@ -1480,6 +1489,7 @@ mod tests {
             agent: AgentResponse::new(AgentIdentity {
                 name: "coder-a1".to_string(),
                 uuid: "uuid-1".to_string(),
+                description: String::new(),
                 class: "Coder".to_string(),
                 provider: "codex".to_string(),
                 status: "processing".to_string(),

@@ -97,6 +97,7 @@ fn seed_agent(home: &Path, session_id: &str) {
         &wardian_core::db::AgentUpsert {
             session_id,
             session_name: "reviewer-a1",
+            description: "",
             agent_class: "Reviewer",
             provider: "codex",
             workspace: Some("<absolute-workspace-path>"),

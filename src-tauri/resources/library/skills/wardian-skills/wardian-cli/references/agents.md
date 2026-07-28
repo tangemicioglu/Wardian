@@ -6,7 +6,7 @@ Begin a Wardian coordination task by checking yourself and the relevant roster:
 
 ```bash
 wardian agent
-wardian agent list --scope all --fields name,uuid,class,provider,workspace,status,status_source
+wardian agent list --scope all --fields name,uuid,description,class,provider,workspace,status,status_source
 wardian agent doctor reviewer-a1
 ```
 
@@ -55,18 +55,21 @@ for the same `WARDIAN_HOME`:
 wardian agent spawn --provider codex --class Reviewer --name reviewer-a1 --workspace <absolute-workspace-path>
 wardian agent clone reviewer-a1 --name reviewer-a2
 wardian agent update reviewer-a1 --class Reviewer --workspace <absolute-workspace-path>
+wardian agent update reviewer-a1 --description "Reviews frontend release changes"
 ```
 
 Supply both `--provider` and `--class` when spawning. `clone` carries the
 source agent's provider, class, workspace, and context unless overridden.
 
 Use `agent update` instead of editing `settings/state.json`. It updates live
-and persisted state together. It can update class and workspace atomically,
-regenerates class instruction includes after a class change, and reports
-`updated_fields` plus `restart_required`; run `wardian agent restart <target>`
-when required before relying on the new class or workspace. Restart preserves
-the Wardian agent, habitat, and saved session history. Do not use it to move a
-managed-worktree agent.
+and persisted state together. It can update class, workspace, and the optional
+purpose description atomically, regenerates class instruction includes after a
+class change, and reports `updated_fields` plus `restart_required`. Description
+changes do not restart the provider and do not change its instructions or
+capabilities. Pass `--description ""` to clear the memo. Run
+`wardian agent restart <target>` when required before relying on a new class or
+workspace. Restart preserves the Wardian agent, habitat, and saved session
+history. Do not use it to move a managed-worktree agent.
 
 ## Assign A Managed Workspace
 

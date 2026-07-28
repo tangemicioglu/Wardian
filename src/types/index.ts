@@ -139,6 +139,7 @@ export type ProviderConfig =
 export interface AgentConfig {
     session_id: string;
     session_name: string;
+    description?: string;
     agent_class: string;
     folder: string;
     resume_session?: string;

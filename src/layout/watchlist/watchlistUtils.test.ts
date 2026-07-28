@@ -538,6 +538,15 @@ describe("filterAgents", () => {
     expect(filterAgents(agents, "coder")).toEqual([agents[0], agents[2]]);
   });
 
+  it("filters by agent description", () => {
+    const describedAgents = [
+      agents[0],
+      { ...agents[1], description: "Owns frontend release follow-up" },
+      agents[2],
+    ];
+    expect(filterAgents(describedAgents, "release follow-up")).toEqual([describedAgents[1]]);
+  });
+
   it("returns empty for no match", () => {
     expect(filterAgents(agents, "zzz")).toEqual([]);
   });

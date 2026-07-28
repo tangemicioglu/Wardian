@@ -17,6 +17,8 @@ use wardian_core::models::{
     DeployedSkillRef, ProviderConfig,
 };
 
+const MAX_AGENT_DESCRIPTION_CHARS: usize = 280;
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpawnAgentRequest {
@@ -1932,10 +1934,21 @@ fn normalize_agent_update_workspace(folder: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
+fn normalize_agent_description(description: &str) -> Result<String, String> {
+    let description = description.trim();
+    if description.chars().count() > MAX_AGENT_DESCRIPTION_CHARS {
+        return Err(format!(
+            "Agent description must be {MAX_AGENT_DESCRIPTION_CHARS} characters or fewer"
+        ));
+    }
+    Ok(description.to_string())
+}
+
 fn apply_agent_update_fields(
     config: &mut AgentConfig,
     class: Option<&str>,
     workspace: Option<&str>,
+    description: Option<&str>,
     classes: &[wardian_core::models::AgentClassDefinition],
 ) -> Result<Vec<String>, String> {
     let mut updated_fields = Vec::new();
@@ -1966,6 +1979,14 @@ fn apply_agent_update_fields(
         }
     }
 
+    if let Some(description) = description {
+        let normalized = normalize_agent_description(description)?;
+        if config.description != normalized {
+            config.description = normalized;
+            updated_fields.push("description".to_string());
+        }
+    }
+
     Ok(updated_fields)
 }
 
@@ -1982,9 +2003,10 @@ pub(crate) async fn update_agent_fields_in_state(
     session_id: &str,
     class: Option<&str>,
     workspace: Option<&str>,
+    description: Option<&str>,
     classes: &[wardian_core::models::AgentClassDefinition],
 ) -> Result<AgentUpdateOutcome, String> {
-    if class.is_none() && workspace.is_none() {
+    if class.is_none() && workspace.is_none() && description.is_none() {
         return Err("At least one agent update field is required".to_string());
     }
 
@@ -1996,7 +2018,8 @@ pub(crate) async fn update_agent_fields_in_state(
         .ok_or_else(|| format!("Agent {session_id} not found"))?;
     let previous_config = agent.config.lock().unwrap().clone();
     let mut config = previous_config.clone();
-    let updated_fields = apply_agent_update_fields(&mut config, class, workspace, classes)?;
+    let updated_fields =
+        apply_agent_update_fields(&mut config, class, workspace, description, classes)?;
 
     if updated_fields.iter().any(|field| field == "class") {
         config.system_include_directories =
@@ -3185,6 +3208,7 @@ async fn clear_agent_session_inner(
         (
             config.session_id.clone(),
             config.session_name.clone(),
+            config.description.clone(),
             config.agent_class.clone(),
             config.provider.clone(),
             workspace,
@@ -3227,12 +3251,13 @@ async fn clear_agent_session_inner(
     let _ = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
         session_id: &db_snapshot.0,
         session_name: &db_snapshot.1,
-        agent_class: &db_snapshot.2,
-        provider: &db_snapshot.3,
-        workspace: Some(&db_snapshot.4),
-        project: db_snapshot.5.as_deref(),
-        is_off: db_snapshot.6,
-        created_at: db_snapshot.7.as_deref(),
+        description: &db_snapshot.2,
+        agent_class: &db_snapshot.3,
+        provider: &db_snapshot.4,
+        workspace: Some(&db_snapshot.5),
+        project: db_snapshot.6.as_deref(),
+        is_off: db_snapshot.7,
+        created_at: db_snapshot.8.as_deref(),
     });
 
     // 9. Force a frontend refresh and terminal resize to clear glitches
@@ -3275,7 +3300,7 @@ pub async fn rename_agent(
     let order = state.agent_order.lock().await;
 
     if let Some(agent) = agents.get_mut(&session_id) {
-        let (sid, name, class, provider, workspace, is_off, born) = {
+        let (sid, name, description, class, provider, workspace, is_off, born) = {
             let mut config = agent.config.lock().unwrap();
             config.session_name = new_name;
             let workspace = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id)
@@ -3284,6 +3309,7 @@ pub async fn rename_agent(
             (
                 config.session_id.clone(),
                 config.session_name.clone(),
+                config.description.clone(),
                 config.agent_class.clone(),
                 config.provider.clone(),
                 workspace,
@@ -3297,6 +3323,7 @@ pub async fn rename_agent(
         let _ = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
             session_id: &sid,
             session_name: &name,
+            description: &description,
             agent_class: &class,
             provider: &provider,
             workspace: Some(&workspace),
@@ -3315,24 +3342,23 @@ pub async fn rename_agent(
 pub async fn update_agent_config(
     mut new_config: AgentConfig,
     state: State<'_, AppState>,
-    app: AppHandle,
+    _app: AppHandle,
 ) -> Result<(), String> {
     manager::log_debug(&format!(
         "[WARDIAN] update_agent_config called for session: {}",
         new_config.session_id
     ));
     new_config.validate_provider_config_matches_provider()?;
+    new_config.description = normalize_agent_description(&new_config.description)?;
     new_config.mark_provider_config_nested_for_save();
     let _lifecycle_guard = lock_agent_lifecycle(&state, &new_config.session_id).await;
-    let mut agents = state.agents.lock().await;
+    let agents = state.agents.lock().await;
     let order = state.agent_order.lock().await;
 
-    if let Some(agent) = agents.get_mut(&new_config.session_id) {
+    if let Some(agent) = agents.get(&new_config.session_id) {
+        let previous_config = agent.config.lock().unwrap().clone();
         // If class has changed, auto-update the system_include_directories
-        let current_class = {
-            let config = agent.config.lock().unwrap();
-            config.agent_class.clone()
-        };
+        let current_class = previous_config.agent_class.clone();
 
         if current_class != new_config.agent_class {
             manager::log_debug(&format!(
@@ -3346,11 +3372,47 @@ pub async fn update_agent_config(
                 ));
         }
 
-        {
-            let mut config = agent.config.lock().unwrap();
-            *config = new_config;
-        }
-        manager::save_state(&app, &agents, &order);
+        let previous_state_snapshot = manager::state_configs_snapshot(&agents, &order);
+        let mut state_snapshot = previous_state_snapshot.clone();
+        let persisted_config = state_snapshot
+            .iter_mut()
+            .find(|config| config.session_id == new_config.session_id)
+            .ok_or_else(|| {
+                format!(
+                    "Agent {} is missing from persisted order",
+                    new_config.session_id
+                )
+            })?;
+        *persisted_config = new_config.clone();
+
+        manager::try_save_state_snapshot(&state_snapshot)
+            .map_err(|error| format!("Failed to persist agent configuration: {error}"))?;
+
+        let workspace = crate::utils::fs::resolve_cwd(&new_config.folder, &new_config.session_id)
+            .to_string_lossy()
+            .to_string();
+        let created_at = agent.init_timestamp.lock().unwrap().clone();
+        let project = wardian_core::db::project_name_from_workspace(&workspace);
+        wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
+            session_id: &new_config.session_id,
+            session_name: &new_config.session_name,
+            description: &new_config.description,
+            agent_class: &new_config.agent_class,
+            provider: &new_config.provider,
+            workspace: Some(&workspace),
+            project: project.as_deref(),
+            is_off: new_config.is_off,
+            created_at: created_at.as_deref(),
+        })
+        .map_err(|error| {
+            let rollback_error = manager::try_save_state_snapshot(&previous_state_snapshot)
+                .err()
+                .map(|rollback| format!("; state rollback also failed: {rollback}"))
+                .unwrap_or_default();
+            format!("Failed to persist agent metadata: {error}{rollback_error}")
+        })?;
+
+        *agent.config.lock().unwrap() = new_config;
         Ok(())
     } else {
         Err(format!("Agent {} not found", new_config.session_id))
@@ -3973,6 +4035,7 @@ mod tests {
         workspace_paths_match, worktree_deletion_is_already_complete, AgentOrderPlacement,
         AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
         DeletedAgentReferenceCleanup, DiscoveredGitWorktree, GIT_WORKTREE_DISCOVERY_CONCURRENCY,
+        MAX_AGENT_DESCRIPTION_CHARS,
     };
     use crate::providers::GeminiProvider;
     use crate::providers::antigravity::AntigravityProvider;
@@ -5538,12 +5601,14 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             &mut config,
             Some("reviewer"),
             Some(&workspace.to_string_lossy()),
+            Some("  Reviews release changes  "),
             &classes,
         )
         .expect("update fields");
 
-        assert_eq!(updated_fields, vec!["class", "workspace"]);
+        assert_eq!(updated_fields, vec!["class", "workspace", "description"]);
         assert_eq!(config.agent_class, "Reviewer");
+        assert_eq!(config.description, "Reviews release changes");
         assert_eq!(
             config.folder,
             normalize_spawn_folder(&workspace.to_string_lossy()).unwrap()
@@ -5561,15 +5626,20 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             ..Default::default()
         };
 
-        let error =
-            apply_agent_update_fields(&mut config, None, Some(&workspace.to_string_lossy()), &[])
-                .expect_err("managed worktree must use worktree commands");
+        let error = apply_agent_update_fields(
+            &mut config,
+            None,
+            Some(&workspace.to_string_lossy()),
+            None,
+            &[],
+        )
+        .expect_err("managed worktree must use worktree commands");
 
         assert!(error.contains("agent worktree"));
 
         let current_workspace = config.folder.clone();
         let no_op_error =
-            apply_agent_update_fields(&mut config, None, Some(&current_workspace), &[])
+            apply_agent_update_fields(&mut config, None, Some(&current_workspace), None, &[])
                 .expect_err("managed worktree no-op must still use worktree commands");
         assert!(no_op_error.contains("agent worktree"));
     }
@@ -5584,18 +5654,36 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             ..Default::default()
         };
 
-        let blank = apply_agent_update_fields(&mut config, None, Some("   "), &[])
+        let blank = apply_agent_update_fields(&mut config, None, Some("   "), None, &[])
             .expect_err("blank workspace must be rejected");
         assert!(blank.contains("cannot be empty"));
 
-        let relative = apply_agent_update_fields(&mut config, None, Some("."), &[])
+        let relative = apply_agent_update_fields(&mut config, None, Some("."), None, &[])
             .expect_err("relative workspace must be rejected");
         assert!(relative.contains("absolute"));
 
         let file_error =
-            apply_agent_update_fields(&mut config, None, Some(&file.to_string_lossy()), &[])
+            apply_agent_update_fields(&mut config, None, Some(&file.to_string_lossy()), None, &[])
                 .expect_err("workspace file must be rejected");
         assert!(file_error.contains("directory"));
+    }
+
+    #[test]
+    fn agent_update_description_can_be_cleared_and_is_bounded() {
+        let mut config = AgentConfig {
+            description: "Existing memo".to_string(),
+            ..Default::default()
+        };
+
+        let cleared = apply_agent_update_fields(&mut config, None, None, Some("  "), &[])
+            .expect("clear description");
+        assert_eq!(cleared, vec!["description"]);
+        assert!(config.description.is_empty());
+
+        let too_long = "x".repeat(MAX_AGENT_DESCRIPTION_CHARS + 1);
+        let error = apply_agent_update_fields(&mut config, None, None, Some(&too_long), &[])
+            .expect_err("oversized description must be rejected");
+        assert!(error.contains("280 characters or fewer"));
     }
 
     #[tokio::test]
@@ -5637,13 +5725,18 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             "agent-1",
             Some("Reviewer"),
             Some(&workspace.to_string_lossy()),
+            Some("Reviews release changes"),
             &classes,
         )
         .await
         .expect("update live state");
 
-        assert_eq!(outcome.updated_fields, vec!["class", "workspace"]);
+        assert_eq!(
+            outcome.updated_fields,
+            vec!["class", "workspace", "description"]
+        );
         assert_eq!(outcome.config.agent_class, "Reviewer");
+        assert_eq!(outcome.config.description, "Reviews release changes");
         assert_eq!(outcome.state_snapshot.len(), 1);
         assert_eq!(
             outcome.state_snapshot[0].agent_class,
@@ -5699,6 +5792,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
                 "agent-1",
                 None,
                 Some(&workspace_for_update),
+                None,
                 &[],
             )
             .await

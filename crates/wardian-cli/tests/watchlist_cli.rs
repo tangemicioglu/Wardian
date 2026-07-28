@@ -55,6 +55,7 @@ fn seed_agent(
         &wardian_core::db::AgentUpsert {
             session_id,
             session_name,
+            description: "",
             agent_class: "Coder",
             provider: "codex",
             workspace,

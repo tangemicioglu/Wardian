@@ -64,6 +64,8 @@ export const ConfigureAgentPanel: React.FC<Props> = ({
 
   if (!config) return null;
 
+  const descriptionLength = config.description?.length ?? 0;
+
   const updateField = (field: keyof AgentConfig, value: any) => {
     setConfig(prev => prev ? { ...prev, [field]: value } : null);
   };
@@ -132,6 +134,25 @@ export const ConfigureAgentPanel: React.FC<Props> = ({
               value={config.session_name}
               onChange={(e) => updateField("session_name", e.target.value)}
             />
+          </div>
+          <div>
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <label className="block text-[10px] font-bold text-muted-neutral" htmlFor="agent-description">
+                Description <span className="font-normal">(optional)</span>
+              </label>
+              <span className="text-[9px] tabular-nums text-muted-neutral">{descriptionLength}/280</span>
+            </div>
+            <textarea
+              id="agent-description"
+              className="min-h-20 w-full resize-y rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-3 py-2 text-sm text-primary transition-colors focus:border-[var(--color-wardian-accent)] focus:outline-none"
+              maxLength={280}
+              placeholder="What is this agent responsible for?"
+              value={config.description ?? ""}
+              onChange={(e) => updateField("description", e.target.value)}
+            />
+            <p className="mt-1 text-[10px] text-muted-neutral">
+              A memo shown in agent lists. It does not change instructions or capabilities.
+            </p>
           </div>
           <div>
             <label className="block text-[10px] font-bold text-muted-neutral mb-1">Agent Class</label>

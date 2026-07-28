@@ -558,7 +558,7 @@ function RoleAssignmentPicker({
         aria-label="Search agents"
         value={search}
         onChange={(event) => onSearch(event.currentTarget.value)}
-        placeholder="Search by name, class, provider, or workspace"
+        placeholder="Search by name, description, class, provider, or workspace"
         className="mb-2 w-full rounded border border-wardian-border bg-[var(--color-wardian-bg)] px-2 py-1 text-xs text-primary"
         autoFocus
       />
@@ -602,6 +602,11 @@ function RoleAssignmentPicker({
                   <span className="truncate text-left text-[10px] text-muted">
                     {[agent.agent_class, agent.provider, workspaceLabel(agent.folder)].filter(Boolean).join(' - ')}
                   </span>
+                  {agent.description?.trim() ? (
+                    <span className="truncate text-left text-[10px] text-muted-neutral" title={agent.description}>
+                      {agent.description}
+                    </span>
+                  ) : null}
                 </button>
               );
             })}
@@ -801,6 +806,7 @@ function agentSearchText(agent: AgentConfig) {
     agent.session_name,
     agent.session_id,
     agent.agent_class,
+    agent.description,
     agent.provider,
     agent.folder,
   ].filter(Boolean).join(' ').toLowerCase();

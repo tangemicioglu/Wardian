@@ -35,6 +35,7 @@ describe('RunLaunchDialog', () => {
           {
             session_id: 'agent-1',
             session_name: 'Assistant',
+            description: 'Triages customer requests and drafts responses',
             agent_class: 'Personal Assistant',
             folder: '/assistant',
             is_off: false,
@@ -226,6 +227,7 @@ describe('RunLaunchDialog', () => {
     expect(screen.queryByText(/fresh agent defaults/i)).toBeNull();
     expect(screen.queryByLabelText(/provider for fresh agents/i)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /change reasoning_gate assignment/i }));
+    expect(screen.getByText('Triages customer requests and drafts responses')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /offline worker/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /assistant/i }));
     fireEvent.click(screen.getByRole('button', { name: /^run$/i }));

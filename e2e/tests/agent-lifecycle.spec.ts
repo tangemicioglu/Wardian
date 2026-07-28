@@ -21,6 +21,7 @@ async function installCustomCloneIpcMock(page: Page) {
     type Agent = {
       session_id: string;
       session_name: string;
+      description: string;
       agent_class: string;
       folder: string;
       provider: string;
@@ -31,6 +32,7 @@ async function installCustomCloneIpcMock(page: Page) {
       {
         session_id: "mock-session-e2e-001",
         session_name: "E2E Mock Agent",
+        description: "Owns release notes and keeps deployment guidance current.",
         agent_class: "TestClass",
         folder: "C:/projects/e2e",
         provider: "claude",
@@ -284,6 +286,26 @@ test.describe("Custom Agent Clone", () => {
     await expect(page.locator('[data-testid="agents-overview-surface"]')).toBeVisible();
     await page.screenshot({
       path: path.join("e2e", "screenshots", "watchlist-single-click", "2026-07-22", "single-click-reveals-agent.png"),
+      animations: "disabled",
+    });
+  });
+
+  test("shows an agent description in the roster and configuration panel", async ({ page }) => {
+    await installCustomCloneIpcMock(page);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+
+    const sourceRow = page.locator('[data-testid="agent-watchlist"] .watchlist-row', { hasText: "E2E Mock Agent" });
+    await expect(sourceRow).toContainText("TestClass · Owns release notes and keeps deployment guidance current.");
+    await sourceRow.click();
+    await page.locator('[data-testid="sidebar-tab-agent-config"]').click();
+
+    const description = page.getByLabel("Description (optional)");
+    await expect(description).toHaveValue("Owns release notes and keeps deployment guidance current.");
+    await expect(page.getByText("A memo shown in agent lists. It does not change instructions or capabilities.")).toBeVisible();
+
+    await page.screenshot({
+      path: path.join("e2e", "screenshots", "agent-descriptions", "2026-07-27", "roster-and-agent-config.png"),
       animations: "disabled",
     });
   });

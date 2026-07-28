@@ -23,6 +23,11 @@ describe("requiresRestart", () => {
         expect(requiresRestart(baseConfig, newConfig)).toBe(false);
     });
 
+    it("does not require restart when the description changes", () => {
+        const newConfig = { ...baseConfig, description: "Owns frontend release follow-up" };
+        expect(requiresRestart(baseConfig, newConfig)).toBe(false);
+    });
+
     it("returns false if nothing changes", () => {
         expect(requiresRestart(baseConfig, baseConfig)).toBe(false);
     });

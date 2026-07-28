@@ -277,7 +277,7 @@ export function removeDeletedAgentsFromWatchlistState(
 }
 
 /**
- * Filters agents by search term, matching against session_name and agent_class.
+ * Filters agents by search term, matching identity and human-authored purpose.
  */
 export function filterAgents(
   agents: AgentConfig[],
@@ -288,7 +288,8 @@ export function filterAgents(
   return agents.filter(
     (a) =>
       a.session_name.toLowerCase().includes(term) ||
-      a.agent_class.toLowerCase().includes(term),
+      a.agent_class.toLowerCase().includes(term) ||
+      a.description?.toLowerCase().includes(term),
   );
 }
 
