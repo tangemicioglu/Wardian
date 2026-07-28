@@ -70,6 +70,7 @@ function matchesSearch(agent: AgentConfig, normalizedQuery: string): boolean {
   if (!normalizedQuery) return true;
   return [
     agent.session_name,
+    agent.description ?? "",
     agent.agent_class,
     agent.provider ?? "",
     agent.folder,

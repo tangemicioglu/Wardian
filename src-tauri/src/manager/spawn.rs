@@ -395,6 +395,7 @@ pub async fn spawn_agent(
     let _ = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
         session_id: &config.session_id,
         session_name: &config.session_name,
+        description: &config.description,
         agent_class: &config.agent_class,
         provider: &config.provider,
         workspace: Some(&expected_folder),

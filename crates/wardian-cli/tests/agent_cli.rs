@@ -13,6 +13,7 @@ fn seed_home() -> TempDir {
         &AgentUpsert {
             session_id: "uuid-1",
             session_name: "coder-a1",
+            description: "Owns frontend release follow-up",
             agent_class: "Coder",
             provider: "codex",
             workspace: Some("D:/Development/Wardian"),
@@ -27,6 +28,7 @@ fn seed_home() -> TempDir {
         &AgentUpsert {
             session_id: "uuid-2",
             session_name: "architect-a1",
+            description: "",
             agent_class: "Architect",
             provider: "claude",
             workspace: Some("D:/Development/Wardian"),
@@ -41,6 +43,7 @@ fn seed_home() -> TempDir {
         &AgentUpsert {
             session_id: "uuid-3",
             session_name: "fork-coder",
+            description: "",
             agent_class: "Coder",
             provider: "codex",
             workspace: Some("D:/Forks/Wardian"),
@@ -142,6 +145,7 @@ fn self_lookup_returns_agent_json() {
     assert!(stdout.contains("{\n"));
     assert!(stdout.contains(r#"  "schema": 1"#));
     assert!(stdout.contains(r#""name": "coder-a1""#));
+    assert!(stdout.contains(r#""description": "Owns frontend release follow-up""#));
     assert!(stdout.contains(r#""workspace": "D:/Development/Wardian""#));
     assert!(!stdout.contains(r#""status_source""#));
     assert!(!stdout.contains(r#""project""#));

@@ -94,6 +94,35 @@ describe("ConfigureAgentPanel", () => {
     });
   });
 
+  it("saves an optional description without asking for a provider restart", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ConfigureAgentPanel
+        agentId="agent-1"
+        agents={[baseAgent]}
+        agentClasses={classes}
+        telemetry={{}}
+        onSaved={() => {}}
+        onBackToSpawn={() => {}}
+      />,
+    );
+
+    const description = screen.getByLabelText(/Description/);
+    expect(description).toHaveAttribute("maxlength", "280");
+    await user.type(description, "Owns frontend release follow-up");
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("update_agent_config", {
+        newConfig: expect.objectContaining({
+          description: "Owns frontend release follow-up",
+        }),
+      });
+    });
+    expect(window.alert).not.toHaveBeenCalled();
+  });
+
   it("shows and copies the Wardian agent ID instead of the provider resume ID", async () => {
     const user = userEvent.setup();
     const agent = {

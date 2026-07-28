@@ -127,6 +127,8 @@ wardian agent resume <name-or-uuid>
 wardian agent spawn --provider codex --class Reviewer --name reviewer-a1 --workspace <absolute-workspace-path>
 wardian agent update <name-or-uuid> --class Reviewer
 wardian agent update <name-or-uuid> --workspace <absolute-workspace-path>
+wardian agent update <name-or-uuid> --description "Owns frontend release follow-up"
+wardian agent update <name-or-uuid> --description "" # clear the memo
 wardian agent clone <name-or-uuid> --name coder-a2
 wardian agent worktree list
 wardian agent worktree enable <name-or-uuid> --name review-fixes

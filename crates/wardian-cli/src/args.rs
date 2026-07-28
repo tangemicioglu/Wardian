@@ -673,11 +673,14 @@ pub enum AgentCommand {
         /// Agent name or UUID.
         target: String,
         /// Assign an existing class and regenerate its instruction include directories.
-        #[arg(long, required_unless_present = "workspace")]
+        #[arg(long, required_unless_present_any = ["workspace", "description"])]
         class: Option<String>,
         /// Move an ordinary agent workspace to an existing path.
-        #[arg(long, required_unless_present = "class")]
+        #[arg(long, required_unless_present_any = ["class", "description"])]
         workspace: Option<String>,
+        /// Set the optional purpose memo. Pass an empty value to clear it.
+        #[arg(long, required_unless_present_any = ["class", "workspace"])]
+        description: Option<String>,
     },
     /// Show effective provider policy and launch diagnostics for one agent.
     Doctor {
@@ -772,6 +775,7 @@ mod tests {
                 ref target,
                 class: Some(ref class),
                 workspace: Some(ref workspace),
+                description: None,
             }) if target == "coder-a1"
                 && class == "Reviewer"
                 && workspace == "D:/Development/Wardian"
@@ -782,6 +786,26 @@ mod tests {
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
+
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "agent",
+            "update",
+            "coder-a1",
+            "--description",
+            "Owns frontend release follow-up",
+        ])
+        .unwrap();
+        let Command::Agent(args) = cli.command else {
+            panic!("expected Agent")
+        };
+        assert!(matches!(
+            args.command,
+            Some(AgentCommand::Update {
+                description: Some(ref description),
+                ..
+            }) if description == "Owns frontend release follow-up"
+        ));
     }
 
     #[test]

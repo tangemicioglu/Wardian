@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct AgentIdentity {
     pub name: String,
     pub uuid: String,
+    #[serde(default)]
+    pub description: String,
     pub class: String,
     pub provider: String,
     pub status: String,
@@ -154,6 +156,7 @@ fn row_to_identity(row: AgentRow) -> AgentIdentity {
     AgentIdentity {
         name: row.session_name,
         uuid: row.session_id,
+        description: row.description,
         class: row.agent_class.unwrap_or_default(),
         provider: row.provider.unwrap_or_else(|| "claude".to_string()),
         status,
@@ -199,6 +202,7 @@ mod tests {
             &AgentUpsert {
                 session_id: "uuid-1",
                 session_name: "coder-a1",
+                description: "Owns frontend release follow-up",
                 agent_class: "Coder",
                 provider: "codex",
                 workspace: Some("D:/Development/Wardian"),
@@ -213,6 +217,7 @@ mod tests {
             &AgentUpsert {
                 session_id: "uuid-2",
                 session_name: "architect-a1",
+                description: "",
                 agent_class: "Architect",
                 provider: "claude",
                 workspace: Some("D:/Development/Wardian"),
@@ -237,6 +242,25 @@ mod tests {
         assert_eq!(agent.provider, "codex");
         assert_eq!(agent.workspace.as_deref(), Some("D:/Development/Wardian"));
         assert_eq!(agent.status, "processing");
+    }
+
+    #[test]
+    fn identity_without_description_deserializes_with_an_empty_memo() {
+        let identity: AgentIdentity = serde_json::from_value(serde_json::json!({
+            "name": "legacy-agent",
+            "uuid": "legacy-1",
+            "class": "Coder",
+            "provider": "codex",
+            "status": "idle",
+            "pid": null,
+            "started_at": null,
+            "workspace": null,
+            "last_status_at": null,
+            "status_source": "persisted"
+        }))
+        .unwrap();
+
+        assert!(identity.description.is_empty());
     }
 
     #[test]

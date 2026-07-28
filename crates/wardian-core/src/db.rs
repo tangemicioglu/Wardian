@@ -16,6 +16,7 @@ static DB_CONN: Lazy<Arc<Mutex<Option<Connection>>>> = Lazy::new(|| Arc::new(Mut
 pub struct AgentUpsert<'a> {
     pub session_id: &'a str,
     pub session_name: &'a str,
+    pub description: &'a str,
     pub agent_class: &'a str,
     pub provider: &'a str,
     pub workspace: Option<&'a str>,
@@ -28,6 +29,7 @@ pub struct AgentUpsert<'a> {
 pub struct AgentRow {
     pub session_id: String,
     pub session_name: String,
+    pub description: String,
     pub agent_class: Option<String>,
     pub provider: Option<String>,
     pub workspace: Option<String>,
@@ -78,6 +80,7 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS agents (
             session_id TEXT PRIMARY KEY,
             session_name TEXT UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
             agent_class TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             is_off BOOLEAN DEFAULT 0,
@@ -182,6 +185,7 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         ("workspace", "TEXT"),
         ("project", "TEXT"),
         ("last_status_at", "DATETIME"),
+        ("description", "TEXT NOT NULL DEFAULT ''"),
     ] {
         ensure_column(conn, "agents", name, definition)?;
     }
@@ -223,6 +227,7 @@ pub fn upsert_agent_with_conn(conn: &Connection, upsert: &AgentUpsert<'_>) -> ru
         "INSERT INTO agents (
             session_id,
             session_name,
+            description,
             agent_class,
             provider,
             workspace,
@@ -230,9 +235,10 @@ pub fn upsert_agent_with_conn(conn: &Connection, upsert: &AgentUpsert<'_>) -> ru
             is_off,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(?8, CURRENT_TIMESTAMP))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, COALESCE(?9, CURRENT_TIMESTAMP))
         ON CONFLICT(session_id) DO UPDATE SET
             session_name = excluded.session_name,
+            description = excluded.description,
             agent_class = excluded.agent_class,
             provider = excluded.provider,
             workspace = excluded.workspace,
@@ -241,6 +247,7 @@ pub fn upsert_agent_with_conn(conn: &Connection, upsert: &AgentUpsert<'_>) -> ru
         params![
             upsert.session_id,
             upsert.session_name,
+            upsert.description,
             upsert.agent_class,
             upsert.provider,
             upsert.workspace,
@@ -795,6 +802,7 @@ fn agent_select_sql(where_clause: &str) -> String {
     format!(
         "SELECT session_id,
                 session_name,
+                description,
                 agent_class,
                 provider,
                 workspace,
@@ -809,19 +817,20 @@ fn agent_select_sql(where_clause: &str) -> String {
 }
 
 fn row_to_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRow> {
-    let last_pid: Option<i64> = row.get(7)?;
+    let last_pid: Option<i64> = row.get(8)?;
     Ok(AgentRow {
         session_id: row.get(0)?,
         session_name: row.get(1)?,
-        agent_class: row.get(2)?,
-        provider: row.get(3)?,
-        workspace: row.get(4)?,
-        project: row.get(5)?,
-        last_status: row.get(6)?,
+        description: row.get(2)?,
+        agent_class: row.get(3)?,
+        provider: row.get(4)?,
+        workspace: row.get(5)?,
+        project: row.get(6)?,
+        last_status: row.get(7)?,
         last_pid: last_pid.and_then(|pid| u32::try_from(pid).ok()),
-        is_off: row.get(8)?,
-        created_at: row.get(9)?,
-        last_status_at: row.get(10)?,
+        is_off: row.get(9)?,
+        created_at: row.get(10)?,
+        last_status_at: row.get(11)?,
     })
 }
 
@@ -853,6 +862,7 @@ mod tests {
         assert!(columns.contains(&"workspace".to_string()));
         assert!(columns.contains(&"project".to_string()));
         assert!(columns.contains(&"last_status_at".to_string()));
+        assert!(columns.contains(&"description".to_string()));
     }
 
     #[test]
@@ -865,6 +875,7 @@ mod tests {
             &AgentUpsert {
                 session_id: "uuid-1",
                 session_name: "coder-a1",
+                description: "Owns frontend release follow-up",
                 agent_class: "Coder",
                 provider: "codex",
                 workspace: Some("D:/Development/Wardian"),
@@ -879,6 +890,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.provider.as_deref(), Some("codex"));
+        assert_eq!(row.description, "Owns frontend release follow-up");
         assert_eq!(row.project.as_deref(), Some("Wardian"));
         assert_eq!(row.workspace.as_deref(), Some("D:/Development/Wardian"));
     }
@@ -955,6 +967,7 @@ mod tests {
             &AgentUpsert {
                 session_id: "uuid-1",
                 session_name: "coder-a1",
+                description: "",
                 agent_class: "Coder",
                 provider: "codex",
                 workspace: None,
@@ -984,6 +997,7 @@ mod tests {
             &AgentUpsert {
                 session_id: "uuid-1",
                 session_name: "coder-a1",
+                description: "",
                 agent_class: "Coder",
                 provider: "codex",
                 workspace: None,
@@ -1013,6 +1027,7 @@ mod tests {
             &AgentUpsert {
                 session_id: "uuid-1",
                 session_name: "coder-a1",
+                description: "",
                 agent_class: "Coder",
                 provider: "codex",
                 workspace: None,

@@ -10,7 +10,19 @@ For a visual map of an agent's session, workspace, class, and skills, see [Key C
 
 Press `Ctrl+P` / `Cmd+P`, select a pane's **+** button, or use the empty-pane Home state, then choose **Agents**. Wardian keeps a single Agents surface and focuses it when you open it again.
 
-The right roster controls which agents auxiliary tools target. It does not filter Agents automatically. Use **Filter agents** in the surface to narrow the visible cards by agent name, class, provider, or workspace.
+The right roster controls which agents auxiliary tools target. It does not filter Agents automatically. Use **Filter agents** in the surface to narrow the visible cards by agent name, description, class, provider, or workspace.
+
+### Remember an Agent's Purpose
+
+Select one agent, open **Agent Configuration** from the left rail, and add an
+optional **Description**. Use it as a short memo about that specific agent's
+responsibility, such as `Owns frontend release follow-up`.
+
+Wardian shows the memo beside the agent's class in the roster and in workflow
+assignment choices. Roster and assignment searches include it. Descriptions do
+not change the agent's instructions, skills, permissions, or provider session,
+and saving one does not restart the agent. New agents start without a
+description, so the spawn workflow has no additional required step.
 
 ### Open an Agent from Another View
 

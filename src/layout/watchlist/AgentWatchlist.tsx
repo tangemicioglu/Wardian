@@ -861,8 +861,11 @@ export default function AgentWatchlist({
               {agent.session_name}
             </p>
           )}
-          <p className="text-[10px] text-primary/50 font-medium truncate tracking-wide">
-            {agent.agent_class}
+          <p
+            className="text-[10px] text-primary/50 font-medium truncate tracking-wide"
+            title={agent.description?.trim() || agent.agent_class}
+          >
+            {agent.description?.trim() ? `${agent.agent_class} · ${agent.description.trim()}` : agent.agent_class}
           </p>
         </div>
         {prefs.columns.filter(c => c.visible).map(col => {

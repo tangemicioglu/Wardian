@@ -2,11 +2,20 @@ use crate::errors::CliError;
 use serde_json::{Map, Value};
 use wardian_core::identity::{AgentIdentity, StatusSource};
 
-const DEFAULT_FIELDS: &[&str] = &["name", "uuid", "class", "provider", "workspace", "status"];
+const DEFAULT_FIELDS: &[&str] = &[
+    "name",
+    "uuid",
+    "description",
+    "class",
+    "provider",
+    "workspace",
+    "status",
+];
 const VERBOSE_FIELDS: &[&str] = &["pid", "started_at", "last_status_at", "visibility"];
 const ALL_FIELDS: &[&str] = &[
     "name",
     "uuid",
+    "description",
     "class",
     "provider",
     "workspace",
@@ -128,6 +137,10 @@ fn agent_to_map(agent: &AgentIdentity) -> Map<String, Value> {
     let mut values = Map::new();
     values.insert("name".to_string(), Value::String(agent.name.clone()));
     values.insert("uuid".to_string(), Value::String(agent.uuid.clone()));
+    values.insert(
+        "description".to_string(),
+        Value::String(agent.description.clone()),
+    );
     values.insert("class".to_string(), Value::String(agent.class.clone()));
     values.insert(
         "provider".to_string(),
@@ -196,6 +209,7 @@ mod tests {
         AgentIdentity {
             name: "coder-a1".to_string(),
             uuid: "uuid-1".to_string(),
+            description: "Owns frontend release follow-up".to_string(),
             class: "Coder".to_string(),
             provider: "codex".to_string(),
             status: "processing".to_string(),
@@ -215,6 +229,7 @@ mod tests {
         assert!(rendered.contains(r#"  "schema": 1"#));
         assert!(rendered.contains(r#""agent""#));
         assert!(rendered.contains(r#""name": "coder-a1""#));
+        assert!(rendered.contains(r#""description": "Owns frontend release follow-up""#));
         assert!(!rendered.contains(r#""pid""#));
     }
 

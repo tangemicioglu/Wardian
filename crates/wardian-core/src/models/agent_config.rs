@@ -270,6 +270,8 @@ impl<'de> Deserialize<'de> for ProviderConfig {
 pub struct AgentConfig {
     pub session_id: String,
     pub session_name: String,
+    /// Optional human-authored memo describing this specific agent's purpose.
+    pub description: String,
     pub agent_class: String,
     pub folder: String,
     pub git_worktree: Option<bool>,
@@ -323,6 +325,7 @@ impl Default for AgentConfig {
         Self {
             session_id: String::new(),
             session_name: String::new(),
+            description: String::new(),
             agent_class: String::new(),
             folder: String::new(),
             git_worktree: None,
@@ -375,6 +378,7 @@ impl Default for AgentConfig {
 struct AgentConfigCompat {
     pub session_id: String,
     pub session_name: String,
+    pub description: String,
     pub agent_class: String,
     pub folder: String,
     pub git_worktree: Option<bool>,
@@ -425,6 +429,7 @@ impl Default for AgentConfigCompat {
         Self {
             session_id: default.session_id,
             session_name: default.session_name,
+            description: default.description,
             agent_class: default.agent_class,
             folder: default.folder,
             git_worktree: default.git_worktree,
@@ -543,6 +548,7 @@ impl From<AgentConfigCompat> for AgentConfig {
         let mut config = Self {
             session_id: compat.session_id,
             session_name: compat.session_name,
+            description: compat.description,
             agent_class: compat.agent_class,
             folder: compat.folder,
             git_worktree: compat.git_worktree,
@@ -784,6 +790,7 @@ impl AgentConfig {
     {
         map.serialize_entry("session_id", &self.session_id)?;
         map.serialize_entry("session_name", &self.session_name)?;
+        map.serialize_entry("description", &self.description)?;
         map.serialize_entry("agent_class", &self.agent_class)?;
         map.serialize_entry("folder", &self.folder)?;
         map.serialize_entry("git_worktree", &self.git_worktree)?;
@@ -897,6 +904,7 @@ mod tests {
         let config = AgentConfig {
             session_id: "abc-123".into(),
             session_name: "TestAgent".into(),
+            description: "Owns frontend release follow-up".into(),
             agent_class: "Coder".into(),
             folder: "C:/project".into(),
             git_worktree: Some(true),
@@ -915,6 +923,7 @@ mod tests {
         let deserialized: AgentConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config.session_id, deserialized.session_id);
         assert_eq!(config.session_name, deserialized.session_name);
+        assert_eq!(config.description, deserialized.description);
         assert_eq!(config.agent_class, deserialized.agent_class);
         assert_eq!(config.folder, deserialized.folder);
         assert_eq!(config.git_worktree, deserialized.git_worktree);

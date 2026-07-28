@@ -177,13 +177,13 @@ export function withProvider(
 
 /**
  * Checks if the changes between two AgentConfigs require an agent restart.
- * Restarts are required if any field OTHER than session_name or session_id is changed.
+ * Restarts are required if any runtime-affecting field changes.
  */
 export function requiresRestart(oldConfig: AgentConfig, newConfig: AgentConfig): boolean {
   const keys = Object.keys(newConfig) as (keyof AgentConfig)[];
   
   for (const key of keys) {
-    if (key === "session_name" || key === "session_id" || key === "session_persistence" || key === "conversation_logging") continue;
+    if (key === "session_name" || key === "session_id" || key === "description" || key === "session_persistence" || key === "conversation_logging") continue;
     
     const oldVal = oldConfig[key];
     const newVal = newConfig[key];

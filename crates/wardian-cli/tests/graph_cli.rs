@@ -35,6 +35,7 @@ fn seed_agent(conn: &rusqlite::Connection, uuid: &str, name: &str, workspace: &s
         &AgentUpsert {
             session_id: uuid,
             session_name: name,
+            description: "",
             agent_class: "Coder",
             provider: "codex",
             workspace: Some(workspace),

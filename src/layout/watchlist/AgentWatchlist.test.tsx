@@ -140,6 +140,21 @@ describe('AgentWatchlist', () => {
     expect(screen.getByText('Beta')).toBeInTheDocument();
   });
 
+  it('shows an optional description alongside the class without adding another row', () => {
+    const describedAgents = [
+      { ...sampleAgents[0], description: 'Owns frontend release follow-up' },
+      sampleAgents[1],
+    ];
+
+    render(<AgentWatchlist {...defaultProps} agents={describedAgents} />);
+
+    expect(screen.getByText('Coder · Owns frontend release follow-up')).toHaveAttribute(
+      'title',
+      'Owns frontend release follow-up',
+    );
+    expect(screen.getByText('Architect')).toBeInTheDocument();
+  });
+
   it('exposes roster target selection as semantic state', () => {
     render(
       <AgentWatchlist

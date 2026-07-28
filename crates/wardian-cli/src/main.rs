@@ -208,7 +208,13 @@ fn handle_agent(args: AgentArgs) -> Result<String, CliError> {
             target,
             class,
             workspace,
-        }) => handle_agent_update(target, class.as_deref(), workspace.as_deref()),
+            description,
+        }) => handle_agent_update(
+            target,
+            class.as_deref(),
+            workspace.as_deref(),
+            description.as_deref(),
+        ),
         Some(AgentCommand::Doctor { target }) => handle_agent_doctor(target),
         Some(AgentCommand::Clone { target, name }) => {
             handle_agent_clone(target, name.as_deref(), &args)
@@ -307,8 +313,10 @@ fn handle_agent_update(
     target: &str,
     class: Option<&str>,
     workspace: Option<&str>,
+    description: Option<&str>,
 ) -> Result<String, CliError> {
-    let response = live::agent_update(target, class, workspace).map_err(control_error)?;
+    let response =
+        live::agent_update(target, class, workspace, description).map_err(control_error)?;
     serde_json::to_string_pretty(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
@@ -1771,6 +1779,7 @@ mod tests {
         wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
             session_id: "agent-uuid-1",
             session_name: "AgentOne",
+            description: "",
             agent_class: "Coder",
             provider: "codex",
             workspace: Some("<absolute-workspace-path>"),
@@ -2242,6 +2251,7 @@ mod tests {
             agent: wardian_core::identity::AgentIdentity {
                 name: "coder-a1".to_string(),
                 uuid: "agent-1".to_string(),
+                description: String::new(),
                 class: "Coder".to_string(),
                 provider: "codex".to_string(),
                 status: "processing".to_string(),
@@ -2363,6 +2373,7 @@ mod tests {
             wardian_core::identity::AgentIdentity {
                 name: "me-agent".to_string(),
                 uuid: "me".to_string(),
+                description: String::new(),
                 class: "Coder".to_string(),
                 provider: "claude".to_string(),
                 status: "idle".to_string(),
@@ -2376,6 +2387,7 @@ mod tests {
             wardian_core::identity::AgentIdentity {
                 name: "friend-agent".to_string(),
                 uuid: "friend".to_string(),
+                description: String::new(),
                 class: "Architect".to_string(),
                 provider: "claude".to_string(),
                 status: "idle".to_string(),
@@ -2389,6 +2401,7 @@ mod tests {
             wardian_core::identity::AgentIdentity {
                 name: "stranger-agent".to_string(),
                 uuid: "stranger".to_string(),
+                description: String::new(),
                 class: "Reviewer".to_string(),
                 provider: "claude".to_string(),
                 status: "idle".to_string(),
