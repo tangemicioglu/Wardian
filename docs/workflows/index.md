@@ -27,6 +27,7 @@ In practice, you usually move through workflows in this order:
 ## Start Here
 
 - **[Building Workflows](./building-workflows.md)**: Use the canvas, block library, node settings, and variable assistant.
+- **[Workflow Samples](./samples.md)**: Start from editable, privacy-safe templates for common automation patterns.
 - **[Triggers](./triggers.md)**: Understand manual runs, scheduled triggers, and live listeners.
 - **[Scheduled Runs](./scheduled-runs.md)**: Manage scheduled task instances, pause/resume, run now, and deletion.
 - **[Node Reference](./node-reference.md)**: Reference every current workflow node type and its user-visible behavior.

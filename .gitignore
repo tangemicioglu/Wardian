@@ -62,6 +62,7 @@ Icon
 
 # Tauri/Rust specifics
 target/
+.cargo-target/
 src-tauri/*.log
 src-tauri/target/
 src-tauri/gen/
