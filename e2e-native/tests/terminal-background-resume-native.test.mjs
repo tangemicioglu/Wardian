@@ -133,6 +133,35 @@ function terminalText(snapshot) {
   ].join("\n");
 }
 
+async function captureRestoredScrollbackEvidence(driver, sessionId, presentationId) {
+  const screenshotDir = process.env.WARDIAN_E2E_SCREENSHOT_DIR;
+  if (!screenshotDir) {
+    return null;
+  }
+  const scrolled = await driver.executeScript((sid, pid) => {
+    const card = document.getElementById(`agent-card-${sid}`);
+    const host = [...(card?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
+      .find((candidate) => candidate.getAttribute("data-terminal-presentation-id") === pid);
+    if (!host) return false;
+    host.dispatchEvent(new WheelEvent("wheel", { deltaY: -2400, bubbles: true, cancelable: true }));
+    return true;
+  }, sessionId, presentationId);
+  assert.equal(scrolled, true, "Expected resumed terminal host for screenshot evidence");
+  await waitFor("resumed terminal scrollback", 10_000, async () => {
+    const snapshot = await readTerminalDebugSnapshot(driver, presentationId);
+    return {
+      ok: snapshot?.renderer?.viewportY < snapshot?.renderer?.baseY,
+      viewportY: snapshot?.renderer?.viewportY ?? null,
+      baseY: snapshot?.renderer?.baseY ?? null,
+    };
+  });
+  fs.mkdirSync(screenshotDir, { recursive: true });
+  const screenshotPath = path.join(screenshotDir, "authoritative-scrollback-restored.png");
+  const card = await driver.findElement(By.id(`agent-card-${sessionId}`));
+  fs.writeFileSync(screenshotPath, await card.takeScreenshot(true), "base64");
+  return screenshotPath;
+}
+
 test(
   "background terminal recovery applies live output without refitting or resizing the renderer",
   { timeout: 240000 },
@@ -257,5 +286,13 @@ test(
       presentationId,
       "Foregrounding must preserve terminal ownership",
     );
+    const screenshotPath = await captureRestoredScrollbackEvidence(
+      driver,
+      sessionId,
+      presentationId,
+    );
+    if (screenshotPath) {
+      t.diagnostic(`Restored scrollback screenshot: ${screenshotPath}`);
+    }
   },
 );

@@ -23,9 +23,9 @@ Wardian will keep one live xterm instance per agent session, move PTY output del
 - Start PTY reads immediately after the xterm instance opens instead of waiting for fit/resize readiness. Terminal IO must not be gated on layout measurement because Codex issues early terminal-control probes during inline-mode startup.
 - Send xterm text input through the direct `send_input_to_agent` command path rather than an app-wide Tauri event bridge. This keeps cursor-position replies and other terminal-generated control input on the lowest-latency path.
 - Launch Codex with `--no-alt-screen` inside Wardian so xterm keeps scrollback in the primary buffer instead of moving Codex into an alternate buffer with effectively no terminal scrollback.
-- For Codex terminals, enable xterm's `scrollOnEraseInDisplay` behavior so clear-screen redraws in the primary buffer push previous content into scrollback instead of wiping the viewport.
+- Keep xterm's non-standard `scrollOnEraseInDisplay` behavior disabled so a provider repaint cannot snapshot its composer or status chrome into history.
 - Keep xterm `reflowCursorLine` disabled, which matches the xterm default for PTY-backed shells and avoids xterm mutating shell-managed lines during resize.
-- Strip Codex `CSI 3 J` scrollback-erase sequences before writing PTY output into xterm. xterm.js honors that sequence by deleting saved lines, while the Windows console VT documentation only defines `CSI J` values `0`, `1`, and `2`, which makes `3J` a plausible source of host-specific history loss.
+- Strip Codex `CSI 3 J` in the backend terminal actor before both canonical VT parsing and event publication. This keeps broker snapshots, desktop xterm, and remote xterm on one output stream even when the sequence is fragmented across PTY reads.
 
 ## Consequences
 
@@ -37,7 +37,7 @@ Wardian will keep one live xterm instance per agent session, move PTY output del
 - **Positive**: Codex history now accumulates in Wardian's normal terminal scrollback instead of being trapped in an alternate-screen viewport.
 - **Positive**: Codex redraws that clear the screen in primary-buffer mode can still preserve prior content in xterm scrollback.
 - **Positive**: Codex-specific scrollback erase sequences no longer wipe xterm history in Wardian when native Windows terminals would not.
-- **Positive**: The fix stays in the frontend terminal layer and does not add provider-specific PTY behavior in Rust.
+- **Positive**: The provider policy is applied once at PTY ingress, so snapshots and every presentation retain the same history.
 - **Positive**: Other providers benefit from more faithful remount restoration without changing their launch/runtime paths.
 - **Negative**: Terminal state preservation now depends on xterm serialize-addon compatibility with the pinned xterm version.
 - **Negative**: Live xterm instances now stay resident per open session until the session is explicitly cleaned up, which increases frontend memory retention relative to disposing on every remount.

@@ -107,6 +107,13 @@ of scrollback. Its serialized payload is capped at 2 MiB. Apply it as follows:
 3. Ignore events at or below the barrier.
 4. Apply only consecutive later events.
 
+Provider-specific output policy is applied before both VT parsing and event
+publication. In particular, the Codex runtime ignores `CSI 3 J` so a provider
+scrollback erase cannot create one history in broker snapshots and another in
+desktop or remote xterm. The filter carries partial control-sequence prefixes
+across PTY reads. Clients do not repeat this policy, and every snapshot remains
+an authoritative replacement of local state.
+
 An expired replay cursor, missing sequence, generation change, or terminated
 runtime is a structured batch result. Gap and generation-change results include
 a recovery snapshot and new barrier. Slow clients resynchronize instead of

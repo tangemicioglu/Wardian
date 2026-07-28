@@ -56,6 +56,7 @@ impl std::error::Error for TerminalBrokerError {}
 pub struct TerminalRuntimeHandles {
     input_tx: mpsc::Sender<Vec<u8>>,
     resize: Arc<ResizeHandler>,
+    ignore_scrollback_erase: bool,
 }
 
 impl TerminalRuntimeHandles {
@@ -66,7 +67,60 @@ impl TerminalRuntimeHandles {
         Self {
             input_tx,
             resize: Arc::new(resize),
+            ignore_scrollback_erase: false,
         }
+    }
+
+    /// Keeps the broker's canonical history when a provider emits ED3.
+    ///
+    /// This policy is attached to the runtime before any PTY output reaches
+    /// the parser so snapshots and every presentation consume the same bytes.
+    pub fn ignore_scrollback_erase(mut self) -> Self {
+        self.ignore_scrollback_erase = true;
+        self
+    }
+}
+
+const ERASE_SCROLLBACK_SEQUENCE: &[u8] = b"\x1b[3J";
+
+struct TerminalOutputFilter {
+    ignore_scrollback_erase: bool,
+    pending: Vec<u8>,
+}
+
+impl TerminalOutputFilter {
+    fn new(ignore_scrollback_erase: bool) -> Self {
+        Self {
+            ignore_scrollback_erase,
+            pending: Vec::new(),
+        }
+    }
+
+    fn filter(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if !self.ignore_scrollback_erase {
+            return bytes.to_vec();
+        }
+
+        let mut input = std::mem::take(&mut self.pending);
+        input.extend_from_slice(bytes);
+        let mut output = Vec::with_capacity(input.len());
+        let mut index = 0;
+        while index < input.len() {
+            let remaining = &input[index..];
+            if remaining.starts_with(ERASE_SCROLLBACK_SEQUENCE) {
+                index += ERASE_SCROLLBACK_SEQUENCE.len();
+                continue;
+            }
+            if remaining.len() < ERASE_SCROLLBACK_SEQUENCE.len()
+                && ERASE_SCROLLBACK_SEQUENCE.starts_with(remaining)
+            {
+                self.pending.extend_from_slice(remaining);
+                break;
+            }
+            output.push(input[index]);
+            index += 1;
+        }
+        output
     }
 }
 
@@ -1489,6 +1543,7 @@ struct TerminalSessionActor {
     runtime: Option<TerminalRuntimeHandles>,
     runtime_state: TerminalRuntimeState,
     parser: vt100::Parser,
+    output_filter: TerminalOutputFilter,
     replay: ReplayRing,
     presentations: HashMap<String, PresentationRecord>,
     consumers: HashMap<String, ConsumerRecord>,
@@ -1530,6 +1585,7 @@ impl TerminalSessionActor {
         timer: Arc<dyn TerminalTimer>,
     ) -> Self {
         let initial_lease_epoch = lease_epoch.load(Ordering::SeqCst);
+        let output_filter = TerminalOutputFilter::new(runtime.ignore_scrollback_erase);
         Self {
             session_id,
             runtime_generation,
@@ -1539,6 +1595,7 @@ impl TerminalSessionActor {
             runtime: Some(runtime),
             runtime_state: TerminalRuntimeState::Live,
             parser: vt100::Parser::new(geometry.rows, geometry.cols, 1_000),
+            output_filter,
             replay: ReplayRing::new(),
             presentations: HashMap::new(),
             consumers: HashMap::new(),
@@ -1781,6 +1838,7 @@ impl TerminalSessionActor {
         if bytes.is_empty() {
             return Ok(());
         }
+        let bytes = self.output_filter.filter(&bytes);
         for chunk in bytes.chunks(MAX_BATCH_BYTES as usize) {
             self.parser.process(chunk);
             self.emit_event(TerminalBrokerEventKind::Output {

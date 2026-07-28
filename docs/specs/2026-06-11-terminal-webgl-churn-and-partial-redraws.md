@@ -5,6 +5,17 @@ Filename: `2026-06-11-terminal-webgl-churn-and-partial-redraws.md`
 - **Status:** Implemented (superseded in part — see Update below)
 - **Date:** 2026-06-11
 
+## Update (2026-07-28): dormant redraw heuristics deleted
+
+The disabled scratch-terminal viewport replacement and its direct xterm-buffer
+mutation helpers are now deleted. Keeping unreachable machinery made later
+scrollback fixes tempting to layer on top of a path already disproved by live
+provider captures. The newline-count full-screen-clear rewrite is also removed;
+xterm now receives provider VT semantics without inferred clears. The one
+intentional Codex policy, ignoring `CSI 3 J`, runs in the backend before both
+snapshot parsing and output publication. See
+[Terminal scrollback ownership](./2026-07-28-terminal-scrollback-ownership.md).
+
 ## Update (2026-06-14): synthetic-scrollback journaling removed
 
 Decision 3 below (journaling provider sliding-window drops into reconstructed
@@ -26,10 +37,10 @@ like a standalone terminal. The journaling machinery is deleted:
 `shouldReconstructProviderLine`, `findDroppedHomeRedrawLines`,
 `shouldHomeCursorBeforeTransientResize`, the `TerminalOutputState` journal state,
 the `ESC[999;1H` extract/insert path in `AgentTerminal.tsx`, and
-`syntheticScrollback.test.ts`. `normalizeOpenCodeOutput` now only strips
-capability-negotiation noise (sync/DECRQM/theme toggles, Codex's `ESC[3J`) and
-applies theme/cursor normalization. The disabled viewport-redraw switch
-(`providerUsesViewportRedraws` → `false`, decisions 2/4) is retained unchanged.
+`syntheticScrollback.test.ts`. `normalizeOpenCodeOutput` only strips OpenCode
+capability-negotiation noise and applies theme/cursor normalization. The
+disabled viewport-redraw switch described by the historical sections below was
+deleted in the 2026-07-28 cleanup.
 
 ### Codex composer snapshots in scrollback (same update)
 

@@ -1232,7 +1232,6 @@ function compactDebug(debug) {
     viewportY: debug.viewportY ?? null,
     bufferLength: debug.bufferLength ?? null,
     provider: debug.provider ?? null,
-    usesViewportRedraws: debug.usesViewportRedraws ?? null,
     lastHomeRedrawLines: debug.lastHomeRedrawLines ?? null,
     renderer: debug.renderer ?? null,
     recentWritePreviews: debug.recentWritePreviews ?? null,

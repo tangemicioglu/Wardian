@@ -2399,7 +2399,7 @@ describe("RemoteMobileApp", () => {
     expect(terminalInstance.scrollLines).toHaveBeenCalledWith(2);
   });
 
-  it("maps wheel events from an alternate-screen session to xterm scrollback", async () => {
+  it("leaves wheel events to an alternate-screen mouse session", async () => {
     mockRemoteAgentDetailFetch("opencode");
     render(<RemoteMobileApp />);
 
@@ -2415,10 +2415,10 @@ describe("RemoteMobileApp", () => {
 
     fireEvent.wheel(terminalSurface, { deltaY: -120, deltaMode: WheelEvent.DOM_DELTA_PIXEL });
 
-    expect(terminal.scrollLines).toHaveBeenCalledWith(-6);
+    expect(terminal.scrollLines).not.toHaveBeenCalled();
   });
 
-  it("maps alternate-screen touch travel to xterm scrollback", async () => {
+  it("translates alternate-screen touch travel into a wheel event", async () => {
     mockRemoteAgentDetailFetch("opencode");
     render(<RemoteMobileApp />);
 
@@ -2431,10 +2431,18 @@ describe("RemoteMobileApp", () => {
     (terminal.buffer.active as { type: "normal" | "alternate" }).type = "alternate";
     (terminal.modes as { mouseTrackingMode: "none" | "any" }).mouseTrackingMode = "any";
     terminal.scrollLines.mockClear();
+    const wheelListener = vi.fn();
+    terminalHost.addEventListener("wheel", wheelListener);
     fireEvent.touchStart(terminalHost, { touches: [{ clientX: 92, clientY: 220 }] });
     fireEvent.touchMove(terminalHost, { touches: [{ clientX: 96, clientY: 184 }] });
 
-    expect(terminal.scrollLines).toHaveBeenCalledWith(2);
+    expect(wheelListener).toHaveBeenCalledTimes(1);
+    expect(wheelListener.mock.calls[0]?.[0]).toMatchObject({
+      clientX: 96,
+      clientY: 184,
+      deltaY: 36,
+    });
+    expect(terminal.scrollLines).not.toHaveBeenCalled();
   });
 
   it("maps captured terminal child touch drags to xterm scrollback", async () => {
