@@ -35,6 +35,21 @@ Do not infer agent state from UI, terminal titles, or files such as
 | Organize durable teams and monitoring watchlists | `wardian team`, `wardian watchlist` | [teams and watchlists](references/coordination-groups.md) |
 | Diagnose CLI errors or run a shared dev/runtime check | `wardian` | [runtime debugging](references/runtime-debugging.md) |
 
+## Surface Workflow Opportunities
+
+Proactively suggest a Wardian workflow when a user asks to schedule a recurring
+task, automate a repeatable sequence, or coordinate durable multi-step work.
+Briefly explain why the workflow fits (for example, its schedule, agent, or
+command steps), then ask whether the user wants to design one.
+
+When the user wants to author a workflow, start from a relevant bundled sample
+when one fits. Read [workflow samples](references/workflow-samples.md) before
+proposing the graph.
+
+Do not create, edit, schedule, or run a workflow merely because the request
+matches. Keep one-off work as a direct request, and wait for the user to choose
+workflow authoring before making a blueprint or changing workflow state.
+
 ## Non-Negotiable Defaults
 
 - Use `agent update` rather than editing `settings/state.json`; restart an

@@ -4,6 +4,12 @@ use tauri::{AppHandle, Manager};
 use wardian_core::models::AgentClassDefinition;
 
 const BUNDLED_COMMON_SKILLS: &[&str] = &["wardian-skills/wardian-cli"];
+const BUNDLED_WORKFLOW_SAMPLES: &[&str] = &[
+    "code-change-review.md",
+    "scheduled-brief.md",
+    "research-brief.md",
+    "incident-triage.md",
+];
 
 pub fn get_all_agent_classes(_app: &AppHandle) -> Vec<AgentClassDefinition> {
     get_wardian_home()
@@ -26,6 +32,7 @@ pub fn init_agent_classes(app: &AppHandle) {
         // Keep `.agents/skills` canonical while exposing provider-specific discovery shims.
         ensure_claude_skills_link(&app_dir.join("common"));
         init_bundled_common_skills(app, &app_dir);
+        init_bundled_workflow_samples(app, &app_dir);
 
         let classes_path = app_dir.join("classes.json");
 
@@ -159,13 +166,67 @@ fn init_bundled_common_skills(app: &AppHandle, app_dir: &Path) {
     }
 }
 
+fn bundled_library_workflows_root(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .resolve(
+            "resources/library/workflows",
+            tauri::path::BaseDirectory::Resource,
+        )
+        .ok()
+        .filter(|path| path.exists())
+}
+
+fn seed_bundled_workflow_sample(
+    source_root: &Path,
+    app_dir: &Path,
+    sample_name: &str,
+) -> Result<(), String> {
+    let source = source_root.join(sample_name);
+    if !source.is_file() {
+        return Err(format!(
+            "Bundled workflow sample is missing: {}",
+            source.display()
+        ));
+    }
+
+    let destination = app_dir
+        .join("library")
+        .join("workflows")
+        .join("samples")
+        .join(sample_name);
+    if destination.exists() {
+        return Ok(());
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or_else(|| format!("Workflow sample has no parent: {}", destination.display()))?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    std::fs::copy(&source, &destination).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn init_bundled_workflow_samples(app: &AppHandle, app_dir: &Path) {
+    let Some(source_root) = bundled_library_workflows_root(app) else {
+        return;
+    };
+
+    for sample_name in BUNDLED_WORKFLOW_SAMPLES {
+        if let Err(error) = seed_bundled_workflow_sample(&source_root, app_dir, sample_name) {
+            crate::manager::log_debug(&format!(
+                "[Wardian] Failed to seed bundled workflow sample {sample_name}: {error}"
+            ));
+        }
+    }
+}
+
 pub fn get_agent_class_default_instruction(_app: &AppHandle, class_name: &str) -> Option<String> {
     wardian_core::classes::default_class_instruction(class_name).map(ToOwned::to_owned)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::seed_bundled_common_skill;
+    use super::{seed_bundled_common_skill, seed_bundled_workflow_sample};
     use std::fs;
 
     #[test]
@@ -283,6 +344,12 @@ mod tests {
                 ),
             ),
             (
+                "references/workflow-samples.md",
+                include_str!(
+                    "../../resources/library/skills/wardian-skills/wardian-cli/references/workflow-samples.md"
+                ),
+            ),
+            (
                 "references/coordination-groups.md",
                 include_str!(
                     "../../resources/library/skills/wardian-skills/wardian-cli/references/coordination-groups.md"
@@ -356,6 +423,84 @@ mod tests {
             assert!(
                 MESSAGING.contains(required_messaging_instruction),
                 "messaging reference must retain safety instruction: {required_messaging_instruction}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_wardian_cli_skill_surfaces_workflow_opportunities_without_acting() {
+        const ROOT: &str =
+            include_str!("../../resources/library/skills/wardian-skills/wardian-cli/SKILL.md");
+
+        for required_instruction in [
+            "Proactively suggest a Wardian workflow",
+            "schedule a recurring\ntask, automate a repeatable sequence, or coordinate durable multi-step work",
+            "ask whether the user wants to design one",
+            "Do not create, edit, schedule, or run a workflow merely because the request\nmatches",
+            "wait for the user to choose\nworkflow authoring",
+        ] {
+            assert!(
+                ROOT.contains(required_instruction),
+                "root skill must preserve workflow discovery instruction: {required_instruction}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_workflow_sample_is_seeded_without_overwriting_a_user_edit() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source_root = temp
+            .path()
+            .join("resources")
+            .join("library")
+            .join("workflows");
+        std::fs::create_dir_all(&source_root).expect("create source root");
+        std::fs::write(source_root.join("sample.md"), "bundled sample").expect("write sample");
+        let app_dir = temp.path().join("home");
+
+        seed_bundled_workflow_sample(&source_root, &app_dir, "sample.md").expect("seed sample");
+        let destination = app_dir.join("library/workflows/samples/sample.md");
+        assert_eq!(
+            std::fs::read_to_string(&destination).expect("read sample"),
+            "bundled sample"
+        );
+
+        std::fs::write(&destination, "user edit").expect("edit sample");
+        seed_bundled_workflow_sample(&source_root, &app_dir, "sample.md")
+            .expect("preserve user edit");
+        assert_eq!(
+            std::fs::read_to_string(destination).expect("read user edit"),
+            "user edit"
+        );
+    }
+
+    #[test]
+    fn bundled_workflow_samples_are_valid_blueprints() {
+        for (name, sample) in [
+            (
+                "code-change-review",
+                include_str!("../../resources/library/workflows/code-change-review.md"),
+            ),
+            (
+                "scheduled-brief",
+                include_str!("../../resources/library/workflows/scheduled-brief.md"),
+            ),
+            (
+                "research-brief",
+                include_str!("../../resources/library/workflows/research-brief.md"),
+            ),
+            (
+                "incident-triage",
+                include_str!("../../resources/library/workflows/incident-triage.md"),
+            ),
+        ] {
+            let blueprint = wardian_core::workflow::parse_str(sample)
+                .unwrap_or_else(|error| panic!("{name} sample should parse: {error}"));
+            let report = wardian_core::workflow::validate(&blueprint);
+            assert!(
+                report.is_valid(),
+                "{name} sample should validate: {:?}",
+                report.errors()
             );
         }
     }

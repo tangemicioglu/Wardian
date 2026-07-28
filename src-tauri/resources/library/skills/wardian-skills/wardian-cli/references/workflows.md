@@ -18,3 +18,7 @@ wardian workflow schedule list
 `validate`, `parse`, `normalize`, `runs`, `run-show`, and `replay` are
 disk-backed. `exec` and schedule actions that launch runs require the desktop
 app for the same `WARDIAN_HOME`.
+
+Bundled, editable examples live in `<WARDIAN_HOME>/library/workflows/samples/`.
+They are templates only: inspect and adapt one before running it, and create a
+schedule only after the user explicitly asks for one.
