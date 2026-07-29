@@ -113,7 +113,7 @@ describe('WorkflowMonitorGlance', () => {
       />,
     );
 
-    expect(screen.getByText(/1 need/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 attention/i)).toBeInTheDocument();
     expect(screen.getByText(/1 running/i)).toBeInTheDocument();
     expect(screen.getByText(/3 next/i)).toBeInTheDocument();
 
@@ -144,7 +144,7 @@ describe('WorkflowMonitorGlance', () => {
     expect(screen.getByText('approval-gate')).toBeInTheDocument();
     expect(screen.queryByText('failed-audit')).toBeNull();
     expect(screen.queryByText('Broken Audit')).toBeInTheDocument();
-    expect(screen.getByText(/1 need/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 attention/i)).toBeInTheDocument();
   });
 
   it('filters runs and schedules from one search field', () => {

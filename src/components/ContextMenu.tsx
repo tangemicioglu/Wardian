@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenuSurface } from './useContextMenuSurface';
 
@@ -56,6 +56,10 @@ const MenuItem = memo(({ item, index, onClose }: { item: ContextMenuItem; index:
       onMouseLeave={handleMouseLeave}
     >
       <button
+        type="button"
+        role="menuitem"
+        aria-haspopup={hasSubItems ? "menu" : undefined}
+        aria-expanded={hasSubItems ? activeSubMenu : undefined}
         onClick={(e) => {
           e.stopPropagation();
           if (item.onClick) {
@@ -82,7 +86,8 @@ const MenuItem = memo(({ item, index, onClose }: { item: ContextMenuItem; index:
 
       {hasSubItems && activeSubMenu && (
         <div 
-          className={`absolute ${direction === 'left' ? 'right-full mr-1' : 'left-full ml-1'} top-0 min-w-[200px] bg-[var(--color-wardian-bg)] border border-wardian-border rounded-lg shadow-2xl p-1 z-[1001] backdrop-blur-3xl animate-in fade-in ${direction === 'left' ? 'slide-in-from-right-2' : 'slide-in-from-left-2'} duration-150 ring-1 ring-white/10`}
+          role="menu"
+          className={`wardian-menu absolute ${direction === 'left' ? 'right-full mr-1' : 'left-full ml-1'} top-0 min-w-[200px] p-1 z-[1001] backdrop-blur-3xl animate-in fade-in ${direction === 'left' ? 'slide-in-from-right-2' : 'slide-in-from-left-2'} duration-150`}
           onMouseEnter={handleMouseEnter}
         >
           {item.subItems!.map((sub, i) => (
@@ -96,8 +101,13 @@ const MenuItem = memo(({ item, index, onClose }: { item: ContextMenuItem; index:
 
 export const ContextMenu = memo(({ x, y, items, onClose }: ContextMenuProps) => {
   const { menuRef, style } = useContextMenuSurface<HTMLDivElement>(x, y, onClose);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const firstItem = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]');
+    firstItem?.focus();
+
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         onClose();
@@ -108,15 +118,39 @@ export const ContextMenu = memo(({ x, y, items, onClose }: ContextMenuProps) => 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('wheel', onClose);
+      previousFocusRef.current?.focus();
     };
-  }, [onClose]);
+  }, [menuRef, onClose]);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const menuItems = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (menuItems.length === 0) return;
+
+    const currentIndex = Math.max(0, menuItems.indexOf(document.activeElement as HTMLElement));
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % menuItems.length;
+    if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + menuItems.length) % menuItems.length;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = menuItems.length - 1;
+    if (nextIndex !== null) {
+      event.preventDefault();
+      menuItems[nextIndex]?.focus();
+    }
+  };
 
   return createPortal(
     <div 
       ref={menuRef}
       style={style}
-      className="fixed min-w-[200px] bg-[var(--color-wardian-bg)] border border-wardian-border rounded-xl shadow-2xl p-1 z-[9999] backdrop-blur-3xl animate-in zoom-in-95 duration-100 ring-1 ring-white/10"
+      role="menu"
+      className="wardian-menu fixed min-w-[200px] p-1 z-[9999] backdrop-blur-3xl animate-in zoom-in-95 duration-100"
       onContextMenu={(e) => e.preventDefault()}
+      onKeyDown={onKeyDown}
     >
       {items.map((item, i) => (
         <MenuItem key={`${item.label}-${i}`} item={item} index={i} onClose={onClose} />

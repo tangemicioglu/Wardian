@@ -103,7 +103,7 @@ export function WorkflowMonitorGlance({
       />
 
       <div className="grid grid-cols-3 gap-1">
-        <StatusChip label="Need" count={attentionCount} tone={attentionCount > 0 ? 'attention' : 'muted'} />
+        <StatusChip label="Attention" count={attentionCount} tone={attentionCount > 0 ? 'attention' : 'muted'} />
         <StatusChip label="Running" count={activeOnlyRuns.length} tone={activeOnlyRuns.length > 0 ? 'active' : 'muted'} />
         <StatusChip label="Next" count={upcoming.length} tone={upcoming.length > 0 ? 'upcoming' : 'muted'} />
       </div>

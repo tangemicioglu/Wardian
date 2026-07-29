@@ -632,7 +632,7 @@ describe('AgentsOverviewView maximize behavior', () => {
     expect(screen.getByTestId('terminal-agent-2')).toBeInTheDocument();
   });
 
-  it('renders terminal cards when Grid card display is terminal', () => {
+  it('renders terminal cards when Agent card display is terminal', () => {
     useSettingsStore.getState().setGridCardDisplayMode('terminal');
 
     renderGrid(null, agents);
@@ -700,7 +700,7 @@ describe('AgentsOverviewView maximize behavior', () => {
     expect(terminalRenderSpy).not.toHaveBeenCalled();
   });
 
-  it('renders chat cards when Grid card display is chat', () => {
+  it('renders chat cards when Agent card display is chat', () => {
     useSettingsStore.getState().setGridCardDisplayMode('chat');
 
     renderGrid(null, agents);

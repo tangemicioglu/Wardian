@@ -18,7 +18,7 @@ entire resolved settings object. Missing fields inherit Wardian's current
 computed defaults for the app and operating system.
 
 - `settings/app.json`: app preferences such as theme, top bar telemetry
-  visibility, Grid card display, Watchlist new agent position, terminal font
+  visibility, Agent card display, Watchlist new agent position, terminal font
   size, terminal font family, Explorer opening behavior, and Gemini auto-patch.
 - `settings/shell.json`: runtime preferences such as shell selection, default
   provider, regular agent session policy, and Codex runtime defaults.
@@ -128,9 +128,9 @@ Official installed stable release builds hide top bar telemetry by default.
 Development builds, prerelease builds, and unmarked local source-built release
 binaries show it by default.
 
-## Grid
+## Agents
 
-The **Grid card display** control sets the global display mode for cards in
+The **Agent card display** control sets the global display mode for cards in
 Agents surfaces:
 
 - **Terminal** shows the provider terminal/TUI, including raw keyboard control,
@@ -191,7 +191,7 @@ in the right-side roster:
 - **Bottom** appends the newly spawned agent to the end of the global roster
   order.
 
-This setting applies to new visible agents spawned from the Agent Config pane
+This setting applies to new visible agents spawned from the Agent Configuration pane
 and to agents created with `wardian agent spawn` while the desktop app is
 running for the same `WARDIAN_HOME`. It does not re-sort existing agents on
 startup, reinterpret manual drag order, or override clone/team placement

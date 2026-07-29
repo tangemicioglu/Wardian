@@ -6,7 +6,7 @@ import type { Watchlist, ContextMenuState, WatchlistPrefs, AgentInteractions, So
 import { DEFAULT_WATCHLIST_PREFS } from "./types";
 
 const COLUMN_WIDTHS: Record<OptionalColumnId, string> = {
-  status_label:   '42px',
+  status_label:   '86px',
   query_count:    '20px',
   uptime:         '30px',
   provider_model: '54px',
@@ -869,11 +869,20 @@ export default function AgentWatchlist({
           </p>
         </div>
         {prefs.columns.filter(c => c.visible).map(col => {
-          if (col.id === 'status_label') return (
-            <span key="status_label" className={`text-[9px] truncate max-w-[60px] ${getAgentStatusTextClass(status)}`}>
-              {getAgentStatusLabel(status, thought)}
-            </span>
-          );
+          if (col.id === 'status_label') {
+            const statusLabel = getAgentStatusLabel(status);
+            const activityLabel = thought.trim() && thought !== statusLabel ? thought : undefined;
+            return (
+              <span
+                key="status_label"
+                className={`text-[9px] truncate ${getAgentStatusTextClass(status)}`}
+                title={activityLabel ? `Activity: ${activityLabel}` : undefined}
+                aria-label={`Status: ${statusLabel}${activityLabel ? `. Activity: ${activityLabel}` : ""}`}
+              >
+                {statusLabel}
+              </span>
+            );
+          }
           if (col.id === 'query_count') return (
             <span key="query_count" className="text-[9px] text-muted-neutral tabular-nums w-4 text-right">
               {metrics?.query_count ?? "–"}
@@ -914,7 +923,7 @@ export default function AgentWatchlist({
         {/* ── Header ─────────────────────────────────────── */}
         <div className="flex justify-between items-center mb-3">
           <h2 className="text-sm font-bold text-primary tracking-tight truncate">
-            {activeList ? activeList.name : "All Agents"}
+            {activeList?.id === "all" ? "Agent List" : activeList?.name ?? "Agent List"}
           </h2>
           <div className="flex items-center gap-1">
             <button

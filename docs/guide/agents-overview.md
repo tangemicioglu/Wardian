@@ -59,7 +59,7 @@ Each card can show either:
 - **Terminal** for the provider's real PTY, approvals, raw keybindings, and interactive TUI.
 - **Chat** for normalized messages, tool activity, approval choices, and a compact prompt composer.
 
-Use the **Terminal** / **Chat** button in the card header for a temporary per-agent override. The default comes from **Settings > Grid > Grid card display**. Unsent Chat text stays with that agent when you switch modes.
+Use the **Terminal** / **Chat** button in the card header for a temporary per-agent override. The default comes from **Settings > Agents > Agent card display**. Unsent Chat text stays with that agent when you switch modes.
 
 In Terminal mode, click inside the terminal before typing. When the same agent terminal is visible elsewhere, the clicked presentation explicitly requests ownership; merely tabbing through the UI does not steal it. A **Mirror** remains read-only until ownership transfers. Reclaimed renderers restore and fit automatically when visible.
 

@@ -1,7 +1,7 @@
 import React from "react";
 import { Circle, Group, Text } from "react-konva";
 import type { GardenAgentUnit } from "./garden.types";
-import { isActiveAgentStatus } from "./gardenStatus";
+import { gardenAgentStatusColor, isActiveAgentStatus } from "./gardenStatus";
 import { resolveCssVar } from "./resolveColor";
 import { useGardenPulse } from "./useGardenPulse";
 
@@ -17,7 +17,7 @@ interface AgentUnitProps {
 }
 
 export const AgentUnit: React.FC<AgentUnitProps> = ({ unit, selected, onSelect, onOpen, onDragMove }) => {
-  const fill = resolveCssVar(unit.color);
+  const fill = resolveCssVar(gardenAgentStatusColor(unit.status));
   const pulse = useGardenPulse(isActiveAgentStatus(unit.status));
 
   return (

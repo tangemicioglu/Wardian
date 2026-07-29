@@ -1,19 +1,12 @@
 import { ExternalLink } from 'lucide-react';
-import type { RunStatusKind, RunSummary } from './runTypes';
-import { formatRunStatus } from './statusLabels';
+import type { RunSummary } from './runTypes';
+import { formatRunStatus, workflowRunStatusColor } from './statusLabels';
 
 interface RunListProps {
   runs: RunSummary[];
   selectedRunId: string | null;
   onOpen: (blueprintId: string, runId: string) => void;
 }
-
-const RUN_STATUS_COLORS: Record<RunStatusKind, string> = {
-  running: 'var(--color-wardian-processing)',
-  awaiting_approval: 'var(--color-wardian-warning)',
-  completed: 'var(--color-wardian-success)',
-  failed: 'var(--color-wardian-error)',
-};
 
 export function RunList({ runs, selectedRunId, onOpen }: RunListProps) {
   if (runs.length === 0) {
@@ -27,7 +20,7 @@ export function RunList({ runs, selectedRunId, onOpen }: RunListProps) {
   return (
     <div className="flex flex-col gap-2">
       {runs.map((run) => {
-        const color = RUN_STATUS_COLORS[run.status];
+        const color = workflowRunStatusColor(run.status);
         const selected = selectedRunId === run.run_id;
         return (
           <div

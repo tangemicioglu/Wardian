@@ -14,7 +14,7 @@ const STEPS = [
     docsLabel: "First-run guide",
   },
   {
-    title: "Keep the roster readable",
+    title: "Keep the agent list readable",
     detail: "Use agents, teams, and watchlists to monitor work without opening every terminal.",
     docsPath: "/guide/watchlists",
     docsLabel: "Watchlist guide",

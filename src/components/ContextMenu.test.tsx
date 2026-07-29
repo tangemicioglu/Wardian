@@ -37,8 +37,8 @@ describe('ContextMenu', () => {
     render(<MenuHarness />);
     await user.click(screen.getByRole('button', { name: 'Open second menu' }));
 
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'First action' })).not.toBeInTheDocument());
-    expect(screen.getByRole('button', { name: 'Second action' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'First action' })).not.toBeInTheDocument());
+    expect(screen.getByRole('menuitem', { name: 'Second action' })).toBeInTheDocument();
   });
 
   it('runs item actions and closes the menu', async () => {
@@ -59,9 +59,31 @@ describe('ContextMenu', () => {
       />,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Copy' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Copy' }));
 
     expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses menu semantics with arrow-key navigation and Escape dismissal', () => {
+    const onClose = vi.fn();
+    render(
+      <ContextMenu
+        x={20}
+        y={30}
+        onClose={onClose}
+        items={[{ label: 'Copy' }, { label: 'Rename' }]}
+      />,
+    );
+
+    const menu = screen.getByRole('menu');
+    const copy = screen.getByRole('menuitem', { name: 'Copy' });
+    const rename = screen.getByRole('menuitem', { name: 'Rename' });
+    expect(copy).toHaveFocus();
+
+    fireEvent.keyDown(menu, { key: 'ArrowDown' });
+    expect(rename).toHaveFocus();
+    fireEvent.keyDown(menu, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -84,8 +106,8 @@ describe('ContextMenu', () => {
       />,
     );
 
-    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Insert Variable' }).parentElement!);
-    await user.click(await screen.findByRole('button', { name: 'Base Output' }));
+    fireEvent.mouseEnter(screen.getByRole('menuitem', { name: 'Insert Variable' }).parentElement!);
+    await user.click(await screen.findByRole('menuitem', { name: 'Base Output' }));
     expect(subAction).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
 

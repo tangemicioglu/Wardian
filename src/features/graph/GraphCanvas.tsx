@@ -4,6 +4,7 @@ import Sigma from "sigma";
 import { RELATIONSHIP_REASON_LABELS, type AgentGraphProjection, type GraphRelationshipReason } from "./graphProjection";
 import { EdgeActivityOverlay } from "./EdgeActivityOverlay";
 import { resolveGraphColor, withAlpha } from "./graphColorUtils";
+import { formatAgentStatusLabel } from "../../utils/statusUtils";
 
 const EDGE_REASON_COLORS: Record<GraphRelationshipReason, string> = {
   same_team: "var(--color-wardian-accent)",
@@ -172,7 +173,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       const graphNode = projectionRef.current.nodes.find((candidate) => candidate.id === node);
       if (!graphNode) return;
       const point = sigmaPointerPosition(event);
-      setTooltip({ x: point.x, y: point.y, title: graphNode.label, detail: graphNode.status });
+      setTooltip({ x: point.x, y: point.y, title: graphNode.label, detail: formatAgentStatusLabel(graphNode.status) });
     });
     renderer.on("leaveNode", () => setTooltip(null));
     renderer.on("enterEdge", ({ edge, event }: SigmaEdgePayload) => {

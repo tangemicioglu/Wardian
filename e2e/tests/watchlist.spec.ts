@@ -1,5 +1,5 @@
 /**
- * Watchlist (Agent Roster) E2E tests.
+ * Watchlist (Agent List) E2E tests.
  *
  * Tests are split into two groups:
  *   1. UI-only (browser E2E): panel rendering, search input, collapse/expand toggle.
@@ -33,8 +33,8 @@ test.describe("Watchlist Panel", () => {
     const watchlist = page.locator('[data-testid="agent-watchlist"]');
     await expect(watchlist).toBeVisible();
 
-    // The collapse button is in the titlebar with title "Hide Agent Roster".
-    const collapseBtn = page.getByTitle("Hide Agent Roster");
+    // The collapse button is in the titlebar with title "Hide Agent List".
+    const collapseBtn = page.getByTitle("Hide Agent List");
     await expect(collapseBtn).toBeVisible();
     await collapseBtn.click();
 
@@ -45,12 +45,12 @@ test.describe("Watchlist Panel", () => {
   test("expand toggle restores the watchlist", async () => {
     const watchlist = page.locator('[data-testid="agent-watchlist"]');
     if (!(await watchlist.evaluate((el) => el.className.includes("w-0")))) {
-      await page.getByTitle("Hide Agent Roster").click();
+      await page.getByTitle("Hide Agent List").click();
       await expect(watchlist).toHaveClass(/w-0/);
     }
 
     // Expand.
-    await page.getByTitle("Show Agent Roster").click();
+    await page.getByTitle("Show Agent List").click();
     await expect(watchlist).not.toHaveClass(/w-0/);
     await expect(watchlist).toBeVisible();
   });

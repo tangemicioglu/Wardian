@@ -1,7 +1,7 @@
 import type { QueueEventType, QueueItem, QueuePreferences } from "../../types";
 
 export const QUEUE_EVENT_LABELS: Record<QueueEventType, string> = {
-  action_needed: "Action needed",
+  action_needed: "Action required",
   agent_completed: "Agent completions",
   workflow_completed: "Workflow completions",
   workflow_failed: "Workflow failures",

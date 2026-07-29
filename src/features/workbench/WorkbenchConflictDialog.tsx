@@ -6,12 +6,6 @@ export type WorkbenchConflictDialogProps = {
   on_export_local: () => void;
 };
 
-const buttonStyle = {
-  border: "1px solid var(--color-wardian-border)",
-  background: "var(--color-wardian-card)",
-  color: "var(--color-wardian-text)",
-} as const;
-
 /** Explicit, non-merging recovery choices for a frozen workbench draft. */
 export function WorkbenchConflictDialog({
   mode,
@@ -26,18 +20,10 @@ export function WorkbenchConflictDialog({
       role="dialog"
       aria-modal="true"
       aria-labelledby="workbench-conflict-title"
-      style={{
-        background: "var(--color-wardian-overlay)",
-        color: "var(--color-wardian-text)",
-      }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="wardian-dialog-overlay fixed inset-0 z-50 flex items-center justify-center p-4"
     >
       <section
-        className="w-full max-w-lg rounded-lg border p-5 shadow-xl"
-        style={{
-          background: "var(--color-wardian-bg)",
-          borderColor: "var(--color-wardian-border-heavy)",
-        }}
+        className="wardian-dialog-panel wardian-dialog-panel--standard w-full p-5"
       >
         <h2 id="workbench-conflict-title" className="text-lg font-semibold">
           {futureSchema ? "Newer workbench version" : "Workbench changed on disk"}
@@ -55,8 +41,7 @@ export function WorkbenchConflictDialog({
             <>
               <button
                 type="button"
-                style={buttonStyle}
-                className="rounded px-3 py-2 text-sm"
+              className="wardian-button wardian-button--secondary"
                 disabled={resolving}
                 onClick={() => void on_use_disk()}
               >
@@ -64,11 +49,7 @@ export function WorkbenchConflictDialog({
               </button>
               <button
                 type="button"
-                style={{
-                  ...buttonStyle,
-                  background: "var(--color-wardian-accent)",
-                }}
-                className="rounded px-3 py-2 text-sm"
+                className="wardian-button wardian-button--primary"
                 disabled={resolving}
                 onClick={() => void on_replace_disk()}
               >
@@ -78,8 +59,7 @@ export function WorkbenchConflictDialog({
           )}
           <button
             type="button"
-            style={buttonStyle}
-            className="rounded px-3 py-2 text-sm"
+            className="wardian-button wardian-button--secondary"
             disabled={resolving}
             onClick={on_export_local}
           >

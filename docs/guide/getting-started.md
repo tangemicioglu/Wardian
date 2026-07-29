@@ -137,13 +137,13 @@ Use the resulting absolute path in the spawn form. Do not use a private credenti
 
 Open the **Agent Configuration** rail item and fill in the spawn form:
 
-![Wardian spawn agent form with agent name, class, workspace, provider, and initialize controls](../assets/screenshots/spawn-agent/spawn-form.png)
+![Wardian spawn agent form with agent name, class, workspace, provider, and Spawn Agent controls](../assets/screenshots/spawn-agent/spawn-form.png)
 
 1. Choose an agent class, such as **Coder** or **Researcher**. Classes are reusable blueprints; see [Class Management](./class-management.md) for the model and the [Library](./library.md#3-classes) when you want to inspect or customize them.
 2. Select the provider you installed and authenticated.
 3. Enter a short agent name.
 4. Set the workspace to `<absolute-workspace-path>`.
-5. Click **Initialize**.
+5. Click **Spawn Agent**.
 
 The new agent appears in the right roster and in Agents. If Agents is not open, press `Ctrl+P` / `Cmd+P` and choose **Agents**, or use **Open** on the agent in the roster to create an agent-session tab.
 

@@ -29,15 +29,14 @@ describe("workbench cutover verifier", () => {
     expect(description.entries).toHaveLength(25);
     expect(new Set(description.entries.map((entry) => entry.path)).size).toBe(25);
     expect(description.counts).toEqual({
-      migrated: 22,
+      migrated: 23,
       removed: 1,
-      "intentionally-unrelated": 2,
+      "intentionally-unrelated": 1,
     });
     expect(description.entries.every((entry) => entry.reason.trim().length > 0)).toBe(true);
     expect(description.entries.filter((entry) => entry.disposition === "intentionally-unrelated")
       .map((entry) => entry.path)).toEqual([
       "src/features/remote/RemoteMobileApp.test.tsx",
-      "src/features/settings/SettingsModal.test.tsx",
     ]);
     expect(description.allowlist.length).toBeGreaterThanOrEqual(2);
     expect(description.allowlist.every(

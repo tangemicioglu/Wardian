@@ -1363,7 +1363,7 @@ describe("AgentChatView", () => {
     rerender(<AgentChatView sessionId="agent-2" status="Action Required" />);
 
     expect(await screen.findByLabelText("Message agent")).not.toBeDisabled();
-    expect(screen.getByPlaceholderText("Respond to action needed...")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Respond to action required...")).toBeInTheDocument();
   });
 
   it("shows submit failures without clearing the draft", async () => {

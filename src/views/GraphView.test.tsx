@@ -139,7 +139,7 @@ describe("GraphView", () => {
     render(<GraphView {...defaultProps} />);
 
     expect(screen.getByTestId("graph-view")).toBeInTheDocument();
-    expect(screen.getByText("All Agents")).toBeInTheDocument();
+    expect(screen.getByText("Agent List")).toBeInTheDocument();
     expect(screen.getByText("Shift-drag to connect")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "same team" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "same team" })).toHaveClass("graph-lens--same-team");

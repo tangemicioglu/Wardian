@@ -34,7 +34,7 @@ const frozenAudit = Object.freeze([
   ["src/styles/App.css", "migrated", "Task 19 removes the flag-off titlebar navigation styles."],
   ["e2e/tests/remote-pwa.spec.ts", "migrated", "Remote PWA navigation now uses the Inbox surface name."],
   ["src/features/remote/RemoteMobileApp.test.tsx", "intentionally-unrelated", "Remote mobile navigation is not desktop surface navigation."],
-  ["src/features/settings/SettingsModal.test.tsx", "intentionally-unrelated", "Settings Queue and Grid controls configure alerts and density, not desktop surfaces."],
+  ["src/features/settings/SettingsModal.test.tsx", "migrated", "Settings now uses the Agents category and no longer matches a legacy desktop surface selector."],
 ].map(([auditPath, disposition, reason]) => Object.freeze({
   path: auditPath,
   disposition,
@@ -92,12 +92,6 @@ const allowlistedMatches = Object.freeze([
     rule_ids: ["legacy-role-button-selector", "direct-desktop-surface-launch-click"],
     context: /(?:Grid|Queue|Graph|Garden)/,
     reason: "Remote mobile buttons do not launch desktop workbench surfaces.",
-  },
-  {
-    path: "src/features/settings/SettingsModal.test.tsx",
-    rule_ids: ["legacy-role-button-selector", "direct-desktop-surface-launch-click"],
-    context: /(?:Grid|Queue)/,
-    reason: "Settings Queue and Grid buttons configure alerts or density.",
   },
   {
     path: "e2e/tests/agent-lifecycle.spec.ts",

@@ -102,7 +102,7 @@ export function WorkbenchContextMenu({
       }}
       role="menu"
       aria-label={aria_label}
-      className="wardian-workbench-context-menu"
+      className="wardian-menu wardian-workbench-context-menu"
       style={style}
       onKeyDown={moveFocus}
       onContextMenu={(event) => event.preventDefault()}

@@ -1168,7 +1168,7 @@ describe("RemoteMobileApp", () => {
 
     render(<RemoteMobileApp />);
 
-    expect(await screen.findByText("Processing...")).toBeVisible();
+    expect(await screen.findByText("Processing")).toBeVisible();
 
     window.dispatchEvent(new Event("focus"));
 
@@ -3913,7 +3913,7 @@ describe("RemoteMobileApp", () => {
       });
     });
 
-    await waitFor(() => expect(screen.getByText("Processing...")).toBeVisible());
+    await waitFor(() => expect(screen.getByText("Processing")).toBeVisible());
     expect(terminalCalls).toBe(0);
   });
 

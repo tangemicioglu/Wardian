@@ -200,7 +200,7 @@ describe("ConfigureAgentPanel", () => {
       />,
     );
 
-    await user.selectOptions(await screen.findByLabelText("Provider Engine"), "claude");
+    await user.selectOptions(await screen.findByLabelText("Provider"), "claude");
     await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
     await waitFor(() => {

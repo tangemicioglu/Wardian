@@ -78,7 +78,7 @@ describe('GitFileList', () => {
     );
 
     await user.pointer({ keys: '[MouseRight]', target: screen.getByRole('button', { name: 'View diff for src/app.tsx' }) });
-    await user.click(await screen.findByRole('button', { name: 'Stage' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Stage' }));
 
     expect(onStage).toHaveBeenCalledWith('src/app.tsx');
     expect(onDiff).not.toHaveBeenCalled();

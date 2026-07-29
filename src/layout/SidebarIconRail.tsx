@@ -65,7 +65,7 @@ export const SidebarIconRail: React.FC<SidebarIconRailProps> = ({
           <span
             data-testid="sidebar-tab-git-badge"
             aria-label={`${sourceControlChangeCount} pending source control changes`}
-            className="absolute -right-1 -top-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[var(--color-wardian-accent)] text-[10px] leading-[18px] font-mono font-bold text-black text-center shadow-sm"
+            className="absolute -right-1 -top-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[var(--color-wardian-accent)] text-[10px] leading-[18px] font-mono font-bold text-[var(--color-wardian-accent-contrast)] text-center shadow-sm"
           >
             {sourceControlBadgeLabel}
           </span>

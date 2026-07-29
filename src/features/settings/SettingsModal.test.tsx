@@ -186,7 +186,7 @@ describe("SettingsModal", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Inbox" }));
     fireEvent.click(screen.getByLabelText("Desktop alert for workflow failures"));
-    fireEvent.click(screen.getByLabelText("Sound alert for action needed"));
+    fireEvent.click(screen.getByLabelText("Sound alert for action required"));
     fireEvent.change(screen.getByLabelText("Sound alert volume"), {
       target: { value: "75" },
     });
@@ -349,13 +349,13 @@ describe("SettingsModal", () => {
     });
   });
 
-  it("loads and saves the Grid card display preference", async () => {
+  it("loads and saves the Agent card display preference", async () => {
     useSettingsStore.setState({ gridCardDisplayMode: "chat" });
     render(<SettingsModal isOpen onClose={vi.fn()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Grid" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
 
-    const select = screen.getByLabelText("Grid card display");
+    const select = screen.getByLabelText("Agent card display");
     expect(select).toHaveValue("chat");
 
     fireEvent.change(select, { target: { value: "terminal" } });

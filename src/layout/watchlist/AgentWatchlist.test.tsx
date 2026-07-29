@@ -140,6 +140,25 @@ describe('AgentWatchlist', () => {
     expect(screen.getByText('Beta')).toBeInTheDocument();
   });
 
+  it('keeps the Status column canonical and exposes transient work as activity', () => {
+    render(
+      <AgentWatchlist
+        {...defaultProps}
+        telemetry={{
+          ...sampleTelemetry,
+          'agent-1': { ...sampleTelemetry['agent-1'], current_status: 'processing' },
+        }}
+        currentThoughts={{ 'agent-1': 'Running command npm test' }}
+      />,
+    );
+
+    expect(screen.getByText('Processing')).toBeInTheDocument();
+    expect(screen.getByLabelText('Status: Processing. Activity: Running command npm test')).toHaveAttribute(
+      'title',
+      'Activity: Running command npm test',
+    );
+  });
+
   it('shows an optional description alongside the class without adding another row', () => {
     const describedAgents = [
       { ...sampleAgents[0], description: 'Owns frontend release follow-up' },

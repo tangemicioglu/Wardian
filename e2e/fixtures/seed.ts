@@ -114,7 +114,7 @@ export function seedTestHome(
       watchlists: [
         {
           id: "all",
-          name: "All Agents",
+          name: "Agent List",
           agent_ids: [MOCK_AGENT_ID],
         },
       ],

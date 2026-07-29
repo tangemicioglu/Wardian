@@ -65,7 +65,7 @@ flag-off development server cannot satisfy the run accidentally.
 | `src/styles/App.css` | Retained only for the flag-off comparison; Task 19 removes the legacy titlebar navigation styles after the cutover gates pass. |
 | `e2e/tests/remote-pwa.spec.ts` | Migrated to the Inbox surface name. |
 | `src/features/remote/RemoteMobileApp.test.tsx` | Intentionally unrelated: these buttons belong to the remote mobile surface. |
-| `src/features/settings/SettingsModal.test.tsx` | Intentionally unrelated: Queue and Grid are Settings navigation/density controls, not desktop surface launchers. |
+| `src/features/settings/SettingsModal.test.tsx` | Migrated: the Settings category is now Agents, so the test no longer matches a legacy desktop-surface selector. |
 
 No baseline hit may disappear from the current-tree audit without moving to its
 recorded disposition. New matches introduced after `d53842dc` must be classified

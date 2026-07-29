@@ -160,7 +160,7 @@ describe("SidebarContentPane", () => {
   it("uses compact sidebar title typography for agent configuration", () => {
     renderPane();
 
-    expect(screen.getByRole("heading", { name: "Agent Config", level: 2 })).toHaveClass("text-sm");
+    expect(screen.getByRole("heading", { name: "Agent Configuration", level: 2 })).toHaveClass("text-sm");
     expect(screen.getByRole("heading", { name: "Spawn Agent", level: 3 })).toHaveClass("text-xs");
   });
 

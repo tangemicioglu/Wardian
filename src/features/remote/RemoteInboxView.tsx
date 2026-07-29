@@ -1,32 +1,29 @@
 import React from "react";
-import { Bot, Inbox } from "lucide-react";
+import { Bot, GitBranch, Inbox } from "lucide-react";
 import type { QueueItem } from "../../types";
 import { useRemoteStore } from "./useRemoteStore";
-
-function remoteInboxItemLabel(item: QueueItem) {
-  if (item.type === "action_needed") return "Action needed";
-  if (item.type === "agent_completed") return "Agent task completed";
-  return item.status === "failed" ? "Workflow failed" : "Workflow completed";
-}
+import { QUEUE_TONE_CLASSES, queueItemIsAgentEvent, queueItemLabel, queueItemTone } from "../queue/queuePresentation";
 
 function RemoteInboxCard({ item }: { item: QueueItem }) {
   const title = item.agent_name ?? item.workflow_name ?? "Unknown";
   const bodyText = item.status === "failed" && item.error ? item.error : item.summary;
+  const Icon = queueItemIsAgentEvent(item) ? Bot : GitBranch;
+  const classes = QUEUE_TONE_CLASSES[queueItemTone(item)];
 
   return (
     <article className="rounded-md border border-wardian-border bg-wardian-card-bg px-3 py-3">
       <div className="flex items-start gap-3">
         <span
-          className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-wardian-processing/10 text-wardian-processing"
+          className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${classes.icon}`}
           aria-hidden="true"
         >
-          <Bot className="h-4 w-4" />
+          <Icon className="h-4 w-4" />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="truncate text-sm font-semibold text-primary">{title}</span>
-            <span className="rounded-full bg-wardian-processing/10 px-2 py-0.5 text-[10px] font-bold text-wardian-processing">
-              {remoteInboxItemLabel(item)}
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${classes.badge}`}>
+              {queueItemLabel(item)}
             </span>
           </div>
           {bodyText && (

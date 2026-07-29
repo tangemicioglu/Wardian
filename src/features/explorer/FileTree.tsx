@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useLayoutEffect,
 import { invoke } from '@tauri-apps/api/core';
 import { ChevronRight, ChevronDown, File, FileText, Image, Code } from 'lucide-react';
 import { normalizeExplorerPathForCompare } from './pathUtils';
+import { gitStatusColor } from '../git/gitStatusPresentation';
 
 export interface FileNode {
   name: string;
@@ -22,15 +23,6 @@ export interface FileTreeProps {
   refreshToken?: number;
   changedPaths?: string[];
 }
-
-const GIT_STATUS_COLORS: Record<string, string> = {
-  M: 'var(--color-wardian-warning)',
-  A: 'var(--color-wardian-success)',
-  D: 'var(--color-wardian-error)',
-  R: 'var(--color-wardian-warning)',
-  C: 'var(--color-wardian-processing)',
-  '?': 'var(--color-wardian-success)',
-};
 
 function toRelativePath(nodePath: string, root: string): string {
   const n = nodePath.replace(/\\/g, '/');
@@ -260,8 +252,8 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
         const fileStatus = gitStatusMap?.[relPath];
         const dirHasChanges = node.is_dir && relPath !== '' && changedDirectories?.has(relPath);
         const gitColor = fileStatus
-          ? GIT_STATUS_COLORS[fileStatus]
-          : dirHasChanges ? GIT_STATUS_COLORS['M'] : undefined;
+          ? gitStatusColor(fileStatus)
+          : dirHasChanges ? gitStatusColor('M') : undefined;
 
         return (
           <div

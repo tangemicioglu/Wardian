@@ -6,8 +6,14 @@ import {
   classifyJsonEvent,
   extractQueueContent,
   extractTerminalQueueContent,
+  formatAgentStatusLabel,
+  getAgentActivityLabel,
+  getAgentStatusColorToken,
+  getAgentStatusIndicatorClass,
+  getAgentStatusTextClass,
   getStatusColorClass,
   getStatusLabel,
+  normalizeAgentStatus,
 } from "./statusUtils";
 import type { AgentTelemetry } from "../types";
 
@@ -77,6 +83,22 @@ describe("deriveEffectiveStatus", () => {
 
   it("keeps a lease-derived Headless status visible for an off agent", () => {
     expect(deriveEffectiveStatus("", undefined, "Headless", true)).toBe("Headless");
+  });
+
+  it("normalizes raw provider variants before deriving a status", () => {
+    expect(deriveEffectiveStatus("", undefined, "Processing")).toBe("Processing...");
+    expect(deriveEffectiveStatus("", undefined, "Action Required")).toBe("Action Needed");
+  });
+
+  it("preserves Error instead of allowing stale activity to override it", () => {
+    expect(deriveEffectiveStatus("Working on task", "Stale thought", "Error")).toBe("Error");
+  });
+});
+
+describe("getAgentActivityLabel", () => {
+  it("keeps a transient thought separate from the canonical lifecycle label", () => {
+    expect(getAgentActivityLabel("Processing", "Running command npm test", 12)).toBe("Running comm");
+    expect(formatAgentStatusLabel("Processing")).toBe("Processing");
   });
 });
 
@@ -414,23 +436,27 @@ describe("getStatusColorClass", () => {
     expect(getStatusColorClass("Off")).toContain("bg-wardian-off");
   });
 
+  it("returns red for Error", () => {
+    expect(getStatusColorClass("Error")).toContain("bg-wardian-error");
+  });
+
   it("returns gray for unknown status", () => {
     expect(getStatusColorClass("Something Else")).toContain("bg-wardian-off");
   });
 
-  it("returns gray pulse for Restoring", () => {
-    expect(getStatusColorClass("Restoring")).toContain("bg-wardian-off");
+  it("returns processing pulse for Restoring", () => {
+    expect(getStatusColorClass("Restoring")).toContain("bg-wardian-processing");
     expect(getStatusColorClass("Restoring")).toContain("animate-pulse");
   });
 });
 
 describe("getStatusLabel", () => {
-  it("maps Processing to Working", () => {
-    expect(getStatusLabel("Processing...")).toBe("Working");
+  it("maps Processing to its canonical display label", () => {
+    expect(getStatusLabel("Processing...")).toBe("Processing");
   });
 
-  it("maps Action Needed to Action", () => {
-    expect(getStatusLabel("Action Needed")).toBe("Action");
+  it("maps Action Needed to Action Required", () => {
+    expect(getStatusLabel("Action Needed")).toBe("Action Required");
   });
 
   it("maps Idle to Idle", () => {
@@ -443,6 +469,29 @@ describe("getStatusLabel", () => {
 
   it("maps unknown values to Pending", () => {
     expect(getStatusLabel("Something Else")).toBe("Pending");
+  });
+});
+
+describe("agent status presentation", () => {
+  it.each([
+    ["processing", "Processing...", "Processing"],
+    ["Processing...", "Processing...", "Processing"],
+    ["action_required", "Action Needed", "Action Required"],
+    ["Action Needed", "Action Needed", "Action Required"],
+    ["failed", "Error", "Error"],
+    ["offline", "Off", "Off"],
+  ])("normalizes %s for every agent surface", (raw, normalized, label) => {
+    expect(normalizeAgentStatus(raw)).toBe(normalized);
+    expect(formatAgentStatusLabel(raw)).toBe(label);
+  });
+
+  it("uses matching semantic tones for desktop lists and canvas surfaces", () => {
+    expect(getAgentStatusIndicatorClass("Processing")).toBe("bg-wardian-processing");
+    expect(getAgentStatusColorToken("Processing")).toBe("var(--color-wardian-processing)");
+    expect(getAgentStatusTextClass("Processing")).toBe("text-wardian-processing");
+    expect(getAgentStatusIndicatorClass("Error")).toBe("bg-wardian-error");
+    expect(getAgentStatusColorToken("Error")).toBe("var(--color-wardian-error)");
+    expect(getAgentStatusTextClass("Error")).toBe("text-wardian-error");
   });
 });
 

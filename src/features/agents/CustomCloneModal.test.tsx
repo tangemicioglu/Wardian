@@ -159,7 +159,7 @@ describe("CustomCloneModal", () => {
     );
 
     await screen.findByDisplayValue("Alpha-copy");
-    await user.selectOptions(screen.getByLabelText("Provider Engine"), "codex");
+    await user.selectOptions(screen.getByLabelText("Provider"), "codex");
     await user.selectOptions(screen.getByLabelText("Agent Class"), "Reviewer");
     await user.clear(screen.getByLabelText("Workspace Path"));
     await user.type(screen.getByLabelText("Workspace Path"), "D:/Development/Wardian");

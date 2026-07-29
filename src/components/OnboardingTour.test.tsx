@@ -18,7 +18,7 @@ describe("OnboardingTour", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Next" }));
-    expect(screen.getByText("Keep the roster readable")).toBeInTheDocument();
+    expect(screen.getByText("Keep the agent list readable")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("button", { name: "Next" }));

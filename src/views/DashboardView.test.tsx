@@ -63,7 +63,8 @@ describe('DashboardView', () => {
     expect(screen.getByText('12.3% CPU')).toBeInTheDocument();
     expect(screen.getByText('257 MB')).toBeInTheDocument();
     expect(screen.getByText('4')).toBeInTheDocument();
-    expect(screen.getByText('Derived thought')).toBeInTheDocument();
+    expect(screen.getByText('Processing')).toBeInTheDocument();
+    expect(screen.getByTitle('Activity: Derived thought')).toBeInTheDocument();
     expect(props.deriveCurrentThought).toHaveBeenCalledWith(
       'Running tests',
       'Validating changes',

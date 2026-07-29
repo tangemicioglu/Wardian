@@ -1,5 +1,113 @@
 import { AgentTelemetry } from "../types";
 
+/** Canonical presentation states for every agent surface. */
+export type AgentDisplayStatus =
+  | "Idle"
+  | "Processing..."
+  | "Action Needed"
+  | "Pending..."
+  | "Off"
+  | "Headless"
+  | "Restoring"
+  | "Error";
+
+/**
+ * Normalizes provider, remote, and persisted status variants at the UI boundary.
+ * Backend values remain unchanged; presentation can rely on one vocabulary.
+ */
+export function normalizeAgentStatus(status: string | undefined): AgentDisplayStatus | undefined {
+  const normalized = status?.trim().toLowerCase().replace(/\.+$/g, "").replace(/\s+/g, "_");
+  switch (normalized) {
+    case "idle":
+      return "Idle";
+    case "processing":
+    case "running":
+    case "working":
+      return "Processing...";
+    case "action_needed":
+    case "action_required":
+      return "Action Needed";
+    case "pending":
+      return "Pending...";
+    case "off":
+    case "offline":
+      return "Off";
+    case "headless":
+      return "Headless";
+    case "restoring":
+      return "Restoring";
+    case "error":
+    case "failed":
+      return "Error";
+    default:
+      return undefined;
+  }
+}
+
+/** Returns the user-facing label for a normalized agent lifecycle state. */
+export function formatAgentStatusLabel(status: string | undefined): string {
+  switch (normalizeAgentStatus(status)) {
+    case "Processing...":
+      return "Processing";
+    case "Action Needed":
+      return "Action Required";
+    case "Pending...":
+      return "Pending";
+    case "Idle":
+    case "Off":
+    case "Headless":
+    case "Restoring":
+    case "Error":
+      return normalizeAgentStatus(status)!;
+    default:
+      return "Pending";
+  }
+}
+
+/** Returns the semantic color token used by Graph and other canvas renderers. */
+export function getAgentStatusColorToken(status: string | undefined): string {
+  switch (normalizeAgentStatus(status)) {
+    case "Idle":
+      return "var(--color-wardian-success)";
+    case "Processing...":
+      return "var(--color-wardian-processing)";
+    case "Action Needed":
+      return "var(--color-wardian-warning)";
+    case "Headless":
+      return "var(--color-wardian-headless)";
+    case "Error":
+      return "var(--color-wardian-error)";
+    case "Off":
+    case "Pending...":
+    default:
+      return "var(--color-wardian-off)";
+    case "Restoring":
+      return "var(--color-wardian-processing)";
+  }
+}
+
+/** Returns the static indicator class shared by desktop and remote agent lists. */
+export function getAgentStatusIndicatorClass(status: string | undefined): string {
+  switch (normalizeAgentStatus(status)) {
+    case "Idle":
+      return "bg-wardian-success";
+    case "Processing...":
+      return "bg-wardian-processing";
+    case "Action Needed":
+      return "bg-wardian-warning";
+    case "Headless":
+      return "bg-wardian-headless";
+    case "Error":
+      return "bg-wardian-error";
+    case "Off":
+    case "Pending...":
+    default:
+      return "bg-wardian-off";
+    case "Restoring":
+      return "bg-wardian-processing";
+  }
+}
+
 /**
  * Derives the effective display status from terminal title, thoughts, and metrics.
  */
@@ -8,8 +116,8 @@ export function deriveEffectiveStatus(
   currentThought: string | undefined,
   metricsStatus: string | undefined,
   isOff?: boolean,
-): "Idle" | "Processing..." | "Action Needed" | "Pending..." | "Off" | "Headless" | "Restoring" {
-  let effectiveStatus: string = metricsStatus || "Pending...";
+): AgentDisplayStatus {
+  let effectiveStatus: AgentDisplayStatus = normalizeAgentStatus(metricsStatus) ?? "Pending...";
 
   // Backend "Headless" and "Restoring" statuses are authoritative — pass them through unchanged.
   if (effectiveStatus === "Headless") return "Headless";
@@ -19,6 +127,10 @@ export function deriveEffectiveStatus(
   // process for it. That lease-derived Headless state must be visible instead
   // of being hidden by the persisted off flag.
   if (isOff) return "Off";
+
+  // Errors are terminal states and must retain their semantic red treatment
+  // instead of being overwritten by stale terminal titles or live thoughts.
+  if (effectiveStatus === "Error") return "Error";
 
   // Title-based overrides. "Action Required" always upgrades status.
   // "◇ / Ready / Idle" can only set Idle when the backend hasn't reported an active state —
@@ -46,7 +158,7 @@ export function deriveEffectiveStatus(
   // A live thought signals activity, but must not override an explicit "Action Needed".
   if (currentThought && effectiveStatus !== "Action Needed") effectiveStatus = "Processing...";
 
-  return effectiveStatus as "Idle" | "Processing..." | "Action Needed" | "Pending..." | "Off" | "Headless" | "Restoring";
+  return effectiveStatus;
 }
 
 /**
@@ -70,10 +182,10 @@ export function deriveCurrentThought(
   liveThought: string | undefined,
   metrics: AgentTelemetry | undefined,
   isOff?: boolean,
-): { thought: string; status: "Idle" | "Processing..." | "Action Needed" | "Pending..." | "Off" | "Headless" | "Restoring" } {
+): { thought: string; status: AgentDisplayStatus } {
   let effectiveStatus = deriveEffectiveStatus(rawTitle, liveThought, metrics?.current_status, isOff);
   let currentThought = cleanThought(liveThought || rawTitle.trim());
-  const isHeadless = metrics?.current_status === "Headless";
+  const isHeadless = normalizeAgentStatus(metrics?.current_status) === "Headless";
 
   if (!liveThought && rawTitle.startsWith("OC | ")) {
     currentThought = cleanThought(rawTitle.slice(5).trim());
@@ -91,6 +203,10 @@ export function deriveCurrentThought(
   // "Ready"/"Booting..." fallbacks that would mislabel them as Idle.
   if (effectiveStatus === "Restoring") {
     return { thought: "Restoring...", status: "Restoring" };
+  }
+
+  if (effectiveStatus === "Error") {
+    return { thought: "Error", status: "Error" };
   }
 
   // Fallback chain when no live thought
@@ -118,19 +234,8 @@ export function deriveCurrentThought(
   return { thought: currentThought, status: effectiveStatus };
 }
 
-export function getStatusLabel(status: string): "Idle" | "Working" | "Action" | "Pending" | "Off" {
-  switch (status) {
-    case "Processing...":
-      return "Working";
-    case "Action Needed":
-      return "Action";
-    case "Idle":
-      return "Idle";
-    case "Off":
-      return "Off";
-    default:
-      return "Pending";
-  }
+export function getStatusLabel(status: string): string {
+  return formatAgentStatusLabel(status);
 }
 
 /**
@@ -289,55 +394,65 @@ export function classifyJsonEvent(data: Record<string, unknown>): JsonEventEffec
 }
 
 /**
- * Returns the short text label for the status to be displayed in lists/dashboards.
+ * Returns the canonical lifecycle label for a Status field.
  */
-export function getAgentStatusLabel(status: string, thought: string, maxLength: number = 12): string {
-  if (status === "Headless") {
-    return "Headless";
-  }
-  if (status === "Processing...") {
+export function getAgentStatusLabel(status: string): string {
+  return formatAgentStatusLabel(status);
+}
+
+/**
+ * Returns a short transient activity label. Keep this separate from Status so
+ * equivalent agents read the same across Watchlist, Graph, and other surfaces.
+ */
+export function getAgentActivityLabel(status: string, thought: string, maxLength: number = 40): string {
+  if (normalizeAgentStatus(status) === "Processing..." && thought.trim()) {
     return thought.substring(0, maxLength);
   }
-  if (status === "Action Needed") {
-    return "Action Needed";
-  }
-  if (status === "Off") {
-    return "Off";
-  }
-  if (status === "Pending...") {
-    return "Pending";
-  }
-  return status || "Idle";
+  return formatAgentStatusLabel(status);
 }
 
 /**
  * Returns the text color CSS class for the status.
  */
 export function getAgentStatusTextClass(status: string): string {
-  if (status === "Headless") return "text-wardian-headless";
-  if (status === "Processing...") return "text-[var(--color-wardian-accent)]";
-  if (status === "Action Needed") return "text-wardian-warning";
-  if (status === "Off") return "text-muted-neutral";
-  return "text-muted-neutral";
+  switch (normalizeAgentStatus(status)) {
+    case "Headless":
+      return "text-wardian-headless";
+    case "Processing...":
+      return "text-wardian-processing";
+    case "Restoring":
+      return "text-wardian-processing";
+    case "Action Needed":
+      return "text-wardian-warning";
+    case "Error":
+      return "text-wardian-error";
+    default:
+      return "text-muted-neutral";
+  }
 }
+
 export function getStatusColorClass(effectiveStatus: string): string {
-  if (effectiveStatus === "Headless") {
+  const normalizedStatus = normalizeAgentStatus(effectiveStatus);
+  if (normalizedStatus === "Headless") {
     return "bg-wardian-headless shadow-[0_0_10px_var(--color-wardian-headless)] animate-pulse";
   }
-  if (effectiveStatus === "Processing...") {
+  if (normalizedStatus === "Processing...") {
     return "bg-wardian-processing shadow-[0_0_8px_var(--color-wardian-processing)] animate-pulse";
   }
-  if (effectiveStatus === "Action Needed") {
+  if (normalizedStatus === "Action Needed") {
     return "bg-wardian-warning shadow-[0_0_10px_var(--color-wardian-warning)] animate-bounce";
   }
-  if (effectiveStatus === "Idle") {
+  if (normalizedStatus === "Idle") {
     return "bg-wardian-success shadow-[0_0_8px_var(--color-wardian-success)]";
   }
-  if (effectiveStatus === "Off") {
+  if (normalizedStatus === "Error") {
+    return "bg-wardian-error shadow-[0_0_10px_var(--color-wardian-error)]";
+  }
+  if (normalizedStatus === "Off") {
     return "bg-wardian-off shadow-none";
   }
-  if (effectiveStatus === "Restoring") {
-    return "bg-wardian-off animate-pulse";
+  if (normalizedStatus === "Restoring") {
+    return "bg-wardian-processing shadow-[0_0_8px_var(--color-wardian-processing)] animate-pulse";
   }
   return "bg-wardian-off flex-shrink-0";
 }

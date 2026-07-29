@@ -116,11 +116,11 @@ export function WorkflowMonitor({ onOpenRun, onEditSchedule }: WorkflowMonitorPr
         data-testid="workflow-monitor-stats"
         className="workflow-monitor__stats grid shrink-0 gap-2 rounded border border-wardian-border bg-[var(--color-wardian-card)] p-2"
       >
-        <MonitorStat label="failed" value={failedCount} tone={failedCount > 0 ? 'error' : 'muted'} />
-        <MonitorStat label="running" value={runningCount} tone={runningCount > 0 ? 'active' : 'muted'} />
-        <MonitorStat label="awaiting" value={awaitingCount} tone={awaitingCount > 0 ? 'warning' : 'muted'} />
-        <MonitorStat label="scheduled" value={upcomingSchedules.length} tone={upcomingSchedules.length > 0 ? 'accent' : 'muted'} />
-        <MonitorStat label="paused" value={pausedCount} tone={pausedCount > 0 ? 'warning' : 'muted'} />
+        <MonitorStat label="Failed" value={failedCount} tone={failedCount > 0 ? 'error' : 'muted'} />
+        <MonitorStat label="Running" value={runningCount} tone={runningCount > 0 ? 'active' : 'muted'} />
+        <MonitorStat label="Awaiting approval" value={awaitingCount} tone={awaitingCount > 0 ? 'warning' : 'muted'} />
+        <MonitorStat label="Scheduled" value={upcomingSchedules.length} tone={upcomingSchedules.length > 0 ? 'accent' : 'muted'} />
+        <MonitorStat label="Paused" value={pausedCount} tone={pausedCount > 0 ? 'warning' : 'muted'} />
       </div>
       {error ? <div className="shrink-0 text-[11px] text-[var(--color-wardian-error)]">{error}</div> : null}
 

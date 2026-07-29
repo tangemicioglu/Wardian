@@ -373,7 +373,7 @@ export function WorkflowsView({ theme }: WorkflowsViewProps) {
       </div>
 
       {launchOpen && (blueprintPath || editSchedule) && (
-        <div className="workflows-launch-overlay absolute inset-0 z-20 flex items-start justify-center overflow-hidden bg-[color-mix(in_srgb,var(--color-wardian-bg),transparent_25%)] p-8">
+        <div className="workflows-launch-overlay wardian-dialog-overlay absolute inset-0 z-20 flex items-start justify-center overflow-hidden p-8">
           <RunLaunchDialog
             path={editSchedulePath ?? blueprintPath ?? ''}
             blueprintId={editSchedule?.blueprint_id ?? activeBlueprintId ?? undefined}

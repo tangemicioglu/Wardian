@@ -304,27 +304,27 @@ describe("GitPanel", () => {
 
     fireEvent.click(screen.getByTitle("More Source Control Actions"));
 
-    expect(await screen.findByRole("button", { name: "Branch" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sync" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Stash" })).toBeInTheDocument();
+    expect(await screen.findByRole("menuitem", { name: "Branch" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Sync" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "View" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Stash" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Checkout to..." })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Fetch" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Use Tree View" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Branch" }));
-    expect(await screen.findByRole("button", { name: "Checkout to..." })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create Branch..." })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Branch" }));
+    expect(await screen.findByRole("menuitem", { name: "Checkout to..." })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Create Branch..." })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Sync" }));
-    expect(await screen.findByRole("button", { name: "Fetch" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Pull" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Push" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sync" }));
+    expect(await screen.findByRole("menuitem", { name: "Fetch" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Pull" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Push" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "View" }));
-    expect(await screen.findByRole("button", { name: "Use Tree View" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Use List View" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sort by Path" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "View" }));
+    expect(await screen.findByRole("menuitem", { name: "Use Tree View" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Use List View" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Sort by Path" })).toBeInTheDocument();
   });
 
   it("uses a supplied source-control observer without resolving or watching git itself", async () => {
@@ -475,7 +475,7 @@ describe("GitPanel", () => {
     mockInvoke.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: "History refs: Auto" }));
-    fireEvent.click(screen.getByRole("button", { name: "origin/main" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "origin/main" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_log", {
@@ -564,7 +564,7 @@ describe("GitPanel", () => {
 
     const row = await screen.findByRole("button", { name: /Expand Inspect commit patch/ });
     fireEvent.contextMenu(row, { clientX: 12, clientY: 24 });
-    fireEvent.click(await screen.findByRole("button", { name: "View Changes" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "View Changes" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_diff", {
@@ -600,14 +600,14 @@ describe("GitPanel", () => {
     expect(screen.queryByRole("button", { name: "src" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTitle("More Source Control Actions"));
-    fireEvent.click(await screen.findByRole("button", { name: "View" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Use Tree View" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "View" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Use Tree View" }));
 
     expect(await screen.findByRole("button", { name: "src" })).toHaveAttribute("aria-expanded", "true");
 
     fireEvent.click(screen.getByTitle("More Source Control Actions"));
-    fireEvent.click(await screen.findByRole("button", { name: "View" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Use List View" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "View" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Use List View" }));
 
     expect(screen.queryByRole("button", { name: "src" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "View diff for src/features/git/GitPanel.tsx" })).toBeInTheDocument();
@@ -649,8 +649,8 @@ describe("GitPanel", () => {
     });
 
     fireEvent.click(await screen.findByTitle("More Source Control Actions"));
-    fireEvent.click(await screen.findByRole("button", { name: "View" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Use List View" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "View" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Use List View" }));
 
     expect(labels()).toEqual([
       "View diff for alpha/readme.md",
@@ -659,8 +659,8 @@ describe("GitPanel", () => {
     ]);
 
     fireEvent.click(await screen.findByTitle("More Source Control Actions"));
-    fireEvent.click(await screen.findByRole("button", { name: "View" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Sort by Name" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "View" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sort by Name" }));
 
     expect(labels()).toEqual([
       "View diff for gamma/app.ts",
@@ -1028,9 +1028,9 @@ describe("GitPanel", () => {
 
     fireEvent.contextMenu(await screen.findByText("Merge Changes"));
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: "Stage All Merge Changes" })).toHaveLength(2);
+      expect(screen.getByRole("menuitem", { name: "Stage All Merge Changes" })).toBeInTheDocument();
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "Stage All Merge Changes" })[1]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Stage All Merge Changes" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stage", {
@@ -1069,9 +1069,9 @@ describe("GitPanel", () => {
 
     fireEvent.contextMenu(await screen.findByText("Staged changes"));
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: "Unstage All Changes" })).toHaveLength(2);
+      expect(screen.getByRole("menuitem", { name: "Unstage All Changes" })).toBeInTheDocument();
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "Unstage All Changes" })[1]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unstage All Changes" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_unstage", {
@@ -1082,9 +1082,9 @@ describe("GitPanel", () => {
 
     fireEvent.contextMenu(screen.getByText("Changes"));
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: "Stage All Tracked Changes" })).toHaveLength(2);
+      expect(screen.getByRole("menuitem", { name: "Stage All Tracked Changes" })).toBeInTheDocument();
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "Stage All Tracked Changes" })[1]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Stage All Tracked Changes" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stage", {
@@ -1095,9 +1095,9 @@ describe("GitPanel", () => {
 
     fireEvent.contextMenu(screen.getByText("Untracked"));
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: "Stage All Untracked Changes" })).toHaveLength(2);
+      expect(screen.getByRole("menuitem", { name: "Stage All Untracked Changes" })).toBeInTheDocument();
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "Stage All Untracked Changes" })[1]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Stage All Untracked Changes" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stage", {
@@ -1137,9 +1137,9 @@ describe("GitPanel", () => {
 
     fireEvent.contextMenu(await screen.findByText("Untracked"));
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: "Discard All Untracked Changes" })).toHaveLength(2);
+      expect(screen.getByRole("menuitem", { name: "Discard All Untracked Changes" })).toBeInTheDocument();
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "Discard All Untracked Changes" })[1]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Discard All Untracked Changes" }));
     fireEvent.click(await screen.findByRole("button", { name: "Confirm" }));
 
     await waitFor(() => {
@@ -1181,9 +1181,9 @@ describe("GitPanel", () => {
 
     fireEvent.contextMenu(await screen.findByText("Changes"));
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: "Discard All Tracked Changes" })).toHaveLength(2);
+      expect(screen.getByRole("menuitem", { name: "Discard All Tracked Changes" })).toBeInTheDocument();
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "Discard All Tracked Changes" })[1]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Discard All Tracked Changes" }));
     fireEvent.click(await screen.findByRole("button", { name: "Confirm" }));
 
     await waitFor(() => {
@@ -1271,7 +1271,7 @@ describe("GitPanel", () => {
     });
 
     fireEvent.contextMenu(await screen.findByText("Changes"));
-    fireEvent.click(await screen.findByRole("button", { name: "Open Changes" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Open Changes" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_diff_file", {
@@ -1329,7 +1329,7 @@ describe("GitPanel", () => {
 
     const fileRow = await screen.findByRole("button", { name: "View diff for src/app.tsx" });
     fireEvent.contextMenu(fileRow);
-    fireEvent.click(await screen.findByRole("button", { name: "Open File" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Open File" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("open_in_external_editor", {
@@ -1342,7 +1342,7 @@ describe("GitPanel", () => {
     });
 
     fireEvent.contextMenu(fileRow);
-    fireEvent.click(await screen.findByRole("button", { name: "Reveal in Explorer View" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Reveal in Explorer View" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("reveal_in_explorer", {
@@ -1351,7 +1351,7 @@ describe("GitPanel", () => {
     });
 
     fireEvent.contextMenu(fileRow);
-    fireEvent.click(await screen.findByRole("button", { name: "Open File (HEAD)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Open File (HEAD)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_show_file_revision", {
@@ -1393,7 +1393,7 @@ describe("GitPanel", () => {
 
     const fileRows = await screen.findAllByRole("button", { name: "View diff for src/app.tsx" });
     fireEvent.contextMenu(fileRows[0]);
-    fireEvent.click(await screen.findByRole("button", { name: "Compare with Workspace" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Compare with Workspace" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_diff_file_against_workspace", {
@@ -1431,7 +1431,7 @@ describe("GitPanel", () => {
     });
 
     fireEvent.contextMenu(await screen.findByRole("button", { name: "View diff for scratch.txt" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Discard Changes" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Discard Changes" }));
     fireEvent.click(await screen.findByRole("button", { name: "Confirm" }));
 
     await waitFor(() => {
@@ -1472,7 +1472,7 @@ describe("GitPanel", () => {
     });
 
     fireEvent.contextMenu(await screen.findByRole("button", { name: "src" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Stage Changes" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Stage Changes" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stage", {
@@ -1516,7 +1516,7 @@ describe("GitPanel", () => {
     });
 
     fireEvent.contextMenu(await screen.findByRole("button", { name: "logs" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Add to .gitignore" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add to .gitignore" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_ignore", {
@@ -1553,7 +1553,7 @@ describe("GitPanel", () => {
     });
 
     fireEvent.contextMenu(await screen.findByRole("button", { name: "View diff for logs/debug/output.log" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Add to .gitignore" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add to .gitignore" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_ignore", {
@@ -1712,8 +1712,8 @@ describe("GitPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
 
-    expect(screen.getByRole("button", { name: "Commit Staged" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Commit All" }));
+    expect(screen.getByRole("menuitem", { name: "Commit Staged" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Commit All" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stage", {
@@ -1768,7 +1768,7 @@ describe("GitPanel", () => {
       target: { value: "amended subject" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit (Amend)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit (Amend)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_amend", {
@@ -1824,7 +1824,7 @@ describe("GitPanel", () => {
       target: { value: "amend everything" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit All (Amend)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit All (Amend)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_all_amend", {
@@ -1880,7 +1880,7 @@ describe("GitPanel", () => {
       target: { value: "amend staged work" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit Staged (Amend)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit Staged (Amend)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_staged_amend", {
@@ -1932,7 +1932,7 @@ describe("GitPanel", () => {
       target: { value: "amend bypass hook" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit (Amend, No Verify)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit (Amend, No Verify)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_amend_no_verify", {
@@ -1988,7 +1988,7 @@ describe("GitPanel", () => {
       target: { value: "amend staged bypass hook" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit Staged (Amend, No Verify)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit Staged (Amend, No Verify)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_staged_amend_no_verify", {
@@ -2044,7 +2044,7 @@ describe("GitPanel", () => {
       target: { value: "amend all bypass hook" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit All (Amend, No Verify)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit All (Amend, No Verify)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_all_amend_no_verify", {
@@ -2085,7 +2085,7 @@ describe("GitPanel", () => {
       target: { value: "bypass local hook" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit (No Verify)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit (No Verify)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_no_verify", {
@@ -2127,7 +2127,7 @@ describe("GitPanel", () => {
       target: { value: "signed off work" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit (Signed Off)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit (Signed Off)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stage", {
@@ -2176,7 +2176,7 @@ describe("GitPanel", () => {
       target: { value: "signed off staged work" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit Staged (Signed Off)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit Staged (Signed Off)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_staged_signed", {
@@ -2222,7 +2222,7 @@ describe("GitPanel", () => {
       target: { value: "signed off all work" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit All (Signed Off)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit All (Signed Off)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_all_signed", {
@@ -2264,7 +2264,7 @@ describe("GitPanel", () => {
       target: { value: "signed off bypass hook" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit (Signed Off, No Verify)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit (Signed Off, No Verify)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stage", {
@@ -2313,7 +2313,7 @@ describe("GitPanel", () => {
       target: { value: "signed off staged bypass hook" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit Staged (Signed Off, No Verify)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit Staged (Signed Off, No Verify)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_staged_signed_no_verify", {
@@ -2359,7 +2359,7 @@ describe("GitPanel", () => {
       target: { value: "signed off all bypass hook" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit All (Signed Off, No Verify)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit All (Signed Off, No Verify)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_all_signed_no_verify", {
@@ -2398,7 +2398,7 @@ describe("GitPanel", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Abort Rebase" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Abort Rebase" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_rebase_abort", { cwd: "C:/repo" });
@@ -2439,7 +2439,7 @@ describe("GitPanel", () => {
       target: { value: "bypass hook for staged work" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit Staged (No Verify)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit Staged (No Verify)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_staged_no_verify", {
@@ -2484,7 +2484,7 @@ describe("GitPanel", () => {
       target: { value: "bypass hook for everything" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit All (No Verify)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit All (No Verify)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_all_no_verify", {
@@ -2525,7 +2525,7 @@ describe("GitPanel", () => {
       target: { value: "empty marker" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit Empty" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit Empty" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_empty", {
@@ -2566,7 +2566,7 @@ describe("GitPanel", () => {
       target: { value: "empty bypass hook" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Commit Empty (No Verify)" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Commit Empty (No Verify)" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_empty_no_verify", {
@@ -2603,7 +2603,7 @@ describe("GitPanel", () => {
       target: { value: "ship all changes" },
     });
     fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Commit All" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Commit All" }));
 
     await waitFor(() => {
       expect(window.localStorage.getItem("wardian:source-control:commit:last-action")).toBe("all");
@@ -2669,7 +2669,7 @@ describe("GitPanel", () => {
     const moreActions = within(actionRow).getByRole("button", { name: "More Actions" });
     await waitFor(() => expect(moreActions).toBeEnabled());
     fireEvent.click(moreActions);
-    fireEvent.click(await screen.findByRole("button", { name: "Undo Last Commit" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Undo Last Commit" }));
     expect(await screen.findByText("Undo last commit and keep its changes in the working tree?")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
@@ -2817,8 +2817,8 @@ describe("GitPanel", () => {
     renderGitPanel();
 
     fireEvent.click(await screen.findByTitle("More Source Control Actions"));
-    fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Push" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sync" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Push" }));
 
     expect(await screen.findByText("remote rejected")).toBeInTheDocument();
   });
@@ -2844,8 +2844,8 @@ describe("GitPanel", () => {
     renderGitPanel();
 
     fireEvent.click(await screen.findByTitle("More Source Control Actions"));
-    fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Pull" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sync" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Pull" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_pull", { cwd: "C:/repo" });
@@ -2866,8 +2866,8 @@ describe("GitPanel", () => {
     });
 
     fireEvent.click(await screen.findByTitle("More Source Control Actions"));
-    fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Fetch" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sync" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Fetch" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_fetch", { cwd: "C:/repo" });
@@ -2896,9 +2896,9 @@ describe("GitPanel", () => {
     });
 
     fireEvent.click(await screen.findByTitle("More Source Control Actions"));
-    fireEvent.click(await screen.findByRole("button", { name: "Branch" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Checkout to..." }));
-    fireEvent.click(await screen.findByRole("button", { name: "feature/source-control" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Branch" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Checkout to..." }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "feature/source-control" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_list_branches", { cwd: "C:/repo" });
@@ -2928,9 +2928,9 @@ describe("GitPanel", () => {
     });
 
     fireEvent.click(await screen.findByTitle("More Source Control Actions"));
-    fireEvent.click(await screen.findByRole("button", { name: "Branch" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Checkout to..." }));
-    fireEvent.click(await screen.findByRole("button", { name: "Create Branch..." }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Branch" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Checkout to..." }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Create Branch..." }));
     const input = await screen.findByPlaceholderText("branch-name");
     fireEvent.change(input, { target: { value: "feature/new-branch" } });
     fireEvent.keyDown(input, { key: "Enter" });
@@ -2991,7 +2991,7 @@ describe("GitPanel", () => {
   const openSourceControlActionMenu = async (section?: string) => {
     fireEvent.click(await screen.findByTitle("More Source Control Actions"));
     if (section) {
-      fireEvent.click(await screen.findByRole("button", { name: section }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: section }));
     }
   };
 
@@ -2999,7 +2999,7 @@ describe("GitPanel", () => {
     const { refreshStatus } = setupStashActionsPanel();
 
     await openSourceControlActionMenu("Stash");
-    fireEvent.click(await screen.findByRole("button", { name: "Stash Changes Including Untracked" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Stash Changes Including Untracked" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stash_push", {
@@ -3015,7 +3015,7 @@ describe("GitPanel", () => {
     setupStashActionsPanel();
 
     await openSourceControlActionMenu("Stash");
-    fireEvent.click(await screen.findByRole("button", { name: "Stash Staged" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Stash Staged" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stash_staged", { cwd: "C:/repo" });
@@ -3026,7 +3026,7 @@ describe("GitPanel", () => {
     setupStashActionsPanel();
 
     await openSourceControlActionMenu("Stash");
-    fireEvent.click(await screen.findByRole("button", { name: "Apply Latest Stash" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Apply Latest Stash" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stash_apply_latest", { cwd: "C:/repo" });
@@ -3037,8 +3037,8 @@ describe("GitPanel", () => {
     const { refreshStatus } = setupStashActionsPanel();
 
     await openSourceControlActionMenu("Stash");
-    fireEvent.click(await screen.findByRole("button", { name: "Apply Stash..." }));
-    fireEvent.click(await screen.findByRole("button", { name: "stash@{1} WIP on main: first stash" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Apply Stash..." }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "stash@{1} WIP on main: first stash" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stash_apply", {
@@ -3054,7 +3054,7 @@ describe("GitPanel", () => {
     setupStashActionsPanel();
 
     await openSourceControlActionMenu("Stash");
-    fireEvent.click(await screen.findByRole("button", { name: "Pop Latest Stash" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Pop Latest Stash" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stash_pop_latest", { cwd: "C:/repo" });
@@ -3065,8 +3065,8 @@ describe("GitPanel", () => {
     const { refreshStatus } = setupStashActionsPanel();
 
     await openSourceControlActionMenu("Stash");
-    fireEvent.click(await screen.findByRole("button", { name: "Pop Stash..." }));
-    fireEvent.click(await screen.findByRole("button", { name: "stash@{0} WIP on main: second stash" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Pop Stash..." }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "stash@{0} WIP on main: second stash" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_stash_pop", {
@@ -3082,8 +3082,8 @@ describe("GitPanel", () => {
     setupStashActionsPanel();
 
     await openSourceControlActionMenu("Stash");
-    fireEvent.click(await screen.findByRole("button", { name: "View Stash..." }));
-    fireEvent.click(await screen.findByRole("button", { name: "stash@{0} WIP on main: second stash" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "View Stash..." }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "stash@{0} WIP on main: second stash" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_show_stash", {
@@ -3100,8 +3100,8 @@ describe("GitPanel", () => {
     const { refreshStatus } = setupStashActionsPanel();
 
     await openSourceControlActionMenu("Stash");
-    fireEvent.click(await screen.findByRole("button", { name: "Drop Stash..." }));
-    fireEvent.click(await screen.findByRole("button", { name: "stash@{1} WIP on main: first stash" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Drop Stash..." }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "stash@{1} WIP on main: first stash" }));
     expect(await screen.findByText("Drop stash stash@{1}? This cannot be undone.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
@@ -3119,7 +3119,7 @@ describe("GitPanel", () => {
     setupStashActionsPanel();
 
     await openSourceControlActionMenu("Stash");
-    fireEvent.click(await screen.findByRole("button", { name: "Drop All Stashes..." }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Drop All Stashes..." }));
     expect(await screen.findByText("Drop all stashes for this workspace? This cannot be undone.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 

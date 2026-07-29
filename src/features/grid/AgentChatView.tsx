@@ -893,7 +893,7 @@ function ChatComposer({
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const autoFocusConsumedRef = useRef(false);
-  const placeholder = disabledReason ?? (hasActionRequired ? "Respond to action needed..." : "Message agent...");
+  const placeholder = disabledReason ?? (hasActionRequired ? "Respond to action required..." : "Message agent...");
   const canSubmit = draft.trim().length > 0 && !disabledReason;
 
   useEffect(() => {

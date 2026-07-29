@@ -1444,7 +1444,7 @@ describe("Native window layout bridge", () => {
     render(<App />);
 
     expect(screen.getByTitle("Hide Left Sidebar")).toBeInTheDocument();
-    expect(screen.getByTitle("Hide Agent Roster")).toBeInTheDocument();
+    expect(screen.getByTitle("Hide Agent List")).toBeInTheDocument();
   });
 
   it("keeps authoritative Tauri resize payload dimensions over stale outer dimensions", async () => {
@@ -1708,7 +1708,7 @@ describe("Agent Watchlist Sidebar", () => {
       render(<App />);
     });
     await waitFor(() => {
-      expect(screen.getByText(/All Agents/i)).toBeInTheDocument();
+      expect(screen.getByText(/Agent List/i)).toBeInTheDocument();
     });
   });
 
@@ -1770,7 +1770,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
 
     await act(async () => {
       emitAgentMetrics([
@@ -1804,7 +1804,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
 
     await act(async () => {
       emitAgentMetrics([
@@ -1853,7 +1853,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
 
     await act(async () => {
       emitAgentMetrics([
@@ -1907,7 +1907,7 @@ describe("Agent Watchlist Sidebar", () => {
     });
 
     render(<App />);
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
 
     act(() => emitAgentMetrics([{
       session_id: "agent-1",
@@ -1973,7 +1973,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2023,7 +2023,7 @@ describe("Agent Watchlist Sidebar", () => {
     const { emitTurnCompletion } = captureQueueAgentListeners();
 
     render(<App />);
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2044,7 +2044,7 @@ describe("Agent Watchlist Sidebar", () => {
     const { emitTurnCompletion } = captureQueueAgentListeners();
 
     render(<App />);
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2068,7 +2068,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2085,7 +2085,7 @@ describe("Agent Watchlist Sidebar", () => {
               type: "action_needed",
               agent_session_id: "agent-1",
               agent_name: "Alpha",
-              summary: "Action needed",
+              summary: "Action required",
               evidence_id: undefined,
               evidence_source: undefined,
               read: false,
@@ -2103,7 +2103,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2119,7 +2119,7 @@ describe("Agent Watchlist Sidebar", () => {
               type: "action_needed",
               agent_session_id: "agent-1",
               agent_name: "Alpha",
-              summary: "Action needed",
+              summary: "Action required",
               read: false,
             }),
           ],
@@ -2135,7 +2135,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
 
     await act(async () => {
       emitStatus({ session_id: "agent-1", current_status: "Processing..." });
@@ -2167,7 +2167,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
 
     await act(async () => {
       emitAgentMetrics([
@@ -2218,7 +2218,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2255,7 +2255,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("All Agents");
+    await screen.findByText("Agent List");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2731,12 +2731,12 @@ describe("Spawn Form", () => {
     expect(screen.getByPlaceholderText("e.g. 1a2b3c...")).toBeInTheDocument();
   });
 
-  it("renders Initialize button", async () => {
+  it("renders Spawn Agent button", async () => {
     setupDefaultMocks([], defaultClasses);
     render(<App />);
-    // Initial tab is agent-config, which has the Initialize button
+    // Initial tab is agent-config, which has the Spawn Agent button
     await screen.findByText("No Active Instances");
-    expect(screen.getByText("Initialize")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Spawn Agent" })).toBeInTheDocument();
   });
 });
 
@@ -2789,12 +2789,12 @@ describe("Sidebar Navigation", () => {
     render(<App />);
     await screen.findByText("No Active Instances");
 
-    expect(screen.getByText("Agent Config")).toBeInTheDocument();
+    expect(screen.getByText("Agent Configuration")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTitle("Terminal"));
 
     expect(await screen.findByTestId("user-terminal-panel")).toBeInTheDocument();
-    expect(screen.getByText("Agent Config")).toBeInTheDocument();
+    expect(screen.getByText("Agent Configuration")).toBeInTheDocument();
     expect(screen.queryByTestId("terminal-panel")).not.toBeInTheDocument();
   });
 
@@ -2803,12 +2803,12 @@ describe("Sidebar Navigation", () => {
     render(<App />);
     await screen.findByText("No Active Instances");
 
-    expect(screen.getByText("Agent Config")).toBeInTheDocument();
+    expect(screen.getByText("Agent Configuration")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTitle("Application Settings"));
 
     expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
-    expect(screen.getByText("Agent Config")).toBeInTheDocument();
+    expect(screen.getByText("Agent Configuration")).toBeInTheDocument();
   });
 
   it("closes settings from the close button and Escape key", async () => {

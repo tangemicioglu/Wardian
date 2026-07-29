@@ -164,9 +164,9 @@ describe('WorkflowMonitor', () => {
 
     render(<WorkflowMonitor onOpenRun={vi.fn()} onEditSchedule={vi.fn()} />);
 
-    expect(screen.getByTestId('workflow-monitor-stats')).toHaveTextContent('1 failed');
-    expect(screen.getByTestId('workflow-monitor-stats')).toHaveTextContent('1 running');
-    expect(screen.getByTestId('workflow-monitor-stats')).toHaveTextContent('2 scheduled');
+    expect(screen.getByTestId('workflow-monitor-stats')).toHaveTextContent('1 Failed');
+    expect(screen.getByTestId('workflow-monitor-stats')).toHaveTextContent('1 Running');
+    expect(screen.getByTestId('workflow-monitor-stats')).toHaveTextContent('2 Scheduled');
     expect(screen.getByTestId('workflow-monitor-stats')).not.toHaveTextContent('due soon');
     expect(screen.getByRole('heading', { name: /activity/i })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /needs attention/i })).toBeNull();
@@ -545,7 +545,7 @@ describe('WorkflowMonitor', () => {
 
     render(<WorkflowMonitor onOpenRun={vi.fn()} onEditSchedule={vi.fn()} />);
 
-    expect(screen.getByTestId('workflow-monitor-stats')).toHaveTextContent('1 failed');
+    expect(screen.getByTestId('workflow-monitor-stats')).toHaveTextContent('1 Failed');
     fireEvent.click(screen.getByRole('button', { name: /history/i }));
     expect(screen.getByTestId('workflow-history-run-run-current-failed')).toBeInTheDocument();
     expect(screen.getByTestId('workflow-history-run-run-old-failed')).toBeInTheDocument();
