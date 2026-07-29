@@ -2667,6 +2667,16 @@ pub async fn kill_agent(
         // Phase 2: Remove from SQLite
         lifecycle_heartbeat.ensure_active("remove")?;
         let _ = wardian_core::db::delete_agent(&session_id);
+        if let Some(home) = crate::utils::fs::get_wardian_home() {
+            if let Err(error) = crate::commands::terminal_checkpoint::discard_terminal_presentation_checkpoint_for_home(
+                &home,
+                &session_id,
+            ) {
+                manager::log_debug(&format!(
+                    "[WARDIAN] Failed to discard terminal checkpoint for deleted agent {session_id}: {error}"
+                ));
+            }
+        }
         let _ = app.emit("agents-updated", ());
 
         // Cleanup: remove persisted references and the agent's private directory.
@@ -3259,6 +3269,19 @@ async fn clear_agent_session_inner(
         is_off: db_snapshot.7,
         created_at: db_snapshot.8.as_deref(),
     });
+
+    if let Some(home) = crate::utils::fs::get_wardian_home() {
+        if let Err(error) =
+            crate::commands::terminal_checkpoint::discard_terminal_presentation_checkpoint_for_home(
+                &home,
+                &session_id,
+            )
+        {
+            manager::log_debug(&format!(
+                "[WARDIAN] Failed to discard terminal checkpoint for cleared agent {session_id}: {error}"
+            ));
+        }
+    }
 
     // 9. Force a frontend refresh and terminal resize to clear glitches
     let _ = app.emit("agents-updated", ());

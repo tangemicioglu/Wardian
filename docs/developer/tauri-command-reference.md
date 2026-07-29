@@ -57,6 +57,19 @@ evidence or queue the interaction.
 
 `read_agent_pty` drains buffered terminal output after `agent-pty-output-ready`. It is display data and compatibility evidence only. Structured ask/reply completion, Inbox evidence, and provider status transitions must not depend on replaying this text.
 
+## Terminal presentation recovery (`commands/terminal_checkpoint.rs`)
+
+- `save_terminal_presentation_checkpoint`
+- `load_terminal_presentation_checkpoint`
+
+These commands persist a bounded, local serialized desktop xterm state for the
+case where a desktop restart has no live terminal broker to snapshot. The
+frontend saves only canonical parser state after broker output and loads it only
+after `SessionNotFound`; a live broker snapshot remains authoritative. The
+state is stored under `<WARDIAN_HOME>/terminal-checkpoints/`, may contain
+terminal-visible sensitive content, retains one current plus one previous
+generation per agent, and is removed by agent clear/delete.
+
 ## Classes (`commands/class.rs`)
 
 - `list_agent_classes`

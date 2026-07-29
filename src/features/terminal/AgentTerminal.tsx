@@ -51,6 +51,16 @@ import {
 import { proposeTerminalRows, renderedTerminalRowHeight } from "./terminalSizing";
 
 const TERMINAL_SCROLLBACK_LINES = 1_000;
+const TERMINAL_CHECKPOINT_SAVE_DEBOUNCE_MS = 750;
+const TERMINAL_CHECKPOINT_MAX_BYTES = 750_000;
+const TERMINAL_CHECKPOINT_SCROLLBACK_LINES = [
+  TERMINAL_SCROLLBACK_LINES,
+  750,
+  500,
+  250,
+  100,
+  0,
+] as const;
 const TERMINAL_INITIAL_PTY_TAIL_BYTES = 128 * 1024;
 const MIN_TERMINAL_COLS = 20;
 const MIN_TERMINAL_ROWS = 8;
@@ -98,6 +108,14 @@ type TerminalRendererEntry = {
   snapshotOverlay: HTMLCanvasElement | null;
 };
 
+type TerminalPresentationCheckpoint = {
+  version: number;
+  session_id: string;
+  cols: number;
+  rows: number;
+  serialized_state: string;
+};
+
 type TerminalSessionEntry = {
   sessionId: string;
   presentationId: string;
@@ -130,6 +148,9 @@ type TerminalSessionEntry = {
   rendererDisposeTimer: ReturnType<typeof setTimeout> | null;
   parser: HeadlessTerminal;
   parserSerializeAddon: SerializeAddon;
+  checkpointSaveTimer: ReturnType<typeof setTimeout> | null;
+  checkpointRestored: boolean;
+  lastPersistedCheckpointState: string | null;
   latestTitle: string | null;
   titleHandlerRef: TitleHandlerRef;
   terminalLinkContextRef: TerminalLinkContextRef;
@@ -543,6 +564,127 @@ function writeTerminalControl(term: Terminal | HeadlessTerminal, data: string) {
   return new Promise<void>((resolve) => term.write(data, () => resolve()));
 }
 
+function checkpointByteLength(value: string) {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function serializeTerminalPresentationCheckpoint(entry: TerminalSessionEntry) {
+  for (const scrollback of TERMINAL_CHECKPOINT_SCROLLBACK_LINES) {
+    let serializedState = "";
+    try {
+      serializedState = entry.parserSerializeAddon.serialize({ scrollback });
+    } catch (error) {
+      console.warn("Terminal checkpoint serialization failed:", error);
+      return null;
+    }
+    if (checkpointByteLength(serializedState) <= TERMINAL_CHECKPOINT_MAX_BYTES) {
+      return serializedState;
+    }
+  }
+  return null;
+}
+
+async function persistTerminalPresentationCheckpoint(entry: TerminalSessionEntry) {
+  if (entry.disposed) {
+    return;
+  }
+  const serializedState = serializeTerminalPresentationCheckpoint(entry);
+  if (
+    serializedState === null ||
+    serializedState === entry.lastPersistedCheckpointState
+  ) {
+    return;
+  }
+  try {
+    await invoke("save_terminal_presentation_checkpoint", {
+      request: {
+        session_id: entry.sessionId,
+        cols: entry.parser.cols,
+        rows: entry.parser.rows,
+        serialized_state: serializedState,
+      },
+    });
+    if (!entry.disposed) {
+      entry.lastPersistedCheckpointState = serializedState;
+    }
+  } catch (error) {
+    // Checkpoints are a bounded recovery cache. A failed write must never
+    // interrupt live broker rendering or input.
+    console.warn("Terminal checkpoint save failed:", error);
+  }
+}
+
+function scheduleTerminalPresentationCheckpoint(entry: TerminalSessionEntry) {
+  if (entry.disposed || entry.checkpointSaveTimer) {
+    return;
+  }
+  entry.checkpointSaveTimer = setTimeout(() => {
+    entry.checkpointSaveTimer = null;
+    void persistTerminalPresentationCheckpoint(entry);
+  }, TERMINAL_CHECKPOINT_SAVE_DEBOUNCE_MS);
+}
+
+function isUsableTerminalPresentationCheckpoint(
+  checkpoint: TerminalPresentationCheckpoint | null,
+  sessionId: string,
+): checkpoint is TerminalPresentationCheckpoint {
+  return Boolean(
+    checkpoint &&
+      checkpoint.version === 1 &&
+      checkpoint.session_id === sessionId &&
+      Number.isInteger(checkpoint.cols) &&
+      Number.isInteger(checkpoint.rows) &&
+      checkpoint.cols >= MIN_TERMINAL_COLS &&
+      checkpoint.rows >= MIN_TERMINAL_ROWS &&
+      checkpoint.cols <= 1_000 &&
+      checkpoint.rows <= 1_000 &&
+      typeof checkpoint.serialized_state === "string" &&
+      checkpointByteLength(checkpoint.serialized_state) <= TERMINAL_CHECKPOINT_MAX_BYTES,
+  );
+}
+
+async function restoreTerminalPresentationCheckpoint(
+  entry: TerminalSessionEntry,
+) {
+  if (entry.disposed || entry.checkpointRestored) {
+    return false;
+  }
+  entry.checkpointRestored = true;
+  try {
+    const checkpoint = await invoke<TerminalPresentationCheckpoint | null>(
+      "load_terminal_presentation_checkpoint",
+      { request: { session_id: entry.sessionId } },
+    );
+    if (!isUsableTerminalPresentationCheckpoint(checkpoint, entry.sessionId) || entry.disposed) {
+      return false;
+    }
+
+    const renderer = entry.renderer;
+    applyCanonicalGeometry(entry, checkpoint.cols, checkpoint.rows);
+    if (renderer && rendererRemainsCurrent(entry, renderer)) {
+      renderer.term.resize(checkpoint.cols, checkpoint.rows);
+    }
+    await resetTerminalOutputBuffers(entry, renderer);
+    if (entry.disposed) {
+      return false;
+    }
+    await writeTerminalControl(entry.parser, checkpoint.serialized_state);
+    if (renderer) {
+      await runRendererOperation(entry, renderer, async (currentRenderer, isCurrent) => {
+        await writeTerminalControl(currentRenderer.term, checkpoint.serialized_state);
+        if (isCurrent()) {
+          currentRenderer.term.scrollToBottom();
+        }
+      });
+    }
+    entry.lastPersistedCheckpointState = checkpoint.serialized_state;
+    return true;
+  } catch (error) {
+    console.warn("Terminal checkpoint restore failed:", error);
+    return false;
+  }
+}
+
 function wheelEventRows(
   event: { deltaMode: number; deltaY: number },
   term: Terminal,
@@ -744,6 +886,10 @@ function disposeTerminalSession(sessionId: string) {
   entry.disposed = true;
   entry.outputReadyUnlisten?.();
   entry.terminalClearedUnlisten?.();
+  if (entry.checkpointSaveTimer) {
+    clearTimeout(entry.checkpointSaveTimer);
+    entry.checkpointSaveTimer = null;
+  }
   cancelRendererDisposal(entry);
   if (entry.renderer) {
     retireRenderer(entry.renderer, sessionId);
@@ -1371,6 +1517,10 @@ async function applyBrokerSnapshot(
       });
     }
   }
+  // A blank replacement snapshot must also supersede an older checkpoint;
+  // otherwise a later no-broker restore could show terminal state from the
+  // runtime generation that this snapshot intentionally replaced.
+  scheduleTerminalPresentationCheckpoint(entry);
   terminalSessionMap.get(terminalKey)?.titleHandlerRef.current?.(entry.latestTitle ?? "");
 }
 
@@ -1535,6 +1685,7 @@ async function writeTerminalOutputBatch(
       scrollRendererToBottomAfterWrite(currentRenderer, rendererBottomBeforeWrite);
     });
   }
+  scheduleTerminalPresentationCheckpoint(entry);
   // Native VT processing deliberately accepts provider resize/repaint artifacts.
   // Earlier direct-buffer dedup and synthetic-history heuristics deleted real
   // rows and were removed; cosmetic duplicates are safer than data loss.
@@ -1829,6 +1980,9 @@ async function getOrCreateTerminalSession(
     rendererDisposeTimer: null,
     parser,
     parserSerializeAddon,
+    checkpointSaveTimer: null,
+    checkpointRestored: false,
+    lastPersistedCheckpointState: null,
     latestTitle: null,
     titleHandlerRef: {},
     terminalLinkContextRef: { current: {} },
@@ -3045,7 +3199,12 @@ export const AgentTerminal = memo(function AgentTerminal({
             await session.terminalClient.destroy();
             installLegacyTerminalListeners(terminalKey, session);
             void drainPty(terminalKey);
-          } else if (!message.includes("SessionNotFound")) {
+          } else if (message.includes("SessionNotFound")) {
+            // A desktop restart cannot reattach to a pre-existing Windows
+            // ConPTY. Restore only our bounded renderer checkpoint here; a
+            // live broker snapshot remains authoritative on every normal path.
+            await restoreTerminalPresentationCheckpoint(session);
+          } else {
             throw error;
           }
         }

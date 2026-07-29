@@ -119,6 +119,22 @@ runtime is a structured batch result. Gap and generation-change results include
 a recovery snapshot and new barrier. Slow clients resynchronize instead of
 growing an unbounded backlog.
 
+### Desktop-restart recovery cache
+
+The broker is process-local. In particular, a Windows app restart cannot
+reattach a new parent to a surviving provider's old ConPTY, so there may be no
+live broker to snapshot even though the agent remains visible. For that narrow
+case, the desktop persists a bounded serialized xterm presentation checkpoint
+under `<WARDIAN_HOME>/terminal-checkpoints/`. It contains the same normalized
+parser state that was displayed, retains at most one current and one previous
+generation per agent, and may contain terminal-visible sensitive content.
+
+The desktop loads this cache only after `SessionNotFound`. A live broker
+snapshot is always authoritative and is never merged with or replaced by a
+cache. The cache restores scrollback for viewing only; it cannot recover bytes
+that were not captured before restart or make an orphaned ConPTY accept input.
+Clearing or deleting an agent removes its checkpoint.
+
 ## Explicit Ownership Transfer
 
 Activation is a two-phase protocol:

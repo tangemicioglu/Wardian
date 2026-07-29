@@ -590,6 +590,8 @@ pub fn run() {
             commands::terminal::resize_agent_terminal,
             commands::terminal::read_agent_pty,
             commands::terminal::get_terminal_runtime_diagnostics,
+            commands::terminal_checkpoint::save_terminal_presentation_checkpoint,
+            commands::terminal_checkpoint::load_terminal_presentation_checkpoint,
             commands::terminal_session::register_terminal_presentation,
             commands::terminal_session::update_terminal_presentation,
             commands::terminal_session::unregister_terminal_presentation,

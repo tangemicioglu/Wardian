@@ -246,10 +246,18 @@ describe("AgentTerminal scrollback", () => {
     mockHeadlessTerminal.mockImplementation(function MockHeadlessTerminal(
       options?: ConstructorParameters<typeof HeadlessTerminal>[0],
     ) {
+      const state = { serializedState: "" };
       const terminal = {
         open: vi.fn(),
-        write: vi.fn((_data: string, callback?: () => void) => callback?.()),
-        loadAddon: vi.fn(),
+        write: vi.fn((data: string, callback?: () => void) => {
+          state.serializedState += data;
+          callback?.();
+        }),
+        loadAddon: vi.fn((addon: { __termState?: typeof state }) => {
+          if (addon && "__termState" in addon) {
+            addon.__termState = state;
+          }
+        }),
         dispose: vi.fn(),
         resize: vi.fn(),
         onData: vi.fn(),
@@ -257,6 +265,9 @@ describe("AgentTerminal scrollback", () => {
         onTitleChange: vi.fn(),
         onResize: vi.fn(),
         onScroll: vi.fn(),
+        reset: vi.fn(() => {
+          state.serializedState = "";
+        }),
         scrollToTop: vi.fn(),
         scrollToLine: vi.fn((line: number) => {
           terminal.buffer.active.viewportY = line;
@@ -1121,6 +1132,131 @@ describe("AgentTerminal scrollback", () => {
       render_state: "suspended",
       requested_interaction: "read_only",
     }));
+  });
+
+  it("does not load a persisted checkpoint while a live broker is available", async () => {
+    mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
+      const request = (args as { request?: { presentation_id?: string } } | undefined)?.request;
+      const presentationId = request?.presentation_id ?? "pane-live-checkpoint";
+      if (command === "register_terminal_presentation") {
+        return modernRegistrationResult(presentationId);
+      }
+      if (command === "subscribe_terminal_events") {
+        return { broker_state: modernBrokerState(), initial_snapshot: modernSnapshot() };
+      }
+      if (command === "read_terminal_events") return modernCaughtUpBatch();
+      if (command === "report_terminal_presentation_viewport") {
+        return modernRegistrationResult(presentationId).presentation;
+      }
+      if (command === "unregister_terminal_presentation") return modernBrokerState();
+      if (command === "unsubscribe_terminal_events") return undefined;
+      return null;
+    });
+
+    render(
+      <AgentTerminal
+        sessionId="modern-agent"
+        presentationId="pane-live-checkpoint"
+        provider="codex"
+        theme="dark"
+      />,
+    );
+
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+      "register_terminal_presentation",
+      expect.anything(),
+    ));
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "load_terminal_presentation_checkpoint",
+      expect.anything(),
+    );
+  });
+
+  it("restores the persisted xterm state only after the broker reports SessionNotFound", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "register_terminal_presentation") {
+        throw new Error("SessionNotFound");
+      }
+      if (command === "load_terminal_presentation_checkpoint") {
+        return {
+          version: 1,
+          session_id: "orphan-agent",
+          cols: 120,
+          rows: 36,
+          serialized_state: "persisted terminal history",
+        };
+      }
+      if (command === "terminal_link_target_exists") return true;
+      return null;
+    });
+
+    render(
+      <AgentTerminal
+        sessionId="orphan-agent"
+        presentationId="pane-orphan-checkpoint"
+        provider="codex"
+        theme="dark"
+      />,
+    );
+
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+      "load_terminal_presentation_checkpoint",
+      { request: { session_id: "orphan-agent" } },
+    ));
+    const parser = getLatestHeadlessTerminalInstance();
+    const renderer = getLatestTerminalInstance();
+    await waitFor(() => expect(parser.write).toHaveBeenCalledWith(
+      "persisted terminal history",
+      expect.any(Function),
+    ));
+    expect(renderer.write).toHaveBeenCalledWith(
+      "persisted terminal history",
+      expect.any(Function),
+    );
+    expect(mockInvoke).not.toHaveBeenCalledWith("read_agent_pty", expect.anything());
+  });
+
+  it("checkpoints normalized terminal state after a live broker snapshot", async () => {
+    const registration = modernRegistrationResult("pane-checkpoint-save");
+    registration.initial_snapshot = {
+      ...modernSnapshot(),
+      visible_grid: "checkpointed broker state",
+    };
+    mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
+      const request = (args as { request?: { presentation_id?: string } } | undefined)?.request;
+      const presentationId = request?.presentation_id ?? "pane-checkpoint-save";
+      if (command === "register_terminal_presentation") return registration;
+      if (command === "subscribe_terminal_events") {
+        return { broker_state: modernBrokerState(), initial_snapshot: modernSnapshot() };
+      }
+      if (command === "read_terminal_events") return modernCaughtUpBatch();
+      if (command === "report_terminal_presentation_viewport") {
+        return modernRegistrationResult(presentationId).presentation;
+      }
+      if (command === "save_terminal_presentation_checkpoint") return undefined;
+      if (command === "unregister_terminal_presentation") return modernBrokerState();
+      if (command === "unsubscribe_terminal_events") return undefined;
+      return null;
+    });
+
+    render(
+      <AgentTerminal
+        sessionId="modern-agent"
+        presentationId="pane-checkpoint-save"
+        provider="codex"
+        theme="dark"
+      />,
+    );
+
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+      "save_terminal_presentation_checkpoint",
+      expect.objectContaining({
+        request: expect.objectContaining({
+          session_id: "modern-agent",
+          serialized_state: expect.stringContaining("checkpointed broker state"),
+        }),
+      }),
+    ), { timeout: 2_000 });
   });
 
   it("does not retain a parser when unmounted during provider resolution", async () => {
