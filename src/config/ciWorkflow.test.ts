@@ -33,7 +33,14 @@ describe("CI workflow contract", () => {
     expect(frontend).toContain("run: npm run build");
     expect(frontend).toContain("run: npm run check:workbench-cutover");
     expect(frontend).toMatch(
-      /- name: Require frontend screenshot evidence\s+if: github\.event_name == 'pull_request'\s+run: npm run check:frontend-screenshot/,
+      /- name: Require frontend screenshot evidence\s+if: github\.event_name == 'pull_request'/,
+    );
+    expect(frontend).toContain("GH_TOKEN: ${{ github.token }}");
+    expect(frontend).toContain(
+      'PR_BODY="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}" --jq .body)"',
+    );
+    expect(frontend).toContain(
+      "npm run check:frontend-screenshot -- origin/${{ github.base_ref }} HEAD",
     );
     expect(backend).toContain("cargo clippy --workspace -- -D warnings");
     expect(backend).toContain("cargo test --workspace -- --test-threads=1");

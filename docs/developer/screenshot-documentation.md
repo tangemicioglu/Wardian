@@ -72,6 +72,78 @@ npm run docs:screenshots
 
 For screenshots that require Tauri IPC, PTY behavior, or provider runtime behavior, use the native E2E harness instead of browser-only E2E.
 
+## PR Evidence Upload (CLI)
+
+Temporary PR evidence belongs in `e2e/screenshots/<feature>/<timestamp>/` and must remain untracked. Use the installed `gh attach` extension with its token-backed `release-asset` strategy. It returns GitHub-ready Markdown with an HTTPS image URL.
+
+Do not use browser automation, browser-session cookies, or the `repo-branch` strategy for normal PR evidence. The `release-asset` strategy uses the authenticated `gh` token and keeps temporary screenshots out of the branch.
+
+### New PR (preferred)
+
+Every Wardian PR must already link an issue. Upload against that issue before opening the PR, then place the emitted Markdown below the PR template's `## Screenshots` heading. This prevents the initial screenshot-gate job from seeing a body without evidence. Prepare the complete PR template body in the untracked `.tmp/pr-body.md` file before running the final two commands.
+
+macOS/Linux shell:
+
+```bash
+issue=123
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+evidence="$(gh attach upload \
+  e2e/screenshots/<feature>/<timestamp>/<state>.png \
+  --target "$repo#$issue" \
+  --strategy release-asset \
+  --format markdown)"
+printf '\n\n## Screenshots\n\n%s\n' "$evidence" >> .tmp/pr-body.md
+gh pr create --base main --head <branch> --title '<title>' --body-file .tmp/pr-body.md
+```
+
+PowerShell:
+
+```powershell
+$issue = 123
+$repo = gh repo view --json nameWithOwner --jq .nameWithOwner
+$evidence = [string]::Join("`n", @(gh attach upload `
+  'e2e/screenshots/<feature>/<timestamp>/<state>.png' `
+  --target "$repo#$issue" `
+  --strategy release-asset `
+  --format markdown))
+Add-Content -LiteralPath '.tmp/pr-body.md' -Value "`n`n## Screenshots`n`n$evidence"
+gh pr create --base main --head '<branch>' --title '<title>' --body-file '.tmp/pr-body.md'
+```
+
+### Existing PR recovery
+
+If a PR already exists, target its number and append the returned Markdown with `gh pr edit`:
+
+```bash
+pr=123
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+evidence="$(gh attach upload e2e/screenshots/<feature>/<timestamp>/<state>.png \
+  --target "$repo#$pr" --strategy release-asset --format markdown)"
+body="$(printf '%s\n\n## Screenshots\n\n%s\n' \
+  "$(gh pr view "$pr" --json body --jq .body)" "$evidence")"
+gh pr edit "$pr" --body "$body"
+PR_BODY="$(gh pr view "$pr" --json body --jq .body)" \
+  npm run check:frontend-screenshot origin/main HEAD
+```
+
+PowerShell:
+
+```powershell
+$pr = 123
+$repo = gh repo view --json nameWithOwner --jq .nameWithOwner
+$evidence = [string]::Join("`n", @(gh attach upload `
+  'e2e/screenshots/<feature>/<timestamp>/<state>.png' `
+  --target "$repo#$pr" `
+  --strategy release-asset `
+  --format markdown))
+$currentBody = [string]::Join("`n", @(gh pr view $pr --json body --jq .body))
+gh pr edit $pr --body "$currentBody`n`n## Screenshots`n`n$evidence"
+$env:PR_BODY = [string]::Join("`n", @(gh pr view $pr --json body --jq .body))
+npm run check:frontend-screenshot origin/main HEAD
+```
+
+For more than one image, provide each file to the same `gh attach upload` command. Ensure the returned Markdown is under the PR's `## Screenshots` heading and do not add `e2e/screenshots/` to the commit.
+
 ## Review Checklist
 
 - The image belongs under `docs/assets/screenshots/`, not `e2e/screenshots/`.
@@ -81,6 +153,7 @@ For screenshots that require Tauri IPC, PTY behavior, or provider runtime behavi
 - The alt text is descriptive.
 - No local paths, secrets, or private data are visible.
 - `git status` shows only intended docs assets and guide updates.
+- Temporary PR evidence was uploaded with `gh attach` and is not staged or committed.
 
 Use [Core Feature Screenshot Capture Plan](./screenshot-capture-plan.md) to decide which screenshots belong in the first documentation pass.
 

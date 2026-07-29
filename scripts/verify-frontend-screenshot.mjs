@@ -74,6 +74,9 @@ for (const file of frontendFiles) {
   console.error(`- ${file}`);
 }
 console.error("");
-console.error("Attach or upload a feature-specific screenshot, then embed it with markdown such as:");
-console.error("  ![queue-overflow.png](https://github.com/<owner>/<repo>/.../queue-overflow.png)");
+console.error("Use the CLI evidence path, then embed the returned Markdown in the PR body:");
+console.error(
+  "  gh attach upload e2e/screenshots/<feature>/<timestamp>/<state>.png --target <owner>/<repo>#<linked-issue-or-pr> --strategy release-asset --format markdown",
+);
+console.error("For a new PR, target its linked issue and include the output in `gh pr create --body-file`; for an existing PR, update with `gh pr edit <pr> --body ...`.");
 process.exit(1);
