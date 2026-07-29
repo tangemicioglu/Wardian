@@ -120,10 +120,12 @@ async function settle() {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 describe("TerminalSessionClient", () => {
@@ -271,8 +273,9 @@ describe("TerminalSessionClient", () => {
     ]));
   });
 
-  it("keeps a backgrounded client paused when its foreground snapshot fails", async () => {
+  it("retries one failed foreground snapshot before keeping the client paused", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let foregroundSnapshots = 0;
     tauri.invoke.mockImplementation(async (command: string) => {
       if (command === "register_terminal_presentation") {
         return registeredResult("pane-a");
@@ -281,6 +284,57 @@ describe("TerminalSessionClient", () => {
         return { broker_state: brokerState(1, 4), initial_snapshot: snapshot(1, 4) };
       }
       if (command === "request_terminal_snapshot") {
+        foregroundSnapshots += 1;
+        if (foregroundSnapshots === 1) {
+          throw new Error("renderer is still becoming drawable");
+        }
+        return snapshot(1, 100);
+      }
+      if (command === "read_terminal_events") {
+        return eventsBatch([], 100);
+      }
+      if (command === "unregister_terminal_presentation") {
+        return brokerState();
+      }
+      if (command === "unsubscribe_terminal_events") {
+        return undefined;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const client = terminalSessionClientFor("agent-1");
+    await client.registerPresentation(registration("pane-a"), {
+      applySnapshot: () => undefined,
+      applyEvents: () => undefined,
+    });
+
+    await setTerminalApplicationVisibility(false);
+    await setTerminalApplicationVisibility(true);
+
+    await vi.waitFor(() => expect(foregroundSnapshots).toBe(2));
+    expect(tauri.invoke).toHaveBeenCalledWith("ack_terminal_events", {
+      request: expect.objectContaining({ applied_sequence: 100 }),
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Terminal foreground resynchronization failed; retrying from a fresh snapshot.",
+      expect.any(Error),
+    );
+    await client.destroy();
+    warn.mockRestore();
+  });
+
+  it("keeps a backgrounded client paused when its foreground retry also fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let foregroundSnapshots = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === "register_terminal_presentation") {
+        return registeredResult("pane-a");
+      }
+      if (command === "subscribe_terminal_events") {
+        return { broker_state: brokerState(1, 4), initial_snapshot: snapshot(1, 4) };
+      }
+      if (command === "request_terminal_snapshot") {
+        foregroundSnapshots += 1;
         throw new Error("snapshot unavailable");
       }
       if (command === "read_terminal_events") {
@@ -304,15 +358,158 @@ describe("TerminalSessionClient", () => {
     await setTerminalApplicationVisibility(false);
     await setTerminalApplicationVisibility(true);
 
-    expect(tauri.invoke).toHaveBeenCalledWith("request_terminal_snapshot", {
-      request: { session_id: "agent-1" },
-    });
+    await vi.waitFor(() => expect(foregroundSnapshots).toBe(2));
     expect(tauri.invoke).not.toHaveBeenCalledWith("read_terminal_events", expect.anything());
-    expect(warn).toHaveBeenCalledWith(
+    expect(warn).toHaveBeenNthCalledWith(
+      1,
+      "Terminal foreground resynchronization failed; retrying from a fresh snapshot.",
+      expect.any(Error),
+    );
+    expect(warn).toHaveBeenNthCalledWith(
+      2,
       "Terminal foreground resynchronization failed; keeping the client paused.",
       expect.any(Error),
     );
+    await client.destroy();
     warn.mockRestore();
+  });
+
+  it("resumes a newer foreground epoch that arrives during a failed recovery", async () => {
+    const firstSnapshot = deferred<TerminalSnapshot>();
+    let foregroundSnapshots = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === "register_terminal_presentation") {
+        return registeredResult("pane-a");
+      }
+      if (command === "subscribe_terminal_events") {
+        return { broker_state: brokerState(1, 4), initial_snapshot: snapshot(1, 4) };
+      }
+      if (command === "request_terminal_snapshot") {
+        foregroundSnapshots += 1;
+        if (foregroundSnapshots === 1) {
+          return firstSnapshot.promise;
+        }
+        return snapshot(1, 100);
+      }
+      if (command === "ack_terminal_events") {
+        return { runtime_generation: 1, acknowledged_sequence: 100 };
+      }
+      if (command === "read_terminal_events") {
+        return eventsBatch([], 100);
+      }
+      if (command === "unregister_terminal_presentation") {
+        return brokerState();
+      }
+      if (command === "unsubscribe_terminal_events") {
+        return undefined;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const client = terminalSessionClientFor("agent-1");
+    await client.registerPresentation(registration("pane-a"), {
+      applySnapshot: () => undefined,
+      applyEvents: () => undefined,
+    });
+
+    await setTerminalApplicationVisibility(false);
+    const firstForeground = setTerminalApplicationVisibility(true);
+    await vi.waitFor(() => expect(foregroundSnapshots).toBe(1));
+
+    await setTerminalApplicationVisibility(false);
+    const latestForeground = setTerminalApplicationVisibility(true);
+    firstSnapshot.reject(new Error("renderer became hidden again"));
+
+    await firstForeground;
+    await latestForeground;
+    await vi.waitFor(() => expect(foregroundSnapshots).toBe(2));
+    expect(tauri.invoke).toHaveBeenCalledWith("ack_terminal_events", {
+      request: expect.objectContaining({ applied_sequence: 100 }),
+    });
+    await client.destroy();
+  });
+
+  it("re-enqueues a newer foreground epoch after a failed retry yield", async () => {
+    const pendingYields: Array<() => void> = [];
+    const setTimeout = vi.spyOn(window, "setTimeout").mockImplementation((handler) => {
+      if (typeof handler !== "function") {
+        throw new Error("Expected foreground recovery to schedule a callback");
+      }
+      pendingYields.push(handler);
+      return {} as ReturnType<typeof window.setTimeout>;
+    });
+    let foregroundSnapshots = 0;
+    try {
+      tauri.invoke.mockImplementation(async (command: string) => {
+        if (command === "register_terminal_presentation") {
+          return registeredResult("pane-a");
+        }
+        if (command === "subscribe_terminal_events") {
+          return { broker_state: brokerState(1, 4), initial_snapshot: snapshot(1, 4) };
+        }
+        if (command === "request_terminal_snapshot") {
+          foregroundSnapshots += 1;
+          if (foregroundSnapshots === 1) {
+            throw new Error("renderer is not drawable yet");
+          }
+          return snapshot(1, 100);
+        }
+        if (command === "ack_terminal_events") {
+          return { runtime_generation: 1, acknowledged_sequence: 100 };
+        }
+        if (command === "read_terminal_events") {
+          return eventsBatch([], 100);
+        }
+        if (command === "unregister_terminal_presentation") {
+          return brokerState();
+        }
+        if (command === "unsubscribe_terminal_events") {
+          return undefined;
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      });
+
+      const client = terminalSessionClientFor("agent-1");
+      await client.registerPresentation(registration("pane-a"), {
+        applySnapshot: () => undefined,
+        applyEvents: () => undefined,
+      });
+
+      await setTerminalApplicationVisibility(false);
+      const firstForeground = setTerminalApplicationVisibility(true);
+      for (let turn = 0; foregroundSnapshots === 0 && turn < 8; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(foregroundSnapshots).toBe(1);
+      for (let turn = 0; pendingYields.length === 0 && turn < 8; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(pendingYields).toHaveLength(1);
+
+      await setTerminalApplicationVisibility(false);
+      const latestForeground = setTerminalApplicationVisibility(true);
+      pendingYields.shift()?.();
+      for (let turn = 0; foregroundSnapshots < 2 && turn < 8; turn += 1) {
+        await Promise.resolve();
+      }
+
+      await firstForeground;
+      await latestForeground;
+      expect(foregroundSnapshots).toBe(2);
+      for (
+        let turn = 0;
+        !tauri.invoke.mock.calls.some(([command]) => command === "ack_terminal_events") && turn < 8;
+        turn += 1
+      ) {
+        await Promise.resolve();
+      }
+      expect(tauri.invoke).toHaveBeenCalledWith("ack_terminal_events", {
+        request: expect.objectContaining({ applied_sequence: 100 }),
+      });
+      await client.destroy();
+    } finally {
+      setTimeout.mockRestore();
+    }
   });
 
   it("filters shared feed events through each presentation snapshot barrier", async () => {

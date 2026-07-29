@@ -98,6 +98,7 @@ export class TerminalSessionClient {
   #applicationVisible = terminalApplicationVisible;
   #foregroundSnapshotRequired = !terminalApplicationVisible;
   #applicationVisibilityEpoch = 0;
+  #foregroundResumeRetryCount = 0;
   #operation = Promise.resolve();
   #inputOperation = Promise.resolve();
 
@@ -438,6 +439,7 @@ export class TerminalSessionClient {
       this.#applicationVisible = false;
       this.#foregroundSnapshotRequired = true;
       this.#applicationVisibilityEpoch += 1;
+      this.#foregroundResumeRetryCount = 0;
       this.#drainQueued = false;
       return;
     }
@@ -515,8 +517,24 @@ export class TerminalSessionClient {
         return;
       }
       this.#foregroundSnapshotRequired = false;
+      this.#foregroundResumeRetryCount = 0;
       this.queueDrain();
     });
+  }
+
+  /**
+   * A foreground snapshot can race a renderer that is just becoming drawable
+   * again. Keep the cursor paused, but give that one transient failure a
+   * fresh snapshot attempt on the next staged turn. Replaying the retained
+   * event backlog remains forbidden until one snapshot has applied and been
+   * acknowledged successfully.
+   */
+  retryForegroundResumeAfterFailure() {
+    if (!this.#needsForegroundResume() || this.#foregroundResumeRetryCount >= 1) {
+      return false;
+    }
+    this.#foregroundResumeRetryCount += 1;
+    return true;
   }
 
   queueDrain() {
@@ -1096,15 +1114,40 @@ function enqueueTerminalForegroundResume(client: TerminalSessionClient) {
     .catch(() => undefined)
     .then(async () => {
       try {
-        if (terminalApplicationVisible && resumeEpoch === terminalForegroundResumeEpoch) {
-          await client.resumeAfterApplicationForeground();
-        }
-      } catch (error) {
-        if (terminalApplicationVisible && resumeEpoch === terminalForegroundResumeEpoch) {
-          console.warn("Terminal foreground resynchronization failed; keeping the client paused.", error);
+        while (terminalApplicationVisible && resumeEpoch === terminalForegroundResumeEpoch) {
+          try {
+            await client.resumeAfterApplicationForeground();
+            break;
+          } catch (error) {
+            const retrying = client.retryForegroundResumeAfterFailure();
+            console.warn(
+              retrying
+                ? "Terminal foreground resynchronization failed; retrying from a fresh snapshot."
+                : "Terminal foreground resynchronization failed; keeping the client paused.",
+              error,
+            );
+            if (!retrying) {
+              break;
+            }
+            // Keep this client at the head of the staged queue, but give a
+            // just-foregrounded renderer one browser turn before its fresh
+            // snapshot replay.
+            await yieldTerminalForegroundResume();
+          }
         }
       } finally {
         queuedTerminalForegroundResumes.delete(client);
+        // A new foreground epoch can arrive while this client yields between
+        // attempts. Its initial enqueue sees the old task's dedupe entry, so
+        // re-enqueue after releasing that entry rather than leaving the new
+        // foreground snapshot requirement paused indefinitely.
+        if (
+          terminalApplicationVisible &&
+          resumeEpoch !== terminalForegroundResumeEpoch &&
+          client.foregroundResumePriority > 0
+        ) {
+          enqueueTerminalForegroundResume(client);
+        }
       }
       if (terminalApplicationVisible && resumeEpoch === terminalForegroundResumeEpoch) {
         await yieldTerminalForegroundResume();

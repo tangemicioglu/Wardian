@@ -39,8 +39,10 @@ residency.
    viewport-report, owner-resync, renderer-fit, or WebGL lifecycle operations.
    Existing geometry and reveal paths remain their sole authority.
 5. On a failed foreground snapshot, the client remains paused rather than
-   replaying an unbounded stale backlog. A later foreground/visible request can
-   retry safely.
+   replaying an unbounded stale backlog. One staged retry receives a fresh
+   authoritative snapshot after the renderer has had a browser turn to become
+   drawable; a second failure remains paused until a later foreground/visible
+   request retries safely.
 6. A runtime-generation transition continues to use the existing
    generation-aware subscription recovery path.
 
@@ -56,7 +58,9 @@ registered instances.
   one at a time. Each client requests a normal terminal snapshot, applies it to
   all of its presentation bindings, advances and acknowledges its shared
   cursor to the snapshot barrier, and only then drains events after that
-  barrier.
+  barrier. If another background/foreground epoch arrives while a staged
+  recovery is yielding, the newer epoch is re-enqueued after the older
+  deduplication entry releases.
 - Clients without a visible mounted presentation remain paused. Their normal
   presentation-visible path asks for the same resumption before it reveals or
   processes new output. This avoids snapshotting every off-screen terminal at
@@ -83,8 +87,9 @@ lease and geometry semantics that application visibility must not reuse.
 
 Frontend tests must prove that a background client does not read retained
 events, foregrounding applies and acknowledges the snapshot barrier before
-reading again, failed resumption remains paused, and the new path never calls
-geometry or owner-resynchronization IPCs.
+reading again, a transient failed resumption retries from a fresh barrier
+without stale replay, and the new path never calls geometry or
+owner-resynchronization IPCs.
 
 Native runtime coverage must run a mock-provider terminal through the
 background-resume control path and verify that content remains coherent while
