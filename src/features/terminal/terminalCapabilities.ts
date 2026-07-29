@@ -43,15 +43,12 @@ const CODEX_TERMINAL_STATUS_SEQUENCE =
 const SUPPORTED_RESET_DECRQM_PARAMS = new Set([1004, 1016, 2004, 2026]);
 const UNSUPPORTED_RESET_DECRQM_PARAMS = new Set([2027, 2031]);
 const THEME_MODE_NOTIFICATION_TOGGLE = /\u001b\[\?2031[hl]/g;
-const CODEX_SCROLLBACK_ERASE = /\u001b\[3J/g;
 // Matches any SGR sequence so codex's chrome background can be remapped even when
 // it is COMBINED with a foreground/attributes in one SGR. Codex emits the active
 // (typing) composer that way, and xterm's serializer re-emits scrollback that way
 // on a theme swap; matching only the standalone form left those black/inverted.
 const CODEX_SGR_SEQUENCE = /\u001b\[([0-9;]*)m/g;
 const CURSOR_STYLE_SEQUENCE = /\u001b\[[0-9;]* q/g;
-const FULLSCREEN_CLEAR_BY_NEWLINES =
-  /\u001b\[\?25l(?:\u001b\[K\r?\n){8,}\u001b\[K\u001b\[H(\u001b\[\?25h)?/g;
 const REMOTE_HISTORY_FRAME_START = /\u001b\[\?2026h|\u001b\[\?25l\u001b\[H|\u001b\[H/g;
 
 export type TerminalCapabilityContext = {
@@ -70,18 +67,6 @@ export type TerminalCapabilityPlan = {
   normalizedOutput: string;
   focusReported: boolean;
 };
-
-function normalizeFullscreenClearByNewlines(data: string) {
-  return data.replace(
-    FULLSCREEN_CLEAR_BY_NEWLINES,
-    (_match, cursorShow: string | undefined) =>
-      `\u001b[?25l\u001b[2J\u001b[H${cursorShow ?? ""}`,
-  );
-}
-
-function stripProviderScrollbackErase(data: string, provider?: string) {
-  return provider === "codex" ? data.replace(CODEX_SCROLLBACK_ERASE, "") : data;
-}
 
 // Strip codex's color / light-dark probes AND the ConPTY-answered reply echoes
 // from its rendered OUTPUT. Runs on the JOINED output batch (see
@@ -317,11 +302,10 @@ export function normalizeOpenCodeOutput(
   }
 
   if (provider !== "opencode") {
-    return stripProviderScrollbackErase(normalizeFullscreenClearByNewlines(data), provider);
+    return data;
   }
 
-  return stripProviderScrollbackErase(data, provider)
-    .replace(DECRQM_QUERY, "")
+  return data.replace(DECRQM_QUERY, "")
     .replace(THEME_MODE_NOTIFICATION_TOGGLE, "");
 }
 
@@ -333,12 +317,9 @@ export function normalizeTerminalOutputBatch(
   const normalizedChunks = rawChunks
     .map((data) => normalizeOpenCodeOutput(data, provider, state))
     .join("");
-  const scrollbackStripped = stripProviderScrollbackErase(normalizedChunks, provider);
   const normalizedOutput =
-    provider === "codex" ? stripCodexTerminalStatusEchoes(scrollbackStripped) : scrollbackStripped;
-  return provider === "opencode"
-    ? normalizedOutput
-    : normalizeFullscreenClearByNewlines(normalizedOutput);
+    provider === "codex" ? stripCodexTerminalStatusEchoes(normalizedChunks) : normalizedChunks;
+  return normalizedOutput;
 }
 
 function splitRemoteTerminalHistoryFrames(data: string) {

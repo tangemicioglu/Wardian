@@ -896,6 +896,71 @@ async fn zero_presentations_do_not_destroy_runtime_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn canonical_scrollback_policy_ignores_fragmented_erase_scrollback() {
+    let timer = Arc::new(ManualTimer::default());
+    let broker = Arc::new(TerminalSessionBroker::with_timer(timer));
+    let (runtime, _, _) = runtime();
+    let generation = broker
+        .start_or_replace_runtime("session-1", runtime.ignore_scrollback_erase(), geometry(80, 4))
+        .await
+        .expect("start scrollback-preserving runtime");
+    broker
+        .subscribe(TerminalEventSubscriptionRequest {
+            session_id: "session-1".to_string(),
+            consumer_id: "desktop".to_string(),
+            client_kind: TerminalClientKind::Desktop,
+            runtime_generation: generation,
+        })
+        .await
+        .expect("subscribe to canonical output");
+    let history = (1..=12)
+        .map(|line| format!("history row {line:02}\r\n"))
+        .collect::<String>();
+    process_output(broker.clone(), generation, history.into_bytes()).expect("history output");
+
+    process_output(broker.clone(), generation, b"\x1b[".to_vec()).expect("fragmented erase prefix");
+    process_output(broker.clone(), generation, b"3Jcurrent frame".to_vec())
+        .expect("fragmented erase suffix");
+
+    let snapshot = broker
+        .snapshot("session-1")
+        .await
+        .expect("scrollback-preserving snapshot");
+    assert!(
+        snapshot
+            .scrollback
+            .iter()
+            .any(|row| row.contains("history row 01")),
+        "canonical broker state must retain history after ED3"
+    );
+    assert!(snapshot.visible_grid.contains("current frame"));
+
+    let events = broker
+        .read_events(TerminalEventReadRequest {
+            session_id: "session-1".to_string(),
+            consumer_id: "desktop".to_string(),
+            runtime_generation: generation,
+            after_sequence: 0,
+            max_events: 32,
+            max_bytes: 32 * 1_024,
+        })
+        .await
+        .expect("read canonical output");
+    let published = events
+        .events
+        .iter()
+        .filter_map(|event| match &event.event {
+            TerminalBrokerEventKind::Output { bytes } => Some(bytes.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(!published.windows(4).any(|window| window == b"\x1b[3J"));
+    assert!(String::from_utf8_lossy(&published).contains("current frame"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn never_activated_remote_is_not_fallback_promoted_when_owner_detaches() {
     let timer = Arc::new(ManualTimer::default());
     let (broker, generation) = start(timer).await;

@@ -30,8 +30,11 @@ residency.
 2. Foregrounding obtains one authoritative broker snapshot and treats its
    `sequence_barrier` as the new consumer cursor before allowing live event
    drains.
-3. The snapshot is applied to every currently bound presentation and is
-   acknowledged before events after the barrier are consumed.
+3. The authoritative snapshot replaces local state in every currently bound
+   presentation and is acknowledged before events after the barrier are
+   consumed. Provider output policy is applied in the broker before snapshot
+   parsing and event publication; see
+   [Terminal scrollback ownership](./2026-07-28-terminal-scrollback-ownership.md).
 4. A background/foreground transition must not invoke terminal resize,
    viewport-report, owner-resync, renderer-fit, or WebGL lifecycle operations.
    Existing geometry and reveal paths remain their sole authority.

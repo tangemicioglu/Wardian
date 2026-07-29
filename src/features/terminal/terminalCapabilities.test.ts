@@ -404,37 +404,36 @@ describe("terminal capability broker", () => {
     expect(normalizeOpenCodeOutput("\u001b[2Jreset", "claude")).toBe("\u001b[2Jreset");
   });
 
-  it("strips Codex scrollback erase while preserving visible clear sequences", () => {
+  it("does not rewrite Codex scrollback erase in the renderer layer", () => {
     expect(normalizeOpenCodeOutput("before\u001b[3Jmiddle\u001b[2Jafter", "codex")).toBe(
-      "beforemiddle\u001b[2Jafter",
+      "before\u001b[3Jmiddle\u001b[2Jafter",
     );
   });
 
-  it("strips only Codex scrollback erase from combined visible and scrollback clears", () => {
+  it("preserves combined Codex visible and scrollback clears", () => {
     expect(normalizeOpenCodeOutput("before\u001b[2J\u001b[3Jafter", "codex")).toBe(
-      "before\u001b[2Jafter",
+      "before\u001b[2J\u001b[3Jafter",
     );
   });
 
-  it("strips Codex combined visible and scrollback erase when split across PTY chunks", () => {
+  it("preserves Codex combined visible and scrollback erase across frontend chunks", () => {
     expect(normalizeTerminalOutputBatch(["before\u001b[2J", "\u001b[3Jafter"], "codex")).toBe(
-      "before\u001b[2Jafter",
+      "before\u001b[2J\u001b[3Jafter",
     );
   });
 
-
-  it("strips Codex scrollback erase when the control sequence is split across chunks", () => {
+  it("preserves a split Codex scrollback erase for the broker-owned filter", () => {
     expect(normalizeTerminalOutputBatch(["before\u001b[", "3Jafter"], "codex")).toBe(
-      "beforeafter",
+      "before\u001b[3Jafter",
     );
   });
 
-  it("normalizes fullscreen clear preambles without erasing scrollback", () => {
+  it("preserves fullscreen clear-by-newline output for native VT handling", () => {
     const clearByNewlines =
       "\u001b[?25l" + "\u001b[K\r\n".repeat(24) + "\u001b[K\u001b[H\u001b[?25h";
 
     expect(normalizeOpenCodeOutput(`${clearByNewlines}redraw`, "claude")).toBe(
-      "\u001b[?25l\u001b[2J\u001b[H\u001b[?25hredraw",
+      `${clearByNewlines}redraw`,
     );
   });
 
@@ -447,14 +446,14 @@ describe("terminal capability broker", () => {
     );
   });
 
-  it("normalizes fullscreen clear preambles that are split across PTY chunks", () => {
+  it("preserves split fullscreen clear preambles across frontend chunks", () => {
     const chunks = [
       "\u001b[?25l" + "\u001b[K\r\n".repeat(12),
       "\u001b[K\r\n".repeat(12) + "\u001b[K\u001b[H\u001b[?25hredraw",
     ];
 
     expect(normalizeTerminalOutputBatch(chunks, "claude")).toBe(
-      "\u001b[?25l\u001b[2J\u001b[H\u001b[?25hredraw",
+      chunks.join(""),
     );
   });
 

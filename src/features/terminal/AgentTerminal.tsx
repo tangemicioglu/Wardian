@@ -291,7 +291,6 @@ declare global {
           cssCellHeight: number | null;
           deviceCellWidth: number | null;
           deviceCellHeight: number | null;
-          supportsViewportRedrawInPlace: boolean;
           lines: string[];
           allLines: string[];
         } | null;
@@ -306,8 +305,6 @@ declare global {
         } | null;
         scrollTraces: { position: number; at: number; stack: string }[] | null;
         snapshotReplays: SnapshotReplayTrace[] | null;
-        usesViewportRedraws: boolean;
-        supportsViewportRedrawInPlace: boolean;
         lines: string[];
         allLines: string[];
         recentWritePreviews: string[];
@@ -484,7 +481,6 @@ if (typeof window !== "undefined" && shouldExposeTerminalDebug()) {
                 cssCellHeight: nullableNumber(renderDimensions?.css?.cell?.height),
                 deviceCellWidth: nullableNumber(renderDimensions?.device?.cell?.width),
                 deviceCellHeight: nullableNumber(renderDimensions?.device?.cell?.height),
-                supportsViewportRedrawInPlace: supportsViewportRedrawInPlace(rendererTerm),
                 lines: rendererLines,
                 allLines: rendererAllLines,
               }
@@ -493,8 +489,6 @@ if (typeof window !== "undefined" && shouldExposeTerminalDebug()) {
           wheelStats: wheelDebugStats.get(presentationId) ?? null,
           scrollTraces: scrollTraces.get(presentationId) ?? null,
           snapshotReplays: snapshotReplayTraces.get(presentationId) ?? null,
-          usesViewportRedraws: providerUsesViewportRedraws(entry.provider),
-          supportsViewportRedrawInPlace: supportsViewportRedrawInPlace(term),
           lines,
           allLines,
         recentWritePreviews: [...entry.recentWritePreviews],
@@ -545,304 +539,8 @@ function terminalCursorPositionReply(entry: TerminalSessionEntry) {
   return { row, col };
 }
 
-function readParserKnownLineSet(entry: TerminalSessionEntry) {
-  // Scrollback only (0..baseY-1) — deliberately NOT the viewport. A Codex
-  // sliding-window drop is still visible in the viewport when its drop frame
-  // arrives (the repaint that removes it is in this very batch), so including
-  // viewport rows suppresses genuine drops and loses output whenever a window
-  // row was already painted by an earlier batch (observed live with Codex
-  // 0.139.0: rows vanished or survived depending on PTY chunk boundaries).
-  // Shuffle protection (line moved but still visible after the repaint) is
-  // handled in reconstructHomeRedrawScrollback against the new frame's lines.
-  const buffer = entry.parser.buffer.active;
-  const lineCount = Math.max(0, buffer.baseY ?? 0);
-  return new Set(
-    Array.from({ length: lineCount }, (_, index) =>
-      buffer.getLine(index)?.translateToString(true).replace(/\s+/g, " ").trim() || "",
-    ).filter(Boolean),
-  );
-}
-
-type XtermInternalBuffer = {
-  x?: number;
-  y?: number;
-  ybase: number;
-  ydisp: number;
-  lines: {
-    get?: (index: number) => { clone?: () => unknown; translateToString?: (trimRight?: boolean) => string } | undefined;
-    set?: (index: number, value: unknown) => void;
-    splice?: (start: number, deleteCount: number, ...items: unknown[]) => void;
-  };
-};
-
-function getInternalActiveBuffer(term: Terminal | HeadlessTerminal): XtermInternalBuffer | null {
-  const core = (term as unknown as {
-    _core?: {
-      _bufferService?: { buffer?: XtermInternalBuffer; _buffer?: XtermInternalBuffer };
-      bufferService?: { buffer?: XtermInternalBuffer; _buffer?: XtermInternalBuffer };
-    };
-  })._core;
-  return core?._bufferService?.buffer ??
-    core?._bufferService?._buffer ??
-    core?.bufferService?.buffer ??
-    core?.bufferService?._buffer ??
-    null;
-}
-
-function supportsViewportRedrawInPlace(term: Terminal | HeadlessTerminal) {
-  const buffer = getInternalActiveBuffer(term);
-  return Boolean(buffer?.lines.get && buffer.lines.set);
-}
-
-function syncBrowserTerminalScrollState(term: Terminal | HeadlessTerminal) {
-  (term as unknown as {
-    _core?: { _viewport?: { queueSync?: (ydisp?: number) => void } };
-  })._core?._viewport?.queueSync?.(term.buffer.active.viewportY ?? undefined);
-}
-
 function writeTerminalControl(term: Terminal | HeadlessTerminal, data: string) {
   return new Promise<void>((resolve) => term.write(data, () => resolve()));
-}
-
-function overlapLineKey(line: { translateToString?: (trimRight?: boolean) => string } | undefined) {
-  const normalized = String(line?.translateToString?.(true) ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const numbered = normalized.match(/^(?:[●•*]\s*)?(?:line\s+)?(\d{1,4})(?:\s*:\s*\d{1,4})?\.?$/i);
-  if (numbered) {
-    return `number:${Number.parseInt(numbered[1], 10)}`;
-  }
-
-  if (/^[\s─━═╭╮╰╯│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬\-_=]+$/.test(normalized)) {
-    return null;
-  }
-
-  return normalized;
-}
-
-function trimOverlappingScrollbackBeforeViewport(term: Terminal | HeadlessTerminal) {
-  const buffer = getInternalActiveBuffer(term);
-  if (!buffer?.lines.get || !buffer.lines.splice || buffer.ybase <= 0) {
-    return 0;
-  }
-
-  const maxOverlap = Math.min(term.rows, buffer.ybase, 120);
-  const keyAt = (index: number) => overlapLineKey(buffer.lines.get?.(index));
-  const matchingRun = (historyStart: number, screenStart: number, limit: number) => {
-    let matchedRows = 0;
-    let meaningfulRows = 0;
-    let numberedRows = 0;
-    for (let row = 0; row < limit; row += 1) {
-      const historyKey = keyAt(historyStart + row);
-      const screenKey = keyAt(buffer.ybase + screenStart + row);
-      if (!historyKey && !screenKey) {
-        matchedRows += 1;
-        continue;
-      }
-      if (!historyKey || historyKey !== screenKey) {
-        break;
-      }
-      matchedRows += 1;
-      meaningfulRows += 1;
-      if (screenKey.startsWith("number:")) {
-        numberedRows += 1;
-      }
-    }
-    return { matchedRows, meaningfulRows, numberedRows };
-  };
-
-  for (let overlap = maxOverlap; overlap >= 2; overlap -= 1) {
-    const run = matchingRun(buffer.ybase - overlap, 0, overlap);
-    if (run.matchedRows !== overlap || run.meaningfulRows < 2 || run.numberedRows === 0) {
-      continue;
-    }
-
-    buffer.lines.splice(buffer.ybase - overlap, overlap);
-    buffer.ybase = Math.max(0, buffer.ybase - overlap);
-    buffer.ydisp = Math.max(0, buffer.ydisp - overlap);
-    return overlap;
-  }
-
-  const searchStart = Math.max(0, buffer.ybase - term.rows * 3);
-  for (let historyStart = buffer.ybase - 1; historyStart >= searchStart; historyStart -= 1) {
-    const maxRun = Math.min(term.rows, buffer.ybase - historyStart);
-    const run = matchingRun(historyStart, 0, maxRun);
-    if (run.meaningfulRows < 2 || run.numberedRows === 0) {
-      continue;
-    }
-
-    const deleteCount = buffer.ybase - historyStart;
-    buffer.lines.splice(historyStart, deleteCount);
-    buffer.ybase = Math.max(0, buffer.ybase - deleteCount);
-    buffer.ydisp = Math.max(0, buffer.ydisp - deleteCount);
-    return deleteCount;
-  }
-
-  return 0;
-}
-
-async function applyViewportRedrawInPlace(
-  term: Terminal | HeadlessTerminal,
-  data: string,
-  options?: { preserveExistingViewport?: boolean },
-) {
-  const buffer = getInternalActiveBuffer(term);
-  if (!buffer?.lines.get || !buffer.lines.set) {
-    return false;
-  }
-
-  const scratch = new HeadlessTerminal({
-    cols: term.cols,
-    rows: term.rows,
-    scrollback: 0,
-    allowProposedApi: true,
-    scrollOnEraseInDisplay: false,
-    windowsPty: (term.options as TerminalOptionTarget["options"]).windowsPty,
-  });
-
-  try {
-    const scratchBuffer = getInternalActiveBuffer(scratch);
-    if (!scratchBuffer?.lines.set) {
-      return false;
-    }
-
-    if (options?.preserveExistingViewport !== false) {
-      for (let row = 0; row < term.rows; row += 1) {
-        const sourceLine = buffer.lines.get(buffer.ybase + row);
-        const clonedLine = sourceLine?.clone?.();
-        if (clonedLine) {
-          scratchBuffer.lines.set(row, clonedLine);
-        }
-      }
-    }
-
-    await writeTerminalControl(scratch, data);
-
-    const renderedScratchBuffer = getInternalActiveBuffer(scratch);
-    if (!renderedScratchBuffer?.lines.get) {
-      return false;
-    }
-
-    for (let row = 0; row < term.rows; row += 1) {
-      const sourceLine = renderedScratchBuffer.lines.get(renderedScratchBuffer.ybase + row);
-      const clonedLine = sourceLine?.clone?.();
-      if (clonedLine) {
-        buffer.lines.set(buffer.ybase + row, clonedLine);
-      }
-    }
-    buffer.x = renderedScratchBuffer.x;
-    buffer.y = renderedScratchBuffer.y;
-    trimOverlappingScrollbackBeforeViewport(term);
-    syncBrowserTerminalScrollState(term);
-    return true;
-  } finally {
-    scratch.dispose();
-  }
-}
-
-const SYNTHETIC_SCROLLBACK_PREFIX = "\u001b[999;1H";
-
-const ANSI_SEQUENCE = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[PX^_].*?(?:\u001b\\|\u0007)|\u001b[@-_]/g;
-
-function normalizePotentialHistoryLine(line: string) {
-  return line.replace(/\s+/g, " ").trim();
-}
-
-function historyLineKey(line: string) {
-  const normalized = normalizePotentialHistoryLine(line);
-  const numbered = normalized.match(/^(?:[●•*]\s*)?(?:line\s+)?(\d{1,4})(?:\s*:\s*\d{1,4})?\.?$/i);
-  return numbered ? `number:${Number.parseInt(numbered[1], 10)}` : normalized;
-}
-
-function isLikelyProviderChromeLine(line: string) {
-  const normalized = normalizePotentialHistoryLine(line);
-  if (!normalized) {
-    return true;
-  }
-  if (/^[\s─━═╭╮╰╯│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬\-_=]+$/.test(normalized)) {
-    return true;
-  }
-  if (/^(?:›|>|❯|>_|\$)\s*/.test(normalized)) {
-    return true;
-  }
-  if (/^(?:model|directory|permissions):\b/i.test(normalized)) {
-    return true;
-  }
-  if (/\b(?:context|tokens?|thinking|interrupt|permissions|approval|ctrl\+c|shift\+tab|feedback)\b/i.test(normalized)) {
-    return true;
-  }
-  if (/^(?:tip:|update available|run npm install|see full release notes|openai codex|\[.*\])\b/i.test(normalized)) {
-    return true;
-  }
-  return false;
-}
-
-function syntheticScrollbackRowsForViewportRedraw(data: string, knownLines?: Set<string>) {
-  const seen = new Set<string>();
-  const rows = data
-    .replace(ANSI_SEQUENCE, "")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\r/g, "").trimEnd())
-    .filter((line) => {
-      const normalized = normalizePotentialHistoryLine(line);
-      if (isLikelyProviderChromeLine(normalized)) {
-        return false;
-      }
-      const key = historyLineKey(normalized);
-      if (seen.has(key) || knownLines?.has(normalized) || knownLines?.has(key) || knownLines?.has(line)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    })
-    .map((line) => {
-      const numbered = normalizePotentialHistoryLine(line).match(
-        /^(?:[●•*]\s*)?(?:line\s+)?(\d{1,4})(?:\s*:\s*\d{1,4})?\.?$/i,
-      );
-      return numbered ? `  ${Number.parseInt(numbered[1], 10)}` : line.trim();
-    });
-
-  return rows.length > 0 ? rows : null;
-}
-
-function appendSyntheticScrollbackRows(scrollbackData: string, rows: string[] | null) {
-  if (!rows?.length) {
-    return scrollbackData;
-  }
-  const renderedRows = `${rows.join("\r\n")}\r\n`;
-  return scrollbackData
-    ? `${scrollbackData}${renderedRows}`
-    : `${SYNTHETIC_SCROLLBACK_PREFIX}${renderedRows}`;
-}
-
-// Disabled for every provider. Modern provider TUIs (verified live against
-// Claude Code 2.1.173 and Codex 0.139.0) are diff renderers: they
-// cursor-address just the changed cells of a row and assume the terminal
-// retained their previous frame. Routing such frames through the
-// scratch-screen replacement corrupts cells both ways — a blank scratch wipes
-// every cell the frame didn't write (mostly black terminals with only the
-// status row), and a preserved scratch merges the frame with rows the TUI
-// believes it already replaced (numbered output interleaved with stale
-// banner/status cells, dropped and duplicated rows). xterm itself honors the
-// retained-frame contract, so provider streams are written natively. The
-// machinery is kept behind this switch for one release in case a provider
-// ships a true full-frame repainter again; the live rendering audit is the
-// gate for re-enabling it.
-function providerUsesViewportRedraws(_provider: string | undefined) {
-  return false;
-}
-
-const TOP_LEFT_CURSOR_REPOSITION = /\u001b\[(?:|1|;|1;|;1|1;1)[Hf]/;
-
-function isProviderViewportRedraw(provider: string | undefined, data: string) {
-  return providerUsesViewportRedraws(provider) && (
-    TOP_LEFT_CURSOR_REPOSITION.test(data) ||
-    data.includes("\u001b[2J")
-  );
 }
 
 function wheelEventRows(
@@ -1825,42 +1523,7 @@ async function writeTerminalOutputBatch(
   if (options?.recordOutput !== false) {
     useQueueStore.getState().appendAgentTerminalOutput(entry.sessionId, batchedWrite, entry.provider);
   }
-  let scrollbackData = "";
   const viewportData = batchedWrite;
-  if (
-    isProviderViewportRedraw(entry.provider, viewportData) &&
-    supportsViewportRedrawInPlace(entry.parser) &&
-    (!renderer || supportsViewportRedrawInPlace(renderer.term))
-  ) {
-    const knownLines = readParserKnownLineSet(entry);
-    scrollbackData = appendSyntheticScrollbackRows(
-      scrollbackData,
-      syntheticScrollbackRowsForViewportRedraw(viewportData, knownLines),
-    );
-    if (scrollbackData) {
-      await writeTerminalControl(entry.parser, scrollbackData);
-      if (renderer) {
-        await runRendererOperation(entry, renderer, (currentRenderer) =>
-          writeTerminalControl(currentRenderer.term, scrollbackData),
-        );
-      }
-    }
-
-    await applyViewportRedrawInPlace(entry.parser, viewportData, {
-      preserveExistingViewport: false,
-    });
-    if (renderer) {
-      await runRendererOperation(entry, renderer, async (currentRenderer, isCurrent) => {
-        await applyViewportRedrawInPlace(currentRenderer.term, viewportData, {
-          preserveExistingViewport: false,
-        });
-        if (!isCurrent()) return;
-        currentRenderer.term.refresh(0, Math.max(currentRenderer.term.rows - 1, 0));
-        scrollRendererToBottomAfterWrite(currentRenderer, rendererBottomBeforeWrite);
-      });
-    }
-    return;
-  }
   await writeTerminalControl(entry.parser, viewportData);
   if (renderer) {
     await runRendererOperation(entry, renderer, async (currentRenderer, isCurrent) => {
@@ -1872,13 +1535,9 @@ async function writeTerminalOutputBatch(
       scrollRendererToBottomAfterWrite(currentRenderer, rendererBottomBeforeWrite);
     });
   }
-  // NOTE: Claude/Gemini resize repaints scroll part of the pre-repaint
-  // viewport into scrollback, leaving duplicate rows there — the same
-  // artifact a standalone terminal shows for those TUIs. Scrollback
-  // dedup heuristics were tried here (trimOverlappingScrollbackBeforeViewport
-  // after repaint batches) and rejected: after a column reflow the exact-match
-  // path cannot fire, and the fuzzy fallback deletes legitimate history.
-  // Cosmetic duplicates are preferred over data loss.
+  // Native VT processing deliberately accepts provider resize/repaint artifacts.
+  // Earlier direct-buffer dedup and synthetic-history heuristics deleted real
+  // rows and were removed; cosmetic duplicates are safer than data loss.
 }
 
 function scrollRendererToBottomAfterWrite(
@@ -3740,8 +3399,6 @@ export const AgentTerminal = memo(function AgentTerminal({
 });
 
 export const __terminalTesting = {
-  applyViewportRedrawInPlace,
-  appendSyntheticScrollbackRows,
   captureSnapshotOverlay,
   demoteSessionToDom,
   promoteSessionToWebgl,
@@ -3750,7 +3407,4 @@ export const __terminalTesting = {
   resizeParser,
   shouldUseRenderedRowGeometry,
   terminalOwnsMouseInteraction,
-  isProviderViewportRedraw,
-  syntheticScrollbackRowsForViewportRedraw,
-  trimOverlappingScrollbackBeforeViewport,
 };

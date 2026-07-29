@@ -630,13 +630,15 @@ pub async fn spawn_agent(
     drop(pair.slave);
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+    let terminal_runtime = crate::state::terminal_session::native_terminal_runtime(tx, pty_master);
+    let terminal_runtime = if config.provider == "codex" {
+        terminal_runtime.ignore_scrollback_erase()
+    } else {
+        terminal_runtime
+    };
     let runtime_generation = app_state
         .terminal_sessions
-        .start_or_replace_runtime(
-            &config.session_id,
-            crate::state::terminal_session::native_terminal_runtime(tx, pty_master),
-            initial_geometry,
-        )
+        .start_or_replace_runtime(&config.session_id, terminal_runtime, initial_geometry)
         .await
         .map_err(|error| format!("Failed to start terminal session broker: {error}"))?;
     let sid_for_input = config.session_id.clone();

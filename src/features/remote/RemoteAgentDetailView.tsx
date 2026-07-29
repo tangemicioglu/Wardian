@@ -207,6 +207,10 @@ function terminalRowPixelHeight(terminal: Terminal, measureHost: HTMLDivElement)
   return Number.isFinite(measured) && measured > 0 ? measured : 18;
 }
 
+function terminalOwnsMouseInteraction(terminal: Terminal) {
+  return terminal.buffer.active.type === "alternate" && terminal.modes.mouseTrackingMode !== "none";
+}
+
 function installTerminalScrollBridge(
   terminal: Terminal,
   eventSurface: HTMLDivElement,
@@ -226,6 +230,9 @@ function installTerminalScrollBridge(
   };
 
   const onWheel = (event: WheelEvent) => {
+    if (terminalOwnsMouseInteraction(terminal)) {
+      return;
+    }
     const rowHeight = terminalRowPixelHeight(terminal, measureHost);
     const rows =
       event.deltaMode === WheelEvent.DOM_DELTA_LINE
@@ -252,8 +259,21 @@ function installTerminalScrollBridge(
     if (!touch) return;
     const nextTouchPoint = { clientX: touch.clientX, clientY: touch.clientY };
     const deltaY = lastTouchPoint.clientY - nextTouchPoint.clientY;
-    const rowHeight = terminalRowPixelHeight(terminal, measureHost);
-    touchRemainder = scrollByRows(touchRemainder + deltaY / rowHeight);
+    if (terminalOwnsMouseInteraction(terminal)) {
+      (terminal.element ?? measureHost).dispatchEvent(
+        new WheelEvent("wheel", {
+          bubbles: true,
+          cancelable: true,
+          clientX: nextTouchPoint.clientX,
+          clientY: nextTouchPoint.clientY,
+          deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+          deltaY,
+        }),
+      );
+    } else {
+      const rowHeight = terminalRowPixelHeight(terminal, measureHost);
+      touchRemainder = scrollByRows(touchRemainder + deltaY / rowHeight);
+    }
     lastTouchPoint = nextTouchPoint;
     event.preventDefault();
   };

@@ -25,6 +25,8 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
 
   const actionRequests: Array<{ headers: Record<string, string>; body: unknown }> = [];
   let statusStream: WebSocketRoute | null = null;
+  let terminalStream: WebSocketRoute | null = null;
+  const terminalInputs: string[] = [];
   const recoveryScrollback = Array.from(
     { length: 160 },
     (_, index) => `recovery scrollback line ${String(index + 1).padStart(3, "0")}`,
@@ -141,11 +143,13 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
     ws.onMessage(() => {});
   });
   await page.routeWebSocket("**/remote/api/agents/agent-1/terminal-stream", async (ws) => {
+    terminalStream = ws;
     let seeded = false;
     let recoverySnapshotSent = false;
     let liveEventSent = false;
     ws.onMessage((message) => {
       const payload = JSON.parse(String(message));
+      if (payload.type === "input") terminalInputs.push(String(payload.data ?? ""));
       if (!seeded) {
         expect(payload).toMatchObject({
           protocol_version: 2,
@@ -340,6 +344,39 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
     (element) => Number.parseFloat((element as HTMLElement).style.top),
   )).toBeLessThan(scrollTopBefore);
   await captureFeatureScreenshot("terminal-recovery-scrollback.png", page.locator('[data-testid="remote-agent-detail"]'));
+
+  await expect.poll(() => terminalStream !== null).toBe(true);
+  terminalStream?.send(JSON.stringify({
+    type: "events",
+    batch: {
+      status: "events",
+      runtime_generation: 1,
+      events: [{
+        type: "output",
+        sequence: 12,
+        runtime_generation: 1,
+        bytes_base64: Buffer.from(
+          "\u001b[?1049h\u001b[?1000h\u001b[?1006hAlternate terminal scroll target",
+          "utf8",
+        ).toString("base64"),
+      }],
+      next_sequence: 12,
+      available_from_sequence: 12,
+      latest_sequence: 12,
+      recovery_snapshot: null,
+    },
+  }));
+  await expect(page.getByText("Alternate terminal scroll target")).toBeVisible();
+  const terminalInputCountBeforeTouch = terminalInputs.length;
+  await page.locator('[data-testid="remote-terminal-scroll-surface"]').dispatchEvent("touchstart", {
+    touches: [{ identifier: 0, clientX: 180, clientY: 420 }],
+  });
+  await page.locator('[data-testid="remote-terminal-scroll-surface"]').dispatchEvent("touchmove", {
+    touches: [{ identifier: 0, clientX: 180, clientY: 360 }],
+  });
+  await expect.poll(() => terminalInputs.length).toBeGreaterThan(terminalInputCountBeforeTouch);
+  expect(terminalInputs.at(-1)).toMatch(/^\u001b\[<6[45];/);
+
   await expect.poll(() => statusStream !== null).toBe(true);
   statusStream?.send(
     JSON.stringify({
