@@ -431,6 +431,9 @@ describe("TerminalSessionClient", () => {
 
   it("re-enqueues a newer foreground epoch after a failed retry yield", async () => {
     const pendingYields: Array<() => void> = [];
+    const appliedEvents: number[][] = [];
+    const commands: string[] = [];
+    let liveEventDelivered = false;
     const setTimeout = vi.spyOn(window, "setTimeout").mockImplementation((handler) => {
       if (typeof handler !== "function") {
         throw new Error("Expected foreground recovery to schedule a callback");
@@ -440,7 +443,8 @@ describe("TerminalSessionClient", () => {
     });
     let foregroundSnapshots = 0;
     try {
-      tauri.invoke.mockImplementation(async (command: string) => {
+      tauri.invoke.mockImplementation(async (command: string, args?: unknown) => {
+        commands.push(command);
         if (command === "register_terminal_presentation") {
           return registeredResult("pane-a");
         }
@@ -455,10 +459,26 @@ describe("TerminalSessionClient", () => {
           return snapshot(1, 100);
         }
         if (command === "ack_terminal_events") {
-          return { runtime_generation: 1, acknowledged_sequence: 100 };
+          return {
+            runtime_generation: 1,
+            acknowledged_sequence: (args as { request: { applied_sequence: number } }).request
+              .applied_sequence,
+          };
         }
         if (command === "read_terminal_events") {
-          return eventsBatch([], 100);
+          expect((args as { request: { after_sequence: number } }).request.after_sequence).toBe(100);
+          if (!liveEventDelivered) {
+            liveEventDelivered = true;
+            return eventsBatch([
+              {
+                sequence: 101,
+                runtime_generation: 1,
+                type: "output",
+                bytes: [65],
+              },
+            ], 101);
+          }
+          return eventsBatch([], 101);
         }
         if (command === "unregister_terminal_presentation") {
           return brokerState();
@@ -472,7 +492,9 @@ describe("TerminalSessionClient", () => {
       const client = terminalSessionClientFor("agent-1");
       await client.registerPresentation(registration("pane-a"), {
         applySnapshot: () => undefined,
-        applyEvents: () => undefined,
+        applyEvents: (events) => {
+          appliedEvents.push(events.map((event) => event.sequence));
+        },
       });
 
       await setTerminalApplicationVisibility(false);
@@ -506,6 +528,15 @@ describe("TerminalSessionClient", () => {
       expect(tauri.invoke).toHaveBeenCalledWith("ack_terminal_events", {
         request: expect.objectContaining({ applied_sequence: 100 }),
       });
+      await vi.waitFor(() => expect(appliedEvents).toEqual([[101]]));
+      const foregroundSnapshot = commands.lastIndexOf("request_terminal_snapshot");
+      const foregroundAcknowledge = commands.findIndex(
+        (command, index) => index > foregroundSnapshot && command === "ack_terminal_events",
+      );
+      const foregroundRead = commands.findIndex(
+        (command, index) => index > foregroundSnapshot && command === "read_terminal_events",
+      );
+      expect(foregroundRead).toBeGreaterThan(foregroundAcknowledge);
       await client.destroy();
     } finally {
       setTimeout.mockRestore();
