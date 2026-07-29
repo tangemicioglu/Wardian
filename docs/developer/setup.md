@@ -120,6 +120,8 @@ npm run tauri build
 
 This creates an installable local bundle that uses your normal Wardian state directory (`~/.wardian` by default). Local bundles do not create updater artifacts and do not require `TAURI_SIGNING_PRIVATE_KEY`.
 
+This is the complete local desktop-build command. Run it from the repository root in a normal terminal session; it does not require a running Wardian app, agent, or special environment. The release profile does not reuse Rust incremental artifacts, avoiding stale-cache compiler crashes after toolchain changes.
+
 PowerShell:
 
 ```powershell

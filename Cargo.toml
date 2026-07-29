@@ -42,7 +42,7 @@ portable-pty = { path = "vendor/portable-pty" }
 debug = false
 opt-level = 1
 
-# Keep local release builds responsive after ordinary Rust edits. CI explicitly
-# disables incremental compilation for reproducible coverage and release jobs.
+# Keep direct local Tauri builds reliable after Rust toolchain changes. Release
+# incremental artifacts can become incompatible and crash rustc on Windows.
 [profile.release]
-incremental = true
+incremental = false
