@@ -119,10 +119,12 @@ If a browser E2E test **requires** a higher layer to be meaningful, wrap it in `
 
 Screenshots are feature-specific PR evidence rather than generic CI artifacts. For frontend changes, use Playwright or the running app to capture only the interaction/state changed by the PR, write images under `e2e/screenshots/<feature>/<timestamp>/`, upload or attach at least one representative image, and embed it in the PR description. Do not add empty-window or app-tour screenshots that do not explain the change.
 
-The PR workflow runs `npm run check:frontend-screenshot` and fails frontend PRs without an embedded HTTPS image in the PR body. A local-only path such as `e2e/screenshots/<feature>/<timestamp>/<name>.png` is not enough. Use the GitHub web attachment flow or another approved GitHub-hosted image URL, then embed it with markdown:
+The default upload path is the installed [`gh attach`](https://github.com/Addono/gh-attach) GitHub CLI extension. Because every PR already has a linked issue, upload the local evidence against that issue before creating a new PR, then include the returned Markdown in the `gh pr create` body. For an existing PR, target the PR and use `gh pr edit`. This avoids browser automation, cookie extraction, committed temporary evidence, and the race between a newly opened PR and its first screenshot-gate job. Confirm the extension is available with `gh attach --version`; if it is missing, report the prerequisite instead of silently using a browser upload flow.
+
+The PR workflow runs `npm run check:frontend-screenshot` and fails frontend PRs without an embedded HTTPS image in the PR body. A local-only path such as `e2e/screenshots/<feature>/<timestamp>/<name>.png` is not enough. Follow [Screenshot Documentation](docs/developer/screenshot-documentation.md#pr-evidence-upload-cli) for the POSIX and PowerShell CLI commands. The resulting PR body must contain Markdown such as:
 
 ```markdown
-![feature-state](https://github.com/<owner>/<repo>/.../<screenshot>.png)
+![feature-state](https://github.com/<owner>/<repo>/releases/download/_gh-attach-assets/feature-state.png)
 ```
 
 ### Mock Provider

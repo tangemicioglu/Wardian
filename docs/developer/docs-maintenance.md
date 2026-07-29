@@ -57,7 +57,7 @@ Use the existing screenshot rules:
 - Use native E2E evidence for screenshots that require real Tauri IPC, PTY behavior, provider spawning, or filesystem effects.
 - Do not commit `e2e/screenshots/`; that path is for temporary PR evidence and local audit captures.
 
-Frontend PRs that change behavior or visuals must also embed representative screenshot evidence in the PR body using an HTTPS image URL. A local path alone is not enough.
+Frontend PRs that change behavior or visuals must also embed representative screenshot evidence in the PR body using an HTTPS image URL. A local path alone is not enough. Use the CLI-first [`gh attach` upload workflow](./screenshot-documentation.md#pr-evidence-upload-cli), not browser automation, for temporary PR evidence.
 
 ## Release Notes and Public Docs Checklist
 
