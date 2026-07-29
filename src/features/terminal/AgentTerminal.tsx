@@ -689,6 +689,16 @@ function syncParserViewportToRenderer(entry: TerminalSessionEntry) {
   (entry.parser as unknown as { scrollToLine?: (line: number) => void }).scrollToLine?.(rendererViewportY);
 }
 
+function revealLiveRendererAfterScroll(entry: TerminalSessionEntry, term: Terminal) {
+  const renderer = entry.renderer;
+  // A WebGL-demotion still is only safe while the underlying DOM renderer is
+  // stationary. Once the user scrolls, reveal the live viewport immediately
+  // instead of leaving the cosmetic frame to mask that movement.
+  if (renderer?.term === term) {
+    removeSnapshotOverlay(renderer);
+  }
+}
+
 function planTerminalOutputChunk(
   sessionId: string,
   data: string,
@@ -2023,6 +2033,7 @@ function createRenderer(terminalKey: string, entry: TerminalSessionEntry) {
     "wheel",
     (event) => {
       if (scrollTerminalFromWheel(term, event, wheelRowRemainder, terminalKey)) {
+        revealLiveRendererAfterScroll(entry, term);
         syncParserViewportToRenderer(entry);
       }
     },
@@ -2674,6 +2685,7 @@ export const AgentTerminal = memo(function AgentTerminal({
       return;
     }
     if (scrollTerminalFromWheel(term, event, wheelRowRemainderRef, terminalKey)) {
+      revealLiveRendererAfterScroll(entry, term);
       syncParserViewportToRenderer(entry);
     }
   }, [terminalKey]);

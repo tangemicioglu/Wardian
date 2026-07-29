@@ -4999,6 +4999,41 @@ describe("AgentTerminal scrollback", () => {
     }
   });
 
+  it("drops a demotion snapshot as soon as the user scrolls the live DOM terminal", async () => {
+    render(<AgentTerminal sessionId="snap-scroll" theme="dark" />);
+
+    await waitFor(() => {
+      expect(window.__wardianTerminalDebug?.snapshot("snap-scroll")?.renderer?.webglActive).toBe(true);
+    });
+
+    const instance = getLatestTerminalInstance();
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = 320;
+    sourceCanvas.height = 200;
+    (instance.element as HTMLElement).appendChild(sourceCanvas);
+    const { spy } = stubCanvasContexts();
+
+    try {
+      act(() => {
+        __terminalTesting.demoteSessionToDom("snap-scroll");
+      });
+      expect(querySnapshotOverlay()).toBeTruthy();
+
+      instance.buffer.active.baseY = 27;
+      instance.buffer.active.viewportY = 27;
+      fireEvent.wheel(instance.element as HTMLElement, {
+        deltaY: -240,
+        deltaMode: 0,
+      });
+
+      expect(instance.scrollLines).toHaveBeenCalledWith(expect.any(Number));
+      expect(instance.buffer.active.viewportY).toBeLessThan(27);
+      expect(querySnapshotOverlay()).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("refits a reused renderer and removes its stale snapshot before revealing it again", async () => {
     const view = render(
       <AgentTerminal
