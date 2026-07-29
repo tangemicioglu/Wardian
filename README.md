@@ -302,6 +302,8 @@ To generate a production-ready release executable for your platform:
 npm run tauri build
 ```
 
+Run this from the repository root in any terminal, including an ordinary PowerShell session; it does not require a running Wardian app or agent session. Release builds intentionally do not reuse Rust incremental artifacts, so a toolchain update cannot leave a stale cache that crashes the compiler.
+
 ---
 
 ## License

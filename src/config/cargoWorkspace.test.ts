@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import workspaceCargoToml from "../../Cargo.toml?raw";
 import appCargoToml from "../../src-tauri/Cargo.toml?raw";
 import cliCargoToml from "../../crates/wardian-cli/Cargo.toml?raw";
 
@@ -13,5 +14,11 @@ describe("Cargo workspace binary names", () => {
     expect(appBinName).toBe("Wardian");
     expect(cliBinName).toBe("wardian-cli");
     expect(appBinName?.toLowerCase()).not.toBe(cliBinName?.toLowerCase());
+  });
+
+  it("keeps direct local desktop release builds out of the incremental cache", () => {
+    expect(workspaceCargoToml).toMatch(
+      /\[profile\.release\]\s+incremental\s*=\s*false/,
+    );
   });
 });
