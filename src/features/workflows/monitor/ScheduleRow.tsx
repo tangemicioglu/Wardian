@@ -84,9 +84,10 @@ export function ScheduleRow({ schedule, agentLabels = {}, onPause, onResume, onR
         </button>
         </div>
         {menuOpen ? (
-          <div className="absolute right-3 top-10 z-20 w-32 rounded border border-wardian-border bg-[var(--color-wardian-card)] p-1 text-left shadow-lg">
+          <div role="menu" className="wardian-menu absolute right-3 top-10 z-20 w-32 p-1 text-left">
             <button
               type="button"
+              role="menuitem"
               className="flex w-full cursor-pointer select-none items-center gap-2 rounded px-2 py-1.5 text-[11px] text-muted hover:bg-[var(--color-wardian-bg)] hover:text-[var(--color-wardian-error)]"
               onClick={() => {
                 setMenuOpen(false);

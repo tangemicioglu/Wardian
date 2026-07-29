@@ -52,7 +52,7 @@ describe("dispatchQueueNotification", () => {
       summary: "Approve command?",
     }, actionPreferences, { playSound: vi.fn() });
 
-    expect(notificationSpy).toHaveBeenCalledWith("Action needed: Coder", {
+    expect(notificationSpy).toHaveBeenCalledWith("Action required: Coder", {
       body: "Approve command?",
     });
   });
@@ -84,7 +84,7 @@ describe("dispatchQueueNotification", () => {
       sendDesktopNotification: nativeNotificationSpy,
     });
 
-    expect(nativeNotificationSpy).toHaveBeenCalledWith("Action needed: Coder", {
+    expect(nativeNotificationSpy).toHaveBeenCalledWith("Action required: Coder", {
       body: "Approve command?",
     });
     expect(browserNotificationSpy).not.toHaveBeenCalled();

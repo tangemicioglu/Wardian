@@ -328,12 +328,12 @@ describe('WorkflowsView', () => {
     render(<WorkflowsView theme="dark" />);
 
     fireEvent.contextMenu(screen.getByRole('button', { name: /node context/i }));
-    fireEvent.click(screen.getByRole('button', { name: /duplicate node/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /duplicate node/i }));
 
     expect(useBuilderStore.getState().blueprint?.nodes.map((node) => node.id)).toContain('task-3');
 
     fireEvent.contextMenu(screen.getByRole('button', { name: /node context/i }));
-    fireEvent.click(screen.getByRole('button', { name: /delete node/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /delete node/i }));
 
     expect(useBuilderStore.getState().blueprint?.nodes.map((node) => node.id)).not.toContain('task-1');
     expect(useBuilderStore.getState().blueprint?.edges).toEqual([]);
@@ -349,7 +349,7 @@ describe('WorkflowsView', () => {
     render(<WorkflowsView theme="dark" />);
 
     fireEvent.contextMenu(screen.getByRole('button', { name: /node context/i }));
-    fireEvent.click(screen.getByRole('button', { name: /copy node id/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /copy node id/i }));
 
     expect(writeText).toHaveBeenCalledWith('task-1');
   });
@@ -359,7 +359,7 @@ describe('WorkflowsView', () => {
     render(<WorkflowsView theme="dark" />);
 
     fireEvent.contextMenu(screen.getByRole('button', { name: /edge context/i }));
-    fireEvent.click(screen.getByRole('button', { name: /delete connection/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /delete connection/i }));
 
     expect(useBuilderStore.getState().blueprint?.edges).toEqual([]);
   });

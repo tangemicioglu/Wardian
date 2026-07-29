@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { GitFileEntry } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "../../components/ContextMenu";
+import { gitStatusLabel, gitStatusTextClass } from "./gitStatusPresentation";
 
 export type ResourceSortMode = "path" | "name" | "status";
 
@@ -35,40 +36,6 @@ interface FileTreeFile {
 }
 
 type FileTreeNode = FileTreeDirectory | FileTreeFile;
-
-const STATUS_COLORS: Record<string, string> = {
-  M: "text-[var(--color-wardian-warning)]",
-  A: "text-[var(--color-wardian-success)]",
-  D: "text-[var(--color-wardian-error)]",
-  R: "text-[var(--color-wardian-processing)]",
-  C: "text-[var(--color-wardian-processing)]",
-  U: "text-[var(--color-wardian-warning)]",
-  AA: "text-[var(--color-wardian-warning)]",
-  AU: "text-[var(--color-wardian-warning)]",
-  DD: "text-[var(--color-wardian-error)]",
-  DU: "text-[var(--color-wardian-error)]",
-  UA: "text-[var(--color-wardian-warning)]",
-  UD: "text-[var(--color-wardian-error)]",
-  UU: "text-[var(--color-wardian-warning)]",
-  "?": "text-[var(--color-wardian-text-muted)]",
-};
-
-const STATUS_LABELS: Record<string, string> = {
-  M: "Modified",
-  A: "Added",
-  D: "Deleted",
-  R: "Renamed",
-  C: "Copied",
-  U: "Unmerged",
-  AA: "Both Added",
-  AU: "Added By Us",
-  DD: "Both Deleted",
-  DU: "Deleted By Us",
-  UA: "Added By Them",
-  UD: "Deleted By Them",
-  UU: "Both Modified",
-  "?": "Untracked",
-};
 
 const isDeletedStatus = (status: string) => status === "D" || status.includes("D");
 
@@ -284,8 +251,8 @@ export const GitFileList: React.FC<GitFileListProps> = ({
   };
 
   const renderFileRow = (file: GitFileEntry, index: number, depth: number, showDirectory: boolean) => {
-    const colorClass = STATUS_COLORS[file.status] || "text-primary";
-    const statusLabel = STATUS_LABELS[file.status] ?? file.status;
+    const colorClass = gitStatusTextClass(file.status);
+    const statusLabel = gitStatusLabel(file.status);
     const deleted = isDeletedStatus(file.status);
     const filename = lastPathPart(file.path);
     const dir = file.path.includes("/")

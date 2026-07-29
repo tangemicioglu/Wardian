@@ -275,7 +275,7 @@ describe("SpawnAgentPanel", () => {
     expect(await screen.findByText(/Default provider Codex is not installed\. Using Claude\./)).toBeInTheDocument();
   });
 
-  it("disables Initialize when no provider CLI is available", async () => {
+  it("disables Spawn Agent when no provider CLI is available", async () => {
     mockSpawnInvokes([
       readiness("claude", false),
       readiness("codex", false),

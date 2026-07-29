@@ -1,6 +1,6 @@
 import React from "react";
 import { AgentConfig, AgentTelemetry } from "../types";
-import { getAgentStatusLabel, getAgentStatusTextClass } from "../utils/statusUtils";
+import { getAgentActivityLabel, getAgentStatusLabel, getAgentStatusTextClass } from "../utils/statusUtils";
 
 export interface DashboardViewProps {
   filteredAgents: AgentConfig[];
@@ -111,9 +111,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <span className="text-xs font-bold text-[var(--color-wardian-accent)]">{metrics?.query_count || 0}</span>
                 </div>
                 <div className="flex flex-col flex-2 min-w-[200px]">
-                  <span className="label-small mb-0.5">Current Status</span>
-                  <span className={`text-xs truncate ${getAgentStatusTextClass(effectiveStatus)}`}>
-                    {getAgentStatusLabel(effectiveStatus, currentThought, 40)}
+                  <span className="label-small mb-0.5">Status</span>
+                  <span
+                    className={`text-xs truncate ${getAgentStatusTextClass(effectiveStatus)}`}
+                    title={`Activity: ${getAgentActivityLabel(effectiveStatus, currentThought, 80)}`}
+                  >
+                    {getAgentStatusLabel(effectiveStatus)}
                   </span>
                 </div>
               </div>

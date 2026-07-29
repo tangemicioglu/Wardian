@@ -401,7 +401,7 @@ function AppBody() {
     addActionNeeded(
       sessionId,
       agent?.session_name ?? sessionId,
-      "Action needed",
+      "Action required",
     );
   }, [addActionNeeded]);
 

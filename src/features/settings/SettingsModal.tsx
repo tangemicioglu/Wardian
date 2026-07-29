@@ -34,7 +34,7 @@ interface SettingsModalProps {
 type SettingsCategory =
   | "General"
   | "Appearance"
-  | "Grid"
+  | "Agents"
   | "Inbox"
   | "Explorer"
   | "Watchlist"
@@ -56,7 +56,7 @@ type SettingsRowDefinition = {
 const categories: SettingsCategory[] = [
   "General",
   "Appearance",
-  "Grid",
+  "Agents",
   "Inbox",
   "Explorer",
   "Watchlist",
@@ -126,10 +126,10 @@ const rowDefinitions: SettingsRowDefinition[] = [
   },
   {
     id: "grid-card-display",
-    category: "Grid",
-    label: "Grid card display",
-    detail: "Applies to every card in the main Grid view.",
-    keywords: ["grid", "card", "display", "terminal", "chat", "transcript"],
+    category: "Agents",
+    label: "Agent card display",
+    detail: "Applies to every card in the Agents surface.",
+    keywords: ["agents", "grid", "card", "display", "terminal", "chat", "transcript"],
   },
   {
     id: "queue-desktop-notifications",
@@ -177,7 +177,7 @@ const rowDefinitions: SettingsRowDefinition[] = [
     id: "watchlist-new-agent-position",
     category: "Watchlist",
     label: "New agent position",
-    detail: "Controls where newly spawned visible agents land in the roster.",
+    detail: "Controls where newly spawned visible agents land in the agent list.",
     keywords: ["watchlist", "roster", "spawn", "new agent", "position", "top", "bottom"],
   },
   {
@@ -852,7 +852,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
         return (
           <SettingRow key={row.id} label={row.label} detail={row.detail}>
             <select
-              aria-label="Grid card display"
+              aria-label="Agent card display"
               value={gridCardDisplayMode}
               onChange={(event) => void handleGridCardDisplayChange(event.target.value as typeof gridCardDisplayMode)}
               className={optionClass}
@@ -1180,13 +1180,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 p-4">
+    <div className="wardian-dialog-overlay fixed inset-0 z-[60] flex items-center justify-center p-4">
       <section
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
-        className="relative grid h-[min(840px,calc(100vh-2rem))] w-[min(1180px,calc(100vw-2rem))] grid-cols-[260px_minmax(0,1fr)] overflow-hidden rounded-2xl border border-wardian-border bg-wardian-bg shadow-[0_32px_80px_rgba(0,0,0,0.55)]"
+        className="wardian-dialog-panel wardian-dialog-panel--wide relative grid h-[min(840px,calc(100vh-2rem))] w-[min(1180px,calc(100vw-2rem))] grid-cols-[260px_minmax(0,1fr)] overflow-hidden"
       >
         <aside className="border-r border-wardian-border bg-[var(--color-wardian-sidebar-secondary)]/35 p-3">
           <div className="mb-3 px-2 py-2 text-xs font-semibold text-muted-neutral">Settings</div>

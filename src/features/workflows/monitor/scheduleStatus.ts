@@ -1,4 +1,5 @@
 import type { ScheduleDefinition, WorkflowSchedule } from '../../../types/workflow';
+import { workflowRunStatusColor } from '../run/statusLabels';
 
 /** Human schedule summary, e.g. "Every 60m", "Weekly Mon,Fri 09:35". */
 export function scheduleSummaryLabel(schedule: ScheduleDefinition): string {
@@ -32,17 +33,15 @@ export function nextRunLabel(schedule: WorkflowSchedule): string {
 /** Status color (semantic theme var) for a schedule's last/active state. */
 export function scheduleStatusColor(schedule: WorkflowSchedule): string {
   if (schedule.is_paused) return 'var(--color-wardian-warning)';
-  if (schedule.last_run_status === 'running') return 'var(--color-wardian-processing)';
-  if (schedule.last_run_status === 'failed') return 'var(--color-wardian-error)';
-  if (schedule.last_run_status === 'completed') return 'var(--color-wardian-success)';
+  if (schedule.last_run_status) return workflowRunStatusColor(schedule.last_run_status);
   return 'var(--color-wardian-text-muted)';
 }
 
 /** Operational status label shown in dense workflow monitor rows. */
 export function scheduleStatusLabel(schedule: WorkflowSchedule): string {
-  if (schedule.is_paused) return 'paused';
-  if (schedule.last_run_status === 'running') return 'running';
-  if (schedule.last_run_status === 'failed') return 'failed';
-  if (schedule.last_run_status === 'completed') return 'scheduled';
-  return schedule.next_run_epoch_ms ? 'scheduled' : 'idle';
+  if (schedule.is_paused) return 'Paused';
+  if (schedule.last_run_status === 'running') return 'Running';
+  if (schedule.last_run_status === 'failed') return 'Failed';
+  if (schedule.last_run_status === 'completed') return 'Scheduled';
+  return schedule.next_run_epoch_ms ? 'Scheduled' : 'Idle';
 }

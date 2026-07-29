@@ -88,7 +88,12 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   };
 
   return (
-    <div ref={containerRef} className="flex-1 min-h-0 garden-canvas">
+    <div
+      ref={containerRef}
+      className="flex-1 min-h-0 garden-canvas"
+      role="img"
+      aria-label={`Garden canvas showing ${agentUnits.length} agents and ${workflowUnits.length} workflows. Select a unit to read its status.`}
+    >
       <Stage
         ref={stageRef}
         width={size.width}

@@ -108,7 +108,7 @@ describe("CustomTitleBar navigation", () => {
     expect(screen.getByText("0 Active")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Hide Left Sidebar" }));
-    fireEvent.click(screen.getByRole("button", { name: "Hide Agent Roster" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide Agent List" }));
     expect(setLeftCollapsed).toHaveBeenCalledWith(true);
     expect(setRightCollapsed).toHaveBeenCalledWith(true);
 
@@ -126,7 +126,7 @@ describe("CustomTitleBar navigation", () => {
     );
 
     expect(screen.getByRole("button", { name: "Hide Left Sidebar" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Hide Agent Roster" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Hide Agent List" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Minimize" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Maximize" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();

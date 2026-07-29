@@ -403,7 +403,7 @@ test.describe("Workbench recovery", () => {
     const content = page.getByTestId("app-shell-content");
     await expect(content).toHaveAttribute("inert", "");
     await expect(page.getByRole("button", { name: "Hide Left Sidebar" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Hide Agent Roster" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Hide Agent List" })).toBeDisabled();
     await expect(page.getByTestId("sidebar-tab-workflows").click({
       trial: true,
       timeout: 200,

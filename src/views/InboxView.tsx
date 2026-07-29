@@ -5,6 +5,7 @@ import type { QueueItem } from "../types";
 import { DocsLink } from "../components/DocsLink";
 import { QUEUE_EVENT_LABELS, QUEUE_EVENT_TYPES, queueItemIsVisible } from "../features/queue/queueFilters";
 import { parseQueueActionChoices, type QueueActionChoice } from "../features/queue/actionChoices";
+import { QUEUE_TONE_CLASSES, queueItemIsAgentEvent, queueItemLabel, queueItemTone } from "../features/queue/queuePresentation";
 
 const INITIAL_QUEUE_RENDER_LIMIT = 80;
 const QUEUE_RENDER_CHUNK_SIZE = 80;
@@ -64,28 +65,11 @@ function useProgressiveQueueItems(items: QueueItem[]) {
   );
 }
 
-function queueItemLabel(item: QueueItem) {
-  if (item.type === "action_needed") return "Action needed";
-  if (item.type === "agent_completed") return "Agent task completed";
-  if (item.type === "agent_update") return "Important update";
-  if (item.type === "approval_request") {
-    return item.notification_status === "expired" ? "Approval expired" : "Approval requested";
-  }
-  return item.status === "failed" ? "Workflow failed" : "Workflow completed";
-}
-
 function StatusBadge({ item }: { item: QueueItem }) {
-  const isCompleted = item.type === "agent_completed" || item.status === "completed" || item.type === "agent_update";
-  const isActionNeeded = item.type === "action_needed" || item.type === "approval_request";
+  const classes = QUEUE_TONE_CLASSES[queueItemTone(item)];
   return (
     <span
-      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-        isActionNeeded
-          ? "bg-wardian-warning/15 text-wardian-warning"
-          : isCompleted
-          ? "bg-wardian-success/15 text-wardian-success"
-          : "bg-wardian-error/15 text-wardian-error"
-        }`}
+      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${classes.badge}`}
     >
       {queueItemLabel(item)}
     </span>
@@ -93,27 +77,12 @@ function StatusBadge({ item }: { item: QueueItem }) {
 }
 
 function queueItemAccent(item: QueueItem) {
-  if (item.type === "action_needed" || item.type === "approval_request") {
-    return "bg-wardian-warning";
-  }
-  if (item.type === "workflow_completed" && item.status === "failed") {
-    return "bg-wardian-error";
-  }
-  return item.type === "agent_completed" ? "bg-wardian-processing" : "bg-wardian-headless";
+  return QUEUE_TONE_CLASSES[queueItemTone(item)].accent;
 }
 
 function QueueItemIcon({ item }: { item: QueueItem }) {
-  const isAgent = item.type === "agent_completed" || item.type === "action_needed" || item.type === "agent_update" || item.type === "approval_request";
-  const isActionNeeded = item.type === "action_needed" || item.type === "approval_request";
-  const isFailed = item.type === "workflow_completed" && item.status === "failed";
-  const Icon = isAgent ? Bot : GitBranch;
-  const iconClass = isFailed
-    ? "bg-wardian-error/10 text-wardian-error"
-    : isActionNeeded
-      ? "bg-wardian-warning/10 text-wardian-warning"
-    : isAgent
-      ? "bg-wardian-processing/10 text-wardian-processing"
-      : "bg-wardian-headless/10 text-wardian-headless";
+  const Icon = queueItemIsAgentEvent(item) ? Bot : GitBranch;
+  const iconClass = QUEUE_TONE_CLASSES[queueItemTone(item)].icon;
 
   return (
     <div
@@ -138,7 +107,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSending, setIsSending] = useState(false);
 
-  const isAgent = item.type === "agent_completed" || item.type === "action_needed" || item.type === "agent_update" || item.type === "approval_request";
+  const isAgent = queueItemIsAgentEvent(item);
   const isActionNeeded = item.type === "action_needed";
   const isApprovalRequest = item.type === "approval_request";
   const title = item.notification_title ?? (isAgent ? item.agent_name : item.workflow_name);

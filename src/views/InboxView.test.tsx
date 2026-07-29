@@ -70,7 +70,7 @@ describe("InboxView", () => {
 
     render(<InboxView onOpenAgent={onOpenAgent} onSendAgentPrompt={onSendAgentPrompt} />);
 
-    expect(screen.getByText("Action needed")).toBeInTheDocument();
+    expect(screen.getByText("Action required")).toBeInTheDocument();
     expect(screen.getByTestId("queue-item-summary-item-action")).toHaveTextContent("Do you want to proceed? 1. Yes 2. No");
     fireEvent.click(screen.getByRole("button", { name: /open agent terminal/i }));
     expect(onOpenAgent).toHaveBeenCalledWith("sess-1");
@@ -163,7 +163,7 @@ describe("InboxView", () => {
 
     expect(screen.getByRole("button", { name: /filter inbox events/i })).toHaveTextContent("Filter: All events");
     expect(screen.queryByLabelText("Desktop alert for workflow failures")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Sound alert for action needed")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Sound alert for action required")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /filter inbox events/i }));
     fireEvent.click(screen.getByLabelText("Show agent completions"));

@@ -5,6 +5,7 @@ import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph
 import { buildGardenAgentUnits, buildGardenWorkflowUnits } from "../features/garden/gardenProjection";
 import { GardenCanvas } from "../features/garden/GardenCanvas";
 import { unitKey } from "../features/garden/garden.types";
+import { GARDEN_AGENT_STATUS_LEGEND, gardenAgentStatusLabel, gardenWorkflowStatusLabel } from "../features/garden/gardenStatus";
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
 import { useGardenStore } from "../store/useGardenStore";
 import type { GardenSurfaceState } from "../features/workbench/surfaces/coreSurfaceMetadata";
@@ -88,13 +89,44 @@ export const GardenView: React.FC<GardenViewProps> = ({
   // there is no local Garden selection yet.
   const externalAgentKey =
     selectedAgentIds.size === 1 ? unitKey({ kind: "agent", id: [...selectedAgentIds][0] }) : null;
+  const activeSelectionKey = selectedKey ?? externalAgentKey;
+  const selectedUnit = [...agentUnits, ...workflowUnits].find((unit) => unitKey(unit.ref) === activeSelectionKey);
+  const selectedUnitStatus = selectedUnit
+    ? "status" in selectedUnit
+      ? gardenAgentStatusLabel(selectedUnit.status)
+      : gardenWorkflowStatusLabel(selectedUnit.runStatus)
+    : null;
 
   return (
-    <div className="garden-view flex-1 flex flex-col min-h-0">
+    <div className="garden-view relative flex min-h-0 flex-1 flex-col">
+      <section
+        aria-label="Garden status legend"
+        className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-wardian-border bg-[var(--color-wardian-bg)]/90 px-2 py-1.5 text-[10px] shadow-sm backdrop-blur"
+      >
+        <span className="font-bold text-primary">Status</span>
+        {GARDEN_AGENT_STATUS_LEGEND.map((item) => (
+          <span key={item.label} className="inline-flex items-center gap-1 text-muted-neutral">
+            <span className={`h-1.5 w-1.5 rounded-full ${item.indicatorClass}`} aria-hidden="true" />
+            {item.label}
+          </span>
+        ))}
+      </section>
+      <div
+        id="garden-selection-summary"
+        data-testid="garden-selection-summary"
+        aria-live="polite"
+        className="absolute bottom-3 left-3 z-10 rounded-md border border-wardian-border bg-[var(--color-wardian-bg)]/90 px-2 py-1.5 text-[11px] shadow-sm backdrop-blur"
+      >
+        {selectedUnit && selectedUnitStatus ? (
+          <><span className="text-muted">Selected: </span><span className="font-semibold text-primary">{selectedUnit.label}</span><span className="text-muted"> · {selectedUnitStatus}</span></>
+        ) : (
+          <span className="text-muted">Select a unit to view its status.</span>
+        )}
+      </div>
       {rendererActive ? <GardenCanvas
         agentUnits={agentUnits}
         workflowUnits={workflowUnits}
-        selectedKey={selectedKey ?? externalAgentKey}
+        selectedKey={activeSelectionKey}
         onSelect={(ref) => {
           setSelectedKey(unitKey(ref));
           if (ref.kind === "agent") {

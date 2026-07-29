@@ -1,6 +1,7 @@
 import type { AgentConfig, AgentTelemetry, TopologySnapshot, PairActivityEntry } from "../../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../../layout/watchlist/types";
 import { getAgentsForList } from "../../layout/watchlist/watchlistUtils";
+import { getAgentStatusColorToken } from "../../utils/statusUtils";
 
 export type GraphRelationshipReason =
   | "same_team"
@@ -178,7 +179,7 @@ export function buildAgentGraph(input: BuildAgentGraphInput): AgentGraphProjecti
     edges: buildEdges(visibleAgents, input.teams, input.enabledReasons),
     clusters,
     visibleAgents,
-    scopeLabel: input.activeList?.name ?? "All Agents",
+    scopeLabel: input.activeList?.id === "all" ? "Agent List" : input.activeList?.name ?? "Agent List",
     commEdges,
   };
 }
@@ -696,12 +697,5 @@ function centerAndFit(
 }
 
 function statusToColor(status: string) {
-  const normalized = status.toLowerCase();
-  if (normalized.includes("off")) return "var(--color-wardian-off)";
-  if (normalized.includes("action")) return "var(--color-wardian-warning)";
-  if (normalized.includes("error") || normalized.includes("fail")) return "var(--color-wardian-error)";
-  if (normalized.includes("headless")) return "var(--color-wardian-headless)";
-  if (normalized.includes("process")) return "var(--color-wardian-processing)";
-  if (normalized.includes("idle")) return "var(--color-wardian-success)";
-  return "var(--color-wardian-text-muted)";
+  return getAgentStatusColorToken(status);
 }

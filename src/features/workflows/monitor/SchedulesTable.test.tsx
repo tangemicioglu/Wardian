@@ -97,7 +97,7 @@ describe('SchedulesTable', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /more actions for heartbeat/i }));
     expect(onRemove).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: /remove/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /remove/i }));
     expect(onRemove).toHaveBeenCalledWith('s1');
   });
 

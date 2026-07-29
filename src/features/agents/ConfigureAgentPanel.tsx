@@ -185,9 +185,9 @@ export const ConfigureAgentPanel: React.FC<Props> = ({
             />
           </div>
           <div>
-            <label className="block text-[10px] font-bold text-muted-neutral mb-1">Provider Engine</label>
+            <label className="block text-[10px] font-bold text-muted-neutral mb-1">Provider</label>
             <select
-              aria-label="Provider Engine"
+              aria-label="Provider"
               className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-2 text-sm text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
               value={currentProvider}
               onChange={(e) => {

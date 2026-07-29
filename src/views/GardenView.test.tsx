@@ -47,6 +47,8 @@ describe("GardenView", () => {
       />,
     );
     expect(screen.getByTestId("garden-canvas")).toHaveTextContent("1:1");
+    expect(screen.getByRole("region", { name: "Garden status legend" })).toHaveTextContent("Action Required");
+    expect(screen.getByTestId("garden-selection-summary")).toHaveTextContent("Select a unit to view its status.");
   });
 
   it("routes the canvas open action through onOpenAgent", () => {
@@ -115,6 +117,7 @@ describe("GardenView", () => {
     );
 
     expect(screen.getByTestId("garden-canvas")).toHaveAttribute("data-selected-key", "agent:a1");
+    expect(screen.getByTestId("garden-selection-summary")).toHaveTextContent("Selected: Alpha · Idle");
     expect(onSurfaceStateChange).toHaveBeenCalledWith({ selected_unit_key: "agent:a1" });
   });
 });

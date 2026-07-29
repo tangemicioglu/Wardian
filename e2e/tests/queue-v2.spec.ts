@@ -180,13 +180,13 @@ test.describe("Inbox", () => {
 
     await openSurface(page, "inbox");
 
-    await expect(page.getByText("Action needed", { exact: true })).toBeVisible();
+    await expect(page.getByText("Action required", { exact: true })).toBeVisible();
     await expect(page.getByText("Production deployment", { exact: true })).toBeVisible();
     await expect(page.getByText("Migration update", { exact: true })).toBeVisible();
     await expect(page.getByText("Approve the generated patch before continuing.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Filter Inbox events" })).toContainText("Filter: All events");
-    await expect(page.getByLabel("Desktop alert for action needed")).toBeHidden();
-    await expect(page.getByLabel("Sound alert for action needed")).toBeHidden();
+    await expect(page.getByLabel("Desktop alert for action required")).toBeHidden();
+    await expect(page.getByLabel("Sound alert for action required")).toBeHidden();
     await expect(page.getByRole("button", { name: "Send action response 1: Yes" })).toBeVisible();
 
     if (process.env.WARDIAN_INBOX_SCREENSHOT) {

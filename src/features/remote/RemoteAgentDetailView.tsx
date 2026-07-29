@@ -24,6 +24,7 @@ import type {
   RemoteTerminalBrokerEvent,
   TerminalSnapshot,
 } from "../../types";
+import { formatAgentStatusLabel } from "../../utils/statusUtils";
 import { toActivityBlock, type ActivityBlockModel } from "../grid/activityBlocks";
 import { parseApprovalChoices } from "../grid/approvalChoices";
 import { ChatMarkdown } from "../grid/markdown/ChatMarkdown";
@@ -596,7 +597,7 @@ export const RemoteAgentDetailView: React.FC<{ agent: RemoteAgentSummary }> = ({
             <h1 className="truncate text-base font-semibold">{agent.session_name}</h1>
             <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted-neutral">
               <span className={`h-2 w-2 shrink-0 rounded-full ${remoteStatusClassFor(agent.status)}`} aria-hidden="true" />
-              <span className="truncate">{agent.status}</span>
+              <span className="truncate">{formatAgentStatusLabel(agent.status)}</span>
               <span aria-hidden="true">/</span>
               <span className="truncate">{formatProviderName(agent.provider)}</span>
             </div>

@@ -118,7 +118,7 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
       return;
     }
     if (!selectedProviderAvailable) {
-      setProviderNote("Choose an installed provider before initializing an agent.");
+      setProviderNote("Choose an installed provider before spawning an agent.");
       return;
     }
     setIsSpawning(true);
@@ -282,7 +282,7 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
         </div>
         <div>
           <label className="block text-[10px] font-bold text-muted-neutral mb-1">
-            Provider Engine
+            Provider
           </label>
           <select
             data-testid="spawn-provider"
@@ -331,9 +331,12 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
           className="w-full mt-2 bg-wardian-success/80 hover:bg-wardian-success/60 disabled:bg-wardian-off/30 disabled:cursor-not-allowed text-[var(--color-wardian-bg)] py-2.5 rounded-lg font-bold text-xs tracking-wide transition-all flex items-center justify-center gap-2 shadow-lg shadow-wardian-success/10"
         >
           {isSpawning ? (
-            <div className="animate-spin w-4 h-4 border-2 border-[var(--color-wardian-bg)]/30 border-t-[var(--color-wardian-bg)] rounded-full"></div>
+            <>
+              <div className="animate-spin w-4 h-4 border-2 border-[var(--color-wardian-bg)]/30 border-t-[var(--color-wardian-bg)] rounded-full" />
+              Spawning...
+            </>
           ) : (
-            "Initialize"
+            "Spawn Agent"
           )}
         </button>
       </form>

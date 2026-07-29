@@ -2,6 +2,7 @@ import React from "react";
 import { ChevronDown, ChevronRight, RefreshCw, Settings as SettingsIcon } from "lucide-react";
 import { getDisplayItemsForList } from "../../layout/watchlist/watchlistUtils";
 import type { RemoteAgentSummary } from "../../types";
+import { formatAgentStatusLabel } from "../../utils/statusUtils";
 import { isUserFacingProviderName, providerDisplayName } from "../agents/providerOptions";
 import { remoteStatusClassFor } from "./remoteAgentStatus";
 import { remoteAgentToWatchlistAgent } from "./remoteWatchlistAdapter";
@@ -31,7 +32,7 @@ export const RemoteWatchlistView: React.FC<{ onOpenSettings?: () => void }> = ({
   const watchlistAgents = agents.map(remoteAgentToWatchlistAgent);
   const summaryById = new Map(agents.map((agent) => [agent.session_id, agent]));
   const items = getDisplayItemsForList(watchlistAgents, activeList, teams);
-  const currentName = activeList?.name ?? "All Agents";
+  const currentName = activeList?.name ?? "Agent List";
 
   return (
     <section className="flex min-h-0 flex-1 flex-col" data-testid="remote-watchlist-view">
@@ -179,7 +180,7 @@ function RemoteWatchlistRow({
           )}
         </span>
       </span>
-      <span className="shrink-0 text-xs text-muted-neutral">{agent.status}</span>
+      <span className="shrink-0 text-xs text-muted-neutral">{formatAgentStatusLabel(agent.status)}</span>
     </button>
   );
 }

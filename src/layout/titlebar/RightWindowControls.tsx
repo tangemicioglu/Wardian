@@ -49,7 +49,7 @@ export const RightWindowControls: React.FC<RightWindowControlsProps> = ({
           disabled={sidebarToggleDisabled}
           onClick={() => setRightCollapsed(!rightCollapsed)}
           className={`titlebar-toggle ${!rightCollapsed ? "active" : ""}`}
-          title={rightCollapsed ? "Show Agent Roster" : "Hide Agent Roster"}
+          title={rightCollapsed ? "Show Agent List" : "Hide Agent List"}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <rect x="1" y="2" width="14" height="12" rx="1.5" />

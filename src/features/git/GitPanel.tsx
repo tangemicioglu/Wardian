@@ -2247,7 +2247,7 @@ export const GitPanel: React.FC<GitPanelProps> = ({ selectedAgentIds, agents, on
             onClick={handlePrimaryAction}
             disabled={primaryActionDisabled}
             title={primaryActionTitle}
-            className="min-w-0 flex-1 py-1.5 rounded text-xs font-bold transition-colors bg-[var(--color-wardian-accent)] text-black hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
+            className="min-w-0 flex-1 py-1.5 rounded text-xs font-bold transition-colors bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
           >
             {primaryActionKind === "publish" ? (
               <Upload className="w-3.5 h-3.5" />
@@ -2266,7 +2266,7 @@ export const GitPanel: React.FC<GitPanelProps> = ({ selectedAgentIds, agents, on
             aria-haspopup="menu"
             aria-expanded={commitActionMenu !== null}
             title="More Commit Actions"
-            className="flex w-8 shrink-0 items-center justify-center rounded border border-[color-mix(in_srgb,var(--color-wardian-accent),transparent_35%)] bg-[var(--color-wardian-accent)] text-black transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+            className="flex w-8 shrink-0 items-center justify-center rounded border border-[color-mix(in_srgb,var(--color-wardian-accent),transparent_35%)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
           >
             <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
           </button>

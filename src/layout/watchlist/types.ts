@@ -66,7 +66,7 @@ export interface WatchlistPrefs {
   sort: { column_id: SortableColumnId; direction: 'asc' | 'desc' } | null;
   preserve_team_grouping_when_sorted: boolean;
   /**
-   * Legacy collapse state for the All Agents roster. Kept so existing
+   * Legacy collapse state for the agent list. Kept so existing
    * preferences files continue to restore their prior state.
    */
   collapsed_team_ids: string[];

@@ -274,7 +274,7 @@ describe("GitHistoryGraph", () => {
 
     onOpenHistoryFile.mockClear();
     fireEvent.contextMenu(changeRow, { clientX: 12, clientY: 24 });
-    fireEvent.click(screen.getByRole("button", { name: "Open File" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open File" }));
 
     expect(onOpenHistoryFile).toHaveBeenCalledWith(
       expect.objectContaining({ hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }),
@@ -481,7 +481,7 @@ describe("GitHistoryGraph", () => {
     expect(screen.queryByRole("button", { name: "Filter history to current branch" })).not.toBeInTheDocument();
 
     openHistoryRefPicker();
-    fireEvent.click(screen.getByRole("button", { name: "Upstream" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Upstream" }));
 
     expect(onRefFilterChange).toHaveBeenLastCalledWith("upstream");
     expect(screen.getByText("Current work")).toBeInTheDocument();
@@ -498,7 +498,7 @@ describe("GitHistoryGraph", () => {
     expect(screen.getByRole("button", { name: "History refs: Upstream" })).toBeInTheDocument();
 
     openHistoryRefPicker();
-    fireEvent.click(screen.getByRole("button", { name: "Current Branch" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Current Branch" }));
 
     expect(screen.getByText("Current work")).toBeInTheDocument();
     expect(screen.getByText("Upstream base")).toBeInTheDocument();
@@ -506,14 +506,14 @@ describe("GitHistoryGraph", () => {
     expect(screen.getByRole("button", { name: "History refs: Current Branch" })).toBeInTheDocument();
 
     openHistoryRefPicker();
-    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "All" }));
 
     expect(screen.getByText("Current work")).toBeInTheDocument();
     expect(screen.getByText("Upstream base")).toBeInTheDocument();
     expect(screen.getByText("Release tag")).toBeInTheDocument();
 
     openHistoryRefPicker();
-    fireEvent.click(screen.getByRole("button", { name: "v1.0.0" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "v1.0.0" }));
 
     expect(screen.getByText("Current work")).toBeInTheDocument();
     expect(screen.getByText("Upstream base")).toBeInTheDocument();
@@ -552,7 +552,7 @@ describe("GitHistoryGraph", () => {
     );
 
     openHistoryRefPicker();
-    fireEvent.click(screen.getByRole("button", { name: "Current Branch" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Current Branch" }));
 
     const currentRow = screen.getByTestId("history-graph-row-aaaaaaaa");
     expect(within(currentRow).queryByText("HEAD")).not.toBeInTheDocument();
@@ -561,7 +561,7 @@ describe("GitHistoryGraph", () => {
     expect(within(currentRow).queryByText("v1.0.0")).not.toBeInTheDocument();
 
     openHistoryRefPicker();
-    fireEvent.click(screen.getByRole("button", { name: "Show All Ref Badges" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Show All Ref Badges" }));
 
     expect(within(currentRow).getByText("origin/main")).toBeInTheDocument();
     expect(within(currentRow).getByText("v1.0.0")).toBeInTheDocument();
@@ -571,7 +571,7 @@ describe("GitHistoryGraph", () => {
 
     render(<GitHistoryGraph rootPath="C:/repo" branch="main" upstream="origin/main" entries={entries} />);
     openHistoryRefPicker();
-    fireEvent.click(screen.getByRole("button", { name: "Current Branch" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Current Branch" }));
 
     expect(within(screen.getByTestId("history-graph-row-aaaaaaaa")).getByText("v1.0.0")).toBeInTheDocument();
   });
@@ -620,7 +620,7 @@ describe("GitHistoryGraph", () => {
     expect(currentRow).toHaveFocus();
 
     openHistoryRefPicker();
-    fireEvent.click(screen.getByRole("button", { name: "Upstream" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Upstream" }));
 
     expect(screen.getByRole("button", { name: "Go to Current History Item" })).toBeEnabled();
     expect(screen.getByTestId("history-graph-row-aaaaaaaa")).toHaveTextContent("Current work");
@@ -687,15 +687,15 @@ describe("GitHistoryGraph", () => {
 
     fireEvent.contextMenu(screen.getByTestId("history-graph-row-aaaaaaaa"), { clientX: 12, clientY: 24 });
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy Commit ID" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy Commit ID" }));
     expect(writeText).toHaveBeenCalledWith("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
     fireEvent.contextMenu(screen.getByTestId("history-graph-row-aaaaaaaa"), { clientX: 12, clientY: 24 });
-    fireEvent.click(screen.getByRole("button", { name: "Copy Commit Message" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy Commit Message" }));
     expect(writeText).toHaveBeenCalledWith("Context graph commit");
 
     fireEvent.contextMenu(screen.getByTestId("history-graph-row-aaaaaaaa"), { clientX: 12, clientY: 24 });
-    fireEvent.click(screen.getByRole("button", { name: "View Changes" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "View Changes" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("git_commit_changes", {
@@ -730,7 +730,7 @@ describe("GitHistoryGraph", () => {
     );
 
     fireEvent.contextMenu(screen.getByTestId("history-graph-row-aaaaaaaa"), { clientX: 12, clientY: 24 });
-    fireEvent.click(screen.getByRole("button", { name: "View Changes" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "View Changes" }));
 
     expect(onViewHistoryChanges).toHaveBeenCalledWith(
       expect.objectContaining({ hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }),

@@ -684,7 +684,7 @@ test("keeps the first tab clear of collapsed macOS traffic-light chrome", async 
     expect(leftChromeBounds!.x + leftChromeBounds!.width)
       .toBeLessThanOrEqual(firstTabBounds!.x + 1);
 
-    await page.getByRole("button", { name: "Hide Agent Roster", exact: true }).click();
+    await page.getByRole("button", { name: "Hide Agent List", exact: true }).click();
     await expect(titlebar).toHaveAttribute("data-right-collapsed", "true");
     await expect(titlebar).toHaveCSS("--titlebar-right-width", "48px");
 

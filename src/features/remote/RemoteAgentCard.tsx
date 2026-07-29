@@ -1,5 +1,6 @@
 import React from "react";
 import type { RemoteAgentSummary } from "../../types";
+import { formatAgentStatusLabel } from "../../utils/statusUtils";
 import { remoteStatusClassFor } from "./remoteAgentStatus";
 import { useRemoteStore } from "./useRemoteStore";
 import { isUserFacingProviderName, providerDisplayName } from "../agents/providerOptions";
@@ -29,7 +30,7 @@ export const RemoteAgentCard: React.FC<{ agent: RemoteAgentSummary }> = ({ agent
           </div>
           <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-neutral">
             <span className={`h-2 w-2 rounded-full ${remoteStatusClassFor(agent.status)}`} />
-            {agent.status}
+            {formatAgentStatusLabel(agent.status)}
           </span>
         </div>
         {agent.latest_text && <p className="mt-3 line-clamp-3 text-xs leading-relaxed text-muted-neutral">{agent.latest_text}</p>}

@@ -105,7 +105,7 @@ export const ListToolbar: React.FC<ListToolbarProps> = ({
                     {menuOpen && (
                         <div
                             role="menu"
-                            className="absolute right-0 top-full mt-1 z-10 min-w-[140px] rounded border border-wardian-border bg-wardian-sidebar-secondary shadow-wardian-card overflow-hidden"
+                            className="wardian-menu absolute right-0 top-full mt-1 z-10 min-w-[140px] overflow-hidden"
                         >
                             <button
                                 type="button"

@@ -261,13 +261,15 @@ export function RunLaunchDialog({
 
   return (
     <div
-      className="run-launch-dialog flex max-h-[min(calc(100vh-4rem),100%)] flex-col overflow-hidden rounded border border-wardian-border bg-[var(--color-wardian-card)] p-4 text-primary"
+      className="run-launch-dialog wardian-dialog-panel wardian-dialog-panel--standard flex max-h-[min(calc(100vh-4rem),100%)] w-full flex-col overflow-hidden p-4"
       role="dialog"
+      aria-modal="true"
+      aria-labelledby="run-launch-dialog-title"
       data-testid="run-launch-dialog"
     >
       <div className="shrink-0">
-        <h3 className="mb-2 text-sm font-semibold">Run workflow</h3>
-        <div className="mb-3 flex rounded border border-wardian-border p-0.5" role="radiogroup" aria-label="Launch mode">
+        <h3 id="run-launch-dialog-title" className="mb-2 text-sm font-semibold">Run workflow</h3>
+        <div className="wardian-segmented-control mb-3" role="radiogroup" aria-label="Launch mode">
           {(['run', 'schedule'] as const).map((mode) => (
             <button
               key={mode}
@@ -275,10 +277,10 @@ export function RunLaunchDialog({
               role="radio"
               aria-checked={launchMode === mode}
               aria-label={mode === 'run' ? 'Run now' : 'Schedule'}
-              className={`flex-1 rounded px-3 py-1 text-xs font-bold capitalize ${
+              className={`wardian-button flex-1 capitalize ${
                 launchMode === mode
-                  ? 'bg-[var(--color-wardian-accent)] text-[var(--color-wardian-bg)]'
-                  : 'text-muted'
+                  ? 'wardian-button--primary'
+                  : 'wardian-button--secondary'
               }`}
               onClick={() => setLaunchMode(mode)}
             >
@@ -496,7 +498,7 @@ export function RunLaunchDialog({
       <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-wardian-border pt-3" data-testid="run-launch-dialog-actions">
         <button
           type="button"
-          className="rounded border border-wardian-border px-3 py-1 text-xs text-primary"
+          className="wardian-button wardian-button--secondary"
           onClick={onCancel}
         >
           Cancel
@@ -504,7 +506,7 @@ export function RunLaunchDialog({
         {launchMode === 'run' ? (
           <button
             type="button"
-            className="rounded bg-[var(--color-wardian-accent)] px-3 py-1 text-xs text-[var(--color-wardian-bg)] disabled:bg-wardian-off/30"
+            className="wardian-button wardian-button--primary"
             disabled={busy || !launchProviderAvailable}
             onClick={run}
           >
@@ -513,7 +515,7 @@ export function RunLaunchDialog({
         ) : (
           <button
             type="button"
-            className="rounded bg-[var(--color-wardian-accent)] px-3 py-1 text-xs text-[var(--color-wardian-bg)] disabled:bg-wardian-off/30"
+            className="wardian-button wardian-button--primary"
             disabled={busy || !launchProviderAvailable}
             onClick={saveSchedule}
           >

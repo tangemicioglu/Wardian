@@ -10,6 +10,7 @@ import { OnboardingHint } from "../components/OnboardingHint";
 import { GraphCanvas } from "../features/graph/GraphCanvas";
 import { isUserFacingProviderName, providerDisplayName } from "../features/agents/providerOptions";
 import type { GraphSurfaceState } from "../features/workbench/surfaces/coreSurfaceMetadata";
+import { formatAgentStatusLabel } from "../utils/statusUtils";
 
 function formatProviderName(provider: string | null | undefined): string {
   if (!provider) return "unknown";
@@ -241,6 +242,14 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
   }, [props.visibility, selectedEdgeId, projection.commEdges]);
 
   const inspectedAgent = projection.nodes.find((node) => node.id === inspectedAgentId) ?? projection.nodes[0] ?? null;
+  const inspectedAgentStatus = inspectedAgent
+    ? props.deriveCurrentThought(
+      props.terminalTitles[inspectedAgent.id] ?? "",
+      props.currentThoughts[inspectedAgent.id] ?? "",
+      inspectedAgent.telemetry,
+      props.offAgentIds.has(inspectedAgent.id),
+    ).status
+    : null;
   const filteredCount = props.filteredAgents.length;
 
   const toggleReason = (reason: GraphRelationshipReason) => {
@@ -397,14 +406,7 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
                 </div>
               <h2>{inspectedAgent.label}</h2>
               <p>{inspectedAgent.agent.agent_class} / {formatProviderName(inspectedAgent.agent.provider)}</p>
-              <p>
-                {props.deriveCurrentThought(
-                  props.terminalTitles[inspectedAgent.id] ?? "",
-                  props.currentThoughts[inspectedAgent.id] ?? "",
-                  inspectedAgent.telemetry,
-                  props.offAgentIds.has(inspectedAgent.id),
-                ).status}
-              </p>
+              <p>{formatAgentStatusLabel(inspectedAgentStatus ?? undefined)}</p>
               <p className="graph-inspector-path">{inspectedAgent.agent.folder || "No workspace"}</p>
               <dl className="graph-telemetry">
                 <div>

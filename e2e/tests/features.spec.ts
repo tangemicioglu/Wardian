@@ -1,3 +1,4 @@
+import path from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 import {
   buildLibraryContentFixture,
@@ -57,7 +58,7 @@ test.describe("Wardian Core Feature Tests", () => {
     await expect(page.locator('[data-testid="agent-watchlist"]')).toBeVisible();
   });
 
-  test("2. Sidebar navigation - Agent Config tab", async () => {
+  test("2. Sidebar navigation - Agent Configuration tab", async () => {
     await page.locator('[data-testid="sidebar-tab-agent-config"]').click();
     await page.waitForTimeout(500);
     await expect(page.locator('[data-testid="spawn-agent-name"]')).toBeVisible();
@@ -115,6 +116,25 @@ test.describe("Wardian Core Feature Tests", () => {
     await expect(themeSelect).toHaveValue("light");
     await themeSelect.selectOption("system");
     await expect(themeSelect).toHaveValue("system");
+  });
+
+  test("8a. Settings - Agents card display terminology", async () => {
+    const dialog = await openSettings(page);
+    await dialog.getByRole("button", { name: "Agents" }).click();
+
+    const cardDisplay = dialog.getByLabel("Agent card display");
+    await expect(cardDisplay).toBeVisible();
+    await expect(cardDisplay).toHaveValue(/terminal|chat/);
+    await dialog.screenshot({
+      path: path.join(
+        "e2e",
+        "screenshots",
+        "design-consistency",
+        "2026-07-28",
+        "agents-card-display.png",
+      ),
+      animations: "disabled",
+    });
   });
 
   test("9. Settings - Shell selection", async () => {

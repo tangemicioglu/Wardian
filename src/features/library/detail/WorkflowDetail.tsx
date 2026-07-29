@@ -125,7 +125,7 @@ export const WorkflowDetail: React.FC<WorkflowDetailProps> = ({
                 </div>
             </div>
             {launchOpen && blueprintPath && (
-                <div className="absolute inset-0 z-20 flex items-start justify-center overflow-hidden bg-[color-mix(in_srgb,var(--color-wardian-bg),transparent_25%)] p-6">
+                <div className="wardian-dialog-overlay absolute inset-0 z-20 flex items-start justify-center overflow-hidden p-6">
                     <RunLaunchDialog
                         path={blueprintPath}
                         blueprintId={blueprint?.id}

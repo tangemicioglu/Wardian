@@ -23,3 +23,21 @@ export function formatNodeStatus(status: NodeStatusKind): string {
 export function formatRunStatus(status: RunStatusKind | 'interrupted'): string {
   return RUN_STATUS_LABELS[status] ?? status;
 }
+
+/** Shared semantic token for every workflow-run status surface. */
+export function workflowRunStatusColor(status: string): string {
+  switch (status) {
+    case 'running':
+      return 'var(--color-wardian-processing)';
+    case 'awaiting_approval':
+      return 'var(--color-wardian-warning)';
+    case 'completed':
+      return 'var(--color-wardian-success)';
+    case 'failed':
+      return 'var(--color-wardian-error)';
+    case 'interrupted':
+      return 'var(--color-wardian-off)';
+    default:
+      return 'var(--color-wardian-off)';
+  }
+}

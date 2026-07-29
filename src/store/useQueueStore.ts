@@ -318,7 +318,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
     const explicitSummary = summary?.trim();
     const bufferedSummary = (_agentBuffers[sessionId] ?? "").trim();
     const isGenericSummary = !explicitSummary || /^action needed$/i.test(explicitSummary);
-    const itemSummary = isGenericSummary ? (bufferedSummary || explicitSummary || "Action needed") : explicitSummary;
+    const itemSummary = isGenericSummary ? (bufferedSummary || explicitSummary || "Action required") : explicitSummary;
     const item: QueueItem = {
       id: crypto.randomUUID(),
       type: "action_needed",

@@ -40,13 +40,13 @@ describe("RightWindowControls", () => {
     delete (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
-  it("toggles the agent roster titlebar control", async () => {
+  it("toggles the agent list titlebar control", async () => {
     const user = userEvent.setup();
     const setRightCollapsed = vi.fn();
     const { RightWindowControls } = await loadRightWindowControls();
 
     render(<RightWindowControls rightCollapsed={false} setRightCollapsed={setRightCollapsed} />);
-    await user.click(screen.getByTitle("Hide Agent Roster"));
+    await user.click(screen.getByTitle("Hide Agent List"));
 
     expect(setRightCollapsed).toHaveBeenCalledWith(true);
   });
@@ -56,7 +56,7 @@ describe("RightWindowControls", () => {
 
     render(<RightWindowControls rightCollapsed setRightCollapsed={vi.fn()} />);
 
-    expect(screen.getByTitle("Show Agent Roster")).toBeInTheDocument();
+    expect(screen.getByTitle("Show Agent List")).toBeInTheDocument();
     expect(screen.getByTitle("Minimize")).toBeInTheDocument();
     expect(screen.getByTitle("Maximize")).toBeInTheDocument();
     expect(screen.getByTitle("Close")).toBeInTheDocument();

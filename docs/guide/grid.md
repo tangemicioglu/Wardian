@@ -24,7 +24,7 @@ Use **Auto** when Wardian should switch between a multi-card grid and a focused 
 - **Maximize** to focus one agent in Single mode.
 - **Reset Grid Layout** in the background context menu.
 
-The default card display comes from **Settings > Grid > Grid card display**. Per-agent overrides remain temporary to the Agents surface.
+The default card display comes from **Settings > Agents > Agent card display**. Per-agent overrides remain temporary to the Agents surface.
 
 ## What Changed
 

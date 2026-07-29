@@ -260,17 +260,26 @@ export const CustomCloneModal: React.FC<CustomCloneModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/55 px-4">
+    <div
+      className="wardian-dialog-overlay fixed inset-0 z-[10000] flex items-center justify-center px-4"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") onClose();
+      }}
+    >
       <form
         role="dialog"
+        aria-modal="true"
         aria-label="Custom Clone"
         data-testid="custom-clone-modal"
         onSubmit={submit}
-        className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-wardian-border bg-[var(--color-wardian-card)] shadow-2xl"
+        className="wardian-dialog-panel wardian-dialog-panel--wide flex max-h-[90vh] w-full flex-col overflow-hidden"
       >
-        <div className="flex items-center justify-between border-b border-wardian-border px-4 py-3">
+        <div className="wardian-dialog-header flex items-center justify-between px-4 py-3">
           <h2 className="text-sm font-bold text-primary">Custom Clone</h2>
-          <button type="button" onClick={onClose} className="text-sm text-muted-neutral hover:text-primary">
+          <button type="button" onClick={onClose} className="wardian-button wardian-button--secondary">
             Close
           </button>
         </div>
@@ -295,9 +304,9 @@ export const CustomCloneModal: React.FC<CustomCloneModalProps> = ({
                   />
                 </label>
                 <label className="block text-[10px] font-bold text-muted-neutral">
-                  Provider Engine
+                  Provider
                   <select
-                    aria-label="Provider Engine"
+                    aria-label="Provider"
                     data-testid="custom-clone-provider"
                     value={provider}
                     onChange={(event) => setProvider(event.target.value as UserFacingProviderName)}
@@ -378,15 +387,15 @@ export const CustomCloneModal: React.FC<CustomCloneModalProps> = ({
           )}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-wardian-border px-4 py-3">
-          <button type="button" onClick={onClose} className="rounded border border-wardian-border px-3 py-2 text-xs text-muted-neutral hover:text-primary">
+        <div className="wardian-dialog-footer flex justify-end gap-2 px-4 py-3">
+          <button type="button" onClick={onClose} className="wardian-button wardian-button--secondary">
             Cancel
           </button>
           <button
             type="submit"
             data-testid="custom-clone-submit"
             disabled={!preview || isLoading || isSubmitting || !selectedProviderAvailable}
-            className="rounded bg-[var(--color-wardian-accent)] px-4 py-2 text-xs font-bold text-[var(--color-wardian-bg)] disabled:opacity-50"
+            className="wardian-button wardian-button--primary"
           >
             {isSubmitting ? "Cloning..." : "Clone"}
           </button>

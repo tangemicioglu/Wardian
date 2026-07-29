@@ -1,10 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openSurface, surfacePanel } from "../fixtures/workbench";
+import { makeWorkbenchDocument } from "../fixtures/workbenchIpcMock";
 
 async function installGardenTestIpcMock(page: Page) {
+  const workbenchDocument = makeWorkbenchDocument();
   // Mock agents so that the Garden view has units to drag.
   // This mirrors the pattern in agent-lifecycle.spec.ts.
-  await page.addInitScript(() => {
+  await page.addInitScript((workbenchDocument) => {
     type Agent = {
       session_id: string;
       session_name: string;
@@ -43,7 +45,10 @@ async function installGardenTestIpcMock(page: Page) {
       localStorage.setItem(
         "wardian-garden",
         JSON.stringify({
-          state: { positions: { "agent:garden-test-agent-01": { x: 200, y: 200 } }, pins: {} },
+          state: {
+            positions: { "agent:garden-test-agent-01": { x: 200, y: 200 } },
+            pins: {},
+          },
           version: 0,
         }),
       );
@@ -65,12 +70,45 @@ async function installGardenTestIpcMock(page: Page) {
       convertFileSrc: (filePath: string) => filePath,
       invoke: async (command: string, args?: Record<string, unknown>) => {
         if (command === "list_agents") return agents;
+        if (command === "get_workbench_boot_config")
+          return { safe_mode: false };
+        if (command === "load_workbench_state") {
+          return {
+            source: "default",
+            document: workbenchDocument,
+            notice: null,
+            durable_revision: workbenchDocument.revision,
+            durable_token: `mock-token-${workbenchDocument.revision}`,
+          };
+        }
+        if (command === "save_workbench_state") {
+          const document = args?.document as { revision?: number } | undefined;
+          const revision = document?.revision ?? workbenchDocument.revision;
+          return {
+            outcome: "saved",
+            durable_revision: revision,
+            durable_token: `mock-token-${revision}`,
+            request_id: args?.request_id,
+          };
+        }
         if (command === "list_agent_classes") {
-          return [{ name: "TestClass", description: "Garden test class", is_default: true }];
+          return [
+            {
+              name: "TestClass",
+              description: "Garden test class",
+              is_default: true,
+            },
+          ];
         }
         if (command === "list_provider_readiness") {
           return [
-            { provider: "claude", display_name: "Claude", available: true, executable: "C:/tools/claude.cmd", reason: null },
+            {
+              provider: "claude",
+              display_name: "Claude",
+              available: true,
+              executable: "C:/tools/claude.cmd",
+              reason: null,
+            },
           ];
         }
         if (command === "load_watchlists") return [];
@@ -85,7 +123,8 @@ async function installGardenTestIpcMock(page: Page) {
         }
         if (command === "list_workflows") return [];
         if (command === "list_scheduled_runs") return [];
-        if (command === "load_workflow_library") return { folders: [], rootWorkflowIds: [] };
+        if (command === "load_workflow_library")
+          return { folders: [], rootWorkflowIds: [] };
         if (command === "get_library_tree") {
           return { type: "Folder", path: "", name: "Root", children: [] };
         }
@@ -96,7 +135,7 @@ async function installGardenTestIpcMock(page: Page) {
         return null;
       },
     };
-  });
+  }, workbenchDocument);
 }
 
 test.describe("Garden View", () => {
@@ -109,7 +148,9 @@ test.describe("Garden View", () => {
     page = await browser.newPage();
     await installGardenTestIpcMock(page);
     await page.goto("/", { waitUntil: "domcontentloaded" });
-    await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+    await page
+      .locator('[data-testid="app-shell"]')
+      .waitFor({ timeout: 15_000 });
   });
 
   test.afterAll(async () => {
@@ -118,15 +159,31 @@ test.describe("Garden View", () => {
 
   test("renders a canvas when Garden tab is clicked", async () => {
     await openSurface(page, "garden");
-    const canvas = surfacePanel(page, "garden").locator(".garden-canvas canvas");
+    const garden = surfacePanel(page, "garden");
+    const canvas = garden.locator(".garden-canvas canvas");
     await expect(canvas).toBeVisible();
+    await expect(
+      garden.getByRole("region", { name: "Garden status legend" }),
+    ).toContainText("Action Required");
+    await expect(garden.getByTestId("garden-selection-summary")).toContainText(
+      "Select a unit to view its status.",
+    );
+
+    if (process.env.WARDIAN_GARDEN_SCREENSHOT) {
+      await garden.screenshot({
+        path: process.env.WARDIAN_GARDEN_SCREENSHOT,
+        animations: "disabled",
+      });
+    }
   });
 
   test("dragging a unit persists its position to localStorage", async () => {
     await openSurface(page, "garden");
 
     // Wait for the canvas to be visible
-    const canvas = surfacePanel(page, "garden").locator(".garden-canvas canvas");
+    const canvas = surfacePanel(page, "garden").locator(
+      ".garden-canvas canvas",
+    );
     await expect(canvas).toBeVisible({ timeout: 10_000 });
 
     // Get the bounding box of the canvas
@@ -149,7 +206,9 @@ test.describe("Garden View", () => {
     await page.waitForTimeout(500);
 
     // Read the localStorage value
-    const stored = await page.evaluate(() => localStorage.getItem("wardian-garden"));
+    const stored = await page.evaluate(() =>
+      localStorage.getItem("wardian-garden"),
+    );
     expect(stored).toBeTruthy();
     expect(stored).toContain("positions");
 
@@ -164,12 +223,16 @@ test.describe("Garden View", () => {
 
     // Reload the page
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+    await page
+      .locator('[data-testid="app-shell"]')
+      .waitFor({ timeout: 15_000 });
 
     await openSurface(page, "garden");
 
     // Read localStorage again
-    const storedAfter = await page.evaluate(() => localStorage.getItem("wardian-garden"));
+    const storedAfter = await page.evaluate(() =>
+      localStorage.getItem("wardian-garden"),
+    );
 
     // Verify the value is unchanged
     expect(storedAfter).toEqual(storedBefore);
@@ -191,13 +254,17 @@ test.describe("Garden View", () => {
     await page.mouse.up({ button: "right" });
     // The context menu is rendered in a document-level portal so it can escape
     // the clipped canvas/workbench panel.
-    await expect(page.locator('[data-testid="garden-context-menu"]')).toBeVisible();
+    await expect(
+      page.locator('[data-testid="garden-context-menu"]'),
+    ).toBeVisible();
 
     await page.locator('[data-testid="garden-reset-layout"]').click();
     await page.waitForTimeout(200);
 
     // Reset empties the persisted positions map.
-    const parsed = await page.evaluate(() => JSON.parse(localStorage.getItem("wardian-garden") ?? "{}"));
+    const parsed = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("wardian-garden") ?? "{}"),
+    );
     expect(parsed.state.positions).toEqual({});
   });
 });

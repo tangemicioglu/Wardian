@@ -61,7 +61,7 @@ All your custom classes are stored in `<wardian-home>/classes.json`. This single
 To use your blueprint:
 1. Navigate to the **Agent Configuration** tab in the Left Sidebar.
 2. Select your class from the dropdown.
-3. Click **Initialize**.
+3. Click **Spawn Agent**.
 The agent will inherit the selected class instructions and class-level skill assignments.
 
 ## Important Limits
