@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { AgentConfig } from "../../types";
 import type { AgentTeam } from "../../layout/watchlist/types";
 import type { AgentGraphProjection } from "../graph/graphProjection";
-import { buildGardenUnits, type GardenWorkflowInput } from "./gardenProjection";
+import {
+  buildAgentUnits,
+  buildWorkflowUnits,
+  computeGardenLayout,
+  gardenLayoutSignature,
+  type GardenWorkflowInput,
+} from "./gardenProjection";
 import { createScene, pinEntity } from "./gardenScene";
 import { COMMONS_DISTRICT_ID } from "./districts";
 
@@ -64,69 +70,40 @@ function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-describe("buildGardenUnits", () => {
-  it("emits one unit per agent and workflow", () => {
-    const result = buildGardenUnits({
+describe("computeGardenLayout", () => {
+  it("emits a position for every agent and workflow", () => {
+    const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
       workflows,
       scene: createScene(),
     });
-    expect(result.agentUnits.map((unit) => unit.ref.id)).toEqual(["a1", "a2", "b1"]);
-    expect(result.workflowUnits.map((unit) => unit.ref.id)).toEqual(["w1"]);
-  });
-
-  it("carries label, status, and colour through from the projection", () => {
-    const result = buildGardenUnits({
-      projection: projectionOf(nodes),
-      teams,
-      workflows,
-      scene: createScene(),
-    });
-    const alpha = result.agentUnits.find((unit) => unit.ref.id === "a1")!;
-    expect(alpha.label).toBe("Alpha");
-    expect(alpha.status).toBe("Idle");
-    expect(alpha.color).toBe("var(--color-wardian-success)");
+    expect([...result.positions.keys()].sort()).toEqual([
+      "agent:a1",
+      "agent:a2",
+      "agent:b1",
+      "workflow:w1",
+    ]);
   });
 
   it("places teammates closer than agents from another team", () => {
     // The property the phyllotaxis spiral could not provide: distance means
     // something.
-    const result = buildGardenUnits({
+    const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
       workflows: [],
       scene: createScene(),
     });
-    const byId = new Map(result.agentUnits.map((unit) => [unit.ref.id, unit.position]));
-    expect(distance(byId.get("a1")!, byId.get("a2")!)).toBeLessThan(
-      distance(byId.get("a1")!, byId.get("b1")!),
-    );
-  });
-
-  it("keeps geometry independent of status, so a status change cannot move a unit", () => {
-    // The invariant the whole design rests on: telemetry is a display channel.
-    const idle = buildGardenUnits({
-      projection: projectionOf(nodes),
-      teams,
-      workflows,
-      scene: createScene(),
-    });
-    const busy = buildGardenUnits({
-      projection: projectionOf(
-        nodes.map((entry) => ({ ...entry, status: "Processing", color: "var(--x)" })),
-      ),
-      teams,
-      workflows,
-      scene: createScene(),
-    });
-    expect(busy.agentUnits.map((unit) => unit.position)).toEqual(
-      idle.agentUnits.map((unit) => unit.position),
+    expect(
+      distance(result.positions.get("agent:a1")!, result.positions.get("agent:a2")!),
+    ).toBeLessThan(
+      distance(result.positions.get("agent:a1")!, result.positions.get("agent:b1")!),
     );
   });
 
   it("reports where each unit sits so a drag can become a district-relative pin", () => {
-    const result = buildGardenUnits({
+    const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
       workflows,
@@ -139,7 +116,7 @@ describe("buildGardenUnits", () => {
   });
 
   it("honours a pin exactly", () => {
-    const first = buildGardenUnits({
+    const first = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
       workflows,
@@ -148,20 +125,17 @@ describe("buildGardenUnits", () => {
     const origin = first.placement.get("agent:a1")!.districtOrigin;
     const pinned = pinEntity(first.scene, "agent:a1", "team:hw", { x: 12, y: 34 }, origin);
 
-    const result = buildGardenUnits({
+    const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
       workflows,
       scene: pinned,
     });
-    expect(result.agentUnits.find((unit) => unit.ref.id === "a1")!.position).toEqual({
-      x: 12,
-      y: 34,
-    });
+    expect(result.positions.get("agent:a1")).toEqual({ x: 12, y: 34 });
   });
 
   it("returns a scene carrying district cells and settled positions", () => {
-    const result = buildGardenUnits({
+    const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
       workflows,
@@ -176,13 +150,105 @@ describe("buildGardenUnits", () => {
   });
 
   it("handles an empty roster", () => {
-    const result = buildGardenUnits({
+    const result = computeGardenLayout({
       projection: projectionOf([]),
       teams: [],
       workflows: [],
       scene: createScene(),
     });
-    expect(result.agentUnits).toEqual([]);
-    expect(result.workflowUnits).toEqual([]);
+    expect(result.positions.size).toBe(0);
+  });
+});
+
+describe("gardenLayoutSignature", () => {
+  it("ignores status, colour, and selection", () => {
+    // These are display channels. If they entered the signature, every telemetry
+    // tick would rerun the pipeline and nudge the whole map.
+    const base = gardenLayoutSignature(projectionOf(nodes), teams, workflows);
+    const repainted = gardenLayoutSignature(
+      projectionOf(
+        nodes.map((entry) => ({
+          ...entry,
+          status: "Processing",
+          color: "var(--x)",
+          selected: true,
+        })),
+      ),
+      teams,
+      workflows,
+    );
+    expect(repainted).toBe(base);
+  });
+
+  it("ignores continuous edge recency but reacts to a state change", () => {
+    // Recency is recomputed against the wall clock; letting it through would
+    // make the map breathe as conversations age.
+    const withEdge = (recency: number, state: string) =>
+      gardenLayoutSignature(
+        projectionOf(nodes, [
+          { id: "a1--a2", source: "a1", target: "a2", origin: "manual", state, recency },
+        ] as unknown as AgentGraphProjection["commEdges"]),
+        teams,
+        workflows,
+      );
+    expect(withEdge(0.9, "recent")).toBe(withEdge(0.4, "recent"));
+    expect(withEdge(0.9, "recent")).not.toBe(withEdge(0.9, "ongoing"));
+  });
+
+  it("reacts to roster, folder, and team membership changes", () => {
+    const base = gardenLayoutSignature(projectionOf(nodes), teams, workflows);
+    expect(
+      gardenLayoutSignature(projectionOf(nodes.slice(0, 2)), teams, workflows),
+    ).not.toBe(base);
+    expect(
+      gardenLayoutSignature(
+        projectionOf([node("a1", "Alpha", "D:\Dev\Moved"), nodes[1], nodes[2]]),
+        teams,
+        workflows,
+      ),
+    ).not.toBe(base);
+    expect(
+      gardenLayoutSignature(projectionOf(nodes), [
+        { id: "hw", name: "Hardware", agentIds: ["a1"] },
+        { id: "web", name: "Web", agentIds: ["b1"] },
+      ] as AgentTeam[], workflows),
+    ).not.toBe(base);
+  });
+
+  it("is stable under input reordering", () => {
+    expect(gardenLayoutSignature(projectionOf([...nodes].reverse()), [...teams].reverse(), workflows)).toBe(
+      gardenLayoutSignature(projectionOf(nodes), teams, workflows),
+    );
+  });
+});
+
+describe("display attachment", () => {
+  it("attaches live label, status, and colour to computed positions", () => {
+    const layout = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows,
+      scene: createScene(),
+    });
+    const units = buildAgentUnits(
+      projectionOf(nodes.map((entry) => ({ ...entry, status: "Processing" }))),
+      layout.positions,
+    );
+    const alpha = units.find((unit) => unit.ref.id === "a1")!;
+    expect(alpha.label).toBe("Alpha");
+    expect(alpha.status).toBe("Processing");
+    expect(alpha.position).toEqual(layout.positions.get("agent:a1"));
+  });
+
+  it("attaches workflow run status without touching position", () => {
+    const layout = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows,
+      scene: createScene(),
+    });
+    const units = buildWorkflowUnits(workflows, layout.positions);
+    expect(units[0]).toMatchObject({ label: "Build", runStatus: "running", nodeCount: 3 });
+    expect(units[0].position).toEqual(layout.positions.get("workflow:w1"));
   });
 });

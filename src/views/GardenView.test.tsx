@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 const gardenWorkflowSpy = vi.hoisted(() => vi.fn(() => (
@@ -8,6 +8,8 @@ const gardenWorkflowSpy = vi.hoisted(() => vi.fn(() => (
 vi.mock("../features/garden/useGardenWorkflows", () => ({
   useGardenWorkflows: gardenWorkflowSpy,
 }));
+const canvasRenders = vi.hoisted(() => ({ count: 0 }));
+
 vi.mock("../features/garden/GardenCanvas", () => ({
   GardenCanvas: ({
     agentUnits,
@@ -19,16 +21,26 @@ vi.mock("../features/garden/GardenCanvas", () => ({
     workflowUnits: readonly unknown[];
     selectedKey: string | null;
     onOpenAgent: (agentId: string) => void;
-  }) => (
+  }) => {
+    canvasRenders.count += 1;
+    return (
     <div data-testid="garden-canvas" data-selected-key={selectedKey ?? "none"}>
       {agentUnits.length}:{workflowUnits.length}
       <button type="button" onClick={() => onOpenAgent("a1")}>Open Agent</button>
     </div>
-  ),
+    );
+  },
 }));
 
 import { GardenView } from "./GardenView";
+import { useGardenStore } from "../store/useGardenStore";
 import type { AgentConfig } from "../types";
+import type { AgentTeam } from "../layout/watchlist/types";
+
+beforeEach(() => {
+  useGardenStore.getState().reset();
+  canvasRenders.count = 0;
+});
 
 describe("GardenView", () => {
   it("passes one agent unit and one workflow unit to the canvas", () => {
@@ -95,6 +107,105 @@ describe("GardenView", () => {
     expect(gardenWorkflowSpy).toHaveBeenCalledWith(false);
     expect(screen.queryByTestId("garden-canvas")).not.toBeInTheDocument();
     expect(screen.getByText(/renderer paused while hidden/i)).toBeInTheDocument();
+  });
+
+  it("settles in a bounded number of renders when the layout writes positions back", () => {
+    // Regression for React error #185. The layout used to depend on the scene it
+    // produced: every pass wrote new positions, which provoked another pass. The
+    // only brake was a convergence epsilon, and the pipeline is not guaranteed to
+    // reach it — overlap removal ranks units by their incoming positions, so
+    // near-tied units can swap separation order between passes and oscillate
+    // forever. In the app that is an unbounded render loop.
+    //
+    // Asserting a render bound rather than "no crash" is what makes this a real
+    // regression test: the loop is a feedback cycle, and the observable symptom
+    // is renders, not an exception. Under the old wiring each settle-step forced
+    // another canvas render.
+    const agents = Array.from({ length: 12 }, (_, i) =>
+      ({
+        session_id: `a${i}`,
+        session_name: `Agent ${i}`,
+        agent_class: "Coder",
+        folder: i % 2 === 0 ? "D:\Dev\Ward" : "D:\Dev\Other",
+        is_off: false,
+      }) as AgentConfig,
+    );
+    const teams: AgentTeam[] = [
+      { id: "hw", name: "Hardware", agentIds: agents.slice(0, 6).map((a) => a.session_id) },
+      { id: "web", name: "Web", agentIds: agents.slice(6).map((a) => a.session_id) },
+    ] as AgentTeam[];
+
+    render(
+      <GardenView
+        filteredAgents={agents}
+        telemetry={{}}
+        teams={teams}
+        activeList={null}
+        interactions={{}}
+        selectedAgentIds={new Set()}
+        offAgentIds={new Set()}
+        onSelectionChange={vi.fn()}
+        onOpenAgent={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("garden-canvas")).toHaveTextContent("12:1");
+    // Mount plus at most one commit for the persisted scene.
+    expect(canvasRenders.count).toBeLessThanOrEqual(2);
+  });
+
+  it("does not relayout when only telemetry changes", () => {
+    // Telemetry ticks constantly. Rerunning the pipeline on each one would
+    // advance convergence a few pixels every time, so the map would drift for
+    // reasons the user cannot see. The layout is keyed on a signature that omits
+    // status and colour, so a tick is a repaint and nothing more.
+    const agents = Array.from({ length: 12 }, (_, i) =>
+      ({
+        session_id: `a${i}`,
+        session_name: `Agent ${i}`,
+        agent_class: "Coder",
+        folder: i % 2 === 0 ? "D:\Dev\Ward" : "D:\Dev\Other",
+        is_off: false,
+      }) as AgentConfig,
+    );
+
+    const view = render(
+      <GardenView
+        filteredAgents={agents}
+        telemetry={{}}
+        teams={[]}
+        activeList={null}
+        interactions={{}}
+        selectedAgentIds={new Set()}
+        offAgentIds={new Set()}
+        onSelectionChange={vi.fn()}
+        onOpenAgent={vi.fn()}
+      />,
+    );
+    const settled = { ...useGardenStore.getState().scene.positions };
+    expect(Object.keys(settled).length).toBeGreaterThan(0);
+    const rendersAfterMount = canvasRenders.count;
+
+    for (let tick = 0; tick < 6; tick += 1) {
+      view.rerender(
+        <GardenView
+          filteredAgents={[...agents]}
+          telemetry={{ [`a${tick}`]: { current_status: "Processing" } as never }}
+          teams={[]}
+          activeList={null}
+          interactions={{}}
+          selectedAgentIds={new Set()}
+          offAgentIds={new Set()}
+          onSelectionChange={vi.fn()}
+          onOpenAgent={vi.fn()}
+        />,
+      );
+    }
+
+    // Positions are byte-identical: no pass ran at all.
+    expect(useGardenStore.getState().scene.positions).toEqual(settled);
+    // One render per tick, with no extra commits from a write-back cascade.
+    expect(canvasRenders.count).toBe(rendersAfterMount + 6);
   });
 
   it("restores and publishes the registered unit selection", () => {

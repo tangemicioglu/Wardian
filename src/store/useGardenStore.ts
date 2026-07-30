@@ -7,6 +7,7 @@ import {
   markVisited,
   pinEntity,
   reviveScene,
+  scenesConverged,
   unpinEntity,
   type GardenScene,
 } from "../features/garden/gardenScene";
@@ -58,7 +59,14 @@ export const useGardenStore = create<GardenStoreState>()(
       exclude: (entityKey, districtId) =>
         set((state) => ({ scene: excludeFromDistrict(state.scene, entityKey, districtId) })),
       visit: (entityKey) => set((state) => ({ scene: markVisited(state.scene, entityKey) })),
-      adoptScene: (scene) => set({ scene }),
+      // A layout pass always returns a fresh scene object even when nothing
+      // moved. Committing it unconditionally would publish a new `scene`
+      // reference on every pass, re-rendering every subscriber and re-writing
+      // storage for sub-pixel changes. Keeping the existing reference when the
+      // two scenes are materially the same makes the write-back idempotent,
+      // which is what stops a relayout from provoking another one.
+      adoptScene: (scene) =>
+        set((state) => (scenesConverged(state.scene, scene) ? state : { scene })),
       reset: () => set({ scene: createScene(), needsRederive: false }),
     }),
     {

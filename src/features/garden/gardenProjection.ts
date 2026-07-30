@@ -1,4 +1,4 @@
-import type { AgentGraphProjection } from "../graph/graphProjection";
+import type { AgentGraphProjection, CommEdgeState } from "../graph/graphProjection";
 import type { AgentTeam } from "../../layout/watchlist/types";
 import type {
   GardenAgentUnit,
@@ -44,8 +44,8 @@ export interface UnitPlacement {
 }
 
 export interface GardenProjectionResult {
-  agentUnits: GardenAgentUnit[];
-  workflowUnits: GardenWorkflowUnit[];
+  /** entityKey -> world position. Display fields are attached separately. */
+  positions: Map<string, GardenPosition>;
   /** Scene with refreshed district cells and warm-start positions. */
   scene: GardenScene;
   /** Pins stranded by a district change; the view offers a re-place. */
@@ -67,7 +67,7 @@ export interface GardenProjectionResult {
  * channels only — they never reach `layoutGarden`, which is precisely why a
  * status change or a message tick cannot move anything.
  */
-export function buildGardenUnits(input: GardenProjectionInput): GardenProjectionResult {
+export function computeGardenLayout(input: GardenProjectionInput): GardenProjectionResult {
   const teamsByAgent = new Map<string, string[]>();
   for (const team of input.teams) {
     for (const agentId of team.agentIds) {
@@ -110,44 +110,122 @@ export function buildGardenUnits(input: GardenProjectionInput): GardenProjection
     input.projection.commEdges.map((edge) => ({
       source: entityKey(agentRef(edge.source)),
       target: entityKey(agentRef(edge.target)),
-      weight: interactionWeight({ manual: edge.origin === "manual", recency: edge.recency }),
+      weight: interactionWeight({
+        manual: edge.origin === "manual",
+        // Quantized deliberately. `CommunicationEdge.recency` is continuous and
+        // recomputed against the wall clock, so feeding it in directly would
+        // make every distance drift as conversations age and the map would
+        // breathe with no user-visible cause. The three activity states are
+        // discrete and change rarely, which is the granularity geometry should
+        // react to.
+        recency: ACTIVITY_WEIGHT[edge.state],
+      }),
     })),
   );
 
   const result = layoutGarden({ entities, scene: input.scene, ppr, now: input.now });
-  const positionOf = new Map(result.units.map((unit) => [unit.key, unit.position]));
 
-  const agentUnits: GardenAgentUnit[] = input.projection.nodes.map((node) => ({
+  return {
+    positions: new Map(result.units.map((unit) => [unit.key, unit.position])),
+    scene: result.scene,
+    stalePinKeys: result.stalePinKeys,
+    placement: new Map<string, UnitPlacement>(
+      result.units.map((unit) => [
+        unit.key,
+        {
+          districtId: unit.districtId,
+          districtOrigin: result.districtOrigins.get(unit.districtId) ?? { x: 0, y: 0 },
+        },
+      ]),
+    ),
+  };
+}
+
+const ACTIVITY_WEIGHT: Record<CommEdgeState, number> = {
+  ongoing: 1,
+  recent: 0.6,
+  dormant: 0.2,
+};
+
+/**
+ * Stable digest of everything that legitimately affects geometry.
+ *
+ * The Garden re-renders whenever telemetry ticks, because status and colour are
+ * live. Keying the layout on the projection's *identity* would therefore rerun
+ * the whole pipeline on every tick — and since stress majorization stops at a
+ * tolerance rather than an exact optimum, each rerun advances convergence and
+ * nudges every unit a few pixels. The map would drift continuously for reasons
+ * the user cannot see.
+ *
+ * Keying on this digest instead means a status change is a repaint and nothing
+ * more. Note what is absent: status, colour, telemetry, selection, and the
+ * continuous edge recency.
+ */
+export function gardenLayoutSignature(
+  projection: AgentGraphProjection,
+  teams: readonly AgentTeam[],
+  workflows: readonly GardenWorkflowInput[],
+): string {
+  const agents = [...projection.nodes]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((node) =>
+      [
+        node.id,
+        node.agent.folder ?? "",
+        node.agent.git_worktree_source ?? "",
+        node.agent.git_worktree_folder ?? "",
+        node.agent.agent_class ?? "",
+        node.agent.provider ?? "",
+        node.agent.model ?? "",
+        (node.agent.include_directories ?? []).join(","),
+        (node.agent.system_include_directories ?? []).join(","),
+        (node.agent.allowed_mcp_server_names ?? []).join(","),
+        (node.agent.extensions ?? []).join(","),
+      ].join("|"),
+    )
+    .join(";");
+
+  const teamKey = [...teams]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((team) => `${team.id}:${[...team.agentIds].sort().join(",")}`)
+    .join(";");
+
+  const workflowKey = [...workflows]
+    .map((workflow) => workflow.id)
+    .sort()
+    .join(",");
+
+  const edgeKey = [...projection.commEdges]
+    .map((edge) => `${edge.id}:${edge.origin}:${edge.state}`)
+    .sort()
+    .join(";");
+
+  return [agents, teamKey, workflowKey, edgeKey].join("#");
+}
+
+/** Attach live display fields to computed positions. */
+export function buildAgentUnits(
+  projection: AgentGraphProjection,
+  positions: ReadonlyMap<string, GardenPosition>,
+): GardenAgentUnit[] {
+  return projection.nodes.map((node) => ({
     ref: { kind: "agent", id: node.id },
     label: node.label,
     status: node.status,
     color: node.color,
-    position: positionOf.get(entityKey(agentRef(node.id))) ?? { x: 0, y: 0 },
+    position: positions.get(entityKey(agentRef(node.id))) ?? { x: 0, y: 0 },
   }));
+}
 
-  const workflowUnits: GardenWorkflowUnit[] = input.workflows.map((workflow) => ({
+export function buildWorkflowUnits(
+  workflows: readonly GardenWorkflowInput[],
+  positions: ReadonlyMap<string, GardenPosition>,
+): GardenWorkflowUnit[] {
+  return workflows.map((workflow) => ({
     ref: { kind: "workflow", id: workflow.id },
     label: workflow.label,
     runStatus: workflow.runStatus,
     nodeCount: workflow.nodeCount,
-    position: positionOf.get(entityKey(workflowRef(workflow.id))) ?? { x: 0, y: 0 },
+    position: positions.get(entityKey(workflowRef(workflow.id))) ?? { x: 0, y: 0 },
   }));
-
-  const placement = new Map<string, UnitPlacement>(
-    result.units.map((unit) => [
-      unit.key,
-      {
-        districtId: unit.districtId,
-        districtOrigin: result.districtOrigins.get(unit.districtId) ?? { x: 0, y: 0 },
-      },
-    ]),
-  );
-
-  return {
-    agentUnits,
-    workflowUnits,
-    scene: result.scene,
-    stalePinKeys: result.stalePinKeys,
-    placement,
-  };
 }

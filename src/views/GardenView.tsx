@@ -2,12 +2,16 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentConfig, AgentTelemetry } from "../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlist/types";
 import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph/graphProjection";
-import { buildGardenUnits } from "../features/garden/gardenProjection";
+import {
+  buildAgentUnits,
+  buildWorkflowUnits,
+  computeGardenLayout,
+  gardenLayoutSignature,
+} from "../features/garden/gardenProjection";
 import { GardenCanvas } from "../features/garden/GardenCanvas";
 import { unitKey } from "../features/garden/garden.types";
 import { GARDEN_AGENT_STATUS_LEGEND, gardenAgentStatusLabel, gardenWorkflowStatusLabel } from "../features/garden/gardenStatus";
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
-import { scenesConverged } from "../features/garden/gardenScene";
 import { useGardenStore } from "../store/useGardenStore";
 import type { GardenSurfaceState } from "../features/workbench/surfaces/coreSurfaceMetadata";
 
@@ -85,28 +89,72 @@ export const GardenView: React.FC<GardenViewProps> = ({
     [filteredAgents, telemetry, teams, activeList, interactions, selectedAgentIds, offAgentIds],
   );
 
-  // Geometry is derived from the metric pipeline. Telemetry deliberately does
-  // not reach it — status and colour ride along on the projection as display
-  // channels only, so a status change repaints without moving anything.
-  const layout = useMemo(
-    () => buildGardenUnits({ projection, teams, workflows: workflowInputs, scene }),
-    [projection, teams, workflowInputs, scene],
-  );
-  const { agentUnits, workflowUnits, placement } = layout;
-
-  // Persist district cells and settled positions so the next pass can warm-start
-  // from them; without that the map re-derives from scratch on every reload and
-  // visibly rearranges itself.
+  // Layout output — district cells and settled positions — is carried forward
+  // through a ref, never through the reactive dependency chain.
   //
-  // The convergence check is load-bearing rather than an optimisation: a layout
-  // pass always returns a fresh scene object, so writing back on identity would
-  // re-trigger the layout forever. `scenesConverged` stops once positions settle
-  // within a fraction of a pixel.
+  // Routing it back through state makes the layout an input to itself: each pass
+  // produces slightly different positions, which triggers another pass. A
+  // convergence epsilon is not a sufficient brake, because the pipeline is not
+  // guaranteed to converge monotonically — overlap removal ranks units by their
+  // incoming positions, so two units sitting at nearly the same coordinate can
+  // swap separation order between passes and oscillate indefinitely. When that
+  // happens the write-back becomes an unbounded render loop (React error #185)
+  // rather than a slightly jittery map.
+  //
+  // Excluding positions from the dependencies also states the intent correctly:
+  // settled positions are a *result*, and only genuine inputs — the roster, the
+  // teams, the blueprints, and the user's own placements — should provoke a
+  // relayout.
+  const carriedSceneRef = useRef(scene);
+
+  // Geometry is keyed on a digest of the inputs that may legitimately move
+  // something, not on the projection's identity. The projection is rebuilt on
+  // every telemetry tick; running the pipeline that often would advance
+  // convergence a few pixels each time and the map would drift continuously for
+  // no reason a user could see. `projectionRef` supplies the current value
+  // without making identity a trigger.
+  const { pins, exclusions } = scene;
+  const projectionRef = useRef(projection);
+  projectionRef.current = projection;
+  const signature = useMemo(
+    () => gardenLayoutSignature(projection, teams, workflowInputs),
+    [projection, teams, workflowInputs],
+  );
+
+  const layout = useMemo(() => {
+    const result = computeGardenLayout({
+      projection: projectionRef.current,
+      teams,
+      workflows: workflowInputs,
+      scene: { ...carriedSceneRef.current, pins, exclusions },
+    });
+    carriedSceneRef.current = result.scene;
+    return result;
+    // `signature` stands in for projection/teams/workflows: it captures exactly
+    // the geometry-relevant content and omits status, colour, and selection.
+  }, [signature, pins, exclusions]);
+  const { placement } = layout;
+
+  // Display fields are attached per render from the live projection, so status
+  // and colour stay current without touching geometry.
+  const agentUnits = useMemo(
+    () => buildAgentUnits(projection, layout.positions),
+    [projection, layout.positions],
+  );
+  const workflowUnits = useMemo(
+    () => buildWorkflowUnits(workflowInputs, layout.positions),
+    [workflowInputs, layout.positions],
+  );
+
+  // Persist district cells and settled positions so a later session can
+  // warm-start from them; without that the map re-derives from scratch on every
+  // reload and visibly rearranges itself. `adoptScene` ignores a scene that has
+  // not moved materially, so this cannot churn storage.
   const adoptSceneRef = useRef(adoptScene);
   adoptSceneRef.current = adoptScene;
   useEffect(() => {
-    if (!scenesConverged(scene, layout.scene)) adoptSceneRef.current(layout.scene);
-  }, [layout.scene, scene]);
+    adoptSceneRef.current(layout.scene);
+  }, [layout]);
 
   // Fall back to an externally-selected single agent (e.g. chosen in Grid) when
   // there is no local Garden selection yet.
