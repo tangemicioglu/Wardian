@@ -145,7 +145,7 @@ const init = JSON.stringify({
   timestamp: new Date().toISOString(),
 }) + "\\n";
 process.stdout.write(init);
-for (let line = 1; line <= 12; line += 1) {
+for (let line = 1; line <= 80; line += 1) {
   process.stdout.write("seed-row-" + String(line).padStart(2, "0") + "\\r\\n");
 }
 let pending = "";
@@ -345,7 +345,7 @@ test(
       `Expected offscreen-era echo in promoted terminal, got tail: ${promotedText.slice(-300)}`,
     );
     assert.ok(
-      promotedText.includes("seed-row-12"),
+      promotedText.includes("seed-row-80"),
       `Expected seeded rows in promoted terminal, got tail: ${promotedText.slice(-300)}`,
     );
 
@@ -398,5 +398,61 @@ test(
         tail: text.slice(-200),
       };
     });
+
+    // Recreate the user-facing timing window: the terminal is intentionally
+    // demoted off screen, then a user returns to it and wheels before the
+    // IntersectionObserver's WebGL promotion runs. The static frame must be
+    // removed synchronously so it cannot mask the live DOM viewport movement.
+    await scrollCardIntoView(driver, bottomSessionId, "center");
+    await waitFor("bottom terminal promoted before re-entry wheel check", 30000, async () => {
+      const snapshot = await readTerminalDebugSnapshot(driver, bottomPresentationId);
+      return { ok: snapshot?.renderer?.webglActive === true, renderer: snapshot?.renderer ?? null };
+    });
+    await scrollCardIntoView(driver, topSessionId, "start");
+    await waitFor("bottom terminal frozen again before re-entry wheel", 30000, async () => {
+      const card = await readCardState(driver, bottomSessionId);
+      const snapshot = await readTerminalDebugSnapshot(driver, bottomPresentationId);
+      return {
+        ok: snapshot?.renderer?.webglActive === false && card?.hasSnapshotOverlay === true,
+        card,
+        renderer: snapshot?.renderer ?? null,
+      };
+    });
+
+    const reentryWheel = await driver.executeScript((sid, pid) => {
+      const card = document.getElementById(`agent-card-${sid}`);
+      const host = [...(card?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
+        .find((candidate) => candidate.getAttribute("data-terminal-presentation-id") === pid);
+      const before = window.__wardianTerminalDebug?.snapshot(pid);
+      const beforeOverlay = Boolean(card?.querySelector('[data-testid="terminal-snapshot-overlay"]'));
+      card?.scrollIntoView({ block: "center", behavior: "instant" });
+      host?.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+        deltaY: -480,
+      }));
+      const after = window.__wardianTerminalDebug?.snapshot(pid);
+      return {
+        hasHost: Boolean(host),
+        beforeOverlay,
+        afterOverlay: Boolean(card?.querySelector('[data-testid="terminal-snapshot-overlay"]')),
+        baseY: before?.renderer?.baseY ?? 0,
+        beforeViewportY: before?.renderer?.viewportY ?? 0,
+        afterViewportY: after?.renderer?.viewportY ?? 0,
+      };
+    }, bottomSessionId, bottomPresentationId);
+    assert.equal(reentryWheel.hasHost, true, `Expected terminal host: ${JSON.stringify(reentryWheel)}`);
+    assert.equal(reentryWheel.beforeOverlay, true, `Expected frozen overlay before wheel: ${JSON.stringify(reentryWheel)}`);
+    assert.ok(reentryWheel.baseY > 0, `Expected renderer scrollback before wheel: ${JSON.stringify(reentryWheel)}`);
+    assert.ok(
+      reentryWheel.afterViewportY < reentryWheel.beforeViewportY,
+      `Expected re-entry wheel to move the live viewport: ${JSON.stringify(reentryWheel)}`,
+    );
+    assert.equal(
+      reentryWheel.afterOverlay,
+      false,
+      `A moved DOM viewport must not remain masked by a static snapshot: ${JSON.stringify(reentryWheel)}`,
+    );
   },
 );
