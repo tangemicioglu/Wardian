@@ -2,11 +2,12 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentConfig, AgentTelemetry } from "../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlist/types";
 import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph/graphProjection";
-import { buildGardenAgentUnits, buildGardenWorkflowUnits } from "../features/garden/gardenProjection";
+import { buildGardenUnits } from "../features/garden/gardenProjection";
 import { GardenCanvas } from "../features/garden/GardenCanvas";
 import { unitKey } from "../features/garden/garden.types";
 import { GARDEN_AGENT_STATUS_LEGEND, gardenAgentStatusLabel, gardenWorkflowStatusLabel } from "../features/garden/gardenStatus";
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
+import { scenesConverged } from "../features/garden/gardenScene";
 import { useGardenStore } from "../store/useGardenStore";
 import type { GardenSurfaceState } from "../features/workbench/surfaces/coreSurfaceMetadata";
 
@@ -50,8 +51,10 @@ export const GardenView: React.FC<GardenViewProps> = ({
   initialSurfaceState,
   onSurfaceStateChange,
 }) => {
-  const positions = useGardenStore((s) => s.positions);
-  const setPosition = useGardenStore((s) => s.setPosition);
+  const scene = useGardenStore((s) => s.scene);
+  const pinUnit = useGardenStore((s) => s.pin);
+  const visitUnit = useGardenStore((s) => s.visit);
+  const adoptScene = useGardenStore((s) => s.adoptScene);
   const resetLayout = useGardenStore((s) => s.reset);
   const workflowInputs = useGardenWorkflows(visibility === "visible");
 
@@ -82,8 +85,28 @@ export const GardenView: React.FC<GardenViewProps> = ({
     [filteredAgents, telemetry, teams, activeList, interactions, selectedAgentIds, offAgentIds],
   );
 
-  const agentUnits = useMemo(() => buildGardenAgentUnits(projection, positions), [projection, positions]);
-  const workflowUnits = useMemo(() => buildGardenWorkflowUnits(workflowInputs, positions), [workflowInputs, positions]);
+  // Geometry is derived from the metric pipeline. Telemetry deliberately does
+  // not reach it — status and colour ride along on the projection as display
+  // channels only, so a status change repaints without moving anything.
+  const layout = useMemo(
+    () => buildGardenUnits({ projection, teams, workflows: workflowInputs, scene }),
+    [projection, teams, workflowInputs, scene],
+  );
+  const { agentUnits, workflowUnits, placement } = layout;
+
+  // Persist district cells and settled positions so the next pass can warm-start
+  // from them; without that the map re-derives from scratch on every reload and
+  // visibly rearranges itself.
+  //
+  // The convergence check is load-bearing rather than an optimisation: a layout
+  // pass always returns a fresh scene object, so writing back on identity would
+  // re-trigger the layout forever. `scenesConverged` stops once positions settle
+  // within a fraction of a pixel.
+  const adoptSceneRef = useRef(adoptScene);
+  adoptSceneRef.current = adoptScene;
+  useEffect(() => {
+    if (!scenesConverged(scene, layout.scene)) adoptSceneRef.current(layout.scene);
+  }, [layout.scene, scene]);
 
   // Fall back to an externally-selected single agent (e.g. chosen in Grid) when
   // there is no local Garden selection yet.
@@ -128,13 +151,21 @@ export const GardenView: React.FC<GardenViewProps> = ({
         workflowUnits={workflowUnits}
         selectedKey={activeSelectionKey}
         onSelect={(ref) => {
-          setSelectedKey(unitKey(ref));
+          const key = unitKey(ref);
+          setSelectedKey(key);
+          visitUnit(key);
           if (ref.kind === "agent") {
             onSelectionChange(new Set([ref.id]));
           }
         }}
         onOpenAgent={(agentId) => (onOpenAgent ?? onOpenAgentInGrid)?.(agentId)}
-        onMoveUnit={(key, x, y) => setPosition(key, { x, y })}
+        onMoveUnit={(key, x, y) => {
+          // A drag is a pin, stored relative to the unit's district so the
+          // placement survives the district being relocated on the grid.
+          const where = placement.get(key);
+          if (!where) return;
+          pinUnit(key, where.districtId, { x, y }, where.districtOrigin);
+        }}
         onResetLayout={() => {
           resetLayout();
           setSelectedKey(null);

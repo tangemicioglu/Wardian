@@ -1,0 +1,358 @@
+/**
+ * Canonical entity identity for the Garden map.
+ *
+ * Wardian already has five live key schemes for things the map must treat as
+ * one keyspace:
+ *
+ * | Scheme            | Form                        | Owner                        |
+ * | ----------------- | --------------------------- | ---------------------------- |
+ * | `unitKey`         | `agent:<uuid>`              | `garden.types.ts`            |
+ * | `entry_ref`       | `skills/dev/planner`        | `LibraryEntry` (path-derived)|
+ * | `folderKey`       | `<section>/<path>`          | `libraryListUtils.ts`        |
+ * | `fileResourceKey` | `file:<id>` / `artifact:<id>`| `files/fileResourceKey.ts`  |
+ * | `Blueprint.id`    | opaque id                   | `workflow/blueprint.rs`      |
+ *
+ * A list view tolerates that fragmentation. A map does not: the same object
+ * arriving under two keys renders as two units, at two positions, with two
+ * facet vectors — which corrupts distance rather than merely duplicating a row.
+ * The worst offender is workflows, which genuinely carry two identities at
+ * once (`Blueprint.id` and library `entry_ref = workflows/<file>.md`,
+ * reconciled today by ad-hoc path matching in `detail/WorkflowDetail.tsx`).
+ *
+ * This module is the single place that collapses those schemes. Every producer
+ * feeding the Garden converts to an `EntityRef` first; nothing downstream sees
+ * a raw scheme key.
+ *
+ * Identity is deliberately *not* a new store. Per
+ * `docs/specs/2026-07-14-entity-oriented-agent-semantics.md`, an entity is a
+ * projection across existing canonical records, so an `EntityRef` is a handle
+ * that can always be resolved back through the owning command.
+ */
+
+/**
+ * Entity kinds the map can place.
+ *
+ * Narrower than the 14-kind proposal in
+ * `docs/specs/2026-06-02-malleable-garden.md`: `memory` and `queue_item` are
+ * omitted because no memory feature, command, or DTO exists in the codebase —
+ * every reference to it is aspirational spec language, and designing facets
+ * around a fiction would produce distances nothing can verify. `artifact` is
+ * the implemented analogue and is included.
+ */
+export type EntityKind =
+  | "agent"
+  | "workflow"
+  | "workflow_run"
+  | "skill"
+  | "prompt"
+  | "class"
+  | "team"
+  | "watchlist"
+  | "worktree"
+  | "folder"
+  | "artifact";
+
+/** Which canonical record owns this entity, for resolution back to a command. */
+export type EntitySource =
+  | "backend"      // live control endpoint / state.db
+  | "wardian_home" // files under the active Wardian home
+  | "library"      // <home>/library and <home>/classes
+  | "logs"         // <home>/logs/workflows
+  | "workspace";   // user filesystem outside the Wardian home
+
+export interface EntityRef {
+  kind: EntityKind;
+  /**
+   * Canonical id within `kind`. Stable across sessions and machines wherever
+   * the underlying record has a stable identity: agent/artifact UUIDs and
+   * `Blueprint.id` are opaque and portable; folders and worktrees are
+   * normalized absolute paths and are therefore machine-local by nature.
+   */
+  id: string;
+  source: EntitySource;
+  /** Present for path-backed entities. Normalized, never display-formatted. */
+  path?: string;
+}
+
+/**
+ * Canonical string key. `kind` is a closed vocabulary with no `:`, and ids may
+ * contain `:` (drive letters) or `/` (library refs), so a single leading
+ * `kind:` prefix parses unambiguously by splitting on the *first* separator.
+ *
+ * Deliberately identical in shape to the existing `unitKey` (`agent:<id>`) so
+ * persisted Garden positions keyed by the old scheme still resolve for agents
+ * and workflows without a migration.
+ */
+export function entityKey(ref: EntityRef): string {
+  return `${ref.kind}:${ref.id}`;
+}
+
+/** Inverse of `entityKey`. Returns null for malformed or unknown-kind keys. */
+export function parseEntityKey(key: string): { kind: EntityKind; id: string } | null {
+  const separator = key.indexOf(":");
+  if (separator <= 0) return null;
+  const kind = key.slice(0, separator);
+  const id = key.slice(separator + 1);
+  if (!id) return null;
+  if (!ENTITY_KINDS.has(kind as EntityKind)) return null;
+  return { kind: kind as EntityKind, id };
+}
+
+const ENTITY_KINDS: ReadonlySet<EntityKind> = new Set<EntityKind>([
+  "agent",
+  "workflow",
+  "workflow_run",
+  "skill",
+  "prompt",
+  "class",
+  "team",
+  "watchlist",
+  "worktree",
+  "folder",
+  "artifact",
+]);
+
+/**
+ * Normalize a filesystem path for identity comparison.
+ *
+ * Mirrors `normalizeGraphPath` (`features/graph/graphProjection.ts`) rather
+ * than reimplementing it: backslashes to forward, collapse duplicate
+ * separators (preserving a UNC `//` prefix), strip trailing separators, and
+ * lowercase drive-letter and UNC paths because Windows path comparison is
+ * case-insensitive. Kept local to avoid a Garden -> Graph import cycle; the
+ * shared behavior is locked by `entityRef.test.ts`.
+ */
+export function normalizeEntityPath(value: string | undefined | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  let normalized = trimmed.replace(/\\/g, "/");
+  const hasUncPrefix = normalized.startsWith("//");
+  const prefix = hasUncPrefix ? "//" : "";
+  const body = hasUncPrefix ? normalized.slice(2) : normalized;
+  normalized = prefix + body.replace(/\/{2,}/g, "/");
+  normalized = stripTrailingSeparators(normalized);
+
+  if (/^[a-zA-Z]:\//.test(normalized) || normalized.startsWith("//")) {
+    normalized = normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function stripTrailingSeparators(path: string): string {
+  if (path === "/") return path;
+  if (/^[a-zA-Z]:\/$/.test(path)) return path;
+  const uncRoot = path.match(/^\/\/[^/]+\/[^/]+\/?$/);
+  if (uncRoot) return path.endsWith("/") ? path.slice(0, -1) : path;
+  return path.replace(/\/+$/g, "");
+}
+
+// --- Constructors, one per producing scheme -------------------------------
+
+/** `AgentConfig.session_id` / `AgentIdentity.uuid` — one UUID keyspace. */
+export function agentRef(sessionId: string): EntityRef {
+  return { kind: "agent", id: sessionId, source: "backend" };
+}
+
+/**
+ * Workflows: the dual-identity case.
+ *
+ * `Blueprint.id` is the canonical id because it survives a file rename and is
+ * what run evidence is keyed by (`logs/workflows/<blueprint_id>/<run_id>/`).
+ * The library `entry_ref` is retained as `path` so the same unit can be
+ * matched from either direction. Callers holding only an `entry_ref` must go
+ * through `resolveWorkflowRef`, which is why that function takes an index
+ * rather than guessing.
+ */
+export function workflowRef(blueprintId: string, entryPath?: string): EntityRef {
+  return {
+    kind: "workflow",
+    id: blueprintId,
+    source: "library",
+    path: entryPath ? normalizeLibraryPath(entryPath) : undefined,
+  };
+}
+
+export function workflowRunRef(blueprintId: string, runId: string): EntityRef {
+  return { kind: "workflow_run", id: `${blueprintId}/${runId}`, source: "logs" };
+}
+
+/**
+ * Library entries. `LibraryEntry.entry_ref` is `<section>/<rel_path>`, which is
+ * already a stable within-library identity, so it becomes the id directly for
+ * sections whose entries have no separate opaque id.
+ *
+ * Workflows are the exception and are rejected here: they must be constructed
+ * via `workflowRef` so they collapse onto `Blueprint.id`. Returning null forces
+ * the caller to resolve rather than silently minting a duplicate unit.
+ */
+export function libraryEntryRef(entryRef: string): EntityRef | null {
+  const normalized = normalizeLibraryPath(entryRef);
+  const separator = normalized.indexOf("/");
+  if (separator <= 0) return null;
+  const section = normalized.slice(0, separator);
+  const rest = normalized.slice(separator + 1);
+  if (!rest) return null;
+
+  switch (section) {
+    case "skills":
+      return { kind: "skill", id: normalized, source: "library", path: rest };
+    case "prompts":
+      return { kind: "prompt", id: normalized, source: "library", path: rest };
+    case "classes":
+      return { kind: "class", id: rest, source: "library", path: rest };
+    case "workflows":
+      // Caller must resolve to Blueprint.id — see resolveWorkflowRef.
+      return null;
+    default:
+      // `mcps` is stubbed in the backend and never has entries; unknown
+      // sections are ignored rather than mapped to a bogus kind.
+      return null;
+  }
+}
+
+/**
+ * Collapse a library workflow `entry_ref` onto its `Blueprint.id`.
+ *
+ * `index` maps normalized library entry path -> blueprint id, built from
+ * `workflow_list_blueprints` (which returns `{ id, name, path }`). Unresolvable
+ * refs return null: a workflow whose blueprint failed to parse must not enter
+ * the map under a second identity.
+ */
+export function resolveWorkflowRef(
+  entryRef: string,
+  index: ReadonlyMap<string, string>,
+): EntityRef | null {
+  const normalized = normalizeLibraryPath(entryRef);
+  const blueprintId = index.get(normalized);
+  if (!blueprintId) return null;
+  return workflowRef(blueprintId, normalized);
+}
+
+/**
+ * Build the index `resolveWorkflowRef` needs from `workflow_list_blueprints`
+ * output. Blueprint `path` is an absolute file path while library `entry_ref`
+ * is `workflows/<file>.md`, so match on the trailing segment — the same
+ * reconciliation `detail/WorkflowDetail.tsx` performs, done once here instead
+ * of ad hoc at each call site.
+ */
+export function buildWorkflowPathIndex(
+  blueprints: ReadonlyArray<{ id: string; path: string }>,
+): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const blueprint of blueprints) {
+    const normalized = normalizeEntityPath(blueprint.path);
+    if (!normalized) continue;
+    const fileName = normalized.slice(normalized.lastIndexOf("/") + 1);
+    if (!fileName) continue;
+    index.set(`workflows/${fileName}`, blueprint.id);
+  }
+  return index;
+}
+
+export function classRef(className: string): EntityRef {
+  return { kind: "class", id: className, source: "library", path: className };
+}
+
+export function teamRef(teamId: string): EntityRef {
+  return { kind: "team", id: teamId, source: "wardian_home" };
+}
+
+export function watchlistRef(watchlistId: string): EntityRef {
+  return { kind: "watchlist", id: watchlistId, source: "wardian_home" };
+}
+
+/**
+ * Worktrees are the closest thing Wardian has to an enumerable workspace
+ * entity: `AgentWorktreeSummary` carries a stable `id` plus `member_agent_ids`.
+ * Prefer this over a raw normalized path wherever a worktree id is available.
+ */
+export function worktreeRef(worktreeId: string, worktreeFolder?: string): EntityRef {
+  return {
+    kind: "worktree",
+    id: worktreeId,
+    source: "workspace",
+    path: normalizeEntityPath(worktreeFolder) ?? undefined,
+  };
+}
+
+/** Folders are identified by normalized absolute path — machine-local by nature. */
+export function folderRef(path: string): EntityRef | null {
+  const normalized = normalizeEntityPath(path);
+  if (!normalized) return null;
+  return { kind: "folder", id: normalized, source: "workspace", path: normalized };
+}
+
+/** `ArtifactManifestV1.artifact_id` — opaque and backend-owned. */
+export function artifactRef(artifactId: string): EntityRef {
+  return { kind: "artifact", id: artifactId, source: "backend" };
+}
+
+/**
+ * Bridge from the existing `fileResourceKey` scheme (`file:<identity>` /
+ * `artifact:<id>`) so workbench surfaces can hand the Garden a key they
+ * already hold.
+ */
+export function fromFileResourceKey(key: string): EntityRef | null {
+  if (key.startsWith("artifact:")) {
+    const id = key.slice("artifact:".length);
+    return id ? artifactRef(id) : null;
+  }
+  if (key.startsWith("file:")) {
+    // A file is placed by its containing folder: individual files are admitted
+    // to the corpus only through lazy folder expansion, never as standalone
+    // map units (see facets.ts on the materialized-corpus rule).
+    const identity = key.slice("file:".length);
+    const normalized = normalizeEntityPath(identity);
+    if (!normalized) return null;
+    const separator = normalized.lastIndexOf("/");
+    if (separator <= 0) return folderRef(normalized);
+    return folderRef(normalized.slice(0, separator));
+  }
+  return null;
+}
+
+/**
+ * Bridge from the legacy 2-kind `GardenEntityRef` (`garden.types.ts`), so
+ * positions persisted under the old `unitKey` scheme keep resolving.
+ */
+export function fromGardenUnitKey(key: string): EntityRef | null {
+  const parsed = parseEntityKey(key);
+  if (!parsed) return null;
+  if (parsed.kind === "agent") return agentRef(parsed.id);
+  if (parsed.kind === "workflow") return workflowRef(parsed.id);
+  return null;
+}
+
+/**
+ * Library refs and paths are compared case-insensitively and with forward
+ * slashes: library paths are filesystem-derived, and on Windows `Skills/Foo`
+ * and `skills/foo` are the same entry.
+ */
+function normalizeLibraryPath(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
+}
+
+/** True when both refs denote the same canonical entity. */
+export function sameEntity(a: EntityRef, b: EntityRef): boolean {
+  return a.kind === b.kind && a.id === b.id;
+}
+
+/**
+ * Deduplicate refs by canonical key, keeping the first occurrence but merging
+ * in a `path` discovered later. Producers run in an arbitrary order, and the
+ * one that knows the path is not always first.
+ */
+export function dedupeRefs(refs: readonly EntityRef[]): EntityRef[] {
+  const byKey = new Map<string, EntityRef>();
+  for (const ref of refs) {
+    const key = entityKey(ref);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, ref);
+      continue;
+    }
+    if (!existing.path && ref.path) byKey.set(key, { ...existing, path: ref.path });
+  }
+  return [...byKey.values()];
+}

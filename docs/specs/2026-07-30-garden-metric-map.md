@@ -1,0 +1,228 @@
+# Garden as a Metric Map
+
+- **Status:** Proposed
+- **Date:** 2026-07-30
+
+## Sources
+
+- [Malleable Garden Design Philosophy](./2026-06-02-malleable-garden.md) defines
+  Garden-owned versus canonically-owned state, the `EntityRef` direction, and the
+  typed relationship vocabulary this spec implements a first slice of.
+- [Entity-Oriented Agent Semantics](./2026-07-14-entity-oriented-agent-semantics.md)
+  establishes that an entity is a projection across existing records rather than a
+  new store, and that Garden spatial proximity stays interpretive.
+- [Communication Topology](./2026-07-02-communication-topology.md) owns the
+  agent-to-agent edge model this consumes.
+
+## Context and Problem Statement
+
+The Garden view is a proof of concept. Its positions came from a phyllotaxis
+spiral, seeded per entity kind, because the alternative was worse: the graph
+view's spring-electric simulation in `features/graph/graphProjection.ts` piled
+agents on top of each other, and `gardenProjection.ts` documented that it was
+deliberately discarding those positions.
+
+Both approaches share a root problem. A spring-electric layout minimizes an
+energy with no relationship to any semantic quantity, so rendered pixel distance
+means nothing in particular. A spiral is worse still: it means nothing at all,
+only guaranteeing non-overlap. Neither can absorb the entity kinds the Garden is
+supposed to hold — library assets, artifacts, folders — because adding node kinds
+to a force simulation produces a denser hairball, not a richer map.
+
+The missing piece is not more node types. It is a **coordinate system**.
+
+Three things the Garden is expected to be have incompatible position semantics:
+
+| Surface | Position is | Stability |
+| --- | --- | --- |
+| Canvas | authored | absolute |
+| Desktop | authored, snapped into named regions | absolute |
+| Map | derived from a metric, but canonical | same object, same place, always |
+
+These cannot be blended by tuning a force simulation. They blend by defining
+position as a layered algebra where each layer has different authority.
+
+## Proposed Decision
+
+Position is derived from an explainable distance metric over canonical Wardian
+records, laid out by stress majorization with an incrementality penalty, and
+overridden by user placement that feeds back into the metric rather than fighting
+it.
+
+### Position algebra
+
+```
+pos(e) = pin( district( embed(e) + local(e) ) )
+```
+
+- **L0 Embedding** — derived from the semantic metric. Global, coarse, slow.
+- **L1 Local layout** — deterministic arrangement and overlap resolution inside
+  a district. Derived, warm-started.
+- **L2 Authored** — pins and placements. Hard constraints that also *deform* L0.
+
+The invariant: L2 wins, L1 never reorders L0, and L0 changes only when canonical
+records change — never because a lens toggled, a status ticked, or a window
+resized.
+
+### The distance metric
+
+There is no natural distance between an agent and a folder, so distance is
+computed in facet space over a shared affiliation vocabulary. Three components
+compose, each renormalized over the terms that actually apply to the pair:
+
+| Term | Source | Why this form |
+| --- | --- | --- |
+| `d_affil` | weighted cosine over facet vectors | Heterogeneous kinds become comparable through shared scopes. |
+| `d_interact` | personalized PageRank over `PairActivity` | Shortest path collapses hub neighbourhoods; PPR discounts hub-mediated adjacency and rewards independent paths. |
+| `d_use` | PMI over co-use within an interaction thread | Raw co-occurrence re-ranks by popularity, making the busiest agent close to everything. |
+
+Facets are weighted by inverse document frequency, which gives path-depth
+weighting for free: deeper directories have fewer members, so a `gamma^depth`
+term is unnecessary and the weighting adapts as the workspace grows. `kappa`
+priors encode how much sharing a *kind* of thing should mean, independent of
+rarity — sharing a provider is both common and unimportant; sharing a path is
+common but important.
+
+Explicit user negatives repel: `ignored_pairs` and `suppressed_seed_pairs` push a
+pair out of each other's neighbourhood. A map where deleting a link moves nothing
+teaches people to stop correcting it.
+
+### The corpus is the materialized entity set, not the disk
+
+Wardian has no recursive filesystem enumeration — `get_directory_tree` reads one
+directory per call and the explorer expands lazily. Document frequency therefore
+cannot span the filesystem without a crawl, and does not need to: files join the
+corpus only when a folder parcel is expanded. Expansion increments `df` along the
+affected ancestor chain, and the layout's drift penalty absorbs the local
+perturbation. **Level of detail and data ingestion are the same boundary.**
+
+### Districts
+
+Districts are partitioned by a canonical, human-nameable record — team, then
+workspace-fallback group, then worktree, then workspace path — never by
+clustering, which one new agent can re-partition. Cells are assigned along a
+Hilbert curve because it preserves locality in both directions, and cells are
+**sticky**: once a district owns one it keeps it, with a TTL tombstone so an
+emptied district that returns lands where it was.
+
+Districts are also a computational firewall. They cap `n` in every superlinear
+stage, which is what confines insertion cost to one district instead of the map.
+
+### Layout
+
+Stress majorization (SMACOF) replaces the spring simulation, minimizing
+
+```
+sigma(X) = sum w_ij (||x_i - x_j|| - d_ij)^2  +  sum rho_i ||x_i - p_i||^2
+```
+
+with `w_ij = d_ij^-2`. The first term makes rendered distance converge to
+semantic distance — the difference between a graph drawing and a map with a scale
+bar. The second is the incrementality mechanism: warm-started from stored
+positions, insertion perturbs a neighbourhood and leaves the rest in place.
+
+`rho` is expressed *relative* to each node's total stress weight. Absolute
+stiffness is dimensionally wrong: stress weights scale with world units, so a
+`rho` of 1.0 would outweigh every distance target by three orders of magnitude
+and freeze the layout at its seed.
+
+Overlap removal uses separation constraints (VPSC) rather than push-apart,
+because push-apart reorders neighbours and the map visibly changes shape when a
+label grows. Constraint *direction* comes from a total order fixed once from the
+incoming layout; orienting by moving positions lets later constraints contradict
+earlier ones, and the resulting cycles are unsatisfiable.
+
+### Malleability
+
+Three tiers of user authority:
+
+1. **Nudge** — a fixed point in the solver.
+2. **Pin** — durable, and stored **district-relative** as `(district_id, dx, dy)`.
+   Absolute pins rot: if a district's cell shifts, the entity is stranded in the
+   wrong neighbourhood and the map starts lying about affiliation. A pin whose
+   entity changes district is explicitly invalidated and surfaced, never silently
+   honoured or silently dropped.
+3. **Anchor** — placement writes a `scene_anchor:<district>` facet that
+   participates in the metric like any other. Placing A in P genuinely makes A
+   closer to P's members, so its neighbours, ranking, and future placement follow
+   without a pin. Exclusion is symmetric via repulsion.
+
+Anchor weight is capped and time-decayed so placement never compounds with
+repetition and fades if the scene is abandoned — otherwise the map ossifies
+around one afternoon's arrangement.
+
+Per the entity-semantics spec, `scene:*` facets change geometry and ranking only.
+They create no team membership, deployment, or binding. The namespace split makes
+that checkable rather than a convention people drift from.
+
+### Explainability is a constraint on the metric
+
+Cosine decomposes linearly over shared facets, so per-facet attribution costs one
+extra pass. This is a requirement, not a nicety: a map whose distances cannot be
+interrogated is a lava lamp. It is also the reason to reject UMAP/t-SNE-style
+embeddings, on top of their nondeterminism and instability under insertion.
+
+## Stability Contract
+
+> Adding or removing an entity moves no other entity more than delta, unless the
+> change alters a district assignment.
+
+Three things may legitimately break it, and each must be visible:
+
+1. District reassignment — animate the transit.
+2. A rare facet becoming common — meaningful; a skill went from bespoke to standard.
+3. A metric version bump — the scene records `metric_version`; a mismatch offers
+   re-derivation with a preview rather than reflowing silently.
+
+Everything else — telemetry, status, messages, lens toggles, resizes — changes
+colour, tint, and emphasis only. This is enforced by a type boundary:
+`LayoutInput` accepts no telemetry, so geometry cannot depend on it.
+
+## Identity
+
+The Garden must treat five live key schemes as one keyspace: `unitKey`,
+`entry_ref`, `folderKey`, `fileResourceKey`, and `Blueprint.id`. A list view
+tolerates that fragmentation; a map does not, because the same object arriving
+under two keys renders as two units at two positions with two facet vectors.
+
+The concrete collision is workflows, which carry `Blueprint.id` *and* library
+`entry_ref = workflows/<file>.md`, reconciled today by ad-hoc path matching in
+`detail/WorkflowDetail.tsx`. `EntityRef` canonicalizes on `Blueprint.id`.
+
+`memory` is deliberately absent from the entity kinds: no memory feature,
+command, or DTO exists, and every reference to it is aspirational spec language.
+`artifact` is the implemented analogue and carries provenance to its producing
+agent.
+
+## Consequences
+
+- **Positive:** Distance means something and is explainable per facet.
+- **Positive:** Insertion touches one district; nothing global recomputes.
+- **Positive:** User placement is first-class and informs the metric instead of
+  fighting it.
+- **Positive:** Heterogeneous kinds can enter without producing a hairball,
+  because containment and affiliation are geometry rather than drawn edges.
+- **Negative:** More moving parts than a force simulation, and three of them
+  (SMACOF, VPSC, Hilbert placement) are hand-rolled because the project has no
+  d3/elk/dagre dependency.
+- **Negative:** VPSC omits block splitting, so displacement is occasionally
+  conservative rather than optimal. Feasibility is preserved by a fixed-point
+  loop plus a longest-path fallback.
+- **Negative:** Scenes still persist through browser storage rather than as
+  inspectable files under the Wardian home.
+
+## Deferred
+
+- Scene files under the active Wardian home. The scene is I/O-free, versioned,
+  and has a tolerant reviver specifically so this is a storage swap.
+- CLI parity: `garden near`, `garden explain`, `garden district`. All three fall
+  out of the metric with no extra machinery and are testable without a renderer.
+- The aggregation tree and level-of-detail budget, which is what admits folders
+  and the filesystem at scale.
+- Power-diagram parcels with real borders and drop targets; parcels are currently
+  positional only.
+- Edge rendering policy: only flow relations should draw lines, bundled along the
+  aggregation tree. Structural and affiliation relations are already expressed as
+  geometry.
+- Interruptible layout across animation frames. `smacofStep` supports batching;
+  the view currently runs to convergence synchronously.
