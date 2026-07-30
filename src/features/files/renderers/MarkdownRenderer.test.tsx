@@ -292,9 +292,20 @@ describe("MarkdownRenderer", () => {
         text: "# Heading\n\n[Root](/docs/a.md) [Bare](other.md) [Jump](#heading)",
       }),
     } as unknown as FileResourceClient;
-    render(<MarkdownRenderer {...props(client, onOpenFile)} />);
+    const view = render(
+      <div className="files-presentation-layer">
+        <MarkdownRenderer {...props(client, onOpenFile)} />
+      </div>,
+    );
     const heading = await screen.findByRole("heading", { name: "Heading" });
     heading.scrollIntoView = vi.fn();
+    const presentationViewport = view.container.querySelector<HTMLElement>(
+      ".files-presentation-layer",
+    );
+    if (!presentationViewport) throw new Error("expected Files presentation viewport");
+    Object.defineProperty(presentationViewport, "scrollTop", { configurable: true, value: 0, writable: true });
+    vi.spyOn(heading, "getBoundingClientRect").mockReturnValue({ top: 240 } as DOMRect);
+    vi.spyOn(presentationViewport, "getBoundingClientRect").mockReturnValue({ top: 100 } as DOMRect);
     fireEvent.click(screen.getByRole("link", { name: "Root" }));
     fireEvent.click(screen.getByRole("link", { name: "Bare" }));
     fireEvent.click(screen.getByRole("link", { name: "Jump" }));
@@ -302,7 +313,8 @@ describe("MarkdownRenderer", () => {
     expect(onOpenFile).toHaveBeenNthCalledWith(2, "C:/work/docs/other.md");
     expect(onOpenFile).toHaveBeenCalledTimes(2);
     expect(heading).toHaveAttribute("id", "heading");
-    expect(heading.scrollIntoView).toHaveBeenCalled();
+    expect(presentationViewport.scrollTop).toBe(128);
+    expect(heading.scrollIntoView).not.toHaveBeenCalled();
     expect(mockOpenUrl).not.toHaveBeenCalledWith("#heading");
   });
 

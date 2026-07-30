@@ -373,7 +373,12 @@ export default function MarkdownRenderer({
     try { id = decodeURIComponent(fragment); } catch { id = fragment; }
     const candidate = document.getElementById(id);
     const heading = candidate && articleRef.current?.contains(candidate) ? candidate : null;
-    heading?.scrollIntoView({ block: "start" });
+    const presentationViewport = heading?.closest<HTMLElement>(".files-presentation-layer");
+    if (heading && presentationViewport) {
+      const headingBounds = heading.getBoundingClientRect();
+      const viewportBounds = presentationViewport.getBoundingClientRect();
+      presentationViewport.scrollTop += headingBounds.top - viewportBounds.top - 12;
+    }
     heading?.focus({ preventScroll: true });
   }, []);
   const components = useMemo<Components>(() => ({
