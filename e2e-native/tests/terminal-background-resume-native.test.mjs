@@ -135,9 +135,6 @@ function terminalText(snapshot) {
 
 async function captureRestoredScrollbackEvidence(driver, sessionId, presentationId) {
   const screenshotDir = process.env.WARDIAN_E2E_SCREENSHOT_DIR;
-  if (!screenshotDir) {
-    return null;
-  }
   const scrolled = await driver.executeScript((sid, pid) => {
     const card = document.getElementById(`agent-card-${sid}`);
     const host = [...(card?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
@@ -155,6 +152,9 @@ async function captureRestoredScrollbackEvidence(driver, sessionId, presentation
       baseY: snapshot?.renderer?.baseY ?? null,
     };
   });
+  if (!screenshotDir) {
+    return null;
+  }
   fs.mkdirSync(screenshotDir, { recursive: true });
   const screenshotPath = path.join(screenshotDir, "authoritative-scrollback-restored.png");
   const card = await driver.findElement(By.id(`agent-card-${sessionId}`));
