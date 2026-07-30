@@ -3,13 +3,21 @@ import { Layer, Stage } from "react-konva";
 import type Konva from "konva";
 import { AgentUnit, AGENT_UNIT_NAME } from "./AgentUnit";
 import { WorkflowUnit } from "./WorkflowUnit";
+import { LibraryUnit } from "./LibraryUnit";
 import { GardenContextMenu } from "./GardenContextMenu";
-import type { GardenAgentUnit, GardenEntityRef, GardenWorkflowUnit } from "./garden.types";
+import type {
+  GardenAgentUnit,
+  GardenEntityRef,
+  GardenLibraryUnit,
+  GardenWorkflowUnit,
+} from "./garden.types";
 import { unitKey } from "./garden.types";
+import { useGardenTheme } from "./useGardenTheme";
 
 interface GardenCanvasProps {
   agentUnits: GardenAgentUnit[];
   workflowUnits: GardenWorkflowUnit[];
+  libraryUnits?: GardenLibraryUnit[];
   selectedKey: string | null;
   onSelect: (ref: GardenEntityRef) => void;
   onOpenAgent: (id: string) => void;
@@ -30,6 +38,7 @@ const ZOOM_STEP = 1.05;
 export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   agentUnits,
   workflowUnits,
+  libraryUnits = [],
   selectedKey,
   onSelect,
   onOpenAgent,
@@ -41,6 +50,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [scale, setScale] = useState(1);
   const [menu, setMenu] = useState<GardenMenuState | null>(null);
+  const theme = useGardenTheme();
 
   useEffect(() => {
     const el = containerRef.current;
@@ -92,7 +102,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
       ref={containerRef}
       className="flex-1 min-h-0 garden-canvas"
       role="img"
-      aria-label={`Garden canvas showing ${agentUnits.length} agents and ${workflowUnits.length} workflows. Select a unit to read its status.`}
+      aria-label={`Garden canvas showing ${agentUnits.length} agents, ${workflowUnits.length} workflows, and ${libraryUnits.length} library assets. Select a unit to read its status.`}
     >
       <Stage
         ref={stageRef}
@@ -104,11 +114,24 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
         onWheel={handleWheel}
       >
         <Layer>
+          {/* Library assets paint first: they are inert material, and agents
+              should never be occluded by them. */}
+          {libraryUnits.map((unit) => (
+            <LibraryUnit
+              key={unitKey(unit.ref)}
+              unit={unit}
+              selected={selectedKey === unitKey(unit.ref)}
+              theme={theme}
+              onSelect={() => onSelect(unit.ref)}
+              onDragMove={(x, y) => onMoveUnit(unitKey(unit.ref), x, y)}
+            />
+          ))}
           {workflowUnits.map((unit) => (
             <WorkflowUnit
               key={unitKey(unit.ref)}
               unit={unit}
               selected={selectedKey === unitKey(unit.ref)}
+              theme={theme}
               onSelect={() => onSelect(unit.ref)}
               onDragMove={(x, y) => onMoveUnit(unitKey(unit.ref), x, y)}
             />
@@ -118,6 +141,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               key={unitKey(unit.ref)}
               unit={unit}
               selected={selectedKey === unitKey(unit.ref)}
+              theme={theme}
               onSelect={() => onSelect(unit.ref)}
               onOpen={onOpenAgent}
               onDragMove={(x, y) => onMoveUnit(unitKey(unit.ref), x, y)}

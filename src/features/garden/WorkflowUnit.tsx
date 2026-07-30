@@ -4,10 +4,12 @@ import type { GardenWorkflowUnit } from "./garden.types";
 import { isActiveWorkflowStatus, workflowStatusColor } from "./gardenStatus";
 import { resolveCssVar } from "./resolveColor";
 import { useGardenPulse } from "./useGardenPulse";
+import type { GardenTheme } from "./useGardenTheme";
 
 interface WorkflowUnitProps {
   unit: GardenWorkflowUnit;
   selected: boolean;
+  theme: GardenTheme;
   onSelect: (id: string) => void;
   onDragMove: (x: number, y: number) => void;
 }
@@ -16,7 +18,13 @@ const POD_WIDTH = 84;
 const POD_HEIGHT = 34;
 const MAX_PIPS = 6;
 
-export const WorkflowUnit: React.FC<WorkflowUnitProps> = ({ unit, selected, onSelect, onDragMove }) => {
+export const WorkflowUnit: React.FC<WorkflowUnitProps> = ({
+  unit,
+  selected,
+  theme,
+  onSelect,
+  onDragMove,
+}) => {
   const fill = resolveCssVar(workflowStatusColor(unit.runStatus));
   const pulse = useGardenPulse(isActiveWorkflowStatus(unit.runStatus));
   const pips = Math.min(Math.max(unit.nodeCount, 0), MAX_PIPS);
@@ -41,13 +49,24 @@ export const WorkflowUnit: React.FC<WorkflowUnitProps> = ({ unit, selected, onSe
         width={POD_WIDTH}
         height={POD_HEIGHT}
         cornerRadius={10}
-        stroke={selected ? "#ffffff" : fill}
+        stroke={selected ? theme.selection : fill}
         strokeWidth={selected ? 2 : 1}
       />
       {Array.from({ length: pips }).map((_, i) => (
         <Circle key={i} x={10 + i * 11} y={POD_HEIGHT - 8} radius={3} fill={fill} />
       ))}
-      <Text text={unit.label} fontSize={11} fill="#cbd5e1" y={-16} width={POD_WIDTH} align="center" />
+      <Text
+        text={unit.label}
+        fontSize={theme.labelSize}
+        fontFamily={theme.font}
+        fill={theme.label}
+        y={-18}
+        width={POD_WIDTH}
+        align="center"
+        shadowColor={theme.labelBackdrop}
+        shadowBlur={4}
+        shadowOpacity={1}
+      />
     </Group>
   );
 };

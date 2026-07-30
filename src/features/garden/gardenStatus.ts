@@ -46,3 +46,13 @@ export function workflowStatusColor(status: GardenWorkflowRunStatus): string {
 export function gardenWorkflowStatusLabel(status: GardenWorkflowRunStatus): string {
   return status === "none" ? "No runs yet" : formatRunStatus(status);
 }
+
+/**
+ * Library assets have no runtime status — their meaningful state is how widely
+ * they are deployed, which is also what places them on the map. "Not deployed"
+ * is the interesting case: it marks an asset nothing currently uses.
+ */
+export function gardenLibraryDeploymentLabel(deploymentCount: number): string {
+  if (deploymentCount <= 0) return "Not deployed";
+  return deploymentCount === 1 ? "Deployed to 1 target" : `Deployed to ${deploymentCount} targets`;
+}

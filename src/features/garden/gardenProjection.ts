@@ -2,13 +2,26 @@ import type { AgentGraphProjection, CommEdgeState } from "../graph/graphProjecti
 import type { AgentTeam } from "../../layout/watchlist/types";
 import type {
   GardenAgentUnit,
+  GardenLibraryUnit,
   GardenPosition,
   GardenWorkflowRunStatus,
   GardenWorkflowUnit,
 } from "./garden.types";
-import { agentRef, entityKey, workflowRef } from "./entityRef";
-import { emitAgentFacets, emitWorkflowFacets } from "./facets";
-import { COMMONS_DISTRICT_ID, districtId, resolveAgentDistrict } from "./districts";
+import { agentRef, entityKey, libraryEntryRef, workflowRef } from "./entityRef";
+import {
+  emitAgentFacets,
+  emitClassFacets,
+  emitPromptFacets,
+  emitSkillFacets,
+  emitWorkflowFacets,
+} from "./facets";
+import {
+  COMMONS_DISTRICT_ID,
+  districtId,
+  resolveAgentDistrict,
+  resolveEntityDistrict,
+} from "./districts";
+import type { GardenLibraryInput } from "./useGardenLibrary";
 import { interactionWeight, personalizedPageRank } from "./metric";
 import { layoutGarden, type LayoutEntity } from "./gardenLayout";
 import type { GardenScene } from "./gardenScene";
@@ -27,12 +40,14 @@ export interface GardenWorkflowInput {
  */
 const AGENT_UNIT_SIZE = { width: 96, height: 42 };
 const WORKFLOW_UNIT_SIZE = { width: 120, height: 52 };
+const LIBRARY_UNIT_SIZE = { width: 104, height: 34 };
 
 export interface GardenProjectionInput {
   /** Display data — labels, status, colour — plus communication edges. */
   projection: AgentGraphProjection;
   teams: readonly AgentTeam[];
   workflows: readonly GardenWorkflowInput[];
+  library?: readonly GardenLibraryInput[];
   scene: GardenScene;
   now?: number;
 }
@@ -78,15 +93,43 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
   }
 
   const entities: LayoutEntity[] = [];
+  const districtByAgentId = new Map<string, string>();
 
   for (const node of input.projection.nodes) {
     const ref = agentRef(node.id);
     const teamIds = teamsByAgent.get(node.id);
+    const district = districtId(resolveAgentDistrict(node.agent, { teamIds }));
+    districtByAgentId.set(node.id, district);
     entities.push({
       ref,
       facets: emitAgentFacets(node.agent, ref, { teamIds }),
-      districtId: districtId(resolveAgentDistrict(node.agent, { teamIds })),
+      districtId: district,
       ...AGENT_UNIT_SIZE,
+    });
+  }
+
+  // Library assets are placed by where they are *deployed*, which is a canonical
+  // record rather than an inference. An asset with no deployment has no
+  // defensible home and lands in the commons instead of being guessed into
+  // someone's district.
+  for (const entry of input.library ?? []) {
+    const ref = libraryEntryRef(entry.entryRef);
+    if (!ref) continue;
+    const facets =
+      entry.kind === "skill"
+        ? emitSkillFacets(ref, { tags: entry.tags, deployments: entry.deployments })
+        : entry.kind === "prompt"
+          ? emitPromptFacets(ref, entry.tags)
+          : emitClassFacets(ref, {
+              memberAgentIds: entry.deployments
+                .filter((deployment) => deployment.targetType === "agent")
+                .map((deployment) => deployment.targetId),
+            });
+    entities.push({
+      ref,
+      facets,
+      districtId: resolveEntityDistrict(facets.tokens, districtByAgentId),
+      ...LIBRARY_UNIT_SIZE,
     });
   }
 
@@ -165,6 +208,7 @@ export function gardenLayoutSignature(
   projection: AgentGraphProjection,
   teams: readonly AgentTeam[],
   workflows: readonly GardenWorkflowInput[],
+  library: readonly GardenLibraryInput[] = [],
 ): string {
   const agents = [...projection.nodes]
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -200,7 +244,21 @@ export function gardenLayoutSignature(
     .sort()
     .join(";");
 
-  return [agents, teamKey, workflowKey, edgeKey].join("#");
+  // Deployment targets move a library asset between districts, so they belong in
+  // the signature. Labels and tags do not — renaming a skill repaints its unit
+  // but must not relayout the map.
+  const libraryKey = [...library]
+    .map(
+      (entry) =>
+        `${entry.entryRef}:${entry.deployments
+          .map((deployment) => `${deployment.targetType}/${deployment.targetId}/${deployment.linked}`)
+          .sort()
+          .join(",")}`,
+    )
+    .sort()
+    .join(";");
+
+  return [agents, teamKey, workflowKey, edgeKey, libraryKey].join("#");
 }
 
 /** Attach live display fields to computed positions. */
@@ -215,6 +273,27 @@ export function buildAgentUnits(
     color: node.color,
     position: positions.get(entityKey(agentRef(node.id))) ?? { x: 0, y: 0 },
   }));
+}
+
+export function buildLibraryUnits(
+  library: readonly GardenLibraryInput[],
+  positions: ReadonlyMap<string, GardenPosition>,
+): GardenLibraryUnit[] {
+  const units: GardenLibraryUnit[] = [];
+  for (const entry of library) {
+    const ref = libraryEntryRef(entry.entryRef);
+    if (!ref) continue;
+    const position = positions.get(entityKey(ref));
+    if (!position) continue;
+    units.push({
+      ref: { kind: entry.kind, id: ref.id },
+      label: entry.label,
+      deploymentCount: entry.deployments.length,
+      hasCopiedDeployment: entry.deployments.some((deployment) => !deployment.linked),
+      position,
+    });
+  }
+  return units;
 }
 
 export function buildWorkflowUnits(

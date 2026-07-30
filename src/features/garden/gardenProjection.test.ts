@@ -4,6 +4,7 @@ import type { AgentTeam } from "../../layout/watchlist/types";
 import type { AgentGraphProjection } from "../graph/graphProjection";
 import {
   buildAgentUnits,
+  buildLibraryUnits,
   buildWorkflowUnits,
   computeGardenLayout,
   gardenLayoutSignature,
@@ -250,5 +251,104 @@ describe("display attachment", () => {
     const units = buildWorkflowUnits(workflows, layout.positions);
     expect(units[0]).toMatchObject({ label: "Build", runStatus: "running", nodeCount: 3 });
     expect(units[0].position).toEqual(layout.positions.get("workflow:w1"));
+  });
+});
+
+describe("library units", () => {
+  const skill = {
+    entryRef: "skills/kicad",
+    kind: "skill" as const,
+    label: "KiCad Review",
+    tags: ["hardware"],
+    deployments: [{ targetType: "agent", targetId: "a1", linked: true }],
+  };
+
+  it("places a deployed skill in its target agent's district", () => {
+    // Deployment is a canonical record, so this placement is defensible rather
+    // than inferred.
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows,
+      library: [skill],
+      scene: createScene(),
+    });
+    expect(result.placement.get("skill:skills/kicad")?.districtId).toBe("team:hw");
+  });
+
+  it("puts an undeployed asset in the commons rather than guessing", () => {
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows,
+      library: [{ ...skill, deployments: [] }],
+      scene: createScene(),
+    });
+    expect(result.placement.get("skill:skills/kicad")?.districtId).toBe(COMMONS_DISTRICT_ID);
+  });
+
+  it("lands a skill nearer its deployment target than an unrelated agent", () => {
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows: [],
+      library: [skill],
+      scene: createScene(),
+    });
+    const position = result.positions.get("skill:skills/kicad")!;
+    expect(distance(position, result.positions.get("agent:a1")!)).toBeLessThan(
+      distance(position, result.positions.get("agent:b1")!),
+    );
+  });
+
+  it("reports deployment count and copied deployments on the unit", () => {
+    const layout = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows,
+      library: [
+        {
+          ...skill,
+          deployments: [
+            { targetType: "agent", targetId: "a1", linked: true },
+            { targetType: "class", targetId: "Architect", linked: false },
+          ],
+        },
+      ],
+      scene: createScene(),
+    });
+    const units = buildLibraryUnits(
+      [
+        {
+          ...skill,
+          deployments: [
+            { targetType: "agent", targetId: "a1", linked: true },
+            { targetType: "class", targetId: "Architect", linked: false },
+          ],
+        },
+      ],
+      layout.positions,
+    );
+    expect(units[0]).toMatchObject({
+      label: "KiCad Review",
+      deploymentCount: 2,
+      hasCopiedDeployment: true,
+    });
+    expect(units[0].ref).toEqual({ kind: "skill", id: "skills/kicad" });
+  });
+
+  it("keeps a renamed asset from provoking a relayout, but a redeployment does", () => {
+    // Labels are display; deployment targets move the asset between districts.
+    const base = gardenLayoutSignature(projectionOf(nodes), teams, workflows, [skill]);
+    expect(
+      gardenLayoutSignature(projectionOf(nodes), teams, workflows, [
+        { ...skill, label: "Renamed", tags: ["other"] },
+      ]),
+    ).toBe(base);
+    expect(
+      gardenLayoutSignature(projectionOf(nodes), teams, workflows, [
+        { ...skill, deployments: [{ targetType: "agent", targetId: "b1", linked: true }] },
+      ]),
+    ).not.toBe(base);
   });
 });

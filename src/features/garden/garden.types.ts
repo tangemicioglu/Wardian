@@ -1,6 +1,18 @@
 import type { RunStatusKind } from "../workflows/run/runTypes";
 
-export type GardenEntityKind = "agent" | "workflow";
+/**
+ * Kinds the Garden renders today.
+ *
+ * A subset of `EntityRef`'s vocabulary — this is what has a renderer and a
+ * district rule, not what the metric can place. Library entries were the first
+ * non-agent kinds to admit because their deployment records already give them a
+ * defensible home: a skill belongs where it is deployed, which is a canonical
+ * fact rather than a guess.
+ */
+export type GardenEntityKind = "agent" | "workflow" | "skill" | "prompt" | "class";
+
+/** Library-backed kinds, which share one renderer. */
+export type GardenLibraryKind = Extract<GardenEntityKind, "skill" | "prompt" | "class">;
 
 export interface GardenEntityRef {
   kind: GardenEntityKind;
@@ -27,6 +39,20 @@ export interface GardenWorkflowUnit {
   label: string;
   runStatus: GardenWorkflowRunStatus;
   nodeCount: number;
+  position: GardenPosition;
+}
+
+export interface GardenLibraryUnit {
+  ref: GardenEntityRef; // kind is one of GardenLibraryKind
+  label: string;
+  /**
+   * How many places this asset is deployed to. Zero is meaningful: an
+   * undeployed skill is inert, and the map should say so rather than drawing it
+   * like a live one.
+   */
+  deploymentCount: number;
+  /** True when at least one deployment is a copy rather than a live junction. */
+  hasCopiedDeployment: boolean;
   position: GardenPosition;
 }
 

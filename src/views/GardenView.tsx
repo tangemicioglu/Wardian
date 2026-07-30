@@ -4,14 +4,21 @@ import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlis
 import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph/graphProjection";
 import {
   buildAgentUnits,
+  buildLibraryUnits,
   buildWorkflowUnits,
   computeGardenLayout,
   gardenLayoutSignature,
 } from "../features/garden/gardenProjection";
 import { GardenCanvas } from "../features/garden/GardenCanvas";
 import { unitKey } from "../features/garden/garden.types";
-import { GARDEN_AGENT_STATUS_LEGEND, gardenAgentStatusLabel, gardenWorkflowStatusLabel } from "../features/garden/gardenStatus";
+import {
+  GARDEN_AGENT_STATUS_LEGEND,
+  gardenAgentStatusLabel,
+  gardenLibraryDeploymentLabel,
+  gardenWorkflowStatusLabel,
+} from "../features/garden/gardenStatus";
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
+import { useGardenLibrary } from "../features/garden/useGardenLibrary";
 import { useGardenStore } from "../store/useGardenStore";
 import type { GardenSurfaceState } from "../features/workbench/surfaces/coreSurfaceMetadata";
 
@@ -61,6 +68,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const adoptScene = useGardenStore((s) => s.adoptScene);
   const resetLayout = useGardenStore((s) => s.reset);
   const workflowInputs = useGardenWorkflows(visibility === "visible");
+  const libraryInputs = useGardenLibrary(visibility === "visible");
 
   // Canvas highlight is keyed by unitKey so agent and workflow ids can't collide,
   // and it stays local so selecting a workflow never leaks into the app's
@@ -117,8 +125,8 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const projectionRef = useRef(projection);
   projectionRef.current = projection;
   const signature = useMemo(
-    () => gardenLayoutSignature(projection, teams, workflowInputs),
-    [projection, teams, workflowInputs],
+    () => gardenLayoutSignature(projection, teams, workflowInputs, libraryInputs),
+    [projection, teams, workflowInputs, libraryInputs],
   );
 
   const layout = useMemo(() => {
@@ -126,6 +134,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
       projection: projectionRef.current,
       teams,
       workflows: workflowInputs,
+      library: libraryInputs,
       scene: { ...carriedSceneRef.current, pins, exclusions },
     });
     carriedSceneRef.current = result.scene;
@@ -145,6 +154,10 @@ export const GardenView: React.FC<GardenViewProps> = ({
     () => buildWorkflowUnits(workflowInputs, layout.positions),
     [workflowInputs, layout.positions],
   );
+  const libraryUnits = useMemo(
+    () => buildLibraryUnits(libraryInputs, layout.positions),
+    [libraryInputs, layout.positions],
+  );
 
   // Persist district cells and settled positions so a later session can
   // warm-start from them; without that the map re-derives from scratch on every
@@ -161,11 +174,15 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const externalAgentKey =
     selectedAgentIds.size === 1 ? unitKey({ kind: "agent", id: [...selectedAgentIds][0] }) : null;
   const activeSelectionKey = selectedKey ?? externalAgentKey;
-  const selectedUnit = [...agentUnits, ...workflowUnits].find((unit) => unitKey(unit.ref) === activeSelectionKey);
+  const selectedUnit = [...agentUnits, ...workflowUnits, ...libraryUnits].find(
+    (unit) => unitKey(unit.ref) === activeSelectionKey,
+  );
   const selectedUnitStatus = selectedUnit
     ? "status" in selectedUnit
       ? gardenAgentStatusLabel(selectedUnit.status)
-      : gardenWorkflowStatusLabel(selectedUnit.runStatus)
+      : "runStatus" in selectedUnit
+        ? gardenWorkflowStatusLabel(selectedUnit.runStatus)
+        : gardenLibraryDeploymentLabel(selectedUnit.deploymentCount)
     : null;
 
   return (
@@ -197,6 +214,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
       {rendererActive ? <GardenCanvas
         agentUnits={agentUnits}
         workflowUnits={workflowUnits}
+        libraryUnits={libraryUnits}
         selectedKey={activeSelectionKey}
         onSelect={(ref) => {
           const key = unitKey(ref);
