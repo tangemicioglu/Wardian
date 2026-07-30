@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 import type { AppSettings } from "../../src/types/settings";
@@ -952,10 +953,41 @@ test("keeps Files chrome and image controls reachable in 100px and 300px panes",
   await page.getByRole("treeitem", { name: "figure.png" }).click();
 
   const surface = page.getByTestId("files-surface");
+  const workbenchTab = filesTab(page, IMAGE_PATH);
+  const workbenchGroup = workbenchTab.locator(
+    'xpath=ancestor::*[@data-testid="workbench-group"][1]',
+  );
+  const workbenchHeader = workbenchGroup.locator(":scope > .dv-tabs-and-actions-container");
   const breadcrumb = page.getByRole("navigation", { name: "File location" });
   const actions = page.getByRole("button", { name: "File actions" });
   const imageToolbar = page.getByRole("toolbar", { name: "Image controls" });
   await expect(page.getByRole("img", { name: "figure.png" })).toBeVisible();
+
+  const expectWorkbenchTabsReachable = async () => {
+    await expect(workbenchTab).toBeVisible();
+    await expect(workbenchTab).toHaveAttribute("aria-selected", "true");
+    const [headerBox, tabBox, topChromeColors] = await Promise.all([
+      workbenchHeader.boundingBox(),
+      workbenchTab.boundingBox(),
+      page.evaluate(() => {
+        const header = document.querySelector<HTMLElement>(
+          '[data-testid="workbench-group"] .dv-tabs-and-actions-container',
+        );
+        const left = document.querySelector<HTMLElement>(".titlebar-left");
+        const right = document.querySelector<HTMLElement>(".titlebar-right");
+        if (!header || !left || !right) throw new Error("Top chrome is unavailable");
+        return [header, left, right].map((element) => getComputedStyle(element).backgroundColor);
+      }),
+    ]);
+    expect(headerBox).not.toBeNull();
+    expect(tabBox).not.toBeNull();
+    expect(tabBox!.y).toBeGreaterThanOrEqual(headerBox!.y - 0.5);
+    expect(tabBox!.y + tabBox!.height).toBeLessThanOrEqual(headerBox!.y + headerBox!.height + 0.5);
+    expect(topChromeColors[0]).toBe(topChromeColors[1]);
+    expect(topChromeColors[0]).toBe(topChromeColors[2]);
+  };
+
+  await expectWorkbenchTabsReachable();
 
   for (const paneWidth of [100, 300]) {
     await surface.evaluate((element, width) => {
@@ -1021,8 +1053,14 @@ test("keeps Files chrome and image controls reachable in 100px and 300px panes",
       expect(toolbarBox).not.toBeNull();
       expect(buttonBox!.x).toBeGreaterThanOrEqual(toolbarBox!.x - 0.5);
       expect(buttonBox!.x + buttonBox!.width).toBeLessThanOrEqual(toolbarBox!.x + toolbarBox!.width + 0.5);
+      await expectWorkbenchTabsReachable();
     }
+    await page.setViewportSize({ width: paneWidth === 100 ? 1100 : 1440, height: 900 });
+    await expectWorkbenchTabsReachable();
   }
 
   await expect(breadcrumb).toContainText("figure.png");
+  const screenshotDirectory = path.resolve("e2e/screenshots/files-tab-bar/2026-07-30T0400Z");
+  mkdirSync(screenshotDirectory, { recursive: true });
+  await page.screenshot({ path: path.join(screenshotDirectory, "files-tab-bar-stable.png") });
 });

@@ -143,7 +143,15 @@ export default function ImageRenderer({ snapshot, client, lifecycle }: FileRende
   };
   const retry = useCallback(() => setRetryToken((value) => value + 1), []);
   const revealToolbarControl = (event: FocusEvent<HTMLButtonElement>) => {
-    event.currentTarget.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    const toolbar = event.currentTarget.closest<HTMLElement>(".files-image-toolbar");
+    if (!toolbar) return;
+    const control = event.currentTarget.getBoundingClientRect();
+    const viewport = toolbar.getBoundingClientRect();
+    if (control.left < viewport.left) {
+      toolbar.scrollLeft += control.left - viewport.left;
+    } else if (control.right > viewport.right) {
+      toolbar.scrollLeft += control.right - viewport.right;
+    }
   };
   const failImage = useCallback(() => {
     disposeAttemptRef.current();

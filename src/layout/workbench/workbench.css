@@ -67,7 +67,8 @@
   --dv-sash-color: var(--color-wardian-border);
   --dv-scrollbar-background-color: var(--color-wardian-card-bg-muted);
   --dv-tab-divider-color: var(--color-wardian-border);
-  --dv-tabs-and-actions-container-background-color: var(--color-wardian-card);
+  /* Keep the full native top chrome on one surface ramp across all three panes. */
+  --dv-tabs-and-actions-container-background-color: var(--color-wardian-sidebar-primary);
   --dv-tabs-container-scrollbar-color: var(--color-wardian-text-muted);
 }
 
