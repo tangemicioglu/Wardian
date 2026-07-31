@@ -20,6 +20,8 @@ import {
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
 import { useGardenLibrary } from "../features/garden/useGardenLibrary";
 import { useGardenStore } from "../store/useGardenStore";
+import { useLibraryStore } from "../store/useLibraryStore";
+import type { LibrarySectionId } from "../types";
 import type { GardenSurfaceState } from "../features/workbench/surfaces/coreSurfaceMetadata";
 
 const ALL_REASONS: Set<GraphRelationshipReason> = new Set([
@@ -27,6 +29,13 @@ const ALL_REASONS: Set<GraphRelationshipReason> = new Set([
   "shared_workspace",
   "same_worktree",
 ]);
+
+/** Garden unit kind to the Library section that owns it. */
+const LIBRARY_SECTION_BY_KIND: Record<string, LibrarySectionId> = {
+  skill: "skills",
+  prompt: "prompts",
+  class: "classes",
+};
 
 export interface GardenViewProps {
   visibility?: "visible" | "hidden";
@@ -69,6 +78,10 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const resetLayout = useGardenStore((s) => s.reset);
   const workflowInputs = useGardenWorkflows(visibility === "visible");
   const libraryInputs = useGardenLibrary(visibility === "visible");
+  // Deep-links into the Library the same way the agent config panel's "Manage
+  // skills" affordance does, so the Garden does not invent a second navigation
+  // path to the same surface.
+  const openLibraryAt = useLibraryStore((s) => s.openLibraryAt);
 
   // Canvas highlight is keyed by unitKey so agent and workflow ids can't collide,
   // and it stays local so selecting a workflow never leaks into the app's
@@ -225,6 +238,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
           }
         }}
         onOpenAgent={(agentId) => (onOpenAgent ?? onOpenAgentInGrid)?.(agentId)}
+        onOpenLibraryEntry={(unit) => openLibraryAt(LIBRARY_SECTION_BY_KIND[unit.ref.kind], unit.entryRef)}
         onMoveUnit={(key, x, y) => {
           // A drag is a pin, stored relative to the unit's district so the
           // placement survives the district being relocated on the grid.

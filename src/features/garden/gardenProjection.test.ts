@@ -8,6 +8,7 @@ import {
   buildWorkflowUnits,
   computeGardenLayout,
   gardenLayoutSignature,
+  placeableLibraryEntries,
   type GardenWorkflowInput,
 } from "./gardenProjection";
 import { createScene, pinEntity } from "./gardenScene";
@@ -260,6 +261,7 @@ describe("library units", () => {
     kind: "skill" as const,
     label: "KiCad Review",
     tags: ["hardware"],
+    isStarred: false,
     deployments: [{ targetType: "agent", targetId: "a1", linked: true }],
   };
 
@@ -274,17 +276,6 @@ describe("library units", () => {
       scene: createScene(),
     });
     expect(result.placement.get("skill:skills/kicad")?.districtId).toBe("team:hw");
-  });
-
-  it("puts an undeployed asset in the commons rather than guessing", () => {
-    const result = computeGardenLayout({
-      projection: projectionOf(nodes),
-      teams,
-      workflows,
-      library: [{ ...skill, deployments: [] }],
-      scene: createScene(),
-    });
-    expect(result.placement.get("skill:skills/kicad")?.districtId).toBe(COMMONS_DISTRICT_ID);
   });
 
   it("lands a skill nearer its deployment target than an unrelated agent", () => {
@@ -350,5 +341,117 @@ describe("library units", () => {
         { ...skill, deployments: [{ targetType: "agent", targetId: "b1", linked: true }] },
       ]),
     ).not.toBe(base);
+  });
+});
+
+describe("placeableLibraryEntries", () => {
+  const base = { label: "x", tags: [], isStarred: false, deployments: [] };
+
+  it("drops skills that are deployed nowhere", () => {
+    // An unused asset has essentially one facet, so any two are metrically
+    // identical: they stack at a point and overlap removal fans them across an
+    // arbitrary area, swamping the districts that do mean something.
+    const entries = [
+      { ...base, entryRef: "skills/used", kind: "skill" as const, deployments: [
+        { targetType: "agent", targetId: "a1", linked: true },
+      ] },
+      { ...base, entryRef: "skills/unused", kind: "skill" as const },
+    ];
+    expect(placeableLibraryEntries(entries, new Set()).map((e) => e.entryRef)).toEqual([
+      "skills/used",
+    ]);
+  });
+
+  it("keeps a class only when some agent is of that class", () => {
+    // A class's deployment_count counts skills deployed *to* it, which says
+    // nothing about whether anything uses the class.
+    const entries = [
+      { ...base, entryRef: "classes/Coder", kind: "class" as const },
+      { ...base, entryRef: "classes/Unused", kind: "class" as const },
+    ];
+    expect(placeableLibraryEntries(entries, new Set(["coder"])).map((e) => e.entryRef)).toEqual([
+      "classes/Coder",
+    ]);
+  });
+
+  it("keeps only starred prompts, since the library records no prompt relationships", () => {
+    const entries = [
+      { ...base, entryRef: "prompts/kept.md", kind: "prompt" as const, isStarred: true },
+      { ...base, entryRef: "prompts/dropped.md", kind: "prompt" as const },
+    ];
+    expect(placeableLibraryEntries(entries, new Set()).map((e) => e.entryRef)).toEqual([
+      "prompts/kept.md",
+    ]);
+  });
+
+  it("keeps a skill deployed only to a class or user", () => {
+    const entries = [
+      { ...base, entryRef: "skills/classy", kind: "skill" as const, deployments: [
+        { targetType: "class", targetId: "Coder", linked: true },
+      ] },
+      { ...base, entryRef: "skills/global", kind: "skill" as const, deployments: [
+        { targetType: "user", targetId: "user", linked: true },
+      ] },
+    ];
+    expect(placeableLibraryEntries(entries, new Set()).map((e) => e.entryRef)).toEqual([
+      "skills/classy",
+      "skills/global",
+    ]);
+  });
+});
+
+describe("skill and agent cohesion", () => {
+  const deployedSkill = {
+    entryRef: "skills/kicad",
+    kind: "skill" as const,
+    label: "KiCad Review",
+    tags: [],
+    isStarred: false,
+    deployments: [{ targetType: "agent", targetId: "a1", linked: true }],
+  };
+
+  it("keeps a deployed skill closer to its target than to the target's own teammate", () => {
+    // The deployment link is recorded only on the skill, and cosine sees shared
+    // tokens — so before the reciprocal `skill:<entry_ref>` facet existed, a
+    // skill and its agent shared nothing and the cross-kind offset pushed them
+    // apart inside their own district.
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows: [],
+      library: [deployedSkill],
+      scene: createScene(),
+    });
+    const skill = result.positions.get("skill:skills/kicad")!;
+    const target = result.positions.get("agent:a1")!;
+    const teammate = result.positions.get("agent:a2")!;
+    expect(distance(skill, target)).toBeLessThan(distance(skill, teammate));
+  });
+
+  it("keeps an undeployed asset out of the layout entirely", () => {
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows: [],
+      library: [{ ...deployedSkill, deployments: [] }],
+      scene: createScene(),
+    });
+    expect(result.positions.has("skill:skills/kicad")).toBe(false);
+  });
+
+  it("carries the verbatim entry_ref on the unit so the Library can select it", () => {
+    // EntityRef lowercases library refs; the Library's own lookup is
+    // case-sensitive, so a reconstructed id would select nothing.
+    const entry = { ...deployedSkill, entryRef: "classes/Coder", kind: "class" as const };
+    const layout = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows: [],
+      library: [entry],
+      scene: createScene(),
+    });
+    const units = buildLibraryUnits([entry], layout.positions);
+    expect(units[0].entryRef).toBe("classes/Coder");
+    expect(units[0].ref.id).toBe("coder");
   });
 });

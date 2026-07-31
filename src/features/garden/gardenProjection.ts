@@ -95,6 +95,28 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
   const entities: LayoutEntity[] = [];
   const districtByAgentId = new Map<string, string>();
 
+  const agentClasses = new Set(
+    input.projection.nodes
+      .map((node) => node.agent.agent_class?.toLowerCase())
+      .filter((className): className is string => Boolean(className)),
+  );
+  const placedLibrary = placeableLibraryEntries(input.library ?? [], agentClasses);
+
+  // Reciprocal skill links. A deployment is recorded only on the skill's side,
+  // and cosine sees shared tokens — so without mirroring it onto the agent, a
+  // skill and the agent it is deployed to have nothing in common and the metric
+  // pushes them apart.
+  const skillsByAgent = new Map<string, string[]>();
+  for (const entry of placedLibrary) {
+    if (entry.kind !== "skill") continue;
+    for (const deployment of entry.deployments) {
+      if (deployment.targetType !== "agent") continue;
+      const existing = skillsByAgent.get(deployment.targetId);
+      if (existing) existing.push(entry.entryRef);
+      else skillsByAgent.set(deployment.targetId, [entry.entryRef]);
+    }
+  }
+
   for (const node of input.projection.nodes) {
     const ref = agentRef(node.id);
     const teamIds = teamsByAgent.get(node.id);
@@ -102,7 +124,10 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
     districtByAgentId.set(node.id, district);
     entities.push({
       ref,
-      facets: emitAgentFacets(node.agent, ref, { teamIds }),
+      facets: emitAgentFacets(node.agent, ref, {
+        teamIds,
+        deployedSkillRefs: skillsByAgent.get(node.id),
+      }),
       districtId: district,
       ...AGENT_UNIT_SIZE,
     });
@@ -112,7 +137,7 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
   // record rather than an inference. An asset with no deployment has no
   // defensible home and lands in the commons instead of being guessed into
   // someone's district.
-  for (const entry of input.library ?? []) {
+  for (const entry of placedLibrary) {
     const ref = libraryEntryRef(entry.entryRef);
     if (!ref) continue;
     const facets =
@@ -191,6 +216,50 @@ const ACTIVITY_WEIGHT: Record<CommEdgeState, number> = {
 };
 
 /**
+ * Library assets that have earned a place on the map.
+ *
+ * The rule is one line: **an asset appears when it has a demonstrable tie to
+ * something else on the map.** Everything else is clutter, and it is clutter of
+ * a specific, damaging kind — an asset with no tie has essentially one facet
+ * (`section:*` plus its library path), so any two of them are metrically
+ * identical. The layout stacks them at a single point and overlap removal then
+ * fans them across an arbitrary area, swamping the districts that do mean
+ * something. Filtering here is not just tidying; it removes the degenerate mass
+ * that makes the rest unreadable.
+ *
+ * Per kind, the available tie differs:
+ *
+ * - **skill** — deployed to at least one agent, class, or user.
+ * - **class** — at least one agent is of that class. "Deployment" for a class
+ *   counts skills deployed *to* it, which says nothing about whether anything
+ *   uses the class, so agent membership is the honest signal.
+ * - **prompt** — the library records no relationship for prompts at all, so
+ *   there is nothing to derive. Starred is the one explicit statement a user
+ *   makes about a prompt, so that is the admission test.
+ *
+ * Assets excluded here are not lost: they remain in the Library, which is the
+ * surface built for browsing everything. If "what is orphaned?" becomes worth
+ * seeing spatially, it belongs behind a lens rather than in the default view.
+ */
+export function placeableLibraryEntries(
+  library: readonly GardenLibraryInput[],
+  agentClasses: ReadonlySet<string>,
+): GardenLibraryInput[] {
+  return library.filter((entry) => {
+    switch (entry.kind) {
+      case "skill":
+        return entry.deployments.length > 0;
+      case "class":
+        return agentClasses.has(entry.entryRef.split("/").slice(1).join("/").toLowerCase());
+      case "prompt":
+        return entry.isStarred;
+      default:
+        return false;
+    }
+  });
+}
+
+/**
  * Stable digest of everything that legitimately affects geometry.
  *
  * The Garden re-renders whenever telemetry ticks, because status and colour are
@@ -250,7 +319,7 @@ export function gardenLayoutSignature(
   const libraryKey = [...library]
     .map(
       (entry) =>
-        `${entry.entryRef}:${entry.deployments
+        `${entry.entryRef}:${entry.isStarred}:${entry.deployments
           .map((deployment) => `${deployment.targetType}/${deployment.targetId}/${deployment.linked}`)
           .sort()
           .join(",")}`,
@@ -287,6 +356,7 @@ export function buildLibraryUnits(
     if (!position) continue;
     units.push({
       ref: { kind: entry.kind, id: ref.id },
+      entryRef: entry.entryRef,
       label: entry.label,
       deploymentCount: entry.deployments.length,
       hasCopiedDeployment: entry.deployments.some((deployment) => !deployment.linked),

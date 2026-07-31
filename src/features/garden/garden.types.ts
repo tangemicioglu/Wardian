@@ -44,6 +44,15 @@ export interface GardenWorkflowUnit {
 
 export interface GardenLibraryUnit {
   ref: GardenEntityRef; // kind is one of GardenLibraryKind
+  /**
+   * The library's own `<section>/<rel_path>` identity, verbatim.
+   *
+   * Carried separately from `ref.id` because `EntityRef` lowercases library
+   * refs for case-insensitive matching, while the Library's own lookup is
+   * case-sensitive — reconstructing `classes/Architect` from a lowercased id
+   * would fail to select anything.
+   */
+  entryRef: string;
   label: string;
   /**
    * How many places this asset is deployed to. Zero is meaningful: an

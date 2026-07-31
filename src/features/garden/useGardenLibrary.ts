@@ -17,6 +17,7 @@ export interface GardenLibraryInput {
   kind: GardenLibraryKind;
   label: string;
   tags: string[];
+  isStarred: boolean;
   deployments: GardenLibraryDeployment[];
 }
 
@@ -53,6 +54,7 @@ export function gardenLibraryInputs(index: LibraryIndex | null): GardenLibraryIn
         kind,
         label: entry.name,
         tags: entry.tags ?? [],
+        isStarred: entry.is_starred === true,
         deployments: (index.deployments?.[entry.entry_ref] ?? []).map((target) => ({
           targetType: target.target_type,
           targetId: target.target_id,

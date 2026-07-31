@@ -9,6 +9,7 @@ interface LibraryUnitProps {
   selected: boolean;
   theme: GardenTheme;
   onSelect: (unit: GardenLibraryUnit) => void;
+  onOpen: (unit: GardenLibraryUnit) => void;
   onDragMove: (x: number, y: number) => void;
 }
 
@@ -33,6 +34,7 @@ export const LibraryUnit: React.FC<LibraryUnitProps> = ({
   selected,
   theme,
   onSelect,
+  onOpen,
   onDragMove,
 }) => {
   const accent = resolveCssVar(KIND_COLOR[unit.ref.kind] ?? "var(--color-wardian-accent)");
@@ -47,6 +49,11 @@ export const LibraryUnit: React.FC<LibraryUnitProps> = ({
       draggable
       onClick={() => onSelect(unit)}
       onTap={() => onSelect(unit)}
+      // Double-click opens the asset in the Library, mirroring how an agent
+      // unit opens its session. Single click stays a selection so inspecting a
+      // unit never yanks the user off the map.
+      onDblClick={() => onOpen(unit)}
+      onDblTap={() => onOpen(unit)}
       onDragMove={(event) => onDragMove(event.target.x(), event.target.y())}
     >
       <Rect

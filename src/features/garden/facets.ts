@@ -408,7 +408,12 @@ export function emitSkillFacets(
   ref: EntityRef,
   context: SkillFacetContext = {},
 ): GardenEntityFacets {
-  const tokens: FacetToken[] = ["section:skills"];
+  // The skill's own identity, which is what an agent's `skill:<entry_ref>`
+  // token matches against. Cosine only sees *shared* tokens, so a one-sided
+  // `deployed:agent:<id>` link is invisible to it: the skill and the agent it
+  // is deployed to would share nothing, and the cross-kind offset would then
+  // push them apart inside their own district. Both ends must carry the token.
+  const tokens: FacetToken[] = ["section:skills", `skill:${ref.id.toLowerCase()}`];
   if (ref.path) tokens.push(...libraryPathFacets("skills", ref.path));
   for (const tag of context.tags ?? []) tokens.push(`tag:${tag.toLowerCase()}`);
   for (const deployment of context.deployments ?? []) {

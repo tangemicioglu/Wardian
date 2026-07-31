@@ -21,6 +21,7 @@ interface GardenCanvasProps {
   selectedKey: string | null;
   onSelect: (ref: GardenEntityRef) => void;
   onOpenAgent: (id: string) => void;
+  onOpenLibraryEntry?: (unit: GardenLibraryUnit) => void;
   onMoveUnit: (key: string, x: number, y: number) => void;
   onResetLayout: () => void;
 }
@@ -42,6 +43,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   selectedKey,
   onSelect,
   onOpenAgent,
+  onOpenLibraryEntry,
   onMoveUnit,
   onResetLayout,
 }) => {
@@ -123,6 +125,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               selected={selectedKey === unitKey(unit.ref)}
               theme={theme}
               onSelect={() => onSelect(unit.ref)}
+              onOpen={(opened) => onOpenLibraryEntry?.(opened)}
               onDragMove={(x, y) => onMoveUnit(unitKey(unit.ref), x, y)}
             />
           ))}
