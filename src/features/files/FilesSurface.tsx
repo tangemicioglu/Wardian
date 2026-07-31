@@ -57,7 +57,7 @@ export type FilesSurfaceProps = {
   on_canonical_resource?: (
     resource_key: string,
   ) => CloseDecision | void | Promise<CloseDecision | void>;
-  on_open_file?: (path: string) => Promise<void> | void;
+  on_open_file?: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
   on_open_with?: (path: string) => Promise<void> | void;
   on_reveal?: (path: string) => Promise<void> | void;
   on_state_change?: (state: FilesSurfaceStateV2) => Promise<void> | void;
@@ -91,7 +91,7 @@ type ActiveFilesSurfaceProps = Required<Pick<
 >> & {
   resource: UseFileResourceResult;
   resource_request: OpenFileResourceRequestV1;
-  on_open_file: (path: string) => Promise<void> | void;
+  on_open_file: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
   on_open_with: (path: string) => Promise<void> | void;
   on_reveal: (path: string) => Promise<void> | void;
   on_state_change: (state: FilesSurfaceStateV2) => Promise<void> | void;
@@ -985,7 +985,7 @@ function FileBackedFilesSurface({
         save_target_grant_id: grant.save_target_grant_id,
         text: snapshot.working_text,
       });
-      await on_open_file(saved.canonical_path);
+      await on_open_file(saved.canonical_path, true);
       setActionError(null);
     } catch (error) {
       const message = `Save As failed: ${error instanceof Error ? error.message : String(error)}`;

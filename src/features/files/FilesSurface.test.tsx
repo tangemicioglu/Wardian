@@ -771,7 +771,7 @@ describe("FilesSurface", () => {
       resource_id: "file:C:/work/docs/copy.md",
       content_hash: "hash-copy",
     });
-    await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith("C:/work/docs/copy.md"));
+    await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith("C:/work/docs/copy.md", true));
     expect(controller.getSnapshot().resource_id).toBe("file:C:/work/docs/artifact.md");
     expect(onCanonicalResource).not.toHaveBeenCalled();
   });
