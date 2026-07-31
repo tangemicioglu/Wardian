@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { METRIC_VERSION } from "./metric";
 import { DRIFT_NEW, DRIFT_PINNED, DRIFT_SETTLED, DRIFT_VISITED } from "./smacof";
 import { SCENE_ANCHOR_MAX_WEIGHT, sceneAnchorToken } from "./facets";
+import { RING_ARRANGEMENT } from "./ringLattice";
 import {
   GARDEN_SCENE_SCHEMA,
   anchoredDistrict,
@@ -175,7 +176,11 @@ describe("reviveScene", () => {
     const revived = reviveScene({
       schema: GARDEN_SCENE_SCHEMA,
       metric_version: METRIC_VERSION,
-      districts: { order: 5, cells: { "team:a": 3, bad: "x" }, tombstones: {} },
+      districts: {
+        arrangement: RING_ARRANGEMENT,
+        cells: { "team:a": 3, bad: "x" },
+        tombstones: {},
+      },
       pins: {
         good: { district_id: "d1", dx: 1, dy: 2, placed_at_ms: now },
         bad: { district_id: 7 },
@@ -189,6 +194,28 @@ describe("reviveScene", () => {
     expect(Object.keys(revived.scene.positions)).toEqual(["good"]);
     expect(Object.keys(revived.scene.visited)).toEqual(["good"]);
     expect(revived.scene.districts.cells).toEqual({ "team:a": 3 });
+  });
+
+  it("re-places districts written under a different arrangement, keeping pins", () => {
+    // A slot index only means something under the mapping that assigned it.
+    // Reading Hilbert-grid indices as ring slots would not relocate districts so
+    // much as scatter them to positions that never meant anything. Pins are
+    // district-relative offsets and survive the move by construction — which is
+    // the reason they are stored that way.
+    const revived = reviveScene({
+      schema: GARDEN_SCENE_SCHEMA,
+      metric_version: METRIC_VERSION,
+      districts: { order: 5, cells: { "team:a": 812, "team:b": 47 }, tombstones: {} },
+      pins: { "agent:a1": { district_id: "team:a", dx: 30, dy: -40, placed_at_ms: now } },
+    });
+    expect(revived.scene.districts.cells).toEqual({});
+    expect(revived.scene.districts.arrangement).toBe(RING_ARRANGEMENT);
+    expect(revived.scene.pins["agent:a1"]).toEqual({
+      district_id: "team:a",
+      dx: 30,
+      dy: -40,
+      placed_at_ms: now,
+    });
   });
 
   it("flags a metric version change for re-derivation instead of reflowing silently", () => {

@@ -14,13 +14,17 @@
  * documented as currently unconsumed by the frontend. That is exactly the hard
  * case — agents that cohere but have declared no team.
  *
- * ## Why a Hilbert curve
+ * ## Where districts sit
  *
- * District cells are placed along a Hilbert curve rather than in row-major
- * order because it preserves locality in both directions: grid neighbours are
- * curve neighbours, so "near on the map" and "near in the metric" stay
- * correlated as the map grows, and placing a new district near a similar one is
- * a search along the curve.
+ * Districts occupy slots on a concentric ring lattice centred on the commons —
+ * see `ringLattice.ts` for the geometry and why it replaced a Hilbert-curve
+ * grid. This module owns which district gets which slot; the lattice owns where
+ * a slot is.
+ *
+ * A new district takes the free slot that minimizes its similarity-weighted
+ * distance to the districts already placed, so semantically close districts end
+ * up adjacent and the arrangement is a statement about kinship rather than an
+ * enumeration order.
  *
  * ## Why cells are sticky
  *
@@ -37,6 +41,12 @@
 
 import type { AgentConfig } from "../../types";
 import { normalizeEntityPath } from "./entityRef";
+import {
+  CENTER_SLOT,
+  RING_ARRANGEMENT,
+  slotDistance,
+  slotPoint,
+} from "./ringLattice";
 
 /** Districts above this size should be split into parcels, not enlarged. */
 export const MAX_DISTRICT_MEMBERS = 60;
@@ -89,15 +99,13 @@ export const MAX_DISTRICT_RADIUS = 1200;
  */
 export const MAX_DISTRICT_SPACING = 2 * MAX_DISTRICT_RADIUS + DISTRICT_MARGIN;
 
-/** Grid order: side length is 2^order, so order 5 gives 1024 cells. */
-export const DEFAULT_HILBERT_ORDER = 5;
-
 /** How long an emptied district keeps its cell reserved (~14 days). */
 export const DISTRICT_TOMBSTONE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
- * Cells examined past the last occupied one when placing a new district. Bounds
- * the search so a sparse map never scans the full 2^(2*order) grid.
+ * Slots examined past the outermost occupied one when placing a new district.
+ * Rings are unbounded, so the search needs a window to stay linear in the number
+ * of districts rather than in how far out the map happens to reach.
  */
 const FREE_CELL_SEARCH_WINDOW = 256;
 
@@ -152,90 +160,41 @@ export function resolveAgentDistrict(
   return { tier: "commons", id: "shared" };
 }
 
-// --- Hilbert curve --------------------------------------------------------
-
-export interface GridCell {
-  x: number;
-  y: number;
-}
-
-function rotate(n: number, cell: GridCell, rx: number, ry: number): GridCell {
-  let { x, y } = cell;
-  if (ry === 0) {
-    if (rx === 1) {
-      x = n - 1 - x;
-      y = n - 1 - y;
-    }
-    return { x: y, y: x };
-  }
-  return { x, y };
-}
-
-/** Curve index to grid cell. */
-export function hilbertToCell(index: number, order = DEFAULT_HILBERT_ORDER): GridCell {
-  const side = 1 << order;
-  let cell: GridCell = { x: 0, y: 0 };
-  let remaining = Math.max(0, Math.floor(index));
-  for (let step = 1; step < side; step *= 2) {
-    const rx = 1 & (remaining >> 1);
-    const ry = 1 & (remaining ^ rx);
-    cell = rotate(step, cell, rx, ry);
-    cell = { x: cell.x + step * rx, y: cell.y + step * ry };
-    remaining = Math.floor(remaining / 4);
-  }
-  return cell;
-}
-
-/** Grid cell to curve index. */
-export function cellToHilbert(cell: GridCell, order = DEFAULT_HILBERT_ORDER): number {
-  const side = 1 << order;
-  let { x, y } = cell;
-  let index = 0;
-  for (let step = side / 2; step > 0; step = Math.floor(step / 2)) {
-    const rx = (x & step) > 0 ? 1 : 0;
-    const ry = (y & step) > 0 ? 1 : 0;
-    index += step * step * ((3 * rx) ^ ry);
-    const rotated = rotate(side, { x, y }, rx, ry);
-    x = rotated.x;
-    y = rotated.y;
-  }
-  return index;
-}
-
-export function hilbertCellCount(order = DEFAULT_HILBERT_ORDER): number {
-  return 1 << (2 * order);
-}
+// --- Slot geometry --------------------------------------------------------
 
 /**
- * Grid (Chebyshev) distance between two curve indices.
+ * Distance between two slots, in pitches.
  *
- * Grid distance rather than curve-index difference: the curve preserves
- * locality but is not isometric, so two adjacent cells can sit far apart in
- * index space. Placement cares where things end up on screen.
+ * Re-exported from the lattice so callers reason about slots without depending
+ * on how a slot maps to a point.
  */
-export function cellDistance(a: number, b: number, order = DEFAULT_HILBERT_ORDER): number {
-  const cellA = hilbertToCell(a, order);
-  const cellB = hilbertToCell(b, order);
-  return Math.max(Math.abs(cellA.x - cellB.x), Math.abs(cellA.y - cellB.y));
+export function cellDistance(a: number, b: number): number {
+  return slotDistance(a, b);
 }
 
-/** World-space centre of a district cell. */
+/** World-space centre of a district's slot. */
 export function districtCenter(
   index: number,
-  options: { order?: number; spacing?: number; origin?: { x: number; y: number } } = {},
+  options: { spacing?: number; origin?: { x: number; y: number } } = {},
 ): { x: number; y: number } {
-  const order = options.order ?? DEFAULT_HILBERT_ORDER;
   const spacing = options.spacing ?? DEFAULT_DISTRICT_SPACING;
   const origin = options.origin ?? { x: 0, y: 0 };
-  const cell = hilbertToCell(index, order);
-  return { x: origin.x + cell.x * spacing, y: origin.y + cell.y * spacing };
+  const point = slotPoint(index, spacing);
+  return { x: origin.x + point.x, y: origin.y + point.y };
 }
 
 // --- Sticky assignment ----------------------------------------------------
 
 export interface DistrictLayout {
-  order: number;
-  /** districtId -> curve index. Persisted in the scene; never reassigned. */
+  /**
+   * Slot-to-position mapping the stored cells were assigned under.
+   *
+   * Persisted, because a slot index only means something under the arrangement
+   * that produced it. A mismatch discards the cells rather than reinterpreting
+   * them; see `RING_ARRANGEMENT`.
+   */
+  arrangement: number;
+  /** districtId -> slot index. Persisted in the scene; never reassigned. */
   cells: Record<string, number>;
   /** districtId -> epoch ms at which its reserved cell may be reclaimed. */
   tombstones: Record<string, number>;
@@ -249,8 +208,13 @@ export interface DistrictLayout {
   spacing: number;
 }
 
-export function createDistrictLayout(order = DEFAULT_HILBERT_ORDER): DistrictLayout {
-  return { order, cells: {}, tombstones: {}, spacing: DEFAULT_DISTRICT_SPACING };
+export function createDistrictLayout(): DistrictLayout {
+  return {
+    arrangement: RING_ARRANGEMENT,
+    cells: {},
+    tombstones: {},
+    spacing: DEFAULT_DISTRICT_SPACING,
+  };
 }
 
 /**
@@ -299,22 +263,27 @@ export interface PlaceDistrictsResult {
 }
 
 /**
- * Assign cells to any districts that lack one, leaving existing cells untouched.
+ * Assign slots to any districts that lack one, leaving existing slots untouched.
  *
- * A new district takes the free cell minimizing its similarity-weighted grid
- * distance to already-placed districts, so it lands beside the districts it
- * most resembles:
+ * A new district takes the free slot minimizing its similarity-weighted distance
+ * to already-placed districts, so it lands beside the districts it most
+ * resembles:
  *
- *   cost(c) = sum over placed d of  similarity(new, d) * cellDistance(c, cell(d))
+ *   cost(s) = sum over placed d of  similarity(new, d) * slotDistance(s, slot(d))
  *
- * Ties break on the lower cell index, keeping the result deterministic.
+ * Ties break on the lower slot index, which — because slots are numbered from
+ * the centre outward — means an otherwise equal district lands as close to the
+ * middle as it can. Placement is deterministic.
+ *
+ * The commons holds the centre slot unconditionally. It is the district every
+ * other one is arranged around, and letting it be pushed outward by arrival
+ * order would make the arrangement say something false about it.
  */
 export function placeDistricts(
   layout: DistrictLayout,
   activeDistrictIds: readonly string[],
   similarity: DistrictSimilarity = () => 0,
 ): PlaceDistrictsResult {
-  const order = layout.order;
   const cells = { ...layout.cells };
   const tombstones = { ...layout.tombstones };
   const before = new Map(Object.entries(cells));
@@ -327,6 +296,18 @@ export function placeDistricts(
   for (const districtIdentifier of active) delete tombstones[districtIdentifier];
 
   const occupied = new Set<number>(Object.values(cells));
+
+  // The centre is reserved even when the commons is not currently populated:
+  // it is a standing place on the map, and a workspace district that happened to
+  // be created first should not inherit the middle and then keep it forever.
+  if (cells[COMMONS_DISTRICT_ID] === undefined && !occupied.has(CENTER_SLOT)) {
+    if (active.includes(COMMONS_DISTRICT_ID)) {
+      cells[COMMONS_DISTRICT_ID] = CENTER_SLOT;
+      placed.push(COMMONS_DISTRICT_ID);
+    }
+    occupied.add(CENTER_SLOT);
+  }
+
   // Sorted so placement order — and therefore the resulting map — does not
   // depend on how the caller enumerated districts.
   const pending = active.filter((id) => cells[id] === undefined);
@@ -338,9 +319,7 @@ export function placeDistricts(
       placedIds.map((id) => ({ id, cell: cells[id] })),
       occupied,
       similarity,
-      order,
     );
-    if (cell === null) continue; // Grid exhausted; caller may raise the order.
     cells[districtIdentifier] = cell;
     occupied.add(cell);
     placed.push(districtIdentifier);
@@ -350,26 +329,37 @@ export function placeDistricts(
   for (const [id, cell] of before) {
     if (cells[id] !== cell) stable = false;
   }
-  return { layout: { order, cells, tombstones, spacing: layout.spacing }, placed, stable };
+  return {
+    layout: { arrangement: RING_ARRANGEMENT, cells, tombstones, spacing: layout.spacing },
+    placed,
+    stable,
+  };
 }
 
+/**
+ * The innermost free slot, or the one a similar district pulls this one toward.
+ *
+ * Rings are unbounded, so unlike the old fixed grid there is no exhaustion case
+ * and no fallback that parks a district on top of the commons. The search is
+ * still windowed: scanning past the outermost occupied slot by a bounded margin
+ * is enough to find a good seat, and keeps placement linear in the number of
+ * districts rather than in the size of the map.
+ */
 function chooseFreeCell(
   districtIdentifier: string,
   placed: ReadonlyArray<{ id: string; cell: number }>,
   occupied: ReadonlySet<number>,
   similarity: DistrictSimilarity,
-  order: number,
-): number | null {
-  const total = hilbertCellCount(order);
-  if (placed.length === 0) {
-    for (let candidate = 0; candidate < total; candidate += 1) {
+): number {
+  const firstFree = () => {
+    for (let candidate = 0; ; candidate += 1) {
       if (!occupied.has(candidate)) return candidate;
     }
-    return null;
-  }
+  };
+  if (placed.length === 0) return firstFree();
 
   const highestOccupied = Math.max(...placed.map((entry) => entry.cell));
-  const limit = Math.min(total, highestOccupied + 1 + FREE_CELL_SEARCH_WINDOW);
+  const limit = highestOccupied + 1 + FREE_CELL_SEARCH_WINDOW;
 
   let best: number | null = null;
   let bestCost = Infinity;
@@ -379,19 +369,17 @@ function chooseFreeCell(
     for (const entry of placed) {
       const weight = similarity(districtIdentifier, entry.id);
       if (weight <= 0) continue;
-      cost += weight * cellDistance(candidate, entry.cell, order);
+      cost += weight * cellDistance(candidate, entry.cell);
     }
     if (cost < bestCost) {
       bestCost = cost;
       best = candidate;
     }
   }
-  if (best !== null) return best;
-  // Every candidate scored equally (no similarity data): take the first free.
-  for (let candidate = 0; candidate < total; candidate += 1) {
-    if (!occupied.has(candidate)) return candidate;
-  }
-  return null;
+  // Every candidate scored equally (no similarity data): take the innermost free
+  // slot, so an unrelated district fills the map from the centre outward rather
+  // than trailing off into a ring of its own.
+  return best ?? firstFree();
 }
 
 /**
@@ -426,7 +414,7 @@ export function retireDistricts(
       delete cells[districtIdentifier];
     }
   }
-  return { order: layout.order, cells, tombstones, spacing: layout.spacing };
+  return { arrangement: layout.arrangement, cells, tombstones, spacing: layout.spacing };
 }
 
 // --- Non-agent membership -------------------------------------------------

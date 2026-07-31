@@ -2,8 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadGardenWorkflowInputs, mergeWorkflowRunStatus, resetGardenWorkflowCacheForTests } from "./useGardenWorkflows";
 import type { RunSummary } from "../workflows/run/runTypes";
 
-const emptyContext = { agentIds: [], workspacePaths: [], libraryFolder: null };
-const emptyInput = { agentIds: [], workspacePaths: [], libraryFolder: null };
+const emptyContext = {
+  agentIds: [],
+  roleNames: [],
+  classNames: [],
+  workspacePaths: [],
+  libraryFolder: null,
+};
+const emptyInput = {
+  agentIds: [],
+  roleNames: [],
+  classNames: [],
+  workspacePaths: [],
+  libraryFolder: null,
+};
 
 const run = (over: Partial<RunSummary>): RunSummary => ({
   run_id: "r", blueprint_id: "w1", status: "completed", node_count: 1, path: "p", ...over,

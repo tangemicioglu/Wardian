@@ -432,8 +432,16 @@ function reviveDistricts(raw: unknown): DistrictLayout {
   const fallback = createDistrictLayout();
   if (!raw || typeof raw !== "object") return fallback;
   const candidate = raw as Partial<DistrictLayout>;
+
+  // A slot index only means something under the arrangement that assigned it.
+  // Reading indices from the old Hilbert grid as ring slots would not relocate
+  // districts so much as scatter them to positions that never meant anything, so
+  // a stale arrangement is re-placed from scratch. Pins survive regardless: they
+  // are district-relative offsets, not coordinates on the lattice.
+  if (candidate.arrangement !== fallback.arrangement) return fallback;
+
   return {
-    order: typeof candidate.order === "number" ? candidate.order : fallback.order,
+    arrangement: fallback.arrangement,
     cells: reviveRecord(candidate.cells, (value): value is number => typeof value === "number"),
     tombstones: reviveRecord(
       candidate.tombstones,

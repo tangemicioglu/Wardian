@@ -210,7 +210,6 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
     const local = new Map<string, GardenPosition>();
     localById.set(districtId, local);
     const priorOrigin = districtCenter(cellFor(districts, districtId), {
-      order: districts.order,
       spacing: previousSpacing,
     });
 
@@ -312,10 +311,7 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
   const districtOrigins = new Map<string, GardenPosition>();
 
   for (const districtId of activeDistricts) {
-    const origin = districtCenter(cellFor(spacedDistricts, districtId), {
-      order: spacedDistricts.order,
-      spacing,
-    });
+    const origin = districtCenter(cellFor(spacedDistricts, districtId), { spacing });
     districtOrigins.set(districtId, origin);
 
     for (const entity of byDistrict.get(districtId)!) {

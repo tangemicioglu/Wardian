@@ -27,12 +27,46 @@ import type { Blueprint, BlueprintNode } from "../workflows/builder/blueprintTyp
 import { findNodeType } from "../workflows/builder/registry";
 
 export interface WorkflowContext {
-  /** Agent ids bound by `agent_ref` fields. */
+  /** Concrete agent ids bound by `agent_ref` fields. */
   agentIds: string[];
+  /** Role names a blueprint leaves open, e.g. `evolver` from `role:evolver`. */
+  roleNames: string[];
+  /** Agent classes a blueprint requires, e.g. `Coder` from `class:Coder`. */
+  classNames: string[];
   /** Directories named by `path` fields. */
   workspacePaths: string[];
   /** Section-relative folder of the blueprint file, e.g. `trident`. */
   libraryFolder: string | null;
+}
+
+/**
+ * An `agent_ref` is one of three different things, and they were being read as
+ * one.
+ *
+ * A bare value is an agent id and binds the workflow to that agent. `role:name`
+ * and `class:name` are *unfilled* — they say what kind of agent the workflow
+ * needs, and which actual agent runs it is decided elsewhere (at launch, or in
+ * the schedule that deploys it). `ephemeral` names a throwaway agent and ties
+ * the workflow to nobody.
+ *
+ * Treating all of them as ids is why the Evolver's workflows sat in the commons:
+ * every task node in them says `role:evolver`, which resolved to an agent id
+ * that does not exist, so the workflow had no link to anywhere. The role is
+ * still worth recording — workflows sharing one belong together even when none
+ * of them is deployed — but it is not a binding, and only bindings place a
+ * workflow in an agent's district.
+ */
+function classifyAgentRef(value: string): { kind: "agent" | "role" | "class"; name: string } | null {
+  if (value === "ephemeral") return null;
+  if (value.startsWith("role:")) {
+    const name = value.slice("role:".length).trim();
+    return name ? { kind: "role", name } : null;
+  }
+  if (value.startsWith("class:")) {
+    const name = value.slice("class:".length).trim();
+    return name ? { kind: "class", name } : null;
+  }
+  return { kind: "agent", name: value };
 }
 
 /** Field values of `kind`, flattened across the multi-valued case. */
@@ -69,10 +103,18 @@ export function libraryFolderOf(path: string | undefined): string | null {
 /** Read the districting evidence out of a parsed blueprint. */
 export function workflowContextOf(blueprint: Blueprint, path?: string): WorkflowContext {
   const agentIds = new Set<string>();
+  const roleNames = new Set<string>();
+  const classNames = new Set<string>();
   const workspacePaths = new Set<string>();
 
   for (const node of blueprint.nodes ?? []) {
-    for (const value of fieldValuesOfKind(node, "agent_ref")) agentIds.add(value);
+    for (const value of fieldValuesOfKind(node, "agent_ref")) {
+      const ref = classifyAgentRef(value);
+      if (!ref) continue;
+      if (ref.kind === "agent") agentIds.add(ref.name);
+      else if (ref.kind === "role") roleNames.add(ref.name);
+      else classNames.add(ref.name);
+    }
     for (const value of fieldValuesOfKind(node, "path")) workspacePaths.add(value);
   }
 
@@ -80,6 +122,8 @@ export function workflowContextOf(blueprint: Blueprint, path?: string): Workflow
     // Sorted so the facet set — and therefore the layout — does not depend on
     // the order nodes happen to appear in the file.
     agentIds: [...agentIds].sort(),
+    roleNames: [...roleNames].sort(),
+    classNames: [...classNames].sort(),
     workspacePaths: [...workspacePaths].sort(),
     libraryFolder: libraryFolderOf(path),
   };

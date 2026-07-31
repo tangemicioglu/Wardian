@@ -249,6 +249,73 @@ frame to move one circle by a pixel. Three rules now hold the line:
   the default shallow comparison would never skip anything; `position` and
   `crown` come straight from the layout result and are compared by reference.
 
+### Districts are arranged around a centre, not enumerated onto a grid
+
+Districts sat on a Hilbert-curve grid, chosen because the curve preserves
+locality: grid neighbours are curve neighbours, so placing a new district near a
+similar one was a search along an index. That property was worth having and is
+kept. What the grid could not express is *centrality*. Every cell is equivalent,
+so the commons — the shared pool that unaffiliated entities and workflows fall
+back to — was wherever the curve happened to put it, which is a corner. A map
+whose shared centre reads as peripheral is asserting something false.
+
+Districts now occupy slots on a concentric ring lattice. Slot 0 is the origin and
+belongs to the commons unconditionally, reserved even when the commons is
+briefly unpopulated, so arrival order cannot win the middle and then keep it
+forever. Ring `r` sits at radius `r · spacing` and holds `6r` slots, which makes
+the arc between neighbours
+
+    2π(r · spacing) / 6r  =  π · spacing / 3  ≈  1.047 · spacing
+
+independent of `r` and equal to the radial gap between rings — a hexagonal
+packing in polar clothing. One pitch still governs the whole map, so `spacingFor`
+and the district-sizing rule above carry over untouched. Odd rings are staggered
+by half a step so districts do not line up into visible spokes.
+
+Placement is otherwise unchanged: a new district takes the free slot minimizing
+its similarity-weighted distance to those already placed, so semantically close
+districts end up adjacent. Two properties come free. Rings are unbounded, so the
+grid-exhaustion case — which parked a district on top of the commons — no longer
+exists. And ties break on the lower slot index, which now means *closer to the
+centre*, so the map fills outward instead of trailing into a ring of its own.
+
+Slot indices are persisted, so their meaning is part of the stored format.
+`DistrictLayout.arrangement` records which mapping assigned them; a mismatch
+re-places from scratch rather than reinterpreting, because reading a Hilbert
+index as a ring slot would not relocate districts so much as scatter them to
+positions that never meant anything. Pins survive regardless — they are
+district-relative offsets, which is precisely why they are stored that way.
+
+Measured on the 53-agent fixture: 37 districts, which is rings 0–3 filled
+exactly (1 + 6 + 12 + 18), a 5403 × 7085 map at a pitch of 960, fitting at 0.144.
+The grid produced 5229 × 6125 at 0.17 — a circular envelope costs a little
+bounding box, and buys a centre that means something.
+
+### What binds a workflow to an agent
+
+A blueprint says what a workflow *needs*, not what it got. `role:evolver` names a
+role; which agent fills it is decided when the workflow is deployed, and that
+decision lives in the schedule record rather than in the document. Reading only
+the blueprint, the Evolver's three workflows shared nothing with the Evolver but
+a word, and sat in the commons while the agent they run on sat elsewhere.
+
+So an `agent_ref` is read as three different things:
+
+- A bare value is an **agent id** and binds the workflow to that agent.
+- `role:name` and `class:name` are **unfilled requirements**. They are recorded
+  as facets, because workflows wanting the same role are genuinely alike and the
+  affinity fallback can use that, but they cannot place a workflow: they name a
+  kind of agent, not one.
+- `ephemeral` names a throwaway and ties the workflow to nobody.
+
+The binding itself comes from the schedules that deploy the blueprint, pooled
+with any ids the blueprint names outright. This is the same standing as a skill's
+deployment or an artifact's origin — a canonical record of where something
+actually runs — and it is what `deployed:agent:` facets have always meant. Only
+`target_type: "agent"` counts; a `temporary_provider` exists for the length of one
+run and belongs nowhere. On the reference install this gives six blueprints a
+real district, including all three Evolver workflows.
+
 ### A stored position is only meaningful in the frame it was written in
 
 Warm starts exist so the drift penalty has an anchor, which is what makes

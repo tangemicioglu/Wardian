@@ -2,16 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { AgentConfig } from "../../types";
 import {
   COMMONS_DISTRICT_ID,
-  DEFAULT_HILBERT_ORDER,
   MAX_DISTRICT_MEMBERS,
   buildDistrictAffinity,
-  cellDistance,
-  cellToHilbert,
   createDistrictLayout,
   districtCenter,
   districtId,
-  hilbertCellCount,
-  hilbertToCell,
   parcelsFor,
   placeDistricts,
   resolveAgentDistrict,
@@ -19,6 +14,15 @@ import {
   resolveEntityDistrict,
   retireDistricts,
 } from "./districts";
+import {
+  CENTER_SLOT,
+  firstSlotOfRing,
+  ringSlotOf,
+  slotDistance,
+  slotIndex,
+  slotPoint,
+  slotsInRing,
+} from "./ringLattice";
 
 function agent(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -69,57 +73,92 @@ describe("resolveAgentDistrict", () => {
   });
 });
 
-describe("Hilbert curve", () => {
-  it("round-trips every cell of the grid", () => {
-    const order = 3;
-    for (let index = 0; index < hilbertCellCount(order); index += 1) {
-      expect(cellToHilbert(hilbertToCell(index, order), order)).toBe(index);
+describe("ring lattice", () => {
+  it("puts slot 0 at the origin", () => {
+    expect(slotPoint(0, 100)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("round-trips every slot through its ring and position", () => {
+    for (let index = 0; index < 200; index += 1) {
+      expect(slotIndex(ringSlotOf(index))).toBe(index);
     }
   });
 
-  it("keeps consecutive indices grid-adjacent", () => {
-    // The locality property the whole placement scheme rests on.
-    const order = 4;
-    for (let index = 1; index < hilbertCellCount(order); index += 1) {
-      const previous = hilbertToCell(index - 1, order);
-      const current = hilbertToCell(index, order);
-      const manhattan =
-        Math.abs(previous.x - current.x) + Math.abs(previous.y - current.y);
-      expect(manhattan).toBe(1);
+  it("numbers slots contiguously, ring by ring", () => {
+    // Ring r holds 6r slots starting at 1 + 3r(r-1); an off-by-one here would
+    // silently overlay two districts on one point.
+    let expected = 0;
+    for (let ring = 0; ring < 8; ring += 1) {
+      expect(firstSlotOfRing(ring)).toBe(expected);
+      expected += slotsInRing(ring);
     }
   });
 
-  it("preserves locality better than row-major order", () => {
-    // Compare mean grid distance between index-adjacent cells. Row-major wraps
-    // at the end of each row and jumps the full width; Hilbert never does.
-    const order = 4;
-    const side = 1 << order;
-    let hilbertTotal = 0;
-    let rowMajorTotal = 0;
-    for (let index = 1; index < hilbertCellCount(order); index += 1) {
-      hilbertTotal += cellDistance(index - 1, index, order);
-      const previous = { x: (index - 1) % side, y: Math.floor((index - 1) / side) };
-      const current = { x: index % side, y: Math.floor(index / side) };
-      rowMajorTotal += Math.max(
-        Math.abs(previous.x - current.x),
-        Math.abs(previous.y - current.y),
+  it("spaces neighbours about one pitch apart in every direction", () => {
+    // The property that lets a single pitch govern the whole map: the arc
+    // between neighbours in a ring is independent of the radius, and matches the
+    // gap between rings. Without it, outer districts would either collide or
+    // drift apart as the map grew.
+    for (let ring = 1; ring < 6; ring += 1) {
+      const first = firstSlotOfRing(ring);
+      const along = Math.hypot(
+        slotPoint(first + 1).x - slotPoint(first).x,
+        slotPoint(first + 1).y - slotPoint(first).y,
       );
+      expect(along).toBeGreaterThan(0.9);
+      expect(along).toBeLessThan(1.2);
     }
-    expect(hilbertTotal).toBeLessThan(rowMajorTotal);
+    // Radially: ring r sits at radius r.
+    for (let ring = 0; ring < 6; ring += 1) {
+      const point = slotPoint(firstSlotOfRing(ring));
+      expect(Math.hypot(point.x, point.y)).toBeCloseTo(ring);
+    }
   });
 
-  it("maps cells to evenly spaced world coordinates", () => {
-    const first = districtCenter(0, { order: 3, spacing: 100, origin: { x: 10, y: 20 } });
+  it("keeps every slot distinct", () => {
+    const seen = new Set<string>();
+    for (let index = 0; index < 200; index += 1) {
+      const point = slotPoint(index, 100);
+      seen.add(`${point.x.toFixed(3)},${point.y.toFixed(3)}`);
+    }
+    expect(seen.size).toBe(200);
+  });
+
+  it("measures distance across the map, not along the index", () => {
+    // Two slots in the same ring can be adjacent or diametrically opposite, so
+    // index arithmetic is not a distance. Ring 2 holds 12 slots: opposite ends
+    // are four apart, and that must read as farther than one step.
+    const first = firstSlotOfRing(2);
+    expect(slotDistance(first, first + 6)).toBeGreaterThan(
+      slotDistance(first, first + 1),
+    );
+  });
+
+  it("grows a map of districts outward rather than in one direction", () => {
+    // A row-major or curve arrangement fills a quadrant; rings stay balanced
+    // about the centre, which is what makes the middle read as the middle.
+    let sumX = 0;
+    let sumY = 0;
+    for (let index = 0; index < 61; index += 1) {
+      const point = slotPoint(index, 100);
+      sumX += point.x;
+      sumY += point.y;
+    }
+    expect(Math.hypot(sumX, sumY)).toBeLessThan(1);
+  });
+
+  it("maps slots to evenly spaced world coordinates", () => {
+    const first = districtCenter(0, { spacing: 100, origin: { x: 10, y: 20 } });
     expect(first).toEqual({ x: 10, y: 20 });
-    const second = districtCenter(1, { order: 3, spacing: 100, origin: { x: 10, y: 20 } });
-    expect(Math.max(Math.abs(second.x - first.x), Math.abs(second.y - first.y))).toBe(100);
+    const second = districtCenter(1, { spacing: 100, origin: { x: 10, y: 20 } });
+    expect(Math.hypot(second.x - first.x, second.y - first.y)).toBeCloseTo(100);
   });
 });
 
 describe("placeDistricts", () => {
   it("never moves an already-placed district", () => {
     // The stability invariant: insertion is additive and the interior is frozen.
-    let layout = createDistrictLayout(4);
+    let layout = createDistrictLayout();
     layout = placeDistricts(layout, ["team:a", "team:b"]).layout;
     const snapshot = { ...layout.cells };
 
@@ -132,7 +171,7 @@ describe("placeDistricts", () => {
   });
 
   it("places a new district beside the district it most resembles", () => {
-    let layout = createDistrictLayout(4);
+    let layout = createDistrictLayout();
     // Seed two far-apart districts by hand so the objective has a clear answer.
     layout = { ...layout, cells: { "team:near": 0, "team:far": 200 } };
     const similarity = (a: string, b: string) => {
@@ -142,11 +181,11 @@ describe("placeDistricts", () => {
     };
     const result = placeDistricts(layout, ["team:near", "team:far", "team:new"], similarity);
     const cell = result.layout.cells["team:new"];
-    expect(cellDistance(cell, 0, 4)).toBeLessThan(cellDistance(cell, 200, 4));
+    expect(slotDistance(cell, 0)).toBeLessThan(slotDistance(cell, 200));
   });
 
   it("is deterministic regardless of enumeration order", () => {
-    const base = createDistrictLayout(4);
+    const base = createDistrictLayout();
     const forward = placeDistricts(base, ["team:a", "team:b", "team:c"]).layout;
     const reversed = placeDistricts(base, ["team:c", "team:b", "team:a"]).layout;
     expect(forward.cells).toEqual(reversed.cells);
@@ -154,15 +193,30 @@ describe("placeDistricts", () => {
 
   it("assigns distinct cells", () => {
     const result = placeDistricts(
-      createDistrictLayout(4),
+      createDistrictLayout(),
       Array.from({ length: 12 }, (_, i) => `team:${i}`),
     );
     const cells = Object.values(result.layout.cells);
     expect(new Set(cells).size).toBe(cells.length);
   });
 
-  it("uses the default grid order when none is given", () => {
-    expect(createDistrictLayout().order).toBe(DEFAULT_HILBERT_ORDER);
+  it("seats the commons at the centre", () => {
+    // The commons is what the map is arranged around; if arrival order could
+    // win the middle, the arrangement would assert something false about it.
+    const result = placeDistricts(createDistrictLayout(), [
+      "team:a",
+      COMMONS_DISTRICT_ID,
+      "workspace:d:/dev",
+    ]);
+    expect(result.layout.cells[COMMONS_DISTRICT_ID]).toBe(CENTER_SLOT);
+    expect(slotPoint(CENTER_SLOT, 720)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("keeps the centre for the commons even when it arrives later", () => {
+    let layout = placeDistricts(createDistrictLayout(), ["team:a", "team:b"]).layout;
+    expect(Object.values(layout.cells)).not.toContain(CENTER_SLOT);
+    layout = placeDistricts(layout, ["team:a", "team:b", COMMONS_DISTRICT_ID]).layout;
+    expect(layout.cells[COMMONS_DISTRICT_ID]).toBe(CENTER_SLOT);
   });
 });
 
@@ -172,7 +226,7 @@ describe("retireDistricts", () => {
   it("reserves an emptied district's cell so a returning district does not move", () => {
     // Removing the last agent from a team and re-adding it must not relocate the
     // district — that is motion with no perceivable cause.
-    let layout = placeDistricts(createDistrictLayout(4), ["team:a", "team:b"]).layout;
+    let layout = placeDistricts(createDistrictLayout(), ["team:a", "team:b"]).layout;
     const original = layout.cells["team:b"];
 
     layout = retireDistricts(layout, ["team:a"], now);
@@ -186,7 +240,7 @@ describe("retireDistricts", () => {
   });
 
   it("reclaims the cell once the TTL expires", () => {
-    let layout = placeDistricts(createDistrictLayout(4), ["team:a", "team:b"]).layout;
+    let layout = placeDistricts(createDistrictLayout(), ["team:a", "team:b"]).layout;
     layout = retireDistricts(layout, ["team:a"], now, 1000);
     layout = retireDistricts(layout, ["team:a"], now + 2000, 1000);
     expect(layout.cells["team:b"]).toBeUndefined();
@@ -194,7 +248,7 @@ describe("retireDistricts", () => {
   });
 
   it("clears a tombstone as soon as the district is active again", () => {
-    let layout = placeDistricts(createDistrictLayout(4), ["team:a"]).layout;
+    let layout = placeDistricts(createDistrictLayout(), ["team:a"]).layout;
     layout = retireDistricts(layout, [], now);
     expect(layout.tombstones["team:a"]).toBeDefined();
     layout = retireDistricts(layout, ["team:a"], now + 10);

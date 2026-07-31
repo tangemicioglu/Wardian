@@ -25,8 +25,15 @@ export interface GardenWorkflowInput {
   label: string;
   runStatus: GardenWorkflowRunStatus;
   nodeCount: number;
-  /** Agent ids bound by `agent_ref` node fields. */
+  /**
+   * Concrete agent ids the workflow is bound to: `agent_ref` node fields that
+   * name an agent, pooled with the agents its schedules deploy it onto.
+   */
   agentIds?: readonly string[];
+  /** Roles the blueprint leaves open, e.g. `evolver` from `role:evolver`. */
+  roleNames?: readonly string[];
+  /** Agent classes the blueprint requires, e.g. `Coder` from `class:Coder`. */
+  classNames?: readonly string[];
   /** Directories named by `path` node fields, e.g. a shell node's `cwd`. */
   workspacePaths?: readonly string[];
   /** Section-relative library folder, e.g. `trident`. */
@@ -171,6 +178,11 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
     // the agents living there also carry. See `workflowContext.ts`.
     const facets = emitWorkflowFacets(ref, {
       assignedAgentIds: workflow.agentIds,
+      // Roles and classes cannot place a workflow — they name a kind of agent,
+      // not one — but they are strong evidence of kinship between workflows, and
+      // that is what the affinity fallback reads when no binding exists.
+      roleNames: workflow.roleNames,
+      classNames: workflow.classNames,
       workspacePaths: workflow.workspacePaths,
       libraryFolder: workflow.libraryFolder,
     });
@@ -280,6 +292,8 @@ export function gardenLayoutSignature(
       [
         workflow.id,
         (workflow.agentIds ?? []).join(","),
+        (workflow.roleNames ?? []).join(","),
+        (workflow.classNames ?? []).join(","),
         (workflow.workspacePaths ?? []).join(","),
         workflow.libraryFolder ?? "",
       ].join("|"),

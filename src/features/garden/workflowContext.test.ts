@@ -87,3 +87,63 @@ describe("libraryFolderOf", () => {
     expect(libraryFolderOf("/w/library/workflows/trident/scans/orb15.md")).toBe("trident/scans");
   });
 });
+
+describe("an agent_ref is three different things", () => {
+  // Shape taken from the real evolver blueprints: every task node binds
+  // `role:evolver`, and nothing in the file names an agent.
+  const evolver = blueprint([
+    { id: "trigger-1", type: "manual_trigger" },
+    { id: "agent-scan", type: "task", fields: { agent: "role:evolver", prompt: "Scan." } },
+    { id: "agent-triage", type: "task", fields: { agent: "role:evolver", prompt: "Triage." } },
+  ]);
+
+  it("does not mistake an unfilled role for an agent id", () => {
+    // This is what put the Evolver's workflows in the commons: `role:evolver`
+    // was read as an agent id, resolved against no agent, and left the workflow
+    // with no tie to anywhere. A role says what kind of agent the workflow
+    // needs; which agent actually runs it is decided elsewhere.
+    const context = workflowContextOf(evolver);
+    expect(context.agentIds).toEqual([]);
+    expect(context.roleNames).toEqual(["evolver"]);
+  });
+
+  it("keeps a class requirement apart from a binding too", () => {
+    const context = workflowContextOf(
+      blueprint([
+        { id: "a", type: "task", fields: { agent: "class:Coder", prompt: "Build." } },
+        { id: "b", type: "task", fields: { agent: "agent-7", prompt: "Ship." } },
+      ]),
+    );
+    expect(context.classNames).toEqual(["Coder"]);
+    expect(context.agentIds).toEqual(["agent-7"]);
+    expect(context.roleNames).toEqual([]);
+  });
+
+  it("ties a workflow to nobody when its agent is ephemeral", () => {
+    const context = workflowContextOf(
+      blueprint([{ id: "a", type: "task", fields: { agent: "ephemeral", prompt: "Once." } }]),
+    );
+    expect(context.agentIds).toEqual([]);
+    expect(context.roleNames).toEqual([]);
+    expect(context.classNames).toEqual([]);
+  });
+
+  it("de-duplicates and sorts, so node order cannot move the workflow", () => {
+    const context = workflowContextOf(
+      blueprint([
+        { id: "a", type: "task", fields: { agent: "role:zeta", prompt: "p" } },
+        { id: "b", type: "task", fields: { agent: "role:alpha", prompt: "p" } },
+        { id: "c", type: "task", fields: { agent: "role:zeta", prompt: "p" } },
+      ]),
+    );
+    expect(context.roleNames).toEqual(["alpha", "zeta"]);
+  });
+
+  it("ignores a role that is only a prefix", () => {
+    const context = workflowContextOf(
+      blueprint([{ id: "a", type: "task", fields: { agent: "role:", prompt: "p" } }]),
+    );
+    expect(context.roleNames).toEqual([]);
+    expect(context.agentIds).toEqual([]);
+  });
+});

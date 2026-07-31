@@ -215,7 +215,12 @@ describe("user placement", () => {
     const result = layoutGarden({ entities: base, scene: pinned, now });
     const unit = result.units.find((u) => u.key === "agent:hw-a0")!;
     expect(unit.pinned).toBe(true);
-    expect(unit.position).toEqual({ x: 250, y: -180 });
+    // The offset is stored relative to the district, so it resolves against
+    // wherever the district currently sits — which is the whole point of storing
+    // it that way, and is why moving the district does not strand the pin.
+    const origin = result.districtOrigins.get("team:hw")!;
+    expect(unit.position.x).toBeCloseTo(origin.x + 250);
+    expect(unit.position.y).toBeCloseTo(origin.y - 180);
   });
 
   it("reports a pin stranded by a district change instead of honouring it", () => {
