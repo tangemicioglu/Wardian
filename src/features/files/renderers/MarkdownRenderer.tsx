@@ -167,7 +167,7 @@ function SafeLink({
   href?: string;
   children: ReactNode;
   sourcePath: string;
-  onOpenFile: (path: string) => Promise<void> | void;
+  onOpenFile: (path: string, openInNewTab?: boolean) => Promise<void> | void;
   onOpenFragment: (fragment: string) => void;
   onError: (message: string) => void;
 }) {
@@ -175,13 +175,16 @@ function SafeLink({
   if (!safe) return <span>{children}</span>;
   const local = href ? isLocalTarget(href) : false;
   const fragment = href?.startsWith("#") ?? false;
-  const openTrustedTarget = () => {
+  const openTrustedTarget = (openInNewTab = false) => {
     if (href?.startsWith("#")) {
       onOpenFragment(href.slice(1));
     } else if (local && href) {
       try {
-        void Promise.resolve(onOpenFile(resolveLocalMarkdownTarget(sourcePath, href)))
-          .catch((cause) => onError(errorMessage(cause)));
+        const targetPath = resolveLocalMarkdownTarget(sourcePath, href);
+        const opened = openInNewTab
+          ? onOpenFile(targetPath, true)
+          : onOpenFile(targetPath);
+        void Promise.resolve(opened).catch((cause) => onError(errorMessage(cause)));
       } catch (cause) {
         onError(errorMessage(cause));
       }
@@ -192,7 +195,7 @@ function SafeLink({
   const activate = (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    openTrustedTarget();
+    openTrustedTarget(event.ctrlKey || event.metaKey);
   };
   const activateFromKeyboard = (event: KeyboardEvent<HTMLAnchorElement>) => {
     if ((!local && !fragment) || (event.key !== "Enter" && event.key !== " ")) return;
@@ -386,7 +389,9 @@ export default function MarkdownRenderer({
       <SafeLink
         href={href}
         sourcePath={sourcePath}
-        onOpenFile={(path) => onOpenFileRef.current(path)}
+        onOpenFile={(path, openInNewTab) => (
+          openInNewTab ? onOpenFileRef.current(path, true) : onOpenFileRef.current(path)
+        )}
         onOpenFragment={openFragment}
         onError={setError}
       >

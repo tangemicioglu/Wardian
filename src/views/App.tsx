@@ -84,6 +84,7 @@ import { FilesSurface } from "../features/files/FilesSurface";
 import { FileEditorControllerRegistry } from "../features/files/fileEditorController";
 import { createFilesCloseAdapter } from "../features/files/filesCloseAdapter";
 import { fileResourceClient } from "../features/files/fileResourceClient";
+import { fileResourceKey } from "../features/files/fileResourceKey";
 import { openPermanentFileSurface } from "../features/files/fileSurfaceNavigation";
 import { useArtifactEvents } from "../features/files/useArtifactEvents";
 import {
@@ -1261,8 +1262,16 @@ function AppBody() {
               state: filesState,
             });
           }}
-          on_open_file={(path) => {
-            openPermanentFileSurface(workbenchNavigation, path);
+          on_open_file={async (path, openInNewTab = false) => {
+            if (openInNewTab) {
+              openPermanentFileSurface(workbenchNavigation, path);
+              return;
+            }
+            await workbenchNavigation.rebind_resource(surface.surface_id, {
+              surface_type: "files",
+              resource_key: fileResourceKey(path),
+              state: filesState,
+            });
           }}
           on_state_change={(state) => {
             const store = workbenchPersistence.store.getState();

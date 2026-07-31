@@ -288,7 +288,7 @@ async function closeTabFromContextMenu(page: Page, tab: Locator) {
   await page.getByRole("menuitem", { name: "Close tab" }).click();
 }
 
-test("routes Explorer files through transient, permanent, and side Workbench presentations", async ({
+test("routes Explorer files through transient, Ctrl-clicked permanent, and side Workbench presentations", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -314,18 +314,19 @@ test("routes Explorer files through transient, permanent, and side Workbench pre
   await ipc.updateFile(BETA_PATH, "# Beta updated\n\nStable revision event.");
   await expect(page.getByRole("heading", { name: "Beta updated" })).toBeVisible();
 
-  await betaRow.dblclick();
+  await alphaRow.click({ modifiers: ["Control"] });
+  const alphaPermanent = filesTab(page, ALPHA_PATH);
+  await expect(alphaPermanent).toHaveCount(1);
   await expect(betaTransient).toHaveCount(1);
-  await expect(betaTransient).toHaveAttribute("data-surface-id", transientSurfaceId!);
+  const alphaPermanentId = await alphaPermanent.getAttribute("data-surface-id");
+  expect(alphaPermanentId).toBeTruthy();
   await expect.poll(async () => {
     const document = await persistedDocument(ipc);
-    return document.surfaces[transientSurfaceId!]?.state;
+    return document.surfaces[alphaPermanentId!]?.state;
   }).toMatchObject({ transient_preview: false });
 
-  await alphaRow.click();
-  await expect(filesTab(page, ALPHA_PATH)).toHaveCount(1);
-  await expect(betaTransient).toHaveCount(1);
   await expect(page.getByRole("tab").and(page.locator('[data-surface-type="files"]'))).toHaveCount(2);
+  await expect(page.getByRole("heading", { name: "Alpha document" })).toBeVisible();
 
   await betaRow.click({ button: "right" });
   await page.getByRole("button", { name: "Open to Side", exact: true }).click();
@@ -338,7 +339,7 @@ test("routes Explorer files through transient, permanent, and side Workbench pre
   expect((await ipc.calls("read_file_resource_text")).length).toBeGreaterThan(0);
 
   const screenshotPath = path.resolve(
-    "e2e/screenshots/files-surface/2026-07-16T2305Z/explorer-files-tabs.png",
+    "e2e/screenshots/files-surface/2026-07-31T0605Z/explorer-ctrl-click-tabs.png",
   );
   await page.screenshot({ path: screenshotPath, fullPage: true });
 });

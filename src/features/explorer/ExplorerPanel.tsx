@@ -316,10 +316,12 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
     };
   };
 
-  const handleFileSelect = async (path: string, isDir: boolean) => {
+  const handleFileSelect = async (path: string, isDir: boolean, openInNewTab = false) => {
     if (isDir) return;
 
-    if (explorerFileClickAction === 'external') {
+    if (openInNewTab) {
+      openPermanent(path);
+    } else if (explorerFileClickAction === 'external') {
       await openExternalEditor(fileNode(path));
     } else {
       runNavigationAction('File preview', (currentNavigation) => (

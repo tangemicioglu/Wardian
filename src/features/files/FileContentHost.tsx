@@ -83,7 +83,7 @@ type PresentationLayerProps = {
   comparison_baseline: FilesComparisonBaseline | null;
   resource_request: OpenFileResourceRequestV1;
   on_reset: () => void;
-  on_open_file: (path: string) => Promise<void> | void;
+  on_open_file: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
   on_open_with: (path: string) => Promise<void> | void;
   on_reveal: (path: string) => Promise<void> | void;
 };
@@ -155,7 +155,7 @@ export type FileContentHostProps = {
   buffer_snapshot: FileEditorBufferSnapshot | null;
   comparison_baseline?: FilesComparisonBaseline | null;
   resource_request?: OpenFileResourceRequestV1;
-  on_open_file: (path: string) => Promise<void> | void;
+  on_open_file: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
   on_open_with: (path: string) => Promise<void> | void;
   on_reveal: (path: string) => Promise<void> | void;
 };

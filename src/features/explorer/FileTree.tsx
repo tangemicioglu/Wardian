@@ -13,7 +13,8 @@ export interface FileNode {
 
 export interface FileTreeProps {
   path: string;
-  onSelect?: (path: string, is_dir: boolean) => void;
+  /** `open_in_new_tab` is set for the platform-standard Ctrl/Cmd-click gesture. */
+  onSelect?: (path: string, is_dir: boolean, open_in_new_tab?: boolean) => void;
   onOpen?: (path: string, is_dir: boolean) => void;
   onContextMenu?: (e: React.MouseEvent, node: FileNode) => void;
   depth?: number;
@@ -158,6 +159,11 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
       return;
     }
     if (e.detail > 1) return;
+    if (e.ctrlKey || e.metaKey) {
+      interaction.cancelPendingSelection();
+      onSelect?.(node.path, false, true);
+      return;
+    }
     interaction.scheduleSelection(node.path, () => onSelect?.(node.path, false));
   };
 
