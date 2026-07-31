@@ -267,8 +267,9 @@ async function buildProductionRuntime(home, fixture) {
 }
 
 function browserFixture(fixture) {
+  const agentsTerminalAudit = sessionStorage.getItem("wardian-perf-agents-terminal-audit") === "1";
   localStorage.setItem("wardian-settings", JSON.stringify({
-    state: { gridCardDisplayMode: "chat" },
+    state: { gridCardDisplayMode: agentsTerminalAudit ? "terminal" : "chat" },
     version: 2,
   }));
   const clone = (value) => structuredClone(value);
@@ -302,7 +303,9 @@ function browserFixture(fixture) {
   const snapshot = (sessionId = trackedRuntime) => ({
     snapshot_id: `perf-snapshot-${sessionId}`, session_id: sessionId, runtime_generation: 1,
     sequence_barrier: 0, geometry: { cols: 80, rows: 24 }, terminal_state_base64: "",
-    visible_grid: "", scrollback: [],
+    visible_grid: `Wardian shared compositor\r\n${sessionId}\r\none WebGL context for the Agents surface`,
+    scrollback: Array.from({ length: 32 }, (_, index) =>
+      `${sessionId} history ${String(index + 1).padStart(2, "0")}`),
   });
   const presentation = (request) => ({
     presentation_id: request.presentation_id, client_kind: "desktop",
@@ -406,6 +409,10 @@ function browserFixture(fixture) {
     }
     return context;
   };
+  runtime.webgl_contexts_within = (selector) => {
+    refreshWebglLiveCount();
+    return [...liveWebglContexts].filter((entry) => entry.canvas.closest(selector)).length;
+  };
   const observePeaks = () => {
     runtime.xterm_live = document.querySelectorAll(".xterm").length;
     runtime.xterm_peak = Math.max(runtime.xterm_peak, runtime.xterm_live);
@@ -463,6 +470,7 @@ function browserFixture(fixture) {
         return { outcome: "saved", durable_revision: args.document.revision, durable_token: `perf-${args.document.revision}`, request_id: args.request_id };
       }
       if (command === "list_agents") return clone(fixture.agents);
+      if (command === "request_terminal_snapshot") return snapshot(args.request.session_id);
       if (command === "register_terminal_presentation") return registration(args.request);
       if (command === "update_terminal_presentation") return registration(args.request);
       if (command === "report_terminal_presentation_viewport") return presentation(args.request);
@@ -584,6 +592,35 @@ async function measureTabActivation(page, surfaceId) {
   }, surfaceId);
 }
 
+async function agentsSharedRenderer(page, expectedTerminals) {
+  return await page.evaluate((terminalCount) => {
+    const surface = document.querySelector('[data-testid="agents-shared-terminal-surface"]');
+    return {
+      canvases: surface?.querySelectorAll('[data-testid="agents-shared-terminal-canvas"]').length ?? 0,
+      contexts: window.__WARDIAN_WORKBENCH_PERF__
+        .webgl_contexts_within('[data-testid="agents-shared-terminal-surface"]'),
+      dedicated_terminal_canvases: surface?.querySelectorAll(".xterm-screen canvas").length ?? 0,
+      terminals: surface?.querySelectorAll(".xterm").length ?? 0,
+      terminal_ids: [...(surface?.querySelectorAll('[data-terminal-presentation-id]') ?? [])]
+        .map((element) => element.getAttribute("data-terminal-presentation-id"))
+        .filter(Boolean),
+      expected_terminals: terminalCount,
+    };
+  }, expectedTerminals);
+}
+
+function assertAgentsSharedRenderer(renderer) {
+  if (
+    renderer.canvases !== 1
+    || renderer.contexts !== 1
+    || renderer.dedicated_terminal_canvases !== 0
+    || renderer.terminals < 1
+    || renderer.terminals > renderer.expected_terminals
+  ) {
+    throw new Error(`Agents Overview did not use one shared WebGL context: ${JSON.stringify(renderer)}`);
+  }
+}
+
 async function waitForHeavyRendererReleased(page, surfaceId, timeoutMs) {
   await page.waitForFunction((id) => {
     const panel = document.querySelector(`[data-testid="surface-panel"][data-surface-id=${JSON.stringify(id)}]`);
@@ -691,7 +728,21 @@ async function measureRuntime(fixture, runtimeOutDir) {
         return duration;
       }));
     }
+    await page.evaluate(() => {
+      sessionStorage.setItem("wardian-perf-agents-terminal-audit", "1");
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="workbench-host"]').waitFor({ timeout: 20_000 });
     await page.locator('[role="tab"][data-surface-id="perf-overview"]').click();
+    await page.locator('[aria-label="Agents mode"] button').filter({ hasText: "Grid" }).click();
+    await page.locator('[data-testid="agents-shared-terminal-canvas"]').waitFor({ state: "visible" });
+    await page.waitForFunction((expectedTerminals) => {
+      const surface = document.querySelector('[data-testid="agents-shared-terminal-surface"]');
+      const runtime = window.__WARDIAN_WORKBENCH_PERF__;
+      return (surface?.querySelectorAll(".xterm").length ?? 0) > 0
+        && runtime.webgl_contexts_within('[data-testid="agents-shared-terminal-surface"]') === 1;
+    }, fixture.agents.length, { timeout: 20_000 });
+    assertAgentsSharedRenderer(await agentsSharedRenderer(page, fixture.agents.length));
     await page.evaluate(() => {
       const overview = document.querySelector('[data-testid="agents-overview-container"]');
       if (!overview) throw new Error("Agents Overview container is unavailable");
@@ -714,8 +765,66 @@ async function measureRuntime(fixture, runtimeOutDir) {
         return runtime.overview_last_resize_at >= runtime.overview_resize_started_at
           && performance.now() - runtime.overview_last_resize_at >= 120;
       });
-      await twoFrames(page); overviewSettle.push(performance.now() - started);
+      await twoFrames(page);
+      assertAgentsSharedRenderer(await agentsSharedRenderer(page, fixture.agents.length));
+      overviewSettle.push(performance.now() - started);
     }
+    const overviewScroll = await page.locator('[data-testid="agents-overview-container"]').evaluate(
+      (element) => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }),
+    );
+    const scrollStep = Math.max(1, Math.floor(overviewScroll.clientHeight * 0.8));
+    const scrollPositions = [];
+    for (let top = 0; top < overviewScroll.scrollHeight; top += scrollStep) scrollPositions.push(top);
+    scrollPositions.push(Math.max(0, overviewScroll.scrollHeight - overviewScroll.clientHeight), 0);
+    const visitedOverviewTerminals = new Set();
+    for (const scrollTop of scrollPositions) {
+      await page.locator('[data-testid="agents-overview-container"]').evaluate(
+        (element, top) => { element.scrollTop = top; },
+        scrollTop,
+      );
+      await twoFrames(page);
+      const renderer = await agentsSharedRenderer(page, fixture.agents.length);
+      assertAgentsSharedRenderer(renderer);
+      renderer.terminal_ids.forEach((id) => visitedOverviewTerminals.add(id));
+    }
+    if (visitedOverviewTerminals.size !== fixture.agents.length) {
+      throw new Error(
+        `Agents Overview shared context did not render every card while scrolling: ${JSON.stringify([...visitedOverviewTerminals])}`,
+      );
+    }
+    await page.locator('[aria-label="Maximize Perf Agent 01"]').click();
+    await twoFrames(page);
+    assertAgentsSharedRenderer(await agentsSharedRenderer(page, fixture.agents.length));
+    await page.locator('[aria-label="Minimize Perf Agent 01"]').click();
+    await twoFrames(page);
+    assertAgentsSharedRenderer(await agentsSharedRenderer(page, fixture.agents.length));
+    const overviewGroup = page.locator('[data-group-id="perf-group-1"]');
+    await overviewGroup.locator('button[aria-label="Pane actions"]').click();
+    await page.getByRole("menuitem", { name: "Zoom pane", exact: true }).click();
+    await twoFrames(page);
+    await page.locator('[data-testid="agents-overview-container"]').evaluate(
+      (element) => {
+        const target = element.querySelector('[data-agent-grid-card-id="perf-agent-05"]');
+        if (!(target instanceof HTMLElement)) throw new Error("Evidence card is unavailable");
+        element.scrollTop = Math.max(0, target.offsetTop - 6);
+      },
+    );
+    await twoFrames(page);
+    assertAgentsSharedRenderer(await agentsSharedRenderer(page, fixture.agents.length));
+    const evidenceDirectory = path.join(
+      repoRoot,
+      "e2e",
+      "screenshots",
+      "agents-shared-terminal-context",
+      new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-"),
+    );
+    await fs.mkdir(evidenceDirectory, { recursive: true });
+    const evidencePath = path.join(evidenceDirectory, "populated-grid-after-scrolling.png");
+    await page.locator('[data-testid="agents-shared-terminal-surface"]').screenshot({ path: evidencePath });
+    process.stdout.write(`Agents shared terminal evidence: ${path.relative(repoRoot, evidencePath)}\n`);
+    await overviewGroup.locator('button[aria-label="Pane actions"]').click();
+    await page.getByRole("menuitem", { name: "Restore pane", exact: true }).click();
+    await twoFrames(page);
     const heavyResume = [];
     const heavyGrace = fixture.benchmark.heavy_surface_hidden_grace_ms;
     for (const surfaceId of ["perf-graph", "perf-garden", "perf-graph", "perf-garden"]) {

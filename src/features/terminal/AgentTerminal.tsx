@@ -41,6 +41,7 @@ import {
 } from "./terminalSessionClient";
 import { terminalRendererBudget } from "./terminalRendererBudget";
 import { terminalCompatibilityAdapter } from "./terminalCompatibilityAdapter";
+import { useAgentsSharedTerminalSurface } from "./AgentsSharedTerminalSurface";
 import {
   DARK_TERM_THEME,
   LIGHT_TERM_THEME,
@@ -96,6 +97,7 @@ type TerminalRendererEntry = {
   // is demoted to the DOM renderer. Strictly cosmetic (pointer-events: none);
   // removed on promotion or when fresh output arrives.
   snapshotOverlay: HTMLCanvasElement | null;
+  sharedSurfaceRegistration: { dispose: () => void } | null;
 };
 
 type TerminalSessionEntry = {
@@ -763,6 +765,8 @@ function retireRenderer(renderer: TerminalRendererEntry, sessionId: string) {
   clearRendererTimers(renderer);
   webglPool.delete(sessionId);
   removeSnapshotOverlay(renderer);
+  renderer.sharedSurfaceRegistration?.dispose();
+  renderer.sharedSurfaceRegistration = null;
   disposeWebglAddonAndReleaseContext(renderer);
   // Ownership ends at retirement even when an xterm callback still holds the
   // physical renderer alive. A replacement can claim the released budgets
@@ -2047,6 +2051,7 @@ function createRenderer(terminalKey: string, entry: TerminalSessionEntry) {
     host,
     terminalLinkOptions,
     snapshotOverlay: null,
+    sharedSurfaceRegistration: null,
   };
 
   term.onData((data) => {
@@ -2247,6 +2252,7 @@ export const AgentTerminal = memo(function AgentTerminal({
     presentationState: TerminalPresentationState | null,
   ) => void;
 }) {
+  const sharedTerminalSurface = useAgentsSharedTerminalSurface();
   const terminalKey = presentationId;
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -2513,7 +2519,14 @@ export const AgentTerminal = memo(function AgentTerminal({
       xtermRef.current = renderer.term;
       fitAddonRef.current = renderer.fitAddon;
 
-      if (physicalIntersectionRef.current) {
+      renderer.sharedSurfaceRegistration?.dispose();
+      renderer.sharedSurfaceRegistration = sharedTerminalSurface?.register(
+        presentationId,
+        renderer.term,
+        renderer.host,
+      ) ?? null;
+
+      if (!sharedTerminalSurface && physicalIntersectionRef.current) {
         activateWebglRenderer(renderer, terminalKey);
       }
       if (!(await fitTerminalToContainer(entry, container, { force: true }))) {
@@ -2622,6 +2635,7 @@ export const AgentTerminal = memo(function AgentTerminal({
     provider,
     renderState,
     requestedInteraction,
+    sharedTerminalSurface,
     terminalKey,
     visibility,
   ]);
@@ -2777,6 +2791,12 @@ export const AgentTerminal = memo(function AgentTerminal({
 
         xtermRef.current = renderer.term;
         fitAddonRef.current = renderer.fitAddon;
+        renderer.sharedSurfaceRegistration?.dispose();
+        renderer.sharedSurfaceRegistration = sharedTerminalSurface?.register(
+          presentationId,
+          renderer.term,
+          renderer.host,
+        ) ?? null;
         rendererEvictedRef.current = false;
         setRendererEvicted(false);
 
@@ -2816,7 +2836,9 @@ export const AgentTerminal = memo(function AgentTerminal({
 
         if (typeof IntersectionObserver === "undefined") {
           physicalIntersectionRef.current = true;
-          activateWebglRenderer(renderer, terminalKey);
+          if (!sharedTerminalSurface) {
+            activateWebglRenderer(renderer, terminalKey);
+          }
           settleBackend();
         } else {
           physicalIntersectionRef.current = false;
@@ -2830,7 +2852,11 @@ export const AgentTerminal = memo(function AgentTerminal({
                   clearTimeout(visibilityDemoteTimer);
                   visibilityDemoteTimer = null;
                 }
-                promoteSessionToWebgl(terminalKey);
+                if (!sharedTerminalSurface) {
+                  promoteSessionToWebgl(terminalKey);
+                } else {
+                  sharedTerminalSurface.invalidateLayout();
+                }
                 settleBackend();
                 if (session.presentationState && terminalRef.current) {
                   void prepareRendererForReveal(session, terminalRef.current);
@@ -2841,7 +2867,7 @@ export const AgentTerminal = memo(function AgentTerminal({
                 if (!visibilityDemoteTimer) {
                   visibilityDemoteTimer = setTimeout(() => {
                     visibilityDemoteTimer = null;
-                    if (isMounted && !physicalIntersectionRef.current) {
+                    if (!sharedTerminalSurface && isMounted && !physicalIntersectionRef.current) {
                       demoteSessionToDom(terminalKey);
                     }
                   }, VISIBILITY_DEMOTE_GRACE_MS);
@@ -3128,6 +3154,7 @@ export const AgentTerminal = memo(function AgentTerminal({
     provider,
     rendererMountRevision,
     sessionId,
+    sharedTerminalSurface,
     terminalKey,
     workspacePath,
   ]);

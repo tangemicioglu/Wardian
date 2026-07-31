@@ -216,11 +216,27 @@ the socket.
 
 ## Renderer Budgets
 
-The desktop process permits at most 24 mounted xterm renderers and 12 WebGL
-contexts. The pools are independent deterministic LRUs:
+The desktop process permits at most 24 mounted xterm renderers. Dedicated
+terminal surfaces permit at most 12 xterm WebGL contexts through a
+deterministic LRU. Agents Overview does not consume one context per card: each
+mounted Agents surface owns one viewport-sized WebGL2 compositor for all of
+its resident terminal cards.
+
+The Agents compositor reads each xterm's public buffer into card-local CPU
+raster tiles, uploads those tiles as textures, and draws them through the one
+surface context. The xterm DOM renderers remain mounted behind the canvas for
+input, selection, links, accessibility, and atomic fallback. Scrolling and
+layout changes remeasure terminal bodies relative to the visible surface; they
+do not create or retire contexts. Standalone Agent Session terminals retain
+their dedicated xterm WebGL path. Holding the platform link modifier over a
+card temporarily exposes xterm's DOM interaction layer so its native hover
+decoration and activation remain authoritative without creating another GPU
+context.
+
+The xterm and dedicated-WebGL pools remain independent deterministic LRUs:
 
 - touching a visible or interacted presentation keeps it warm;
-- WebGL eviction falls back to xterm's DOM renderer;
+- dedicated WebGL eviction falls back to xterm's DOM renderer;
 - xterm eviction keeps the logical presentation registered, marks it for
   synchronization, and restores it from a broker snapshot when needed;
 - an Agents presentation may be hidden while its budgeted xterm remains
@@ -235,6 +251,11 @@ switches. A presentation outside that set is suspended and consumes no xterm
 budget. Hiding a resident presentation updates the broker to `hidden` while
 leaving its xterm mounted, so returning to Agents does not cause a simultaneous
 registration, snapshot, and renderer-construction burst.
+
+If the Agents compositor cannot create WebGL2, or if its single context is
+lost, the entire surface reveals the already-mounted xterm DOM renderers. A
+native context-restoration event rebuilds the surface resources once; card
+lifecycles never independently retry context creation.
 
 ### First-paint reveal barrier
 

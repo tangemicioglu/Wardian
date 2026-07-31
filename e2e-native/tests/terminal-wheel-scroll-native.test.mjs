@@ -252,6 +252,34 @@ async function waitForScrollback(driver, presentationId, expectedText = "wheel-7
   throw new Error(`Timed out waiting for scrollback: ${JSON.stringify(last)}`);
 }
 
+async function captureSharedContextEvidence(driver, harness) {
+  const renderer = await driver.executeScript(() => {
+    const surface = document.querySelector('[data-testid="agents-shared-terminal-surface"]');
+    return {
+      canvases: surface?.querySelectorAll('[data-testid="agents-shared-terminal-canvas"]').length ?? 0,
+      dedicatedTerminalCanvases: surface?.querySelectorAll(".xterm-screen canvas").length ?? 0,
+      terminals: surface?.querySelectorAll(".xterm").length ?? 0,
+    };
+  });
+  assert.equal(renderer.canvases, 1, `Expected one Agents compositor canvas: ${JSON.stringify(renderer)}`);
+  assert.equal(renderer.dedicatedTerminalCanvases, 0,
+    `Agents cards must not own dedicated WebGL canvases: ${JSON.stringify(renderer)}`);
+  assert.ok(renderer.terminals >= 2, `Expected both Agents terminals: ${JSON.stringify(renderer)}`);
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const directory = path.join(
+    harness.repoRoot,
+    "e2e",
+    "screenshots",
+    "agents-shared-terminal-context",
+    timestamp,
+  );
+  fs.mkdirSync(directory, { recursive: true });
+  const screenshotPath = path.join(directory, "two-terminals-with-scrollback.png");
+  fs.writeFileSync(screenshotPath, await driver.takeScreenshot(), "base64");
+  return screenshotPath;
+}
+
 test("user mouse wheel scrolls the agent terminal renderer and parser", { timeout: 180000 }, async (t) => {
   const harness = await createNativeHarness();
   const previousTerminalDebug = process.env.VITE_WARDIAN_TERMINAL_DEBUG;
@@ -382,6 +410,7 @@ test("user mouse wheel scrolls the agent terminal renderer and parser", { timeou
   await focusAgentTerminal(driver, sessionId, presentationId);
 
   const beforeSnapshot = await waitForScrollback(driver, presentationId);
+  console.log("shared compositor evidence:", await captureSharedContextEvidence(driver, harness));
   console.log("renderer diagnostics:", JSON.stringify({
     bufferType: beforeSnapshot?.renderer?.bufferType,
     mouseTrackingMode: beforeSnapshot?.renderer?.mouseTrackingMode,

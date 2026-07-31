@@ -133,5 +133,8 @@ describe("workbench performance script", () => {
     expect(source).toContain("runtime.terminal_burst_started_at = performance.now()");
     expect(source).toContain("waitForHeavyRendererReleased");
     expect(source).toContain("runtime.webgl_live = liveWebglContexts.size");
+    expect(source).toContain("runtime.webgl_contexts_within = (selector)");
+    expect(source).toContain("Agents Overview did not use one shared WebGL context");
+    expect(source).toContain('if (command === "request_terminal_snapshot") return snapshot(args.request.session_id)');
   });
 });

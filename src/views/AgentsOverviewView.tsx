@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import type { AgentConfig, AgentTelemetry, AgentsOverviewMode, CloneMode } from "../types";
 import { AgentChatView } from "../features/grid/AgentChatView";
 import { AgentTerminal } from "../features/terminal/AgentTerminal";
+import { AgentsSharedTerminalSurfaceProvider } from "../features/terminal/AgentsSharedTerminalSurface";
 import type { Watchlist } from "../layout/watchlist/types";
 import { AgentContextMenu } from "../components/AgentContextMenu";
 import { useLayoutStore } from "../store/useLayoutStore";
@@ -412,6 +413,7 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
   ];
 
   return (
+    <AgentsSharedTerminalSurfaceProvider>
     <div ref={containerRef} className="h-full min-h-0 min-w-0 overflow-auto" data-testid="agents-overview-container">
       <div
         ref={gridRef}
@@ -701,5 +703,6 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
       )}
       </div>
     </div>
+    </AgentsSharedTerminalSurfaceProvider>
   );
 };
