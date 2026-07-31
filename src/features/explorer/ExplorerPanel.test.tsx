@@ -419,6 +419,33 @@ describe('ExplorerPanel', () => {
     expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
   });
 
+  it('opens a permanent Files surface on Ctrl/Cmd-click even when normal clicks open externally', async () => {
+    useSettingsStore.setState({
+      explorerFileClickAction: 'external',
+      externalEditor: 'vscode',
+      externalEditorCustomExecutable: '',
+    });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+    const navigation = makeNavigation();
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
+
+    const file = await screen.findByTestId('mock-file-row');
+    fireEvent.click(file, { ctrlKey: true });
+    fireEvent.click(file, { metaKey: true });
+
+    expect(navigation.open).toHaveBeenCalledTimes(2);
+    expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
+      resource_key: 'file:C:/Users/test/repo/notes.md',
+      state: expect.objectContaining({ transient_preview: false }),
+    }));
+    expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
+    expect(invoke).not.toHaveBeenCalledWith('open_in_external_editor', expect.anything());
+  });
+
   it('uses permanent Open and standard horizontal Open to Side context actions', async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
