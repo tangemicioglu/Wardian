@@ -24,6 +24,7 @@ const PROVIDER_SESSION_ID = `e2e-background-resume-${RUN_ID}`;
 const SESSION_NAME = `E2E-Background-Resume-${RUN_ID}`;
 const BACKGROUND_PREFIX = `BACKGROUND_RESUME_${RUN_ID}`;
 const BACKGROUND_MARKER = `${BACKGROUND_PREFIX}_DONE`;
+const VISIBLE_BLUR_MARKER = `VISIBLE_BLUR_${RUN_ID}_DONE`;
 
 async function invokeTauri(driver, command, args = {}) {
   const result = await driver.executeAsyncScript((cmd, payload, done) => {
@@ -113,8 +114,7 @@ async function sendTerminalInput(driver, sessionId, presentationId, input) {
 
 async function setDocumentVisibility(driver, value) {
   // The native test app deliberately has no permission to hide its own only
-  // window. Drive the supported WebView fallback here; the focused hook unit
-  // test separately verifies Tauri's native focus subscription.
+  // window. Drive the supported WebView visibility signal directly here.
   await driver.executeScript((nextValue) => {
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
@@ -131,6 +131,18 @@ function terminalText(snapshot) {
     ...(snapshot?.renderer?.lines ?? []),
     ...(snapshot?.renderer?.allLines ?? []),
   ].join("\n");
+}
+
+async function captureVisibleBlurEvidence(driver, sessionId) {
+  const screenshotDir = process.env.WARDIAN_E2E_SCREENSHOT_DIR;
+  if (!screenshotDir) {
+    return null;
+  }
+  fs.mkdirSync(screenshotDir, { recursive: true });
+  const screenshotPath = path.join(screenshotDir, "visible-unfocused-terminal-updating.png");
+  const card = await driver.findElement(By.id(`agent-card-${sessionId}`));
+  fs.writeFileSync(screenshotPath, await card.takeScreenshot(true), "base64");
+  return screenshotPath;
 }
 
 async function captureRestoredScrollbackEvidence(driver, sessionId, presentationId) {
@@ -242,6 +254,23 @@ test(
 
     const before = await readTerminalDebugSnapshot(driver, presentationId);
     assert.ok(before?.renderer, "Expected a resident terminal renderer before backgrounding");
+
+    await driver.executeScript(() => {
+      if (document.visibilityState !== "visible") {
+        throw new Error(`Expected a visible document before blur, got ${document.visibilityState}`);
+      }
+      window.dispatchEvent(new Event("blur"));
+    });
+    await sendTerminalInput(driver, sessionId, presentationId, `${VISIBLE_BLUR_MARKER}\r`);
+    await waitFor("visible terminal output after window blur", 30_000, async () => {
+      const snapshot = await readTerminalDebugSnapshot(driver, presentationId);
+      return { ok: terminalText(snapshot).includes(VISIBLE_BLUR_MARKER) };
+    });
+    const visibleBlurScreenshot = await captureVisibleBlurEvidence(driver, sessionId);
+    if (visibleBlurScreenshot) {
+      t.diagnostic(`Visible blurred terminal screenshot: ${visibleBlurScreenshot}`);
+    }
+
     await setDocumentVisibility(driver, "hidden");
 
     const backgroundInput = Array.from(
