@@ -1,20 +1,11 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const terminalVisibility = vi.hoisted(() => ({
   set: vi.fn(() => Promise.resolve()),
 }));
-const nativeWindow = vi.hoisted(() => ({
-  focusListener: null as ((event: { payload: boolean }) => void) | null,
-  unlisten: vi.fn(),
-  onFocusChanged: vi.fn(),
-}));
-
 vi.mock("./terminalSessionClient", () => ({
   setTerminalApplicationVisibility: terminalVisibility.set,
-}));
-vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ onFocusChanged: nativeWindow.onFocusChanged }),
 }));
 
 import { useTerminalApplicationVisibility } from "./useTerminalApplicationVisibility";
@@ -22,32 +13,34 @@ import { useTerminalApplicationVisibility } from "./useTerminalApplicationVisibi
 describe("useTerminalApplicationVisibility", () => {
   beforeEach(() => {
     terminalVisibility.set.mockClear();
-    nativeWindow.focusListener = null;
-    nativeWindow.unlisten.mockClear();
-    nativeWindow.onFocusChanged.mockImplementation((listener: (event: { payload: boolean }) => void) => {
-      nativeWindow.focusListener = listener;
-      return Promise.resolve(nativeWindow.unlisten);
-    });
-    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   });
 
-  it("uses native desktop focus changes to pause and resume terminal consumption", async () => {
-    const { unmount } = renderHook(() => useTerminalApplicationVisibility());
-
-    await waitFor(() => expect(nativeWindow.focusListener).not.toBeNull());
+  it("pauses terminal consumption only while the document is actually hidden", () => {
+    renderHook(() => useTerminalApplicationVisibility());
     expect(terminalVisibility.set).toHaveBeenCalledWith(true);
 
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     act(() => {
-      nativeWindow.focusListener?.({ payload: false });
+      document.dispatchEvent(new Event("visibilitychange"));
     });
     expect(terminalVisibility.set).toHaveBeenLastCalledWith(false);
 
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     act(() => {
-      nativeWindow.focusListener?.({ payload: true });
+      document.dispatchEvent(new Event("visibilitychange"));
     });
     expect(terminalVisibility.set).toHaveBeenLastCalledWith(true);
+  });
 
-    unmount();
-    expect(nativeWindow.unlisten).toHaveBeenCalledTimes(1);
+  it("keeps terminal consumption active when a visible window loses focus", () => {
+    renderHook(() => useTerminalApplicationVisibility());
+    terminalVisibility.set.mockClear();
+
+    act(() => {
+      window.dispatchEvent(new Event("blur"));
+    });
+
+    expect(terminalVisibility.set).not.toHaveBeenCalled();
   });
 });

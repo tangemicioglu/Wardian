@@ -18,10 +18,12 @@ path does not require replay or reconstruction.
 
 ## Scope
 
-This change applies only to a real desktop application background/foreground
-transition. It changes frontend broker consumption; it does not pause a PTY,
-change provider output retention, alter terminal ownership, or change renderer
-residency.
+This change applies only when the WebView document is actually hidden, such as
+when the window is minimized. Losing keyboard focus is not a background
+transition: Wardian may remain visible on another monitor and must continue to
+render terminal output. The optimization changes frontend broker consumption;
+it does not pause a PTY, change provider output retention, alter terminal
+ownership, or change renderer residency.
 
 ## Invariants
 
@@ -61,9 +63,9 @@ registered instances.
   presentation-visible path asks for the same resumption before it reveals or
   processes new output. This avoids snapshotting every off-screen terminal at
   once.
-- Native Tauri focus changes are the primary application signal. DOM
-  `visibilitychange`, `focus`, and `blur` are fallbacks and are made
-  idempotent with the native signal.
+- DOM `visibilitychange` is the sole application signal. Focus and blur are
+  deliberately ignored so an unpaired or delayed native focus notification
+  cannot leave an on-screen terminal paused.
 
 The new barrier resynchronization is intentionally separate from
 `requestPresentationSnapshot` and owner resynchronization. The former is
@@ -84,7 +86,8 @@ lease and geometry semantics that application visibility must not reuse.
 Frontend tests must prove that a background client does not read retained
 events, foregrounding applies and acknowledges the snapshot barrier before
 reading again, failed resumption remains paused, and the new path never calls
-geometry or owner-resynchronization IPCs.
+geometry or owner-resynchronization IPCs. Hook coverage must also prove that
+document hiding pauses consumption while ordinary window blur does not.
 
 Native runtime coverage must run a mock-provider terminal through the
 background-resume control path and verify that content remains coherent while
