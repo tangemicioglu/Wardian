@@ -7,6 +7,13 @@ use tauri::{AppHandle, Manager};
 use wardian_core::control::MessageInputMode;
 use wardian_core::models::chat::AgentChatEvent;
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RemoteAgentChatPage {
+    pub events: Vec<AgentChatEvent>,
+    pub has_older: bool,
+    pub next_before: Option<usize>,
+}
+
 pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
     let agents = state.agents.lock().await;
     let order = state.agent_order.lock().await;
@@ -95,6 +102,31 @@ pub async fn remote_agent_chat_transcript(
     session_id: &str,
 ) -> Result<Vec<AgentChatEvent>, String> {
     crate::commands::chat::load_agent_chat_transcript_for_state(state, session_id.to_string()).await
+}
+
+pub async fn remote_agent_chat_page(
+    state: &AppState,
+    session_id: &str,
+    before: Option<usize>,
+    limit: usize,
+) -> Result<RemoteAgentChatPage, String> {
+    let events = remote_agent_chat_transcript(state, session_id).await?;
+    Ok(page_remote_agent_chat_events(events, before, limit))
+}
+
+pub fn page_remote_agent_chat_events(
+    events: Vec<AgentChatEvent>,
+    before: Option<usize>,
+    limit: usize,
+) -> RemoteAgentChatPage {
+    let end = before.unwrap_or(events.len()).min(events.len());
+    let start = end.saturating_sub(limit.max(1));
+
+    RemoteAgentChatPage {
+        events: events[start..end].to_vec(),
+        has_older: start > 0,
+        next_before: (start > 0).then_some(start),
+    }
 }
 
 pub async fn remote_agent_terminal_snapshot(
@@ -420,6 +452,52 @@ mod tests {
                 && event.role == Some(wardian_core::models::chat::AgentChatRole::Assistant)
                 && event.text.as_deref() == Some("Use the shared chat transcript model.")
         }));
+    }
+
+    #[test]
+    fn remote_agent_chat_pages_keep_the_newest_events_and_a_stable_older_cursor() {
+        let events: Vec<AgentChatEvent> = (1..=85)
+            .map(|sequence| AgentChatEvent {
+                id: format!("event-{sequence}"),
+                session_id: "agent-1".to_string(),
+                provider: "mock".to_string(),
+                kind: wardian_core::models::chat::AgentChatEventKind::Message,
+                role: Some(wardian_core::models::chat::AgentChatRole::Assistant),
+                text: Some(format!("Message {sequence}")),
+                title: None,
+                status: None,
+                turn_id: None,
+                source: None,
+                command: None,
+                exit_code: None,
+                path: None,
+                language: None,
+                created_at: None,
+                sequence: Some(sequence),
+                metadata: serde_json::json!({}),
+            })
+            .collect();
+
+        let latest = page_remote_agent_chat_events(events.clone(), None, 40);
+
+        assert_eq!(latest.events.len(), 40);
+        assert_eq!(latest.events.first().map(|event| event.id.as_str()), Some("event-46"));
+        assert_eq!(latest.events.last().map(|event| event.id.as_str()), Some("event-85"));
+        assert!(latest.has_older);
+        assert_eq!(latest.next_before, Some(45));
+
+        let older = page_remote_agent_chat_events(events.clone(), latest.next_before, 40);
+        assert_eq!(older.events.len(), 40);
+        assert_eq!(older.events.first().map(|event| event.id.as_str()), Some("event-6"));
+        assert_eq!(older.events.last().map(|event| event.id.as_str()), Some("event-45"));
+        assert!(older.has_older);
+        assert_eq!(older.next_before, Some(5));
+
+        let first_page = page_remote_agent_chat_events(events, older.next_before, 40);
+        assert_eq!(first_page.events.len(), 5);
+        assert_eq!(first_page.events.first().map(|event| event.id.as_str()), Some("event-1"));
+        assert!(!first_page.has_older);
+        assert_eq!(first_page.next_before, None);
     }
 
     #[tokio::test]

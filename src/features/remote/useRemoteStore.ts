@@ -68,6 +68,9 @@ interface RemoteState {
   terminalError: string;
   chatEvents: AgentChatEvent[];
   chatLoading: boolean;
+  chatLoadingOlder: boolean;
+  chatHasOlder: boolean;
+  chatNextBefore: number | null;
   chatError: string;
   sending: boolean;
   load: () => Promise<void>;
@@ -83,6 +86,7 @@ interface RemoteState {
   setActiveAgentViewMode: (mode: RemoteAgentViewMode) => Promise<void>;
   refreshActiveAgentTerminal: (options?: { background?: boolean }) => Promise<void>;
   refreshActiveAgentChat: (options?: { background?: boolean }) => Promise<void>;
+  loadOlderActiveAgentChat: () => Promise<void>;
   appendRemoteTerminalQueueOutput: (sessionId: string, data: string, provider?: string) => void;
   sendPromptToActiveAgent: (prompt: string, inputMode?: RemoteAgentInputMode) => Promise<void>;
   runAgentAction: (action: string, target: string) => Promise<void>;
@@ -200,6 +204,21 @@ const mergeOptimisticChatEvents = (transcript: AgentChatEvent[], currentEvents: 
       sequence: baseSequence + index + 1,
     })),
   ];
+};
+
+const mergeRemoteChatPage = (pageEvents: AgentChatEvent[], currentEvents: AgentChatEvent[]) => {
+  const latestEvents = mergeOptimisticChatEvents(pageEvents, currentEvents);
+  const latestIds = new Set(pageEvents.map((event) => event.id));
+  const firstPageSequence = pageEvents.reduce<number | null>((first, event) => {
+    if (typeof event.sequence !== "number") return first;
+    return first === null ? event.sequence : Math.min(first, event.sequence);
+  }, null);
+  const loadedOlderEvents = currentEvents.filter((event) => {
+    if (event.metadata?.optimistic === true || latestIds.has(event.id)) return false;
+    return firstPageSequence === null || typeof event.sequence !== "number" || event.sequence < firstPageSequence;
+  });
+
+  return [...loadedOlderEvents, ...latestEvents];
 };
 
 const createOptimisticUserMessage = (
@@ -423,6 +442,9 @@ const ensureStatusStream = async (set: RemoteSet, get: RemoteGet) => {
               terminalError: "",
               chatEvents: [],
               chatLoading: false,
+              chatLoadingOlder: false,
+              chatHasOlder: false,
+              chatNextBefore: null,
               chatError: "",
             }),
       }));
@@ -662,6 +684,9 @@ const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
             terminalError: "",
             chatEvents: [],
             chatLoading: false,
+            chatLoadingOlder: false,
+            chatHasOlder: false,
+            chatNextBefore: null,
             chatError: "",
           }),
     };
@@ -693,6 +718,9 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
   terminalError: "",
   chatEvents: [],
   chatLoading: false,
+  chatLoadingOlder: false,
+  chatHasOlder: false,
+  chatNextBefore: null,
   chatError: "",
   sending: false,
   async load() {
@@ -795,6 +823,9 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
       terminalError: "",
       chatEvents: [],
       chatLoading: false,
+      chatLoadingOlder: false,
+      chatHasOlder: false,
+      chatNextBefore: null,
       chatError: "",
     });
     if (activeAgentViewMode === "chat") {
@@ -819,6 +850,9 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
       terminalError: "",
       chatEvents: [],
       chatLoading: false,
+      chatLoadingOlder: false,
+      chatHasOlder: false,
+      chatNextBefore: null,
       chatError: "",
     });
   },
@@ -849,18 +883,61 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
       set({ chatLoading: true, chatError: "" });
     }
     try {
-      const chatEvents = await remoteClient.loadAgentChat(activeAgentId);
+      const page = await remoteClient.loadAgentChatPage(activeAgentId);
       set((state) => {
         if (requestSerial !== chatRefreshRequestSerial) return {};
         if (state.activeAgentId !== activeAgentId) return { chatLoading: false };
-        const mergedChatEvents = mergeOptimisticChatEvents(chatEvents, state.chatEvents);
-        if (chatEventsEqual(state.chatEvents, mergedChatEvents)) return { chatLoading: false, chatError: "" };
-        return { chatEvents: mergedChatEvents, chatLoading: false, chatError: "" };
+        const mergedChatEvents = mergeRemoteChatPage(page.events, state.chatEvents);
+        if (chatEventsEqual(state.chatEvents, mergedChatEvents)) {
+          return {
+            chatLoading: false,
+            chatLoadingOlder: false,
+            chatHasOlder: page.has_older,
+            chatNextBefore: page.next_before,
+            chatError: "",
+          };
+        }
+        return {
+          chatEvents: mergedChatEvents,
+          chatLoading: false,
+          chatLoadingOlder: false,
+          chatHasOlder: page.has_older,
+          chatNextBefore: page.next_before,
+          chatError: "",
+        };
       });
     } catch (error) {
       if (requestSerial !== chatRefreshRequestSerial) return;
       set({
         chatLoading: false,
+        chatError: error instanceof Error ? error.message : String(error),
+        status: statusFromError(error),
+      });
+    }
+  },
+  async loadOlderActiveAgentChat() {
+    const { activeAgentId, chatNextBefore, chatLoadingOlder } = get();
+    if (!activeAgentId || chatNextBefore === null || chatLoadingOlder) return;
+    const requestSerial = chatRefreshRequestSerial;
+    set({ chatLoadingOlder: true, chatError: "" });
+    try {
+      const page = await remoteClient.loadAgentChatPage(activeAgentId, chatNextBefore);
+      set((state) => {
+        if (requestSerial !== chatRefreshRequestSerial || state.activeAgentId !== activeAgentId) return {};
+        const existingIds = new Set(state.chatEvents.map((event) => event.id));
+        const olderEvents = page.events.filter((event) => !existingIds.has(event.id));
+        return {
+          chatEvents: [...olderEvents, ...state.chatEvents],
+          chatLoadingOlder: false,
+          chatHasOlder: page.has_older,
+          chatNextBefore: page.next_before,
+          chatError: "",
+        };
+      });
+    } catch (error) {
+      if (requestSerial !== chatRefreshRequestSerial) return;
+      set({
+        chatLoadingOlder: false,
         chatError: error instanceof Error ? error.message : String(error),
         status: statusFromError(error),
       });
@@ -922,6 +999,9 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
             terminalError: "",
             chatEvents: [],
             chatLoading: false,
+            chatLoadingOlder: false,
+            chatHasOlder: false,
+            chatNextBefore: null,
             chatError: "",
           });
         }

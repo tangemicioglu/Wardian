@@ -160,6 +160,7 @@ function mockRemoteAgentDetailFetch(
 ) {
   const { chatEvents = [], status = "Idle" } = options;
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+    const requestUrl = new URL(url, "http://wardian.test");
     if (url === "/remote/api/session") {
       return Promise.resolve(
         new Response(
@@ -195,8 +196,24 @@ function mockRemoteAgentDetailFetch(
     if (url === "/remote/api/workflows") {
       return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
     }
-    if (url === "/remote/api/agents/agent-1/chat") {
-      return Promise.resolve(new Response(JSON.stringify({ events: chatEvents }), { status: 200 }));
+    if (requestUrl.pathname === "/remote/api/agents/agent-1/chat") {
+      const pageSize = 40;
+      const before = requestUrl.searchParams.get("before");
+      const requestedBefore = before === null ? null : Number(before);
+      const end = typeof requestedBefore === "number" && Number.isInteger(requestedBefore)
+        ? Math.min(Math.max(requestedBefore, 0), chatEvents.length)
+        : chatEvents.length;
+      const start = Math.max(0, end - pageSize);
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            events: chatEvents.slice(start, end),
+            has_older: start > 0,
+            next_before: start > 0 ? start : null,
+          }),
+          { status: 200 },
+        ),
+      );
     }
     if (url === "/remote/api/agents/action" && init?.method === "POST") {
       return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
@@ -1846,7 +1863,7 @@ describe("RemoteMobileApp", () => {
     expect(screen.getByText("No chat transcript yet.")).toBeVisible();
   });
 
-  it("lazy loads older remote chat rows from the latest transcript window", async () => {
+  it("loads older remote chat pages from the latest transcript window", async () => {
     const chatEvents: AgentChatEvent[] = Array.from({ length: 85 }, (_, index) => ({
       id: `message-${index + 1}`,
       session_id: "agent-1",
@@ -1876,7 +1893,9 @@ describe("RemoteMobileApp", () => {
     expect(await screen.findByText("Message 85")).toBeVisible();
     expect(screen.queryByText("Message 1")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Load 5 earlier transcript rows" }));
+    await userEvent.click(screen.getByRole("button", { name: "Load older transcript" }));
+    expect(screen.queryByText("Message 1")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Load older transcript" }));
     expect(await screen.findByText("Message 1")).toBeVisible();
   });
 
