@@ -660,7 +660,10 @@ export function cycleSort(
   columnId: SortableColumnId,
 ): WatchlistPrefs['sort'] {
   if (!current || current.column_id !== columnId) {
-    return { column_id: columnId, direction: 'asc' };
+    return {
+      column_id: columnId,
+      direction: columnId === 'last_queried' ? 'desc' : 'asc',
+    };
   }
   if (current.direction === 'asc') {
     return { column_id: columnId, direction: 'desc' };

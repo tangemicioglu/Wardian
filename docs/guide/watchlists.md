@@ -57,7 +57,7 @@ Click the **gear icon** (⚙) in the watchlist header to open the column picker.
 | Last Queried | On | Time elapsed since the last prompt was sent |
 
 ### Sorting
-Click any column header to sort by that column. Clicking again cycles through ascending → descending → unsorted. The **Agent** column header sorts alphabetically by name. Sorting applies on top of your custom watchlist order; drag-to-reorder still works when no sort is active.
+Click any column header to sort by that column. The first sort on **Last** is descending so the most recently queried agent appears first; other columns start ascending. Clicking the active header again cycles through the opposite direction → unsorted. The **Agent** column header sorts alphabetically by name. Sorting applies on top of your custom watchlist order; drag-to-reorder still works when no sort is active.
 
 ### Persistence
 Column visibility and sort state are saved to `<wardian-home>/watchlists/prefs.json` and restored on next launch.
