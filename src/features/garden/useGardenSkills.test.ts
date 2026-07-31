@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LibraryEntry, LibraryIndex, LibraryIndexFolder } from "../../types";
-import { gardenLibraryInputs } from "./useGardenLibrary";
+import { gardenSkillInputs } from "./useGardenSkills";
 
 function entry(overrides: Partial<LibraryEntry> & { entry_ref: string }): LibraryEntry {
   return {
@@ -26,13 +26,24 @@ function indexOf(
   return { sections, deployments, orphans: [] } as unknown as LibraryIndex;
 }
 
-describe("gardenLibraryInputs", () => {
-  it("flattens nested skills, prompts, and classes", () => {
+describe("gardenSkillInputs", () => {
+  it("flattens nested skills", () => {
     const index = indexOf({
       skills: {
         stubbed: false,
         tree: folder("", [folder("dev", [entry({ entry_ref: "skills/dev/planner" })])]),
       },
+    });
+    expect(gardenSkillInputs(index).map((input) => input.entryRef)).toEqual([
+      "skills/dev/planner",
+    ]);
+  });
+
+  it("reads no section but skills", () => {
+    // Prompts attach to nothing, a class is an attribute an agent already
+    // carries, and workflows arrive through useGardenWorkflows keyed by
+    // Blueprint.id — admitting them here would give one workflow two units.
+    const index = indexOf({
       prompts: {
         stubbed: false,
         tree: folder("", [entry({ entry_ref: "prompts/review.md", kind: "prompt" })]),
@@ -41,30 +52,16 @@ describe("gardenLibraryInputs", () => {
         stubbed: false,
         tree: folder("", [entry({ entry_ref: "classes/Architect", kind: "class" })]),
       },
-    });
-    expect(gardenLibraryInputs(index).map((input) => [input.entryRef, input.kind])).toEqual([
-      ["classes/Architect", "class"],
-      ["prompts/review.md", "prompt"],
-      ["skills/dev/planner", "skill"],
-    ]);
-  });
-
-  it("excludes workflows so a blueprint cannot enter the map twice", () => {
-    // Workflows arrive through useGardenWorkflows keyed by Blueprint.id. Adding
-    // them here as well would reintroduce the dual-identity bug: one workflow,
-    // two units, two positions.
-    const index = indexOf({
       workflows: {
         stubbed: false,
         tree: folder("", [entry({ entry_ref: "workflows/build.md", kind: "workflow" })]),
       },
     });
-    expect(gardenLibraryInputs(index)).toEqual([]);
+    expect(gardenSkillInputs(index)).toEqual([]);
   });
 
-  it("skips stubbed sections and entries that failed to parse", () => {
+  it("skips a stubbed section and entries that failed to parse", () => {
     const index = indexOf({
-      mcps: { stubbed: true, tree: folder("", []) },
       skills: {
         stubbed: false,
         tree: folder("", [
@@ -73,12 +70,16 @@ describe("gardenLibraryInputs", () => {
         ]),
       },
     });
-    expect(gardenLibraryInputs(index).map((input) => input.entryRef)).toEqual(["skills/good"]);
+    expect(gardenSkillInputs(index).map((input) => input.entryRef)).toEqual(["skills/good"]);
+
+    expect(gardenSkillInputs(indexOf({ skills: { stubbed: true, tree: folder("", []) } }))).toEqual(
+      [],
+    );
   });
 
   it("attaches deployment targets, preserving the linked flag", () => {
     // `linked: false` means the skill was copied rather than junctioned, so its
-    // edits do not sync — weaker evidence of relatedness, and worth surfacing.
+    // edits never sync back — which the glyph shows with a dashed stroke.
     const index = indexOf(
       {
         skills: { stubbed: false, tree: folder("", [entry({ entry_ref: "skills/kicad" })]) },
@@ -90,17 +91,17 @@ describe("gardenLibraryInputs", () => {
         ],
       },
     );
-    expect(gardenLibraryInputs(index)[0].deployments).toEqual([
+    expect(gardenSkillInputs(index)[0].deployments).toEqual([
       { targetType: "agent", targetId: "a1", linked: true },
       { targetType: "class", targetId: "Architect", linked: false },
     ]);
   });
 
   it("returns an empty list before the index loads", () => {
-    expect(gardenLibraryInputs(null)).toEqual([]);
+    expect(gardenSkillInputs(null)).toEqual([]);
   });
 
-  it("sorts deterministically so the layout sees a stable order", () => {
+  it("sorts deterministically, which monogram assignment depends on", () => {
     const index = indexOf({
       skills: {
         stubbed: false,
@@ -110,7 +111,7 @@ describe("gardenLibraryInputs", () => {
         ]),
       },
     });
-    expect(gardenLibraryInputs(index).map((input) => input.entryRef)).toEqual([
+    expect(gardenSkillInputs(index).map((input) => input.entryRef)).toEqual([
       "skills/alpha",
       "skills/zeta",
     ]);

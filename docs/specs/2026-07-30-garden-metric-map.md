@@ -194,6 +194,63 @@ command, or DTO exists, and every reference to it is aspirational spec language.
 `artifact` is the implemented analogue and carries provenance to its producing
 agent.
 
+## What earns a unit
+
+Having a canonical identity is not sufficient to have a position.
+
+> An entity that is an **attribute** of another entity renders *on* it. An entity
+> with **independent existence and its own lifecycle** gets a unit.
+
+| Entity | Independent lifecycle | Encoding |
+| --- | --- | --- |
+| Agent | yes | unit |
+| Workflow blueprint | yes — editable, has runs | unit |
+| Skill *deployment* | no — a fact about an agent | glyph on the agent |
+| Skill *itself* | yes, but lives in the Library | reverse highlight, never placed |
+| Class | no — an agent has exactly one | district fallback tier |
+| Prompt | attaches to nothing | absent |
+
+The failure this rules out is concrete. A skill deployed to six agents is one
+object that must sit in one place, so the metric puts it at the centroid of its
+targets — a location where it is relevant to nobody — and "pick the
+most-referenced district" is a tie-break for an unanswerable question. The error
+is upstream of the layout: `deployed:agent:a1` is a fact about a1, not about a
+location. This is the same reasoning that already turns containment and team
+membership into geometry rather than nodes; deployments were the case that had
+been missed.
+
+Instancing a skill across its carriers gains one thing the unit model could not
+express at all: a skill deployed to a *class* has no single agent to sit beside,
+so class-inherited capability was previously unrepresentable. It costs one
+thing, and that cost must be paid back — a skill no longer has a place to
+navigate to, so "where is this used?" is answered by highlighting the carrying
+set. A set is the honest answer to that question; a point never was.
+
+Three constraints follow:
+
+- **Glyphs never enter the layout.** They are decoration attached to a position,
+  which is what lets detail expand and contract with zoom. An agent's overlap
+  footprint grows with the number of skills it carries, measured at full detail
+  rather than at the current zoom — a footprint that shrank when you zoomed out
+  would make geometry a function of the viewport. An agent with no skills
+  reserves nothing.
+- **Skills stay in the metric.** `skill:<entry_ref>` on the *agent* is rare and
+  therefore high-IDF, so two agents carrying the same unusual skill are pulled
+  together. Leaving the unit set strengthens this: there is no longer a
+  cross-kind offset working against the district assignment.
+- **The crown is ordered by IDF descending.** A skill deployed to every agent
+  renders on every agent; at `df == N` its IDF is exactly 0, so it sinks into the
+  truncated tail without a special rule. The crown shows what is distinctive
+  about an agent rather than what is ubiquitous.
+
+Glyph identity is the weak point. Dwarf Fortress symbols work because the set is
+fixed and learned; Wardian skills are user-named, so no generated glyph set can
+be distinguishable in general. The fallback is a monogram plus a hash-derived
+hue, assigned globally so one skill means one glyph everywhere, with collisions
+resolved against the last word — which is where near-duplicate names actually
+differ. A user-assigned icon in `LibraryItemMetadata` is the intended escape
+hatch and is not yet built.
+
 ## Consequences
 
 - **Positive:** Distance means something and is explainable per facet.
@@ -210,6 +267,9 @@ agent.
   loop plus a longest-path fallback.
 - **Negative:** Scenes still persist through browser storage rather than as
   inspectable files under the Wardian home.
+- **Negative:** Monogram legibility at 8px is unproven against real skill names,
+  and near-duplicates are common in practice. The user-assigned icon that would
+  settle it does not exist yet.
 
 ## Deferred
 
@@ -226,3 +286,9 @@ agent.
   geometry.
 - Interruptible layout across animation frames. `smacofStep` supports batching;
   the view currently runs to convergence synchronously.
+- A user-assigned skill icon in `LibraryItemMetadata`, overriding the generated
+  monogram. The metadata store is already keyed by `entry_ref`, so this is a
+  field plus an editor.
+- An expanded selection panel listing an agent's skills by name and grouped by
+  provenance. The crown answers "what kind of agent is this"; naming every skill
+  is a closer-range question the summary bar currently only counts.

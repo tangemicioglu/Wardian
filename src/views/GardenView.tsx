@@ -4,7 +4,6 @@ import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlis
 import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph/graphProjection";
 import {
   buildAgentUnits,
-  buildLibraryUnits,
   buildWorkflowUnits,
   computeGardenLayout,
   gardenLayoutSignature,
@@ -14,14 +13,14 @@ import { unitKey } from "../features/garden/garden.types";
 import {
   GARDEN_AGENT_STATUS_LEGEND,
   gardenAgentStatusLabel,
-  gardenLibraryDeploymentLabel,
+  gardenSkillReachLabel,
   gardenWorkflowStatusLabel,
 } from "../features/garden/gardenStatus";
+import { agentsCarrying } from "../features/garden/skillGlyphs";
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
-import { useGardenLibrary } from "../features/garden/useGardenLibrary";
+import { useGardenSkills } from "../features/garden/useGardenSkills";
 import { useGardenStore } from "../store/useGardenStore";
 import { useLibraryStore } from "../store/useLibraryStore";
-import type { LibrarySectionId } from "../types";
 import type { GardenSurfaceState } from "../features/workbench/surfaces/coreSurfaceMetadata";
 
 const ALL_REASONS: Set<GraphRelationshipReason> = new Set([
@@ -29,13 +28,6 @@ const ALL_REASONS: Set<GraphRelationshipReason> = new Set([
   "shared_workspace",
   "same_worktree",
 ]);
-
-/** Garden unit kind to the Library section that owns it. */
-const LIBRARY_SECTION_BY_KIND: Record<string, LibrarySectionId> = {
-  skill: "skills",
-  prompt: "prompts",
-  class: "classes",
-};
 
 export interface GardenViewProps {
   visibility?: "visible" | "hidden";
@@ -77,7 +69,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const adoptScene = useGardenStore((s) => s.adoptScene);
   const resetLayout = useGardenStore((s) => s.reset);
   const workflowInputs = useGardenWorkflows(visibility === "visible");
-  const libraryInputs = useGardenLibrary(visibility === "visible");
+  const skillInputs = useGardenSkills(visibility === "visible");
   // Deep-links into the Library the same way the agent config panel's "Manage
   // skills" affordance does, so the Garden does not invent a second navigation
   // path to the same surface.
@@ -138,8 +130,8 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const projectionRef = useRef(projection);
   projectionRef.current = projection;
   const signature = useMemo(
-    () => gardenLayoutSignature(projection, teams, workflowInputs, libraryInputs),
-    [projection, teams, workflowInputs, libraryInputs],
+    () => gardenLayoutSignature(projection, teams, workflowInputs, skillInputs),
+    [projection, teams, workflowInputs, skillInputs],
   );
 
   const layout = useMemo(() => {
@@ -147,7 +139,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
       projection: projectionRef.current,
       teams,
       workflows: workflowInputs,
-      library: libraryInputs,
+      skills: skillInputs,
       scene: { ...carriedSceneRef.current, pins, exclusions },
     });
     carriedSceneRef.current = result.scene;
@@ -160,16 +152,12 @@ export const GardenView: React.FC<GardenViewProps> = ({
   // Display fields are attached per render from the live projection, so status
   // and colour stay current without touching geometry.
   const agentUnits = useMemo(
-    () => buildAgentUnits(projection, layout.positions),
-    [projection, layout.positions],
+    () => buildAgentUnits(projection, layout.positions, layout.crowns),
+    [projection, layout.positions, layout.crowns],
   );
   const workflowUnits = useMemo(
     () => buildWorkflowUnits(workflowInputs, layout.positions),
     [workflowInputs, layout.positions],
-  );
-  const libraryUnits = useMemo(
-    () => buildLibraryUnits(libraryInputs, layout.positions),
-    [libraryInputs, layout.positions],
   );
 
   // Persist district cells and settled positions so a later session can
@@ -187,16 +175,33 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const externalAgentKey =
     selectedAgentIds.size === 1 ? unitKey({ kind: "agent", id: [...selectedAgentIds][0] }) : null;
   const activeSelectionKey = selectedKey ?? externalAgentKey;
-  const selectedUnit = [...agentUnits, ...workflowUnits, ...libraryUnits].find(
+
+  // A selected skill has no unit of its own, so it is summarized from its
+  // carriers instead — and those carriers light up on the map. This is the
+  // reverse index that replaces "go to where the skill lives": the honest
+  // answer to "where is this used?" is a set, not a point.
+  const selectedSkillRef = activeSelectionKey?.startsWith("skill:")
+    ? activeSelectionKey.slice("skill:".length)
+    : null;
+  const highlightedAgentIds = useMemo(
+    () => (selectedSkillRef ? agentsCarrying(layout.crowns, selectedSkillRef) : new Set<string>()),
+    [selectedSkillRef, layout.crowns],
+  );
+  const selectedSkillLabel = selectedSkillRef
+    ? (skillInputs.find((skill) => skill.entryRef === selectedSkillRef)?.label ?? selectedSkillRef)
+    : null;
+
+  const selectedUnit = [...agentUnits, ...workflowUnits].find(
     (unit) => unitKey(unit.ref) === activeSelectionKey,
   );
-  const selectedUnitStatus = selectedUnit
-    ? "status" in selectedUnit
-      ? gardenAgentStatusLabel(selectedUnit.status)
-      : "runStatus" in selectedUnit
-        ? gardenWorkflowStatusLabel(selectedUnit.runStatus)
-        : gardenLibraryDeploymentLabel(selectedUnit.deploymentCount)
-    : null;
+  const summaryLabel = selectedSkillLabel ?? selectedUnit?.label ?? null;
+  const summaryStatus = selectedSkillRef
+    ? gardenSkillReachLabel(highlightedAgentIds.size)
+    : selectedUnit
+      ? "status" in selectedUnit
+        ? gardenAgentStatusLabel(selectedUnit.status)
+        : gardenWorkflowStatusLabel(selectedUnit.runStatus)
+      : null;
 
   return (
     <div className="garden-view relative flex min-h-0 flex-1 flex-col">
@@ -218,8 +223,8 @@ export const GardenView: React.FC<GardenViewProps> = ({
         aria-live="polite"
         className="absolute bottom-3 left-3 z-10 rounded-md border border-wardian-border bg-[var(--color-wardian-bg)]/90 px-2 py-1.5 text-[11px] shadow-sm backdrop-blur"
       >
-        {selectedUnit && selectedUnitStatus ? (
-          <><span className="text-muted">Selected: </span><span className="font-semibold text-primary">{selectedUnit.label}</span><span className="text-muted"> · {selectedUnitStatus}</span></>
+        {summaryLabel && summaryStatus ? (
+          <><span className="text-muted">Selected: </span><span className="font-semibold text-primary">{summaryLabel}</span><span className="text-muted"> · {summaryStatus}</span></>
         ) : (
           <span className="text-muted">Select a unit to view its status.</span>
         )}
@@ -227,18 +232,20 @@ export const GardenView: React.FC<GardenViewProps> = ({
       {rendererActive ? <GardenCanvas
         agentUnits={agentUnits}
         workflowUnits={workflowUnits}
-        libraryUnits={libraryUnits}
         selectedKey={activeSelectionKey}
+        highlightedAgentIds={highlightedAgentIds}
         onSelect={(ref) => {
           const key = unitKey(ref);
           setSelectedKey(key);
-          visitUnit(key);
+          // Skills are not placed, so there is no position for the scene to
+          // remember and nothing for `visit` to keep from drifting.
+          if (ref.kind !== "skill") visitUnit(key);
           if (ref.kind === "agent") {
             onSelectionChange(new Set([ref.id]));
           }
         }}
         onOpenAgent={(agentId) => (onOpenAgent ?? onOpenAgentInGrid)?.(agentId)}
-        onOpenLibraryEntry={(unit) => openLibraryAt(LIBRARY_SECTION_BY_KIND[unit.ref.kind], unit.entryRef)}
+        onOpenSkill={(glyph) => openLibraryAt("skills", glyph.entryRef)}
         onMoveUnit={(key, x, y) => {
           // A drag is a pin, stored relative to the unit's district so the
           // placement survives the district being relocated on the grid.

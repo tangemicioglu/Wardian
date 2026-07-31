@@ -66,8 +66,8 @@ export function districtId(key: DistrictKey): string {
 
 /**
  * The district every entity falls back to. Named "commons" rather than
- * "unaffiliated" because it is a real place on the map — where library assets
- * with no deployment and folders with no owner live — not an error state.
+ * "unaffiliated" because it is a real place on the map — where unassigned
+ * blueprints and folders with no owner live — not an error state.
  */
 export const COMMONS_DISTRICT_ID = districtId({ tier: "commons", id: "shared" });
 

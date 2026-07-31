@@ -48,11 +48,11 @@ export function gardenWorkflowStatusLabel(status: GardenWorkflowRunStatus): stri
 }
 
 /**
- * Library assets have no runtime status — their meaningful state is how widely
- * they are deployed, which is also what places them on the map. "Not deployed"
- * is the interesting case: it marks an asset nothing currently uses.
+ * A skill has no runtime status. What it has instead is reach — how many agents
+ * on the map carry it — which is the answer the map can give that a list
+ * cannot, now that a skill is drawn on its carriers rather than in one place.
  */
-export function gardenLibraryDeploymentLabel(deploymentCount: number): string {
-  if (deploymentCount <= 0) return "Not deployed";
-  return deploymentCount === 1 ? "Deployed to 1 target" : `Deployed to ${deploymentCount} targets`;
+export function gardenSkillReachLabel(carrierCount: number): string {
+  if (carrierCount <= 0) return "On no agents here";
+  return carrierCount === 1 ? "On 1 agent" : `On ${carrierCount} agents`;
 }

@@ -1,18 +1,15 @@
 import type { RunStatusKind } from "../workflows/run/runTypes";
+import type { GardenSkillGlyph } from "./skillGlyphs";
 
 /**
- * Kinds the Garden renders today.
+ * Kinds the Garden can address.
  *
- * A subset of `EntityRef`'s vocabulary — this is what has a renderer and a
- * district rule, not what the metric can place. Library entries were the first
- * non-agent kinds to admit because their deployment records already give them a
- * defensible home: a skill belongs where it is deployed, which is a canonical
- * fact rather than a guess.
+ * A subset of `EntityRef`'s vocabulary. Only `agent` and `workflow` are
+ * *placed*: `skill` is addressable so a glyph can be selected and deep-linked,
+ * but a skill has no position of its own — it renders on the agents that carry
+ * it. See `skillGlyphs.ts` for why.
  */
-export type GardenEntityKind = "agent" | "workflow" | "skill" | "prompt" | "class";
-
-/** Library-backed kinds, which share one renderer. */
-export type GardenLibraryKind = Extract<GardenEntityKind, "skill" | "prompt" | "class">;
+export type GardenEntityKind = "agent" | "workflow" | "skill";
 
 export interface GardenEntityRef {
   kind: GardenEntityKind;
@@ -30,6 +27,14 @@ export interface GardenAgentUnit {
   status: string;
   color: string; // may be a CSS var() expression; resolve before Konva fill
   position: GardenPosition;
+  /**
+   * Skills this agent carries, most distinctive first.
+   *
+   * Decoration, not geometry: the crown is attached to the agent's position and
+   * never enters the layout, which is what lets it expand and contract with
+   * zoom without any risk of moving a unit.
+   */
+  crown: GardenSkillGlyph[];
 }
 
 export type GardenWorkflowRunStatus = RunStatusKind | "none";
@@ -39,29 +44,6 @@ export interface GardenWorkflowUnit {
   label: string;
   runStatus: GardenWorkflowRunStatus;
   nodeCount: number;
-  position: GardenPosition;
-}
-
-export interface GardenLibraryUnit {
-  ref: GardenEntityRef; // kind is one of GardenLibraryKind
-  /**
-   * The library's own `<section>/<rel_path>` identity, verbatim.
-   *
-   * Carried separately from `ref.id` because `EntityRef` lowercases library
-   * refs for case-insensitive matching, while the Library's own lookup is
-   * case-sensitive — reconstructing `classes/Architect` from a lowercased id
-   * would fail to select anything.
-   */
-  entryRef: string;
-  label: string;
-  /**
-   * How many places this asset is deployed to. Zero is meaningful: an
-   * undeployed skill is inert, and the map should say so rather than drawing it
-   * like a live one.
-   */
-  deploymentCount: number;
-  /** True when at least one deployment is a copy rather than a live junction. */
-  hasCopiedDeployment: boolean;
   position: GardenPosition;
 }
 

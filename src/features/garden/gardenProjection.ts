@@ -2,26 +2,15 @@ import type { AgentGraphProjection, CommEdgeState } from "../graph/graphProjecti
 import type { AgentTeam } from "../../layout/watchlist/types";
 import type {
   GardenAgentUnit,
-  GardenLibraryUnit,
   GardenPosition,
   GardenWorkflowRunStatus,
   GardenWorkflowUnit,
 } from "./garden.types";
-import { agentRef, entityKey, libraryEntryRef, workflowRef } from "./entityRef";
-import {
-  emitAgentFacets,
-  emitClassFacets,
-  emitPromptFacets,
-  emitSkillFacets,
-  emitWorkflowFacets,
-} from "./facets";
-import {
-  COMMONS_DISTRICT_ID,
-  districtId,
-  resolveAgentDistrict,
-  resolveEntityDistrict,
-} from "./districts";
-import type { GardenLibraryInput } from "./useGardenLibrary";
+import { agentRef, entityKey, workflowRef } from "./entityRef";
+import { emitAgentFacets, emitWorkflowFacets } from "./facets";
+import { COMMONS_DISTRICT_ID, districtId, resolveAgentDistrict } from "./districts";
+import type { GardenSkillInput } from "./useGardenSkills";
+import { buildSkillCrowns, crownExtent, type GardenSkillGlyph } from "./skillGlyphs";
 import { interactionWeight, personalizedPageRank } from "./metric";
 import { layoutGarden, type LayoutEntity } from "./gardenLayout";
 import type { GardenScene } from "./gardenScene";
@@ -40,14 +29,30 @@ export interface GardenWorkflowInput {
  */
 const AGENT_UNIT_SIZE = { width: 96, height: 42 };
 const WORKFLOW_UNIT_SIZE = { width: 120, height: 52 };
-const LIBRARY_UNIT_SIZE = { width: 104, height: 34 };
+
+/**
+ * Footprint of an agent carrying `crownLength` skills.
+ *
+ * The crown is drawn above the dot, so it extends the box upward and, once it
+ * is wide enough, sideways. It is measured at full detail even though the crown
+ * is truncated when zoomed out — a footprint that shrank on zoom would let the
+ * map rearrange itself in response to the viewport, which is exactly what the
+ * stability contract forbids.
+ */
+function agentFootprint(crownLength: number): { width: number; height: number } {
+  const extent = crownExtent(crownLength);
+  return {
+    width: Math.max(AGENT_UNIT_SIZE.width, 2 * extent),
+    height: AGENT_UNIT_SIZE.height + extent,
+  };
+}
 
 export interface GardenProjectionInput {
   /** Display data — labels, status, colour — plus communication edges. */
   projection: AgentGraphProjection;
   teams: readonly AgentTeam[];
   workflows: readonly GardenWorkflowInput[];
-  library?: readonly GardenLibraryInput[];
+  skills?: readonly GardenSkillInput[];
   scene: GardenScene;
   now?: number;
 }
@@ -61,6 +66,14 @@ export interface UnitPlacement {
 export interface GardenProjectionResult {
   /** entityKey -> world position. Display fields are attached separately. */
   positions: Map<string, GardenPosition>;
+  /**
+   * agentId -> its skill glyphs, most distinctive first.
+   *
+   * Produced here rather than in the view because the same resolution feeds the
+   * agent's `skill:` facets, and the two must not be able to disagree about
+   * which skills an agent has.
+   */
+  crowns: Map<string, GardenSkillGlyph[]>;
   /** Scene with refreshed district cells and warm-start positions. */
   scene: GardenScene;
   /** Pins stranded by a district change; the view offers a re-place. */
@@ -93,68 +106,39 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
   }
 
   const entities: LayoutEntity[] = [];
-  const districtByAgentId = new Map<string, string>();
 
-  const agentClasses = new Set(
-    input.projection.nodes
-      .map((node) => node.agent.agent_class?.toLowerCase())
-      .filter((className): className is string => Boolean(className)),
+  // Skills are attributes of agents rather than units of their own, so they
+  // enter the pipeline only as agent facets. That is a strengthening, not a
+  // concession: `skill:<entry_ref>` is rare and therefore high-IDF, so two
+  // agents carrying the same unusual skill are genuinely pulled together —
+  // whereas a skill *unit* had to sit at the centroid of its carriers, where it
+  // was near none of them. See `skillGlyphs.ts`.
+  //
+  // Crowns supply the facets because they already resolve class-inherited and
+  // global deployments down to the agents they actually reach, which a raw scan
+  // of `deployments` does not. A global skill lands on every agent, so its IDF
+  // is exactly 0 and it costs nothing — the corpus regulates it without a rule.
+  const crowns = buildSkillCrowns(
+    input.skills ?? [],
+    input.projection.nodes.map((node) => ({
+      id: node.id,
+      agentClass: node.agent.agent_class,
+    })),
   );
-  const placedLibrary = placeableLibraryEntries(input.library ?? [], agentClasses);
-
-  // Reciprocal skill links. A deployment is recorded only on the skill's side,
-  // and cosine sees shared tokens — so without mirroring it onto the agent, a
-  // skill and the agent it is deployed to have nothing in common and the metric
-  // pushes them apart.
-  const skillsByAgent = new Map<string, string[]>();
-  for (const entry of placedLibrary) {
-    if (entry.kind !== "skill") continue;
-    for (const deployment of entry.deployments) {
-      if (deployment.targetType !== "agent") continue;
-      const existing = skillsByAgent.get(deployment.targetId);
-      if (existing) existing.push(entry.entryRef);
-      else skillsByAgent.set(deployment.targetId, [entry.entryRef]);
-    }
-  }
 
   for (const node of input.projection.nodes) {
     const ref = agentRef(node.id);
     const teamIds = teamsByAgent.get(node.id);
     const district = districtId(resolveAgentDistrict(node.agent, { teamIds }));
-    districtByAgentId.set(node.id, district);
+    const crown = crowns.get(node.id) ?? [];
     entities.push({
       ref,
       facets: emitAgentFacets(node.agent, ref, {
         teamIds,
-        deployedSkillRefs: skillsByAgent.get(node.id),
+        deployedSkillRefs: crown.map((glyph) => glyph.entryRef),
       }),
       districtId: district,
-      ...AGENT_UNIT_SIZE,
-    });
-  }
-
-  // Library assets are placed by where they are *deployed*, which is a canonical
-  // record rather than an inference. An asset with no deployment has no
-  // defensible home and lands in the commons instead of being guessed into
-  // someone's district.
-  for (const entry of placedLibrary) {
-    const ref = libraryEntryRef(entry.entryRef);
-    if (!ref) continue;
-    const facets =
-      entry.kind === "skill"
-        ? emitSkillFacets(ref, { tags: entry.tags, deployments: entry.deployments })
-        : entry.kind === "prompt"
-          ? emitPromptFacets(ref, entry.tags)
-          : emitClassFacets(ref, {
-              memberAgentIds: entry.deployments
-                .filter((deployment) => deployment.targetType === "agent")
-                .map((deployment) => deployment.targetId),
-            });
-    entities.push({
-      ref,
-      facets,
-      districtId: resolveEntityDistrict(facets.tokens, districtByAgentId),
-      ...LIBRARY_UNIT_SIZE,
+      ...agentFootprint(crown.length),
     });
   }
 
@@ -195,6 +179,7 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
 
   return {
     positions: new Map(result.units.map((unit) => [unit.key, unit.position])),
+    crowns,
     scene: result.scene,
     stalePinKeys: result.stalePinKeys,
     placement: new Map<string, UnitPlacement>(
@@ -216,50 +201,6 @@ const ACTIVITY_WEIGHT: Record<CommEdgeState, number> = {
 };
 
 /**
- * Library assets that have earned a place on the map.
- *
- * The rule is one line: **an asset appears when it has a demonstrable tie to
- * something else on the map.** Everything else is clutter, and it is clutter of
- * a specific, damaging kind — an asset with no tie has essentially one facet
- * (`section:*` plus its library path), so any two of them are metrically
- * identical. The layout stacks them at a single point and overlap removal then
- * fans them across an arbitrary area, swamping the districts that do mean
- * something. Filtering here is not just tidying; it removes the degenerate mass
- * that makes the rest unreadable.
- *
- * Per kind, the available tie differs:
- *
- * - **skill** — deployed to at least one agent, class, or user.
- * - **class** — at least one agent is of that class. "Deployment" for a class
- *   counts skills deployed *to* it, which says nothing about whether anything
- *   uses the class, so agent membership is the honest signal.
- * - **prompt** — the library records no relationship for prompts at all, so
- *   there is nothing to derive. Starred is the one explicit statement a user
- *   makes about a prompt, so that is the admission test.
- *
- * Assets excluded here are not lost: they remain in the Library, which is the
- * surface built for browsing everything. If "what is orphaned?" becomes worth
- * seeing spatially, it belongs behind a lens rather than in the default view.
- */
-export function placeableLibraryEntries(
-  library: readonly GardenLibraryInput[],
-  agentClasses: ReadonlySet<string>,
-): GardenLibraryInput[] {
-  return library.filter((entry) => {
-    switch (entry.kind) {
-      case "skill":
-        return entry.deployments.length > 0;
-      case "class":
-        return agentClasses.has(entry.entryRef.split("/").slice(1).join("/").toLowerCase());
-      case "prompt":
-        return entry.isStarred;
-      default:
-        return false;
-    }
-  });
-}
-
-/**
  * Stable digest of everything that legitimately affects geometry.
  *
  * The Garden re-renders whenever telemetry ticks, because status and colour are
@@ -277,7 +218,7 @@ export function gardenLayoutSignature(
   projection: AgentGraphProjection,
   teams: readonly AgentTeam[],
   workflows: readonly GardenWorkflowInput[],
-  library: readonly GardenLibraryInput[] = [],
+  skills: readonly GardenSkillInput[] = [],
 ): string {
   const agents = [...projection.nodes]
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -313,27 +254,30 @@ export function gardenLayoutSignature(
     .sort()
     .join(";");
 
-  // Deployment targets move a library asset between districts, so they belong in
-  // the signature. Labels and tags do not — renaming a skill repaints its unit
-  // but must not relayout the map.
-  const libraryKey = [...library]
+  // Deployments are agent facets now, so they still move things and still
+  // belong here. `linked` does not: a copy and a junction are the same tie for
+  // distance purposes and differ only in how the glyph is stroked, so including
+  // it would relayout the map when a deployment merely fell back to a copy.
+  // Labels and tags are likewise absent — renaming a skill repaints a glyph.
+  const skillKey = [...skills]
     .map(
-      (entry) =>
-        `${entry.entryRef}:${entry.isStarred}:${entry.deployments
-          .map((deployment) => `${deployment.targetType}/${deployment.targetId}/${deployment.linked}`)
+      (skill) =>
+        `${skill.entryRef}:${skill.deployments
+          .map((deployment) => `${deployment.targetType}/${deployment.targetId}`)
           .sort()
           .join(",")}`,
     )
     .sort()
     .join(";");
 
-  return [agents, teamKey, workflowKey, edgeKey, libraryKey].join("#");
+  return [agents, teamKey, workflowKey, edgeKey, skillKey].join("#");
 }
 
 /** Attach live display fields to computed positions. */
 export function buildAgentUnits(
   projection: AgentGraphProjection,
   positions: ReadonlyMap<string, GardenPosition>,
+  crowns: ReadonlyMap<string, GardenSkillGlyph[]> = new Map(),
 ): GardenAgentUnit[] {
   return projection.nodes.map((node) => ({
     ref: { kind: "agent", id: node.id },
@@ -341,29 +285,8 @@ export function buildAgentUnits(
     status: node.status,
     color: node.color,
     position: positions.get(entityKey(agentRef(node.id))) ?? { x: 0, y: 0 },
+    crown: crowns.get(node.id) ?? [],
   }));
-}
-
-export function buildLibraryUnits(
-  library: readonly GardenLibraryInput[],
-  positions: ReadonlyMap<string, GardenPosition>,
-): GardenLibraryUnit[] {
-  const units: GardenLibraryUnit[] = [];
-  for (const entry of library) {
-    const ref = libraryEntryRef(entry.entryRef);
-    if (!ref) continue;
-    const position = positions.get(entityKey(ref));
-    if (!position) continue;
-    units.push({
-      ref: { kind: entry.kind, id: ref.id },
-      entryRef: entry.entryRef,
-      label: entry.label,
-      deploymentCount: entry.deployments.length,
-      hasCopiedDeployment: entry.deployments.some((deployment) => !deployment.linked),
-      position,
-    });
-  }
-  return units;
 }
 
 export function buildWorkflowUnits(

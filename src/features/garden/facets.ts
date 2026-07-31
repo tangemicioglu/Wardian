@@ -404,16 +404,25 @@ export interface SkillFacetContext {
   deployments?: ReadonlyArray<{ targetType: string; targetId: string; linked: boolean }>;
 }
 
+/**
+ * Facets for a skill entity.
+ *
+ * Not used by the Garden's layout: a skill is an attribute of the agents that
+ * carry it, so it renders as a glyph on each of them and never takes a position
+ * of its own (see `skillGlyphs.ts`). The emitter stays because the facet
+ * vocabulary is shared with the entity model, and because a Library-side or
+ * lens-side surface may yet want to rank skills by similarity — a use that
+ * needs no geometry.
+ *
+ * A previous revision also emitted the skill's own `skill:<id>` identity so a
+ * skill *unit* would share a token with its agents and be pulled toward them.
+ * That was a workaround for placing the skill at all; nothing needs it now.
+ */
 export function emitSkillFacets(
   ref: EntityRef,
   context: SkillFacetContext = {},
 ): GardenEntityFacets {
-  // The skill's own identity, which is what an agent's `skill:<entry_ref>`
-  // token matches against. Cosine only sees *shared* tokens, so a one-sided
-  // `deployed:agent:<id>` link is invisible to it: the skill and the agent it
-  // is deployed to would share nothing, and the cross-kind offset would then
-  // push them apart inside their own district. Both ends must carry the token.
-  const tokens: FacetToken[] = ["section:skills", `skill:${ref.id.toLowerCase()}`];
+  const tokens: FacetToken[] = ["section:skills"];
   if (ref.path) tokens.push(...libraryPathFacets("skills", ref.path));
   for (const tag of context.tags ?? []) tokens.push(`tag:${tag.toLowerCase()}`);
   for (const deployment of context.deployments ?? []) {

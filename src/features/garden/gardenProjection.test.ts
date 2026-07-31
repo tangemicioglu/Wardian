@@ -4,27 +4,25 @@ import type { AgentTeam } from "../../layout/watchlist/types";
 import type { AgentGraphProjection } from "../graph/graphProjection";
 import {
   buildAgentUnits,
-  buildLibraryUnits,
   buildWorkflowUnits,
   computeGardenLayout,
   gardenLayoutSignature,
-  placeableLibraryEntries,
   type GardenWorkflowInput,
 } from "./gardenProjection";
 import { createScene, pinEntity } from "./gardenScene";
 import { COMMONS_DISTRICT_ID } from "./districts";
 
-function agent(id: string, folder: string): AgentConfig {
+function agent(id: string, folder: string, agentClass = "Coder"): AgentConfig {
   return {
     session_id: id,
     session_name: id,
-    agent_class: "Coder",
+    agent_class: agentClass,
     folder,
     is_off: false,
   } as AgentConfig;
 }
 
-function node(id: string, label: string, folder: string) {
+function node(id: string, label: string, folder: string, agentClass = "Coder") {
   return {
     id,
     label,
@@ -33,7 +31,7 @@ function node(id: string, label: string, folder: string) {
     x: 0,
     y: 0,
     size: 9,
-    agent: agent(id, folder),
+    agent: agent(id, folder, agentClass),
     clusterId: null,
     selected: false,
   };
@@ -235,11 +233,13 @@ describe("display attachment", () => {
     const units = buildAgentUnits(
       projectionOf(nodes.map((entry) => ({ ...entry, status: "Processing" }))),
       layout.positions,
+      layout.crowns,
     );
     const alpha = units.find((unit) => unit.ref.id === "a1")!;
     expect(alpha.label).toBe("Alpha");
     expect(alpha.status).toBe("Processing");
     expect(alpha.position).toEqual(layout.positions.get("agent:a1"));
+    expect(alpha.crown).toEqual([]);
   });
 
   it("attaches workflow run status without touching position", () => {
@@ -255,203 +255,150 @@ describe("display attachment", () => {
   });
 });
 
-describe("library units", () => {
-  const skill = {
+
+describe("skills as agent attributes", () => {
+  const kicad = {
     entryRef: "skills/kicad",
-    kind: "skill" as const,
     label: "KiCad Review",
     tags: ["hardware"],
-    isStarred: false,
     deployments: [{ targetType: "agent", targetId: "a1", linked: true }],
   };
 
-  it("places a deployed skill in its target agent's district", () => {
-    // Deployment is a canonical record, so this placement is defensible rather
-    // than inferred.
-    const result = computeGardenLayout({
-      projection: projectionOf(nodes),
-      teams,
-      workflows,
-      library: [skill],
-      scene: createScene(),
-    });
-    expect(result.placement.get("skill:skills/kicad")?.districtId).toBe("team:hw");
-  });
-
-  it("lands a skill nearer its deployment target than an unrelated agent", () => {
+  it("places no unit for a skill", () => {
+    // A skill deployed to several agents cannot be near all of them, so it has
+    // no defensible position at all. It renders on its carriers instead.
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
       workflows: [],
-      library: [skill],
+      skills: [kicad],
       scene: createScene(),
     });
-    const position = result.positions.get("skill:skills/kicad")!;
-    expect(distance(position, result.positions.get("agent:a1")!)).toBeLessThan(
-      distance(position, result.positions.get("agent:b1")!),
-    );
+    expect([...result.positions.keys()].sort()).toEqual(["agent:a1", "agent:a2", "agent:b1"]);
   });
 
-  it("reports deployment count and copied deployments on the unit", () => {
+  it("hangs the skill on the agent it is deployed to, and on nobody else", () => {
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows: [],
+      skills: [kicad],
+      scene: createScene(),
+    });
+    expect(result.crowns.get("a1")?.map((glyph) => glyph.entryRef)).toEqual(["skills/kicad"]);
+    expect(result.crowns.has("a2")).toBe(false);
+  });
+
+  it("reaches every agent of a class, which a skill unit could never do", () => {
+    // The decisive case for instancing: a class deployment has no single agent
+    // to sit beside, so the unit model had nowhere to put it.
+    const mixed = [
+      node("a1", "Alpha", "D:\Dev\Hardware", "Architect"),
+      node("a2", "Beta", "D:\Dev\Hardware", "Architect"),
+      node("b1", "Gamma", "D:\Dev\Web", "Coder"),
+    ];
+    const result = computeGardenLayout({
+      projection: projectionOf(mixed),
+      teams,
+      workflows: [],
+      skills: [
+        { ...kicad, deployments: [{ targetType: "class", targetId: "Architect", linked: true }] },
+      ],
+      scene: createScene(),
+    });
+    expect(result.crowns.get("a1")?.[0]).toMatchObject({ provenance: "class" });
+    expect(result.crowns.get("a2")?.[0]).toMatchObject({ provenance: "class" });
+    expect(result.crowns.has("b1")).toBe(false);
+  });
+
+  it("pulls two agents sharing a rare skill closer than an agent without it", () => {
+    // Skills leave the unit set but stay in the metric, and this is why: the
+    // shared `skill:` token is rare, so IDF makes it a strong attractor. The
+    // three agents are otherwise identical — same team, same folder, same class.
+    const peers = [
+      node("a1", "Alpha", "D:\Dev\Hardware"),
+      node("a2", "Beta", "D:\Dev\Hardware"),
+      node("a3", "Delta", "D:\Dev\Hardware"),
+    ];
+    const oneTeam: AgentTeam[] = [
+      { id: "hw", name: "Hardware", agentIds: ["a1", "a2", "a3"] },
+    ] as AgentTeam[];
+    const result = computeGardenLayout({
+      projection: projectionOf(peers),
+      teams: oneTeam,
+      workflows: [],
+      skills: [
+        {
+          ...kicad,
+          deployments: [
+            { targetType: "agent", targetId: "a1", linked: true },
+            { targetType: "agent", targetId: "a2", linked: true },
+          ],
+        },
+      ],
+      scene: createScene(),
+    });
+    const [alpha, beta, delta] = ["a1", "a2", "a3"].map(
+      (id) => result.positions.get(`agent:${id}`)!,
+    );
+    expect(distance(alpha, beta)).toBeLessThan(distance(alpha, delta));
+  });
+
+  it("orders a crown by IDF, so a universal skill sinks below a rare one", () => {
+    // Otherwise a skill deployed everywhere renders on every agent and swamps
+    // the crown with the one thing that distinguishes nobody.
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows: [],
+      skills: [
+        { ...kicad, entryRef: "skills/everywhere", label: "Everywhere",
+          deployments: [{ targetType: "user", targetId: "global", linked: true }] },
+        kicad,
+      ],
+      scene: createScene(),
+    });
+    expect(result.crowns.get("a1")?.map((glyph) => glyph.entryRef)).toEqual([
+      "skills/kicad",
+      "skills/everywhere",
+    ]);
+    // Carried by every agent, so it is the only thing b1 has.
+    expect(result.crowns.get("b1")?.map((glyph) => glyph.entryRef)).toEqual([
+      "skills/everywhere",
+    ]);
+  });
+
+  it("attaches the crown to the agent unit", () => {
     const layout = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows,
-      library: [
-        {
-          ...skill,
-          deployments: [
-            { targetType: "agent", targetId: "a1", linked: true },
-            { targetType: "class", targetId: "Architect", linked: false },
-          ],
-        },
-      ],
+      workflows: [],
+      skills: [kicad],
       scene: createScene(),
     });
-    const units = buildLibraryUnits(
-      [
-        {
-          ...skill,
-          deployments: [
-            { targetType: "agent", targetId: "a1", linked: true },
-            { targetType: "class", targetId: "Architect", linked: false },
-          ],
-        },
-      ],
-      layout.positions,
-    );
-    expect(units[0]).toMatchObject({
-      label: "KiCad Review",
-      deploymentCount: 2,
-      hasCopiedDeployment: true,
-    });
-    expect(units[0].ref).toEqual({ kind: "skill", id: "skills/kicad" });
+    const units = buildAgentUnits(projectionOf(nodes), layout.positions, layout.crowns);
+    expect(units.find((unit) => unit.ref.id === "a1")!.crown).toHaveLength(1);
+    expect(units.find((unit) => unit.ref.id === "a2")!.crown).toEqual([]);
   });
 
-  it("keeps a renamed asset from provoking a relayout, but a redeployment does", () => {
-    // Labels are display; deployment targets move the asset between districts.
-    const base = gardenLayoutSignature(projectionOf(nodes), teams, workflows, [skill]);
+  it("relayouts on a redeployment but not on a rename or a copy fallback", () => {
+    // A copy and a junction are the same tie for distance purposes and differ
+    // only in how the glyph is stroked.
+    const base = gardenLayoutSignature(projectionOf(nodes), teams, workflows, [kicad]);
     expect(
       gardenLayoutSignature(projectionOf(nodes), teams, workflows, [
-        { ...skill, label: "Renamed", tags: ["other"] },
+        { ...kicad, label: "Renamed", tags: ["other"] },
       ]),
     ).toBe(base);
     expect(
       gardenLayoutSignature(projectionOf(nodes), teams, workflows, [
-        { ...skill, deployments: [{ targetType: "agent", targetId: "b1", linked: true }] },
+        { ...kicad, deployments: [{ targetType: "agent", targetId: "a1", linked: false }] },
+      ]),
+    ).toBe(base);
+    expect(
+      gardenLayoutSignature(projectionOf(nodes), teams, workflows, [
+        { ...kicad, deployments: [{ targetType: "agent", targetId: "b1", linked: true }] },
       ]),
     ).not.toBe(base);
-  });
-});
-
-describe("placeableLibraryEntries", () => {
-  const base = { label: "x", tags: [], isStarred: false, deployments: [] };
-
-  it("drops skills that are deployed nowhere", () => {
-    // An unused asset has essentially one facet, so any two are metrically
-    // identical: they stack at a point and overlap removal fans them across an
-    // arbitrary area, swamping the districts that do mean something.
-    const entries = [
-      { ...base, entryRef: "skills/used", kind: "skill" as const, deployments: [
-        { targetType: "agent", targetId: "a1", linked: true },
-      ] },
-      { ...base, entryRef: "skills/unused", kind: "skill" as const },
-    ];
-    expect(placeableLibraryEntries(entries, new Set()).map((e) => e.entryRef)).toEqual([
-      "skills/used",
-    ]);
-  });
-
-  it("keeps a class only when some agent is of that class", () => {
-    // A class's deployment_count counts skills deployed *to* it, which says
-    // nothing about whether anything uses the class.
-    const entries = [
-      { ...base, entryRef: "classes/Coder", kind: "class" as const },
-      { ...base, entryRef: "classes/Unused", kind: "class" as const },
-    ];
-    expect(placeableLibraryEntries(entries, new Set(["coder"])).map((e) => e.entryRef)).toEqual([
-      "classes/Coder",
-    ]);
-  });
-
-  it("keeps only starred prompts, since the library records no prompt relationships", () => {
-    const entries = [
-      { ...base, entryRef: "prompts/kept.md", kind: "prompt" as const, isStarred: true },
-      { ...base, entryRef: "prompts/dropped.md", kind: "prompt" as const },
-    ];
-    expect(placeableLibraryEntries(entries, new Set()).map((e) => e.entryRef)).toEqual([
-      "prompts/kept.md",
-    ]);
-  });
-
-  it("keeps a skill deployed only to a class or user", () => {
-    const entries = [
-      { ...base, entryRef: "skills/classy", kind: "skill" as const, deployments: [
-        { targetType: "class", targetId: "Coder", linked: true },
-      ] },
-      { ...base, entryRef: "skills/global", kind: "skill" as const, deployments: [
-        { targetType: "user", targetId: "user", linked: true },
-      ] },
-    ];
-    expect(placeableLibraryEntries(entries, new Set()).map((e) => e.entryRef)).toEqual([
-      "skills/classy",
-      "skills/global",
-    ]);
-  });
-});
-
-describe("skill and agent cohesion", () => {
-  const deployedSkill = {
-    entryRef: "skills/kicad",
-    kind: "skill" as const,
-    label: "KiCad Review",
-    tags: [],
-    isStarred: false,
-    deployments: [{ targetType: "agent", targetId: "a1", linked: true }],
-  };
-
-  it("keeps a deployed skill closer to its target than to the target's own teammate", () => {
-    // The deployment link is recorded only on the skill, and cosine sees shared
-    // tokens — so before the reciprocal `skill:<entry_ref>` facet existed, a
-    // skill and its agent shared nothing and the cross-kind offset pushed them
-    // apart inside their own district.
-    const result = computeGardenLayout({
-      projection: projectionOf(nodes),
-      teams,
-      workflows: [],
-      library: [deployedSkill],
-      scene: createScene(),
-    });
-    const skill = result.positions.get("skill:skills/kicad")!;
-    const target = result.positions.get("agent:a1")!;
-    const teammate = result.positions.get("agent:a2")!;
-    expect(distance(skill, target)).toBeLessThan(distance(skill, teammate));
-  });
-
-  it("keeps an undeployed asset out of the layout entirely", () => {
-    const result = computeGardenLayout({
-      projection: projectionOf(nodes),
-      teams,
-      workflows: [],
-      library: [{ ...deployedSkill, deployments: [] }],
-      scene: createScene(),
-    });
-    expect(result.positions.has("skill:skills/kicad")).toBe(false);
-  });
-
-  it("carries the verbatim entry_ref on the unit so the Library can select it", () => {
-    // EntityRef lowercases library refs; the Library's own lookup is
-    // case-sensitive, so a reconstructed id would select nothing.
-    const entry = { ...deployedSkill, entryRef: "classes/Coder", kind: "class" as const };
-    const layout = computeGardenLayout({
-      projection: projectionOf(nodes),
-      teams,
-      workflows: [],
-      library: [entry],
-      scene: createScene(),
-    });
-    const units = buildLibraryUnits([entry], layout.positions);
-    expect(units[0].entryRef).toBe("classes/Coder");
-    expect(units[0].ref.id).toBe("coder");
   });
 });
