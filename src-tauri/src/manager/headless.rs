@@ -434,6 +434,30 @@ pub async fn run_headless_with_options(
         launch_spec.args.len(),
         resume_session.is_some_and(|value| !value.trim().is_empty())
     ));
+    if provider_name == "codex" {
+        let bypasses_sandbox = launch_spec
+            .args
+            .iter()
+            .any(|arg| arg == "--dangerously-bypass-approvals-and-sandbox");
+        let sandbox_mode = launch_spec
+            .args
+            .iter()
+            .position(|arg| arg == "--sandbox")
+            .and_then(|index| launch_spec.args.get(index + 1))
+            .map(String::as_str)
+            .unwrap_or("<bypassed>");
+        let approval_policy = launch_spec
+            .args
+            .iter()
+            .position(|arg| arg == "--ask-for-approval")
+            .and_then(|index| launch_spec.args.get(index + 1))
+            .map(String::as_str)
+            .unwrap_or("<bypassed>");
+        log_debug(&format!(
+            "[Wardian] run_headless Codex policy: bypass={}, sandbox={}, approval={}",
+            bypasses_sandbox, sandbox_mode, approval_policy
+        ));
+    }
 
     // If the control request is cancelled, dropping the child must terminate
     // the provider rather than leaving it running against a leased session.
@@ -1179,6 +1203,82 @@ mod tests {
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false)
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a logged-in Codex CLI; run with cargo test -p Wardian -- --ignored real_codex_headless_projected_home_runs_shell_on_windows"]
+    async fn real_codex_headless_projected_home_runs_shell_on_windows() {
+        let test_wardian_home = TestWardianHome::new();
+        let settings_path = test_wardian_home
+            ._home
+            .path()
+            .join("settings")
+            .join("shell.json");
+        std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+            .expect("create settings directory");
+        std::fs::write(
+            settings_path,
+            r#"{
+              "sandbox_mode": "danger-full-access",
+              "approval_policy": "never",
+              "full_auto": false,
+              "trust_workspaces": true
+            }"#,
+        )
+        .expect("write unrestricted Codex policy");
+
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace parent")
+            .to_path_buf();
+        let expected_path = workspace.to_string_lossy().to_string();
+        let session_id = "headless-codex-runtime-smoke";
+        let config = AgentConfig {
+            session_id: session_id.to_string(),
+            folder: expected_path.clone(),
+            provider: "codex".to_string(),
+            provider_config: wardian_core::models::ProviderConfig::Codex(
+                wardian_core::models::CodexProviderConfig::default(),
+            ),
+            ..Default::default()
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(120),
+            run_headless_with_options(HeadlessRunOptions {
+                cwd: &workspace,
+                prompt: "Use the shell tool exactly once to run Get-Location. Then respond with only the returned absolute path.",
+                wardian_session_id: session_id,
+                resume_session: None,
+                output_format: "json",
+                provider_name: "codex",
+                config_override: Some(&config),
+                timeout: Duration::from_secs(110),
+                lease_owner: None,
+            }),
+        )
+        .await
+        .expect("headless Codex smoke test timed out")
+        .expect("headless Codex execution");
+
+        let response = result["response"].as_str().expect("Codex response text");
+        assert!(
+            response.contains(&expected_path),
+            "expected Codex to return {expected_path:?}, got {response:?}"
+        );
+
+        let projected_codex_home = test_wardian_home
+            ._home
+            .path()
+            .join("agents")
+            .join(session_id)
+            .join("habitat")
+            .join(".codex");
+        assert!(
+            projected_codex_home.join("auth.json").is_file(),
+            "headless Codex should run from Wardian's projected CODEX_HOME"
+        );
     }
 
     #[cfg(windows)]

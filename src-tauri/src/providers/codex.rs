@@ -123,7 +123,7 @@ impl CodexProvider {
     /// flags must be appended after that subcommand.
     pub(crate) fn append_headless_global_args(&self, args: &mut Vec<String>, config: &AgentConfig) {
         let runtime_policy = crate::utils::load_codex_runtime_policy().unwrap_or_default();
-        self.append_shared_args_with_runtime_policy(args, config, &runtime_policy);
+        self.append_shared_args_with_runtime_policy(args, config, &runtime_policy, true);
     }
 
     /// Append flags owned by `codex exec` (or `codex exec resume`).
@@ -157,7 +157,7 @@ impl CodexProvider {
         is_exec_mode: bool,
         runtime_policy: &CodexRuntimePolicy,
     ) {
-        self.append_shared_args_with_runtime_policy(args, config, runtime_policy);
+        self.append_shared_args_with_runtime_policy(args, config, runtime_policy, false);
 
         if is_exec_mode {
             self.append_headless_exec_args(args, Some(config));
@@ -174,6 +174,7 @@ impl CodexProvider {
         args: &mut Vec<String>,
         config: &AgentConfig,
         runtime_policy: &CodexRuntimePolicy,
+        is_headless: bool,
     ) {
         let codex = config.codex_config();
         if let Some(ref model) = config.model {
@@ -196,7 +197,18 @@ impl CodexProvider {
             }
         }
 
-        if effective_policy.full_auto {
+        // `danger-full-access` plus `never` already grants a headless worker
+        // unrestricted tool access. On Windows, passing those two flags alone
+        // still lets Codex initialize its configured `unelevated` sandbox,
+        // which cannot create the Microsoft Store PowerShell process. Use the
+        // explicit bypass form for that equivalent headless policy instead.
+        let bypass_sandbox = effective_policy.full_auto
+            || (cfg!(target_os = "windows")
+                && is_headless
+                && effective_policy.sandbox_mode == "danger-full-access"
+                && effective_policy.approval_policy == "never");
+
+        if bypass_sandbox {
             #[cfg(target_os = "windows")]
             {
                 // Codex can still inherit `[windows].sandbox = "elevated"` from
@@ -683,6 +695,55 @@ mod tests {
         assert!(args.contains(&"--ask-for-approval".to_string()));
         assert!(args.contains(&"on-request".to_string()));
         assert!(!args.contains(&"--full-auto".to_string()));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn headless_unrestricted_policy_bypasses_windows_sandbox() {
+        let p = make_provider();
+        let config = AgentConfig::default();
+        let policy = CodexRuntimePolicy {
+            sandbox_mode: "danger-full-access".into(),
+            approval_policy: "never".into(),
+            full_auto: false,
+            trust_workspaces: false,
+        };
+        let mut headless_args = Vec::new();
+        let mut interactive_args = Vec::new();
+
+        p.append_shared_args_with_runtime_policy(&mut headless_args, &config, &policy, true);
+        p.append_shared_args_with_runtime_policy(&mut interactive_args, &config, &policy, false);
+
+        assert!(headless_args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(!headless_args.contains(&"--sandbox".to_string()));
+        assert!(!headless_args.contains(&"--ask-for-approval".to_string()));
+        assert!(!interactive_args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(interactive_args.contains(&"--sandbox".to_string()));
+        assert!(interactive_args.contains(&"danger-full-access".to_string()));
+        assert!(interactive_args.contains(&"--ask-for-approval".to_string()));
+        assert!(interactive_args.contains(&"never".to_string()));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn headless_restricted_policy_keeps_windows_sandbox() {
+        let p = make_provider();
+        let config = AgentConfig::default();
+        let policy = CodexRuntimePolicy {
+            sandbox_mode: "workspace-write".into(),
+            approval_policy: "never".into(),
+            full_auto: false,
+            trust_workspaces: false,
+        };
+        let mut args = Vec::new();
+
+        p.append_shared_args_with_runtime_policy(&mut args, &config, &policy, true);
+
+        assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(args.contains(&"--sandbox".to_string()));
+        assert!(args.contains(&"workspace-write".to_string()));
+        assert!(args.contains(&"--ask-for-approval".to_string()));
+        assert!(args.contains(&"never".to_string()));
     }
 
     #[cfg(target_os = "windows")]
