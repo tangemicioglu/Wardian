@@ -16,8 +16,8 @@ import { test, expect, type Page } from "@playwright/test";
 import * as path from "path";
 import { openSurface, surfacePanel } from "../fixtures/workbench";
 
-async function installCustomCloneIpcMock(page: Page) {
-  await page.addInitScript(() => {
+async function installCustomCloneIpcMock(page: Page, options: { includeRecentSortFixture?: boolean } = {}) {
+  await page.addInitScript(({ includeRecentSortFixture }) => {
     type Agent = {
       session_id: string;
       session_name: string;
@@ -28,17 +28,26 @@ async function installCustomCloneIpcMock(page: Page) {
       is_off: boolean;
     };
 
-    const agents: Agent[] = [
-      {
-        session_id: "mock-session-e2e-001",
-        session_name: "E2E Mock Agent",
-        description: "Owns release notes and keeps deployment guidance current.",
+    const agents: Agent[] = [{
+      session_id: "mock-session-e2e-001",
+      session_name: "E2E Mock Agent",
+      description: "Owns release notes and keeps deployment guidance current.",
+      agent_class: "TestClass",
+      folder: "C:/projects/e2e",
+      provider: "claude",
+      is_off: false,
+    }];
+    if (includeRecentSortFixture) {
+      agents.push({
+        session_id: "mock-session-e2e-002",
+        session_name: "E2E Older Agent",
+        description: "Provides an older interaction for Last-column sorting.",
         agent_class: "TestClass",
         folder: "C:/projects/e2e",
         provider: "claude",
         is_off: false,
-      },
-    ];
+      });
+    }
     const callbacks = new Map<number, unknown>();
     let callbackId = 1;
     const tauriWindow = window as Window & {
@@ -129,7 +138,14 @@ async function installCustomCloneIpcMock(page: Page) {
         }
         if (command === "load_watchlists") return [];
         if (command === "load_watchlist_prefs") return null;
-        if (command === "load_agent_interactions") return {};
+        if (command === "load_agent_interactions") {
+          if (!includeRecentSortFixture) return {};
+          const now = Date.now();
+          return {
+            "mock-session-e2e-001": new Date(now - 60_000).toISOString(),
+            "mock-session-e2e-002": new Date(now - 120_000).toISOString(),
+          };
+        }
         if (command === "load_queue_items") return [];
         if (command === "load_onboarding_hints") {
           return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
@@ -181,7 +197,7 @@ async function installCustomCloneIpcMock(page: Page) {
         return null;
       },
     };
-  });
+  }, options);
 }
 
 test.describe("Agent Spawn Form", () => {
@@ -286,6 +302,23 @@ test.describe("Custom Agent Clone", () => {
     await expect(page.locator('[data-testid="agents-overview-surface"]')).toBeVisible();
     await page.screenshot({
       path: path.join("e2e", "screenshots", "watchlist-single-click", "2026-07-22", "single-click-reveals-agent.png"),
+      animations: "disabled",
+    });
+  });
+
+  test("first Last sort shows the most recently queried agent first", async ({ page }) => {
+    await installCustomCloneIpcMock(page, { includeRecentSortFixture: true });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+
+    const watchlist = page.locator('[data-testid="agent-watchlist"]');
+    await expect(watchlist.locator('.watchlist-row[aria-label="Agent E2E Mock Agent"]')).toBeVisible();
+    await watchlist.getByRole("button", { name: "Last", exact: true }).click();
+
+    await expect(watchlist.locator(".watchlist-row").first()).toHaveAttribute("aria-label", "Agent E2E Mock Agent");
+    await expect(watchlist.locator(".watchlist-row").nth(1)).toHaveAttribute("aria-label", "Agent E2E Older Agent");
+    await page.screenshot({
+      path: path.join("e2e", "screenshots", "watchlist-last-sort", "2026-07-31", "last-most-recent-first.png"),
       animations: "disabled",
     });
   });

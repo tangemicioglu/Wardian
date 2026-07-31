@@ -678,8 +678,16 @@ describe('formatRelativeTime', () => {
 // ── cycleSort ──────────────────────────────────────────────────────────
 
 describe('cycleSort', () => {
-  it('goes none → asc', () => {
+  it('goes none → asc for columns without a recency-first default', () => {
     expect(cycleSort(null, 'query_count')).toEqual({ column_id: 'query_count', direction: 'asc' });
+  });
+  it('starts Last descending so the most recently queried agent appears first', () => {
+    const sort = cycleSort(null, 'last_queried');
+    expect(sort).toEqual({ column_id: 'last_queried', direction: 'desc' });
+
+    const agents = [makeAgent('a'), makeAgent('b'), makeAgent('c')];
+    const interactions = { a: '2026-01-03T00:00:00Z', b: '2026-01-01T00:00:00Z', c: '2026-01-02T00:00:00Z' };
+    expect(sortAgents(agents, sort, {}, interactions).map(a => a.session_id)).toEqual(['a', 'c', 'b']);
   });
   it('goes asc → desc on same column', () => {
     const current: WatchlistPrefs['sort'] = { column_id: 'query_count', direction: 'asc' };
