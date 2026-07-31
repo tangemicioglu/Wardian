@@ -65,6 +65,7 @@ import {
   resolvePin,
   sceneAnchorWeights,
   stalePins,
+  warmStartAnchor,
   type GardenScene,
 } from "./gardenScene";
 
@@ -252,15 +253,10 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
         // changed. In the local frame that origin is (0, 0), so a pin resolves
         // to exactly the district-relative offset it is stored as.
         const pinnedAt = resolvePin(input.scene, key, districtId, ORIGIN);
-        const warmStart = input.scene.positions[key];
         return {
           key,
           rho: driftFor(input.scene, key, now),
-          anchor:
-            pinnedAt ??
-            (warmStart
-              ? { x: warmStart.x - priorOrigin.x, y: warmStart.y - priorOrigin.y }
-              : undefined),
+          anchor: pinnedAt ?? warmStartAnchor(input.scene, key, districtId, priorOrigin),
         };
       });
 
@@ -343,7 +339,7 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
 
   return {
     units,
-    scene: recordPositions({ ...input.scene, districts: spacedDistricts }, settled),
+    scene: recordPositions({ ...input.scene, districts: spacedDistricts }, settled, districtOf),
     stalePinKeys: stalePins(input.scene, districtOf),
     residualOverlaps,
     corpus,

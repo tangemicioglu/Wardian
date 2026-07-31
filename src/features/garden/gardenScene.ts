@@ -42,7 +42,12 @@ import {
   DRIFT_SETTLED,
   DRIFT_VISITED,
 } from "./smacof";
-import { createDistrictLayout, type DistrictLayout } from "./districts";
+import {
+  MAX_DISTRICT_RADIUS,
+  MAX_DISTRICT_SPACING,
+  createDistrictLayout,
+  type DistrictLayout,
+} from "./districts";
 
 export const GARDEN_SCENE_SCHEMA = 1;
 
@@ -70,6 +75,15 @@ export interface GardenScene {
   exclusions: Record<string, string[]>;
   /** entityKey -> last settled position. Warm-start seeds for the layout. */
   positions: Record<string, GardenPosition>;
+  /**
+   * entityKey -> district the stored position was written under.
+   *
+   * Positions are absolute, so they only mean anything against the origin they
+   * were measured from. Recording the district makes that frame explicit and
+   * lets a stale coordinate be recognised rather than silently reinterpreted.
+   * Absent for scenes written before this was tracked; see `warmStartAnchor`.
+   */
+  position_districts: Record<string, string>;
   /** entityKey -> epoch ms the user last interacted with it. */
   visited: Record<string, number>;
 }
@@ -82,6 +96,7 @@ export function createScene(): GardenScene {
     pins: {},
     exclusions: {},
     positions: {},
+    position_districts: {},
     visited: {},
   };
 }
@@ -220,10 +235,71 @@ export function anchoredDistrict(scene: GardenScene, entityKey: string): string 
 export function recordPositions(
   scene: GardenScene,
   positions: ReadonlyMap<string, GardenPosition>,
+  districtOf?: ReadonlyMap<string, string>,
 ): GardenScene {
   const next = { ...scene.positions };
-  for (const [key, position] of positions) next[key] = position;
-  return { ...scene, positions: next, metric_version: METRIC_VERSION };
+  const frames = { ...scene.position_districts };
+  for (const [key, position] of positions) {
+    next[key] = position;
+    const districtId = districtOf?.get(key);
+    if (districtId !== undefined) frames[key] = districtId;
+    else delete frames[key];
+  }
+  return {
+    ...scene,
+    positions: next,
+    position_districts: frames,
+    metric_version: METRIC_VERSION,
+  };
+}
+
+/**
+ * Local warm-start anchor for an entity, or undefined when the stored position
+ * cannot be trusted to describe this district.
+ *
+ * A warm start exists so the drift penalty has somewhere to pull toward, which
+ * is what makes inserting one agent an incremental change instead of a full
+ * reflow. Its authority is exactly that and no more: it is derived state, and a
+ * stale one is worse than none.
+ *
+ * Two things can invalidate it, both observed in the wild:
+ *
+ *   - **The entity changed district.** The coordinate was measured from another
+ *     district's origin, so re-basing it here yields an offset of roughly the
+ *     distance between two cells. Under the drift penalty the unit then holds
+ *     that position, the district's measured extent grows by a whole grid pitch,
+ *     and the pitch is derived from that extent — so the next pass reads every
+ *     stored position in a wider frame and the error compounds. One re-districting
+ *     was enough to inflate the pitch tenfold; a few of them in succession put a
+ *     real map eleven thousand times too large to draw.
+ *
+ *   - **The stored geometry is already inflated**, from a scene written before
+ *     the above was caught. The district check cannot see this, because such a
+ *     scene is internally consistent — the position really was written under this
+ *     district, in a frame that was already wrong. `MAX_DISTRICT_RADIUS` is what
+ *     bounds it, and what lets an affected scene heal itself on load rather than
+ *     requiring the user to discard their arrangement.
+ */
+export function warmStartAnchor(
+  scene: GardenScene,
+  entityKey: string,
+  districtId: string,
+  priorOrigin: GardenPosition,
+): GardenPosition | undefined {
+  const stored = scene.positions[entityKey];
+  if (!stored) return undefined;
+
+  // Undefined means the scene predates frame tracking; such a position is
+  // accepted on the radius check alone rather than discarded outright, since
+  // most of them are perfectly good.
+  const writtenIn = scene.position_districts[entityKey];
+  if (writtenIn !== undefined && writtenIn !== districtId) return undefined;
+
+  const local = { x: stored.x - priorOrigin.x, y: stored.y - priorOrigin.y };
+  if (Math.abs(local.x) > MAX_DISTRICT_RADIUS || Math.abs(local.y) > MAX_DISTRICT_RADIUS) {
+    return undefined;
+  }
+  return local;
 }
 
 export function markVisited(
@@ -246,11 +322,15 @@ export function pruneScene(scene: GardenScene, liveKeys: ReadonlySet<string>): G
   for (const [key, position] of Object.entries(scene.positions)) {
     if (liveKeys.has(key)) positions[key] = position;
   }
+  const position_districts: Record<string, string> = {};
+  for (const [key, districtId] of Object.entries(scene.position_districts)) {
+    if (liveKeys.has(key)) position_districts[key] = districtId;
+  }
   const visited: Record<string, number> = {};
   for (const [key, at] of Object.entries(scene.visited)) {
     if (liveKeys.has(key)) visited[key] = at;
   }
-  return { ...scene, positions, visited };
+  return { ...scene, positions, position_districts, visited };
 }
 
 /**
@@ -276,6 +356,11 @@ export function scenesConverged(
   if (!shallowEqualNumbers(a.districts.tombstones, b.districts.tombstones)) return false;
   if (JSON.stringify(a.pins) !== JSON.stringify(b.pins)) return false;
   if (JSON.stringify(a.exclusions) !== JSON.stringify(b.exclusions)) return false;
+  // Not cosmetic: on the first load of a scene written before frames were
+  // tracked, every position is unchanged but the frames go from absent to
+  // known. Treating that as converged would decline to adopt them, and the
+  // scene would never learn which district its coordinates belong to.
+  if (JSON.stringify(a.position_districts) !== JSON.stringify(b.position_districts)) return false;
 
   const keys = new Set([...Object.keys(a.positions), ...Object.keys(b.positions)]);
   for (const key of keys) {
@@ -331,6 +416,10 @@ export function reviveScene(raw: unknown): SceneCompatibility {
     pins: reviveRecord(candidate.pins, isPin),
     exclusions: reviveRecord(candidate.exclusions, isStringArray),
     positions: reviveRecord(candidate.positions, isPosition),
+    position_districts: reviveRecord(
+      candidate.position_districts,
+      (value): value is string => typeof value === "string",
+    ),
     visited: reviveRecord(candidate.visited, (value): value is number => typeof value === "number"),
   };
 
@@ -352,9 +441,14 @@ function reviveDistricts(raw: unknown): DistrictLayout {
     ),
     // A scene written before the pitch was adaptive has no spacing; the default
     // is exactly what produced its stored positions.
+    //
+    // A stored pitch beyond the ceiling is not a preference to honour — it is
+    // damage from a pass that read stale warm starts as geometry. Clamping here
+    // means the map is drawable on the very first frame, before the layout has
+    // had a chance to recompute it.
     spacing:
       typeof candidate.spacing === "number" && candidate.spacing > 0
-        ? candidate.spacing
+        ? Math.min(candidate.spacing, MAX_DISTRICT_SPACING)
         : fallback.spacing,
   };
 }

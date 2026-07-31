@@ -60,6 +60,35 @@ export const DISTRICT_SPACING_QUANTUM = 120;
 /** Clear space left between the bounding boxes of two neighbouring districts. */
 export const DISTRICT_MARGIN = 96;
 
+/**
+ * Furthest a unit can plausibly settle from its own district's origin.
+ *
+ * A district holds at most `MAX_DISTRICT_MEMBERS` units before it splits into
+ * parcels, those parcels sit on a ring of `DEFAULT_DISTRICT_SPACING * 0.32`, and
+ * stress majorization spreads a parcel over a few multiples of the layout scale.
+ * Sixty units of typical footprint pack inside a radius of roughly 350, so this
+ * is generous by a factor of three.
+ *
+ * It exists because a stored position can outlive the frame it was written in:
+ * if districting changes, yesterday's coordinate is measured against a different
+ * origin today, and the difference is not a memory of anywhere — it is an
+ * artefact. Bounding what a warm start may claim keeps that artefact from
+ * becoming geometry.
+ */
+export const MAX_DISTRICT_RADIUS = 1200;
+
+/**
+ * Hard ceiling on the grid pitch.
+ *
+ * `spacingFor` derives the pitch from how much room districts actually need, and
+ * that derivation is only as trustworthy as its inputs. A pitch is also
+ * self-perpetuating — it is persisted, and it sets the frame the next pass reads
+ * stored positions in — so a single bad measurement can compound across
+ * sessions. This is the backstop: past it, districts may touch, which is a far
+ * smaller failure than a map too large to draw.
+ */
+export const MAX_DISTRICT_SPACING = 2 * MAX_DISTRICT_RADIUS + DISTRICT_MARGIN;
+
 /** Grid order: side length is 2^order, so order 5 gives 1024 cells. */
 export const DEFAULT_HILBERT_ORDER = 5;
 
@@ -236,11 +265,19 @@ export function createDistrictLayout(order = DEFAULT_HILBERT_ORDER): DistrictLay
  * `required` is the largest district's full width or height. Growth is
  * immediate; shrinking waits until a whole quantum has been freed, so a
  * district losing one member does not drag every other district inward.
+ *
+ * The result is capped at `MAX_DISTRICT_SPACING`, and a `current` above the cap
+ * is never treated as a reason to stay there — that is what lets a scene
+ * persisted with a runaway pitch recover on its next pass instead of carrying
+ * the damage forward forever.
  */
 export function spacingFor(required: number, current = DEFAULT_DISTRICT_SPACING): number {
   const target = Math.max(DEFAULT_DISTRICT_SPACING, required + DISTRICT_MARGIN);
-  const quantized =
-    Math.ceil(target / DISTRICT_SPACING_QUANTUM) * DISTRICT_SPACING_QUANTUM;
+  const quantized = Math.min(
+    MAX_DISTRICT_SPACING,
+    Math.ceil(target / DISTRICT_SPACING_QUANTUM) * DISTRICT_SPACING_QUANTUM,
+  );
+  if (current > MAX_DISTRICT_SPACING) return quantized;
   if (quantized > current) return quantized;
   if (quantized <= current - DISTRICT_SPACING_QUANTUM) return quantized;
   return current;

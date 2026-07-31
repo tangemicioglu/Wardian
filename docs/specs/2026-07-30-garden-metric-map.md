@@ -249,6 +249,43 @@ frame to move one circle by a pixel. Three rules now hold the line:
   the default shallow comparison would never skip anything; `position` and
   `crown` come straight from the layout result and are compared by reference.
 
+### A stored position is only meaningful in the frame it was written in
+
+Warm starts exist so the drift penalty has an anchor, which is what makes
+inserting one agent an incremental change rather than a full reflow. They are
+derived state, and their authority stops there — a stale one is worse than none.
+
+Positions are stored absolutely, so they mean nothing without the origin they
+were measured from, and that origin is a district's. When districting changes,
+yesterday's coordinate re-based on today's origin is off by roughly the distance
+between two cells. Nothing about that difference is a memory of anywhere. It is
+an artefact, and under the drift penalty the unit holds it — so the district's
+measured extent grows by a whole grid pitch, and the pitch is *derived from that
+extent*. The next pass then reads every stored position in a wider frame, and the
+error compounds across sessions because the pitch is persisted. Measured: one
+re-districting took the pitch from 720 to 7440; a few in succession put a real
+53-agent map at a pitch of 9,402,240 and a span of 28.5M × 51.7M world units,
+which no viewport can show. The map was not empty. It was unreadably large.
+
+Three rules contain it:
+
+- **The scene records which district each position was measured in**
+  (`position_districts`). A warm start whose district has changed is discarded
+  rather than reinterpreted. This is exact, and it prevents the first inflation.
+- **A warm start beyond `MAX_DISTRICT_RADIUS` of its origin is discarded**
+  regardless. The district check cannot recognise a scene that is already
+  inflated, because such a scene is internally consistent — the position really
+  was written under this district, in a frame that was already wrong. An absolute
+  bound is the only thing that can, and it lets an affected scene heal on load
+  instead of asking the user to discard their arrangement.
+- **The pitch is capped at `MAX_DISTRICT_SPACING`**, and a persisted pitch above
+  the cap is never a reason to stay there. Past the cap districts may touch,
+  which is a far smaller failure than a map too large to draw.
+
+The general rule: geometry derived from persisted geometry needs a bound that
+does not itself come from the persisted value, or a single bad measurement
+becomes permanent.
+
 ## Identity
 
 The Garden must treat five live key schemes as one keyspace: `unitKey`,

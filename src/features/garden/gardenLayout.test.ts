@@ -6,6 +6,7 @@ import {
   COMMONS_DISTRICT_ID,
   DEFAULT_DISTRICT_SPACING,
   MAX_DISTRICT_MEMBERS,
+  MAX_DISTRICT_SPACING,
 } from "./districts";
 import { interactionWeight, personalizedPageRank } from "./metric";
 import { maxDisplacement } from "./smacof";
@@ -482,5 +483,99 @@ describe("district separation", () => {
       x: origin.x + 4000,
       y: origin.y + 4000,
     });
+  });
+});
+
+describe("stored positions never become geometry", () => {
+  // Twenty-four agents over six workspaces: enough districts that a change in
+  // how they are grouped moves most units into a different frame.
+  function roster(districtOf: (i: number) => string): LayoutEntity[] {
+    return Array.from({ length: 24 }, (_, i) =>
+      agentEntity(`r${i}`, districtOf(i), { folder: `D:\\Dev\\P${i % 6}` }),
+    );
+  }
+
+  const asCommons = roster(() => COMMONS_DISTRICT_ID);
+  const asWorkspaces = roster((i) => `workspace:d:/dev/p${i % 6}`);
+
+  /** Full extent of the laid-out map, which is what the viewport must fit. */
+  function span(result: ReturnType<typeof layoutGarden>) {
+    const xs = result.units.map((unit) => unit.position.x);
+    const ys = result.units.map((unit) => unit.position.y);
+    return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  }
+
+  it("survives the districting rule changing under a persisted scene", () => {
+    // This is the failure that produced an empty Garden on a real install, and
+    // it needs a *persisted* scene to appear at all — every test that starts
+    // from `createScene()` misses it.
+    //
+    // A stored position is absolute, so it only means anything against the
+    // origin it was measured from. When these agents move from the commons into
+    // per-workspace districts, yesterday's coordinate re-based on today's origin
+    // is off by roughly the distance between two cells. The drift penalty then
+    // holds each unit at that offset, the district's measured extent grows by a
+    // whole grid pitch, and the pitch is derived from that extent — so the next
+    // pass reads every stored position in a wider frame again. Observed: one
+    // re-grouping took the pitch from 720 to 7440, and a few in succession put
+    // the map eleven thousand times too large to draw.
+    let scene = layoutGarden({ entities: asCommons, scene: createScene(), now }).scene;
+
+    for (let pass = 0; pass < 6; pass += 1) {
+      const result = layoutGarden({ entities: asWorkspaces, scene, now });
+      scene = result.scene;
+      expect(result.districts.spacing).toBeLessThanOrEqual(MAX_DISTRICT_SPACING);
+      expect(span(result)).toBeLessThan(6000);
+    }
+  });
+
+  it("reaches the same map whether or not a stale scene preceded it", () => {
+    // The point of rejecting a stale warm start is not merely that the map stays
+    // small — it is that history the layout cannot honour leaves no trace.
+    const stale = layoutGarden({ entities: asCommons, scene: createScene(), now }).scene;
+    const fromStale = layoutGarden({ entities: asWorkspaces, scene: stale, now });
+    const fromFresh = layoutGarden({ entities: asWorkspaces, scene: createScene(), now });
+    expect(fromStale.districts.spacing).toBe(fromFresh.districts.spacing);
+  });
+
+  it("heals a scene whose stored geometry is already inflated", () => {
+    // Scenes in this state exist on disk, written before the above was caught.
+    // They are internally consistent — the positions really were written under
+    // these districts — so nothing but an absolute bound can recognise them.
+    const healthy = layoutGarden({ entities: asWorkspaces, scene: createScene(), now });
+    const inflated: GardenScene = {
+      ...healthy.scene,
+      districts: { ...healthy.scene.districts, spacing: 9_402_240 },
+      positions: Object.fromEntries(
+        Object.entries(healthy.scene.positions).map(([key, position], i) => [
+          key,
+          { x: position.x + i * 700_000, y: position.y + i * 1_300_000 },
+        ]),
+      ),
+    };
+
+    const recovered = layoutGarden({ entities: asWorkspaces, scene: inflated, now });
+    expect(recovered.districts.spacing).toBeLessThanOrEqual(MAX_DISTRICT_SPACING);
+    expect(span(recovered)).toBeLessThan(6000);
+  });
+
+  it("still warm-starts from a position written under the same district", () => {
+    // The bound must not be so eager that it throws away the incremental
+    // insertion it exists to protect.
+    const settled = layoutGarden({ entities: asWorkspaces, scene: createScene(), now });
+    const again = layoutGarden({ entities: asWorkspaces, scene: settled.scene, now });
+    for (const unit of again.units) {
+      const before = settled.units.find((other) => other.key === unit.key)!;
+      // A few world units is stress majorization converging to its tolerance.
+      // A *rejected* warm start reseeds the unit and moves it by hundreds.
+      expect(distance(unit.position, before.position)).toBeLessThan(5);
+    }
+  });
+
+  it("records the district each stored position was measured in", () => {
+    const result = layoutGarden({ entities: asWorkspaces, scene: createScene(), now });
+    for (const unit of result.units) {
+      expect(result.scene.position_districts[unit.key]).toBe(unit.districtId);
+    }
   });
 });
