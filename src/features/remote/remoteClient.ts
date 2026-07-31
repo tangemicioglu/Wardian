@@ -15,6 +15,12 @@ import type {
   RemoteWorkflowSummary,
 } from "../../types";
 
+export interface RemoteAgentChatPage {
+  events: AgentChatEvent[];
+  has_older: boolean;
+  next_before: number | null;
+}
+
 const REMOTE_CSRF_HEADER_NAME = "x-wardian-csrf";
 const REMOTE_STATUS_STREAM_PATH = "/remote/api/status-stream";
 
@@ -117,6 +123,17 @@ export const remoteClient = {
       `/remote/api/agents/${encodeURIComponent(sessionId)}/chat`,
     );
     return result.events;
+  },
+  async loadAgentChatPage(sessionId: string, before?: number): Promise<RemoteAgentChatPage> {
+    const search = typeof before === "number" ? `?before=${encodeURIComponent(before)}` : "";
+    const result = await remoteJson<Partial<RemoteAgentChatPage>>(
+      `/remote/api/agents/${encodeURIComponent(sessionId)}/chat${search}`,
+    );
+    return {
+      events: result.events ?? [],
+      has_older: result.has_older ?? false,
+      next_before: result.next_before ?? null,
+    };
   },
   async loadAgentTerminal(sessionId: string) {
     const result = await remoteJson<{ snapshot: RemoteTerminalSnapshot }>(

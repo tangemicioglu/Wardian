@@ -80,8 +80,6 @@ const iconButtonClass =
 const modeButtonClass =
   "min-h-9 flex-1 rounded-md px-3 text-xs font-semibold transition-colors";
 
-const CHAT_INITIAL_ROW_LIMIT = 80;
-const CHAT_ROW_PAGE_SIZE = 60;
 const EDGE_BACK_START_MAX_X = 32;
 const EDGE_BACK_MIN_DELTA_X = 72;
 const EDGE_BACK_MAX_DELTA_Y = 48;
@@ -520,15 +518,19 @@ export const RemoteAgentDetailView: React.FC<{ agent: RemoteAgentSummary }> = ({
   const terminalError = useRemoteStore((state) => state.terminalError);
   const chatEvents = useRemoteStore((state) => state.chatEvents);
   const chatLoading = useRemoteStore((state) => state.chatLoading);
+  const chatLoadingOlder = useRemoteStore((state) => state.chatLoadingOlder);
+  const chatHasOlder = useRemoteStore((state) => state.chatHasOlder);
   const chatError = useRemoteStore((state) => state.chatError);
   const sending = useRemoteStore((state) => state.sending);
   const closeAgent = useRemoteStore((state) => state.closeAgent);
   const setActiveAgentViewMode = useRemoteStore((state) => state.setActiveAgentViewMode);
   const refreshActiveAgentTerminal = useRemoteStore((state) => state.refreshActiveAgentTerminal);
   const refreshActiveAgentChat = useRemoteStore((state) => state.refreshActiveAgentChat);
+  const loadOlderActiveAgentChat = useRemoteStore((state) => state.loadOlderActiveAgentChat);
   const sendPromptToActiveAgent = useRemoteStore((state) => state.sendPromptToActiveAgent);
   const [prompt, setPrompt] = useState("");
   const contentEndRef = useRef<HTMLDivElement | null>(null);
+  const lastVisibleChatEventIdRef = useRef<string | undefined>(undefined);
   const edgeBackSwipeStartRef = useRef<EdgeBackSwipeStart | null>(null);
 
   const visibleEvents = useMemo(
@@ -541,7 +543,10 @@ export const RemoteAgentDetailView: React.FC<{ agent: RemoteAgentSummary }> = ({
   );
 
   useEffect(() => {
-    contentEndRef.current?.scrollIntoView({ block: "end" });
+    const lastVisibleChatEventId = visibleEvents[visibleEvents.length - 1]?.id;
+    const shouldScroll = activeAgentViewMode === "terminal" || lastVisibleChatEventId !== lastVisibleChatEventIdRef.current;
+    lastVisibleChatEventIdRef.current = lastVisibleChatEventId;
+    if (shouldScroll) contentEndRef.current?.scrollIntoView({ block: "end" });
   }, [activeAgentViewMode, visibleEvents]);
 
   const submit = async (event: React.FormEvent) => {
@@ -666,10 +671,13 @@ export const RemoteAgentDetailView: React.FC<{ agent: RemoteAgentSummary }> = ({
           agent={agent}
           visibleEvents={visibleEvents}
           loading={chatLoading}
+          loadingOlder={chatLoadingOlder}
+          hasOlder={chatHasOlder}
           error={chatError}
           endRef={contentEndRef}
           isSubmitting={sending}
           onApprovalSubmit={(response) => void sendPromptToActiveAgent(response)}
+          onLoadOlder={() => void loadOlderActiveAgentChat()}
         />
       ) : (
         <TerminalPane agent={agent} loading={terminalLoading} error={terminalError} endRef={contentEndRef} />
@@ -1085,31 +1093,29 @@ function ChatPane({
   agent,
   visibleEvents,
   loading,
+  loadingOlder,
+  hasOlder,
   error,
   endRef,
   isSubmitting,
   onApprovalSubmit,
+  onLoadOlder,
 }: {
   agent: RemoteAgentSummary;
   visibleEvents: AgentChatEvent[];
   loading: boolean;
+  loadingOlder: boolean;
+  hasOlder: boolean;
   error: string;
   endRef: React.RefObject<HTMLDivElement | null>;
   isSubmitting: boolean;
   onApprovalSubmit: (response: string) => void;
+  onLoadOlder: () => void;
 }) {
   const rows = useMemo(
     () => derivePresentedChatRows(sortRemoteTranscriptEvents(visibleEvents).filter(shouldShowRemoteChatEvent)),
     [visibleEvents],
   );
-  const [visibleRowLimit, setVisibleRowLimit] = useState(CHAT_INITIAL_ROW_LIMIT);
-  const hiddenOlderRowCount = Math.max(0, rows.length - visibleRowLimit);
-  const visibleRows = useMemo(() => rows.slice(hiddenOlderRowCount), [hiddenOlderRowCount, rows]);
-
-  useEffect(() => {
-    setVisibleRowLimit(CHAT_INITIAL_ROW_LIMIT);
-  }, [agent.session_id]);
-
   return (
     <section className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3" aria-label={`${agent.session_name} chat`}>
       {error && <div className="rounded-md border border-wardian-error px-3 py-2 text-xs text-wardian-error">{error}</div>}
@@ -1124,16 +1130,17 @@ function ChatPane({
           No chat transcript yet.
         </div>
       )}
-      {hiddenOlderRowCount > 0 ? (
+      {hasOlder ? (
         <button
           type="button"
           className="w-full rounded border border-wardian-border bg-wardian-card px-3 py-2 text-xs font-semibold leading-5 text-muted-neutral hover:text-primary"
-          onClick={() => setVisibleRowLimit((limit) => Math.min(rows.length, limit + CHAT_ROW_PAGE_SIZE))}
+          onClick={onLoadOlder}
+          disabled={loadingOlder}
         >
-          Load {Math.min(CHAT_ROW_PAGE_SIZE, hiddenOlderRowCount)} earlier transcript rows
+          {loadingOlder ? "Loading older transcript..." : "Load older transcript"}
         </button>
       ) : null}
-      {visibleRows.map((row) =>
+      {rows.map((row) =>
         row.kind === "work_group" ? (
           <WorkGroupRow key={row.id} row={row} />
         ) : row.event.kind === "message" ? (

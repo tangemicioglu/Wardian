@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_WATCHLIST_PREFS } from "../../layout/watchlist/types";
 import type { AgentChatEvent } from "../../types";
-import { RemoteRequestError, remoteClient } from "./remoteClient";
+import { type RemoteAgentChatPage, RemoteRequestError, remoteClient } from "./remoteClient";
 import { useRemoteStore } from "./useRemoteStore";
 
 vi.mock("./remoteClient", async (importOriginal) => {
@@ -14,7 +14,7 @@ vi.mock("./remoteClient", async (importOriginal) => {
         listAgents: vi.fn(),
         listWorkflows: vi.fn(),
         loadWatchlists: vi.fn(),
-        loadAgentChat: vi.fn(),
+        loadAgentChatPage: vi.fn(),
         openStatusStream: vi.fn(),
       },
   };
@@ -64,8 +64,8 @@ describe("useRemoteStore watchlists", () => {
     vi.mocked(remoteClient.listAgents).mockResolvedValue([]);
     vi.mocked(remoteClient.listWorkflows).mockResolvedValue([]);
     vi.mocked(remoteClient.loadWatchlists).mockReset();
-    vi.mocked(remoteClient.loadAgentChat).mockReset();
-    vi.mocked(remoteClient.loadAgentChat).mockResolvedValue([]);
+    vi.mocked(remoteClient.loadAgentChatPage).mockReset();
+    vi.mocked(remoteClient.loadAgentChatPage).mockResolvedValue({ events: [], has_older: false, next_before: null });
     vi.mocked(remoteClient.openStatusStream).mockResolvedValue({ close: vi.fn() } as unknown as WebSocket);
     localStorage.clear();
     useRemoteStore.getState().disconnectStatusStream();
@@ -80,6 +80,12 @@ describe("useRemoteStore watchlists", () => {
       mobileCollapsedTeamIds: [],
       activeAgentId: null,
       activeAgentViewModesById: {},
+      chatEvents: [],
+      chatLoading: false,
+      chatLoadingOlder: false,
+      chatHasOlder: false,
+      chatNextBefore: null,
+      chatError: "",
       status: "loading",
     });
   });
@@ -170,8 +176,8 @@ describe("useRemoteStore watchlists", () => {
   });
 
   it("fetches chat when reopening an agent whose remembered mobile view mode is chat", async () => {
-    vi.mocked(remoteClient.loadAgentChat).mockResolvedValue([
-      {
+    vi.mocked(remoteClient.loadAgentChatPage).mockResolvedValue({
+      events: [{
         id: "chat-1",
         session_id: "agent-1",
         provider: "codex",
@@ -189,8 +195,10 @@ describe("useRemoteStore watchlists", () => {
         created_at: "2026-05-21T08:00:00.000Z",
         sequence: 1,
         metadata: {},
-      },
-    ]);
+      }],
+      has_older: false,
+      next_before: null,
+    });
     useRemoteStore.setState({
       agents: [
         {
@@ -211,15 +219,15 @@ describe("useRemoteStore watchlists", () => {
 
     await useRemoteStore.getState().openAgent("agent-1");
 
-    expect(remoteClient.loadAgentChat).toHaveBeenCalledWith("agent-1");
+    expect(remoteClient.loadAgentChatPage).toHaveBeenCalledWith("agent-1");
     expect(useRemoteStore.getState().activeAgentViewMode).toBe("chat");
     expect(useRemoteStore.getState().chatEvents).toHaveLength(1);
   });
 
   it("ignores stale remote chat refresh responses that resolve after a newer transcript", async () => {
-    const firstLoad = deferred<AgentChatEvent[]>();
-    const secondLoad = deferred<AgentChatEvent[]>();
-    vi.mocked(remoteClient.loadAgentChat)
+    const firstLoad = deferred<RemoteAgentChatPage>();
+    const secondLoad = deferred<RemoteAgentChatPage>();
+    vi.mocked(remoteClient.loadAgentChatPage)
       .mockReturnValueOnce(firstLoad.promise)
       .mockReturnValueOnce(secondLoad.promise);
     useRemoteStore.setState({
@@ -244,17 +252,69 @@ describe("useRemoteStore watchlists", () => {
     const firstRefresh = useRemoteStore.getState().refreshActiveAgentChat();
     const secondRefresh = useRemoteStore.getState().refreshActiveAgentChat();
 
-    secondLoad.resolve([chatMessage("newer-message", "Newer transcript", 2)]);
+    secondLoad.resolve({ events: [chatMessage("newer-message", "Newer transcript", 2)], has_older: false, next_before: null });
     await secondRefresh;
     expect(useRemoteStore.getState().chatEvents.map((event) => event.text)).toEqual(["Newer transcript"]);
 
-    firstLoad.resolve([
-      chatMessage("older-message-1", "Older duplicate", 1),
-      chatMessage("older-message-2", "Older duplicate", 2),
-    ]);
+    firstLoad.resolve({
+      events: [chatMessage("older-message-1", "Older duplicate", 1), chatMessage("older-message-2", "Older duplicate", 2)],
+      has_older: false,
+      next_before: null,
+    });
     await firstRefresh;
 
     expect(useRemoteStore.getState().chatEvents.map((event) => event.text)).toEqual(["Newer transcript"]);
+  });
+
+  it("loads older remote chat pages only when requested", async () => {
+    vi.mocked(remoteClient.loadAgentChatPage)
+      .mockResolvedValueOnce({
+        events: [chatMessage("newer-message", "Newest transcript", 85)],
+        has_older: true,
+        next_before: 45,
+      })
+      .mockResolvedValueOnce({
+        events: [chatMessage("older-message", "Older transcript", 45)],
+        has_older: false,
+        next_before: null,
+      })
+      .mockResolvedValueOnce({
+        events: [chatMessage("newer-message", "Newest transcript", 85)],
+        has_older: true,
+        next_before: 45,
+      });
+    useRemoteStore.setState({
+      agents: [
+        {
+          session_id: "agent-1",
+          session_name: "Alpha",
+          agent_class: "Coder",
+          provider: "codex",
+          workspace: "<absolute-workspace-path>",
+          status: "Idle",
+          latest_text: null,
+        },
+      ],
+      activeAgentId: "agent-1",
+      activeAgentViewMode: "chat",
+    });
+
+    await useRemoteStore.getState().refreshActiveAgentChat();
+
+    expect(useRemoteStore.getState().chatEvents.map((event) => event.text)).toEqual(["Newest transcript"]);
+    expect(useRemoteStore.getState().chatHasOlder).toBe(true);
+    expect(remoteClient.loadAgentChatPage).toHaveBeenLastCalledWith("agent-1");
+
+    await useRemoteStore.getState().loadOlderActiveAgentChat();
+
+    expect(remoteClient.loadAgentChatPage).toHaveBeenLastCalledWith("agent-1", 45);
+    expect(useRemoteStore.getState().chatEvents.map((event) => event.text)).toEqual(["Older transcript", "Newest transcript"]);
+    expect(useRemoteStore.getState().chatHasOlder).toBe(false);
+
+    await useRemoteStore.getState().refreshActiveAgentChat({ background: true });
+
+    expect(useRemoteStore.getState().chatEvents.map((event) => event.text)).toEqual(["Older transcript", "Newest transcript"]);
+    expect(useRemoteStore.getState().chatHasOlder).toBe(true);
   });
 
   it("falls back to all agents when the remote watchlist endpoint is unavailable", async () => {

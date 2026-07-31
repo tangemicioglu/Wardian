@@ -28,6 +28,8 @@ const REMOTE_STATUS_STREAM_NAME: &str = "agent_status";
 const WEBSOCKET_FIRST_TICKET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const REMOTE_TERMINAL_DEFAULT_TAIL_BYTES: usize = 64 * 1024;
 const REMOTE_TERMINAL_MAX_TAIL_BYTES: usize = 128 * 1024;
+const REMOTE_CHAT_DEFAULT_PAGE_EVENTS: usize = 40;
+const REMOTE_CHAT_MAX_PAGE_EVENTS: usize = 100;
 
 pub fn validate_gateway_bind_config(config: &RemoteGatewayConfig) -> Result<(), String> {
     crate::remote::policy::CanonicalOrigin::parse(&config.canonical_origin)?;
@@ -627,17 +629,28 @@ fn remote_workflow_compat_empty_list_response() -> serde_json::Value {
     serde_json::json!({ "workflows": [] })
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct RemoteChatQuery {
+    before: Option<usize>,
+    limit: Option<usize>,
+}
+
 async fn load_remote_agent_chat(
     State(ctx): State<RemoteGatewayContext>,
     headers: HeaderMap,
     AxumPath(session_id): AxumPath<String>,
+    Query(query): Query<RemoteChatQuery>,
 ) -> Result<Json<serde_json::Value>, RemoteGatewayError> {
     let origin = require_audited_request_boundary(&ctx.config, &headers, false, "load_agent_chat")?;
     let session =
         require_audited_remote_session(&ctx, &headers, &origin, "chat_read", "load_agent_chat")
             .await?;
     let state = ctx.app.state::<crate::state::AppState>();
-    let events = crate::remote::operations::remote_agent_chat_transcript(&state, &session_id)
+    let limit = query
+        .limit
+        .unwrap_or(REMOTE_CHAT_DEFAULT_PAGE_EVENTS)
+        .clamp(1, REMOTE_CHAT_MAX_PAGE_EVENTS);
+    let page = crate::remote::operations::remote_agent_chat_page(&state, &session_id, query.before, limit)
         .await
         .map_err(|_| RemoteGatewayError::bad_request("agent_chat_failed"))?;
     audit_gateway_event(
@@ -645,7 +658,7 @@ async fn load_remote_agent_chat(
         &origin,
         GatewayAuditEvent::accepted("chat_read", "load_agent_chat").target("agent", &session_id),
     );
-    Ok(Json(serde_json::json!({ "events": events })))
+    Ok(Json(serde_json::json!(page)))
 }
 
 async fn load_remote_agent_terminal(
