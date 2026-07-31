@@ -241,9 +241,23 @@ describe("user placement", () => {
       ...teamOf(4, "web", "D:\\Dev\\Web"),
       agentEntity("wanderer", "team:web", { folder: "D:\\Dev\\Elsewhere" }),
     ];
+    // Compared inside the district's own frame. Ring geometry decides where a
+    // district sits, and a pin changes what its district measures, so world
+    // coordinates from two different runs are not comparable — while the local
+    // solve this claim is actually about is untouched by any of that.
+    const webLocal = (run: ReturnType<typeof layoutGarden>, key: string) => {
+      const origin = run.districtOrigins.get("team:web")!;
+      const unit = run.units.find((u) => u.key === key)!;
+      return { x: unit.position.x - origin.x, y: unit.position.y - origin.y };
+    };
+    const webPeers = (run: ReturnType<typeof layoutGarden>) =>
+      centroid(
+        run.units
+          .filter((u) => u.districtId === "team:web" && u.key !== "agent:wanderer")
+          .map((u) => ({ position: webLocal(run, u.key) })),
+      );
+
     const plain = layoutGarden({ entities: mixed, scene: createScene(), now });
-    const plainWanderer = plain.units.find((u) => u.key === "agent:wanderer")!;
-    const plainWebCentroid = centroid(plain.units.filter((u) => u.districtId === "team:web"));
 
     const anchored = pinEntity(
       createScene(),
@@ -254,13 +268,18 @@ describe("user placement", () => {
       now,
     );
     const withAnchor = layoutGarden({ entities: mixed, scene: anchored, now });
-    const anchorWanderer = withAnchor.units.find((u) => u.key === "agent:wanderer")!;
 
     // The anchor facet is present on the entity's vector.
     const anchoredFacets = withAnchor.corpus.df.get("scene_anchor:team:web");
     expect(anchoredFacets).toBe(1);
-    expect(distance(anchorWanderer.position, plainWebCentroid)).toBeLessThanOrEqual(
-      distance(plainWanderer.position, plainWebCentroid) + 1e-6,
+
+    // Both runs measured against one fixed reference — where team:web sat
+    // before anchoring. Using each run's own centroid would move the target:
+    // pinning the wanderer displaces its neighbours a little, so the peers
+    // drift with it and the comparison stops meaning anything.
+    const reference = webPeers(plain);
+    expect(distance(webLocal(withAnchor, "agent:wanderer"), reference)).toBeLessThanOrEqual(
+      distance(webLocal(plain, "agent:wanderer"), reference) + 1e-6,
     );
   });
 

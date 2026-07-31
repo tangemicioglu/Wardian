@@ -38,6 +38,15 @@ const SLOTS_PER_RING_STEP = 6;
 export const CENTER_SLOT = 0;
 
 /**
+ * Ring extents are rounded up to a multiple of this before radii are derived.
+ *
+ * A ring's radius depends on its widest district, so without a step the map
+ * would breathe continuously: one unit settling a pixel further out would slide
+ * every ring outside it. The stability contract forbids that.
+ */
+export const RING_EXTENT_QUANTUM = 60;
+
+/**
  * Bumped when the slot-to-position mapping changes.
  *
  * Slot indices are persisted, so their *meaning* is part of the stored format.
@@ -83,20 +92,83 @@ export function slotIndex(slot: RingSlot): number {
 }
 
 /**
- * Where a slot sits, in units of the grid pitch.
+ * Where a slot sits.
+ *
+ * `radii` gives each ring its own radius; without it, ring `r` falls back to
+ * `r * spacing` — a uniform pitch, which is only correct when every district is
+ * about the same size.
  *
  * Rings are rotated by half a step on odd rings so a district is not always
  * directly behind the one inside it, which would leave visible spokes of empty
  * space running out from the centre.
  */
-export function slotPoint(index: number, spacing = 1): { x: number; y: number } {
+export function slotPoint(
+  index: number,
+  spacing = 1,
+  radii?: readonly number[],
+): { x: number; y: number } {
   const { ring, position } = ringSlotOf(index);
   if (ring === 0) return { x: 0, y: 0 };
   const count = slotsInRing(ring);
   const stagger = ring % 2 === 0 ? 0 : 0.5;
   const angle = (2 * Math.PI * (position + stagger)) / count;
-  const radius = ring * spacing;
+  const radius = radii?.[ring] ?? ring * spacing;
   return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+}
+
+/**
+ * Radius of each ring, sized to the districts it actually holds.
+ *
+ * A single pitch has to satisfy the largest district anywhere on the map, which
+ * is fine when districts are uniform and wasteful when they are not: a roster
+ * with one busy project and thirty one-agent workspaces gave every one of those
+ * singletons a cell scaled for the busiest, and the map read as empty.
+ *
+ * Two constraints decide each radius, and the larger wins:
+ *
+ *   - **Radial.** Ring `r` must clear the ring inside it — half of each ring's
+ *     widest district, plus a margin.
+ *   - **Angular.** Neighbours within a ring sit on a chord of
+ *     `2·R·sin(π / 6r)`, which must also clear their widths. This is what stops
+ *     an inner ring from being packed too tightly to hold what is in it.
+ *
+ * Radii are recomputed every pass rather than persisted. They are a pure
+ * function of which districts are where and how big they are, and deriving them
+ * fresh is what keeps stored geometry from feeding back into the frame it is
+ * later read in.
+ *
+ * Extents are quantized before they are used. Without that, every ring's radius
+ * is a continuous function of its widest district, so a single unit settling a
+ * pixel further out slides every ring outside it — and the stability contract
+ * says adding or removing one entity must not move the others. Quantizing makes
+ * a ring move only when its contents change by a visible amount, and then by a
+ * definite step.
+ */
+export function ringRadii(
+  extentBySlot: ReadonlyMap<number, number>,
+  margin = 0,
+  quantum = RING_EXTENT_QUANTUM,
+): number[] {
+  const extentByRing: number[] = [];
+  for (const [slot, extent] of extentBySlot) {
+    const { ring } = ringSlotOf(slot);
+    extentByRing[ring] = Math.max(extentByRing[ring] ?? 0, extent);
+  }
+  for (let ring = 0; ring < extentByRing.length; ring += 1) {
+    const extent = extentByRing[ring];
+    if (extent !== undefined) extentByRing[ring] = Math.ceil(extent / quantum) * quantum;
+  }
+
+  const radii: number[] = [0];
+  for (let ring = 1; ring < extentByRing.length; ring += 1) {
+    const here = extentByRing[ring] ?? 0;
+    const inside = extentByRing[ring - 1] ?? 0;
+    const radial = radii[ring - 1] + inside + here + margin;
+    // Half the chord between neighbours must clear half a district.
+    const angular = (here + margin / 2) / Math.sin(Math.PI / slotsInRing(ring));
+    radii[ring] = Math.max(radial, angular);
+  }
+  return radii;
 }
 
 /**

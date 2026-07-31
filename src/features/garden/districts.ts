@@ -172,14 +172,23 @@ export function cellDistance(a: number, b: number): number {
   return slotDistance(a, b);
 }
 
-/** World-space centre of a district's slot. */
+/**
+ * World-space centre of a district's slot.
+ *
+ * `radii` sizes each ring to what it holds; `spacing` is the uniform fallback
+ * for callers that have no measurements to hand.
+ */
 export function districtCenter(
   index: number,
-  options: { spacing?: number; origin?: { x: number; y: number } } = {},
+  options: {
+    spacing?: number;
+    radii?: readonly number[];
+    origin?: { x: number; y: number };
+  } = {},
 ): { x: number; y: number } {
   const spacing = options.spacing ?? DEFAULT_DISTRICT_SPACING;
   const origin = options.origin ?? { x: 0, y: 0 };
-  const point = slotPoint(index, spacing);
+  const point = slotPoint(index, spacing, options.radii);
   return { x: origin.x + point.x, y: origin.y + point.y };
 }
 

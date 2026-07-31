@@ -254,8 +254,13 @@ export function recordPositions(
 }
 
 /**
- * Local warm-start anchor for an entity, or undefined when the stored position
- * cannot be trusted to describe this district.
+ * Warm-start anchor for an entity, or undefined when the stored position cannot
+ * be trusted to describe this district.
+ *
+ * Positions are stored *relative to their district origin*, so there is no frame
+ * to reconstruct and no arithmetic that can silently offset them. That is the
+ * structural half of the fix described below; the checks here are what catch
+ * scenes written before it.
  *
  * A warm start exists so the drift penalty has somewhere to pull toward, which
  * is what makes inserting one agent an incremental change instead of a full
@@ -284,7 +289,6 @@ export function warmStartAnchor(
   scene: GardenScene,
   entityKey: string,
   districtId: string,
-  priorOrigin: GardenPosition,
 ): GardenPosition | undefined {
   const stored = scene.positions[entityKey];
   if (!stored) return undefined;
@@ -295,11 +299,13 @@ export function warmStartAnchor(
   const writtenIn = scene.position_districts[entityKey];
   if (writtenIn !== undefined && writtenIn !== districtId) return undefined;
 
-  const local = { x: stored.x - priorOrigin.x, y: stored.y - priorOrigin.y };
-  if (Math.abs(local.x) > MAX_DISTRICT_RADIUS || Math.abs(local.y) > MAX_DISTRICT_RADIUS) {
+  // Also catches a scene whose positions are still absolute: read as
+  // district-relative they land far outside any district, and are dropped in
+  // favour of a fresh seed.
+  if (Math.abs(stored.x) > MAX_DISTRICT_RADIUS || Math.abs(stored.y) > MAX_DISTRICT_RADIUS) {
     return undefined;
   }
-  return local;
+  return stored;
 }
 
 export function markVisited(

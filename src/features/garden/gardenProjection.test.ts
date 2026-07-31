@@ -123,8 +123,8 @@ describe("computeGardenLayout", () => {
       workflows,
       scene: createScene(),
     });
-    const origin = first.placement.get("agent:a1")!.districtOrigin;
-    const pinned = pinEntity(first.scene, "agent:a1", "team:hw", { x: 12, y: 34 }, origin);
+    const firstOrigin = first.placement.get("agent:a1")!.districtOrigin;
+    const pinned = pinEntity(first.scene, "agent:a1", "team:hw", { x: 12, y: 34 }, firstOrigin);
 
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
@@ -132,7 +132,14 @@ describe("computeGardenLayout", () => {
       workflows,
       scene: pinned,
     });
-    expect(result.positions.get("agent:a1")).toEqual({ x: 12, y: 34 });
+    // A pin is an offset from its district, not a world coordinate, and it is
+    // honoured against wherever the district currently sits. Asserting the
+    // absolute point would be asserting that districts never move — which is
+    // the opposite of what storing pins this way is for.
+    const origin = result.placement.get("agent:a1")!.districtOrigin;
+    const settled = result.positions.get("agent:a1")!;
+    expect(settled.x - origin.x).toBeCloseTo(12 - firstOrigin.x);
+    expect(settled.y - origin.y).toBeCloseTo(34 - firstOrigin.y);
   });
 
   it("returns a scene carrying district cells and settled positions", () => {

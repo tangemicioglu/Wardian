@@ -33,6 +33,7 @@ import {
 import {
   COMMONS_DISTRICT_ID,
   DEFAULT_DISTRICT_SPACING,
+  DISTRICT_MARGIN,
   MAX_DISTRICT_MEMBERS,
   districtCenter,
   parcelsFor,
@@ -58,6 +59,7 @@ import {
   type SmacofNode,
 } from "./smacof";
 import { removeOverlaps, type UnitBox } from "./vpsc";
+import { ringRadii } from "./ringLattice";
 import {
   anchoredDistrict,
   driftFor,
@@ -197,21 +199,18 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
   const units: PlacedUnit[] = [];
   const residualOverlaps: Array<[string, string]> = [];
 
-  // The pitch that produced the stored positions. Warm starts are absolute, so
-  // without it their district-relative meaning cannot be recovered.
-  const previousSpacing = input.scene.districts.spacing || DEFAULT_DISTRICT_SPACING;
-
   const localById = new Map<string, Map<string, GardenPosition>>();
   const parcelOfKey = new Map<string, string>();
-  let requiredSpan = 0;
+  // Half-width each district needs about its own centre, footprints included.
+  // Kept per district rather than collapsed to a maximum, because ring radii are
+  // derived from what each ring actually contains: a ring of one-agent districts
+  // has no business being as wide as the ring holding the commons.
+  const extentByDistrict = new Map<string, number>();
 
   for (const districtId of activeDistricts) {
     const members = byDistrict.get(districtId)!;
     const local = new Map<string, GardenPosition>();
     localById.set(districtId, local);
-    const priorOrigin = districtCenter(cellFor(districts, districtId), {
-      spacing: previousSpacing,
-    });
 
     // Oversized districts split into parcels so k-NN and SMACOF stay bounded.
     const parcels = parcelsFor(
@@ -255,7 +254,7 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
         return {
           key,
           rho: driftFor(input.scene, key, now),
-          anchor: pinnedAt ?? warmStartAnchor(input.scene, key, districtId, priorOrigin),
+          anchor: pinnedAt ?? warmStartAnchor(input.scene, key, districtId),
         };
       });
 
@@ -284,48 +283,66 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
         const position = cleared.positions.get(key) ?? parcelOrigin;
         local.set(key, position);
         parcelOfKey.set(key, parcelId);
-        // Full span the district occupies about its own centre, footprints
-        // included, so neighbouring cells are sized against what is drawn.
+        // How far the district reaches from its own centre, footprints included,
+        // so neighbours are sized against what is actually drawn.
         //
         // Pinned units are excluded. A pin is authored placement, which outranks
         // the metric by design, so a user dragging one unit toward the edge of
         // the map is not a statement that every district should move apart —
-        // and letting it be one would ratchet: a wider pitch moves the district
-        // origins, which moves the pin's world position, which widens the pitch
-        // again. Spacing is derived from derived positions only.
+        // and letting it be one would ratchet: wider rings move the district
+        // origins, which moves the pin's world position, which widens the rings
+        // again. Geometry is derived from derived positions only.
         if (input.scene.pins[key]) continue;
-        requiredSpan = Math.max(
-          requiredSpan,
-          2 * (Math.abs(position.x) + entity.width / 2),
-          2 * (Math.abs(position.y) + entity.height / 2),
+        extentByDistrict.set(
+          districtId,
+          Math.max(
+            extentByDistrict.get(districtId) ?? 0,
+            Math.abs(position.x) + entity.width / 2,
+            Math.abs(position.y) + entity.height / 2,
+          ),
         );
       }
     }
   }
 
-  const spacing = spacingFor(requiredSpan, previousSpacing);
-  const spacedDistricts: DistrictLayout = { ...districts, spacing };
+  // Rings are sized to what they hold. A single global pitch had to satisfy the
+  // largest district on the map, so thirty-odd one-agent districts each sat
+  // alone in a cell scaled for the commons, and the result read as empty. Each
+  // ring now only has to clear its own widest member and the ring inside it.
+  const radii = ringRadii(
+    new Map(
+      activeDistricts.map((id) => [cellFor(districts, id), extentByDistrict.get(id) ?? 0]),
+    ),
+    DISTRICT_MARGIN,
+  );
+  const spacedDistricts: DistrictLayout = {
+    ...districts,
+    spacing: spacingFor(2 * Math.max(0, ...extentByDistrict.values()), districts.spacing),
+  };
 
-  // --- Translate onto the grid --------------------------------------------
+  // --- Translate onto the lattice -----------------------------------------
   const settled = new Map<string, GardenPosition>();
   const districtOrigins = new Map<string, GardenPosition>();
 
   for (const districtId of activeDistricts) {
-    const origin = districtCenter(cellFor(spacedDistricts, districtId), { spacing });
+    const origin = districtCenter(cellFor(spacedDistricts, districtId), { radii });
     districtOrigins.set(districtId, origin);
 
     for (const entity of byDistrict.get(districtId)!) {
       const key = entityKey(entity.ref);
       const point = localById.get(districtId)?.get(key);
       if (!point) continue;
-      const position = { x: origin.x + point.x, y: origin.y + point.y };
-      settled.set(key, position);
+      // Stored district-relative. An absolute coordinate means nothing without
+      // the origin it was measured from, and reconstructing that origin later —
+      // from a pitch that had itself been derived from stored positions — is
+      // exactly the loop that once inflated the map past drawing.
+      settled.set(key, point);
       units.push({
         ref: entity.ref,
         key,
         districtId,
         parcelId: parcelOfKey.get(key) ?? districtId,
-        position,
+        position: { x: origin.x + point.x, y: origin.y + point.y },
         pinned: Boolean(input.scene.pins[key]),
       });
     }

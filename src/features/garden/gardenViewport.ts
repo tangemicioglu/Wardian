@@ -31,6 +31,41 @@ export interface FitTransform {
 }
 
 /**
+ * Zoom about a fixed screen point, keeping the world point under it still.
+ *
+ * Scaling on its own leaves only the stage's own origin in place, so the whole
+ * map slides across the viewport as it grows. That reads as scrolling rather
+ * than zooming — the wheel appeared to move the canvas up and down — and it also
+ * means zooming out drifts away from whatever you were looking at.
+ *
+ * Anchoring is what makes the gesture legible: the thing under the cursor is the
+ * thing you are zooming into. Solving for the position that holds it:
+ *
+ *     world  = (screen - position) / scale        must be equal before and after
+ *     position' = screen - world · scale'
+ */
+export function zoomAt(
+  screenPoint: GardenPosition,
+  current: FitTransform,
+  factor: number,
+  bounds: { min: number; max: number },
+): FitTransform {
+  const scale = Math.min(bounds.max, Math.max(bounds.min, current.scale * factor));
+  if (!Number.isFinite(scale) || scale <= 0 || current.scale <= 0) return current;
+  const world = {
+    x: (screenPoint.x - current.position.x) / current.scale,
+    y: (screenPoint.y - current.position.y) / current.scale,
+  };
+  return {
+    scale,
+    position: {
+      x: screenPoint.x - world.x * scale,
+      y: screenPoint.y - world.y * scale,
+    },
+  };
+}
+
+/**
  * Scale and offset that bring every unit into view.
  *
  * The layout places units around each district's own origin, so world

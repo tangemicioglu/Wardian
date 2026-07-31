@@ -291,6 +291,63 @@ exactly (1 + 6 + 12 + 18), a 5403 × 7085 map at a pitch of 960, fitting at 0.14
 The grid produced 5229 × 6125 at 0.17 — a circular envelope costs a little
 bounding box, and buys a centre that means something.
 
+### Rings are sized to what they hold
+
+A single grid pitch has to satisfy the largest district anywhere on the map. That
+is fine when districts are uniform and wasteful when they are not: a roster with
+one busy project and thirty one-agent workspaces gave every singleton a cell
+scaled for the busiest, and the map read as empty at any zoom that showed all of
+it. Measured on the reference roster, ring 0 needed a pitch of 1966 while rings
+2–4 needed 264 — and every ring got 2160.
+
+Each ring now takes its own radius, from two constraints, larger wins:
+
+- **Radial** — clear the ring inside it: half of each ring's widest district,
+  plus a margin.
+- **Angular** — neighbours in a ring sit on a chord of `2·R·sin(π / 6r)`, which
+  must also clear their widths. This is what stops an inner ring from being
+  packed tighter than its contents allow.
+
+Extents are quantized before radii are derived. Radii are otherwise a continuous
+function of the widest district in each ring, so one unit settling a pixel
+further out would slide every ring outside it — precisely what the stability
+contract forbids. Quantizing means a ring moves only when its contents change
+visibly, and then by a definite step.
+
+Radii are recomputed each pass rather than persisted, which is safe because
+**stored positions are now district-relative**. An absolute coordinate means
+nothing without the origin it was measured from, and reconstructing that origin
+later — from a pitch which had itself been derived from stored positions — is the
+loop that once inflated the map past drawing. A relative position needs no frame
+reconstruction, so the whole class of bug is gone rather than guarded against.
+
+One consequence to state plainly: a pin's *world* position now follows its
+district. That is what storing pins as district-relative offsets was always for,
+and it is why tests assert the offset rather than the point.
+
+Measured on the 53-agent fixture: 5403 × 7085 fitting at 0.144, down to
+2342 × 3137 fitting at 0.317 — units render more than twice as large.
+
+### Navigating the map
+
+Three complaints, one cause each.
+
+**The wheel appeared to scroll.** Scaling the stage without moving it leaves only
+the stage's own origin fixed, so the map slid across the viewport as it grew.
+Zoom is now anchored: the world point under the cursor stays under the cursor,
+which is what makes the gesture read as zoom. The wheel always zooms and never
+pans — a canvas that pans on wheel and zooms on modifier-wheel makes the user
+discover which they are doing by trying it.
+
+**There was no keyboard.** The canvas takes a `tabIndex` and owns `+`/`-` to
+zoom, arrows to pan (in screen pixels, so it feels the same at any zoom), shift
+for a coarse step, and `0` or `f` to fit.
+
+**Nothing said where you were.** A canvas that looks empty cannot distinguish
+"empty" from "zoomed a long way out" — the failure that opened this whole thread.
+A zoom readout and a Fit control now answer that directly, and each control names
+its shortcut.
+
 ### What binds a workflow to an agent
 
 A blueprint says what a workflow *needs*, not what it got. `role:evolver` names a

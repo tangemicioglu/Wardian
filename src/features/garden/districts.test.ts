@@ -17,6 +17,7 @@ import {
 import {
   CENTER_SLOT,
   firstSlotOfRing,
+  ringRadii,
   ringSlotOf,
   slotDistance,
   slotIndex,
@@ -406,5 +407,69 @@ describe("district affinity", () => {
     expect(resolveEntityDistrict(["path:d:/trading/trident"], districtByAgent, affinity)).toBe(
       "workspace:d:/trading/trident",
     );
+  });
+});
+
+describe("ringRadii", () => {
+  /** Slot indices for `count` districts, filled from the centre outward. */
+  const slots = (count: number) => Array.from({ length: count }, (_, i) => i);
+
+  it("sizes a ring to what it holds, not to the widest district on the map", () => {
+    // The sparsity report: one busy district set a single pitch for the whole
+    // map, so thirty one-agent districts each sat alone in a cell scaled for the
+    // commons. Rings of small districts should stay tight regardless of how big
+    // the centre is.
+    const extents = new Map(slots(19).map((slot) => [slot, slot === 0 ? 1000 : 60]));
+    const radii = ringRadii(extents, 96);
+    // Ring 1 has to clear the big centre, but ring 2 only has to clear ring 1.
+    expect(radii[2] - radii[1]).toBeLessThan(radii[1] / 3);
+  });
+
+  it("keeps neighbours in a ring from overlapping", () => {
+    // Six slots in ring 1: at too small a radius they would collide even though
+    // the radial constraint alone is satisfied.
+    const extents = new Map(slots(7).map((slot) => [slot, slot === 0 ? 0 : 200]));
+    const radii = ringRadii(extents, 0);
+    const first = firstSlotOfRing(1);
+    const a = slotPoint(first, 1, radii);
+    const b = slotPoint(first + 1, 1, radii);
+    expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(400 - 1e-6);
+  });
+
+  it("clears the ring inside it", () => {
+    const extents = new Map(slots(19).map((slot) => [slot, 150]));
+    const radii = ringRadii(extents, 40);
+    for (let ring = 1; ring < radii.length; ring += 1) {
+      // Each ring is at least its own half-width plus the inner one's away.
+      expect(radii[ring] - radii[ring - 1]).toBeGreaterThanOrEqual(300);
+    }
+  });
+
+  it("does not move a ring for a change too small to see", () => {
+    // Radii are a continuous function of extents, so without quantization one
+    // unit settling a pixel further out would slide every ring outside it. The
+    // stability contract forbids exactly that.
+    const base = new Map(slots(13).map((slot) => [slot, 100]));
+    const nudged = new Map(base);
+    nudged.set(5, 101);
+    expect(ringRadii(nudged, 96)).toEqual(ringRadii(base, 96));
+  });
+
+  it("does move once the change is a real one", () => {
+    const base = new Map(slots(13).map((slot) => [slot, 100]));
+    const grown = new Map(base);
+    grown.set(5, 400);
+    expect(ringRadii(grown, 96)[2]).toBeGreaterThan(ringRadii(base, 96)[2]);
+  });
+
+  it("puts the centre at the origin whatever it holds", () => {
+    const radii = ringRadii(new Map([[0, 5000]]), 96);
+    expect(radii[0]).toBe(0);
+    expect(slotPoint(0, 1, radii)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("falls back to a uniform pitch when given no radii", () => {
+    const point = slotPoint(firstSlotOfRing(2), 300);
+    expect(Math.hypot(point.x, point.y)).toBeCloseTo(600);
   });
 });
