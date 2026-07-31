@@ -86,6 +86,8 @@ describe("MarkdownRenderer", () => {
     expect(screen.getByText("Unsafe").closest("a")).toBeNull();
     fireEvent.click(local);
     expect(onOpenFile).toHaveBeenCalledWith("C:/work/other.md");
+    fireEvent.click(local, { ctrlKey: true });
+    expect(onOpenFile).toHaveBeenLastCalledWith("C:/work/other.md", true);
     const web = screen.getByRole("link", { name: "Web" });
     const auxiliary = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 });
     fireEvent(web, auxiliary);

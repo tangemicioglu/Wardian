@@ -23,7 +23,7 @@ vi.mock('./FileTree', () => ({
   }: {
     path: string;
     onContextMenu?: (event: React.MouseEvent, node: unknown) => void;
-    onSelect?: (path: string, isDir: boolean) => void;
+    onSelect?: (path: string, isDir: boolean, openInNewTab?: boolean) => void;
     onOpen?: (path: string, isDir: boolean) => void;
     refreshToken?: number;
     changedPaths?: string[];
@@ -34,7 +34,11 @@ vi.mock('./FileTree', () => ({
       <button
         type="button"
         data-testid="mock-file-row"
-        onClick={() => onSelect?.('C:\\Users\\test\\repo\\notes.md', false)}
+        onClick={(event) => onSelect?.(
+          'C:\\Users\\test\\repo\\notes.md',
+          false,
+          event.ctrlKey || event.metaKey || undefined,
+        )}
         onDoubleClick={() => onOpen?.('C:\\Users\\test\\repo\\notes.md', false)}
         onContextMenu={(event) => onContextMenu?.(event, {
           name: 'notes.md',
@@ -387,7 +391,7 @@ describe('ExplorerPanel', () => {
     expect(invoke).not.toHaveBeenCalledWith('read_file_preview', expect.anything());
   });
 
-  it('pins a matching transient or opens a permanent Files surface on double click', async () => {
+  it('pins a matching transient or opens a permanent Files surface on Ctrl/Cmd-click and double click', async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
@@ -396,7 +400,8 @@ describe('ExplorerPanel', () => {
     const navigation = makeNavigation();
     render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
 
-    fireEvent.doubleClick(await screen.findByTestId('mock-file-row'));
+    const file = await screen.findByTestId('mock-file-row');
+    fireEvent.click(file, { ctrlKey: true });
 
     expect(navigation.open).toHaveBeenCalledOnce();
     expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
@@ -407,6 +412,11 @@ describe('ExplorerPanel', () => {
     expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
     expect(navigation.open_transient).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalledWith('read_file_preview', expect.anything());
+
+    vi.clearAllMocks();
+    fireEvent.doubleClick(file);
+    expect(navigation.open).toHaveBeenCalledOnce();
+    expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
   });
 
   it('uses permanent Open and standard horizontal Open to Side context actions', async () => {

@@ -91,6 +91,22 @@ describe('FileTree Component', () => {
     }
   });
 
+  it('opens a file in a new tab immediately on Ctrl/Cmd-click', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([
+      { name: 'notes.md', path: '/test/notes.md', is_dir: false, extension: 'md' },
+    ]);
+    const onSelect = vi.fn();
+    render(<FileTree path="/test" onSelect={onSelect} />);
+
+    const file = await screen.findByText('notes.md');
+    fireEvent.click(file, { ctrlKey: true });
+    fireEvent.click(file, { metaKey: true });
+
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenNthCalledWith(1, '/test/notes.md', false, true);
+    expect(onSelect).toHaveBeenNthCalledWith(2, '/test/notes.md', false, true);
+  });
+
   it('cancels delayed selection when the same file is double-clicked open', async () => {
     vi.mocked(invoke).mockResolvedValueOnce([
       { name: 'notes.md', path: '/test/notes.md', is_dir: false, extension: 'md' },

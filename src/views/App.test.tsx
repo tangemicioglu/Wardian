@@ -608,11 +608,11 @@ describe("Workbench persistence boot integration", () => {
       .toBeNull();
   });
 
-  it("pins an existing transient Files preview when a Markdown link opens it", async () => {
+  it("pins an existing transient Files preview when Ctrl/Cmd-clicking a Markdown link", async () => {
     setupDefaultMocks([], defaultClasses);
     const defaultInvoke = mockInvoke.getMockImplementation();
     // Keep this fixture on the current schema so the assertion covers link-driven
-    // pinning, not the independent legacy presentation migration lifecycle.
+    // tab opening, not the independent legacy presentation migration lifecycle.
     const fileState = (transientPreview: boolean) => ({
       resource_kind: "file" as const,
       transient_preview: transientPreview,
@@ -696,7 +696,7 @@ describe("Workbench persistence boot integration", () => {
       "link",
       { name: "Open linked preview" },
       { timeout: 10_000 },
-    ));
+    ), { ctrlKey: true });
     await waitFor(() => {
       const saves = mockInvoke.mock.calls.filter(([command]) => command === "save_workbench_state");
       const latest = saves[saves.length - 1]?.[1] as {
