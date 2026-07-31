@@ -17,7 +17,7 @@ use super::codex::{
 use super::opencode::opencode_env;
 use super::{
     interactive_provider_cwd, persisted_agent_config, session_bootstrap_prompt,
-    strip_flag_value_pairs, strip_standalone_flag,
+    strip_flag_value_pairs,
 };
 use crate::utils::logging::log_debug;
 
@@ -757,7 +757,6 @@ fn claude_headless_response(value: &serde_json::Value) -> Option<String> {
 
 fn append_codex_bootstrap_args(
     provider_args: &mut Vec<String>,
-    provider: &dyn AgentProvider,
     provider_cwd: &std::path::Path,
     config: Option<&AgentConfig>,
 ) {
@@ -767,9 +766,12 @@ fn append_codex_bootstrap_args(
     // Codex global options must precede `exec`; exec only accepts its own
     // subcommand options after this point.
     if let Some(config) = config {
-        let spawn_args =
-            strip_flag_value_pairs(provider.get_spawn_args(config, false), "--add-dir");
-        provider_args.extend(strip_standalone_flag(spawn_args, "--no-alt-screen"));
+        CodexProvider::new().append_headless_global_args(provider_args, config);
+        if let Some(custom) = config.custom_args.as_ref() {
+            if let Some(parsed) = shlex::split(custom) {
+                provider_args.extend(parsed);
+            }
+        }
     }
 
     provider_args.push("exec".to_string());
@@ -895,7 +897,6 @@ pub async fn obtain_session_id(
     if provider_name == "codex" {
         append_codex_bootstrap_args(
             &mut provider_args,
-            provider.as_ref(),
             &provider_cwd,
             config,
         );
@@ -1220,10 +1221,15 @@ mod tests {
         std::fs::write(
             settings_path,
             r#"{
-              "sandbox_mode": "danger-full-access",
-              "approval_policy": "never",
-              "full_auto": false,
-              "trust_workspaces": true
+              "schema_version": 2,
+              "overrides": {
+                "codex_runtime_policy": {
+                  "sandbox_mode": "danger-full-access",
+                  "approval_policy": "never",
+                  "full_auto": false,
+                  "trust_workspaces": true
+                }
+              }
             }"#,
         )
         .expect("write unrestricted Codex policy");
@@ -1234,6 +1240,7 @@ mod tests {
             .to_path_buf();
         let expected_path = workspace.to_string_lossy().to_string();
         let session_id = "headless-codex-runtime-smoke";
+        let marker_file_name = "wardian-headless-codex-smoke.txt";
         let config = AgentConfig {
             session_id: session_id.to_string(),
             folder: expected_path.clone(),
@@ -1248,7 +1255,11 @@ mod tests {
             Duration::from_secs(120),
             run_headless_with_options(HeadlessRunOptions {
                 cwd: &workspace,
-                prompt: "Use the shell tool exactly once to run Get-Location. Then respond with only the returned absolute path.",
+                prompt: concat!(
+                    "Use the shell tool exactly once. In that one shell command, create a file ",
+                    "named wardian-headless-codex-smoke.txt in $env:CODEX_HOME whose contents ",
+                    "are the output of Get-Location. Then respond with only the returned absolute path."
+                ),
                 wardian_session_id: session_id,
                 resume_session: None,
                 output_format: "json",
@@ -1264,8 +1275,8 @@ mod tests {
 
         let response = result["response"].as_str().expect("Codex response text");
         assert!(
-            response.contains(&expected_path),
-            "expected Codex to return {expected_path:?}, got {response:?}"
+            !response.trim().is_empty(),
+            "expected Codex to return a non-empty response"
         );
 
         let projected_codex_home = test_wardian_home
@@ -1278,6 +1289,12 @@ mod tests {
         assert!(
             projected_codex_home.join("auth.json").is_file(),
             "headless Codex should run from Wardian's projected CODEX_HOME"
+        );
+        let marker = std::fs::read_to_string(projected_codex_home.join(marker_file_name))
+            .expect("Codex shell should create a marker under its projected CODEX_HOME");
+        assert!(
+            marker.contains(&expected_path),
+            "expected projected-home marker to contain {expected_path:?}, got {marker:?}"
         );
     }
 
@@ -1717,9 +1734,9 @@ mod tests {
 
     #[test]
     fn codex_bootstrap_places_global_flags_before_exec() {
-        let provider = crate::providers::ProviderFactory::resolve("codex").unwrap();
         let config = AgentConfig {
             provider: "codex".into(),
+            custom_args: Some("--custom-flag custom-value".into()),
             provider_config: wardian_core::models::ProviderConfig::Codex(
                 wardian_core::models::CodexProviderConfig {
                     sandbox_mode: Some("danger-full-access".into()),
@@ -1733,17 +1750,27 @@ mod tests {
 
         append_codex_bootstrap_args(
             &mut args,
-            provider.as_ref(),
             Path::new("/workspace"),
             Some(&config),
         );
 
         let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
-        let approval_index = args
+        let policy_index = args
             .iter()
-            .position(|arg| arg == "--ask-for-approval")
+            .position(|arg| {
+                arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--sandbox"
+            })
             .unwrap();
-        assert!(approval_index < exec_index);
+        assert!(policy_index < exec_index);
+        assert!(args[..exec_index].contains(&"--custom-flag".to_string()));
+        assert!(args[..exec_index].contains(&"custom-value".to_string()));
+        #[cfg(windows)]
+        {
+            assert!(args[..exec_index]
+                .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+            assert!(!args.contains(&"--sandbox".to_string()));
+            assert!(!args.contains(&"--ask-for-approval".to_string()));
+        }
         assert!(args[exec_index + 1..].contains(&"--json".to_string()));
         assert!(args[exec_index + 1..].contains(&"--skip-git-repo-check".to_string()));
     }
