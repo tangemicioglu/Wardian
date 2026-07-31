@@ -483,18 +483,13 @@ class SharedSurfaceController implements AgentsSharedTerminalSurface {
     for (const registration of this.#registrations.values()) {
       if (!registration.host.isConnected) continue;
       const screen = registration.term.element?.querySelector<HTMLElement>(".xterm-screen");
-      const viewport = registration.term.element?.querySelector<HTMLElement>(".xterm-viewport");
       const rect = (screen ?? registration.host).getBoundingClientRect();
-      const viewportRect = viewport?.getBoundingClientRect();
-      const viewportContentRight = viewport && viewportRect && viewport.clientWidth > 0
-        ? viewportRect.left + viewport.clientWidth
-        : rect.right;
       const left = Math.max(rect.left, rootRect.left);
       const top = Math.max(rect.top, rootRect.top);
-      // xterm's screen can extend beneath its native scrollbar. Keep the quad
-      // at full cell width, but clip before the viewport gutter so the real
-      // scrollbar remains completely visible and interactive.
-      const right = Math.min(rect.right, rootRect.right, viewportContentRight);
+      // Render every terminal column through the same compositor. The xterm
+      // viewport is a transparent sibling raised above this canvas, so its
+      // native scrollbar can overlay the complete shared-rendered tile.
+      const right = Math.min(rect.right, rootRect.right);
       const bottom = Math.min(rect.bottom, rootRect.bottom);
       if (right <= left || bottom <= top || rect.width < 2 || rect.height < 2) continue;
       rasterize(registration, rect.width, rect.height, dpr);

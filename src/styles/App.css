@@ -469,9 +469,12 @@
   scrollbar-color: var(--color-wardian-border-heavy) var(--color-wardian-bg);
 }
 
-/* The shared terminal canvas intentionally excludes xterm's real scrollbar
-   gutter. Keep that exposed control comfortably visible and draggable. */
+/* Keep xterm's empty scroll viewport above the shared canvas so its native
+   scrollbar remains visible without exposing the differently rasterized
+   xterm screen underneath. */
 .agents-shared-terminal-surface .xterm-viewport {
+  z-index: 30;
+  background-color: transparent !important;
   scrollbar-width: auto;
   scrollbar-color: var(--color-wardian-text-muted) var(--color-wardian-bg);
 }

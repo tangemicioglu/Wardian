@@ -320,7 +320,7 @@ function browserFixture(fixture) {
   const snapshot = (sessionId = trackedRuntime) => ({
     snapshot_id: `perf-snapshot-${sessionId}`, session_id: sessionId, runtime_generation: 1,
     sequence_barrier: 0, geometry: { cols: 80, rows: 24 }, terminal_state_base64: "",
-    visible_grid: `Wardian shared compositor\r\n${sessionId}\r\none WebGL context for the Agents surface`,
+    visible_grid: `Wardian shared compositor\r\n${sessionId}\r\none WebGL context for the Agents surface\r\nevery glyph keeps one baseline beneath the scrollbar overlay edge`,
     scrollback: Array.from({ length: 32 }, (_, index) =>
       `${sessionId} history ${String(index + 1).padStart(2, "0")}`),
   });
@@ -904,11 +904,24 @@ async function measureRuntime(fixture, runtimeOutDir) {
     );
     await fs.mkdir(evidenceDirectory, { recursive: true });
     const evidencePath = path.join(evidenceDirectory, "populated-grid-after-scrolling.png");
+    const evidenceTerminal = page.locator(
+      '[data-terminal-presentation-id="perf-overview:agent:perf-agent-05"]',
+    );
+    const evidenceTerminalBox = await evidenceTerminal.boundingBox();
+    if (evidenceTerminalBox) {
+      await page.mouse.move(
+        evidenceTerminalBox.x + evidenceTerminalBox.width - 2,
+        evidenceTerminalBox.y + evidenceTerminalBox.height / 2,
+      );
+      await twoFrames(page);
+    }
     await page.locator('[data-testid="agents-shared-terminal-surface"]').screenshot({ path: evidencePath });
     process.stdout.write(`Agents shared terminal evidence: ${path.relative(repoRoot, evidencePath)}\n`);
     const textSnapshot = await agentsSharedTextSnapshot(page, "perf-agent-05");
     const expectedText = "one WebGL context for the Agents surface";
-    if (!textSnapshot || !textSnapshot.all_lines.join("").includes(expectedText)) {
+    const expectedScrollbarText = "every glyph keeps one baseline beneath the scrollbar overlay edge";
+    const renderedText = textSnapshot?.all_lines.join("") ?? "";
+    if (!renderedText.includes(expectedText) || !renderedText.includes(expectedScrollbarText)) {
       throw new Error(`Agents shared terminal text fidelity failed: ${JSON.stringify(textSnapshot)}`);
     }
     await overviewGroup.locator('button[aria-label="Pane actions"]').click();

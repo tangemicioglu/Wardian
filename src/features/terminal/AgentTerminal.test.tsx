@@ -3092,7 +3092,7 @@ describe("AgentTerminal scrollback", () => {
       screenElement.className = "xterm-screen";
       firstHost?.append(viewport, screenElement);
       fireEvent.scroll(screen.getByTestId("agents-shared-terminal-surface"));
-      await waitFor(() => expect(gl.scissor).toHaveBeenCalledWith(0, 0, 890, 600));
+      await waitFor(() => expect(gl.scissor).toHaveBeenCalledWith(0, 0, 900, 600));
       firstHost?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, ctrlKey: true }));
       expect(canvas).toHaveStyle({ opacity: "0" });
       fireEvent.keyUp(window, { key: "Control" });
