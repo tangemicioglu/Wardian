@@ -216,11 +216,11 @@ the socket.
 
 ## Renderer Budgets
 
-The desktop process permits at most 24 mounted xterm renderers. Dedicated
-terminal surfaces permit at most 12 xterm WebGL contexts through a
-deterministic LRU. Agents Overview does not consume one context per card: each
-mounted Agents surface owns one viewport-sized WebGL2 compositor for all of
-its resident terminal cards.
+Dedicated terminal surfaces permit at most 24 mounted xterm renderers and 12
+xterm WebGL contexts through deterministic LRUs. Agents Overview participates
+in neither budget: it keeps all terminal-mode card xterms mounted and owns one
+viewport-sized WebGL2 compositor for the entire surface. Scrolling or hiding
+the Agents surface does not evict those xterms or recreate its context.
 
 The Agents compositor reads each xterm's public buffer into card-local CPU
 raster tiles, uploads those tiles as textures, and draws them through the one
@@ -233,23 +233,20 @@ card temporarily exposes xterm's DOM interaction layer so its native hover
 decoration and activation remain authoritative without creating another GPU
 context.
 
-The xterm and dedicated-WebGL pools remain independent deterministic LRUs:
+The dedicated-terminal xterm and WebGL pools remain independent deterministic
+LRUs:
 
 - touching a visible or interacted presentation keeps it warm;
 - dedicated WebGL eviction falls back to xterm's DOM renderer;
 - xterm eviction keeps the logical presentation registered, marks it for
   synchronization, and restores it from a broker snapshot when needed;
-- an Agents presentation may be hidden while its budgeted xterm remains
-  mounted; hidden still disables input and reveal, but does not itself discard
-  renderer state;
 - an ordinary component unmount has a 30-second disposal grace so moves and
   zoom changes can reuse the renderer.
 
 Renderer residency and presentation visibility are deliberately independent.
-The Agents surface keeps its current bounded resident set across short tab
-switches. A presentation outside that set is suspended and consumes no xterm
-budget. Hiding a resident presentation updates the broker to `hidden` while
-leaving its xterm mounted, so returning to Agents does not cause a simultaneous
+The Agents surface keeps every terminal-mode card renderer mounted across tab
+switches. Hiding the surface updates presentations to `hidden` while leaving
+their xterms mounted, so returning to Agents does not cause a simultaneous
 registration, snapshot, and renderer-construction burst.
 
 If the Agents compositor cannot create WebGL2, or if its single context is

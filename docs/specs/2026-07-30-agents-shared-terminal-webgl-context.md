@@ -28,7 +28,7 @@ their renderer would increase risk without addressing the reported problem.
 ## Decision
 
 Each mounted Agents Overview surface owns one persistent canvas and one real
-WebGL2 context. Every resident terminal card keeps an xterm instance, but the
+WebGL2 context. Every terminal-mode card keeps an xterm instance, but the
 Agents path does not load xterm's canvas-bound `WebglAddon`. A surface
 compositor reads each xterm's public buffer API, rasterizes each visible
 terminal body into a CPU-side tile, and composites those tiles through one GPU
@@ -62,7 +62,7 @@ The canvas covers only the visible Agents viewport, uses device-pixel backing
 dimensions, and has `pointer-events: none`. Card-local xterm elements continue
 to own focus, input, selection, links, wheel handling, and accessibility.
 
-The context owner survives card residency changes, scrolling, maximize and
+The context owner survives card changes, scrolling, maximize and
 restore, and short workbench visibility changes. It is disposed only when its
 Agents Overview surface is destroyed. A hidden surface stops drawing without
 destroying and recreating the context.
@@ -143,7 +143,7 @@ One lost shared context affects all terminal cards in that Agents surface, so
 the failure must be atomic and visible:
 
 1. Stop shared draws and hide the compositor canvas.
-2. Reveal xterm's complete DOM renderer for every resident card.
+2. Reveal xterm's complete DOM renderer for every registered card.
 3. Allow the surface canvas's native restoration event to rebuild programs,
    buffers, and textures once.
 4. After restoration, mark every visible presentation dirty and reveal the
@@ -154,26 +154,24 @@ the DOM renderer for its lifetime. It must not enter a create, lose, retry loop.
 
 ### Existing renderer budgets
 
-The 24-xterm residency budget remains. It limits parser/DOM/GPU resources for
-large rosters and keeps the broker's mounted/suspended contract unchanged.
+Agents terminals do not participate in either process-wide renderer budget.
+The shared surface keeps every terminal-mode card's xterm state source mounted,
+including cards outside the scroll viewport and while the workbench surface is
+hidden. Adding or approaching a card therefore cannot evict another Agents
+renderer.
 
-Agents terminals no longer participate in the process-wide 12-context LRU.
-Their surface context counts once regardless of resident card count. Dedicated
-standalone terminals continue using that LRU until a separate measured need
-justifies changing them.
-
-The Agents path removes per-card WebGL promotion, demotion, grace timers, and
-snapshot overlays. Card eviction may still destroy and later restore an xterm
-renderer, but it cannot destroy the surface's WebGL context.
+Dedicated standalone terminals retain the 24-xterm and 12-context LRUs. The
+Agents path removes per-card WebGL promotion, demotion, grace timers, snapshot
+overlays, viewport-residency eviction, and xterm-budget restoration.
 
 ## Invariants
 
 1. A visible Agents Overview surface owns at most one live WebGL context for
    all of its terminal cards.
-2. Scrolling, maximize/restore, card mode changes, and renderer residency never
+2. Scrolling, maximize/restore, card mode changes, and surface visibility never
    create another WebGL context for that surface.
-3. A card renderer can be created or destroyed without losing the shared
-   context or disturbing another card's pixels.
+3. Scrolling and surface navigation do not destroy or recreate Agents xterm
+   renderers.
 4. Draws are clipped to the registered terminal body and cannot overwrite
    another terminal or card chrome.
 5. Terminal input, selection, links, mouse protocol, scrollback position,
@@ -225,10 +223,12 @@ implementation for a new design review.
 - Resize and scroll recomposition uses deterministic card order.
 - Card disposal removes only registration and cached draw data.
 - Surface disposal releases the real context once.
-- Context loss changes every resident card to DOM fallback without retry churn.
+- Context loss changes every registered card to DOM fallback without retry churn.
 - Standalone `AgentTerminal` still uses the dedicated WebGL budget path.
-- Agents maximize/restore and terminal/chat switching preserve presentation and
-  xterm identity where the residency policy already promises it.
+- More than 24 Agents terminals stay mounted without entering either renderer
+  budget.
+- Agents maximize/restore, scrolling, and surface hide/reveal preserve xterm
+  identity.
 
 ### Browser E2E
 
@@ -264,11 +264,18 @@ Update the workbench performance audit so its terminal metrics distinguish:
 
 - real browser WebGL contexts;
 - shared Agents terminal presentations;
-- resident xterm instances.
+- mounted xterm instances.
 
-For one visible Agents Overview surface, the real terminal-context count must
-stay at one while card count, scroll position, and maximize state change. Graph
-and other non-terminal contexts remain separate and are reported independently.
+The compositor-specific audit expands the canonical 20-agent workbench fixture
+to 32 terminal cards so it crosses both former renderer limits. The fixture's
+20-agent population remains a general workbench benchmark input, not a runtime
+terminal limit.
+
+For one visible Agents Overview surface with those 32 terminal cards, the
+real terminal-context count must stay at one and every xterm identity must stay
+stable while scroll position, maximize state, and surface visibility change.
+Graph and other non-terminal contexts remain separate and are reported
+independently.
 
 ## Documentation and evidence
 

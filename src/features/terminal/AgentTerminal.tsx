@@ -2148,10 +2148,15 @@ function mountRenderer(
   terminalKey: string,
   session: TerminalSessionEntry,
   container: HTMLDivElement,
-  options?: { evictExisting?: boolean },
+  options?: { evictExisting?: boolean; bypassXtermBudget?: boolean },
 ) {
   cancelRendererDisposal(session);
-  if (!session.renderer) {
+  if (options?.bypassXtermBudget) {
+    // Agents Overview owns one compositor for the whole surface. Its xterms
+    // are persistent state sources for that compositor, so admitting another
+    // card must never evict an existing card renderer.
+    terminalRendererBudget.release("xterm", terminalKey);
+  } else if (!terminalRendererBudget.has("xterm", terminalKey)) {
     const acquisition = terminalRendererBudget.acquire("xterm", terminalKey, () => {
       const current = terminalSessionMap.get(terminalKey);
       if (!current?.renderer) {
@@ -2176,7 +2181,7 @@ function mountRenderer(
         }).catch(() => undefined);
       }
       current.onRendererEvicted?.();
-    }, options);
+    }, { evictExisting: options?.evictExisting });
     if (!acquisition.granted) {
       return null;
     }
@@ -2282,6 +2287,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   const rendererLifecycleActiveRef = useRef(
     renderState === "mounted",
   );
+  const rendererVisibilityRef = useRef(visibility);
   const presentationLifecycleRef = useRef({ visibility, renderState, requestedInteraction });
   presentationLifecycleRef.current = { visibility, renderState, requestedInteraction };
   const [initError, setInitError] = useState<string | null>(null);
@@ -2407,7 +2413,9 @@ export const AgentTerminal = memo(function AgentTerminal({
   useEffect(() => {
     const rendererLifecycleActive = renderState === "mounted";
     const wasRendererLifecycleActive = rendererLifecycleActiveRef.current;
+    const wasRendererVisible = rendererVisibilityRef.current === "visible";
     rendererLifecycleActiveRef.current = rendererLifecycleActive;
+    rendererVisibilityRef.current = visibility;
     if (!rendererLifecycleActive) {
       invalidateRendererReveal();
       const entry = terminalSessionMap.get(terminalKey);
@@ -2423,7 +2431,10 @@ export const AgentTerminal = memo(function AgentTerminal({
       setRendererEvicted(false);
     } else if (visibility !== "visible") {
       invalidateRendererReveal();
-    } else if (!wasRendererLifecycleActive) {
+    } else if (
+      !wasRendererLifecycleActive ||
+      (!wasRendererVisible && !terminalSessionMap.get(terminalKey)?.renderer)
+    ) {
       setRendererMountRevision((revision) => revision + 1);
     }
   }, [invalidateRendererReveal, renderState, terminalKey, visibility]);
@@ -2501,7 +2512,10 @@ export const AgentTerminal = memo(function AgentTerminal({
       return true;
     };
     try {
-      const renderer = mountRenderer(terminalKey, entry, container, { evictExisting: false });
+      const renderer = mountRenderer(terminalKey, entry, container, {
+        evictExisting: false,
+        bypassXtermBudget: Boolean(sharedTerminalSurface),
+      });
       if (!renderer) {
         if (!rendererRestoreRetryTimerRef.current) {
           rendererRestoreRetryTimerRef.current = setTimeout(() => {
@@ -2781,7 +2795,9 @@ export const AgentTerminal = memo(function AgentTerminal({
         session.currentTheme = sessionTermTheme;
         lastThemeSignalRef.current = sessionTermTheme;
 
-        const renderer = mountRenderer(terminalKey, session, terminalRef.current);
+        const renderer = mountRenderer(terminalKey, session, terminalRef.current, {
+          bypassXtermBudget: Boolean(sharedTerminalSurface),
+        });
         if (!renderer) {
           return;
         }

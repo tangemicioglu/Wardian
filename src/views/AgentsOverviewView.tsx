@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentConfig, AgentTelemetry, AgentsOverviewMode, CloneMode } from "../types";
 import { AgentChatView } from "../features/grid/AgentChatView";
 import { AgentTerminal } from "../features/terminal/AgentTerminal";
@@ -9,7 +9,6 @@ import { useLayoutStore } from "../store/useLayoutStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useGridResize } from "../features/grid/useGridResize";
 import { useAgentsOverviewLayout } from "../features/grid/useAgentsOverviewLayout";
-import { MAX_XTERM_RENDERERS } from "../features/terminal/terminalRendererBudget";
 import {
   CHAT_CARD_FLOOR,
   DEFAULT_AGENTS_OVERVIEW_GAP,
@@ -260,92 +259,6 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
     : 0;
   const visibleAgentIdKey = visibleAgents.map((agent) => agent.session_id.toString()).join('\0');
   const renderableAgentIdKey = renderableAgents.map((agent) => agent.session_id.toString()).join('\0');
-  const [residentAgentIds, setResidentAgentIds] = useState<Set<string>>(() => new Set());
-
-  useLayoutEffect(() => {
-    const root = containerRef.current;
-    const grid = gridRef.current;
-    const logicalIds = new Set(visibleAgentIdKey ? visibleAgentIdKey.split('\0') : []);
-    if (!root || !grid) {
-      setResidentAgentIds(new Set());
-      return;
-    }
-    if (surfaceVisibility !== "visible") {
-      return;
-    }
-    const orderedLogicalIds = Array.from(logicalIds);
-    const allAgentsResident = orderedLogicalIds.length <= MAX_XTERM_RENDERERS;
-    if (allAgentsResident) {
-      setResidentAgentIds(new Set(orderedLogicalIds));
-    }
-    if (typeof IntersectionObserver === "undefined") {
-      setResidentAgentIds(new Set(orderedLogicalIds.slice(0, MAX_XTERM_RENDERERS)));
-      return;
-    }
-
-    const observedCards = Array.from(
-      grid.querySelectorAll<HTMLElement>("[data-agent-grid-card-id]"),
-    ).filter((card) => logicalIds.has(card.dataset.agentGridCardId ?? ""));
-    const rootBounds = root.getBoundingClientRect();
-    const verticalMargin = 320;
-    const rootIsMeasured = rootBounds.width >= 10 && rootBounds.height >= 10;
-    const initiallyNearViewport = new Set(
-      (rootIsMeasured ? observedCards : [])
-        .filter((card) => {
-          const bounds = card.getBoundingClientRect();
-          return bounds.width >= 10
-            && bounds.height >= 10
-            && bounds.bottom >= rootBounds.top - verticalMargin
-            && bounds.top <= rootBounds.bottom + verticalMargin;
-        })
-        .map((card) => card.dataset.agentGridCardId ?? "")
-        .filter(Boolean),
-    );
-    const nearViewportAgentIds = new Set(initiallyNearViewport);
-    if (!allAgentsResident) {
-      setResidentAgentIds((current) => {
-        const retained = new Set(Array.from(current).filter((agentId) => logicalIds.has(agentId)));
-        for (const agentId of initiallyNearViewport) {
-          if (retained.size >= MAX_XTERM_RENDERERS) break;
-          retained.add(agentId);
-        }
-        return retained;
-      });
-    }
-
-    const observer = new IntersectionObserver((entries) => {
-      const approachingAgentIds: string[] = [];
-      for (const entry of entries) {
-        const agentId = (entry.target as HTMLElement).dataset.agentGridCardId;
-        if (!agentId || !logicalIds.has(agentId)) continue;
-        if (entry.isIntersecting) {
-          nearViewportAgentIds.add(agentId);
-          approachingAgentIds.push(agentId);
-        } else {
-          nearViewportAgentIds.delete(agentId);
-        }
-      }
-      if (allAgentsResident || approachingAgentIds.length === 0) return;
-      setResidentAgentIds((current) => {
-        const next = new Set(Array.from(current).filter((agentId) => logicalIds.has(agentId)));
-        for (const approachingAgentId of approachingAgentIds) {
-          if (next.has(approachingAgentId)) continue;
-          if (next.size >= MAX_XTERM_RENDERERS) {
-            const victim = Array.from(next).find((agentId) => !nearViewportAgentIds.has(agentId));
-            if (!victim) continue;
-            next.delete(victim);
-          }
-          next.add(approachingAgentId);
-        }
-        return next;
-      });
-    }, {
-      root,
-      rootMargin: `${verticalMargin}px 0px`,
-    });
-    observedCards.forEach((card) => observer.observe(card));
-    return () => observer.disconnect();
-  }, [containerRef, surfaceVisibility, visibleAgentIdKey]);
 
   useEffect(() => {
     if (overviewLayout.focusedAgentId !== focusedAgentId) {
@@ -427,8 +340,6 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
       {renderableAgents.map((agent: AgentConfig, _idx: number) => {
         const agentId = agent.session_id.toString();
         const isAgentVisible = surfaceVisibility === "visible" && visibleAgentIds.has(agentId);
-        const isAgentRendererResident = residentAgentIds.has(agentId);
-        const isAgentPresentationVisible = isAgentVisible && isAgentRendererResident;
         const isAgentMaximized = isMaximized && overviewLayout.focusedAgentId === agentId;
         const isOff = offAgentIds.has(agentId);
         const isSelected = selectedAgentIds.has(agentId);
@@ -569,8 +480,8 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
                     isMaximized={isAgentMaximized}
                     theme={theme}
                     workspacePath={visibleWorkspacePath}
-                visibility={isAgentPresentationVisible ? "visible" : "hidden"}
-                renderState={isAgentRendererResident ? "mounted" : "suspended"}
+                    visibility={isAgentVisible ? "visible" : "hidden"}
+                    renderState="mounted"
                     onTerminalFocus={onTerminalFocus}
                     onTitleChange={handleTitleChange}
                   />

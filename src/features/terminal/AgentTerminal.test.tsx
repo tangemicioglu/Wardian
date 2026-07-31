@@ -2979,7 +2979,10 @@ describe("AgentTerminal scrollback", () => {
     );
   });
 
-  it("uses the Agents compositor without creating a per-card WebGL context", async () => {
+  it("uses the Agents compositor without either per-card renderer budget", async () => {
+    for (let index = 0; index < 24; index += 1) {
+      terminalRendererBudget.acquire("xterm", `standalone-${index}`, () => undefined);
+    }
     render(
       <AgentsSharedTerminalSurfaceProvider>
         <AgentTerminal sessionId="shared-agents-renderer" theme="dark" />
@@ -2988,7 +2991,39 @@ describe("AgentTerminal scrollback", () => {
 
     await waitFor(() => expect(getLatestTerminalInstance().open).toHaveBeenCalled());
     expect(mockWebglAddon).not.toHaveBeenCalled();
+    expect(terminalRendererBudget.has("xterm", "shared-agents-renderer")).toBe(false);
+    expect(terminalRendererBudget.has("webgl", "shared-agents-renderer")).toBe(false);
+    expect(terminalRendererBudget.size("xterm")).toBe(24);
     expect(screen.getByTestId("agents-shared-terminal-canvas")).toBeInTheDocument();
+  });
+
+  it("mounts a retained shared renderer when its surface first becomes visible", async () => {
+    const view = render(
+      <AgentsSharedTerminalSurfaceProvider>
+        <AgentTerminal
+          sessionId="shared-hidden-first"
+          visibility="hidden"
+          renderState="mounted"
+          theme="dark"
+        />
+      </AgentsSharedTerminalSurfaceProvider>,
+    );
+    await act(async () => undefined);
+    expect(mockTerminal).not.toHaveBeenCalled();
+
+    view.rerender(
+      <AgentsSharedTerminalSurfaceProvider>
+        <AgentTerminal
+          sessionId="shared-hidden-first"
+          visibility="visible"
+          renderState="mounted"
+          theme="dark"
+        />
+      </AgentsSharedTerminalSurfaceProvider>,
+    );
+
+    await waitFor(() => expect(mockTerminal).toHaveBeenCalledTimes(1));
+    expect(terminalRendererBudget.has("xterm", "shared-hidden-first")).toBe(false);
   });
 
   it("creates one real context for multiple Agents terminal cards", async () => {

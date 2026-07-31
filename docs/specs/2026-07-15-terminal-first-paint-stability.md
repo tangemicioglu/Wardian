@@ -41,20 +41,16 @@ backend change. A timer expiring is not evidence of such a change.
 
 ### 1. Separate visibility from renderer residency
 
-Agents keeps its bounded resident xterm set when its surface becomes hidden.
-The presentations report `visibility: hidden`, but a resident renderer remains
-`mounted` while it is within the existing global xterm budget. Hidden Agents
+Agents keeps every terminal-mode card xterm mounted when its surface becomes
+hidden. The presentations report `visibility: hidden`, but Agents renderers do
+not participate in the global xterm or dedicated-WebGL budgets. Hidden Agents
 terminals continue receiving the ordered broker stream, so returning to the
-surface does not require re-registration, snapshot replay, or renderer seeding.
+surface does not require re-registration, snapshot replay, renderer seeding,
+or renderer-budget admission.
 
-WebGL residency remains independent. A hidden presentation may relinquish its
-WebGL context and continue as a mounted DOM renderer. The existing renderer
-budget may still evict an xterm; eviction marks the presentation suspended and
-the next reveal reconstructs it through the same preparation transaction used
-for a genuinely new renderer.
-
-The resident set remains capped by `MAX_XTERM_RENDERERS`. Hiding a surface does
-not add residents or bypass LRU eviction.
+The Agents surface owns one persistent WebGL context for all cards. It stops
+drawing while hidden but does not relinquish that context. Dedicated Agent
+Session terminals retain their independent xterm and WebGL budgets.
 
 ### 2. Use one reveal preparation transaction
 

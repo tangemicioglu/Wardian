@@ -119,7 +119,6 @@ describe("workbench performance script", () => {
       heavy_surface_resume_p95_ms: { limit: 500, unit: "ms" },
       react_commit_max_ms: { limit: 50, unit: "ms" },
       bundle_delta_gzip_bytes: { limit: 250 * 1024, unit: "bytes" },
-      xterm_renderer_peak: { limit: 24, unit: "renderers" },
       webgl_context_peak: { limit: 12, unit: "contexts" },
     });
   });
@@ -134,7 +133,9 @@ describe("workbench performance script", () => {
     expect(source).toContain("waitForHeavyRendererReleased");
     expect(source).toContain("runtime.webgl_live = liveWebglContexts.size");
     expect(source).toContain("runtime.webgl_contexts_within = (selector)");
+    expect(source).toContain("AGENTS_SHARED_TERMINAL_STRESS_COUNT = 32");
     expect(source).toContain("Agents Overview did not use one shared WebGL context");
+    expect(source).toContain("Agents Overview recreated an xterm renderer");
     expect(source).toContain('if (command === "request_terminal_snapshot") return snapshot(args.request.session_id)');
   });
 });
