@@ -198,7 +198,17 @@ export function initSmacof(input: SmacofInput): SmacofState {
       x[position] = sumX / count + Math.cos(angle) * radius;
       y[position] = sumY / count + Math.sin(angle) * radius;
     } else {
-      const ringRadius = scale * (0.6 + 0.12 * unanchoredSeen);
+      // Vogel's model: radius grows as sqrt(i), which is what keeps a
+      // phyllotactic spiral at uniform density.
+      //
+      // This previously grew *linearly*, so the extent of a seeded group scaled
+      // with n rather than sqrt(n). It only shows up when a parcel is
+      // metrically degenerate — entities that share no distinguishing facet
+      // have no neighbours to be pulled toward, so they stay near their seeds
+      // and the seed pattern becomes the layout. Thirty workflows with nothing
+      // but their own ids smeared across ~1800 world units, which then set the
+      // grid pitch for every district on the map.
+      const ringRadius = scale * 0.3 * Math.sqrt(unanchoredSeen);
       x[position] = center.x + Math.cos(angle) * ringRadius;
       y[position] = center.y + Math.sin(angle) * ringRadius;
     }

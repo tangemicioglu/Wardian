@@ -332,3 +332,68 @@ describe("performance", () => {
     expect(elapsed).toBeLessThan(150);
   });
 });
+
+describe("seeding a metrically degenerate parcel", () => {
+  /** Extent of the seed pattern for `count` nodes with no anchor and no edges. */
+  function seededExtent(count: number): number {
+    const nodes = Array.from({ length: count }, (_, i) => ({
+      key: `n${String(i).padStart(3, "0")}`,
+      rho: DRIFT_NEW,
+    }));
+    const state = initSmacof({ nodes, graph: new Map(), center: { x: 0, y: 0 } });
+    let extent = 0;
+    for (const node of nodes) {
+      const position = state.positions.get(node.key)!;
+      extent = Math.max(extent, Math.hypot(position.x, position.y));
+    }
+    return extent;
+  }
+
+  it("grows the seed radius as sqrt(n), not linearly", () => {
+    // Entities that share no distinguishing facet have no neighbours to be
+    // pulled toward, so they stay near their seeds and the seed pattern *is*
+    // the layout. A radius growing linearly in the node index therefore made a
+    // degenerate group's extent scale with n: thirty workflows carrying nothing
+    // but their own ids smeared across ~1800 world units, which then set the
+    // grid pitch for every district on the map.
+    const small = seededExtent(4);
+    const large = seededExtent(64);
+    // sqrt(64/4) == 4. Linear growth would be nearer 16x.
+    expect(large / small).toBeGreaterThan(3);
+    expect(large / small).toBeLessThan(6);
+  });
+
+  it("keeps a realistic degenerate group compact", () => {
+    // Thirty unplaceable workflows is the case that broke the map.
+    expect(seededExtent(30)).toBeLessThan(2 * DEFAULT_LAYOUT_SCALE);
+  });
+
+  it("separates coincident seeds so overlap removal has little to undo", () => {
+    const nodes = Array.from({ length: 12 }, (_, i) => ({
+      key: `n${String(i).padStart(3, "0")}`,
+      rho: DRIFT_NEW,
+    }));
+    const state = initSmacof({ nodes, graph: new Map(), center: { x: 0, y: 0 } });
+    const seen = new Set<string>();
+    for (const node of nodes) {
+      const position = state.positions.get(node.key)!;
+      seen.add(`${Math.round(position.x)},${Math.round(position.y)}`);
+    }
+    expect(seen.size).toBe(nodes.length);
+  });
+
+  it("is deterministic and independent of input order", () => {
+    const keys = Array.from({ length: 10 }, (_, i) => `n${String(i).padStart(3, "0")}`);
+    const build = (order: string[]) =>
+      initSmacof({
+        nodes: order.map((key) => ({ key, rho: DRIFT_NEW })),
+        graph: new Map(),
+        center: { x: 0, y: 0 },
+      });
+    const forward = build(keys);
+    const reversed = build([...keys].reverse());
+    for (const key of keys) {
+      expect(reversed.positions.get(key)).toEqual(forward.positions.get(key));
+    }
+  });
+});

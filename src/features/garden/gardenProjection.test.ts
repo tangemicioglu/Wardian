@@ -11,6 +11,7 @@ import {
 } from "./gardenProjection";
 import { createScene, pinEntity } from "./gardenScene";
 import { COMMONS_DISTRICT_ID } from "./districts";
+import { MIN_FIT_SCALE, fitTransform } from "./gardenViewport";
 
 function agent(id: string, folder: string, agentClass = "Coder"): AgentConfig {
   return {
@@ -506,5 +507,98 @@ describe("workflows resolve into districts", () => {
         { ...withPath, workspacePaths: ["D:\\Development\\Wardian"] },
       ]),
     ).not.toBe(signature);
+  });
+});
+
+describe("a full roster stays visible", () => {
+  // Workspace distribution taken from a real 53-agent install: a handful of
+  // shared projects and a long tail of one-off directories, which is what makes
+  // the district count large.
+  const WORKSPACES: Array<[string, number]> = [
+    ["D:/Development/Wardian", 8],
+    ["D:/Trading", 3],
+    ["D:/Babel", 3],
+    ["C:/Users/me/OneDrive/AcademicWriting", 3],
+    ["C:/Users/me/Hivemind", 2],
+    ["D:/Trading/trident", 2],
+    ["D:/Development/PAC-Website", 2],
+    ["D:/Development/InformationTransfer", 2],
+  ];
+
+  function fullRoster() {
+    const roster: ReturnType<typeof node>[] = [];
+    let index = 0;
+    for (const [folder, count] of WORKSPACES) {
+      for (let i = 0; i < count; i += 1) roster.push(node(`a${index++}`, `A${index}`, folder));
+    }
+    while (roster.length < 53) {
+      roster.push(node(`a${index}`, `A${index}`, `D:/Misc/${index++}`));
+    }
+    return roster;
+  }
+
+  // Thirty blueprints with no agent, no path, and no folder: the worst case,
+  // and the one that broke the map.
+  const unplaceable: GardenWorkflowInput[] = Array.from({ length: 30 }, (_, i) => ({
+    id: `wf${i}`,
+    label: `Workflow ${i}`,
+    runStatus: "none" as const,
+    nodeCount: 3,
+  }));
+
+  function layoutFullRoster() {
+    return computeGardenLayout({
+      projection: projectionOf(fullRoster()),
+      teams: [],
+      workflows: unplaceable,
+      scene: createScene(),
+    });
+  }
+
+  it("fits a real-sized map into a real-sized viewport", () => {
+    // The failure this exists to catch: entities that share no distinguishing
+    // facet were seeded on a spiral whose radius grew linearly, so thirty
+    // unplaceable workflows smeared across ~1800 units. That set the grid pitch
+    // for all thirty-seven districts, the map reached 11,000 units across, and
+    // the viewport — clamped at the user zoom floor — showed the empty gap
+    // between two districts. It looked like an empty Garden.
+    const result = layoutFullRoster();
+    const transform = fitTransform([...result.positions.values()], {
+      width: 1392,
+      height: 1044,
+    })!;
+    expect(transform.scale).toBeGreaterThan(MIN_FIT_SCALE * 2);
+
+    for (const position of result.positions.values()) {
+      const x = transform.position.x + position.x * transform.scale;
+      const y = transform.position.y + position.y * transform.scale;
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(x).toBeLessThanOrEqual(1392);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(y).toBeLessThanOrEqual(1044);
+    }
+  });
+
+  it("keeps a district of indistinguishable units compact", () => {
+    const result = layoutFullRoster();
+    const origin = result.placement.get("workflow:wf0")!.districtOrigin;
+    let span = 0;
+    for (let i = 0; i < unplaceable.length; i += 1) {
+      const position = result.positions.get(`workflow:wf${i}`)!;
+      span = Math.max(
+        span,
+        Math.abs(position.x - origin.x) * 2,
+        Math.abs(position.y - origin.y) * 2,
+      );
+    }
+    // Thirty units of 120x52 packed sensibly, not fanned across the map.
+    expect(span).toBeLessThan(1200);
+  });
+
+  it("produces a finite position for every unit", () => {
+    for (const position of layoutFullRoster().positions.values()) {
+      expect(Number.isFinite(position.x)).toBe(true);
+      expect(Number.isFinite(position.y)).toBe(true);
+    }
   });
 });

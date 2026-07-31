@@ -6,6 +6,7 @@ import { WorkflowUnit } from "./WorkflowUnit";
 import { GardenContextMenu } from "./GardenContextMenu";
 import { gardenDetailForScale, type GardenSkillGlyph } from "./skillGlyphs";
 import { useGardenPulse } from "./useGardenPulse";
+import { MAX_SCALE, MIN_SCALE, fitTransform } from "./gardenViewport";
 import type { GardenAgentUnit, GardenEntityRef, GardenWorkflowUnit } from "./garden.types";
 import { unitKey } from "./garden.types";
 import { isActiveAgentStatus, isActiveWorkflowStatus } from "./gardenStatus";
@@ -30,11 +31,7 @@ interface GardenMenuState {
   agentId: string | null;
 }
 
-const MIN_SCALE = 0.4;
-const MAX_SCALE = 2.5;
 const ZOOM_STEP = 1.05;
-/** Margin around the content bounds when fitting the initial view, in world units. */
-const FIT_PADDING = 80;
 
 export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   agentUnits,
@@ -59,6 +56,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   // is not updated once the user takes over the viewport.
   const [fit, setFit] = useState<string | null>(null);
   const fitRef = useRef<string | null>(null);
+  const minScaleRef = useRef(MIN_SCALE);
   const theme = useGardenTheme();
 
   // Progressive disclosure. Detail is a pure function of zoom and touches only
@@ -123,35 +121,23 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   useEffect(() => {
     if (userAdjustedRef.current) return;
     const stage = stageRef.current;
-    if (!stage || size.width === 0 || size.height === 0) return;
-    const positions = [...agentUnits, ...workflowUnits].map((unit) => unit.position);
-    if (positions.length === 0) return;
-
-    const xs = positions.map((position) => position.x);
-    const ys = positions.map((position) => position.y);
-    const minX = Math.min(...xs) - FIT_PADDING;
-    const maxX = Math.max(...xs) + FIT_PADDING;
-    const minY = Math.min(...ys) - FIT_PADDING;
-    const maxY = Math.max(...ys) + FIT_PADDING;
-
-    // Only ever zoom *out* to fit. Magnifying a sparse map would start the user
-    // inside a cluster with no sense of the whole.
-    const next = Math.min(
-      1,
-      Math.max(MIN_SCALE, Math.min(size.width / (maxX - minX), size.height / (maxY - minY))),
+    if (!stage) return;
+    const transform = fitTransform(
+      [...agentUnits, ...workflowUnits].map((unit) => unit.position),
+      size,
     );
-    const position = {
-      x: size.width / 2 - ((minX + maxX) / 2) * next,
-      y: size.height / 2 - ((minY + maxY) / 2) * next,
-    };
+    if (!transform) return;
+
     // This effect re-runs on every telemetry tick, because the unit arrays are
     // rebuilt to keep status live. Writing an unchanged transform back would
     // redraw the layer each time for nothing.
-    const applied = `${position.x},${position.y},${next}`;
+    const applied = `${transform.position.x},${transform.position.y},${transform.scale}`;
     if (applied === fitRef.current) return;
     fitRef.current = applied;
-    setScale(next);
-    stage.position(position);
+    // The wheel must not snap the user back the moment they touch it.
+    minScaleRef.current = Math.min(MIN_SCALE, transform.scale);
+    setScale(transform.scale);
+    stage.position(transform.position);
     setFit(applied);
   }, [agentUnits, workflowUnits, size]);
 
@@ -201,7 +187,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     userAdjustedRef.current = true;
     setScale((prev) => {
       const next = e.evt.deltaY < 0 ? prev * ZOOM_STEP : prev / ZOOM_STEP;
-      return Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
+      return Math.min(MAX_SCALE, Math.max(minScaleRef.current, next));
     });
   };
 
