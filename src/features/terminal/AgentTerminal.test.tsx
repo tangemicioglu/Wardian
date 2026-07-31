@@ -16,7 +16,6 @@ import { defaultTerminalFontFamily, useSettingsStore } from "../../store/useSett
 import { useQueueStore } from "../../store/useQueueStore";
 import { resetTerminalSessionClientsForTesting } from "./terminalSessionClient";
 import { terminalRendererBudget } from "./terminalRendererBudget";
-import { AgentsSharedTerminalSurfaceProvider } from "./AgentsSharedTerminalSurface";
 
 const mockInvoke = vi.mocked(invoke);
 const mockListen = vi.mocked(listen);
@@ -2979,135 +2978,52 @@ describe("AgentTerminal scrollback", () => {
     );
   });
 
-  it("uses the Agents compositor without either per-card renderer budget", async () => {
+  it("uses xterm's native renderer for Agents without either per-card renderer budget", async () => {
     for (let index = 0; index < 24; index += 1) {
       terminalRendererBudget.acquire("xterm", `standalone-${index}`, () => undefined);
     }
     render(
-      <AgentsSharedTerminalSurfaceProvider>
-        <AgentTerminal sessionId="shared-agents-renderer" theme="dark" />
-      </AgentsSharedTerminalSurfaceProvider>,
+      <AgentTerminal
+        sessionId="agents-native-renderer"
+        rendererPolicy="persistent-native"
+        theme="dark"
+      />,
     );
 
     await waitFor(() => expect(getLatestTerminalInstance().open).toHaveBeenCalled());
     expect(mockWebglAddon).not.toHaveBeenCalled();
-    expect(terminalRendererBudget.has("xterm", "shared-agents-renderer")).toBe(false);
-    expect(terminalRendererBudget.has("webgl", "shared-agents-renderer")).toBe(false);
+    expect(getLatestTerminalInstance().registerLinkProvider).toHaveBeenCalledTimes(1);
+    expect(getLatestTerminalInstance().options.reflowCursorLine).toBe(true);
+    expect(terminalRendererBudget.has("xterm", "agents-native-renderer")).toBe(false);
+    expect(terminalRendererBudget.has("webgl", "agents-native-renderer")).toBe(false);
     expect(terminalRendererBudget.size("xterm")).toBe(24);
-    expect(screen.getByTestId("agents-shared-terminal-canvas")).toBeInTheDocument();
   });
 
-  it("mounts a retained shared renderer when its surface first becomes visible", async () => {
+  it("mounts a retained native renderer when its surface first becomes visible", async () => {
     const view = render(
-      <AgentsSharedTerminalSurfaceProvider>
-        <AgentTerminal
-          sessionId="shared-hidden-first"
-          visibility="hidden"
-          renderState="mounted"
-          theme="dark"
-        />
-      </AgentsSharedTerminalSurfaceProvider>,
+      <AgentTerminal
+        sessionId="native-hidden-first"
+        visibility="hidden"
+        renderState="mounted"
+        rendererPolicy="persistent-native"
+        theme="dark"
+      />,
     );
     await act(async () => undefined);
     expect(mockTerminal).not.toHaveBeenCalled();
 
     view.rerender(
-      <AgentsSharedTerminalSurfaceProvider>
-        <AgentTerminal
-          sessionId="shared-hidden-first"
-          visibility="visible"
-          renderState="mounted"
-          theme="dark"
-        />
-      </AgentsSharedTerminalSurfaceProvider>,
+      <AgentTerminal
+        sessionId="native-hidden-first"
+        visibility="visible"
+        renderState="mounted"
+        rendererPolicy="persistent-native"
+        theme="dark"
+      />,
     );
 
     await waitFor(() => expect(mockTerminal).toHaveBeenCalledTimes(1));
-    expect(terminalRendererBudget.has("xterm", "shared-hidden-first")).toBe(false);
-  });
-
-  it("creates one real context for multiple Agents terminal cards", async () => {
-    const originalWebGL2 = globalThis.WebGL2RenderingContext;
-    Object.defineProperty(globalThis, "WebGL2RenderingContext", {
-      configurable: true,
-      value: class WebGL2RenderingContext {},
-    });
-    const gl = {
-      ARRAY_BUFFER: 0x8892, BLEND: 0x0be2, COLOR_BUFFER_BIT: 0x4000,
-      COMPILE_STATUS: 0x8b81, FLOAT: 0x1406, FRAGMENT_SHADER: 0x8b30,
-      LINK_STATUS: 0x8b82, ONE_MINUS_SRC_ALPHA: 0x0303, RGBA: 0x1908,
-      SCISSOR_TEST: 0x0c11, SRC_ALPHA: 0x0302, STATIC_DRAW: 0x88e4,
-      TEXTURE0: 0x84c0, TEXTURE_2D: 0x0de1, TEXTURE_MAG_FILTER: 0x2800,
-      TEXTURE_MIN_FILTER: 0x2801, TEXTURE_WRAP_S: 0x2802, TEXTURE_WRAP_T: 0x2803,
-      TRIANGLES: 0x0004, UNSIGNED_BYTE: 0x1401, VERTEX_SHADER: 0x8b31,
-      CLAMP_TO_EDGE: 0x812f, LINEAR: 0x2601, NEAREST: 0x2600, UNPACK_FLIP_Y_WEBGL: 0x9240,
-      activeTexture: vi.fn(), attachShader: vi.fn(), bindBuffer: vi.fn(), bindTexture: vi.fn(),
-      blendFunc: vi.fn(), bufferData: vi.fn(), clear: vi.fn(), clearColor: vi.fn(),
-      compileShader: vi.fn(), createBuffer: vi.fn(() => ({})), createProgram: vi.fn(() => ({})),
-      createShader: vi.fn(() => ({})), createTexture: vi.fn(() => ({})), deleteBuffer: vi.fn(),
-      deleteProgram: vi.fn(), deleteShader: vi.fn(), deleteTexture: vi.fn(), disable: vi.fn(),
-      drawArrays: vi.fn(), enable: vi.fn(), enableVertexAttribArray: vi.fn(),
-      getAttribLocation: vi.fn(() => 0), getExtension: vi.fn(() => null),
-      getProgramInfoLog: vi.fn(() => ""), getProgramParameter: vi.fn(() => true),
-      getShaderInfoLog: vi.fn(() => ""), getShaderParameter: vi.fn(() => true),
-      getUniformLocation: vi.fn(() => ({})), linkProgram: vi.fn(), pixelStorei: vi.fn(),
-      scissor: vi.fn(), shaderSource: vi.fn(), texImage2D: vi.fn(), texParameteri: vi.fn(),
-      uniform1i: vi.fn(), uniform2f: vi.fn(), uniform4f: vi.fn(), useProgram: vi.fn(),
-      vertexAttribPointer: vi.fn(), viewport: vi.fn(),
-    };
-    const context2d = {
-      clearRect: vi.fn(), fillRect: vi.fn(), fillText: vi.fn(),
-      fillStyle: "", font: "", globalAlpha: 1, textAlign: "left", textBaseline: "middle",
-    };
-    const contextSpy = vi.spyOn(HTMLCanvasElement.prototype, "getContext")
-      .mockImplementation(((type: string) => type === "webgl2" ? gl : context2d) as never);
-    const view = render(
-      <AgentsSharedTerminalSurfaceProvider>
-        <AgentTerminal presentationId="shared:one" sessionId="shared-one" theme="dark" />
-        <AgentTerminal presentationId="shared:two" sessionId="shared-two" theme="dark" />
-      </AgentsSharedTerminalSurfaceProvider>,
-    );
-
-    try {
-      await waitFor(() => expect(mockTerminal).toHaveBeenCalledTimes(2));
-      await waitFor(() => expect(gl.drawArrays).toHaveBeenCalled());
-      expect(getLatestTerminalInstance().options.reflowCursorLine).toBe(true);
-      expect(gl.pixelStorei).toHaveBeenCalledWith(gl.UNPACK_FLIP_Y_WEBGL, false);
-      expect(gl.texParameteri).toHaveBeenCalledWith(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      expect(gl.texParameteri).toHaveBeenCalledWith(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      expect(contextSpy.mock.calls.filter(([type]) => type === "webgl2")).toHaveLength(1);
-      expect(mockWebglAddon).not.toHaveBeenCalled();
-      const drawsBeforeScroll = gl.drawArrays.mock.calls.length;
-      fireEvent.scroll(screen.getByTestId("agents-shared-terminal-surface"));
-      await waitFor(() => expect(gl.drawArrays.mock.calls.length).toBeGreaterThan(drawsBeforeScroll));
-      expect(contextSpy.mock.calls.filter(([type]) => type === "webgl2")).toHaveLength(1);
-      const canvas = screen.getByTestId("agents-shared-terminal-canvas");
-      const presentation = view.container.querySelector('[data-terminal-presentation-id="shared:one"]');
-      const firstHost = presentation?.firstElementChild;
-      expect(firstHost).toBeInstanceOf(HTMLElement);
-      const viewport = document.createElement("div");
-      viewport.className = "xterm-viewport";
-      Object.defineProperty(viewport, "clientWidth", { configurable: true, value: 890 });
-      const screenElement = document.createElement("div");
-      screenElement.className = "xterm-screen";
-      firstHost?.append(viewport, screenElement);
-      fireEvent.scroll(screen.getByTestId("agents-shared-terminal-surface"));
-      await waitFor(() => expect(gl.scissor).toHaveBeenCalledWith(0, 0, 900, 600));
-      firstHost?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, ctrlKey: true }));
-      expect(canvas).toHaveStyle({ opacity: "0" });
-      fireEvent.keyUp(window, { key: "Control" });
-      expect(canvas).toHaveStyle({ opacity: "1" });
-      canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
-      expect(canvas).toHaveStyle({ visibility: "hidden" });
-      canvas.dispatchEvent(new Event("webglcontextrestored"));
-      await waitFor(() => expect(contextSpy.mock.calls.filter(([type]) => type === "webgl2")).toHaveLength(2));
-      expect(canvas).toHaveStyle({ visibility: "visible" });
-    } finally {
-      view.unmount();
-      contextSpy.mockRestore();
-      if (originalWebGL2 === undefined) delete (globalThis as { WebGL2RenderingContext?: unknown }).WebGL2RenderingContext;
-      else Object.defineProperty(globalThis, "WebGL2RenderingContext", { configurable: true, value: originalWebGL2 });
-    }
+    expect(terminalRendererBudget.has("xterm", "native-hidden-first")).toBe(false);
   });
 
   it("waits for physical intersection before promoting a revealed renderer to WebGL", async () => {

@@ -48,9 +48,9 @@ terminals continue receiving the ordered broker stream, so returning to the
 surface does not require re-registration, snapshot replay, renderer seeding,
 or renderer-budget admission.
 
-The Agents surface owns one persistent WebGL context for all cards. It stops
-drawing while hidden but does not relinquish that context. Dedicated Agent
-Session terminals retain their independent xterm and WebGL budgets.
+Agents uses xterm's native non-WebGL renderer for all cards, so it creates no
+WebGL contexts and never enters context-cap churn. Dedicated Agent Session
+terminals retain their independent xterm and WebGL budgets.
 
 ### 2. Use one reveal preparation transaction
 

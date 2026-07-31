@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentConfig, AgentTelemetry, AgentsOverviewMode, CloneMode } from "../types";
 import { AgentChatView } from "../features/grid/AgentChatView";
 import { AgentTerminal } from "../features/terminal/AgentTerminal";
-import { AgentsSharedTerminalSurfaceProvider } from "../features/terminal/AgentsSharedTerminalSurface";
 import type { Watchlist } from "../layout/watchlist/types";
 import { AgentContextMenu } from "../components/AgentContextMenu";
 import { useLayoutStore } from "../store/useLayoutStore";
@@ -132,6 +131,7 @@ const AgentTerminalSlot = React.memo(function AgentTerminalSlot({
       renderState={renderState}
       requestedInteraction="interactive"
       autoActivateWhenUnowned
+      rendererPolicy="persistent-native"
       provider={provider}
       isMaximized={isMaximized}
       theme={theme}
@@ -326,7 +326,6 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
   ];
 
   return (
-    <AgentsSharedTerminalSurfaceProvider>
     <div ref={containerRef} className="h-full min-h-0 min-w-0 overflow-auto" data-testid="agents-overview-container">
       <div
         ref={gridRef}
@@ -614,6 +613,5 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
       )}
       </div>
     </div>
-    </AgentsSharedTerminalSurfaceProvider>
   );
 };

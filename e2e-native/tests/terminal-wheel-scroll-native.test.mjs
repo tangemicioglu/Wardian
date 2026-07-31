@@ -252,18 +252,20 @@ async function waitForScrollback(driver, presentationId, expectedText = "wheel-7
   throw new Error(`Timed out waiting for scrollback: ${JSON.stringify(last)}`);
 }
 
-async function captureSharedContextEvidence(driver, harness) {
+async function captureNativeRendererEvidence(driver, harness) {
   const renderer = await driver.executeScript(() => {
-    const surface = document.querySelector('[data-testid="agents-shared-terminal-surface"]');
+    const surface = document.querySelector('[data-testid="agents-overview-container"]');
     return {
-      canvases: surface?.querySelectorAll('[data-testid="agents-shared-terminal-canvas"]').length ?? 0,
-      dedicatedTerminalCanvases: surface?.querySelectorAll(".xterm-screen canvas").length ?? 0,
+      customCompositorCanvases:
+        surface?.querySelectorAll('[data-testid="agents-shared-terminal-canvas"]').length ?? 0,
+      nativeTerminalCanvases: surface?.querySelectorAll(".xterm-screen canvas").length ?? 0,
       terminals: surface?.querySelectorAll(".xterm").length ?? 0,
     };
   });
-  assert.equal(renderer.canvases, 1, `Expected one Agents compositor canvas: ${JSON.stringify(renderer)}`);
-  assert.equal(renderer.dedicatedTerminalCanvases, 0,
-    `Agents cards must not own dedicated WebGL canvases: ${JSON.stringify(renderer)}`);
+  assert.equal(renderer.customCompositorCanvases, 0,
+    `Agents cards must not use a custom compositor: ${JSON.stringify(renderer)}`);
+  assert.ok(renderer.nativeTerminalCanvases >= 2,
+    `Expected xterm's native rendering layers: ${JSON.stringify(renderer)}`);
   assert.ok(renderer.terminals >= 2, `Expected both Agents terminals: ${JSON.stringify(renderer)}`);
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -271,7 +273,7 @@ async function captureSharedContextEvidence(driver, harness) {
     harness.repoRoot,
     "e2e",
     "screenshots",
-    "agents-shared-terminal-context",
+    "agents-native-terminal-renderers",
     timestamp,
   );
   fs.mkdirSync(directory, { recursive: true });
@@ -410,7 +412,7 @@ test("user mouse wheel scrolls the agent terminal renderer and parser", { timeou
   await focusAgentTerminal(driver, sessionId, presentationId);
 
   const beforeSnapshot = await waitForScrollback(driver, presentationId);
-  console.log("shared compositor evidence:", await captureSharedContextEvidence(driver, harness));
+  console.log("native xterm evidence:", await captureNativeRendererEvidence(driver, harness));
   console.log("renderer diagnostics:", JSON.stringify({
     bufferType: beforeSnapshot?.renderer?.bufferType,
     mouseTrackingMode: beforeSnapshot?.renderer?.mouseTrackingMode,

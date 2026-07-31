@@ -17,7 +17,7 @@ const baselinePath = path.join(
   "workbench-performance-baseline.json",
 );
 const refusal = "Refusing to benchmark without an explicit isolated WARDIAN_HOME.";
-const AGENTS_SHARED_TERMINAL_STRESS_COUNT = 32;
+const AGENTS_NATIVE_TERMINAL_STRESS_COUNT = 32;
 const gates = Object.freeze({
   restore_p95_ms: { limit: 1500, unit: "ms" },
   tab_switch_p95_ms: { limit: 100, unit: "ms" },
@@ -320,7 +320,7 @@ function browserFixture(fixture) {
   const snapshot = (sessionId = trackedRuntime) => ({
     snapshot_id: `perf-snapshot-${sessionId}`, session_id: sessionId, runtime_generation: 1,
     sequence_barrier: 0, geometry: { cols: 80, rows: 24 }, terminal_state_base64: "",
-    visible_grid: `Wardian shared compositor\r\n${sessionId}\r\none WebGL context for the Agents surface\r\nevery glyph keeps one baseline beneath the scrollbar overlay edge`,
+    visible_grid: `Wardian native xterm renderer\r\n${sessionId}\r\nzero WebGL contexts for the Agents surface\r\n╭─ Clawd ─────────╮\r\n│ glyphs ✓ links │\r\n╰─────────────────╯\r\nhttps://wardian.org/terminal-renderer-check`,
     scrollback: Array.from({ length: 32 }, (_, index) =>
       `${sessionId} history ${String(index + 1).padStart(2, "0")}`),
   });
@@ -609,14 +609,15 @@ async function measureTabActivation(page, surfaceId) {
   }, surfaceId);
 }
 
-async function agentsSharedRenderer(page, expectedTerminals) {
+async function agentsNativeRenderer(page, expectedTerminals) {
   return await page.evaluate((terminalCount) => {
-    const surface = document.querySelector('[data-testid="agents-shared-terminal-surface"]');
+    const surface = document.querySelector('[data-testid="agents-overview-container"]');
     return {
-      canvases: surface?.querySelectorAll('[data-testid="agents-shared-terminal-canvas"]').length ?? 0,
+      custom_compositor_canvases:
+        surface?.querySelectorAll('[data-testid="agents-shared-terminal-canvas"]').length ?? 0,
       contexts: window.__WARDIAN_WORKBENCH_PERF__
-        .webgl_contexts_within('[data-testid="agents-shared-terminal-surface"]'),
-      dedicated_terminal_canvases: surface?.querySelectorAll(".xterm-screen canvas").length ?? 0,
+        .webgl_contexts_within('[data-testid="agents-overview-container"]'),
+      native_terminal_canvases: surface?.querySelectorAll(".xterm-screen canvas").length ?? 0,
       terminals: surface?.querySelectorAll(".xterm").length ?? 0,
       terminal_ids: [...(surface?.querySelectorAll('[data-terminal-presentation-id]') ?? [])]
         .map((element) => element.getAttribute("data-terminal-presentation-id"))
@@ -627,7 +628,7 @@ async function agentsSharedRenderer(page, expectedTerminals) {
   }, expectedTerminals);
 }
 
-async function agentsSharedTextSnapshot(page, sessionId) {
+async function agentsNativeTextSnapshot(page, sessionId) {
   return await page.evaluate((id) => {
     const presentationId = document
       .querySelector(`[data-terminal-session-id=${JSON.stringify(id)}]`)
@@ -646,20 +647,19 @@ async function agentsSharedTextSnapshot(page, sessionId) {
   }, sessionId);
 }
 
-function assertAgentsSharedRenderer(renderer) {
+function assertAgentsNativeRenderer(renderer) {
   if (
-    renderer.canvases !== 1
-    || renderer.contexts !== 1
-    || renderer.dedicated_terminal_canvases !== 0
+    renderer.custom_compositor_canvases !== 0
+    || renderer.contexts !== 0
     || renderer.terminals !== renderer.expected_terminals
   ) {
-    throw new Error(`Agents Overview did not use one shared WebGL context: ${JSON.stringify(renderer)}`);
+    throw new Error(`Agents Overview did not retain native zero-WebGL xterms: ${JSON.stringify(renderer)}`);
   }
 }
 
 async function stampAgentsTerminalIdentity(page) {
   await page.evaluate(() => {
-    const surface = document.querySelector('[data-testid="agents-shared-terminal-surface"]');
+    const surface = document.querySelector('[data-testid="agents-overview-container"]');
     for (const terminal of surface?.querySelectorAll('.xterm') ?? []) {
       terminal.setAttribute('data-perf-stable-terminal', 'true');
     }
@@ -786,16 +786,15 @@ async function measureRuntime(fixture, runtimeOutDir) {
     await page.locator('[data-testid="workbench-host"]').waitFor({ timeout: 20_000 });
     await page.locator('[role="tab"][data-surface-id="perf-overview"]').click();
     await page.locator('[aria-label="Agents mode"] button').filter({ hasText: "Grid" }).click();
-    await page.locator('[data-testid="agents-shared-terminal-canvas"]').waitFor({ state: "visible" });
     try {
       await page.waitForFunction((expectedTerminals) => {
-        const surface = document.querySelector('[data-testid="agents-shared-terminal-surface"]');
+        const surface = document.querySelector('[data-testid="agents-overview-container"]');
         const runtime = window.__WARDIAN_WORKBENCH_PERF__;
         return (surface?.querySelectorAll(".xterm").length ?? 0) === expectedTerminals
-          && runtime.webgl_contexts_within('[data-testid="agents-shared-terminal-surface"]') === 1;
-      }, AGENTS_SHARED_TERMINAL_STRESS_COUNT, { timeout: 40_000 });
+          && runtime.webgl_contexts_within('[data-testid="agents-overview-container"]') === 0;
+      }, AGENTS_NATIVE_TERMINAL_STRESS_COUNT, { timeout: 40_000 });
     } catch (error) {
-      const diagnostic = await agentsSharedRenderer(page, AGENTS_SHARED_TERMINAL_STRESS_COUNT);
+      const diagnostic = await agentsNativeRenderer(page, AGENTS_NATIVE_TERMINAL_STRESS_COUNT);
       const layoutDiagnostic = await page.evaluate(() => ({
         mode: document.querySelector('[data-testid="agent-grid"]')?.getAttribute('data-overview-mode'),
         cards: [...document.querySelectorAll('[data-agent-grid-card-id]')].slice(0, 3).map((card) => ({
@@ -807,9 +806,9 @@ async function measureRuntime(fixture, runtimeOutDir) {
           text: card.textContent?.slice(-200) ?? null,
         })),
       }));
-      throw new Error(`Agents shared renderer did not admit every stress terminal: ${JSON.stringify({ diagnostic, layoutDiagnostic, errors })}\n${error}`);
+      throw new Error(`Agents native renderers did not admit every stress terminal: ${JSON.stringify({ diagnostic, layoutDiagnostic, errors })}\n${error}`);
     }
-    assertAgentsSharedRenderer(await agentsSharedRenderer(page, AGENTS_SHARED_TERMINAL_STRESS_COUNT));
+    assertAgentsNativeRenderer(await agentsNativeRenderer(page, AGENTS_NATIVE_TERMINAL_STRESS_COUNT));
     await stampAgentsTerminalIdentity(page);
     await page.evaluate(() => {
       const overview = document.querySelector('[data-testid="agents-overview-container"]');
@@ -834,8 +833,8 @@ async function measureRuntime(fixture, runtimeOutDir) {
           && performance.now() - runtime.overview_last_resize_at >= 120;
       });
       await twoFrames(page);
-      const renderer = await agentsSharedRenderer(page, AGENTS_SHARED_TERMINAL_STRESS_COUNT);
-      assertAgentsSharedRenderer(renderer);
+      const renderer = await agentsNativeRenderer(page, AGENTS_NATIVE_TERMINAL_STRESS_COUNT);
+      assertAgentsNativeRenderer(renderer);
       assertAgentsTerminalIdentity(renderer);
       overviewSettle.push(performance.now() - started);
     }
@@ -853,32 +852,32 @@ async function measureRuntime(fixture, runtimeOutDir) {
         scrollTop,
       );
       await twoFrames(page);
-      const renderer = await agentsSharedRenderer(page, AGENTS_SHARED_TERMINAL_STRESS_COUNT);
-      assertAgentsSharedRenderer(renderer);
+      const renderer = await agentsNativeRenderer(page, AGENTS_NATIVE_TERMINAL_STRESS_COUNT);
+      assertAgentsNativeRenderer(renderer);
       assertAgentsTerminalIdentity(renderer);
       renderer.terminal_ids.forEach((id) => visitedOverviewTerminals.add(id));
     }
-    if (visitedOverviewTerminals.size !== AGENTS_SHARED_TERMINAL_STRESS_COUNT) {
+    if (visitedOverviewTerminals.size !== AGENTS_NATIVE_TERMINAL_STRESS_COUNT) {
       throw new Error(
-        `Agents Overview shared context did not render every card while scrolling: ${JSON.stringify([...visitedOverviewTerminals])}`,
+        `Agents Overview did not retain every native xterm while scrolling: ${JSON.stringify([...visitedOverviewTerminals])}`,
       );
     }
     await page.locator('[aria-label="Maximize Perf Agent 01"]').click();
     await twoFrames(page);
-    let renderer = await agentsSharedRenderer(page, AGENTS_SHARED_TERMINAL_STRESS_COUNT);
-    assertAgentsSharedRenderer(renderer);
+    let renderer = await agentsNativeRenderer(page, AGENTS_NATIVE_TERMINAL_STRESS_COUNT);
+    assertAgentsNativeRenderer(renderer);
     assertAgentsTerminalIdentity(renderer);
     await page.locator('[aria-label="Minimize Perf Agent 01"]').click();
     await twoFrames(page);
-    renderer = await agentsSharedRenderer(page, AGENTS_SHARED_TERMINAL_STRESS_COUNT);
-    assertAgentsSharedRenderer(renderer);
+    renderer = await agentsNativeRenderer(page, AGENTS_NATIVE_TERMINAL_STRESS_COUNT);
+    assertAgentsNativeRenderer(renderer);
     assertAgentsTerminalIdentity(renderer);
     await clickSurfaceTabFromUser(page, "perf-agent-owner");
     await twoFrames(page);
     await clickSurfaceTabFromUser(page, "perf-overview");
     await twoFrames(page);
-    renderer = await agentsSharedRenderer(page, AGENTS_SHARED_TERMINAL_STRESS_COUNT);
-    assertAgentsSharedRenderer(renderer);
+    renderer = await agentsNativeRenderer(page, AGENTS_NATIVE_TERMINAL_STRESS_COUNT);
+    assertAgentsNativeRenderer(renderer);
     assertAgentsTerminalIdentity(renderer);
     const overviewGroup = page.locator('[data-group-id="perf-group-1"]');
     await overviewGroup.locator('button[aria-label="Pane actions"]').click();
@@ -892,14 +891,14 @@ async function measureRuntime(fixture, runtimeOutDir) {
       },
     );
     await twoFrames(page);
-    renderer = await agentsSharedRenderer(page, AGENTS_SHARED_TERMINAL_STRESS_COUNT);
-    assertAgentsSharedRenderer(renderer);
+    renderer = await agentsNativeRenderer(page, AGENTS_NATIVE_TERMINAL_STRESS_COUNT);
+    assertAgentsNativeRenderer(renderer);
     assertAgentsTerminalIdentity(renderer);
     const evidenceDirectory = path.join(
       repoRoot,
       "e2e",
       "screenshots",
-      "agents-shared-terminal-context",
+      "agents-native-terminal-renderers",
       new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-"),
     );
     await fs.mkdir(evidenceDirectory, { recursive: true });
@@ -909,21 +908,23 @@ async function measureRuntime(fixture, runtimeOutDir) {
     );
     const evidenceTerminalBox = await evidenceTerminal.boundingBox();
     if (evidenceTerminalBox) {
+      await page.keyboard.down("Control");
       await page.mouse.move(
-        evidenceTerminalBox.x + evidenceTerminalBox.width - 2,
-        evidenceTerminalBox.y + evidenceTerminalBox.height / 2,
+        evidenceTerminalBox.x + 150,
+        evidenceTerminalBox.y + evidenceTerminalBox.height - 24,
       );
       await twoFrames(page);
     }
-    await page.locator('[data-testid="agents-shared-terminal-surface"]').screenshot({ path: evidencePath });
-    process.stdout.write(`Agents shared terminal evidence: ${path.relative(repoRoot, evidencePath)}\n`);
-    const textSnapshot = await agentsSharedTextSnapshot(page, "perf-agent-05");
-    const expectedText = "one WebGL context for the Agents surface";
-    const expectedScrollbarText = "every glyph keeps one baseline beneath the scrollbar overlay edge";
+    await page.locator('[data-testid="agents-overview-container"]').screenshot({ path: evidencePath });
+    process.stdout.write(`Agents native terminal evidence: ${path.relative(repoRoot, evidencePath)}\n`);
+    const textSnapshot = await agentsNativeTextSnapshot(page, "perf-agent-05");
+    const expectedText = "zero WebGL contexts for the Agents surface";
+    const expectedFidelityText = "╭─ Clawd ─────────╮│ glyphs ✓ links │╰─────────────────╯";
     const renderedText = textSnapshot?.all_lines.join("") ?? "";
-    if (!renderedText.includes(expectedText) || !renderedText.includes(expectedScrollbarText)) {
-      throw new Error(`Agents shared terminal text fidelity failed: ${JSON.stringify(textSnapshot)}`);
+    if (!renderedText.includes(expectedText) || !renderedText.includes(expectedFidelityText)) {
+      throw new Error(`Agents native terminal text fidelity failed: ${JSON.stringify(textSnapshot)}`);
     }
+    await page.keyboard.up("Control");
     await overviewGroup.locator('button[aria-label="Pane actions"]').click();
     await page.getByRole("menuitem", { name: "Restore pane", exact: true }).click();
     await twoFrames(page);
@@ -949,9 +950,9 @@ async function measureRuntime(fixture, runtimeOutDir) {
     if (observed.react_commits.length === 0) {
       throw new Error("React commit instrumentation produced no observed samples");
     }
-    if (observed.xterm_peak < AGENTS_SHARED_TERMINAL_STRESS_COUNT) {
+    if (observed.xterm_peak < AGENTS_NATIVE_TERMINAL_STRESS_COUNT) {
       throw new Error(
-        `Expected at least ${AGENTS_SHARED_TERMINAL_STRESS_COUNT} measured terminal renderers, observed ${observed.xterm_peak}`,
+        `Expected at least ${AGENTS_NATIVE_TERMINAL_STRESS_COUNT} measured terminal renderers, observed ${observed.xterm_peak}`,
       );
     }
     return {

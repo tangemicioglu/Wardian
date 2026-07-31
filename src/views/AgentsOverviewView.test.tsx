@@ -169,7 +169,7 @@ beforeEach(() => {
 });
 
 describe('AgentsOverviewView maximize behavior', () => {
-  it('keeps every shared terminal mounted beyond the former 24-renderer limit', () => {
+  it('keeps every native terminal mounted beyond the former 24-renderer limit', () => {
     const manyAgents = Array.from({ length: 32 }, (_, index): AgentConfig => ({
       session_id: `agent-${index + 1}`,
       session_name: `Agent ${index + 1}`,
@@ -185,7 +185,11 @@ describe('AgentsOverviewView maximize behavior', () => {
     );
     expect(latestProps.size).toBe(32);
     for (const props of latestProps.values()) {
-      expect(props).toMatchObject({ visibility: 'visible', renderState: 'mounted' });
+      expect(props).toMatchObject({
+        visibility: 'visible',
+        renderState: 'mounted',
+        rendererPolicy: 'persistent-native',
+      });
     }
   });
 
@@ -207,7 +211,11 @@ describe('AgentsOverviewView maximize behavior', () => {
 
     expect(terminalRenderSpy).toHaveBeenCalledTimes(2);
     for (const [props] of terminalRenderSpy.mock.calls) {
-      expect(props).toMatchObject({ visibility: "hidden", renderState: "mounted" });
+      expect(props).toMatchObject({
+        visibility: "hidden",
+        renderState: "mounted",
+        rendererPolicy: "persistent-native",
+      });
     }
   });
 

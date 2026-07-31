@@ -218,20 +218,14 @@ the socket.
 
 Dedicated terminal surfaces permit at most 24 mounted xterm renderers and 12
 xterm WebGL contexts through deterministic LRUs. Agents Overview participates
-in neither budget: it keeps all terminal-mode card xterms mounted and owns one
-viewport-sized WebGL2 compositor for the entire surface. Scrolling or hiding
-the Agents surface does not evict those xterms or recreate its context.
+in neither budget: it keeps all terminal-mode card xterms mounted and uses
+xterm's native non-WebGL renderer for every card. Scrolling or hiding Agents
+does not evict those xterms, and Agents creates no WebGL contexts.
 
-The Agents compositor reads each xterm's public buffer into card-local CPU
-raster tiles, uploads those tiles as textures, and draws them through the one
-surface context. The xterm DOM renderers remain mounted behind the canvas for
-input, selection, links, accessibility, and atomic fallback. Scrolling and
-layout changes remeasure terminal bodies relative to the visible surface; they
-do not create or retire contexts. Standalone Agent Session terminals retain
-their dedicated xterm WebGL path. Holding the platform link modifier over a
-card temporarily exposes xterm's DOM interaction layer so its native hover
-decoration and activation remain authoritative without creating another GPU
-context.
+Keeping xterm's renderer authoritative preserves custom glyphs, wide and
+combined characters, decorations, links, selection, accessibility, and native
+scrollbar behavior. Standalone Agent Session terminals retain their dedicated
+xterm WebGL path.
 
 The dedicated-terminal xterm and WebGL pools remain independent deterministic
 LRUs:
@@ -249,10 +243,8 @@ switches. Hiding the surface updates presentations to `hidden` while leaving
 their xterms mounted, so returning to Agents does not cause a simultaneous
 registration, snapshot, and renderer-construction burst.
 
-If the Agents compositor cannot create WebGL2, or if its single context is
-lost, the entire surface reveals the already-mounted xterm DOM renderers. A
-native context-restoration event rebuilds the surface resources once; card
-lifecycles never independently retry context creation.
+Agents has no WebGL context to lose or restore. Its xterms remain the rendered
+state as well as the interaction and accessibility state.
 
 ### First-paint reveal barrier
 

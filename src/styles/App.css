@@ -469,26 +469,6 @@
   scrollbar-color: var(--color-wardian-border-heavy) var(--color-wardian-bg);
 }
 
-/* Keep xterm's empty scroll viewport above the shared canvas so its native
-   scrollbar remains visible without exposing the differently rasterized
-   xterm screen underneath. */
-.agents-shared-terminal-surface .xterm-viewport {
-  z-index: 30;
-  background-color: transparent !important;
-  scrollbar-width: auto;
-  scrollbar-color: var(--color-wardian-text-muted) var(--color-wardian-bg);
-}
-
-.agents-shared-terminal-surface .xterm-viewport::-webkit-scrollbar {
-  width: 10px;
-}
-
-.agents-shared-terminal-surface .xterm-viewport::-webkit-scrollbar-thumb {
-  background: var(--color-wardian-text-muted);
-  border-width: 1px;
-  min-height: 24px;
-}
-
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
