@@ -58,6 +58,14 @@ const ANSI_THEME_KEYS = [
   "brightMagenta", "brightCyan", "brightWhite",
 ] as const;
 
+// xterm's resolved palette uses these values whenever a theme does not
+// override one of the first 16 ANSI colors. term.options.theme only exposes
+// the caller's overrides, so the compositor needs the same fallbacks.
+const DEFAULT_ANSI_COLORS = [
+  "#2e3436", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#75507b", "#06989a", "#d3d7cf",
+  "#555753", "#ef2929", "#8ae234", "#fce94f", "#729fcf", "#ad7fa8", "#34e2e2", "#eeeeec",
+] as const;
+
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string) {
   const shader = gl.createShader(type);
   if (!shader) throw new Error("Unable to create shared terminal shader");
@@ -94,7 +102,7 @@ function cssColor(value: number) {
 }
 
 function paletteColor(index: number, theme: ITheme, foreground: string) {
-  if (index < 16) return theme[ANSI_THEME_KEYS[index]] ?? foreground;
+  if (index < 16) return theme[ANSI_THEME_KEYS[index]] ?? DEFAULT_ANSI_COLORS[index] ?? foreground;
   if (index < 232) {
     const value = index - 16;
     const channel = (part: number) => part === 0 ? 0 : 55 + part * 40;
@@ -105,6 +113,99 @@ function paletteColor(index: number, theme: ITheme, foreground: string) {
   }
   const gray = 8 + (index - 232) * 10;
   return cssColor((gray << 16) | (gray << 8) | gray);
+}
+
+type Rgb = { red: number; green: number; blue: number };
+const contrastColorCache = new Map<string, string>();
+
+function parseHexColor(value: string): Rgb | null {
+  const match = /^#([\da-f]{3}|[\da-f]{6})$/i.exec(value.trim());
+  if (!match) return null;
+  const hex = match[1].length === 3
+    ? match[1].split("").map((channel) => `${channel}${channel}`).join("")
+    : match[1];
+  return {
+    red: Number.parseInt(hex.slice(0, 2), 16),
+    green: Number.parseInt(hex.slice(2, 4), 16),
+    blue: Number.parseInt(hex.slice(4, 6), 16),
+  };
+}
+
+function relativeLuminance(color: Rgb) {
+  const channel = (value: number) => {
+    const normalized = value / 255;
+    return normalized <= 0.03928
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  };
+  return channel(color.red) * 0.2126 + channel(color.green) * 0.7152 + channel(color.blue) * 0.0722;
+}
+
+function contrastRatio(first: Rgb, second: Rgb) {
+  const firstLuminance = relativeLuminance(first);
+  const secondLuminance = relativeLuminance(second);
+  return (Math.max(firstLuminance, secondLuminance) + 0.05)
+    / (Math.min(firstLuminance, secondLuminance) + 0.05);
+}
+
+function mixColor(from: Rgb, to: Rgb, amount: number): Rgb {
+  return {
+    red: Math.round(from.red + (to.red - from.red) * amount),
+    green: Math.round(from.green + (to.green - from.green) * amount),
+    blue: Math.round(from.blue + (to.blue - from.blue) * amount),
+  };
+}
+
+function rgbColor(color: Rgb) {
+  return `#${[color.red, color.green, color.blue]
+    .map((channel) => channel.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+/** Match xterm's minimum-contrast behavior for compositor-rendered glyphs. */
+export function adjustTerminalForegroundContrast(
+  foreground: string,
+  background: string,
+  minimumRatio: number,
+) {
+  const cacheKey = `${foreground}\0${background}\0${minimumRatio}`;
+  const cached = contrastColorCache.get(cacheKey);
+  if (cached) return cached;
+  const foregroundRgb = parseHexColor(foreground);
+  const backgroundRgb = parseHexColor(background);
+  if (!foregroundRgb || !backgroundRgb || minimumRatio <= 1
+    || contrastRatio(foregroundRgb, backgroundRgb) >= minimumRatio) {
+    contrastColorCache.set(cacheKey, foreground);
+    return foreground;
+  }
+
+  const candidates = [
+    { red: 0, green: 0, blue: 0 },
+    { red: 255, green: 255, blue: 255 },
+  ];
+  let best: { color: Rgb; amount: number; ratio: number } | null = null;
+  for (const target of candidates) {
+    let low = 0;
+    let high = 1;
+    for (let step = 0; step < 10; step++) {
+      const amount = (low + high) / 2;
+      if (contrastRatio(mixColor(foregroundRgb, target, amount), backgroundRgb) >= minimumRatio) {
+        high = amount;
+      } else {
+        low = amount;
+      }
+    }
+    const color = mixColor(foregroundRgb, target, high);
+    const ratio = contrastRatio(color, backgroundRgb);
+    if (ratio >= minimumRatio && (!best || high < best.amount)) {
+      best = { color, amount: high, ratio };
+    } else if (!best || ratio > best.ratio) {
+      best = { color, amount: high, ratio };
+    }
+  }
+  const adjusted = best ? rgbColor(best.color) : foreground;
+  contrastColorCache.set(cacheKey, adjusted);
+  return adjusted;
 }
 
 function cellColor(cell: IBufferCell, foreground: boolean, theme: ITheme) {
@@ -168,6 +269,8 @@ function rasterize(registration: Registration, width: number, height: number, dp
   const cellHeight = pixelHeight / Math.max(1, term.rows);
   const fontSize = Number(term.options.fontSize ?? 14) * dpr;
   const family = String(term.options.fontFamily ?? "monospace");
+  const normalFontWeight = term.options.fontWeight ?? "normal";
+  const boldFontWeight = term.options.fontWeightBold ?? "bold";
   context.clearRect(0, 0, pixelWidth, pixelHeight);
   context.fillStyle = background;
   context.fillRect(0, 0, pixelWidth, pixelHeight);
@@ -186,15 +289,25 @@ function rasterize(registration: Registration, width: number, height: number, dp
       const x = column * cellWidth;
       const y = row * cellHeight;
       const selected = selectionContains(term, column, absoluteY);
-      context.fillStyle = selected ? (theme.selectionBackground ?? "#555555") : cellColor(cell, false, theme);
+      const cellBackground = selected ? (theme.selectionBackground ?? "#555555") : cellColor(cell, false, theme);
+      context.fillStyle = cellBackground;
       context.fillRect(x, y, cellWidth * Math.max(1, cell.getWidth()), cellHeight);
       const chars = cell.getChars();
       if (!chars || cell.isInvisible()) continue;
       context.globalAlpha = cell.isDim() ? 0.55 : 1;
-      context.fillStyle = selected && theme.selectionForeground
+      const cellForeground = selected && theme.selectionForeground
         ? theme.selectionForeground
         : cellColor(cell, true, theme);
-      context.font = `${cell.isItalic() ? "italic " : ""}${cell.isBold() ? "bold " : ""}${fontSize}px ${family}`;
+      const minimumContrastRatio = Math.max(
+        1,
+        Number(term.options.minimumContrastRatio ?? 1) / (cell.isDim() ? 2 : 1),
+      );
+      context.fillStyle = adjustTerminalForegroundContrast(
+        cellForeground,
+        cellBackground,
+        minimumContrastRatio,
+      );
+      context.font = `${cell.isItalic() ? "italic " : ""}${cell.isBold() ? boldFontWeight : normalFontWeight} ${fontSize}px ${family}`;
       if (!drawBlockGlyph(context, chars, x, y, cellWidth * Math.max(1, cell.getWidth()), cellHeight)) {
         context.fillText(chars, x, y + cellHeight / 2, cellWidth * Math.max(1, cell.getWidth()));
       }
@@ -224,7 +337,7 @@ function rasterize(registration: Registration, width: number, height: number, dp
       const chars = cursorCell?.getChars();
       if (cursorCell && chars && !cursorCell.isInvisible()) {
         context.fillStyle = theme.cursorAccent ?? background;
-        context.font = `${cursorCell.isItalic() ? "italic " : ""}${cursorCell.isBold() ? "bold " : ""}${fontSize}px ${family}`;
+        context.font = `${cursorCell.isItalic() ? "italic " : ""}${cursorCell.isBold() ? boldFontWeight : normalFontWeight} ${fontSize}px ${family}`;
         if (!drawBlockGlyph(context, chars, cursorX, cursorY, cursorWidth, cellHeight)) {
           context.fillText(chars, cursorX, cursorY + cellHeight / 2, cursorWidth);
         }
@@ -261,6 +374,11 @@ class SharedSurfaceController implements AgentsSharedTerminalSurface {
 
   register(id: string, term: Terminal, host: HTMLElement): Disposable {
     this.#remove(id);
+    const previousReflowCursorLine = term.options.reflowCursorLine;
+    // Grid and maximize transitions resize a presentation without necessarily
+    // prompting the provider to repaint its current line. Preserve that line
+    // across local width changes; the standalone path keeps xterm's default.
+    term.options.reflowCursorLine = true;
     const registration: Registration = {
       id,
       term,
@@ -285,6 +403,7 @@ class SharedSurfaceController implements AgentsSharedTerminalSurface {
       subscribe(term.onResize), subscribe(term.onSelectionChange), subscribe(term.buffer.onBufferChange),
       {
         dispose: () => {
+          term.options.reflowCursorLine = previousReflowCursorLine;
           host.removeEventListener("pointermove", useDomInteractionLayer);
           host.removeEventListener("pointerleave", restoreSharedLayer);
           restoreSharedLayer();
@@ -364,25 +483,41 @@ class SharedSurfaceController implements AgentsSharedTerminalSurface {
     for (const registration of this.#registrations.values()) {
       if (!registration.host.isConnected) continue;
       const screen = registration.term.element?.querySelector<HTMLElement>(".xterm-screen");
+      const viewport = registration.term.element?.querySelector<HTMLElement>(".xterm-viewport");
       const rect = (screen ?? registration.host).getBoundingClientRect();
+      const viewportRect = viewport?.getBoundingClientRect();
+      const viewportContentRight = viewport && viewportRect && viewport.clientWidth > 0
+        ? viewportRect.left + viewport.clientWidth
+        : rect.right;
       const left = Math.max(rect.left, rootRect.left);
       const top = Math.max(rect.top, rootRect.top);
-      const right = Math.min(rect.right, rootRect.right);
+      // xterm's screen can extend beneath its native scrollbar. Keep the quad
+      // at full cell width, but clip before the viewport gutter so the real
+      // scrollbar remains completely visible and interactive.
+      const right = Math.min(rect.right, rootRect.right, viewportContentRight);
       const bottom = Math.min(rect.bottom, rootRect.bottom);
       if (right <= left || bottom <= top || rect.width < 2 || rect.height < 2) continue;
       rasterize(registration, rect.width, rect.height, dpr);
       registration.texture ??= gl.createTexture();
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, registration.texture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, registration.raster);
-      const x = (rect.left - rootRect.left) * dpr;
-      const y = (rect.top - rootRect.top) * dpr;
-      gl.uniform4f(gl.getUniformLocation(program, "u_rect"), x, y, rect.width * dpr, rect.height * dpr);
+      // The tile is already rasterized at device resolution. Align its quad to
+      // the same integer pixel grid so the GPU does not resample glyph edges.
+      const x = Math.round((rect.left - rootRect.left) * dpr);
+      const y = Math.round((rect.top - rootRect.top) * dpr);
+      gl.uniform4f(
+        gl.getUniformLocation(program, "u_rect"),
+        x,
+        y,
+        registration.raster.width,
+        registration.raster.height,
+      );
       gl.enable(gl.SCISSOR_TEST);
       gl.scissor(
         Math.round((left - rootRect.left) * dpr),
@@ -468,7 +603,7 @@ export function AgentsSharedTerminalSurfaceProvider({ children }: PropsWithChild
   });
   return (
     <SurfaceContext.Provider value={controller}>
-      <div ref={rootRef} className="relative h-full min-h-0 min-w-0 overflow-hidden" data-testid="agents-shared-terminal-surface">
+      <div ref={rootRef} className="agents-shared-terminal-surface relative h-full min-h-0 min-w-0 overflow-hidden" data-testid="agents-shared-terminal-surface">
         {children}
         <canvas
           ref={canvasRef}

@@ -469,6 +469,23 @@
   scrollbar-color: var(--color-wardian-border-heavy) var(--color-wardian-bg);
 }
 
+/* The shared terminal canvas intentionally excludes xterm's real scrollbar
+   gutter. Keep that exposed control comfortably visible and draggable. */
+.agents-shared-terminal-surface .xterm-viewport {
+  scrollbar-width: auto;
+  scrollbar-color: var(--color-wardian-text-muted) var(--color-wardian-bg);
+}
+
+.agents-shared-terminal-surface .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+
+.agents-shared-terminal-surface .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--color-wardian-text-muted);
+  border-width: 1px;
+  min-height: 24px;
+}
+
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }

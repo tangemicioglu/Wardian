@@ -244,9 +244,11 @@ async function buildProductionRuntime(home, fixture) {
   const outDir = path.join(home, "runtime-build");
   assertInsideHome(home, outDir);
   const previousPerf = process.env.VITE_WARDIAN_WORKBENCH_PERF;
+  const previousTerminalDebug = process.env.VITE_WARDIAN_TERMINAL_DEBUG;
   const previousGrace = process.env.VITE_WARDIAN_HEAVY_SURFACE_GRACE_MS;
   try {
     process.env.VITE_WARDIAN_WORKBENCH_PERF = "1";
+    process.env.VITE_WARDIAN_TERMINAL_DEBUG = "1";
     process.env.VITE_WARDIAN_HEAVY_SURFACE_GRACE_MS = String(
       fixture.benchmark.heavy_surface_hidden_grace_ms,
     );
@@ -260,6 +262,8 @@ async function buildProductionRuntime(home, fixture) {
   } finally {
     if (previousPerf === undefined) delete process.env.VITE_WARDIAN_WORKBENCH_PERF;
     else process.env.VITE_WARDIAN_WORKBENCH_PERF = previousPerf;
+    if (previousTerminalDebug === undefined) delete process.env.VITE_WARDIAN_TERMINAL_DEBUG;
+    else process.env.VITE_WARDIAN_TERMINAL_DEBUG = previousTerminalDebug;
     if (previousGrace === undefined) delete process.env.VITE_WARDIAN_HEAVY_SURFACE_GRACE_MS;
     else process.env.VITE_WARDIAN_HEAVY_SURFACE_GRACE_MS = previousGrace;
   }
@@ -623,6 +627,25 @@ async function agentsSharedRenderer(page, expectedTerminals) {
   }, expectedTerminals);
 }
 
+async function agentsSharedTextSnapshot(page, sessionId) {
+  return await page.evaluate((id) => {
+    const presentationId = document
+      .querySelector(`[data-terminal-session-id=${JSON.stringify(id)}]`)
+      ?.getAttribute("data-terminal-presentation-id");
+    const snapshot = presentationId
+      ? window.__wardianTerminalDebug?.snapshot(presentationId)
+      : null;
+    return snapshot?.renderer
+      ? {
+          presentation_id: presentationId,
+          cols: snapshot.renderer.cols,
+          rows: snapshot.renderer.rows,
+          all_lines: snapshot.renderer.allLines.slice(-12),
+        }
+      : null;
+  }, sessionId);
+}
+
 function assertAgentsSharedRenderer(renderer) {
   if (
     renderer.canvases !== 1
@@ -883,6 +906,11 @@ async function measureRuntime(fixture, runtimeOutDir) {
     const evidencePath = path.join(evidenceDirectory, "populated-grid-after-scrolling.png");
     await page.locator('[data-testid="agents-shared-terminal-surface"]').screenshot({ path: evidencePath });
     process.stdout.write(`Agents shared terminal evidence: ${path.relative(repoRoot, evidencePath)}\n`);
+    const textSnapshot = await agentsSharedTextSnapshot(page, "perf-agent-05");
+    const expectedText = "one WebGL context for the Agents surface";
+    if (!textSnapshot || !textSnapshot.all_lines.join("").includes(expectedText)) {
+      throw new Error(`Agents shared terminal text fidelity failed: ${JSON.stringify(textSnapshot)}`);
+    }
     await overviewGroup.locator('button[aria-label="Pane actions"]').click();
     await page.getByRole("menuitem", { name: "Restore pane", exact: true }).click();
     await twoFrames(page);
