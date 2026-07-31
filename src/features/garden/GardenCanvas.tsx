@@ -1,12 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Layer, Stage } from "react-konva";
 import type Konva from "konva";
 import { AgentUnit, AGENT_UNIT_NAME } from "./AgentUnit";
 import { WorkflowUnit } from "./WorkflowUnit";
 import { GardenContextMenu } from "./GardenContextMenu";
 import { gardenDetailForScale, type GardenSkillGlyph } from "./skillGlyphs";
+import { useGardenPulse } from "./useGardenPulse";
 import type { GardenAgentUnit, GardenEntityRef, GardenWorkflowUnit } from "./garden.types";
 import { unitKey } from "./garden.types";
+import { isActiveAgentStatus, isActiveWorkflowStatus } from "./gardenStatus";
 import { useGardenTheme } from "./useGardenTheme";
 
 interface GardenCanvasProps {
@@ -47,6 +49,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
+  const layerRef = useRef<Konva.Layer>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [scale, setScale] = useState(1);
   const [menu, setMenu] = useState<GardenMenuState | null>(null);
@@ -55,6 +58,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   // a test (or a bug report) can turn a world position into a screen point. It
   // is not updated once the user takes over the viewport.
   const [fit, setFit] = useState<string | null>(null);
+  const fitRef = useRef<string | null>(null);
   const theme = useGardenTheme();
 
   // Progressive disclosure. Detail is a pure function of zoom and touches only
@@ -140,10 +144,57 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
       x: size.width / 2 - ((minX + maxX) / 2) * next,
       y: size.height / 2 - ((minY + maxY) / 2) * next,
     };
+    // This effect re-runs on every telemetry tick, because the unit arrays are
+    // rebuilt to keep status live. Writing an unchanged transform back would
+    // redraw the layer each time for nothing.
+    const applied = `${position.x},${position.y},${next}`;
+    if (applied === fitRef.current) return;
+    fitRef.current = applied;
     setScale(next);
     stage.position(position);
-    setFit(`${position.x},${position.y},${next}`);
+    setFit(applied);
   }, [agentUnits, workflowUnits, size]);
+
+  // One animation for every breathing halo. See `useGardenPulse` for why this
+  // is not per unit.
+  //
+  // Keyed on *which* units are breathing rather than on the unit arrays: those
+  // are rebuilt on every telemetry tick, and re-running the effect that often
+  // would rescan the scene graph for no reason. Only a status crossing the
+  // active boundary, or a unit appearing or leaving, changes what to animate.
+  const pulsingKey = useMemo(
+    () =>
+      [
+        ...agentUnits.filter((unit) => isActiveAgentStatus(unit.status)).map((u) => u.ref.id),
+        ...workflowUnits
+          .filter((unit) => isActiveWorkflowStatus(unit.runStatus))
+          .map((u) => u.ref.id),
+      ].join(","),
+    [agentUnits, workflowUnits],
+  );
+  useGardenPulse(layerRef, pulsingKey);
+
+  // Stable identities so `AgentUnit` can skip re-rendering agents that did not
+  // change. A closure created per unit per render would defeat that.
+  const handleSelectAgent = useCallback(
+    (id: string) => onSelect({ kind: "agent", id }),
+    [onSelect],
+  );
+  const handleSelectSkill = useCallback(
+    (glyph: GardenSkillGlyph) => onSelect({ kind: "skill", id: glyph.entryRef }),
+    [onSelect],
+  );
+  const handleOpenSkill = useCallback(
+    (glyph: GardenSkillGlyph) => onOpenSkill?.(glyph),
+    [onOpenSkill],
+  );
+  const handleMoveAgent = useCallback(
+    (id: string, x: number, y: number) => {
+      userAdjustedRef.current = true;
+      onMoveUnit(unitKey({ kind: "agent", id }), x, y);
+    },
+    [onMoveUnit],
+  );
 
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
@@ -176,7 +227,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
           if (event.target === event.currentTarget) userAdjustedRef.current = true;
         }}
       >
-        <Layer>
+        <Layer ref={layerRef}>
           {workflowUnits.map((unit) => (
             <WorkflowUnit
               key={unitKey(unit.ref)}
@@ -196,14 +247,11 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               detail={detail}
               theme={theme}
               selectedSkillRef={selectedSkillRef}
-              onSelect={() => onSelect(unit.ref)}
+              onSelect={handleSelectAgent}
               onOpen={onOpenAgent}
-              onSelectSkill={(glyph) => onSelect({ kind: "skill", id: glyph.entryRef })}
-              onOpenSkill={(glyph) => onOpenSkill?.(glyph)}
-              onDragMove={(x, y) => {
-                userAdjustedRef.current = true;
-                onMoveUnit(unitKey(unit.ref), x, y);
-              }}
+              onSelectSkill={handleSelectSkill}
+              onOpenSkill={handleOpenSkill}
+              onDragMove={handleMoveAgent}
             />
           ))}
         </Layer>

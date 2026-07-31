@@ -4,6 +4,7 @@ import {
   COMMONS_DISTRICT_ID,
   DEFAULT_HILBERT_ORDER,
   MAX_DISTRICT_MEMBERS,
+  buildDistrictAffinity,
   cellDistance,
   cellToHilbert,
   createDistrictLayout,
@@ -14,6 +15,7 @@ import {
   parcelsFor,
   placeDistricts,
   resolveAgentDistrict,
+  resolveDistrictByAffinity,
   resolveEntityDistrict,
   retireDistricts,
 } from "./districts";
@@ -263,5 +265,92 @@ describe("parcelsFor", () => {
     const first = parcelsFor("team:a", members);
     const second = parcelsFor("team:a", [...members].reverse());
     expect([...first.entries()]).toEqual([...second.entries()]);
+  });
+});
+
+describe("district affinity", () => {
+  // 12 agents: 2 in the Trident workspace, 10 in Wardian. Every agent shares
+  // the drive root, which is exactly the token that must not decide anything.
+  const agents = [
+    ...Array.from({ length: 2 }, () => ({
+      tokens: ["path:d:/", "path:d:/trading", "path:d:/trading/trident"],
+      districtId: "workspace:d:/trading/trident",
+    })),
+    ...Array.from({ length: 10 }, () => ({
+      tokens: ["path:d:/", "path:d:/development", "path:d:/development/wardian"],
+      districtId: "workspace:d:/development/wardian",
+    })),
+  ];
+  const affinity = buildDistrictAffinity(agents);
+
+  it("places on a rare shared facet", () => {
+    expect(
+      resolveDistrictByAffinity(["section:workflows", "path:d:/trading/trident"], affinity),
+    ).toBe("workspace:d:/trading/trident");
+  });
+
+  it("refuses to place on a universal facet", () => {
+    // df == N makes the IDF exactly 0, so a drive root is free and decides
+    // nothing. No rule about drive roots is needed anywhere.
+    expect(resolveDistrictByAffinity(["path:d:/"], affinity)).toBeNull();
+  });
+
+  it("refuses to place on a facet no agent carries", () => {
+    expect(resolveDistrictByAffinity(["path:e:/elsewhere"], affinity)).toBeNull();
+  });
+
+  it("prefers the district a facet is concentrated in, not the largest one", () => {
+    // The Wardian district has five times the agents; the deep Trident path is
+    // still the more informative signal.
+    expect(
+      resolveDistrictByAffinity(
+        ["path:d:/", "path:d:/trading", "path:d:/trading/trident"],
+        affinity,
+      ),
+    ).toBe("workspace:d:/trading/trident");
+  });
+
+  it("discounts a facet split across districts", () => {
+    // A token spread evenly over many districts is weak evidence for any one of
+    // them, and the share factor is what makes that fall out.
+    const split = buildDistrictAffinity([
+      { tokens: ["tag:shared"], districtId: "a" },
+      { tokens: ["tag:shared"], districtId: "b" },
+      { tokens: ["tag:shared"], districtId: "c" },
+      { tokens: ["tag:shared"], districtId: "d" },
+    ]);
+    expect(resolveDistrictByAffinity(["tag:shared"], split)).toBeNull();
+  });
+
+  it("is deterministic when two districts score identically", () => {
+    const tied = buildDistrictAffinity([
+      { tokens: ["path:x"], districtId: "zeta" },
+      { tokens: ["path:x"], districtId: "alpha" },
+      ...Array.from({ length: 20 }, () => ({ tokens: ["path:other"], districtId: "big" })),
+    ]);
+    const first = resolveDistrictByAffinity(["path:x"], tied);
+    for (let i = 0; i < 5; i += 1) {
+      expect(resolveDistrictByAffinity(["path:x"], tied)).toBe(first);
+    }
+  });
+
+  it("returns null on an empty corpus rather than inventing a home", () => {
+    expect(resolveDistrictByAffinity(["path:x"], buildDistrictAffinity([]))).toBeNull();
+  });
+
+  it("lets an explicit link win over affinity", () => {
+    // A deployment or binding is a canonical record; affinity is inference from
+    // shared facets, so it only speaks when nothing canonical does.
+    const districtByAgent = new Map([["a1", "team:hw"]]);
+    expect(
+      resolveEntityDistrict(
+        ["deployed:agent:a1", "path:d:/trading/trident"],
+        districtByAgent,
+        affinity,
+      ),
+    ).toBe("team:hw");
+    expect(resolveEntityDistrict(["path:d:/trading/trident"], districtByAgent, affinity)).toBe(
+      "workspace:d:/trading/trident",
+    );
   });
 });

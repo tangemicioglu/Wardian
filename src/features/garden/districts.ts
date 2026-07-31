@@ -41,6 +41,25 @@ import { normalizeEntityPath } from "./entityRef";
 /** Districts above this size should be split into parcels, not enlarged. */
 export const MAX_DISTRICT_MEMBERS = 60;
 
+/**
+ * Baseline world-space gap between district cells.
+ *
+ * A floor rather than a constant: the layout widens it when a district's own
+ * members need more room, so districts cannot bleed into one another. See
+ * `spacingFor`.
+ */
+export const DEFAULT_DISTRICT_SPACING = 720;
+
+/**
+ * Spacing is rounded up to a multiple of this, and only shrinks once it is a
+ * whole step too wide. Without the quantum a single unit drifting a pixel would
+ * restate the spacing every pass and slide the entire map.
+ */
+export const DISTRICT_SPACING_QUANTUM = 120;
+
+/** Clear space left between the bounding boxes of two neighbouring districts. */
+export const DISTRICT_MARGIN = 96;
+
 /** Grid order: side length is 2^order, so order 5 gives 1024 cells. */
 export const DEFAULT_HILBERT_ORDER = 5;
 
@@ -177,7 +196,7 @@ export function districtCenter(
   options: { order?: number; spacing?: number; origin?: { x: number; y: number } } = {},
 ): { x: number; y: number } {
   const order = options.order ?? DEFAULT_HILBERT_ORDER;
-  const spacing = options.spacing ?? 640;
+  const spacing = options.spacing ?? DEFAULT_DISTRICT_SPACING;
   const origin = options.origin ?? { x: 0, y: 0 };
   const cell = hilbertToCell(index, order);
   return { x: origin.x + cell.x * spacing, y: origin.y + cell.y * spacing };
@@ -191,10 +210,40 @@ export interface DistrictLayout {
   cells: Record<string, number>;
   /** districtId -> epoch ms at which its reserved cell may be reclaimed. */
   tombstones: Record<string, number>;
+  /**
+   * Current grid pitch, in world units.
+   *
+   * Persisted because a stored position is absolute: without knowing the pitch
+   * that produced it, a later pass cannot recover which district-relative point
+   * it represents, and every warm start would be silently offset.
+   */
+  spacing: number;
 }
 
 export function createDistrictLayout(order = DEFAULT_HILBERT_ORDER): DistrictLayout {
-  return { order, cells: {}, tombstones: {} };
+  return { order, cells: {}, tombstones: {}, spacing: DEFAULT_DISTRICT_SPACING };
+}
+
+/**
+ * Grid pitch wide enough for the widest district, with hysteresis.
+ *
+ * The grid was a fixed pitch while overlap removal ran per district with
+ * nothing aware of the cell bounds, so a populous district simply grew past its
+ * cell and overlapped its neighbours — the map showed one crowd where the data
+ * had two. Deriving the pitch from the measured extents makes the separation a
+ * property of the layout rather than a hope about how big districts get.
+ *
+ * `required` is the largest district's full width or height. Growth is
+ * immediate; shrinking waits until a whole quantum has been freed, so a
+ * district losing one member does not drag every other district inward.
+ */
+export function spacingFor(required: number, current = DEFAULT_DISTRICT_SPACING): number {
+  const target = Math.max(DEFAULT_DISTRICT_SPACING, required + DISTRICT_MARGIN);
+  const quantized =
+    Math.ceil(target / DISTRICT_SPACING_QUANTUM) * DISTRICT_SPACING_QUANTUM;
+  if (quantized > current) return quantized;
+  if (quantized <= current - DISTRICT_SPACING_QUANTUM) return quantized;
+  return current;
 }
 
 /**
@@ -264,7 +313,7 @@ export function placeDistricts(
   for (const [id, cell] of before) {
     if (cells[id] !== cell) stable = false;
   }
-  return { layout: { order, cells, tombstones }, placed, stable };
+  return { layout: { order, cells, tombstones, spacing: layout.spacing }, placed, stable };
 }
 
 function chooseFreeCell(
@@ -340,7 +389,7 @@ export function retireDistricts(
       delete cells[districtIdentifier];
     }
   }
-  return { order: layout.order, cells, tombstones };
+  return { order: layout.order, cells, tombstones, spacing: layout.spacing };
 }
 
 // --- Non-agent membership -------------------------------------------------
@@ -355,9 +404,111 @@ export function retireDistricts(
  */
 const DISTRICT_LINK_PREFIXES = ["deployed:agent:", "origin:agent:"] as const;
 
+/**
+ * Where the agents carrying each facet live.
+ *
+ * Built from agents only, which is what makes it usable as evidence: a token
+ * appearing here is one that some agent actually has, so an entity sharing it
+ * has a real tie to a populated place rather than to its own kind. It is also
+ * why `section:workflows` and friends cannot vote — no agent carries them.
+ */
+export interface DistrictAffinity {
+  /** token -> districtId -> number of agents there carrying it. */
+  votes: Map<string, Map<string, number>>;
+  /** Corpus size for the IDF weighting: the number of agents indexed. */
+  agentCount: number;
+}
+
+/**
+ * Minimum affinity score before an entity is placed by evidence rather than
+ * parked in the commons.
+ *
+ * Expressed as the IDF of a facet held by *half* the roster, so the admission
+ * rule reads: the shared facet must be rarer than "half of everyone", and
+ * concentrated enough in one district to keep its weight after the share
+ * factor. Below that the placement would be a guess dressed up as a derivation,
+ * and the commons is the honest answer.
+ *
+ * Relative rather than absolute because the score is an IDF, and IDF grows with
+ * corpus size: a fixed floor silently means "a third of the roster" on a large
+ * one and "nothing qualifies" on a small one. That is exactly what went wrong
+ * on the first attempt, where a four-agent fixture placed nothing while the
+ * same relationship on a real roster placed cleanly.
+ */
+export function minimumAffinityScore(agentCount: number): number {
+  if (agentCount <= 0) return Infinity;
+  return Math.log((agentCount + 1) / (agentCount / 2 + 1));
+}
+
+export function buildDistrictAffinity(
+  agents: ReadonlyArray<{ tokens: readonly string[]; districtId: string }>,
+): DistrictAffinity {
+  const votes = new Map<string, Map<string, number>>();
+  for (const agent of agents) {
+    for (const token of agent.tokens) {
+      let byDistrict = votes.get(token);
+      if (!byDistrict) {
+        byDistrict = new Map();
+        votes.set(token, byDistrict);
+      }
+      byDistrict.set(agent.districtId, (byDistrict.get(agent.districtId) ?? 0) + 1);
+    }
+  }
+  return { votes, agentCount: agents.length };
+}
+
+/**
+ * District of the agents an entity most resembles, or null when the evidence is
+ * too thin to be worth acting on.
+ *
+ * Scored as an IDF-weighted vote, using the same smoothed statistic as the
+ * metric, so rarity does the discriminating without a hand-tuned rule. A
+ * workflow whose shell node runs in `D:/Trading/trident` shares that path facet
+ * with the two agents living there: `ln(54/3) ≈ 2.9`, decisive. The same
+ * workflow also shares `path:d:/` with everyone, where `df == N` makes the IDF
+ * exactly 0 and the token free. Nothing needs to know that a drive root is
+ * uninteresting and a project directory is not.
+ *
+ * The share factor keeps a token split across districts from counting fully for
+ * each of them, so a facet has to be *concentrated* to decide anything.
+ */
+export function resolveDistrictByAffinity(
+  tokens: readonly string[],
+  affinity: DistrictAffinity,
+  minimumScore = minimumAffinityScore(affinity.agentCount),
+): string | null {
+  if (affinity.agentCount === 0) return null;
+  const scores = new Map<string, number>();
+
+  for (const token of tokens) {
+    const byDistrict = affinity.votes.get(token);
+    if (!byDistrict) continue;
+    let holders = 0;
+    for (const count of byDistrict.values()) holders += count;
+    const weight = Math.log((affinity.agentCount + 1) / (holders + 1));
+    if (weight <= 0) continue;
+    for (const [district, count] of byDistrict) {
+      scores.set(district, (scores.get(district) ?? 0) + (weight * count) / holders);
+    }
+  }
+
+  let best: string | null = null;
+  let bestScore = 0;
+  // Sorted for determinism when two districts score identically.
+  for (const [district, score] of [...scores].sort((l, r) => l[0].localeCompare(r[0]))) {
+    if (score > bestScore) {
+      best = district;
+      bestScore = score;
+    }
+  }
+  return bestScore >= minimumScore ? best : null;
+}
+
 export function resolveEntityDistrict(
   tokens: readonly string[],
   districtByAgentId: ReadonlyMap<string, string>,
+  /** Consulted only when no explicit link resolves; see `resolveDistrictByAffinity`. */
+  affinity?: DistrictAffinity,
 ): string {
   const candidates: string[] = [];
   for (const token of tokens) {
@@ -371,7 +522,9 @@ export function resolveEntityDistrict(
       if (district) candidates.push(district);
     }
   }
-  if (candidates.length === 0) return COMMONS_DISTRICT_ID;
+  if (candidates.length === 0) {
+    return (affinity && resolveDistrictByAffinity(tokens, affinity)) ?? COMMONS_DISTRICT_ID;
+  }
   // Sorted for determinism when an entity links to several districts; the most
   // frequently referenced district wins.
   const counts = new Map<string, number>();

@@ -474,6 +474,17 @@ export interface WorkflowFacetContext {
   assignedAgentIds?: readonly string[];
   /** Class refs referenced as `class:<name>` in an agent field. */
   classNames?: readonly string[];
+  /**
+   * Directories the workflow operates on, from `path`-kind node fields.
+   *
+   * These are what tie a workflow to a place when it binds no agent at all: a
+   * blueprint whose shell node runs in `D:/Trading/trident` shares the ancestor
+   * chain of the agents living there, and IDF makes the deep, rare segments
+   * decisive while the drive root costs nothing.
+   */
+  workspacePaths?: readonly string[];
+  /** Section-relative library folder, which groups a family of blueprints. */
+  libraryFolder?: string | null;
   tags?: readonly string[];
 }
 
@@ -485,6 +496,10 @@ export function emitWorkflowFacets(
   for (const role of context.roleNames ?? []) tokens.push(`role:${role.toLowerCase()}`);
   for (const agentId of context.assignedAgentIds ?? []) tokens.push(`deployed:agent:${agentId}`);
   for (const className of context.classNames ?? []) tokens.push(`class:${className.toLowerCase()}`);
+  for (const path of context.workspacePaths ?? []) tokens.push(...pathAncestorFacets(path));
+  if (context.libraryFolder) {
+    tokens.push(...libraryPathFacets("workflows", context.libraryFolder));
+  }
   for (const tag of context.tags ?? []) tokens.push(`tag:${tag.toLowerCase()}`);
   return { ref, tokens: dedupeTokens(tokens), excludes: [] };
 }

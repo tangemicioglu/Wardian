@@ -3,7 +3,7 @@ import { Circle, Group, Rect, Text } from "react-konva";
 import type { GardenWorkflowUnit } from "./garden.types";
 import { isActiveWorkflowStatus, workflowStatusColor } from "./gardenStatus";
 import { resolveCssVar } from "./resolveColor";
-import { useGardenPulse } from "./useGardenPulse";
+import { PULSE_HALO_NAME } from "./useGardenPulse";
 import type { GardenTheme } from "./useGardenTheme";
 
 interface WorkflowUnitProps {
@@ -26,7 +26,7 @@ export const WorkflowUnit: React.FC<WorkflowUnitProps> = ({
   onDragMove,
 }) => {
   const fill = resolveCssVar(workflowStatusColor(unit.runStatus));
-  const pulse = useGardenPulse(isActiveWorkflowStatus(unit.runStatus));
+  const active = isActiveWorkflowStatus(unit.runStatus);
   const pips = Math.min(Math.max(unit.nodeCount, 0), MAX_PIPS);
 
   return (
@@ -38,12 +38,16 @@ export const WorkflowUnit: React.FC<WorkflowUnitProps> = ({
       onTap={() => onSelect(unit.ref.id)}
       onDragMove={(e) => onDragMove(e.target.x(), e.target.y())}
     >
+      {/* Named so the canvas' single pulse animation can find it; see
+          `useGardenPulse` for why this is not animated through React. */}
       <Rect
-        width={POD_WIDTH * (unit.runStatus === "none" ? 1 : pulse)}
+        name={active ? PULSE_HALO_NAME : undefined}
+        width={POD_WIDTH}
         height={POD_HEIGHT}
         cornerRadius={10}
         fill={fill}
         opacity={0.22}
+        listening={false}
       />
       <Rect
         width={POD_WIDTH}

@@ -162,6 +162,59 @@ extra pass. This is a requirement, not a nicety: a map whose distances cannot be
 interrogated is a lava lamp. It is also the reason to reject UMAP/t-SNE-style
 embeddings, on top of their nondeterminism and instability under insertion.
 
+## Districts are sized, not assumed
+
+The grid pitch was a constant while overlap removal ran per parcel with no
+notion of a cell boundary, so a populous district simply grew past its cell.
+Measured on synthetic rosters, a 24-member district spans ~1250 world units
+against a 720 pitch: neighbours overlapped by ~500, and the map showed one
+crowd where the data had two. Bleed began around a dozen members per district,
+well inside normal use.
+
+Each district is therefore solved in its **own frame**, centred on the origin,
+measured, and only then translated onto the grid — the pitch is derived from the
+widest district rather than hoped for. Three consequences worth stating:
+
+- The pitch is **persisted in the scene**. A stored position is absolute, so
+  without the pitch that produced it a later pass cannot recover which
+  district-relative point it represents, and every warm start would be silently
+  offset.
+- It is **quantized with hysteresis**: growth is immediate, shrinking waits for
+  a whole step. The pitch feeds back into the next pass through warm starts, so
+  an ungated rule would creep outward on every relayout.
+- **Pins do not count toward the measurement.** A pin is authored placement,
+  which outranks the metric by design; dragging one unit toward the edge is not
+  a request to move every district apart. It would also ratchet — a wider pitch
+  moves the district origin, which moves the pin, which widens the pitch.
+
+## What places a workflow
+
+A blueprint binds no agent until a run assigns roles, so workflows were parked
+in the commons — where, carrying one facet each, they were mutually
+indistinguishable and piled up. The premise was wrong: a blueprint is not short
+of evidence, nobody had read it.
+
+Three signals, strongest first, all from the blueprint's own content:
+
+| Signal | Source | Strength |
+| --- | --- | --- |
+| Agent binding | `agent_ref` field on a `task`/`decision` node | canonical link |
+| Workspace path | `path` field — a `shell` node's `cwd`, a `script` node's `path` | shared with agents that reach it |
+| Library folder | `workflows/<folder>/` | groups a family |
+
+Which fields count is read from the **node registry**, which declares each
+field's `kind`. That matters: a `shell` node's `command` often contains
+something path-shaped, and a name-based allowlist would read it as a directory.
+
+Placement by path is an IDF-weighted vote over the facets a workflow shares with
+agents, using the same smoothed statistic as the metric. A workflow whose shell
+node runs in `D:/Trading/trident` shares that facet with the two agents living
+there — `ln(54/3) ≈ 2.9`, decisive — while `path:d:/` is on every agent, so
+`df == N` makes it worth exactly 0. No rule anywhere has to know that a drive
+root is uninteresting and a project directory is not. Below a floor score the
+workflow stays in the commons, because a placement on thin evidence is a guess
+dressed up as a derivation.
+
 ## Stability Contract
 
 > Adding or removing an entity moves no other entity more than delta, unless the
@@ -177,6 +230,24 @@ Three things may legitimately break it, and each must be visible:
 Everything else — telemetry, status, messages, lens toggles, resizes — changes
 colour, tint, and emphasis only. This is enforced by a type boundary:
 `LayoutInput` accepts no telemetry, so geometry cannot depend on it.
+
+Keeping geometry cheap is not the same as keeping *rendering* cheap, and the two
+were confused. Telemetry ticks rebuild every unit so status stays live, and each
+rebuild used to re-render every unit and re-resolve every colour through
+`getComputedStyle` — dozens of forced style recalculations per tick. Worse, the
+status pulse ran a `requestAnimationFrame` loop **per active unit**, each driving
+a React state update, so a busy agent reconciled its entire skill crown once per
+frame to move one circle by a pixel. Three rules now hold the line:
+
+- **Canvas animation belongs on the canvas.** One `Konva.Animation` scales every
+  tagged halo and the layer redraws once. The pulse costs nothing in React and
+  does not scale with what else a unit draws.
+- **Resolved colours are cached per theme.** The theme name is part of the key,
+  so a swap self-invalidates without coordination — reading an attribute is free,
+  reading a computed style is not.
+- **Units compare their props field by field.** Prop identity always changes, so
+  the default shallow comparison would never skip anything; `position` and
+  `crown` come straight from the layout result and are compared by reference.
 
 ## Identity
 

@@ -15,10 +15,10 @@ async function installCrownIpcMock(page: Page) {
   const workbenchDocument = makeWorkbenchDocument();
   await page.addInitScript((workbenchDocument) => {
     const agents = [
-      ["hw-01", "Kicad Reviewer", "Architect", "C:/projects/hardware"],
-      ["hw-02", "Board Layout", "Architect", "C:/projects/hardware"],
-      ["web-01", "Docs Writer", "Coder", "C:/projects/web"],
-      ["web-02", "API Builder", "Coder", "C:/projects/web"],
+      ["hw-01", "Kicad Reviewer", "Architect", "D:/Trading/trident"],
+      ["hw-02", "Board Layout", "Architect", "D:/Trading/trident"],
+      ["web-01", "Docs Writer", "Coder", "D:/Development/Wardian"],
+      ["web-02", "API Builder", "Coder", "D:/Development/Wardian"],
     ].map(([session_id, session_name, agent_class, folder]) => ({
       session_id,
       session_name,
@@ -144,6 +144,42 @@ async function installCrownIpcMock(page: Page) {
           return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         }
         if (command === "list_workflows") return [];
+        if (command === "workflow_list_blueprints") {
+          return [
+            { id: "trident-alerts", path: "/w/library/workflows/trident/trident-alerts.md" },
+            { id: "trident-scan", path: "/w/library/workflows/trident/trident-scan.md" },
+            { id: "autoreview", path: "/w/library/workflows/autoreview.md" },
+          ];
+        }
+        if (command === "workflow_parse") {
+          const path = String(args?.path ?? "");
+          // The Trident blueprints name the directory they operate on, which is
+          // the same workspace two agents live in; the loose one names nothing.
+          const trident = path.includes("/trident/");
+          return {
+            blueprint: {
+              schema: 2,
+              id: path.split("/").pop()?.replace(".md", ""),
+              name: trident ? "Trident " + (path.includes("scan") ? "Scan" : "Alerts") : "Autoreview",
+              nodes: trident
+                ? [
+                    { id: "t", type: "manual_trigger" },
+                    {
+                      id: "c",
+                      type: "shell",
+                      // Forward slashes on purpose: a backslash does not survive
+                      // serialization into addInitScript, and the normalizer
+                      // accepts either form. Backslash handling is covered by
+                      // the unit tests in workflowContext.test.ts.
+                      fields: { command: "python alerts.py", cwd: "D:/Trading/trident" },
+                    },
+                  ]
+                : [{ id: "t", type: "manual_trigger" }],
+              edges: [],
+            },
+          };
+        }
+        if (command === "workflow_list_runs") return [];
         if (command === "list_scheduled_runs") return [];
         if (command === "load_workflow_library") return { folders: [], rootWorkflowIds: [] };
         if (command === "get_library_tree") {
@@ -178,6 +214,17 @@ test.describe("Garden skill crown", () => {
         animations: "disabled",
       });
     }
+
+    // The districting claim, asserted rather than eyeballed: the Trident
+    // blueprints name a directory two agents live in, so they must land in that
+    // workspace district, while the blueprint naming nothing stays in the
+    // commons.
+    const districts = await page.evaluate(
+      () =>
+        JSON.parse(localStorage.getItem("wardian-garden") ?? "{}")?.state?.scene?.districts
+          ?.cells ?? {},
+    );
+    expect(Object.keys(districts)).toContain("workspace:d:/trading/trident");
 
     await expect(garden.getByTestId("garden-selection-summary")).toContainText(
       "Select a unit to view its status.",

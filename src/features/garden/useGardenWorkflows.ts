@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Blueprint } from "../workflows/builder/blueprintTypes";
 import type { RunSummary } from "../workflows/run/runTypes";
 import type { GardenWorkflowInput } from "./gardenProjection";
+import { workflowContextOf, type WorkflowContext } from "./workflowContext";
 
 interface BlueprintRef {
   id: string;
@@ -13,6 +14,7 @@ interface ParsedBlueprint {
   id: string;
   name: string;
   nodeCount: number;
+  context: WorkflowContext;
 }
 
 type GardenInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -37,6 +39,9 @@ export function mergeWorkflowRunStatus(
     label: bp.name,
     runStatus: latest.get(bp.id)?.status ?? "none",
     nodeCount: bp.nodeCount,
+    agentIds: bp.context.agentIds,
+    workspacePaths: bp.context.workspacePaths,
+    libraryFolder: bp.context.libraryFolder,
   }));
 }
 
@@ -55,6 +60,9 @@ export async function loadGardenWorkflowInputs(invoker: GardenInvoke = invoke as
           id: result.blueprint.id,
           name: result.blueprint.name,
           nodeCount: result.blueprint.nodes.length,
+          // Read once, at parse time, and cached with the blueprint: this is
+          // what gives a workflow somewhere to be other than the commons.
+          context: workflowContextOf(result.blueprint, ref.path),
         } satisfies ParsedBlueprint;
       }),
     );

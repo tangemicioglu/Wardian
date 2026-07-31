@@ -8,7 +8,12 @@ import type {
 } from "./garden.types";
 import { agentRef, entityKey, workflowRef } from "./entityRef";
 import { emitAgentFacets, emitWorkflowFacets } from "./facets";
-import { COMMONS_DISTRICT_ID, districtId, resolveAgentDistrict } from "./districts";
+import {
+  buildDistrictAffinity,
+  districtId,
+  resolveAgentDistrict,
+  resolveEntityDistrict,
+} from "./districts";
 import type { GardenSkillInput } from "./useGardenSkills";
 import { buildSkillCrowns, crownExtent, type GardenSkillGlyph } from "./skillGlyphs";
 import { interactionWeight, personalizedPageRank } from "./metric";
@@ -20,6 +25,12 @@ export interface GardenWorkflowInput {
   label: string;
   runStatus: GardenWorkflowRunStatus;
   nodeCount: number;
+  /** Agent ids bound by `agent_ref` node fields. */
+  agentIds?: readonly string[];
+  /** Directories named by `path` node fields, e.g. a shell node's `cwd`. */
+  workspacePaths?: readonly string[];
+  /** Section-relative library folder, e.g. `trident`. */
+  libraryFolder?: string | null;
 }
 
 /**
@@ -126,10 +137,12 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
     })),
   );
 
+  const districtByAgentId = new Map<string, string>();
   for (const node of input.projection.nodes) {
     const ref = agentRef(node.id);
     const teamIds = teamsByAgent.get(node.id);
     const district = districtId(resolveAgentDistrict(node.agent, { teamIds }));
+    districtByAgentId.set(node.id, district);
     const crown = crowns.get(node.id) ?? [];
     entities.push({
       ref,
@@ -142,15 +155,31 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
     });
   }
 
+  // Evidence for placing everything that is not an agent. Agents are already
+  // placed by a canonical rule, so they are the fixed points the rest is
+  // measured against.
+  const affinity = buildDistrictAffinity(
+    entities.map((entity) => ({ tokens: entity.facets.tokens, districtId: entity.districtId })),
+  );
+
   for (const workflow of input.workflows) {
     const ref = workflowRef(workflow.id);
+    // A blueprint binds no agent until a run assigns roles, which is why these
+    // all used to sit in the commons. But a blueprint is not short of evidence:
+    // an `agent_ref` field is an outright binding, and a `path` field — a shell
+    // node's `cwd`, say — names the directory the workflow operates on, which
+    // the agents living there also carry. See `workflowContext.ts`.
+    const facets = emitWorkflowFacets(ref, {
+      assignedAgentIds: workflow.agentIds,
+      workspacePaths: workflow.workspacePaths,
+      libraryFolder: workflow.libraryFolder,
+    });
     entities.push({
       ref,
-      facets: emitWorkflowFacets(ref),
-      // A blueprint carries no durable binding to an agent or team until a run
-      // assigns roles, so it lives in the commons rather than being guessed
-      // into someone's district.
-      districtId: COMMONS_DISTRICT_ID,
+      facets,
+      // Falls back to the commons when the evidence is too thin to act on,
+      // rather than guessing the workflow into someone's district.
+      districtId: resolveEntityDistrict(facets.tokens, districtByAgentId, affinity),
       ...WORKFLOW_UNIT_SIZE,
     });
   }
@@ -244,10 +273,19 @@ export function gardenLayoutSignature(
     .map((team) => `${team.id}:${[...team.agentIds].sort().join(",")}`)
     .join(";");
 
+  // Everything that can move a workflow: its identity plus the evidence that
+  // places it. Run status and node count are display, and stay out.
   const workflowKey = [...workflows]
-    .map((workflow) => workflow.id)
+    .map((workflow) =>
+      [
+        workflow.id,
+        (workflow.agentIds ?? []).join(","),
+        (workflow.workspacePaths ?? []).join(","),
+        workflow.libraryFolder ?? "",
+      ].join("|"),
+    )
     .sort()
-    .join(",");
+    .join(";");
 
   const edgeKey = [...projection.commEdges]
     .map((edge) => `${edge.id}:${edge.origin}:${edge.state}`)

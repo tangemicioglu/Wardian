@@ -5,7 +5,7 @@ import { gardenAgentStatusColor, isActiveAgentStatus } from "./gardenStatus";
 import { resolveCssVar } from "./resolveColor";
 import { SkillCrown } from "./SkillCrown";
 import type { GardenDetail, GardenSkillGlyph } from "./skillGlyphs";
-import { useGardenPulse } from "./useGardenPulse";
+import { PULSE_BASE_RADIUS, PULSE_HALO_NAME } from "./useGardenPulse";
 import type { GardenTheme } from "./useGardenTheme";
 
 /** Konva node `name` used to identify agent units during canvas hit-testing. */
@@ -30,10 +30,10 @@ interface AgentUnitProps {
   onOpen: (id: string) => void;
   onSelectSkill: (glyph: GardenSkillGlyph) => void;
   onOpenSkill: (glyph: GardenSkillGlyph) => void;
-  onDragMove: (x: number, y: number) => void;
+  onDragMove: (key: string, x: number, y: number) => void;
 }
 
-export const AgentUnit: React.FC<AgentUnitProps> = ({
+const AgentUnitImpl: React.FC<AgentUnitProps> = ({
   unit,
   selected,
   highlighted = false,
@@ -47,7 +47,7 @@ export const AgentUnit: React.FC<AgentUnitProps> = ({
   onDragMove,
 }) => {
   const fill = resolveCssVar(gardenAgentStatusColor(unit.status));
-  const pulse = useGardenPulse(isActiveAgentStatus(unit.status));
+  const active = isActiveAgentStatus(unit.status);
 
   return (
     <Group
@@ -62,13 +62,29 @@ export const AgentUnit: React.FC<AgentUnitProps> = ({
       onTap={() => onSelect(unit.ref.id)}
       onDblClick={() => onOpen(unit.ref.id)}
       onDblTap={() => onOpen(unit.ref.id)}
-      onDragMove={(e) => onDragMove(e.target.x(), e.target.y())}
+      onDragMove={(e) => onDragMove(unit.ref.id, e.target.x(), e.target.y())}
     >
-      <Circle radius={18 * pulse} fill={fill} opacity={0.18} />
+      {/* Named so the canvas' single pulse animation can find it. The radius is
+          mutated on the Konva node rather than through React, so a busy agent
+          does not re-render its whole crown once per frame. */}
+      <Circle
+        name={active ? PULSE_HALO_NAME : undefined}
+        radius={PULSE_BASE_RADIUS}
+        fill={fill}
+        opacity={0.18}
+        listening={false}
+      />
       {/* Drawn outside the status halo so a carrier stands out without
           overriding the status colour, which stays the primary channel. */}
       {highlighted && (
-        <Circle radius={21} stroke={theme.selection} strokeWidth={2} opacity={0.85} dash={[3, 3]} />
+        <Circle
+          radius={21}
+          stroke={theme.selection}
+          strokeWidth={2}
+          opacity={0.85}
+          dash={[3, 3]}
+          listening={false}
+        />
       )}
       <Circle
         radius={11}
@@ -93,6 +109,7 @@ export const AgentUnit: React.FC<AgentUnitProps> = ({
         width={140}
         offsetX={70}
         align="center"
+        listening={false}
         // Halo in the background colour: labels sit over status halos and
         // neighbouring units, and a map label has to stay readable wherever it
         // lands. Cheaper and less cluttered than a backdrop rectangle.
@@ -103,3 +120,35 @@ export const AgentUnit: React.FC<AgentUnitProps> = ({
     </Group>
   );
 };
+
+/**
+ * Compared field by field rather than by identity.
+ *
+ * `buildAgentUnits` rebuilds every unit object on each telemetry tick so status
+ * and colour stay live, which means prop identity always changes and the
+ * default shallow comparison would never skip anything. The fields below are
+ * the complete set this component draws from; `position` and `crown` are
+ * compared by reference because both come straight out of the layout result and
+ * only change when the layout does.
+ */
+function propsEqual(previous: AgentUnitProps, next: AgentUnitProps): boolean {
+  return (
+    previous.unit.ref.id === next.unit.ref.id &&
+    previous.unit.label === next.unit.label &&
+    previous.unit.status === next.unit.status &&
+    previous.unit.position === next.unit.position &&
+    previous.unit.crown === next.unit.crown &&
+    previous.selected === next.selected &&
+    previous.highlighted === next.highlighted &&
+    previous.detail === next.detail &&
+    previous.theme === next.theme &&
+    previous.selectedSkillRef === next.selectedSkillRef &&
+    previous.onSelect === next.onSelect &&
+    previous.onOpen === next.onOpen &&
+    previous.onSelectSkill === next.onSelectSkill &&
+    previous.onOpenSkill === next.onOpenSkill &&
+    previous.onDragMove === next.onDragMove
+  );
+}
+
+export const AgentUnit = React.memo(AgentUnitImpl, propsEqual);

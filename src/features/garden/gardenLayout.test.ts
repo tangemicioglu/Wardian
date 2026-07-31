@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { AgentConfig } from "../../types";
 import { agentRef, libraryEntryRef } from "./entityRef";
 import { emitAgentFacets, emitSkillFacets } from "./facets";
-import { COMMONS_DISTRICT_ID, MAX_DISTRICT_MEMBERS } from "./districts";
+import {
+  COMMONS_DISTRICT_ID,
+  DEFAULT_DISTRICT_SPACING,
+  MAX_DISTRICT_MEMBERS,
+} from "./districts";
 import { interactionWeight, personalizedPageRank } from "./metric";
 import { maxDisplacement } from "./smacof";
 import { overlaps } from "./vpsc";
@@ -363,3 +367,120 @@ function shift(
   const end = units.find((unit) => unit.key === key)!.position;
   return distance(start, end);
 }
+
+describe("district separation", () => {
+  /** Axis-aligned bounds of a district's drawn units, footprints included. */
+  function boundsOf(
+    units: ReturnType<typeof layoutGarden>["units"],
+    entities: LayoutEntity[],
+    districtId: string,
+  ) {
+    const sizeOf = new Map(entities.map((e) => [entityKeyOf(e), e]));
+    const members = units.filter((unit) => unit.districtId === districtId);
+    return members.reduce(
+      (box, unit) => {
+        const entity = sizeOf.get(unit.key)!;
+        return {
+          minX: Math.min(box.minX, unit.position.x - entity.width / 2),
+          maxX: Math.max(box.maxX, unit.position.x + entity.width / 2),
+          minY: Math.min(box.minY, unit.position.y - entity.height / 2),
+          maxY: Math.max(box.maxY, unit.position.y + entity.height / 2),
+        };
+      },
+      { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity },
+    );
+  }
+
+  function entityKeyOf(entity: LayoutEntity): string {
+    return `${entity.ref.kind}:${entity.ref.id}`;
+  }
+
+  function boxesOverlap(
+    a: ReturnType<typeof boundsOf>,
+    b: ReturnType<typeof boundsOf>,
+  ): boolean {
+    return a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY;
+  }
+
+  it("keeps crowded districts from bleeding into each other", () => {
+    // The failure this exists to catch: the grid pitch was a constant while
+    // overlap removal ran per parcel with no notion of a cell boundary, so a
+    // populous district simply grew past its cell. The map then showed one
+    // crowd where the data had two.
+    const entities = [
+      ...teamOf(24, "alpha", "D:\Dev\Alpha"),
+      ...teamOf(24, "beta", "D:\Dev\Beta"),
+      ...teamOf(24, "gamma", "D:\Dev\Gamma"),
+    ];
+    const result = layoutGarden({ entities, scene: createScene(), now });
+
+    const ids = ["team:alpha", "team:beta", "team:gamma"];
+    for (let i = 0; i < ids.length; i += 1) {
+      for (let j = i + 1; j < ids.length; j += 1) {
+        const left = boundsOf(result.units, entities, ids[i]);
+        const right = boundsOf(result.units, entities, ids[j]);
+        expect(boxesOverlap(left, right)).toBe(false);
+      }
+    }
+  });
+
+  it("widens the pitch only as far as the widest district needs", () => {
+    const small = layoutGarden({
+      entities: [...teamOf(3, "alpha", "D:\Dev\Alpha"), ...teamOf(3, "beta", "D:\Dev\Beta")],
+      scene: createScene(),
+      now,
+    });
+    const large = layoutGarden({
+      entities: [...teamOf(30, "alpha", "D:\Dev\Alpha"), ...teamOf(30, "beta", "D:\Dev\Beta")],
+      scene: createScene(),
+      now,
+    });
+    expect(small.districts.spacing).toBe(DEFAULT_DISTRICT_SPACING);
+    expect(large.districts.spacing).toBeGreaterThanOrEqual(small.districts.spacing);
+  });
+
+  it("settles on a pitch instead of ratcheting outward across passes", () => {
+    // Spacing feeds back into the next pass through warm starts, so a rule that
+    // only ever grew would push the map apart a little on every relayout.
+    const entities = [
+      ...teamOf(20, "alpha", "D:\Dev\Alpha"),
+      ...teamOf(20, "beta", "D:\Dev\Beta"),
+    ];
+    let scene = createScene();
+    const seen: number[] = [];
+    for (let pass = 0; pass < 6; pass += 1) {
+      const result = layoutGarden({ entities, scene, now });
+      scene = result.scene;
+      seen.push(result.districts.spacing);
+    }
+    expect(seen[seen.length - 1]).toBe(seen[2]);
+  });
+
+  it("does not let one dragged unit push every district apart", () => {
+    // A pin is authored placement and outranks the metric. Dragging a unit to
+    // the edge of the map is not a request to reflow the entire grid — and if
+    // it were, the pitch change would move the district, move the pin with it,
+    // and widen the pitch again.
+    const entities = [
+      ...teamOf(6, "alpha", "D:\Dev\Alpha"),
+      ...teamOf(6, "beta", "D:\Dev\Beta"),
+    ];
+    const base = layoutGarden({ entities, scene: createScene(), now });
+    const origin = base.districtOrigins.get("team:alpha")!;
+    const dragged = pinEntity(
+      base.scene,
+      "agent:alpha-a0",
+      "team:alpha",
+      { x: origin.x + 4000, y: origin.y + 4000 },
+      origin,
+    );
+
+    const after = layoutGarden({ entities, scene: dragged, now });
+    expect(after.districts.spacing).toBe(base.districts.spacing);
+    // And the pin is still honoured exactly.
+    expect(after.units.find((unit) => unit.key === "agent:alpha-a0")!.position).toEqual({
+      x: origin.x + 4000,
+      y: origin.y + 4000,
+    });
+  });
+});

@@ -32,11 +32,13 @@ import {
 } from "./facets";
 import {
   COMMONS_DISTRICT_ID,
+  DEFAULT_DISTRICT_SPACING,
   MAX_DISTRICT_MEMBERS,
   districtCenter,
   parcelsFor,
   placeDistricts,
   retireDistricts,
+  spacingFor,
   type DistrictLayout,
 } from "./districts";
 import {
@@ -66,8 +68,12 @@ import {
   type GardenScene,
 } from "./gardenScene";
 
-/** World-space gap between district cells. */
-export const DISTRICT_SPACING = 720;
+/**
+ * Baseline world-space gap between district cells.
+ *
+ * Re-exported from `districts.ts`, where the adaptive rule that widens it lives.
+ */
+export const DISTRICT_SPACING = DEFAULT_DISTRICT_SPACING;
 
 export interface LayoutEntity {
   ref: EntityRef;
@@ -180,24 +186,32 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
   const districts = retireDistricts(placement.layout, activeDistricts, now);
 
   // --- Per-district layout ------------------------------------------------
+  //
+  // Solved in each district's *own* frame, centred on (0, 0), then translated
+  // onto the grid. Solving in world coordinates would fix the grid pitch before
+  // anything is known about how much room a district needs, which is precisely
+  // how districts came to overlap: the pitch was a constant, and overlap
+  // removal — which runs per parcel — has no concept of a cell boundary.
+  // Measuring first lets the pitch be derived rather than hoped for.
   const units: PlacedUnit[] = [];
-  const settled = new Map<string, GardenPosition>();
   const residualOverlaps: Array<[string, string]> = [];
-  const districtOrigins = new Map<string, GardenPosition>();
+
+  // The pitch that produced the stored positions. Warm starts are absolute, so
+  // without it their district-relative meaning cannot be recovered.
+  const previousSpacing = input.scene.districts.spacing || DEFAULT_DISTRICT_SPACING;
+
+  const localById = new Map<string, Map<string, GardenPosition>>();
+  const parcelOfKey = new Map<string, string>();
+  let requiredSpan = 0;
 
   for (const districtId of activeDistricts) {
     const members = byDistrict.get(districtId)!;
-    const cell = districts.cells[districtId];
-    const origin =
-      cell === undefined
-        ? // The grid is full. Park the district at the commons rather than
-          // dropping its members off the map entirely.
-          districtCenter(districts.cells[COMMONS_DISTRICT_ID] ?? 0, {
-            order: districts.order,
-            spacing: DISTRICT_SPACING,
-          })
-        : districtCenter(cell, { order: districts.order, spacing: DISTRICT_SPACING });
-    districtOrigins.set(districtId, origin);
+    const local = new Map<string, GardenPosition>();
+    localById.set(districtId, local);
+    const priorOrigin = districtCenter(cellFor(districts, districtId), {
+      order: districts.order,
+      spacing: previousSpacing,
+    });
 
     // Oversized districts split into parcels so k-NN and SMACOF stay bounded.
     const parcels = parcelsFor(
@@ -214,8 +228,11 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
         .filter((entity): entity is (typeof placed)[number] => entity !== undefined);
       if (parcelMembers.length === 0) continue;
 
-      // Parcels of one district fan out around its origin so they do not stack.
-      const parcelOrigin = offsetForParcel(origin, parcelIndex);
+      // Parcels of one district fan out around its centre so they do not stack.
+      // The ring radius is a constant rather than a fraction of the pitch: the
+      // pitch is derived from the extent this contributes to, and reading it
+      // here would make that circular.
+      const parcelOrigin = offsetForParcel(ORIGIN, parcelIndex);
       parcelIndex += 1;
 
       const graph = symmetrizeGraph(
@@ -232,12 +249,18 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
         // Parcels are an internal subdivision that exists to bound computation,
         // and their membership shifts as entities come and go — anchoring a
         // user's placement to one would silently relocate it whenever the split
-        // changed.
-        const pinnedAt = resolvePin(input.scene, key, districtId, origin);
+        // changed. In the local frame that origin is (0, 0), so a pin resolves
+        // to exactly the district-relative offset it is stored as.
+        const pinnedAt = resolvePin(input.scene, key, districtId, ORIGIN);
+        const warmStart = input.scene.positions[key];
         return {
           key,
           rho: driftFor(input.scene, key, now),
-          anchor: pinnedAt ?? input.scene.positions[key],
+          anchor:
+            pinnedAt ??
+            (warmStart
+              ? { x: warmStart.x - priorOrigin.x, y: warmStart.y - priorOrigin.y }
+              : undefined),
         };
       });
 
@@ -264,16 +287,55 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
       for (const entity of parcelMembers) {
         const key = entityKey(entity.ref);
         const position = cleared.positions.get(key) ?? parcelOrigin;
-        settled.set(key, position);
-        units.push({
-          ref: entity.ref,
-          key,
-          districtId,
-          parcelId,
-          position,
-          pinned: Boolean(input.scene.pins[key]),
-        });
+        local.set(key, position);
+        parcelOfKey.set(key, parcelId);
+        // Full span the district occupies about its own centre, footprints
+        // included, so neighbouring cells are sized against what is drawn.
+        //
+        // Pinned units are excluded. A pin is authored placement, which outranks
+        // the metric by design, so a user dragging one unit toward the edge of
+        // the map is not a statement that every district should move apart —
+        // and letting it be one would ratchet: a wider pitch moves the district
+        // origins, which moves the pin's world position, which widens the pitch
+        // again. Spacing is derived from derived positions only.
+        if (input.scene.pins[key]) continue;
+        requiredSpan = Math.max(
+          requiredSpan,
+          2 * (Math.abs(position.x) + entity.width / 2),
+          2 * (Math.abs(position.y) + entity.height / 2),
+        );
       }
+    }
+  }
+
+  const spacing = spacingFor(requiredSpan, previousSpacing);
+  const spacedDistricts: DistrictLayout = { ...districts, spacing };
+
+  // --- Translate onto the grid --------------------------------------------
+  const settled = new Map<string, GardenPosition>();
+  const districtOrigins = new Map<string, GardenPosition>();
+
+  for (const districtId of activeDistricts) {
+    const origin = districtCenter(cellFor(spacedDistricts, districtId), {
+      order: spacedDistricts.order,
+      spacing,
+    });
+    districtOrigins.set(districtId, origin);
+
+    for (const entity of byDistrict.get(districtId)!) {
+      const key = entityKey(entity.ref);
+      const point = localById.get(districtId)?.get(key);
+      if (!point) continue;
+      const position = { x: origin.x + point.x, y: origin.y + point.y };
+      settled.set(key, position);
+      units.push({
+        ref: entity.ref,
+        key,
+        districtId,
+        parcelId: parcelOfKey.get(key) ?? districtId,
+        position,
+        pinned: Boolean(input.scene.pins[key]),
+      });
     }
   }
 
@@ -281,13 +343,26 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
 
   return {
     units,
-    scene: recordPositions({ ...input.scene, districts }, settled),
+    scene: recordPositions({ ...input.scene, districts: spacedDistricts }, settled),
     stalePinKeys: stalePins(input.scene, districtOf),
     residualOverlaps,
     corpus,
-    districts,
+    districts: spacedDistricts,
     districtOrigins,
   };
+}
+
+const ORIGIN: GardenPosition = { x: 0, y: 0 };
+
+/**
+ * Cell for a district, falling back to the commons cell when the grid is full.
+ * Parking a district on top of the commons is worse than a clean placement, and
+ * far better than dropping its members off the map entirely.
+ */
+function cellFor(districts: DistrictLayout, districtId: string): number {
+  const cell = districts.cells[districtId];
+  if (cell !== undefined) return cell;
+  return districts.cells[COMMONS_DISTRICT_ID] ?? 0;
 }
 
 /**
@@ -333,6 +408,6 @@ function districtSimilarity(
 function offsetForParcel(origin: GardenPosition, index: number): GardenPosition {
   if (index === 0) return origin;
   const angle = (Math.PI * 2 * (index - 1)) / 6;
-  const radius = DISTRICT_SPACING * 0.32;
+  const radius = DEFAULT_DISTRICT_SPACING * 0.32;
   return { x: origin.x + Math.cos(angle) * radius, y: origin.y + Math.sin(angle) * radius };
 }

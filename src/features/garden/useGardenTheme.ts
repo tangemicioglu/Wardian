@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CANVAS_LABEL_FONT,
   CANVAS_LABEL_SIZE,
   CANVAS_SUBLABEL_SIZE,
 } from "../../utils/canvasTypography";
-import { resolveCssVar } from "./resolveColor";
+import { clearResolvedColorCache, resolveCssVar } from "./resolveColor";
 
 export interface GardenTheme {
   /** Primary label colour. */
@@ -37,7 +37,13 @@ export function useGardenTheme(): GardenTheme {
   const [themeVersion, setThemeVersion] = useState(0);
 
   useEffect(() => {
-    const observer = new MutationObserver(() => setThemeVersion((version) => version + 1));
+    const observer = new MutationObserver(() => {
+      // The resolver caches per theme name, which is correct for a theme swap.
+      // A stylesheet edited *under* the same name would otherwise keep serving
+      // stale colours, so drop the cache whenever the attribute is touched.
+      clearResolvedColorCache();
+      setThemeVersion((version) => version + 1);
+    });
     observer.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["data-theme"],
@@ -45,16 +51,20 @@ export function useGardenTheme(): GardenTheme {
     return () => observer.disconnect();
   }, []);
 
-  // themeVersion is the invalidation signal; the values come from the DOM.
-  void themeVersion;
-
-  return {
-    label: resolveCssVar("var(--color-wardian-text)", "#111827"),
-    labelMuted: resolveCssVar("var(--color-wardian-text-muted-neutral)", "#4b5563"),
-    selection: resolveCssVar("var(--color-wardian-accent)", "#926a09"),
-    labelBackdrop: resolveCssVar("var(--color-wardian-bg)", "#fcfaf5"),
-    font: CANVAS_LABEL_FONT,
-    labelSize: CANVAS_LABEL_SIZE,
-    subLabelSize: CANVAS_SUBLABEL_SIZE,
-  };
+  // Stable identity per theme. Every canvas unit takes the theme as a prop, so
+  // returning a fresh object each render would defeat their memoization and
+  // re-render the whole map on every telemetry tick.
+  return useMemo(
+    () => ({
+      label: resolveCssVar("var(--color-wardian-text)", "#111827"),
+      labelMuted: resolveCssVar("var(--color-wardian-text-muted-neutral)", "#4b5563"),
+      selection: resolveCssVar("var(--color-wardian-accent)", "#926a09"),
+      labelBackdrop: resolveCssVar("var(--color-wardian-bg)", "#fcfaf5"),
+      font: CANVAS_LABEL_FONT,
+      labelSize: CANVAS_LABEL_SIZE,
+      subLabelSize: CANVAS_SUBLABEL_SIZE,
+    }),
+    // themeVersion is the invalidation signal; the values come from the DOM.
+    [themeVersion],
+  );
 }

@@ -271,6 +271,7 @@ export function scenesConverged(
   b: GardenScene,
   epsilon = 0.5,
 ): boolean {
+  if (a.districts.spacing !== b.districts.spacing) return false;
   if (!shallowEqualNumbers(a.districts.cells, b.districts.cells)) return false;
   if (!shallowEqualNumbers(a.districts.tombstones, b.districts.tombstones)) return false;
   if (JSON.stringify(a.pins) !== JSON.stringify(b.pins)) return false;
@@ -349,6 +350,12 @@ function reviveDistricts(raw: unknown): DistrictLayout {
       candidate.tombstones,
       (value): value is number => typeof value === "number",
     ),
+    // A scene written before the pitch was adaptive has no spacing; the default
+    // is exactly what produced its stored positions.
+    spacing:
+      typeof candidate.spacing === "number" && candidate.spacing > 0
+        ? candidate.spacing
+        : fallback.spacing,
   };
 }
 

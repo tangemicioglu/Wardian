@@ -402,3 +402,109 @@ describe("skills as agent attributes", () => {
     ).not.toBe(base);
   });
 });
+
+describe("workflows resolve into districts", () => {
+  // Mirrors the real roster: a couple of agents in the Trident workspace, the
+  // rest elsewhere.
+  const mixed = [
+    node("t1", "Trident Scanner", "D:\\Trading\\trident"),
+    node("t2", "Trident Trader", "D:\\Trading\\trident"),
+    node("w1", "Ward Coder", "D:\\Development\\Wardian"),
+    node("w2", "Ward Reviewer", "D:\\Development\\Wardian"),
+  ];
+  const noTeams: AgentTeam[] = [];
+
+  const base: GardenWorkflowInput = {
+    id: "trident-alerts",
+    label: "Trident Alerts",
+    runStatus: "none",
+    nodeCount: 4,
+  };
+
+  function districtOf(workflow: GardenWorkflowInput) {
+    const result = computeGardenLayout({
+      projection: projectionOf(mixed),
+      teams: noTeams,
+      workflows: [workflow],
+      scene: createScene(),
+    });
+    return result.placement.get(`workflow:${workflow.id}`)?.districtId;
+  }
+
+  it("places a workflow beside the agents whose workspace it runs in", () => {
+    // The signal the user pointed at: a Trident blueprint's shell node carries
+    // `cwd: D:\Trading\trident`, and two agents live there. Nothing about the
+    // workflow's *name* is consulted.
+    expect(districtOf({ ...base, workspacePaths: ["D:\\Trading\\trident"] })).toBe(
+      "workspace:d:/trading/trident",
+    );
+  });
+
+  it("prefers an outright agent binding over a shared path", () => {
+    expect(
+      districtOf({ ...base, agentIds: ["w1"], workspacePaths: ["D:\\Trading\\trident"] }),
+    ).toBe("workspace:d:/development/wardian");
+  });
+
+  it("stays in the commons when the only shared path is a drive root", () => {
+    // `path:d:/` is on every agent, so its IDF is exactly 0. Placing on that
+    // would be a guess dressed up as a derivation.
+    expect(districtOf({ ...base, workspacePaths: ["D:\\"] })).toBe(COMMONS_DISTRICT_ID);
+  });
+
+  it("stays in the commons when a blueprint offers no evidence at all", () => {
+    expect(districtOf(base)).toBe(COMMONS_DISTRICT_ID);
+  });
+
+  it("does not place on a path no agent can reach", () => {
+    expect(districtOf({ ...base, workspacePaths: ["E:\\Unrelated\\Thing"] })).toBe(
+      COMMONS_DISTRICT_ID,
+    );
+  });
+
+  it("groups a family of blueprints by their library folder", () => {
+    // Even with no agent and no path, blueprints sharing a folder cluster
+    // together rather than scattering across the commons.
+    const family = ["alerts", "scan", "daily"].map((name) => ({
+      ...base,
+      id: `trident-${name}`,
+      label: `Trident ${name}`,
+      libraryFolder: "trident",
+    }));
+    const loners = ["audit", "heartbeat"].map((name) => ({
+      ...base,
+      id: name,
+      label: name,
+      libraryFolder: null,
+    }));
+    const result = computeGardenLayout({
+      projection: projectionOf(mixed),
+      teams: noTeams,
+      workflows: [...family, ...loners],
+      scene: createScene(),
+    });
+    const at = (id: string) => result.positions.get(`workflow:${id}`)!;
+    let widestInFamily = 0;
+    for (const left of family) {
+      for (const right of family) {
+        widestInFamily = Math.max(widestInFamily, distance(at(left.id), at(right.id)));
+      }
+    }
+    expect(widestInFamily).toBeLessThan(distance(at("trident-alerts"), at("heartbeat")));
+  });
+
+  it("reacts to a changed workspace but not to a rename or a new run", () => {
+    const withPath = { ...base, workspacePaths: ["D:\\Trading\\trident"] };
+    const signature = gardenLayoutSignature(projectionOf(mixed), noTeams, [withPath]);
+    expect(
+      gardenLayoutSignature(projectionOf(mixed), noTeams, [
+        { ...withPath, label: "Renamed", runStatus: "running" as const, nodeCount: 9 },
+      ]),
+    ).toBe(signature);
+    expect(
+      gardenLayoutSignature(projectionOf(mixed), noTeams, [
+        { ...withPath, workspacePaths: ["D:\\Development\\Wardian"] },
+      ]),
+    ).not.toBe(signature);
+  });
+});
