@@ -168,6 +168,29 @@ fn headless_provider_context(
     })
 }
 
+fn effective_headless_provider_config(
+    provider_name: &str,
+    cwd: &std::path::Path,
+    config_override: Option<&AgentConfig>,
+    persisted_config: Option<&AgentConfig>,
+) -> Option<AgentConfig> {
+    config_override
+        .cloned()
+        .or_else(|| persisted_config.cloned())
+        .or_else(|| {
+            // Provider-bound workflow workers do not have an agent profile,
+            // but Codex still needs the persisted runtime policy flags.
+            (provider_name == "codex").then(|| AgentConfig {
+                provider: "codex".to_string(),
+                folder: cwd.to_string_lossy().to_string(),
+                provider_config: wardian_core::models::ProviderConfig::Codex(
+                    wardian_core::models::CodexProviderConfig::default(),
+                ),
+                ..Default::default()
+            })
+        })
+}
+
 pub(crate) fn headless_provider_args(
     provider_name: &str,
     provider: &dyn AgentProvider,
@@ -334,9 +357,12 @@ pub async fn run_headless_with_options(
         config_override,
         persisted_config.as_ref(),
     )?;
-    let effective_provider_config = config_override
-        .cloned()
-        .or_else(|| persisted_config.clone());
+    let effective_provider_config = effective_headless_provider_config(
+        provider_name,
+        cwd,
+        config_override,
+        persisted_config.as_ref(),
+    );
     let (bin, _) = provider.get_executable();
     let claude_hook = if provider_name == "claude" {
         ensure_claude_permission_hook(wardian_session_id).ok()
@@ -1550,6 +1576,53 @@ mod tests {
             .position(|arg| arg == "--skip-git-repo-check")
             .expect("headless Codex defaults to the repository bypass");
         assert!(skip_index > exec_index);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn temporary_codex_headless_worker_applies_unrestricted_runtime_policy() {
+        let test_wardian_home = TestWardianHome::new();
+        let settings_path = test_wardian_home
+            ._home
+            .path()
+            .join("settings")
+            .join("shell.json");
+        std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+            .expect("create settings directory");
+        std::fs::write(
+            settings_path,
+            r#"{
+              "schema_version": 2,
+              "overrides": {
+                "codex_runtime_policy": {
+                  "sandbox_mode": "danger-full-access",
+                  "approval_policy": "never"
+                }
+              }
+            }"#,
+        )
+        .expect("write unrestricted Codex policy");
+
+        let cwd = Path::new("D:/Development/Wardian");
+        let config = effective_headless_provider_config("codex", cwd, None, None)
+            .expect("temporary Codex worker config");
+        let provider = crate::providers::ProviderFactory::resolve("codex").unwrap();
+        let args = headless_provider_args(
+            "codex",
+            provider.as_ref(),
+            cwd,
+            "task",
+            "json",
+            None,
+            Some(&config),
+        );
+
+        let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
+        assert!(args[..exec_index]
+            .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(!args.contains(&"--sandbox".to_string()));
+        assert!(!args.contains(&"--ask-for-approval".to_string()));
+        assert_eq!(config.folder, cwd.to_string_lossy());
     }
 
     #[test]
