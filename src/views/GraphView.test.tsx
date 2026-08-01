@@ -240,6 +240,37 @@ describe("GraphView", () => {
     expect(screen.getByText("Coder / Codex")).toBeInTheDocument();
   });
 
+  it("clears node selection when an edge is selected", () => {
+    render(<GraphView {...defaultProps} selectedAgentIds={new Set(["a"])} />);
+
+    fireEvent.click(screen.getByTestId("mock-graph-edge"));
+
+    expect(handlers.onSelectionChange).toHaveBeenCalledWith(new Set());
+    expect(screen.getByTestId("mock-graph-node")).toHaveAttribute("data-selected-edge", "a--b");
+  });
+
+  it("clears edge selection when a node is selected", () => {
+    render(
+      <GraphView
+        {...defaultProps}
+        initialSurfaceState={{
+          enabled_reasons: [],
+          inspected_agent_id: null,
+          inspector_open: true,
+          selected_edge_id: "a--b",
+          picker_search: "",
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("mock-graph-node")).toHaveAttribute("data-selected-edge", "a--b");
+
+    fireEvent.click(screen.getByTestId("mock-graph-node"));
+
+    expect(handlers.onSelectionChange).toHaveBeenCalledWith(new Set(["a"]));
+    expect(screen.getByTestId("mock-graph-node")).toHaveAttribute("data-selected-edge", "none");
+  });
+
   it("routes the inspector open action through onOpenAgent", () => {
     render(<GraphView {...defaultProps} selectedAgentIds={new Set(["a"])} />);
 

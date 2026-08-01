@@ -262,9 +262,15 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
   };
 
   const selectAgent = (agentId: string) => {
+    setSelectedEdgeId(null);
     setInspectedAgentId(agentId);
     setInspectorOpen(true);
     props.onSelectionChange(new Set([agentId]));
+  };
+
+  const selectEdge = (edgeId: string) => {
+    setSelectedEdgeId(edgeId);
+    props.onSelectionChange(new Set());
   };
 
   const openContextMenu = (agentId: string, x: number, y: number) => {
@@ -372,7 +378,7 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
               onOpenAgent={(agentId) => openAgent?.(agentId)}
               onContextMenu={openContextMenu}
               selectedEdgeId={selectedEdgeId}
-              onSelectEdge={setSelectedEdgeId}
+              onSelectEdge={selectEdge}
               onConnect={(a, b) => {
                 invoke("add_topology_edge", { a, b }).catch((error) => {
                   console.error("add_topology_edge failed", error);
