@@ -241,6 +241,7 @@ ChangeReviewFileEntry {
   turn_indices: Vec<u64>
   binary: bool
   truncated: bool
+  reviewed: bool
 }
 
 ChangeReviewSummary {
@@ -254,6 +255,13 @@ ChangeReviewSummary {
   truncated: bool
 }
 
+ChangeReviewReviewedPath {
+  path: String
+  change_kind: ChangeReviewChangeKind
+  insertions: Option<u64>
+  deletions: Option<u64>
+}
+
 ChangeReviewWatermark {
   schema: u8
   agent_id: String
@@ -261,8 +269,26 @@ ChangeReviewWatermark {
   reviewed_turn_index: u64
   reviewed_at: String
   reviewed_head: Option<String>
+  reviewed_paths: Vec<ChangeReviewReviewedPath>
 }
 ```
+
+The `unreviewed` baseline **never removes a path that git currently reports as
+changed.** It marks entries: an entry whose path and numstat signature match a
+`reviewed_paths` record is `reviewed`, and everything else is not. Presentation
+may collapse or dim reviewed entries; the change set itself stays complete.
+
+A turn-index watermark alone cannot carry this baseline. `latest_effective_turn`
+advances only on a `files.written` or `external_side_effects` claim, so a
+shell-driven write does not move it. Clearing the change set on a turn-index
+comparison therefore hides exactly the writes that `evidence: inferred` exists
+to surface, which is the annotate-never-filter rule inverted. The signature is
+already computed for every entry, so per-path comparison costs nothing
+additional.
+
+A file edited back to its reviewed signature reads as reviewed. That is
+accepted: Phase 1 has no content baseline to distinguish it, and the failure is
+conservative in the safe direction.
 
 ```
 ChangeReviewPrefs {
@@ -316,6 +342,10 @@ Untracked files are included, subject to `.gitignore`. Ignore rules are
 load-bearing: a workspace that snapshots `node_modules` churns hundreds of
 megabytes on a single install.
 
+Path identity is compared case-insensitively only under the Windows target
+configuration. POSIX and macOS comparisons preserve case, so two workspaces or
+claimed paths differing only by case stay distinct.
+
 Deleting an agent removes its refs under `refs/wardian/<agent_id>/` and its
 watermark.
 
@@ -337,6 +367,10 @@ watermark.
 - Marking reviewed advances the watermark, and the `unreviewed` baseline then
   reports an empty change set until the next effective turn.
 - A non-git workspace renders file lists and an explicit no-diff-content state.
+- After marking reviewed, a path written through a shell remains present under
+  the `unreviewed` baseline with `evidence: inferred`, empty `agent_ids`, and
+  `reviewed: false`. No baseline ever empties a non-empty git change set.
+- Workspace and path identity comparisons are case-insensitive only on Windows.
 - Phase 2 only: a turn-boundary snapshot completes within budget, leaves HEAD,
   the operator's index, and all branches unmodified, and adds no ref visible to
   `git branch`.
