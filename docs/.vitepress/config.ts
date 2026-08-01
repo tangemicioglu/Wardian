@@ -21,6 +21,7 @@ const guideSidebar = [
       { text: "Grid Compatibility", link: "/guide/grid" },
       { text: "Dashboard", link: "/guide/dashboard" },
       { text: "Graph", link: "/guide/graph" },
+      { text: "Garden", link: "/guide/garden" },
       { text: "Watchlists", link: "/guide/watchlists" },
       { text: "Inbox", link: "/guide/inbox" },
       { text: "Class Management", link: "/guide/class-management" },

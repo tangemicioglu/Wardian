@@ -2,12 +2,25 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentConfig, AgentTelemetry } from "../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlist/types";
 import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph/graphProjection";
-import { buildGardenAgentUnits, buildGardenWorkflowUnits } from "../features/garden/gardenProjection";
+import {
+  buildAgentUnits,
+  buildWorkflowUnits,
+  computeGardenLayout,
+  gardenLayoutSignature,
+} from "../features/garden/gardenProjection";
 import { GardenCanvas } from "../features/garden/GardenCanvas";
-import { unitKey } from "../features/garden/garden.types";
-import { GARDEN_AGENT_STATUS_LEGEND, gardenAgentStatusLabel, gardenWorkflowStatusLabel } from "../features/garden/gardenStatus";
+import { unitKey, type GardenPosition } from "../features/garden/garden.types";
+import {
+  GARDEN_AGENT_STATUS_LEGEND,
+  gardenAgentStatusLabel,
+  gardenSkillReachLabel,
+  gardenWorkflowStatusLabel,
+} from "../features/garden/gardenStatus";
+import { agentsCarrying } from "../features/garden/skillGlyphs";
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
+import { useGardenSkills } from "../features/garden/useGardenSkills";
 import { useGardenStore } from "../store/useGardenStore";
+import { useLibraryStore } from "../store/useLibraryStore";
 import type { GardenSurfaceState } from "../features/workbench/surfaces/coreSurfaceMetadata";
 
 const ALL_REASONS: Set<GraphRelationshipReason> = new Set([
@@ -15,6 +28,37 @@ const ALL_REASONS: Set<GraphRelationshipReason> = new Set([
   "shared_workspace",
   "same_worktree",
 ]);
+
+/**
+ * Hold a dropped unit inside the district it belongs to.
+ *
+ * A drag says where within its neighbourhood a unit should sit. It cannot say
+ * which neighbourhood the unit is in — that comes from canonical facts about the
+ * agent, not from where a cursor was released — so a drop into a neighbouring
+ * district is a placement the map cannot honour without lying about membership.
+ *
+ * Letting it through was worse than an approximation. The unit stayed a member
+ * of its own district at an enormous offset, so the district grew to that size,
+ * every ring grew with it, and the unit rode its own origin outward: dropped on
+ * a neighbour, it landed 600 units away, and the map inflated 2.3x in one drag.
+ *
+ * Clamping to the boundary keeps the gesture honest — you can place a unit
+ * anywhere in its own territory, and the edge is where the territory ends.
+ */
+function clampToDistrict(
+  point: GardenPosition,
+  where: { districtOrigin: GardenPosition; districtRadius: number },
+): GardenPosition {
+  const dx = point.x - where.districtOrigin.x;
+  const dy = point.y - where.districtOrigin.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance <= where.districtRadius || distance === 0) return point;
+  const scale = where.districtRadius / distance;
+  return {
+    x: where.districtOrigin.x + dx * scale,
+    y: where.districtOrigin.y + dy * scale,
+  };
+}
 
 export interface GardenViewProps {
   visibility?: "visible" | "hidden";
@@ -50,10 +94,17 @@ export const GardenView: React.FC<GardenViewProps> = ({
   initialSurfaceState,
   onSurfaceStateChange,
 }) => {
-  const positions = useGardenStore((s) => s.positions);
-  const setPosition = useGardenStore((s) => s.setPosition);
+  const scene = useGardenStore((s) => s.scene);
+  const pinUnit = useGardenStore((s) => s.pin);
+  const visitUnit = useGardenStore((s) => s.visit);
+  const adoptScene = useGardenStore((s) => s.adoptScene);
   const resetLayout = useGardenStore((s) => s.reset);
   const workflowInputs = useGardenWorkflows(visibility === "visible");
+  const skillInputs = useGardenSkills(visibility === "visible");
+  // Deep-links into the Library the same way the agent config panel's "Manage
+  // skills" affordance does, so the Garden does not invent a second navigation
+  // path to the same surface.
+  const openLibraryAt = useLibraryStore((s) => s.openLibraryAt);
 
   // Canvas highlight is keyed by unitKey so agent and workflow ids can't collide,
   // and it stays local so selecting a workflow never leaks into the app's
@@ -82,20 +133,122 @@ export const GardenView: React.FC<GardenViewProps> = ({
     [filteredAgents, telemetry, teams, activeList, interactions, selectedAgentIds, offAgentIds],
   );
 
-  const agentUnits = useMemo(() => buildGardenAgentUnits(projection, positions), [projection, positions]);
-  const workflowUnits = useMemo(() => buildGardenWorkflowUnits(workflowInputs, positions), [workflowInputs, positions]);
+  // Layout output — district cells and settled positions — is carried forward
+  // through a ref, never through the reactive dependency chain.
+  //
+  // Routing it back through state makes the layout an input to itself: each pass
+  // produces slightly different positions, which triggers another pass. A
+  // convergence epsilon is not a sufficient brake, because the pipeline is not
+  // guaranteed to converge monotonically — overlap removal ranks units by their
+  // incoming positions, so two units sitting at nearly the same coordinate can
+  // swap separation order between passes and oscillate indefinitely. When that
+  // happens the write-back becomes an unbounded render loop (React error #185)
+  // rather than a slightly jittery map.
+  //
+  // Excluding positions from the dependencies also states the intent correctly:
+  // settled positions are a *result*, and only genuine inputs — the roster, the
+  // teams, the blueprints, and the user's own placements — should provoke a
+  // relayout.
+  const carriedSceneRef = useRef(scene);
+
+  // Geometry is keyed on a digest of the inputs that may legitimately move
+  // something, not on the projection's identity. The projection is rebuilt on
+  // every telemetry tick; running the pipeline that often would advance
+  // convergence a few pixels each time and the map would drift continuously for
+  // no reason a user could see. `projectionRef` supplies the current value
+  // without making identity a trigger.
+  const { pins, exclusions } = scene;
+  const projectionRef = useRef(projection);
+  projectionRef.current = projection;
+  const signature = useMemo(
+    () => gardenLayoutSignature(projection, teams, workflowInputs, skillInputs),
+    [projection, teams, workflowInputs, skillInputs],
+  );
+
+  // A reset discards the scene rather than advancing it, and the carried copy
+  // would otherwise put everything straight back: it holds the settled positions
+  // and district cells the reset just cleared, and the next pass warm-starts
+  // from them. The counter is what tells the two cases apart.
+  const generation = useGardenStore((s) => s.generation);
+  const generationRef = useRef(generation);
+
+  const layout = useMemo(() => {
+    if (generationRef.current !== generation) {
+      generationRef.current = generation;
+      carriedSceneRef.current = scene;
+    }
+    const result = computeGardenLayout({
+      projection: projectionRef.current,
+      teams,
+      workflows: workflowInputs,
+      skills: skillInputs,
+      scene: { ...carriedSceneRef.current, pins, exclusions },
+    });
+    carriedSceneRef.current = result.scene;
+    return result;
+    // `signature` stands in for projection/teams/workflows: it captures exactly
+    // the geometry-relevant content and omits status, colour, and selection.
+    //
+    // `scene` is read only on a generation change, and is deliberately not a
+    // dependency: it is republished by every adopted layout, and depending on it
+    // would make the layout an input to itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature, pins, exclusions, generation]);
+  const { placement } = layout;
+
+  // Display fields are attached per render from the live projection, so status
+  // and colour stay current without touching geometry.
+  const agentUnits = useMemo(
+    () => buildAgentUnits(projection, layout.positions, layout.crowns),
+    [projection, layout.positions, layout.crowns],
+  );
+  const workflowUnits = useMemo(
+    () => buildWorkflowUnits(workflowInputs, layout.positions),
+    [workflowInputs, layout.positions],
+  );
+
+  // Persist district cells and settled positions so a later session can
+  // warm-start from them; without that the map re-derives from scratch on every
+  // reload and visibly rearranges itself. `adoptScene` ignores a scene that has
+  // not moved materially, so this cannot churn storage.
+  const adoptSceneRef = useRef(adoptScene);
+  adoptSceneRef.current = adoptScene;
+  useEffect(() => {
+    adoptSceneRef.current(layout.scene);
+  }, [layout]);
 
   // Fall back to an externally-selected single agent (e.g. chosen in Grid) when
   // there is no local Garden selection yet.
   const externalAgentKey =
     selectedAgentIds.size === 1 ? unitKey({ kind: "agent", id: [...selectedAgentIds][0] }) : null;
   const activeSelectionKey = selectedKey ?? externalAgentKey;
-  const selectedUnit = [...agentUnits, ...workflowUnits].find((unit) => unitKey(unit.ref) === activeSelectionKey);
-  const selectedUnitStatus = selectedUnit
-    ? "status" in selectedUnit
-      ? gardenAgentStatusLabel(selectedUnit.status)
-      : gardenWorkflowStatusLabel(selectedUnit.runStatus)
+
+  // A selected skill has no unit of its own, so it is summarized from its
+  // carriers instead — and those carriers light up on the map. This is the
+  // reverse index that replaces "go to where the skill lives": the honest
+  // answer to "where is this used?" is a set, not a point.
+  const selectedSkillRef = activeSelectionKey?.startsWith("skill:")
+    ? activeSelectionKey.slice("skill:".length)
     : null;
+  const highlightedAgentIds = useMemo(
+    () => (selectedSkillRef ? agentsCarrying(layout.crowns, selectedSkillRef) : new Set<string>()),
+    [selectedSkillRef, layout.crowns],
+  );
+  const selectedSkillLabel = selectedSkillRef
+    ? (skillInputs.find((skill) => skill.entryRef === selectedSkillRef)?.label ?? selectedSkillRef)
+    : null;
+
+  const selectedUnit = [...agentUnits, ...workflowUnits].find(
+    (unit) => unitKey(unit.ref) === activeSelectionKey,
+  );
+  const summaryLabel = selectedSkillLabel ?? selectedUnit?.label ?? null;
+  const summaryStatus = selectedSkillRef
+    ? gardenSkillReachLabel(highlightedAgentIds.size)
+    : selectedUnit
+      ? "status" in selectedUnit
+        ? gardenAgentStatusLabel(selectedUnit.status)
+        : gardenWorkflowStatusLabel(selectedUnit.runStatus)
+      : null;
 
   return (
     <div className="garden-view relative flex min-h-0 flex-1 flex-col">
@@ -117,8 +270,8 @@ export const GardenView: React.FC<GardenViewProps> = ({
         aria-live="polite"
         className="absolute bottom-3 left-3 z-10 rounded-md border border-wardian-border bg-[var(--color-wardian-bg)]/90 px-2 py-1.5 text-[11px] shadow-sm backdrop-blur"
       >
-        {selectedUnit && selectedUnitStatus ? (
-          <><span className="text-muted">Selected: </span><span className="font-semibold text-primary">{selectedUnit.label}</span><span className="text-muted"> · {selectedUnitStatus}</span></>
+        {summaryLabel && summaryStatus ? (
+          <><span className="text-muted">Selected: </span><span className="font-semibold text-primary">{summaryLabel}</span><span className="text-muted"> · {summaryStatus}</span></>
         ) : (
           <span className="text-muted">Select a unit to view its status.</span>
         )}
@@ -127,14 +280,26 @@ export const GardenView: React.FC<GardenViewProps> = ({
         agentUnits={agentUnits}
         workflowUnits={workflowUnits}
         selectedKey={activeSelectionKey}
+        highlightedAgentIds={highlightedAgentIds}
         onSelect={(ref) => {
-          setSelectedKey(unitKey(ref));
+          const key = unitKey(ref);
+          setSelectedKey(key);
+          // Skills are not placed, so there is no position for the scene to
+          // remember and nothing for `visit` to keep from drifting.
+          if (ref.kind !== "skill") visitUnit(key);
           if (ref.kind === "agent") {
             onSelectionChange(new Set([ref.id]));
           }
         }}
         onOpenAgent={(agentId) => (onOpenAgent ?? onOpenAgentInGrid)?.(agentId)}
-        onMoveUnit={(key, x, y) => setPosition(key, { x, y })}
+        onOpenSkill={(glyph) => openLibraryAt("skills", glyph.entryRef)}
+        onMoveUnit={(key, x, y) => {
+          // A drag is a pin, stored relative to the unit's district so the
+          // placement survives the district being relocated on the grid.
+          const where = placement.get(key);
+          if (!where) return;
+          pinUnit(key, where.districtId, clampToDistrict({ x, y }, where), where.districtOrigin);
+        }}
         onResetLayout={() => {
           resetLayout();
           setSelectedKey(null);

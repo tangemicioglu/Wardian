@@ -46,3 +46,13 @@ export function workflowStatusColor(status: GardenWorkflowRunStatus): string {
 export function gardenWorkflowStatusLabel(status: GardenWorkflowRunStatus): string {
   return status === "none" ? "No runs yet" : formatRunStatus(status);
 }
+
+/**
+ * A skill has no runtime status. What it has instead is reach — how many agents
+ * on the map carry it — which is the answer the map can give that a list
+ * cannot, now that a skill is drawn on its carriers rather than in one place.
+ */
+export function gardenSkillReachLabel(carrierCount: number): string {
+  if (carrierCount <= 0) return "On no agents here";
+  return carrierCount === 1 ? "On 1 agent" : `On ${carrierCount} agents`;
+}

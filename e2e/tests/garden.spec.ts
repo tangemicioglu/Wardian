@@ -37,22 +37,10 @@ async function installGardenTestIpcMock(page: Page) {
       unregisterListener: () => undefined,
     };
 
-    // Seed a known garden position for the test agent so the drag below starts
-    // on top of a real unit (canvas units have no DOM handle to target). Guarded
-    // so the reload in the persistence test does not clobber the dragged value.
-    // Shape matches zustand's `persist` envelope: { state, version }.
-    if (!localStorage.getItem("wardian-garden")) {
-      localStorage.setItem(
-        "wardian-garden",
-        JSON.stringify({
-          state: {
-            positions: { "agent:garden-test-agent-01": { x: 200, y: 200 } },
-            pins: {},
-          },
-          version: 0,
-        }),
-      );
-    }
+    // No seeded geometry. Positions are derived from the metric now, and the v1
+    // envelope this used to write is discarded by the store's migration anyway —
+    // it left the drag below landing on empty canvas. The drag test reads the
+    // unit's real position out of the persisted scene instead.
 
     tauriWindow.__TAURI_INTERNALS__ = {
       metadata: {
@@ -186,17 +174,43 @@ test.describe("Garden View", () => {
     );
     await expect(canvas).toBeVisible({ timeout: 10_000 });
 
-    // Get the bounding box of the canvas
+    // Canvas units have no DOM handle, so the drag has to land on top of one.
+    // This fixture seeds exactly one agent and no workflows, so the map holds a
+    // single unit — and the canvas fits its content into view, which puts that
+    // unit in the middle of the viewport whatever its world coordinates are.
+    // Aiming at the centre is therefore both simpler and sturdier than
+    // projecting a stored position: stored positions are district-relative, so
+    // projecting them as world coordinates aimed at empty canvas.
+    //
+    // The fit is still waited on, because the container is measured by a
+    // ResizeObserver and re-fits as it settles; dragging mid-fit would chase a
+    // moving unit.
+    const container = surfacePanel(page, "garden").locator(".garden-canvas");
+    let transform: string | null = null;
+    await expect
+      .poll(
+        async () => {
+          const next = await container.getAttribute("data-garden-fit");
+          const stable = next !== null && next === transform;
+          transform = next;
+          return stable;
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+
     const box = await canvas.boundingBox();
     if (!box) throw new Error("no canvas bounding box");
 
-    // Start the drag on the seeded unit (canvas coords 200,200; Stage starts at
-    // offset 0 / scale 1, so canvas point maps to box origin + that offset).
-    const startX = box.x + 200;
-    const startY = box.y + 200;
-    const endX = box.x + 360;
-    const endY = box.y + 320;
+    const startX = box.x + box.width / 2;
+    const startY = box.y + box.height / 2;
+    const endX = startX + 160;
+    const endY = startY + 120;
 
+    // Released explicitly: a drag is committed on `dragend` now, not on every
+    // intermediate move. Committing per move re-pinned the unit and re-ran the
+    // whole layout on each mouse event, so the map re-solved and slid under the
+    // cursor while the user was still dragging.
     await page.mouse.move(startX, startY);
     await page.mouse.down();
     await page.mouse.move(endX, endY, { steps: 8 });
@@ -205,15 +219,18 @@ test.describe("Garden View", () => {
     // Wait a moment for the store to persist
     await page.waitForTimeout(500);
 
-    // Read the localStorage value
-    const stored = await page.evaluate(() =>
-      localStorage.getItem("wardian-garden"),
+    // A drag is an authored placement, so it must land in `pins` — the layer
+    // that outranks the metric. `positions` alone proves nothing: the layout
+    // writes warm-start seeds there on every pass whether or not a drag landed.
+    const scene = await page.evaluate(
+      () => JSON.parse(localStorage.getItem("wardian-garden") ?? "{}")?.state?.scene,
     );
-    expect(stored).toBeTruthy();
-    expect(stored).toContain("positions");
+    expect(Object.keys(scene?.pins ?? {})).toContain("agent:garden-test-agent-01");
 
     // Store the value for the next test.
-    gardenStorageValue = stored;
+    gardenStorageValue = await page.evaluate(() =>
+      localStorage.getItem("wardian-garden"),
+    );
   });
 
   test("dragged position persists across page reload", async () => {
@@ -261,10 +278,12 @@ test.describe("Garden View", () => {
     await page.locator('[data-testid="garden-reset-layout"]').click();
     await page.waitForTimeout(200);
 
-    // Reset empties the persisted positions map.
+    // Reset clears the authored layer. `positions` is not the thing to assert
+    // on: those are warm-start seeds, and the layout legitimately rewrites them
+    // on the very next pass.
     const parsed = await page.evaluate(() =>
       JSON.parse(localStorage.getItem("wardian-garden") ?? "{}"),
     );
-    expect(parsed.state.positions).toEqual({});
+    expect(parsed.state.scene.pins).toEqual({});
   });
 });

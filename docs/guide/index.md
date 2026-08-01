@@ -20,6 +20,7 @@ automation, and extension. Take only the next step that helps the work at hand.
 - [Grid](./grid.md): map the former Grid page to the current Agents Grid mode.
 - [Dashboard](./dashboard.md): compare live agent health and quick controls.
 - [Graph](./graph.md): inspect team, workspace, and worktree relationships between agents.
+- [Garden](./garden.md): see agents, workflows, and skills laid out so that distance reflects what they share.
 - [Watchlists](./watchlists.md): group, select, sort, and monitor agents in the right roster.
 - [Inbox](./inbox.md): triage completed work, important updates, and decisions.
 - [Class Management](./class-management.md): understand reusable agent setups; edit them from the Library's Classes section.

@@ -1,6 +1,15 @@
 import type { RunStatusKind } from "../workflows/run/runTypes";
+import type { GardenSkillGlyph } from "./skillGlyphs";
 
-export type GardenEntityKind = "agent" | "workflow";
+/**
+ * Kinds the Garden can address.
+ *
+ * A subset of `EntityRef`'s vocabulary. Only `agent` and `workflow` are
+ * *placed*: `skill` is addressable so a glyph can be selected and deep-linked,
+ * but a skill has no position of its own — it renders on the agents that carry
+ * it. See `skillGlyphs.ts` for why.
+ */
+export type GardenEntityKind = "agent" | "workflow" | "skill";
 
 export interface GardenEntityRef {
   kind: GardenEntityKind;
@@ -18,6 +27,14 @@ export interface GardenAgentUnit {
   status: string;
   color: string; // may be a CSS var() expression; resolve before Konva fill
   position: GardenPosition;
+  /**
+   * Skills this agent carries, most distinctive first.
+   *
+   * Decoration, not geometry: the crown is attached to the agent's position and
+   * never enters the layout, which is what lets it expand and contract with
+   * zoom without any risk of moving a unit.
+   */
+  crown: GardenSkillGlyph[];
 }
 
 export type GardenWorkflowRunStatus = RunStatusKind | "none";

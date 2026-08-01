@@ -3,6 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Blueprint } from "../workflows/builder/blueprintTypes";
 import type { RunSummary } from "../workflows/run/runTypes";
 import type { GardenWorkflowInput } from "./gardenProjection";
+import { workflowContextOf, type WorkflowContext } from "./workflowContext";
+import {
+  deploymentsByBlueprint,
+  type WorkflowScheduleRecord,
+} from "./workflowDeployments";
 
 interface BlueprintRef {
   id: string;
@@ -13,6 +18,7 @@ interface ParsedBlueprint {
   id: string;
   name: string;
   nodeCount: number;
+  context: WorkflowContext;
 }
 
 type GardenInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -20,10 +26,14 @@ type GardenInvoke = (command: string, args?: Record<string, unknown>) => Promise
 let cachedBlueprintKey: string | null = null;
 let cachedBlueprints: ParsedBlueprint[] = [];
 
-/** Pure: attach each blueprint's most-recent run status (by updated_at). */
+/**
+ * Pure: attach each blueprint's most-recent run status (by updated_at) and the
+ * agents its schedules deploy it onto.
+ */
 export function mergeWorkflowRunStatus(
   blueprints: ParsedBlueprint[],
   runs: RunSummary[],
+  deployments: ReadonlyMap<string, string[]> = new Map(),
 ): GardenWorkflowInput[] {
   const latest = new Map<string, RunSummary>();
   for (const run of runs) {
@@ -37,6 +47,13 @@ export function mergeWorkflowRunStatus(
     label: bp.name,
     runStatus: latest.get(bp.id)?.status ?? "none",
     nodeCount: bp.nodeCount,
+    // A blueprint's own `agent_ref` bindings and the schedules that deploy it are
+    // the same kind of evidence — both name a concrete agent — so they pool.
+    agentIds: [...new Set([...bp.context.agentIds, ...(deployments.get(bp.id) ?? [])])].sort(),
+    roleNames: bp.context.roleNames,
+    classNames: bp.context.classNames,
+    workspacePaths: bp.context.workspacePaths,
+    libraryFolder: bp.context.libraryFolder,
   }));
 }
 
@@ -55,6 +72,9 @@ export async function loadGardenWorkflowInputs(invoker: GardenInvoke = invoke as
           id: result.blueprint.id,
           name: result.blueprint.name,
           nodeCount: result.blueprint.nodes.length,
+          // Read once, at parse time, and cached with the blueprint: this is
+          // what gives a workflow somewhere to be other than the commons.
+          context: workflowContextOf(result.blueprint, ref.path),
         } satisfies ParsedBlueprint;
       }),
     );
@@ -63,8 +83,19 @@ export async function loadGardenWorkflowInputs(invoker: GardenInvoke = invoke as
     cachedBlueprints = blueprints;
   }
 
-  const runs = ((await invoker("workflow_list_runs").catch(() => [])) ?? []) as RunSummary[];
-  return mergeWorkflowRunStatus(blueprints, runs);
+  // Runs and schedules are both small, unparsed lists and independent of each
+  // other, so they are fetched together rather than in sequence. Neither is
+  // cached with the blueprints: run status changes constantly, and a schedule
+  // can be rebound without the blueprint file changing at all.
+  const [runs, schedules] = await Promise.all([
+    invoker("workflow_list_runs").catch(() => []) as Promise<RunSummary[]>,
+    invoker("schedule_list").catch(() => []) as Promise<WorkflowScheduleRecord[]>,
+  ]);
+  return mergeWorkflowRunStatus(
+    blueprints,
+    runs ?? [],
+    deploymentsByBlueprint(schedules ?? []),
+  );
 }
 
 export function resetGardenWorkflowCacheForTests() {
