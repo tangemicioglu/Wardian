@@ -2,10 +2,10 @@
 
 ## Decision
 
-Wardian surfaces recent agent file changes through a Changes surface built on
-primitives that already exist: conversation turn records for attribution and
-time-slicing, and the working tree's own git object store for content. No new
-storage subsystem ships in the first phase.
+Wardian surfaces recent agent file changes through a Changes pane in the left
+sidebar, built on primitives that already exist: conversation turn records for
+attribution and time-slicing, and the working tree's own git object store for
+content. No new storage subsystem ships in the first phase.
 
 Runtime cost is the governing constraint. Every design choice below resolves in
 favour of the cheaper option, and the optional snapshot layer in Phase 2 is
@@ -38,7 +38,7 @@ object store.
 
 ## Baselines
 
-The surface exposes one axis of baselines. The current side of every comparison
+The pane exposes one axis of baselines. The current side of every comparison
 is the live working tree.
 
 | Mode | Baseline | Storage cost |
@@ -58,10 +58,29 @@ analysis turn must not blank a diff the operator is still reading.
 
 ## Phase 1
 
+### Placement
+
+Changes is a left-sidebar pane, not a workbench surface. It takes its own
+icon-rail entry beside Source Control and renders through
+`SidebarContentPane.tsx`, mirroring `GitPanel` in structure: a scoped file list
+above an inline diff.
+
+Reviewing changes is peripheral and glanceable work performed *while* watching
+an agent. A workbench surface would consume a tab slot next to the agent session
+it describes, and would place Changes in a different structural class from
+Source Control, which is the same kind of object with a different baseline.
+
+Changes does not live inside the Explorer pane. Explorer presents a
+whole-workspace file tree; Changes presents a time-scoped, filtered change list
+with baselines and attribution. One pane cannot carry both data shapes without a
+mode toggle.
+
+Changes does not extend `GitPanel`. Source control semantics and agent-turn
+semantics stay in separate modules.
+
 ### Composition
 
-The Changes surface is a workbench surface registered through the existing
-surface registry. It composes existing modules and adds no backend subsystem:
+The pane composes existing modules and adds no backend subsystem:
 
 - `ConversationTurnRecord` in `crates/wardian-core/src/conversations.rs`
   supplies `turn_index`, `started_at`, `files.written`, `tools_used`, and
@@ -77,7 +96,7 @@ The change set is recomputed on **turn boundaries**, not on file events.
 
 `git_watch` watches only `.git/index` and `.git/HEAD`. An agent writing a file
 through an edit tool or a shell touches neither, so `git-changed` does not fire
-for the changes this surface exists to show. It is subscribed to as a secondary
+for the changes this pane exists to show. It is subscribed to as a secondary
 signal, covering the operator's own staging, commits, and branch switches, and
 must not be relied on for agent writes.
 
@@ -92,7 +111,7 @@ of its start until it ends.
 
 These rules are binding, not advisory.
 
-The surface must not poll `git_status` on a timer, and must not scan the working
+The pane must not poll `git_status` on a timer, and must not scan the working
 tree on render.
 
 Diff content is fetched per file on expansion, never eagerly for the whole
@@ -103,7 +122,7 @@ Line counts for the whole change set are obtained in a single `git diff
 `src-tauri/src/commands/git.rs` today; Phase 1 adds exactly one.
 
 Turn records are read from the conversation archive, which is already
-materialised on disk. The surface must not re-derive turns from provider
+materialised on disk. The pane must not re-derive turns from provider
 transcripts.
 
 ### Attribution
@@ -193,7 +212,7 @@ exists rather than a strict fixed set of baselines.
 Pinned baselines are the unbounded risk, not turn count. A long-lived
 `conversation_start` ref holds every superseded blob for the life of the
 conversation. When a pinned baseline diverges past a configured threshold the
-surface warns and offers to re-anchor it.
+pane warns and offers to re-anchor it.
 
 ## Data Model
 
@@ -253,14 +272,14 @@ to Wardian, and they are not added to `settings/state.json`.
 
 The directory is created on first write. A missing or unparseable index is
 treated as "nothing reviewed yet" rather than an error, so a corrupt file
-degrades the `unreviewed` baseline instead of breaking the surface.
+degrades the `unreviewed` baseline instead of breaking the pane.
 
 This is the only new persisted record in Phase 1.
 
 ## Edge Cases
 
 A workspace that is not a git repository yields turn-record file lists with no
-diff content. The surface states this rather than rendering an empty change set.
+diff content. The pane states this rather than rendering an empty change set.
 
 Several agents sharing one workspace produce a single git-derived change set
 with per-entry `agent_ids`. Attribution is an overlay; the change set is never
@@ -270,7 +289,7 @@ A detached HEAD, or a repository with no default branch, degrades
 `branch_point` to `head`.
 
 A rebase or amend can orphan `reviewed_head`. The watermark then falls back to
-`reviewed_turn_index` alone, and the surface marks the comparison approximate.
+`reviewed_turn_index` alone, and the pane marks the comparison approximate.
 
 Binary files and files beyond the size cap are listed with `binary` or
 `truncated` set and no rendered content.
@@ -284,7 +303,7 @@ watermark.
 
 ## Verification
 
-- The Changes surface issues no git invocation between recomputation triggers.
+- The Changes pane issues no git invocation between recomputation triggers.
 - A file written by an agent appears in the change set after the turn ends,
   without any `git-changed` event having fired.
 - Line counts for a change set of any size cost one `git diff --numstat`
