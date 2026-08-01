@@ -262,6 +262,7 @@ pub fn run() {
                 state.file_resources.attach_app_handle(app.handle().clone());
                 tauri::async_runtime::block_on(async {
                     state.interactions.hydrate_from_persistence().await;
+                    state.hydrate_mailbox_from_persistence().await;
                 });
                 crate::commands::terminal_session::start_terminal_session_event_bridge(
                     app.handle().clone(),
@@ -353,9 +354,13 @@ pub fn run() {
                                         if !order_map.contains(&session_id) {
                                             order_map.push(session_id.clone());
                                         }
-                                        agents_map.insert(session_id, agent);
+                                        agents_map.insert(session_id.clone(), agent);
                                         drop(agents_map);
                                         drop(order_map);
+                                        crate::control::spawn_mailbox_retry_worker(
+                                            &app_handle,
+                                            &session_id,
+                                        );
                                         let _ = app_handle.emit("agents-updated", ());
                                     }
                                 };
@@ -511,6 +516,10 @@ pub fn run() {
                                     agents_map.insert(config.session_id.clone(), agent);
                                     drop(agents_map);
                                     drop(order_map);
+                                    crate::control::spawn_mailbox_retry_worker(
+                                        &app_handle,
+                                        &config.session_id,
+                                    );
                                     let _ = app_handle.emit("agents-updated", ());
                                     schedule_restored_agent_archive_sync(
                                         app_handle.clone(),

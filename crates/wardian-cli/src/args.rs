@@ -475,7 +475,7 @@ pub struct SendArgs {
     #[arg(long, value_enum, conflicts_with = "as_command")]
     pub approval: Option<ApprovalArg>,
 
-    /// Wait until the target reaches this status after sending
+    /// Wait for the delivered target turn to reach this status; idle uses provider-confirmed turn completion
     #[arg(long = "wait-until")]
     pub wait_until: Option<String>,
 

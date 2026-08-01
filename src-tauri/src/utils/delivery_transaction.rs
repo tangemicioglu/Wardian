@@ -165,6 +165,26 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = ()>,
 {
+    submit_terminal_transaction_with_hooks(tx, profile, prompt, on_payload_sent, || async {}).await
+}
+
+/// Submit a terminal prompt while exposing ordering boundaries around its
+/// payload and submit key. The second hook runs after any provider-specific
+/// submit delay, immediately before the key which starts the provider turn.
+pub async fn submit_terminal_transaction_with_hooks<S, F, Fut, G, Gfut>(
+    tx: &S,
+    profile: &DeliveryProfile,
+    prompt: &str,
+    on_payload_sent: F,
+    on_before_submit: G,
+) -> Result<TerminalDeliveryOutcome, TerminalDeliveryError>
+where
+    S: TerminalInputSink + ?Sized,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+    G: FnOnce() -> Gfut,
+    Gfut: Future<Output = ()>,
+{
     let plan = plan_terminal_payload(profile, prompt);
     if plan.payload_bytes.is_empty() {
         return Ok(TerminalDeliveryOutcome {
@@ -184,6 +204,7 @@ where
     on_payload_sent().await;
 
     tokio::time::sleep(std::time::Duration::from_millis(plan.submit_delay_ms)).await;
+    on_before_submit().await;
 
     tx.send_bytes(plan.submit_key).await.map_err(|e| {
         TerminalDeliveryError::terminal_state_unknown(
@@ -290,6 +311,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_transaction_runs_before_submit_hook_before_the_submit_key() {
+        let profile = zero_delay_profile("gemini");
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = RecordingSink {
+            events: Arc::clone(&events),
+        };
+        let payload_events = Arc::clone(&events);
+        let before_submit_events = Arc::clone(&events);
+
+        submit_terminal_transaction_with_hooks(
+            &sink,
+            &profile,
+            "hello",
+            move || async move {
+                payload_events
+                    .lock()
+                    .expect("events lock")
+                    .push("payload_hook");
+            },
+            move || async move {
+                before_submit_events
+                    .lock()
+                    .expect("events lock")
+                    .push("before_submit_hook");
+            },
+        )
+        .await
+        .expect("submit");
+
+        assert_eq!(
+            events.lock().expect("events lock").as_slice(),
+            [
+                "payload",
+                "payload_hook",
+                "before_submit_hook",
+                "submit_key"
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn submit_transaction_treats_empty_prompt_as_non_error() {
         let profile = zero_delay_profile("codex");
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
@@ -327,5 +389,26 @@ mod tests {
         assert!(error
             .message
             .contains("Failed to send prompt submit key after payload send"));
+    }
+
+    struct RecordingSink {
+        events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    }
+
+    impl TerminalInputSink for RecordingSink {
+        fn send_bytes(
+            &self,
+            bytes: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+            Box::pin(async move {
+                let event = if bytes == b"\r" {
+                    "submit_key"
+                } else {
+                    "payload"
+                };
+                self.events.lock().expect("events lock").push(event);
+                Ok(())
+            })
+        }
     }
 }

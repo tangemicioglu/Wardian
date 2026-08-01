@@ -9,7 +9,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex;
-use wardian_core::control::StructuredReply;
+use wardian_core::control::{
+    InteractionDeliveryAttemptRecord, InteractionStatus, MailboxDeliveryPhase,
+    MailboxMessageRecord, MailboxMessageStatus, StructuredReply,
+};
 
 pub struct LibraryWatchRegistration {
     pub watcher: notify::RecommendedWatcher,
@@ -127,11 +130,11 @@ impl AppState {
             .clone()
     }
 
-    pub async fn lock_agent_lifecycle(
-        &self,
-        session_id: &str,
-    ) -> tokio::sync::OwnedMutexGuard<()> {
-        self.agent_lifecycle_lock_for(session_id).await.lock_owned().await
+    pub async fn lock_agent_lifecycle(&self, session_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        self.agent_lifecycle_lock_for(session_id)
+            .await
+            .lock_owned()
+            .await
     }
 
     /// Tries to claim an agent's lifecycle gate without waiting. Headless
@@ -156,9 +159,61 @@ impl AppState {
             .lock()
             .await
             .remove_for_target(target_session_id);
+        let _ = wardian_core::db::delete_mailbox_messages_for_target(target_session_id);
         self.interactions
             .clear_provider_input_state(target_session_id)
             .await;
+    }
+
+    /// Restores pending live-surface messages after interaction state has been
+    /// hydrated. A completed or terminal attempt wins over an interrupted
+    /// in-memory dispatch, while a pre-submit attempt returns to the queue.
+    pub async fn hydrate_mailbox_from_persistence(&self) {
+        let Ok(records) = wardian_core::db::list_mailbox_messages() else {
+            return;
+        };
+
+        let mut restored = Vec::with_capacity(records.len());
+        for mut record in records {
+            match mailbox_recovery_status(&record) {
+                MailboxRecoveryStatus::Delivered => {
+                    let _ = wardian_core::db::delete_mailbox_message(&record.id);
+                    let _ = self
+                        .interactions
+                        .update_message_status_durable(
+                            &record.interaction_id,
+                            InteractionStatus::Delivered,
+                        )
+                        .await;
+                }
+                MailboxRecoveryStatus::Failed => {
+                    let _ = wardian_core::db::delete_mailbox_message(&record.id);
+                    let _ = self
+                        .interactions
+                        .update_message_status_durable(
+                            &record.interaction_id,
+                            InteractionStatus::Failed,
+                        )
+                        .await;
+                }
+                MailboxRecoveryStatus::Retry => {
+                    if record.status == MailboxMessageStatus::InFlight {
+                        record.status = MailboxMessageStatus::Pending;
+                        record.phase = MailboxDeliveryPhase::Queued;
+                        let _ = wardian_core::db::upsert_mailbox_message(&record);
+                    }
+                    let _ = self
+                        .interactions
+                        .update_message_status_durable(
+                            &record.interaction_id,
+                            InteractionStatus::Queued,
+                        )
+                        .await;
+                    restored.push(record);
+                }
+            }
+        }
+        self.mailbox.lock().await.hydrate(restored);
     }
 
     pub fn next_status_observation_sequence(&self, target_session_id: &str) -> u64 {
@@ -182,6 +237,57 @@ impl AppState {
             .map(|theme| theme.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MailboxRecoveryStatus {
+    Retry,
+    Delivered,
+    Failed,
+}
+
+fn mailbox_recovery_status(record: &MailboxMessageRecord) -> MailboxRecoveryStatus {
+    match record.status {
+        MailboxMessageStatus::Pending => return MailboxRecoveryStatus::Retry,
+        MailboxMessageStatus::Delivered => return MailboxRecoveryStatus::Delivered,
+        MailboxMessageStatus::Failed => return MailboxRecoveryStatus::Failed,
+        MailboxMessageStatus::InFlight => {}
+    }
+    let Ok(attempts) = wardian_core::db::list_interaction_delivery_attempts(&record.interaction_id)
+    else {
+        return MailboxRecoveryStatus::Retry;
+    };
+    let Some(attempt) = attempts.last() else {
+        return MailboxRecoveryStatus::Retry;
+    };
+    if mailbox_attempt_reached_submit(attempt) {
+        MailboxRecoveryStatus::Delivered
+    } else if mailbox_attempt_is_terminal_failure(attempt) {
+        MailboxRecoveryStatus::Failed
+    } else {
+        MailboxRecoveryStatus::Retry
+    }
+}
+
+fn mailbox_attempt_reached_submit(attempt: &InteractionDeliveryAttemptRecord) -> bool {
+    matches!(
+        attempt.delivery_state.as_str(),
+        "submitted" | "submit_sent_unverified" | "submit_sent_unconfirmed" | "provider_applied"
+    )
+}
+
+fn mailbox_attempt_is_terminal_failure(attempt: &InteractionDeliveryAttemptRecord) -> bool {
+    attempt.delivery_state == "failed"
+        && !matches!(
+            attempt.delivery_phase.as_deref(),
+            Some(
+                "target_config_failed"
+                    | "target_lookup_failed"
+                    | "input_channel_missing"
+                    | "terminal_ready_wait_failed"
+                    | "payload_send_failed"
+            )
+        )
 }
 
 fn normalize_terminal_theme(theme: &str) -> String {
@@ -231,7 +337,9 @@ impl Default for AppState {
 mod tests {
     use super::*;
     use crate::state::mailbox::MailboxMessageDraft;
-    use wardian_core::control::{MessageInputMode, QueuePolicy};
+    use wardian_core::control::{
+        DeliveryTransportKind, InteractionBodyRef, MessageInputMode, QueuePolicy,
+    };
 
     #[test]
     fn app_state_constructs_without_panic() {
@@ -284,5 +392,123 @@ mod tests {
             .await
             .list_for_target("agent-1")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn mailbox_hydration_restores_pending_delivery_after_a_restart() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
+        let seeded = AppState::new();
+        let interaction = seeded
+            .interactions
+            .create_message_durable(
+                None,
+                vec!["agent-1".to_string()],
+                InteractionBodyRef::Inline {
+                    body: "deliver later".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        let record = MailboxMessageRecord {
+            id: "msg_0000000000001_000001".to_string(),
+            interaction_id: interaction.id.clone(),
+            target_session_id: "agent-1".to_string(),
+            body: "deliver later".to_string(),
+            input_mode: MessageInputMode::Message,
+            queue_policy: QueuePolicy::QueueIfBusy,
+            approval_action: None,
+            origin: None,
+            created_at: "2026-08-01T00:00:00.000Z".to_string(),
+            status: MailboxMessageStatus::Pending,
+            phase: MailboxDeliveryPhase::Queued,
+        };
+        wardian_core::db::upsert_mailbox_message(&record).unwrap();
+
+        let restored = AppState::new();
+        restored.interactions.hydrate_from_persistence().await;
+        restored.hydrate_mailbox_from_persistence().await;
+
+        assert_eq!(
+            restored.mailbox.lock().await.list_for_target("agent-1"),
+            vec![record]
+        );
+        assert_eq!(
+            restored
+                .interactions
+                .interaction(&interaction.id)
+                .await
+                .unwrap()
+                .status,
+            InteractionStatus::Queued
+        );
+    }
+
+    #[tokio::test]
+    async fn mailbox_hydration_does_not_retry_a_message_with_a_submit_receipt() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
+        let seeded = AppState::new();
+        let interaction = seeded
+            .interactions
+            .create_message_durable(
+                None,
+                vec!["agent-1".to_string()],
+                InteractionBodyRef::Inline {
+                    body: "already submitted".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        let record = MailboxMessageRecord {
+            id: "msg_0000000000001_000002".to_string(),
+            interaction_id: interaction.id.clone(),
+            target_session_id: "agent-1".to_string(),
+            body: "already submitted".to_string(),
+            input_mode: MessageInputMode::Message,
+            queue_policy: QueuePolicy::QueueIfBusy,
+            approval_action: None,
+            origin: None,
+            created_at: "2026-08-01T00:00:00.000Z".to_string(),
+            status: MailboxMessageStatus::InFlight,
+            phase: MailboxDeliveryPhase::Dispatching,
+        };
+        wardian_core::db::upsert_mailbox_message(&record).unwrap();
+        wardian_core::db::upsert_interaction_delivery_attempt(&InteractionDeliveryAttemptRecord {
+            id: "attempt_submit_receipt".to_string(),
+            interaction_id: interaction.id.clone(),
+            target_session_id: "agent-1".to_string(),
+            transport: DeliveryTransportKind::LiveSurface,
+            generation: 1,
+            runtime_state: "mailbox_drain".to_string(),
+            delivery_state: "submit_sent_unconfirmed".to_string(),
+            delivery_phase: Some("submit_key_sent".to_string()),
+            observed_state: Some("bytes_sent".to_string()),
+            reason: None,
+            error: None,
+            created_at: "2026-08-01T00:00:01.000Z".to_string(),
+            updated_at: "2026-08-01T00:00:01.000Z".to_string(),
+        })
+        .unwrap();
+
+        let restored = AppState::new();
+        restored.interactions.hydrate_from_persistence().await;
+        restored.hydrate_mailbox_from_persistence().await;
+
+        assert!(restored.mailbox.lock().await.all().is_empty());
+        assert!(wardian_core::db::list_mailbox_messages()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            restored
+                .interactions
+                .interaction(&interaction.id)
+                .await
+                .unwrap()
+                .status,
+            InteractionStatus::Delivered
+        );
     }
 }

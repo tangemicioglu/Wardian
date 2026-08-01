@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 use crate::control::{
     DeliveryErrorDetail, DeliveryTransportKind, InteractionBodyRef,
     InteractionDeliveryAttemptRecord, InteractionKind, InteractionRecord, InteractionStatus,
-    InteractionTriggerPolicy, ProviderInputReadiness, ProviderInputState, ProviderReadyEvidence,
-    ReplyStatus, StructuredReply,
+    InteractionTriggerPolicy, MailboxDeliveryPhase, MailboxMessageRecord, MailboxMessageStatus,
+    MessageInputMode, MessageOrigin, ProviderInputReadiness, ProviderInputState,
+    ProviderReadyEvidence, QueuePolicy, ReplyStatus, StructuredReply,
 };
 
 static DB_CONN: Lazy<Arc<Mutex<Option<Connection>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
@@ -144,6 +145,28 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         "interaction_delivery_attempts",
         "transport",
         "TEXT NOT NULL DEFAULT 'live_surface'",
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS mailbox_messages (
+            id TEXT PRIMARY KEY,
+            interaction_id TEXT NOT NULL,
+            target_session_id TEXT NOT NULL,
+            body TEXT NOT NULL,
+            input_mode TEXT NOT NULL,
+            queue_policy TEXT NOT NULL,
+            approval_action TEXT,
+            origin TEXT,
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            FOREIGN KEY(interaction_id) REFERENCES interactions(id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mailbox_messages_target_status
+         ON mailbox_messages(target_session_id, status, created_at, id)",
+        [],
     )?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS interaction_events (
@@ -470,6 +493,145 @@ fn row_to_interaction_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<Intera
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
         completed_at: row.get(10)?,
+    })
+}
+
+pub fn upsert_mailbox_message(
+    record: &MailboxMessageRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        upsert_mailbox_message_with_conn(conn, record)?;
+        Ok(())
+    })
+}
+
+pub fn upsert_mailbox_message_with_conn(
+    conn: &Connection,
+    record: &MailboxMessageRecord,
+) -> rusqlite::Result<()> {
+    let approval_action = record
+        .approval_action
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(to_sql_error)?;
+    let origin = record
+        .origin
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(to_sql_error)?;
+    conn.execute(
+        "INSERT INTO mailbox_messages (
+            id,
+            interaction_id,
+            target_session_id,
+            body,
+            input_mode,
+            queue_policy,
+            approval_action,
+            origin,
+            created_at,
+            status,
+            phase
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(id) DO UPDATE SET
+            interaction_id = excluded.interaction_id,
+            target_session_id = excluded.target_session_id,
+            body = excluded.body,
+            input_mode = excluded.input_mode,
+            queue_policy = excluded.queue_policy,
+            approval_action = excluded.approval_action,
+            origin = excluded.origin,
+            status = excluded.status,
+            phase = excluded.phase",
+        params![
+            record.id,
+            record.interaction_id,
+            record.target_session_id,
+            record.body,
+            enum_value(&record.input_mode)?,
+            enum_value(&record.queue_policy)?,
+            approval_action,
+            origin,
+            record.created_at,
+            enum_value(&record.status)?,
+            enum_value(&record.phase)?,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_mailbox_messages() -> Result<Vec<MailboxMessageRecord>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| Ok(list_mailbox_messages_with_conn(conn)?))
+}
+
+pub fn list_mailbox_messages_with_conn(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<MailboxMessageRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+            id,
+            interaction_id,
+            target_session_id,
+            body,
+            input_mode,
+            queue_policy,
+            approval_action,
+            origin,
+            created_at,
+            status,
+            phase
+         FROM mailbox_messages
+         ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], row_to_mailbox_message)?;
+    rows.collect()
+}
+
+fn row_to_mailbox_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MailboxMessageRecord> {
+    let input_mode: String = row.get(4)?;
+    let queue_policy: String = row.get(5)?;
+    let approval_action: Option<String> = row.get(6)?;
+    let origin: Option<String> = row.get(7)?;
+    let status: String = row.get(9)?;
+    let phase: String = row.get(10)?;
+    Ok(MailboxMessageRecord {
+        id: row.get(0)?,
+        interaction_id: row.get(1)?,
+        target_session_id: row.get(2)?,
+        body: row.get(3)?,
+        input_mode: enum_from_value::<MessageInputMode>(&input_mode)?,
+        queue_policy: enum_from_value::<QueuePolicy>(&queue_policy)?,
+        approval_action: approval_action
+            .map(|value| serde_json::from_str(&value).map_err(to_sql_error))
+            .transpose()?,
+        origin: origin
+            .map(|value| serde_json::from_str::<MessageOrigin>(&value).map_err(to_sql_error))
+            .transpose()?,
+        created_at: row.get(8)?,
+        status: enum_from_value::<MailboxMessageStatus>(&status)?,
+        phase: enum_from_value::<MailboxDeliveryPhase>(&phase)?,
+    })
+}
+
+pub fn delete_mailbox_message(id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        conn.execute("DELETE FROM mailbox_messages WHERE id = ?1", params![id])?;
+        Ok(())
+    })
+}
+
+pub fn delete_mailbox_messages_for_target(
+    target_session_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        conn.execute(
+            "DELETE FROM mailbox_messages WHERE target_session_id = ?1",
+            params![target_session_id],
+        )?;
+        Ok(())
     })
 }
 
@@ -940,6 +1102,51 @@ mod tests {
     }
 
     #[test]
+    fn mailbox_messages_round_trip_through_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        upsert_interaction_record_with_conn(
+            &conn,
+            &InteractionRecord {
+                id: "int_001".to_string(),
+                kind: InteractionKind::Message,
+                sender_session_id: None,
+                target_session_ids: vec!["agent-1".to_string()],
+                status: InteractionStatus::Queued,
+                trigger_policy: InteractionTriggerPolicy::StartTurn,
+                body_ref: InteractionBodyRef::Inline {
+                    body: "deliver after the active turn".to_string(),
+                },
+                parent_interaction_id: None,
+                created_at: "2026-08-01T00:00:00.000Z".to_string(),
+                updated_at: "2026-08-01T00:00:00.000Z".to_string(),
+                completed_at: None,
+            },
+        )
+        .unwrap();
+        let record = MailboxMessageRecord {
+            id: "msg_0000000000001_000001".to_string(),
+            interaction_id: "int_001".to_string(),
+            target_session_id: "agent-1".to_string(),
+            body: "deliver after the active turn".to_string(),
+            input_mode: MessageInputMode::Message,
+            queue_policy: QueuePolicy::QueueIfBusy,
+            approval_action: None,
+            origin: None,
+            created_at: "2026-08-01T00:00:00.000Z".to_string(),
+            status: MailboxMessageStatus::Pending,
+            phase: MailboxDeliveryPhase::Queued,
+        };
+
+        upsert_mailbox_message_with_conn(&conn, &record).unwrap();
+
+        assert_eq!(
+            list_mailbox_messages_with_conn(&conn).unwrap(),
+            vec![record]
+        );
+    }
+
+    #[test]
     fn structured_replies_round_trip_through_db() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
@@ -1072,6 +1279,7 @@ mod interaction_tests {
         for table in [
             "interactions",
             "interaction_delivery_attempts",
+            "mailbox_messages",
             "interaction_events",
             "provider_input_state",
             "structured_replies",

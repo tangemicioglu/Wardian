@@ -200,6 +200,16 @@ reports `restart_required`, including class changes. `agent kill` is permanent:
 it removes the agent, its habitat, and its session history, while leaving the
 project workspace files untouched. It requires `--confirm` deliberately.
 
+`send` is one-way: it reports whether the message was submitted or queued, but
+does not return the target's answer. Use `ask` when an automation step needs a
+durable structured reply. When a normal live message is queued because the
+target is busy, Wardian persists it and retries after the target is safe for
+input, including after an app restart. A queued live message expires after five
+minutes rather than being injected into a later, unrelated turn. For a live message,
+`send --wait-until idle` waits for the provider-confirmed completion of the
+specific delivered turn rather than treating any brief Idle status observation
+as completion.
+
 ## Common Workflows
 
 Inspect your neighbors (default):
@@ -236,7 +246,8 @@ Reviewed the patch. No blocking findings.
 EOF
 ```
 
-Send a prompt to an existing agent and wait for the next Idle transition:
+Send a prompt to an existing agent and wait for provider-confirmed completion
+of that delivered turn:
 
 ```bash
 wardian send --file prompt.md --to coder-a1 --wait-until idle --timeout 10m
@@ -247,6 +258,11 @@ Watch retained readable output for a deterministic marker:
 ```bash
 wardian agent watch coder-a1 --until output:READY_FOR_REVIEW --include transcript,output,delivery --timeout 10m
 ```
+
+A conditional `agent watch --until ...` starts at the cursor observed when the
+command begins, so retained status history cannot satisfy a new wait. Omit
+`--until` to inspect retained history, or pass `--since <cursor>` when a
+historical condition is intentional.
 
 Send a human-facing update only when it changes the user's understanding or next decision:
 
@@ -417,7 +433,7 @@ PowerShell:
 
 `--as-command` sends the exact message body without the attribution prefix while still using the normal provider-aware submit path. It accepts only one explicit agent name or UUID, rejects `all` and `class:<ClassName>` with `not_supported`, and cannot be combined with `--thread`.
 
-`--wait-until <status>` is available for single-agent targets and waits from a pre-send watch cursor for a newer matching status observation. For an offline headless turn, `--wait-until idle` waits for that turn's durable `provider_applied` delivery event instead: the returned agent snapshot correctly remains `off` rather than inventing a live Idle session. `--thread` is reserved but not implemented yet; when the app is running, using it returns `not_supported`.
+`--wait-until <status>` is available for single-agent targets. A normal live send first waits for its own `submit_started` delivery boundary; `--wait-until idle` then waits for that exact provider turn's `turn_completed` event, rather than a retained or transient Idle observation. For an offline headless turn, `--wait-until idle` waits for that turn's durable `provider_applied` delivery event instead: the returned agent snapshot correctly remains `off` rather than inventing a live Idle session. `--thread` is reserved but not implemented yet; when the app is running, using it returns `not_supported`.
 
 Successful `send` responses include `input_mode` and `delivery[]`; command sends also include `delivery[].input_mode` so automation can confirm command delivery. Failed or partial delivery returns a nonzero exit with JSON on stderr and `details.delivery[]`, including `runtime_state`, `delivery_state`, and provider-specific input errors.
 

@@ -2,7 +2,7 @@ use crate::manager;
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
 };
-use crate::state::{AppState, MailboxMessageDraft};
+use crate::state::{AppState, MailboxMessageDraft, MailboxMessageRecord};
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -30,6 +30,7 @@ const STRUCTURED_ASK_INLINE_MESSAGE_MAX_BYTES: usize = 4096;
 const STRUCTURED_ASK_REQUESTS_DIR: &str = "requests";
 const CODEX_PAYLOAD_ECHO_TIMEOUT_MS: u64 = 750;
 const MAX_HEADLESS_DELIVERY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const MAX_MAILBOX_DELIVERY_AGE: Duration = Duration::from_secs(5 * 60);
 
 async fn rollback_agent_update(
     state: &AppState,
@@ -1309,14 +1310,15 @@ async fn deliver_message_to_target_with_headless_timeout(
             origin.map(|MessageOrigin::WardianAgent { session_id }| session_id.clone());
         let interaction = state
             .interactions
-            .create_message(
+            .create_message_durable(
                 sender_session_id,
                 vec![info.uuid.clone()],
                 InteractionBodyRef::Inline {
                     body: outbound_message.clone(),
                 },
             )
-            .await;
+            .await
+            .map_err(ControlError::request_failed)?;
         let interaction_id = interaction.id.clone();
         if let Some(app) = app {
             let _ = app.emit("pair-activity-changed", ());
@@ -1355,7 +1357,6 @@ async fn deliver_message_to_target_with_headless_timeout(
             DeliveryRoute::Mailbox { runtime_state } => {
                 queued += 1;
                 let queued_uuid = info.uuid.clone();
-                let queued_status = info.status.clone();
                 let detail = enqueue_mailbox_delivery(
                     state,
                     interaction_id.clone(),
@@ -1367,7 +1368,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                     origin,
                     runtime_state,
                 )
-                .await;
+                .await?;
                 persist_interaction_delivery_attempt(
                     state,
                     &interaction_id,
@@ -1378,7 +1379,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                 .await;
                 record_delivery_attempt(state, &detail).await;
                 if let Some(app) = app {
-                    spawn_mailbox_drain_if_idle(app, &queued_uuid, &queued_status);
+                    spawn_mailbox_retry_worker(app, &queued_uuid);
                 }
                 delivery.push(detail);
             }
@@ -1491,7 +1492,6 @@ async fn deliver_message_to_target_with_headless_timeout(
                         queued += 1;
                         let current_info = *current_info;
                         let queued_uuid = current_info.uuid.clone();
-                        let queued_status = current_info.status.clone();
                         let detail = enqueue_mailbox_delivery(
                             state,
                             interaction_id.clone(),
@@ -1503,7 +1503,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                             origin,
                             "conversation_leased",
                         )
-                        .await;
+                        .await?;
                         persist_interaction_delivery_attempt(
                             state,
                             &interaction_id,
@@ -1514,7 +1514,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                         .await;
                         record_delivery_attempt(state, &detail).await;
                         if let Some(app) = app {
-                            spawn_mailbox_drain_if_idle(app, &queued_uuid, &queued_status);
+                            spawn_mailbox_retry_worker(app, &queued_uuid);
                         }
                         delivery.push(detail);
                     }
@@ -1696,19 +1696,28 @@ async fn enqueue_mailbox_delivery(
     approval_action: Option<&ApprovalAction>,
     origin: Option<&MessageOrigin>,
     runtime_state: &str,
-) -> DeliveryDetail {
-    let mut mailbox = state.mailbox.lock().await;
-    let record = mailbox.enqueue(MailboxMessageDraft {
-        interaction_id,
-        target_session_id: info.uuid.clone(),
-        body,
-        input_mode,
-        queue_policy,
-        approval_action: approval_action.cloned(),
-        origin: origin.cloned(),
-    });
+) -> Result<DeliveryDetail, ControlError> {
+    let record = {
+        let mut mailbox = state.mailbox.lock().await;
+        let record = mailbox.enqueue(MailboxMessageDraft {
+            interaction_id,
+            target_session_id: info.uuid.clone(),
+            body,
+            input_mode,
+            queue_policy,
+            approval_action: approval_action.cloned(),
+            origin: origin.cloned(),
+        });
+        if let Err(error) = wardian_core::db::upsert_mailbox_message(&record) {
+            mailbox.remove(&record.id);
+            return Err(ControlError::request_failed(format!(
+                "failed to persist queued mailbox message: {error}"
+            )));
+        }
+        record
+    };
 
-    DeliveryDetail {
+    Ok(DeliveryDetail {
         uuid: info.uuid,
         name: info.name,
         provider: info.provider,
@@ -1722,7 +1731,7 @@ async fn enqueue_mailbox_delivery(
         reason: Some("target was not safe for live delivery".to_string()),
         profile: None,
         error: None,
-    }
+    })
 }
 
 enum HeadlessMessageDelivery {
@@ -3539,10 +3548,20 @@ async fn handle_agent_watch(
         .await
         .ok_or_else(|| ControlError::not_found(format!("agent not found: {target}")))?;
     let watch_state = agent_watch_state(&state, &uuid).await?;
+    // A conditional watch answers whether a new observation satisfies the
+    // condition. An unanchored snapshot intentionally still returns retained
+    // history, but treating retained history as a completion signal made
+    // `--until status:idle` succeed on an old idle blip.
+    let since = {
+        let guard = watch_state
+            .lock()
+            .map_err(|_| ControlError::request_failed("watch state lock poisoned"))?;
+        watch_start_cursor(&guard, options.since, condition.is_some())
+    };
     let snapshot = if let Some(condition) = condition {
         wait_for_watch_condition(
             watch_state,
-            options.since,
+            since,
             condition,
             Duration::from_millis(options.timeout_ms.unwrap_or(30_000)),
             options.tail_bytes,
@@ -3553,13 +3572,21 @@ async fn handle_agent_watch(
         watch_state
             .lock()
             .map_err(|_| ControlError::request_failed("watch state lock poisoned"))?
-            .snapshot_since(options.since.as_deref(), options.tail_bytes)
+            .snapshot_since(since.as_deref(), options.tail_bytes)
             .map_err(control_error_from_watch_state)?
     };
     let agent = watch_agent_snapshot(&state, &uuid).await?;
     let includes = WatchIncludes::from_values(&options.include);
 
     ok_json(&build_agent_watch_response(agent, snapshot, &includes))
+}
+
+fn watch_start_cursor(
+    state: &crate::state::AgentWatchState,
+    requested_since: Option<String>,
+    has_condition: bool,
+) -> Option<String> {
+    requested_since.or_else(|| has_condition.then(|| state.latest_cursor()))
 }
 
 struct AgentWatchControlOptions {
@@ -4317,24 +4344,36 @@ pub(crate) fn spawn_mailbox_drain_if_idle(
     if normalize_status(observed_status) != "idle" {
         return;
     }
+    spawn_mailbox_retry_worker(app, session_id);
+}
 
+/// Starts one persistent retry worker for a target that has pending mailbox
+/// entries. The worker is deliberately owned by `MailboxState`, so repeated
+/// status observations cannot create competing retry loops or strand a new
+/// message while an old loop is exiting.
+pub(crate) fn spawn_mailbox_retry_worker(app: &AppHandle, session_id: &str) {
     let app = app.clone();
     let session_id = session_id.to_string();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let _ = drain_next_mailbox_message_for_idle_agent(Some(&app), &state, &session_id).await;
-    });
-}
+        let claimed = state.mailbox.lock().await.claim_retry_worker(&session_id);
+        if !claimed {
+            return;
+        }
 
-fn spawn_delayed_mailbox_drain_retry(app: Option<&AppHandle>, session_id: &str) {
-    let Some(app) = app.cloned() else {
-        return;
-    };
-    let session_id = session_id.to_string();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(2_000)).await;
-        let state = app.state::<AppState>();
-        let _ = drain_next_mailbox_message_for_idle_agent(Some(&app), &state, &session_id).await;
+        loop {
+            let _ =
+                drain_next_mailbox_message_for_idle_agent(Some(&app), &state, &session_id).await;
+            let continue_retrying = state
+                .mailbox
+                .lock()
+                .await
+                .continue_retry_worker(&session_id);
+            if !continue_retrying {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
     });
 }
 
@@ -4356,6 +4395,9 @@ async fn drain_next_mailbox_message_for_idle_agent(
         .into_iter()
         .next()
         .ok_or_else(|| ControlError::not_found(format!("agent not found: {session_id}")))?;
+    if let Some(detail) = expire_next_stale_mailbox_message(state, &info).await {
+        return Ok(Some(detail));
+    }
     if info.status != "idle" {
         return Ok(None);
     }
@@ -4373,6 +4415,27 @@ async fn drain_next_mailbox_message_for_idle_agent(
     let Some(record) = record else {
         return Ok(None);
     };
+
+    let dispatch_persist_error = wardian_core::db::upsert_mailbox_message(&record)
+        .err()
+        .map(|error| error.to_string());
+    if let Some(error) = dispatch_persist_error {
+        state.mailbox.lock().await.mark_pending(&record.id);
+        return Err(ControlError::request_failed(format!(
+            "failed to persist mailbox dispatch state: {error}"
+        )));
+    }
+    if let Err(error) = state
+        .interactions
+        .update_message_status_durable(&record.interaction_id, InteractionStatus::Delivering)
+        .await
+    {
+        let requeued = state.mailbox.lock().await.mark_pending(&record.id);
+        if let Some(requeued) = requeued {
+            let _ = wardian_core::db::upsert_mailbox_message(&requeued);
+        }
+        return Err(ControlError::request_failed(error));
+    }
 
     let target_uuid = info.uuid.clone();
     let submit_started = DeliveryDetail {
@@ -4412,16 +4475,50 @@ async fn drain_next_mailbox_message_for_idle_agent(
     let detail = match result {
         Ok(result) => {
             state.mailbox.lock().await.mark_delivered(&record.id);
+            let _ = wardian_core::db::delete_mailbox_message(&record.id);
+            let _ = state
+                .interactions
+                .update_message_status_durable(&record.interaction_id, InteractionStatus::Delivered)
+                .await;
             let mut detail = result.detail;
             detail.message_id = Some(record.id.clone());
             detail
         }
         Err(error) => {
-            let retry_safe = error.retry_safe;
+            let missing_ready_input_channel = error.detail.as_ref().is_some_and(|detail| {
+                detail
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == "no_input_channel")
+            }) && matches!(
+                provider_input_current_state(state, session_id).await,
+                Some(ProviderInputReadiness::Ready)
+            );
+            let retry_safe = error.retry_safe && !missing_ready_input_channel;
             if retry_safe {
-                state.mailbox.lock().await.mark_pending(&record.id);
+                let requeued = state.mailbox.lock().await.mark_pending(&record.id);
+                if let Some(requeued) = requeued {
+                    let _ = wardian_core::db::upsert_mailbox_message(&requeued);
+                }
+                let _ = state
+                    .interactions
+                    .update_message_status_durable(
+                        &record.interaction_id,
+                        InteractionStatus::Queued,
+                    )
+                    .await;
             } else {
-                state.mailbox.lock().await.mark_failed(&record.id);
+                let terminal = state.mailbox.lock().await.mark_failed(&record.id);
+                if let Some(terminal) = terminal {
+                    persist_terminal_mailbox_record(&terminal);
+                }
+                let _ = state
+                    .interactions
+                    .update_message_status_durable(
+                        &record.interaction_id,
+                        InteractionStatus::Failed,
+                    )
+                    .await;
             }
             let service_recorded_detail = error.detail.is_some();
             let mut detail = if let Some(detail) = error.detail {
@@ -4446,6 +4543,8 @@ async fn drain_next_mailbox_message_for_idle_agent(
             }
             detail.reason = Some(if retry_safe {
                 "queued message remains pending for retry".to_string()
+            } else if missing_ready_input_channel {
+                "agent reported ready but its input channel was unavailable; retry was stopped to prevent late delivery".to_string()
             } else {
                 "queued message marked failed because terminal state is partial or unknown"
                     .to_string()
@@ -4461,14 +4560,82 @@ async fn drain_next_mailbox_message_for_idle_agent(
                 .await;
                 record_delivery_attempt(state, &detail).await;
             }
-            if retry_safe {
-                spawn_delayed_mailbox_drain_retry(app, session_id);
-            }
             detail
         }
     };
 
     Ok(Some(detail))
+}
+
+fn mailbox_delivery_is_expired(record: &MailboxMessageRecord) -> bool {
+    let Ok(created_at) = chrono::DateTime::parse_from_rfc3339(&record.created_at) else {
+        return true;
+    };
+    let age = chrono::Utc::now().signed_duration_since(created_at.with_timezone(&chrono::Utc));
+    age >= chrono::Duration::seconds(MAX_MAILBOX_DELIVERY_AGE.as_secs() as i64)
+}
+
+fn persist_terminal_mailbox_record(record: &MailboxMessageRecord) {
+    // A terminal record must win over a crash or transient delete failure: it
+    // is safer to retain the terminal row for startup reconciliation than to
+    // resurrect a message that should never be submitted again.
+    if let Err(error) = wardian_core::db::upsert_mailbox_message(record) {
+        manager::log_debug(&format!(
+            "[Wardian] failed to persist terminal mailbox message {}: {error}",
+            record.id
+        ));
+    }
+    if let Err(error) = wardian_core::db::delete_mailbox_message(&record.id) {
+        manager::log_debug(&format!(
+            "[Wardian] failed to remove terminal mailbox message {}: {error}",
+            record.id
+        ));
+    }
+}
+
+async fn expire_next_stale_mailbox_message(
+    state: &AppState,
+    info: &DeliveryTargetInfo,
+) -> Option<DeliveryDetail> {
+    let terminal = {
+        let mut mailbox = state.mailbox.lock().await;
+        let pending = mailbox.next_pending_for_target(&info.uuid)?;
+        if !mailbox_delivery_is_expired(&pending) {
+            return None;
+        }
+        mailbox.mark_failed(&pending.id)?
+    };
+    persist_terminal_mailbox_record(&terminal);
+    let _ = state
+        .interactions
+        .update_message_status_durable(&terminal.interaction_id, InteractionStatus::Failed)
+        .await;
+
+    let mut detail = failed_delivery_detail(
+        info.clone(),
+        "mailbox_drain",
+        "delivery_expired",
+        format!(
+            "queued delivery expired after {} seconds before provider submission",
+            MAX_MAILBOX_DELIVERY_AGE.as_secs()
+        ),
+        terminal.input_mode,
+        terminal.queue_policy,
+    );
+    detail.message_id = Some(terminal.id.clone());
+    detail.delivery_phase = Some("queue_expired".to_string());
+    detail.reason =
+        Some("queued delivery exceeded its retry window and was not submitted".to_string());
+    persist_interaction_delivery_attempt(
+        state,
+        &terminal.interaction_id,
+        &info.uuid,
+        DeliveryTransportKind::LiveSurface,
+        &detail,
+    )
+    .await;
+    record_delivery_attempt(state, &detail).await;
+    Some(detail)
 }
 
 async fn agent_config_to_identity(
@@ -7343,6 +7510,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mailbox_drain_stops_when_a_ready_agent_has_no_input_channel() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            *agent.current_status.lock().unwrap() = "Action Required".to_string();
+        }
+
+        let queued = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "queued work",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let message_id = queued[0].message_id.clone().unwrap();
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        state
+            .interactions
+            .record_provider_input_state(
+                "agent-1",
+                1,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+
+        let attempt = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+            .await
+            .unwrap()
+            .expect("drain attempt");
+
+        assert_eq!(attempt.delivery_state, "failed");
+        assert_eq!(attempt.message_id.as_deref(), Some(message_id.as_str()));
+        assert_eq!(
+            attempt.error.as_ref().map(|error| error.code.as_str()),
+            Some("no_input_channel")
+        );
+        assert!(attempt
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("retry was stopped"));
+        let records = state.mailbox.lock().await.list_for_target("agent-1");
+        assert_eq!(
+            records[0].status,
+            crate::state::MailboxMessageStatus::Failed
+        );
+    }
+
+    #[test]
+    fn mailbox_delivery_expires_after_the_bounded_retry_window() {
+        let mut record = MailboxMessageRecord {
+            id: "msg_2026080100000_000001".to_string(),
+            interaction_id: "int_expired".to_string(),
+            target_session_id: "agent-1".to_string(),
+            body: "stale work".to_string(),
+            input_mode: MessageInputMode::Message,
+            queue_policy: QueuePolicy::QueueIfBusy,
+            approval_action: None,
+            origin: None,
+            created_at: (chrono::Utc::now() - chrono::Duration::minutes(6))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            status: crate::state::MailboxMessageStatus::Pending,
+            phase: crate::state::MailboxDeliveryPhase::Queued,
+        };
+
+        assert!(mailbox_delivery_is_expired(&record));
+
+        record.created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        assert!(!mailbox_delivery_is_expired(&record));
+    }
+
+    #[tokio::test]
     async fn mailbox_drain_submit_key_failure_marks_failed_without_retry() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
@@ -8103,6 +8357,43 @@ mod tests {
             response.raw_output.as_ref().unwrap().text,
             "\u{1b}[31mreadable\u{1b}[0m"
         );
+    }
+
+    #[test]
+    fn conditional_watch_ignores_retained_idle_until_a_new_observation_arrives() {
+        let mut state = crate::state::AgentWatchState::new("agent-1".to_string(), 16, 1024);
+        state.push_event("status", serde_json::json!({"status":"idle"}));
+
+        let since = watch_start_cursor(&state, None, true).expect("conditional baseline");
+        let stale_snapshot = state.snapshot_since(Some(&since), Some(1024)).unwrap();
+        assert!(!watch_condition_matches(
+            &WatchCondition::Status("idle".to_string()),
+            &stale_snapshot,
+            None,
+        ));
+
+        state.push_event("status", serde_json::json!({"status":"idle"}));
+        let fresh_snapshot = state.snapshot_since(Some(&since), Some(1024)).unwrap();
+        assert!(watch_condition_matches(
+            &WatchCondition::Status("idle".to_string()),
+            &fresh_snapshot,
+            None,
+        ));
+    }
+
+    #[test]
+    fn conditional_watch_honors_an_explicit_historical_cursor() {
+        let mut state = crate::state::AgentWatchState::new("agent-1".to_string(), 16, 1024);
+        let historical_cursor = state.latest_cursor();
+        state.push_event("status", serde_json::json!({"status":"idle"}));
+
+        let since = watch_start_cursor(&state, Some(historical_cursor), true);
+        let snapshot = state.snapshot_since(since.as_deref(), Some(1024)).unwrap();
+        assert!(watch_condition_matches(
+            &WatchCondition::Status("idle".to_string()),
+            &snapshot,
+            None,
+        ));
     }
 
     #[test]

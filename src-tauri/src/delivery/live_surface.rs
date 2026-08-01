@@ -7,10 +7,8 @@ use wardian_core::control::{
 use crate::state::AppState;
 use crate::utils::delivery_transaction::{BrokerTerminalInputSink, TerminalDeliveryError};
 
-type LiveSurfaceTargetResult = Result<
-    (String, String),
-    (Option<LiveSurfaceTarget>, FailedLiveSurfaceAttempt),
->;
+type LiveSurfaceTargetResult =
+    Result<(String, String), (Option<LiveSurfaceTarget>, FailedLiveSurfaceAttempt)>;
 
 #[derive(Debug, Clone)]
 pub struct LiveSurfacePromptRequest {
@@ -64,6 +62,34 @@ impl LiveSurfacePromptRequest {
             delivery_message_id: None,
         }
     }
+}
+
+fn automatic_payload_started_detail(
+    request: &LiveSurfacePromptRequest,
+    interaction_id: &str,
+    name: &str,
+    provider: &str,
+) -> Option<DeliveryDetail> {
+    (request.input_mode == MessageInputMode::Message).then(|| DeliveryDetail {
+        uuid: request.session_id.clone(),
+        name: name.to_string(),
+        provider: provider.to_string(),
+        runtime_state: request.runtime_state.to_string(),
+        delivery_state: "submit_started".to_string(),
+        input_mode: request.input_mode,
+        queue_policy: request.queue_policy,
+        message_id: Some(
+            request
+                .delivery_message_id
+                .clone()
+                .unwrap_or_else(|| interaction_id.to_string()),
+        ),
+        delivery_phase: Some("payload_sent".to_string()),
+        observed_state: Some("payload_sent".to_string()),
+        reason: None,
+        profile: Some(crate::utils::delivery_profile::delivery_profile(provider).provider),
+        error: None,
+    })
 }
 
 pub async fn submit_live_surface_prompt(
@@ -166,10 +192,24 @@ pub async fn submit_live_surface_prompt(
         )
         .await);
     }
-    let input = BrokerTerminalInputSink::new(
-        state.terminal_sessions.clone(),
-        request.session_id.clone(),
-    );
+    let input =
+        BrokerTerminalInputSink::new(state.terminal_sessions.clone(), request.session_id.clone());
+    // This event is intentionally emitted after the payload reaches the PTY
+    // but before the submit key. It gives a send-and-watch caller a durable
+    // ordering boundary that precedes every provider response for this exact
+    // message, including very fast turns that finish before the final submit
+    // receipt can be recorded.
+    let payload_sent_detail = request
+        .payload_sent_detail
+        .clone()
+        .or_else(|| automatic_payload_started_detail(&request, &interaction_id, &name, &provider));
+    // The prompt must be marked processing before the submit key can start a
+    // provider turn. Otherwise a very fast provider can emit completion while
+    // the agent is still idle, which suppresses the completion watch event.
+    let mark_prompt_started_before_submit = request.mark_prompt_started
+        && request.input_mode == MessageInputMode::Message
+        && !crate::utils::terminal_input::normalize_prompt_for_terminal_submit(&request.prompt)
+            .is_empty();
 
     let outcome = if let (MessageInputMode::ApprovalAction, Some(action)) =
         (request.input_mode, request.approval_action.as_ref())
@@ -226,8 +266,9 @@ pub async fn submit_live_surface_prompt(
         let wait_session_id = request.session_id.clone();
         let wait_provider = provider.clone();
         let wait_prompt = request.prompt.clone();
-        let payload_sent_detail = request.payload_sent_detail.clone();
-        match crate::utils::terminal_input::submit_prompt_with_outcome_via_sender_after_payload(
+        let prompt_started_app = app.cloned();
+        let prompt_started_session_id = request.session_id.clone();
+        match crate::utils::terminal_input::submit_prompt_with_outcome_via_sender_after_payload_and_before_submit(
             &input,
             &request.prompt,
             &provider,
@@ -248,6 +289,16 @@ pub async fn submit_live_surface_prompt(
                     &wait_prompt,
                 )
                 .await;
+            },
+            || async move {
+                if mark_prompt_started_before_submit {
+                    crate::control::mark_delivered_agents_prompt_started_for_delivery_service(
+                        prompt_started_app.as_ref(),
+                        state,
+                        std::slice::from_ref(&prompt_started_session_id),
+                    )
+                    .await;
+                }
             },
         )
         .await
@@ -315,7 +366,7 @@ pub async fn submit_live_surface_prompt(
         })?;
     crate::control::push_delivery_for_delivery_service(state, &request.session_id, &detail).await;
 
-    if request.mark_prompt_started {
+    if request.mark_prompt_started && !mark_prompt_started_before_submit {
         crate::control::mark_delivered_agents_prompt_started_for_delivery_service(
             app,
             state,
@@ -481,5 +532,26 @@ mod tests {
         assert_eq!(request.queue_policy, QueuePolicy::LiveOnly);
         assert_eq!(request.runtime_state, "live_pty_available");
         assert!(request.mark_prompt_started);
+    }
+
+    #[test]
+    fn live_message_gets_a_submit_started_event_before_the_submit_key() {
+        let mut request = LiveSurfacePromptRequest::message("agent-1", "hello");
+        request.delivery_message_id = Some("msg_1".to_string());
+
+        let detail = automatic_payload_started_detail(&request, "int_1", "Coder", "codex")
+            .expect("message delivery detail");
+
+        assert_eq!(detail.delivery_state, "submit_started");
+        assert_eq!(detail.delivery_phase.as_deref(), Some("payload_sent"));
+        assert_eq!(detail.message_id.as_deref(), Some("msg_1"));
+    }
+
+    #[test]
+    fn approval_delivery_does_not_emit_a_message_submit_started_event() {
+        let mut request = LiveSurfacePromptRequest::message("agent-1", "hello");
+        request.input_mode = MessageInputMode::ApprovalAction;
+
+        assert!(automatic_payload_started_detail(&request, "int_1", "Coder", "codex").is_none());
     }
 }

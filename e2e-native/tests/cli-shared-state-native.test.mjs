@@ -24,6 +24,7 @@ const CONTROL_CLONE_NAME = `E2E-CLI-CONTROL-CLONE-${RUN_ID}`;
 const ASK_SESSION_NAME = `E2E-CLI-ASK-${RUN_ID}`;
 const ASK_ECHO_SESSION_NAME = `E2E-CLI-ASK-ECHO-${RUN_ID}`;
 const ASK_STRUCTURED_SESSION_NAME = `E2E-CLI-ASK-STRUCTURED-${RUN_ID}`;
+const SEND_IDLE_SESSION_NAME = `E2E-CLI-SEND-IDLE-${RUN_ID}`;
 const WATCH_READABLE_SESSION_NAME = `E2E-CLI-WATCH-READABLE-${RUN_ID}`;
 const ROUTE_QUEUE_SESSION_NAME = `E2E-CLI-ROUTE-QUEUE-${RUN_ID}`;
 const ROUTE_LIVE_ONLY_SESSION_NAME = `E2E-CLI-ROUTE-LIVE-${RUN_ID}`;
@@ -195,15 +196,13 @@ async function waitForDeliveryState(cliPath, harness, target, state, messageId, 
       "agent",
       "watch",
       target,
-      "--until",
-      `delivery:${state}`,
       "--include",
       "delivery,events",
       "--timeout",
       "5s",
     ];
     if (since) {
-      args.push("--since", since);
+      args.push("--since", since, "--until", `delivery:${state}`);
     }
 
     lastResult = runCli(cliPath, harness, args);
@@ -233,15 +232,13 @@ async function waitForWatchEventKind(cliPath, harness, target, kind, timeoutMs =
       "agent",
       "watch",
       target,
-      "--until",
-      `event:${kind}`,
       "--include",
       "events",
       "--timeout",
       "5s",
     ];
     if (since) {
-      args.push("--since", since);
+      args.push("--since", since, "--until", `event:${kind}`);
     }
 
     lastResult = runCli(cliPath, harness, args);
@@ -258,6 +255,36 @@ async function waitForWatchEventKind(cliPath, harness, target, kind, timeoutMs =
 
   assert.fail(
     `Timed out waiting for event ${kind}; last result: ${JSON.stringify(lastResult)}`,
+  );
+}
+
+async function waitForWatchStatus(cliPath, harness, target, status, timeoutMs = 30000) {
+  const startedAt = Date.now();
+  let lastResult = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    lastResult = runCli(cliPath, harness, [
+      "agent",
+      "watch",
+      target,
+      "--include",
+      "events",
+      "--timeout",
+      "5s",
+    ]);
+    if (lastResult.status === 0) {
+      const json = JSON.parse(lastResult.stdout);
+      if (json.events.some((event) => (
+        event.kind === "status" && event.payload.status === status
+      ))) {
+        return json;
+      }
+    }
+    await delay(250);
+  }
+
+  assert.fail(
+    `Timed out waiting for status ${status}; last result: ${JSON.stringify(lastResult)}`,
   );
 }
 
@@ -640,8 +667,6 @@ test("native CLI send runs an off agent headlessly and retains its response", { 
       "agent",
       "watch",
       HEADLESS_SEND_SESSION_NAME,
-      "--until",
-      "output:Mock headless execution completed successfully.",
       "--include",
       "delivery,output,transcript",
       "--timeout",
@@ -1364,6 +1389,79 @@ test("native CLI structured ask completes only on explicit reply", { timeout: 18
   assert.doesNotMatch(askJson.reply.body, /Echoed request id/);
 });
 
+test("native CLI send waits for a provider-confirmed live turn", { timeout: 180000 }, async (t) => {
+  const harness = await createNativeHarness();
+  assert.ok(harness.appPath);
+
+  try {
+    if (!skipNativeBuild) {
+      ensureNativeAppBuilt(harness);
+    }
+  } catch (error) {
+    t.skip(String(error));
+    return;
+  }
+
+  prepareIsolatedHome(harness);
+
+  const cliPath = buildCli(harness);
+  const workspacePath = path.join(harness.repoRoot, "e2e-native");
+
+  let session;
+  try {
+    session = await startNativeSession(harness);
+  } catch (error) {
+    t.skip(String(error));
+    return;
+  }
+
+  t.after(async () => {
+    await session.close();
+  });
+
+  await waitForAppShell(session.driver, 20000);
+  const agent = await createMockAgent(session.driver, workspacePath, {
+    sessionId: `e2e-cli-send-idle-${RUN_ID}`,
+    sessionName: SEND_IDLE_SESSION_NAME,
+    isOff: false,
+    mockScenario: "interactive_echo_then_response",
+    mockDelayMs: 50,
+  });
+  await setAgentStatus(session.driver, agent.session_id, "idle");
+  await waitForCliField(cliPath, harness, SEND_IDLE_SESSION_NAME, "status", "idle");
+
+  const sendResult = runCliOk(cliPath, harness, [
+    "send",
+    "SEND_IDLE_TURN_MARKER",
+    "--to",
+    SEND_IDLE_SESSION_NAME,
+    "--wait-until",
+    "idle",
+    "--timeout",
+    "30s",
+  ]);
+  const send = JSON.parse(sendResult.stdout);
+  assert.equal(send.ok, true);
+  assert.equal(send.status, "idle");
+  assert.equal(send.delivery[0].delivery_state, "submit_sent_unconfirmed");
+
+  const watch = runCliOk(cliPath, harness, [
+    "agent",
+    "watch",
+    SEND_IDLE_SESSION_NAME,
+    "--include",
+    "events,output",
+    "--timeout",
+    "5s",
+  ]);
+  const watched = JSON.parse(watch.stdout);
+  assert.match(watched.output.text, /Actual response after echo: SEND_IDLE_TURN_MARKER/);
+  assert.ok(
+    watched.events.some((event) => event.kind === "turn_completed"),
+    "provider completion must be represented in the watch stream",
+  );
+});
+
 test("native CLI send routes processing mock by queue policy", { timeout: 180000 }, async (t) => {
     const harness = await createNativeHarness();
     assert.ok(harness.appPath);
@@ -1496,8 +1594,6 @@ test("native CLI watch returns readable output by default and raw output on opt-
     "agent",
     "watch",
     WATCH_READABLE_SESSION_NAME,
-    "--until",
-    "output:ANSI readable answer",
     "--include",
     "output,transcript",
     "--timeout",
@@ -1521,6 +1617,37 @@ test("native CLI watch returns readable output by default and raw output on opt-
   ]);
   const raw = JSON.parse(rawResult.stdout);
   assert.match(raw.raw_output.text, /\x1b\[31mANSI_TERMINAL_LINE\x1b\[0m/);
+
+  await setAgentStatus(session.driver, agent.session_id, "idle");
+  await waitForCliField(cliPath, harness, WATCH_READABLE_SESSION_NAME, "status", "idle");
+  await waitForWatchStatus(cliPath, harness, WATCH_READABLE_SESSION_NAME, "idle");
+  const idleWatch = runCliAsync(cliPath, harness, [
+    "agent",
+    "watch",
+    WATCH_READABLE_SESSION_NAME,
+    "--until",
+    "status:idle",
+    "--include",
+    "events",
+    "--timeout",
+    "5s",
+  ]);
+  const staleIdleResult = await Promise.race([
+    idleWatch.then(() => "completed"),
+    delay(750).then(() => "pending"),
+  ]);
+  assert.equal(staleIdleResult, "pending", "retained idle must not satisfy a fresh conditional watch");
+
+  await setAgentStatus(session.driver, agent.session_id, "processing");
+  await waitForCliField(cliPath, harness, WATCH_READABLE_SESSION_NAME, "status", "processing");
+  await setAgentStatus(session.driver, agent.session_id, "idle");
+  const idleResult = await idleWatch;
+  assert.equal(idleResult.status, 0, idleResult.stderr);
+  assert.ok(
+    JSON.parse(idleResult.stdout).events.some((event) => (
+      event.kind === "status" && event.payload.status === "idle"
+    )),
+  );
 });
 
 test.skip("real Codex CLI send submits without leaving residual prompt text", () => {

@@ -210,7 +210,7 @@ impl AgentProvider for OpenCodeProvider {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 match reason {
-                    "stop" => Some(AgentEvent::ModelResponse),
+                    "stop" => Some(AgentEvent::TurnCompleted),
                     "tool-calls" => Some(AgentEvent::Generating),
                     _ => Some(AgentEvent::Unknown),
                 }
@@ -311,12 +311,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_output_step_finish_stop_is_model_response() {
+    fn parse_output_step_finish_stop_is_turn_completed() {
         let provider = make_provider();
         let line = r#"{"type":"step_finish","sessionID":"ses_test","part":{"reason":"stop"}}"#;
         assert_eq!(
             provider.parse_output(line).unwrap(),
-            AgentEvent::ModelResponse
+            AgentEvent::TurnCompleted
         );
     }
 

@@ -886,25 +886,19 @@ fn send_message_and_watch_condition_with_output_echo_guard(
     )?;
     let started_at = Instant::now();
     let condition = effective_send_watch_condition(request.condition, &sent.delivery);
-    let queued_message_ids = queued_delivery_message_ids(&sent.delivery);
-    let condition_since = if !queued_message_ids.is_empty()
-        && condition_requires_queued_delivery_submission(&condition)
-    {
-        wait_for_queued_delivery_submission(
-            request.target,
-            &initial.cursor,
-            &queued_message_ids,
-            request.tail_bytes,
-            remaining_watch_timeout(
-                request.timeout,
-                started_at,
+    let delivery_message_ids = live_delivery_message_ids(&sent.delivery);
+    let condition_since =
+        if !delivery_message_ids.is_empty() && condition_requires_delivery_submission(&condition) {
+            wait_for_delivery_submission(
                 request.target,
-                &condition,
-            )?,
-        )?
-    } else {
-        initial.cursor.clone()
-    };
+                &initial.cursor,
+                &delivery_message_ids,
+                request.tail_bytes,
+                remaining_watch_timeout(request.timeout, started_at, request.target, &condition)?,
+            )?
+        } else {
+            initial.cursor.clone()
+        };
     let watch = agent_watch_with_output_echo_guard(AgentWatchRequest {
         target: request.target,
         since: Some(&condition_since),
@@ -917,12 +911,7 @@ fn send_message_and_watch_condition_with_output_echo_guard(
         ],
         tail_bytes: request.tail_bytes,
         follow: false,
-        timeout: remaining_watch_timeout(
-            request.timeout,
-            started_at,
-            request.target,
-            &condition,
-        )?,
+        timeout: remaining_watch_timeout(request.timeout, started_at, request.target, &condition)?,
         output_echo_guard: request.output_echo_guard,
     })?;
     Ok(AskAgentResponse {
@@ -1018,16 +1007,28 @@ fn ask_prompt_echo_guard<'a>(condition: &str, message: &'a str) -> Option<&'a st
     (!token.is_empty() && message.contains(token)).then_some(message)
 }
 
-fn queued_delivery_message_ids(delivery: &[DeliveryDetail]) -> Vec<String> {
+/// Returns the live-surface message IDs whose eventual provider turn belongs
+/// to this send. Both immediately submitted and mailbox-queued sends need an
+/// exact delivery anchor before a status, output, or turn-completion watch can
+/// be trusted.
+fn live_delivery_message_ids(delivery: &[DeliveryDetail]) -> Vec<String> {
     delivery
         .iter()
-        .filter(|detail| detail.delivery_state == "queued")
+        .filter(|detail| is_live_message_delivery(detail))
         .filter_map(|detail| detail.message_id.clone())
         .collect()
 }
 
-fn condition_requires_queued_delivery_submission(condition: &str) -> bool {
-    condition.starts_with("output:") || condition.starts_with("status:")
+fn is_live_message_delivery(detail: &DeliveryDetail) -> bool {
+    detail.runtime_state != "headless_process"
+        && detail.input_mode == MessageInputMode::Message
+        && detail.delivery_state != "failed"
+}
+
+fn condition_requires_delivery_submission(condition: &str) -> bool {
+    condition.starts_with("output:")
+        || condition.starts_with("status:")
+        || condition.starts_with("event:")
 }
 
 /// A headless delivery is synchronous: by the time `send` returns with
@@ -1038,6 +1039,8 @@ fn condition_requires_queued_delivery_submission(condition: &str) -> bool {
 fn effective_send_watch_condition(condition: &str, delivery: &[DeliveryDetail]) -> String {
     if condition == "status:idle" && delivery.iter().any(is_completed_headless_delivery) {
         "delivery:provider_applied".to_string()
+    } else if condition == "status:idle" && delivery.iter().any(is_live_message_delivery) {
+        "event:turn_completed".to_string()
     } else {
         condition.to_string()
     }
@@ -1047,7 +1050,7 @@ fn is_completed_headless_delivery(detail: &DeliveryDetail) -> bool {
     detail.runtime_state == "headless_process" && detail.delivery_state == "provider_applied"
 }
 
-fn wait_for_queued_delivery_submission(
+fn wait_for_delivery_submission(
     target: &str,
     since: &str,
     message_ids: &[String],
@@ -1424,14 +1427,18 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_message_ids_only_returns_queued_ids_with_ids() {
+    fn live_delivery_message_ids_returns_direct_and_queued_message_ids() {
         let delivery = vec![
             delivery_detail("queued", Some("msg_1")),
-            delivery_detail("submit_started", Some("msg_2")),
+            delivery_detail("submit_sent_unconfirmed", Some("int_2")),
             delivery_detail("queued", None),
+            DeliveryDetail {
+                runtime_state: "headless_process".to_string(),
+                ..delivery_detail("provider_applied", Some("int_headless"))
+            },
         ];
 
-        assert_eq!(queued_delivery_message_ids(&delivery), vec!["msg_1"]);
+        assert_eq!(live_delivery_message_ids(&delivery), vec!["msg_1", "int_2"]);
     }
 
     #[test]
@@ -1456,18 +1463,16 @@ mod tests {
     }
 
     #[test]
-    fn queued_submission_prewait_applies_only_to_output_and_status_conditions() {
-        assert!(condition_requires_queued_delivery_submission("output:DONE"));
-        assert!(condition_requires_queued_delivery_submission("status:idle"));
-        assert!(!condition_requires_queued_delivery_submission(
+    fn delivery_submission_prewait_applies_to_target_behavior_conditions() {
+        assert!(condition_requires_delivery_submission("output:DONE"));
+        assert!(condition_requires_delivery_submission("status:idle"));
+        assert!(condition_requires_delivery_submission(
+            "event:turn_completed"
+        ));
+        assert!(!condition_requires_delivery_submission(
             "delivery:submit_sent_unconfirmed"
         ));
-        assert!(!condition_requires_queued_delivery_submission(
-            "delivery:queued"
-        ));
-        assert!(!condition_requires_queued_delivery_submission(
-            "event:custom"
-        ));
+        assert!(!condition_requires_delivery_submission("delivery:queued"));
     }
 
     #[test]
@@ -1490,7 +1495,7 @@ mod tests {
                 "status:idle",
                 &[delivery_detail("submit_sent_unconfirmed", Some("int_2"))]
             ),
-            "status:idle"
+            "event:turn_completed"
         );
     }
 
