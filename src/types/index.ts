@@ -937,6 +937,11 @@ export type ChangeReviewBaseline =
     | "head"
     | "unreviewed";
 
+export type ChangeReviewPrefs = {
+    schema: 1;
+    baseline: ChangeReviewBaseline;
+};
+
 export type ChangeReviewEvidence = "attributed" | "inferred";
 export type ChangeReviewChangeKind = "added" | "modified" | "deleted" | "renamed" | "untracked";
 

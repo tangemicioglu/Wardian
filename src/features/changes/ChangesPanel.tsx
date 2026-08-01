@@ -8,6 +8,7 @@ import type {
   ChangeReviewBaseline,
   ChangeReviewFileEntry,
   ChangeReviewLoadResponse,
+  ChangeReviewPrefs,
   ChangeReviewSummary,
   FilesComparisonBaseline,
 } from "../../types";
@@ -32,6 +33,20 @@ const BASELINE_OPTIONS: readonly { value: ChangeReviewBaseline; label: string }[
   { value: "head", label: "HEAD" },
   { value: "unreviewed", label: "Unreviewed" },
 ];
+
+const DEFAULT_CHANGE_REVIEW_BASELINE: ChangeReviewBaseline = "last_effective_turn";
+
+function isChangeReviewBaseline(value: unknown): value is ChangeReviewBaseline {
+  return BASELINE_OPTIONS.some((option) => option.value === value);
+}
+
+function baselineFromPrefs(prefs: unknown): ChangeReviewBaseline {
+  if (typeof prefs !== "object" || prefs === null) return DEFAULT_CHANGE_REVIEW_BASELINE;
+  const candidate = prefs as { schema?: unknown; baseline?: unknown };
+  return candidate.schema === 1 && isChangeReviewBaseline(candidate.baseline)
+    ? candidate.baseline
+    : DEFAULT_CHANGE_REVIEW_BASELINE;
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -183,7 +198,8 @@ export function ChangesPanel({
     : null;
   const selectedAgent = agents.find((agent) => agent.session_id === selectedAgentId) ?? null;
   const [workspace, setWorkspace] = useState<string | null>(null);
-  const [baseline, setBaseline] = useState<ChangeReviewBaseline>("last_effective_turn");
+  const [baseline, setBaseline] = useState<ChangeReviewBaseline>(DEFAULT_CHANGE_REVIEW_BASELINE);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [summary, setSummary] = useState<ChangeReviewSummary | null>(null);
   const [gitAvailable, setGitAvailable] = useState(true);
   const [headRef, setHeadRef] = useState<string | null>(null);
@@ -193,6 +209,22 @@ export function ChangesPanel({
   const [refreshRevision, setRefreshRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const requestGeneration = useRef(0);
+
+  useEffect(() => {
+    let active = true;
+    void invoke<ChangeReviewPrefs>("load_change_review_prefs")
+      .then((prefs) => {
+        if (!active) return;
+        setBaseline(baselineFromPrefs(prefs));
+        setPrefsLoaded(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        setBaseline(DEFAULT_CHANGE_REVIEW_BASELINE);
+        setPrefsLoaded(true);
+      });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -209,7 +241,7 @@ export function ChangesPanel({
   }, [selectedAgent, selectedAgentId]);
 
   const recompute = useCallback(async () => {
-    if (!workspace || !selectedAgentId || !visible) return;
+    if (!prefsLoaded || !workspace || !selectedAgentId || !visible) return;
     const generation = ++requestGeneration.current;
     setLoading(true);
     setError(null);
@@ -230,7 +262,7 @@ export function ChangesPanel({
     } finally {
       if (generation === requestGeneration.current) setLoading(false);
     }
-  }, [baseline, selectedAgentId, visible, workspace]);
+  }, [baseline, prefsLoaded, selectedAgentId, visible, workspace]);
 
   useEffect(() => {
     void recompute();
@@ -273,6 +305,14 @@ export function ChangesPanel({
     });
   };
 
+  const handleBaselineChange = useCallback((nextBaseline: ChangeReviewBaseline) => {
+    if (nextBaseline === baseline) return;
+    setExpandedPath(null);
+    setBaseline(nextBaseline);
+    const prefs: ChangeReviewPrefs = { schema: 1, baseline: nextBaseline };
+    void invoke("save_change_review_prefs", { prefs }).catch(() => undefined);
+  }, [baseline]);
+
   return (
     <section
       aria-hidden={!visible}
@@ -291,8 +331,8 @@ export function ChangesPanel({
             className="min-w-0 flex-1 rounded border border-[var(--color-wardian-border)] bg-[var(--color-wardian-input-bg)] px-1.5 py-1 text-[11px]"
             value={baseline}
             onChange={(event) => {
-              setExpandedPath(null);
-              setBaseline(event.currentTarget.value as ChangeReviewBaseline);
+              const nextBaseline = event.currentTarget.value;
+              if (isChangeReviewBaseline(nextBaseline)) handleBaselineChange(nextBaseline);
             }}
           >
             {BASELINE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}

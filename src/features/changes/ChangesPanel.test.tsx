@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentConfig, ChangeReviewLoadResponse } from "../../types";
@@ -67,6 +67,7 @@ describe("ChangesPanel", () => {
     listenMock.mockReset();
     listenMock.mockResolvedValue(() => undefined);
     invokeMock.mockImplementation((command: string) => {
+      if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "last_effective_turn" });
       if (command === "get_explorer_root") return Promise.resolve("C:/workspace");
       if (command === "load_change_review") return Promise.resolve(response);
       return Promise.resolve(undefined);
@@ -91,6 +92,42 @@ describe("ChangesPanel", () => {
       }),
     ));
     expect(invokeMock).not.toHaveBeenCalledWith("git_show_file_revision", expect.anything());
+  });
+
+  it("restores the global baseline before the first change-set load", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "branch_point" });
+      if (command === "get_explorer_root") return Promise.resolve("C:/workspace");
+      if (command === "load_change_review") return Promise.resolve(response);
+      return Promise.resolve(undefined);
+    });
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Change review baseline")).toHaveValue("branch_point");
+      const loads = invokeMock.mock.calls.filter(([command]) => command === "load_change_review");
+      expect(loads).toHaveLength(1);
+      expect(loads[0][1]).toEqual(expect.objectContaining({
+        request: expect.objectContaining({ baseline: "branch_point" }),
+      }));
+    });
+  });
+
+  it("saves only an operator baseline change", async () => {
+    renderPanel();
+
+    await screen.findByText("src/agent.ts");
+    expect(invokeMock).not.toHaveBeenCalledWith("save_change_review_prefs", expect.anything());
+
+    fireEvent.change(screen.getByLabelText("Change review baseline"), { target: { value: "head" } });
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "save_change_review_prefs",
+      { prefs: { schema: 1, baseline: "head" } },
+    ));
+    const saves = invokeMock.mock.calls.filter(([command]) => command === "save_change_review_prefs");
+    expect(saves).toHaveLength(1);
   });
 
   it("does not compute while hidden and recomputes when the sidebar becomes visible", async () => {

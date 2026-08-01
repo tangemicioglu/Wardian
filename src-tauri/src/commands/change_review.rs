@@ -6,20 +6,36 @@ use crate::utils::fs::get_wardian_home;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
-use tauri::State;
+use tauri::{AppHandle, State};
 use wardian_core::conversations::{ConversationIndexEntry, ConversationTurnRecord};
 use wardian_core::models::git::GitStatusResult;
 
 const CHANGE_REVIEW_SCHEMA: u8 = 1;
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeReviewBaseline {
+    #[default]
     LastEffectiveTurn,
     ConversationStart,
     BranchPoint,
     Head,
     Unreviewed,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ChangeReviewPrefs {
+    pub schema: u8,
+    pub baseline: ChangeReviewBaseline,
+}
+
+impl Default for ChangeReviewPrefs {
+    fn default() -> Self {
+        Self {
+            schema: CHANGE_REVIEW_SCHEMA,
+            baseline: ChangeReviewBaseline::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -142,6 +158,35 @@ fn watermark_key(agent_id: &str, workspace: &str) -> String {
 
 fn watermark_path(home: &Path) -> std::path::PathBuf {
     home.join("changes").join("watermarks.json")
+}
+
+fn prefs_path(home: &Path) -> std::path::PathBuf {
+    home.join("changes").join("prefs.json")
+}
+
+fn load_prefs_from_home(home: &Path) -> ChangeReviewPrefs {
+    let Ok(content) = std::fs::read_to_string(prefs_path(home)) else {
+        return ChangeReviewPrefs::default();
+    };
+    let Ok(prefs) = serde_json::from_str::<ChangeReviewPrefs>(&content) else {
+        return ChangeReviewPrefs::default();
+    };
+    if prefs.schema != CHANGE_REVIEW_SCHEMA {
+        return ChangeReviewPrefs::default();
+    }
+    prefs
+}
+
+fn save_prefs_to_home(home: &Path, prefs: &ChangeReviewPrefs) -> Result<(), String> {
+    let changes_dir = home.join("changes");
+    std::fs::create_dir_all(&changes_dir).map_err(|error| error.to_string())?;
+    let path = prefs_path(home);
+    let normalized = ChangeReviewPrefs {
+        schema: CHANGE_REVIEW_SCHEMA,
+        baseline: prefs.baseline,
+    };
+    let json = serde_json::to_string_pretty(&normalized).map_err(|error| error.to_string())?;
+    std::fs::write(path, json).map_err(|error| error.to_string())
 }
 
 fn load_watermark_index(home: &Path) -> WatermarkIndex {
@@ -511,6 +556,22 @@ pub async fn load_change_review(
 }
 
 #[tauri::command]
+pub async fn load_change_review_prefs(_app: AppHandle) -> Result<ChangeReviewPrefs, String> {
+    Ok(get_wardian_home()
+        .map(|home| load_prefs_from_home(&home))
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+pub async fn save_change_review_prefs(
+    prefs: ChangeReviewPrefs,
+    _app: AppHandle,
+) -> Result<(), String> {
+    let home = get_wardian_home().ok_or_else(|| "Could not find home directory".to_string())?;
+    save_prefs_to_home(&home, &prefs)
+}
+
+#[tauri::command]
 pub async fn load_change_review_watermark(
     agent_id: String,
     workspace: String,
@@ -611,5 +672,42 @@ mod tests {
             .find(|file| file.path == "src/shell.ts")
             .unwrap();
         assert_eq!(inferred.evidence, ChangeReviewEvidence::Inferred);
+    }
+
+    #[test]
+    fn missing_change_review_prefs_use_the_default_baseline() {
+        let temp = tempfile::tempdir().expect("temp home");
+
+        assert_eq!(
+            load_prefs_from_home(temp.path()),
+            ChangeReviewPrefs::default()
+        );
+    }
+
+    #[test]
+    fn unparseable_change_review_prefs_use_the_default_baseline() {
+        let temp = tempfile::tempdir().expect("temp home");
+        let changes_dir = temp.path().join("changes");
+        std::fs::create_dir_all(&changes_dir).expect("changes directory");
+        std::fs::write(prefs_path(temp.path()), "not json").expect("prefs file");
+
+        assert_eq!(
+            load_prefs_from_home(temp.path()),
+            ChangeReviewPrefs::default()
+        );
+    }
+
+    #[test]
+    fn saving_change_review_prefs_creates_the_global_preferences_file() {
+        let temp = tempfile::tempdir().expect("temp home");
+        let prefs = ChangeReviewPrefs {
+            schema: CHANGE_REVIEW_SCHEMA,
+            baseline: ChangeReviewBaseline::BranchPoint,
+        };
+
+        save_prefs_to_home(temp.path(), &prefs).expect("save prefs");
+
+        assert_eq!(load_prefs_from_home(temp.path()), prefs);
+        assert!(prefs_path(temp.path()).is_file());
     }
 }
