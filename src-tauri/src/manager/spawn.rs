@@ -631,7 +631,9 @@ pub async fn spawn_agent(
         std::sync::Arc::new(std::sync::Mutex::new(pair.master));
     drop(pair.slave);
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<
+        crate::state::terminal_session::NativeTerminalWriteRequest,
+    >(256);
     let terminal_runtime = crate::state::terminal_session::native_terminal_runtime(tx, pty_master);
     let terminal_runtime = if config.provider == "codex" {
         terminal_runtime.ignore_scrollback_erase()
@@ -648,16 +650,33 @@ pub async fn spawn_agent(
 
     std::thread::spawn(move || {
         while let Some(input) = rx.blocking_recv() {
+            let bytes = input.bytes;
             if provider_name_for_input == "opencode" {
                 log_debug(&format!(
                     "[Wardian] OpenCode PTY input for session {}: {}",
                     sid_for_input,
-                    debug_preview_bytes(&input, 128)
+                    debug_preview_bytes(&bytes, 128)
                 ));
             }
-            log_terminal_trace_bytes(&sid_for_input, &provider_name_for_input, "IN", &input);
-            let _ = writer.write_all(&input);
-            let _ = writer.flush();
+            log_terminal_trace_bytes(&sid_for_input, &provider_name_for_input, "IN", &bytes);
+            let write_result = writer
+                .write_all(&bytes)
+                .and_then(|_| writer.flush())
+                .map_err(|error| error.to_string());
+            match write_result {
+                Ok(()) => {
+                    let _ = input.completion.send(Ok(()));
+                }
+                Err(error) => {
+                    let _ = input.completion.send(Err(error.clone()));
+                    log_terminal_trace_note(
+                        &sid_for_input,
+                        &provider_name_for_input,
+                        &format!("PTY input write failed: {error}"),
+                    );
+                    break;
+                }
+            }
         }
         log_terminal_trace_note(
             &sid_for_input,

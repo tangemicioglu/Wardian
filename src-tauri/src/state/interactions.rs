@@ -417,11 +417,12 @@ impl InteractionState {
     fn message_status_for_delivery_state(delivery_state: &str) -> Option<InteractionStatus> {
         match delivery_state {
             "queued" => Some(InteractionStatus::Queued),
-            "submit_started" => Some(InteractionStatus::Delivering),
+            "submit_started" | "submit_sent_unconfirmed" => Some(InteractionStatus::Delivering),
             "submitted"
             | "submit_sent_unverified"
-            | "submit_sent_unconfirmed"
-            | "provider_applied" => Some(InteractionStatus::Delivered),
+            | "provider_applied"
+            | "provider_accepted"
+            | "approval_submitted" => Some(InteractionStatus::Delivered),
             "failed" => Some(InteractionStatus::Failed),
             _ => None,
         }
@@ -924,6 +925,25 @@ mod tests {
                 "submit_sent_unconfirmed",
                 Some("submit_key_sent".to_string()),
                 Some("bytes_sent".to_string()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let unconfirmed = state.interaction(&message.id).await.unwrap();
+        assert_eq!(unconfirmed.status, InteractionStatus::Delivering);
+        assert!(unconfirmed.completed_at.is_none());
+
+        state
+            .record_delivery_attempt_durable(
+                &message.id,
+                "target-agent",
+                DeliveryTransportKind::LiveSurface,
+                1,
+                "live_pty_available",
+                "provider_accepted",
+                Some("turn_started".to_string()),
+                Some("turn_started".to_string()),
                 None,
                 None,
             )

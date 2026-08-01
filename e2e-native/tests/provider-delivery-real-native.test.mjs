@@ -262,7 +262,7 @@ async function runRealDeliveryCase({ cliPath, harness, provider, agentName, inpu
     cliPath,
     harness,
     agentName,
-    "submit_sent_unconfirmed",
+    "provider_accepted",
     queuedDelivery.message_id,
   );
   assert.equal(drained.runtime_state, "mailbox_drain");

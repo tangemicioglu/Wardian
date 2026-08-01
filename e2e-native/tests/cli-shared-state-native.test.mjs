@@ -25,6 +25,7 @@ const ASK_SESSION_NAME = `E2E-CLI-ASK-${RUN_ID}`;
 const ASK_ECHO_SESSION_NAME = `E2E-CLI-ASK-ECHO-${RUN_ID}`;
 const ASK_STRUCTURED_SESSION_NAME = `E2E-CLI-ASK-STRUCTURED-${RUN_ID}`;
 const SEND_IDLE_SESSION_NAME = `E2E-CLI-SEND-IDLE-${RUN_ID}`;
+const WRITE_RECEIPT_SESSION_NAME = `E2E-NATIVE-WRITE-RECEIPT-${RUN_ID}`;
 const WATCH_READABLE_SESSION_NAME = `E2E-CLI-WATCH-READABLE-${RUN_ID}`;
 const ROUTE_QUEUE_SESSION_NAME = `E2E-CLI-ROUTE-QUEUE-${RUN_ID}`;
 const ROUTE_LIVE_ONLY_SESSION_NAME = `E2E-CLI-ROUTE-LIVE-${RUN_ID}`;
@@ -1149,7 +1150,7 @@ test("native CLI ask returns only output after its pre-send cursor", { timeout: 
     cliPath,
     harness,
     ASK_SESSION_NAME,
-    "submit_sent_unconfirmed",
+    "provider_accepted",
     queuedMessageId,
   );
   assert.equal(drained.detail.runtime_state, "mailbox_drain");
@@ -1254,7 +1255,7 @@ test("native CLI ask output waits ignore the submitted prompt echo", { timeout: 
     cliPath,
     harness,
     ASK_ECHO_SESSION_NAME,
-    "submit_sent_unconfirmed",
+    "provider_accepted",
     queuedMessageId,
   );
   assert.equal(drained.detail.runtime_state, "mailbox_drain");
@@ -1443,7 +1444,7 @@ test("native CLI send waits for a provider-confirmed live turn", { timeout: 1800
   const send = JSON.parse(sendResult.stdout);
   assert.equal(send.ok, true);
   assert.equal(send.status, "idle");
-  assert.equal(send.delivery[0].delivery_state, "submit_sent_unconfirmed");
+  assert.equal(send.delivery[0].delivery_state, "provider_accepted");
 
   const watch = runCliOk(cliPath, harness, [
     "agent",
@@ -1460,6 +1461,81 @@ test("native CLI send waits for a provider-confirmed live turn", { timeout: 1800
     watched.events.some((event) => event.kind === "turn_completed"),
     "provider completion must be represented in the watch stream",
   );
+});
+
+test("native PTY write acknowledgements complete before a provider turn starts", { timeout: 180000 }, async (t) => {
+  const harness = await createNativeHarness();
+  assert.ok(harness.appPath);
+
+  try {
+    if (!skipNativeBuild) {
+      ensureNativeAppBuilt(harness);
+    }
+  } catch (error) {
+    t.skip(String(error));
+    return;
+  }
+
+  prepareIsolatedHome(harness);
+
+  let session;
+  try {
+    session = await startNativeSession(harness);
+  } catch (error) {
+    t.skip(String(error));
+    return;
+  }
+
+  t.after(async () => {
+    await session.close();
+  });
+
+  await waitForAppShell(session.driver, 20000);
+  const agent = await createMockAgent(session.driver, path.join(harness.repoRoot, "e2e-native"), {
+    sessionId: `e2e-native-write-receipt-${RUN_ID}`,
+    sessionName: WRITE_RECEIPT_SESSION_NAME,
+    isOff: false,
+    mockScenario: "action_needed",
+    mockDelayMs: 50,
+  });
+  await waitForTelemetryStatus(session.driver, agent.session_id, "action needed");
+
+  const receiptTimings = await session.driver.executeAsyncScript((sessionId, done) => {
+    const samples = [];
+    const sampleCount = 20;
+    const writeNext = () => {
+      if (samples.length === sampleCount) {
+        done({ ok: true, samples });
+        return;
+      }
+
+      const startedAt = performance.now();
+      window.__TAURI_INTERNALS__.invoke("inject_session_input", {
+        sessionId,
+        text: `ack-receipt-${samples.length}`,
+      }).then(
+        () => {
+          samples.push(performance.now() - startedAt);
+          writeNext();
+        },
+        (error) => done({ ok: false, error: String(error), samples }),
+      );
+    };
+    writeNext();
+  }, agent.session_id);
+
+  assert.equal(receiptTimings.ok, true, `inject_session_input failed: ${receiptTimings.error}`);
+  assert.equal(receiptTimings.samples.length, 20);
+  assert.ok(receiptTimings.samples.every((sample) => Number.isFinite(sample) && sample >= 0));
+  const sortedSamples = [...receiptTimings.samples].sort((left, right) => left - right);
+  const medianMs = sortedSamples[Math.floor(sortedSamples.length / 2)];
+  const p95Ms = sortedSamples[Math.ceil(sortedSamples.length * 0.95) - 1];
+  const maxMs = sortedSamples.at(-1);
+  t.diagnostic(
+    `native PTY write receipt timing: p50=${medianMs.toFixed(2)}ms p95=${p95Ms.toFixed(2)}ms max=${maxMs.toFixed(2)}ms across ${sortedSamples.length} writes`,
+  );
+
+  await waitForTelemetryStatus(session.driver, agent.session_id, "action needed", 2000);
 });
 
 test("native CLI send routes processing mock by queue policy", { timeout: 180000 }, async (t) => {

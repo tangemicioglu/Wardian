@@ -28,9 +28,9 @@ use wardian_core::models::{AgentChatEvent, AgentChatEventKind, AgentChatRole};
 
 const STRUCTURED_ASK_INLINE_MESSAGE_MAX_BYTES: usize = 4096;
 const STRUCTURED_ASK_REQUESTS_DIR: &str = "requests";
-const CODEX_PAYLOAD_ECHO_TIMEOUT_MS: u64 = 750;
+const CODEX_PAYLOAD_ECHO_TIMEOUT_MS: u64 = 5_000;
+const PROVIDER_TURN_START_TIMEOUT_MS: u64 = 10_000;
 const MAX_HEADLESS_DELIVERY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const MAX_MAILBOX_DELIVERY_AGE: Duration = Duration::from_secs(5 * 60);
 
 async fn rollback_agent_update(
     state: &AppState,
@@ -1357,6 +1357,7 @@ async fn deliver_message_to_target_with_headless_timeout(
             DeliveryRoute::Mailbox { runtime_state } => {
                 queued += 1;
                 let queued_uuid = info.uuid.clone();
+                let queued_status = info.status.clone();
                 let detail = enqueue_mailbox_delivery(
                     state,
                     interaction_id.clone(),
@@ -1379,7 +1380,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                 .await;
                 record_delivery_attempt(state, &detail).await;
                 if let Some(app) = app {
-                    spawn_mailbox_retry_worker(app, &queued_uuid);
+                    spawn_mailbox_drain_if_idle(app, &queued_uuid, &queued_status);
                 }
                 delivery.push(detail);
             }
@@ -1492,6 +1493,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                         queued += 1;
                         let current_info = *current_info;
                         let queued_uuid = current_info.uuid.clone();
+                        let queued_status = current_info.status.clone();
                         let detail = enqueue_mailbox_delivery(
                             state,
                             interaction_id.clone(),
@@ -1514,7 +1516,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                         .await;
                         record_delivery_attempt(state, &detail).await;
                         if let Some(app) = app {
-                            spawn_mailbox_retry_worker(app, &queued_uuid);
+                            spawn_mailbox_drain_if_idle(app, &queued_uuid, &queued_status);
                         }
                         delivery.push(detail);
                     }
@@ -1667,17 +1669,23 @@ pub(crate) async fn submit_approval_action_via_sender<S>(
     tx: &S,
     provider: &str,
     action: &ApprovalAction,
-) -> Result<crate::utils::delivery_transaction::TerminalDeliveryOutcome, String>
+) -> Result<
+    crate::utils::delivery_transaction::TerminalDeliveryOutcome,
+    crate::utils::delivery_transaction::TerminalDeliveryError,
+>
 where
     S: crate::utils::delivery_transaction::TerminalInputSink + ?Sized,
 {
     let bytes = approval_action_bytes(provider, action);
-    tx.send_bytes(bytes).await?;
+    tx.send_bytes(bytes).await.map_err(|error| {
+        crate::utils::delivery_transaction::TerminalDeliveryError::terminal_state_unknown(
+            "approval_send_failed",
+            format!("Failed to send approval action: {error}"),
+        )
+    })?;
     Ok(
         crate::utils::delivery_transaction::TerminalDeliveryOutcome {
-            delivery_state:
-                crate::utils::delivery_transaction::DELIVERY_STATE_SUBMIT_SENT_UNCONFIRMED
-                    .to_string(),
+            delivery_state: "approval_submitted".to_string(),
             delivery_phase: "approval_key_sent".to_string(),
             observed_state: Some("bytes_sent".to_string()),
             reason: None,
@@ -2501,22 +2509,82 @@ pub(crate) async fn codex_payload_echo_cursor(
     watch_state.lock().ok().map(|guard| guard.latest_cursor())
 }
 
+/// Captures the watch position before a native terminal submission. A later
+/// `turn_started` event is emitted only from provider output, so it proves the
+/// provider accepted a newly submitted prompt rather than merely rendering it
+/// in the terminal composer.
+pub(crate) async fn provider_turn_start_cursor(
+    state: &AppState,
+    session_id: &str,
+) -> Result<String, String> {
+    let watch_state = {
+        let agents = state.agents.lock().await;
+        agents
+            .get(session_id)
+            .ok_or_else(|| format!("Agent {session_id} not found or is off"))?
+            .watch_state
+            .clone()
+    };
+    watch_state
+        .lock()
+        .map(|watch_state| watch_state.latest_cursor())
+        .map_err(|_| format!("Agent {session_id} watch state lock poisoned"))
+}
+
+/// Waits for provider output that starts a turn after a native terminal submit
+/// key was written. The timeout is deliberately a delivery failure, not a
+/// retry trigger: at that point the composer may still contain the payload.
+pub(crate) async fn wait_for_provider_turn_started_after_submit(
+    state: &AppState,
+    session_id: &str,
+    since_cursor: &str,
+) -> Result<(), String> {
+    let watch_state = {
+        let agents = state.agents.lock().await;
+        agents
+            .get(session_id)
+            .ok_or_else(|| format!("Agent {session_id} not found or is off"))?
+            .watch_state
+            .clone()
+    };
+    let started = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_millis(PROVIDER_TURN_START_TIMEOUT_MS) {
+        let snapshot = watch_state
+            .lock()
+            .map_err(|_| format!("Agent {session_id} watch state lock poisoned"))?
+            .snapshot_since(Some(since_cursor), Some(0))
+            .map_err(|error| format!("watch state error: {}", error.code()))?;
+        if snapshot
+            .events
+            .iter()
+            .any(|event| event.kind == "turn_started")
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    Err(format!(
+        "Timed out waiting for {session_id} provider turn start after terminal submit"
+    ))
+}
+
 pub(crate) async fn wait_for_codex_payload_echo_before_submit(
     state: &AppState,
     provider: &str,
     session_id: &str,
     since_cursor: Option<&str>,
     prompt: &str,
-) {
+) -> Result<(), String> {
     if provider != "codex" {
-        return;
+        return Ok(());
     }
 
     let Some(since_cursor) = since_cursor else {
-        return;
+        return Ok(());
     };
 
-    if let Err(error) = wait_for_codex_prompt_echo_since(
+    wait_for_codex_prompt_echo_since(
         state,
         session_id,
         since_cursor,
@@ -2524,11 +2592,6 @@ pub(crate) async fn wait_for_codex_payload_echo_before_submit(
         CODEX_PAYLOAD_ECHO_TIMEOUT_MS,
     )
     .await
-    {
-        manager::log_debug(&format!(
-            "[Wardian] [{session_id}] Codex prompt echo wait before submit did not complete: {error}"
-        ));
-    }
 }
 
 async fn wait_for_codex_prompt_echo_since(
@@ -4259,7 +4322,7 @@ async fn record_conversation_delivery(
 fn conversation_delivery_state_is_recordable(delivery_state: &str) -> bool {
     matches!(
         delivery_state,
-        "submitted" | "submit_sent_unverified" | "submit_sent_unconfirmed"
+        "submitted" | "submit_sent_unverified" | "provider_accepted" | "approval_submitted"
     )
 }
 
@@ -4308,7 +4371,10 @@ pub(crate) async fn submit_approval_action_for_delivery_service<S>(
     tx: &S,
     provider: &str,
     action: &ApprovalAction,
-) -> Result<crate::utils::delivery_transaction::TerminalDeliveryOutcome, String>
+) -> Result<
+    crate::utils::delivery_transaction::TerminalDeliveryOutcome,
+    crate::utils::delivery_transaction::TerminalDeliveryError,
+>
 where
     S: crate::utils::delivery_transaction::TerminalInputSink + ?Sized,
 {
@@ -4344,36 +4410,23 @@ pub(crate) fn spawn_mailbox_drain_if_idle(
     if normalize_status(observed_status) != "idle" {
         return;
     }
-    spawn_mailbox_retry_worker(app, session_id);
-}
-
-/// Starts one persistent retry worker for a target that has pending mailbox
-/// entries. The worker is deliberately owned by `MailboxState`, so repeated
-/// status observations cannot create competing retry loops or strand a new
-/// message while an old loop is exiting.
-pub(crate) fn spawn_mailbox_retry_worker(app: &AppHandle, session_id: &str) {
     let app = app.clone();
     let session_id = session_id.to_string();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let claimed = state.mailbox.lock().await.claim_retry_worker(&session_id);
-        if !claimed {
-            return;
-        }
+        let _ = drain_next_mailbox_message_for_idle_agent(Some(&app), &state, &session_id).await;
+    });
+}
 
-        loop {
-            let _ =
-                drain_next_mailbox_message_for_idle_agent(Some(&app), &state, &session_id).await;
-            let continue_retrying = state
-                .mailbox
-                .lock()
-                .await
-                .continue_retry_worker(&session_id);
-            if !continue_retrying {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
+/// Gives restored durable mailbox work one immediate, status-gated chance to
+/// drain. Later provider idle observations remain the normal delivery trigger;
+/// this does not poll or retry terminal input.
+pub(crate) fn spawn_mailbox_drain_after_restore(app: &AppHandle, session_id: &str) {
+    let app = app.clone();
+    let session_id = session_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let _ = drain_next_mailbox_message_for_idle_agent(Some(&app), &state, &session_id).await;
     });
 }
 
@@ -4395,9 +4448,6 @@ async fn drain_next_mailbox_message_for_idle_agent(
         .into_iter()
         .next()
         .ok_or_else(|| ControlError::not_found(format!("agent not found: {session_id}")))?;
-    if let Some(detail) = expire_next_stale_mailbox_message(state, &info).await {
-        return Ok(Some(detail));
-    }
     if info.status != "idle" {
         return Ok(None);
     }
@@ -4542,9 +4592,9 @@ async fn drain_next_mailbox_message_for_idle_agent(
                 });
             }
             detail.reason = Some(if retry_safe {
-                "queued message remains pending for retry".to_string()
+                "queued message remains pending until a new idle or ready observation".to_string()
             } else if missing_ready_input_channel {
-                "agent reported ready but its input channel was unavailable; retry was stopped to prevent late delivery".to_string()
+                "agent reported ready but its input channel was unavailable; delivery stopped to prevent late delivery".to_string()
             } else {
                 "queued message marked failed because terminal state is partial or unknown"
                     .to_string()
@@ -4567,18 +4617,10 @@ async fn drain_next_mailbox_message_for_idle_agent(
     Ok(Some(detail))
 }
 
-fn mailbox_delivery_is_expired(record: &MailboxMessageRecord) -> bool {
-    let Ok(created_at) = chrono::DateTime::parse_from_rfc3339(&record.created_at) else {
-        return true;
-    };
-    let age = chrono::Utc::now().signed_duration_since(created_at.with_timezone(&chrono::Utc));
-    age >= chrono::Duration::seconds(MAX_MAILBOX_DELIVERY_AGE.as_secs() as i64)
-}
-
 fn persist_terminal_mailbox_record(record: &MailboxMessageRecord) {
-    // A terminal record must win over a crash or transient delete failure: it
-    // is safer to retain the terminal row for startup reconciliation than to
-    // resurrect a message that should never be submitted again.
+    // Persist the terminal marker before removing the durable queue row. If a
+    // shutdown lands between the two writes, startup still fails the in-flight
+    // record rather than replaying an ambiguous terminal payload.
     if let Err(error) = wardian_core::db::upsert_mailbox_message(record) {
         manager::log_debug(&format!(
             "[Wardian] failed to persist terminal mailbox message {}: {error}",
@@ -4591,51 +4633,6 @@ fn persist_terminal_mailbox_record(record: &MailboxMessageRecord) {
             record.id
         ));
     }
-}
-
-async fn expire_next_stale_mailbox_message(
-    state: &AppState,
-    info: &DeliveryTargetInfo,
-) -> Option<DeliveryDetail> {
-    let terminal = {
-        let mut mailbox = state.mailbox.lock().await;
-        let pending = mailbox.next_pending_for_target(&info.uuid)?;
-        if !mailbox_delivery_is_expired(&pending) {
-            return None;
-        }
-        mailbox.mark_failed(&pending.id)?
-    };
-    persist_terminal_mailbox_record(&terminal);
-    let _ = state
-        .interactions
-        .update_message_status_durable(&terminal.interaction_id, InteractionStatus::Failed)
-        .await;
-
-    let mut detail = failed_delivery_detail(
-        info.clone(),
-        "mailbox_drain",
-        "delivery_expired",
-        format!(
-            "queued delivery expired after {} seconds before provider submission",
-            MAX_MAILBOX_DELIVERY_AGE.as_secs()
-        ),
-        terminal.input_mode,
-        terminal.queue_policy,
-    );
-    detail.message_id = Some(terminal.id.clone());
-    detail.delivery_phase = Some("queue_expired".to_string());
-    detail.reason =
-        Some("queued delivery exceeded its retry window and was not submitted".to_string());
-    persist_interaction_delivery_attempt(
-        state,
-        &terminal.interaction_id,
-        &info.uuid,
-        DeliveryTransportKind::LiveSurface,
-        &detail,
-    )
-    .await;
-    record_delivery_attempt(state, &detail).await;
-    Some(detail)
 }
 
 async fn agent_config_to_identity(
@@ -5204,6 +5201,30 @@ mod tests {
         }
     }
 
+    async fn install_test_terminal_runtime_with_write_receipts(
+        state: &AppState,
+        session_id: &str,
+        input_tx: tokio::sync::mpsc::Sender<
+            crate::state::terminal_session::NativeTerminalWriteRequest,
+        >,
+    ) {
+        let generation = state
+            .terminal_sessions
+            .start_or_replace_runtime(
+                session_id,
+                crate::state::terminal_session::TerminalRuntimeHandles::new_with_write_ack(
+                    input_tx,
+                    |_| Ok(()),
+                ),
+                wardian_core::models::TerminalGeometry { cols: 80, rows: 24 },
+            )
+            .await
+            .expect("test terminal runtime");
+        if let Some(agent) = state.agents.lock().await.get_mut(session_id) {
+            agent.runtime_generation = Some(generation);
+        }
+    }
+
     fn expected_terminal_chunks(provider: &str, prompt: &str) -> Vec<Vec<u8>> {
         let chunks =
             crate::utils::terminal_input::provider_submit_chunks(provider, prompt).unwrap();
@@ -5409,6 +5430,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_live_delivery_becomes_delivered_only_after_provider_turn_start() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        install_test_terminal_runtime_with_write_receipts(&state, "agent-1", tx).await;
+
+        let delivery = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "hello",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        );
+        tokio::pin!(delivery);
+
+        let payload = tokio::select! {
+            request = rx.recv() => request.expect("payload write request"),
+            result = &mut delivery => panic!("delivery completed before payload write: {result:?}"),
+        };
+        assert_eq!(payload.bytes, b"hello".to_vec());
+        payload.completion.send(Ok(())).expect("payload receipt");
+
+        let submit = tokio::select! {
+            request = rx.recv() => request.expect("submit write request"),
+            result = &mut delivery => panic!("delivery completed before submit write: {result:?}"),
+        };
+        assert_eq!(submit.bytes, b"\r".to_vec());
+        submit.completion.send(Ok(())).expect("submit receipt");
+
+        crate::manager::record_agent_turn_started_for_watch(&state, "agent-1").await;
+        let delivery = delivery.await.expect("delivered after provider receipt");
+
+        assert_eq!(delivery[0].delivery_state, "provider_accepted");
+        assert_eq!(delivery[0].delivery_phase.as_deref(), Some("turn_started"));
+    }
+
+    #[tokio::test]
     async fn message_delivery_archives_unconfirmed_live_input_with_agent_origin() {
         let _home = TestWardianHome::new();
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
@@ -5429,7 +5498,7 @@ mod tests {
             name: "CoderOne".to_string(),
             provider: "mock".to_string(),
             runtime_state: "live_pty_available".to_string(),
-            delivery_state: "submit_sent_unconfirmed".to_string(),
+            delivery_state: "provider_accepted".to_string(),
             input_mode: MessageInputMode::Message,
             queue_policy: QueuePolicy::QueueIfBusy,
             message_id: None,
@@ -5496,7 +5565,7 @@ mod tests {
             name: "CoderOne".to_string(),
             provider: "mock".to_string(),
             runtime_state: "live_pty_available".to_string(),
-            delivery_state: "submit_sent_unconfirmed".to_string(),
+            delivery_state: "provider_accepted".to_string(),
             input_mode: MessageInputMode::Message,
             queue_policy: QueuePolicy::QueueIfBusy,
             message_id: None,
@@ -5531,7 +5600,9 @@ mod tests {
             message_id: Some("msg-1".to_string()),
             delivery_phase: Some("queued".to_string()),
             observed_state: None,
-            reason: Some("queued message remains pending for retry".to_string()),
+            reason: Some(
+                "queued message remains pending until a new idle or ready observation".to_string(),
+            ),
             profile: None,
             error: None,
         }];
@@ -5821,6 +5892,28 @@ mod tests {
             .collect();
 
         assert_eq!(statuses, ["headless", "off"]);
+    }
+
+    #[tokio::test]
+    async fn provider_turn_start_receipt_requires_an_event_after_the_submit_cursor() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+
+        crate::manager::record_agent_turn_started_for_watch(&state, "agent-1").await;
+        let cursor = provider_turn_start_cursor(&state, "agent-1")
+            .await
+            .expect("cursor");
+        let wait = wait_for_provider_turn_started_after_submit(&state, "agent-1", &cursor);
+        tokio::pin!(wait);
+
+        tokio::select! {
+            result = &mut wait => panic!("pre-submit event must not satisfy receipt: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+
+        crate::manager::record_agent_turn_started_for_watch(&state, "agent-1").await;
+        wait.await.expect("post-submit provider turn receipt");
     }
 
     #[tokio::test]
@@ -6731,11 +6824,24 @@ mod tests {
 
         assert_eq!(rx.recv().await.unwrap(), b"\r".to_vec());
         assert_eq!(delivery[0].runtime_state, "live_pty_available");
-        assert_eq!(delivery[0].delivery_state, "submit_sent_unconfirmed");
+        assert_eq!(delivery[0].delivery_state, "approval_submitted");
         assert_eq!(
             delivery[0].delivery_phase.as_deref(),
             Some("approval_key_sent")
         );
+    }
+
+    #[tokio::test]
+    async fn approval_send_failure_is_not_retry_safe_after_the_terminal_boundary() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+
+        let error = submit_approval_action_via_sender(&tx, "codex", &ApprovalAction::Accept)
+            .await
+            .expect_err("closed input channel");
+
+        assert_eq!(error.phase, "approval_send_failed");
+        assert!(!error.retry_safe);
     }
 
     #[tokio::test]
@@ -7458,7 +7564,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mailbox_drain_missing_sender_leaves_message_pending_for_retry() {
+    async fn mailbox_drain_missing_sender_leaves_message_pending_for_next_observation() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -7565,35 +7671,12 @@ mod tests {
             .reason
             .as_deref()
             .unwrap_or_default()
-            .contains("retry was stopped"));
+            .contains("delivery stopped"));
         let records = state.mailbox.lock().await.list_for_target("agent-1");
         assert_eq!(
             records[0].status,
             crate::state::MailboxMessageStatus::Failed
         );
-    }
-
-    #[test]
-    fn mailbox_delivery_expires_after_the_bounded_retry_window() {
-        let mut record = MailboxMessageRecord {
-            id: "msg_2026080100000_000001".to_string(),
-            interaction_id: "int_expired".to_string(),
-            target_session_id: "agent-1".to_string(),
-            body: "stale work".to_string(),
-            input_mode: MessageInputMode::Message,
-            queue_policy: QueuePolicy::QueueIfBusy,
-            approval_action: None,
-            origin: None,
-            created_at: (chrono::Utc::now() - chrono::Duration::minutes(6))
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            status: crate::state::MailboxMessageStatus::Pending,
-            phase: crate::state::MailboxDeliveryPhase::Queued,
-        };
-
-        assert!(mailbox_delivery_is_expired(&record));
-
-        record.created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        assert!(!mailbox_delivery_is_expired(&record));
     }
 
     #[tokio::test]
@@ -7681,7 +7764,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mailbox_drain_payload_send_failure_does_not_emit_submit_started() {
+    async fn mailbox_drain_payload_send_failure_fails_without_replay() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -7735,7 +7818,7 @@ mod tests {
         let records = state.mailbox.lock().await.list_for_target("agent-1");
         assert_eq!(
             records[0].status,
-            crate::state::MailboxMessageStatus::Pending
+            crate::state::MailboxMessageStatus::Failed
         );
         let agents = state.agents.lock().await;
         let agent = agents.get("agent-1").unwrap();

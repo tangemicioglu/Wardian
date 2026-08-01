@@ -18,6 +18,7 @@ const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_WAKE_COALESCE: Duration = Duration::from_millis(16);
 const ACTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_INPUT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
+const RUNTIME_INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 type ResizeHandler = dyn Fn(TerminalGeometry) -> Result<(), String> + Send + Sync + 'static;
 type BrokerReply<T> = oneshot::Sender<Result<T, TerminalBrokerError>>;
@@ -52,9 +53,22 @@ impl fmt::Display for TerminalBrokerError {
 
 impl std::error::Error for TerminalBrokerError {}
 
+/// A single terminal-input write and its completion receipt from the native
+/// PTY writer. A successful enqueue is not treated as a successful PTY write.
+pub struct NativeTerminalWriteRequest {
+    pub bytes: Vec<u8>,
+    pub completion: oneshot::Sender<Result<(), String>>,
+}
+
+#[derive(Clone)]
+enum TerminalRuntimeInput {
+    Legacy(mpsc::Sender<Vec<u8>>),
+    Acknowledged(mpsc::Sender<NativeTerminalWriteRequest>),
+}
+
 #[derive(Clone)]
 pub struct TerminalRuntimeHandles {
-    input_tx: mpsc::Sender<Vec<u8>>,
+    input_tx: TerminalRuntimeInput,
     resize: Arc<ResizeHandler>,
     ignore_scrollback_erase: bool,
 }
@@ -65,10 +79,30 @@ impl TerminalRuntimeHandles {
         F: Fn(TerminalGeometry) -> Result<(), String> + Send + Sync + 'static,
     {
         Self {
-            input_tx,
+            input_tx: TerminalRuntimeInput::Legacy(input_tx),
             resize: Arc::new(resize),
             ignore_scrollback_erase: false,
         }
+    }
+
+    /// Creates a runtime whose input sender does not resolve until the native
+    /// writer has either flushed the bytes to the PTY or reported an error.
+    pub fn new_with_write_ack<F>(
+        input_tx: mpsc::Sender<NativeTerminalWriteRequest>,
+        resize: F,
+    ) -> Self
+    where
+        F: Fn(TerminalGeometry) -> Result<(), String> + Send + Sync + 'static,
+    {
+        Self {
+            input_tx: TerminalRuntimeInput::Acknowledged(input_tx),
+            resize: Arc::new(resize),
+            ignore_scrollback_erase: false,
+        }
+    }
+
+    fn acknowledges_native_writes(&self) -> bool {
+        matches!(&self.input_tx, TerminalRuntimeInput::Acknowledged(_))
     }
 
     /// Keeps the broker's canonical history when a provider emits ED3.
@@ -1074,6 +1108,21 @@ impl TerminalSessionBroker {
             .await
     }
 
+    /// Returns whether privileged input resolves only after the native PTY
+    /// writer has flushed it. Live delivery uses this to require a provider
+    /// turn-start receipt only on runtimes that can make that write boundary
+    /// meaningful.
+    pub(crate) async fn native_write_receipts_enabled(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, TerminalBrokerError> {
+        self.request(
+            session_id,
+            TerminalSessionMessage::NativeWriteReceiptsEnabled,
+        )
+        .await
+    }
+
     pub async fn snapshot(
         &self,
         session_id: &str,
@@ -1479,6 +1528,7 @@ enum TerminalSessionMessage {
     },
     ConsumerAcknowledgements(BrokerReply<HashMap<String, u64>>),
     BrokerState(BrokerReply<TerminalBrokerState>),
+    NativeWriteReceiptsEnabled(BrokerReply<bool>),
     Snapshot(BrokerReply<TerminalSnapshot>),
     Pause {
         session_id: String,
@@ -1780,6 +1830,13 @@ impl TerminalSessionActor {
             }
             TerminalSessionMessage::BrokerState(reply) => {
                 let _ = reply.send(Ok(self.broker_state()));
+            }
+            TerminalSessionMessage::NativeWriteReceiptsEnabled(reply) => {
+                let enabled = self
+                    .runtime
+                    .as_ref()
+                    .is_some_and(TerminalRuntimeHandles::acknowledges_native_writes);
+                let _ = reply.send(Ok(enabled));
             }
             TerminalSessionMessage::Snapshot(reply) => {
                 let snapshot = self.snapshot();
@@ -2419,10 +2476,32 @@ impl TerminalSessionActor {
             .ok_or(TerminalBrokerError::RuntimeUnavailable)?
             .input_tx
             .clone();
-        tokio::time::timeout(RUNTIME_INPUT_SEND_TIMEOUT, input_tx.send(bytes))
-            .await
-            .map_err(|_| TerminalBrokerError::RuntimeIo("input_timeout".to_string()))?
-            .map_err(|_| TerminalBrokerError::RuntimeIo("input_channel_closed".to_string()))
+        match input_tx {
+            TerminalRuntimeInput::Legacy(input_tx) => {
+                tokio::time::timeout(RUNTIME_INPUT_SEND_TIMEOUT, input_tx.send(bytes))
+                    .await
+                    .map_err(|_| TerminalBrokerError::RuntimeIo("input_timeout".to_string()))?
+                    .map_err(|_| TerminalBrokerError::RuntimeIo("input_channel_closed".to_string()))
+            }
+            TerminalRuntimeInput::Acknowledged(input_tx) => {
+                let (completion_tx, completion_rx) = oneshot::channel();
+                tokio::time::timeout(
+                    RUNTIME_INPUT_SEND_TIMEOUT,
+                    input_tx.send(NativeTerminalWriteRequest {
+                        bytes,
+                        completion: completion_tx,
+                    }),
+                )
+                .await
+                .map_err(|_| TerminalBrokerError::RuntimeIo("input_timeout".to_string()))?
+                .map_err(|_| TerminalBrokerError::RuntimeIo("input_channel_closed".to_string()))?;
+                tokio::time::timeout(RUNTIME_INPUT_WRITE_TIMEOUT, completion_rx)
+                    .await
+                    .map_err(|_| TerminalBrokerError::RuntimeIo("input_write_timeout".to_string()))?
+                    .map_err(|_| TerminalBrokerError::RuntimeIo("input_writer_closed".to_string()))?
+                    .map_err(TerminalBrokerError::RuntimeIo)
+            }
+        }
     }
 
     fn read_compatibility_output(

@@ -109,7 +109,13 @@ pub(crate) async fn submit_prompt_to_agent_with_codex_echo_guard(
                 payload_cursor.as_deref(),
                 &wait_prompt,
             )
-            .await;
+            .await
+            .map_err(|message| {
+                crate::utils::delivery_transaction::TerminalDeliveryError::terminal_state_unknown(
+                    "payload_echo_timeout",
+                    message,
+                )
+            })
         },
     )
     .await

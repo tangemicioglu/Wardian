@@ -22,7 +22,7 @@
  *   headless_structured_reply — completes a structured Wardian request through the CLI
  *   multi_turn    — init → [user → generating → model_response → turn_completed] × 3
  *   interactive_multi_turn — init → action_required → stdin-driven responses × 2
- *   interactive_echo_then_response — init → action_required → prompt echo → response
+ *   interactive_echo_then_response — init → action_required → accepted input → prompt echo → response
  *   ansi_output   — init → ANSI terminal output → model_response → turn_completed
  */
 
@@ -271,6 +271,10 @@ async function runInteractiveEchoThenResponse() {
   emit(events.actionRequired("Interactive echo test: waiting for input"));
   const input = await waitForStdin();
   const marker = input.match(/[A-Z0-9_]{4,}/)?.[0] || input;
+  // This mirrors the provider event that follows an accepted interactive
+  // submission. Emitting only the echoed response would make the fixture look
+  // like a composer repaint rather than a started provider turn.
+  emit(events.user());
   await sleep(delay);
   emit(events.modelResponse(input));
   await sleep(delay);

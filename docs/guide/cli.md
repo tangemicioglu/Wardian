@@ -200,15 +200,18 @@ reports `restart_required`, including class changes. `agent kill` is permanent:
 it removes the agent, its habitat, and its session history, while leaving the
 project workspace files untouched. It requires `--confirm` deliberately.
 
-`send` is one-way: it reports whether the message was submitted or queued, but
-does not return the target's answer. Use `ask` when an automation step needs a
-durable structured reply. When a normal live message is queued because the
-target is busy, Wardian persists it and retries after the target is safe for
-input, including after an app restart. A queued live message expires after five
-minutes rather than being injected into a later, unrelated turn. For a live message,
-`send --wait-until idle` waits for the provider-confirmed completion of the
-specific delivered turn rather than treating any brief Idle status observation
-as completion.
+`send` is one-way: it reports delivery evidence or queueing, but does not
+return the target's answer. Use `ask` when an automation step needs a durable
+structured reply. When a normal live message is queued because the target is
+busy, Wardian persists it until the target reaches a later idle or ready
+observation; there is no timer-based retry or age expiry. Pending mailbox work
+survives an app restart and gets a status-gated delivery opportunity after the
+agent is restored. A native live message becomes `provider_accepted` only after
+the provider starts the submitted turn. If terminal state becomes ambiguous
+after input is written, Wardian marks the delivery failed instead of replaying
+the message. For a live message, `send --wait-until idle` waits for the
+provider-confirmed completion of the specific delivered turn rather than
+treating any brief Idle status observation as completion.
 
 ## Common Workflows
 

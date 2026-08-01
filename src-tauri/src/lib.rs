@@ -357,7 +357,7 @@ pub fn run() {
                                         agents_map.insert(session_id.clone(), agent);
                                         drop(agents_map);
                                         drop(order_map);
-                                        crate::control::spawn_mailbox_retry_worker(
+                                        crate::control::spawn_mailbox_drain_after_restore(
                                             &app_handle,
                                             &session_id,
                                         );
@@ -516,7 +516,7 @@ pub fn run() {
                                     agents_map.insert(config.session_id.clone(), agent);
                                     drop(agents_map);
                                     drop(order_map);
-                                    crate::control::spawn_mailbox_retry_worker(
+                                    crate::control::spawn_mailbox_drain_after_restore(
                                         &app_handle,
                                         &config.session_id,
                                     );

@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 pub use wardian_core::control::{
     MailboxDeliveryPhase, MailboxMessageDraft, MailboxMessageRecord, MailboxMessageStatus,
 };
@@ -8,7 +7,6 @@ const MAX_TERMINAL_RECORDS_PER_TARGET: usize = 64;
 #[derive(Debug, Default)]
 pub struct MailboxState {
     records: Vec<MailboxMessageRecord>,
-    retry_workers: HashSet<String>,
     last_millis: i64,
     counter: u64,
 }
@@ -44,7 +42,6 @@ impl MailboxState {
                 .cmp(&right.created_at)
                 .then(left.id.cmp(&right.id))
         });
-        self.retry_workers.clear();
         self.last_millis = 0;
         self.counter = 0;
         let record_ids = self
@@ -69,13 +66,6 @@ impl MailboxState {
             .collect()
     }
 
-    pub fn has_pending_for_target(&self, target_session_id: &str) -> bool {
-        self.records.iter().any(|record| {
-            record.target_session_id == target_session_id
-                && record.status == MailboxMessageStatus::Pending
-        })
-    }
-
     pub fn next_pending_for_target(&self, target_session_id: &str) -> Option<MailboxMessageRecord> {
         self.records
             .iter()
@@ -84,24 +74,6 @@ impl MailboxState {
                     && record.status == MailboxMessageStatus::Pending
             })
             .cloned()
-    }
-
-    /// Claims the one retry worker that may drain a target at a time.
-    pub fn claim_retry_worker(&mut self, target_session_id: &str) -> bool {
-        self.has_pending_for_target(target_session_id)
-            && self.retry_workers.insert(target_session_id.to_string())
-    }
-
-    /// Returns whether the claimed worker should keep polling. The pending
-    /// check and worker release happen under the same mailbox lock so a newly
-    /// queued message cannot be stranded between them.
-    pub fn continue_retry_worker(&mut self, target_session_id: &str) -> bool {
-        if self.has_pending_for_target(target_session_id) {
-            true
-        } else {
-            self.retry_workers.remove(target_session_id);
-            false
-        }
     }
 
     pub fn take_next_pending_for_target(
@@ -408,21 +380,5 @@ mod tests {
 
         assert_eq!(mailbox.all()[0], record);
         assert_eq!(next.id, "msg_9999999999999_000004");
-    }
-
-    #[test]
-    fn retry_worker_claim_is_singleton_and_releases_after_pending_work_is_drained() {
-        let mut mailbox = MailboxState::default();
-        let record = mailbox.enqueue(message_for("agent-1", "one"));
-
-        assert!(mailbox.claim_retry_worker("agent-1"));
-        assert!(!mailbox.claim_retry_worker("agent-1"));
-
-        mailbox.take_next_pending_for_target("agent-1").unwrap();
-        mailbox.mark_delivered(&record.id).unwrap();
-        assert!(!mailbox.continue_retry_worker("agent-1"));
-
-        mailbox.enqueue(message_for("agent-1", "two"));
-        assert!(mailbox.claim_retry_worker("agent-1"));
     }
 }

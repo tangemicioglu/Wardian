@@ -43,7 +43,7 @@ pub async fn submit_prompt_with_outcome_chunks_via_sender<S: TerminalInputSink +
         tx,
         provider_name,
         prompt,
-        || async {},
+        || async { Ok(()) },
     )
     .await
 }
@@ -60,14 +60,14 @@ pub async fn submit_prompt_with_outcome_chunks_via_sender_after_payload<S, F, Fu
 where
     S: TerminalInputSink + ?Sized,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = ()>,
+    Fut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
 {
     submit_prompt_with_outcome_chunks_via_sender_after_payload_and_before_submit(
         tx,
         provider_name,
         prompt,
         on_payload_sent,
-        || async {},
+        || async { Ok(()) },
     )
     .await
 }
@@ -91,9 +91,9 @@ pub async fn submit_prompt_with_outcome_chunks_via_sender_after_payload_and_befo
 where
     S: TerminalInputSink + ?Sized,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = ()>,
+    Fut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
     G: FnOnce() -> Gfut,
-    Gfut: Future<Output = ()>,
+    Gfut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
 {
     let normalized = normalize_prompt_for_terminal_submit(prompt);
     if normalized.is_empty() {
@@ -148,14 +148,14 @@ pub async fn submit_prompt_with_outcome_via_sender_after_payload<S, F, Fut>(
 where
     S: TerminalInputSink + ?Sized,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = ()>,
+    Fut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
 {
     submit_prompt_with_outcome_via_sender_after_payload_and_before_submit(
         tx,
         prompt,
         provider_name,
         on_payload_sent,
-        || async {},
+        || async { Ok(()) },
     )
     .await
 }
@@ -179,9 +179,9 @@ pub async fn submit_prompt_with_outcome_via_sender_after_payload_and_before_subm
 where
     S: TerminalInputSink + ?Sized,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = ()>,
+    Fut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
     G: FnOnce() -> Gfut,
-    Gfut: Future<Output = ()>,
+    Gfut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
 {
     submit_prompt_with_outcome_chunks_via_sender_after_payload_and_before_submit(
         tx,
