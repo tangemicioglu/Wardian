@@ -264,6 +264,23 @@ ChangeReviewWatermark {
 }
 ```
 
+```
+ChangeReviewPrefs {
+  schema: u8
+  baseline: ChangeReviewBaseline
+}
+```
+
+The pane unmounts when the sidebar tab changes, as `GitPanel` does, so the
+selected baseline is persisted rather than held in component state. It lives at
+`WARDIAN_HOME/changes/prefs.json`, following `load_watchlist_prefs` and
+`save_watchlist_prefs` in `src-tauri/src/commands/watchlist.rs`. A missing or
+unparseable file yields the default baseline, `last_effective_turn`.
+
+The preference is global rather than per agent. Operators review with a
+habitual baseline, and a per-agent record would cost a write on every agent
+switch to serve a distinction nobody asked for.
+
 Watermarks persist as a single index at `WARDIAN_HOME/changes/watermarks.json`,
 keyed by `agent_id` and `workspace`, following the precedent set by
 `watchlists/index.json` in `src-tauri/src/commands/watchlist.rs`. They are not
@@ -274,7 +291,8 @@ The directory is created on first write. A missing or unparseable index is
 treated as "nothing reviewed yet" rather than an error, so a corrupt file
 degrades the `unreviewed` baseline instead of breaking the pane.
 
-This is the only new persisted record in Phase 1.
+The watermark index and the preferences file are the only new persisted records
+in Phase 1. Both live under `WARDIAN_HOME/changes/`.
 
 ## Edge Cases
 
