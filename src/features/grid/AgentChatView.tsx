@@ -1,12 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Check, FileText, GitCompare, ListChecks, Loader2, Search, SendHorizontal, ShieldAlert, Terminal, Wrench } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Check, FilePlus2, FileText, GitCompare, ListChecks, Loader2, Search, SendHorizontal, ShieldAlert, Terminal, Wrench, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { AgentChatEvent, AgentChatRole, AgentConfig, AgentTelemetry } from "../../types";
 import { useSettingsStore } from "../../store/useSettingsStore";
-import { submitInputToAgent } from "../../utils/terminalInput";
+import {
+  promptWithChatAttachments,
+  stageChatImageAttachments,
+  submitInputToAgent,
+  type ChatAttachment,
+} from "../../utils/terminalInput";
 import { isGenericActivityTitle, toActivityBlock, type ActivityBlockModel, type ActivityTone } from "./activityBlocks";
 import { parseApprovalChoices } from "./approvalChoices";
 import { CodePanel, renderHighlightedCode } from "./chatCode";
@@ -102,6 +108,7 @@ export function AgentChatView({
   const [internalDraft, setInternalDraft] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [visibleRowLimit, setVisibleRowLimit] = useState(CHAT_INITIAL_ROW_LIMIT);
   const externalEditor = useSettingsStore((state) => state.externalEditor);
   const externalEditorCustomExecutable = useSettingsStore((state) => state.externalEditorCustomExecutable);
@@ -127,6 +134,7 @@ export function AgentChatView({
       setLoadState("ready");
       setError(null);
       setSubmitError(null);
+      setAttachments([]);
     })
       .then((dispose) => {
         if (disposed) {
@@ -221,6 +229,7 @@ export function AgentChatView({
     prependScrollSnapshotRef.current = null;
     setVisibleRowLimit(CHAT_INITIAL_ROW_LIMIT);
     setAwaitingResponse(null);
+    setAttachments([]);
   }, [sessionId]);
 
   useLayoutEffect(() => {
@@ -241,24 +250,33 @@ export function AgentChatView({
     }
   }, [hiddenOlderRowCount, latestVisibleRowKey, loadState, visibleChatRows.length]);
 
-  const submitPrompt = async (promptValue: string, clearDraft: boolean) => {
+  const submitPrompt = async (
+    promptValue: string,
+    clearDraft: boolean,
+    selectedAttachments: readonly ChatAttachment[] = [],
+  ) => {
     const prompt = promptValue.trim();
-    if (!prompt || disabledReason) return;
+    if ((!prompt && selectedAttachments.length === 0) || disabledReason) return;
+
+    const providerName = agent?.provider ?? provider ?? providerFromEvents(events);
+    const submittedPrompt = promptWithChatAttachments(prompt, selectedAttachments);
 
     stickToLatestRef.current = true;
     setIsSubmitting(true);
     setSubmitError(null);
     try {
-      await submitInputToAgent(sessionId, prompt);
+      await stageChatImageAttachments(sessionId, providerName, selectedAttachments);
+      await submitInputToAgent(sessionId, submittedPrompt);
       if (clearDraft) setActiveDraft("");
+      if (selectedAttachments.length > 0) setAttachments([]);
       setPendingMessages((pending) => [
         ...pending,
         createPendingUserMessage(
           sessionId,
-          agent?.provider ?? provider ?? providerFromEvents(events),
-          prompt,
+          providerName,
+          submittedPrompt,
           maxSequence(events),
-          matchingUserMessageCount(events, prompt),
+          matchingUserMessageCount(events, submittedPrompt),
         ),
       ]);
       setAwaitingResponse({
@@ -274,7 +292,7 @@ export function AgentChatView({
   };
 
   const handleSubmit = () => {
-    void submitPrompt(activeDraft, true);
+    void submitPrompt(activeDraft, true, attachments);
   };
 
   const handleApprovalSubmit = (response: string) => {
@@ -352,7 +370,9 @@ export function AgentChatView({
         draft={activeDraft}
         hasActionRequired={hasActionRequired}
         isSubmitting={isSubmitting}
+        attachments={attachments}
         onAutoFocused={onComposerAutoFocused}
+        onAttachmentsChange={setAttachments}
         onChange={setActiveDraft}
         onSubmit={handleSubmit}
         submitError={submitError}
@@ -428,7 +448,7 @@ function ActivityEvent({
   const block = entry?.block ?? toActivityBlock(event);
   if (isThinkingIndicator(event)) return <ThinkingRow />;
   if (event.kind === "status") return <StatusRow event={event} block={block} />;
-  if (event.kind === "terminal_output") return <TerminalFallback block={block} />;
+  if (event.kind === "terminal_output") return <TerminalFallback event={event} block={block} />;
   return <ActivityRow event={event} entry={entry} block={block} isSubmitting={isSubmitting} onApprovalSubmit={onApprovalSubmit} />;
 }
 
@@ -830,9 +850,12 @@ function diffStats(content: string): { added: number; removed: number; files: st
   return { added, removed, files: [...files] };
 }
 
-function TerminalFallback({ block }: { block: ActivityBlockModel }) {
+function TerminalFallback({ event, block }: { event: AgentChatEvent; block: ActivityBlockModel }) {
   const [expanded, setExpanded] = useState(false);
   const lineLabel = `${block.lineCount} ${block.lineCount === 1 ? "line" : "lines"}`;
+  const isLaunch = event.metadata?.terminal_presentation === "launch";
+  const title = isLaunch ? event.title?.trim() || "Provider started" : "Terminal fallback";
+  const subtitle = isLaunch ? `Startup screen - ${lineLabel}` : `Raw watch output - ${lineLabel}`;
   const preview = compactTerminalPreview(block.content);
 
   return (
@@ -842,23 +865,23 @@ function TerminalFallback({ block }: { block: ActivityBlockModel }) {
     >
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-semibold leading-5 text-primary">Terminal fallback</div>
+          <div className="truncate text-[12px] font-semibold leading-5 text-primary">{title}</div>
           <div className="truncate text-[11px] leading-4 text-muted-neutral">
-            Raw watch output - {lineLabel}
+            {subtitle}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <CopyIconButton label="Copy terminal output" value={block.content} />
+          <CopyIconButton label={isLaunch ? "Copy launch details" : "Copy terminal output"} value={block.content} />
           <button
             type="button"
             className="rounded border border-wardian-light px-2 py-1 text-[11px] font-semibold leading-4 text-muted-neutral hover:text-primary"
             onClick={() => setExpanded((value) => !value)}
           >
-            {expanded ? "Hide terminal" : "Show terminal"}
+            {expanded ? "Hide details" : isLaunch ? "View details" : "Show terminal"}
           </button>
         </div>
       </div>
-      {preview && !expanded ? (
+      {preview && !expanded && !isLaunch ? (
         <div className="mt-1 truncate font-mono text-[11px] leading-4 text-muted-neutral">{preview}</div>
       ) : null}
       {expanded ? (
@@ -871,22 +894,26 @@ function TerminalFallback({ block }: { block: ActivityBlockModel }) {
 }
 
 function ChatComposer({
+  attachments,
   autoFocus,
   disabledReason,
   draft,
   hasActionRequired,
   isSubmitting,
   onAutoFocused,
+  onAttachmentsChange,
   onChange,
   onSubmit,
   submitError,
 }: {
+  attachments: readonly ChatAttachment[];
   autoFocus: boolean;
   disabledReason: string | null;
   draft: string;
   hasActionRequired: boolean;
   isSubmitting: boolean;
   onAutoFocused?: () => void;
+  onAttachmentsChange: (attachments: ChatAttachment[]) => void;
   onChange: (value: string) => void;
   onSubmit: () => void;
   submitError: string | null;
@@ -894,7 +921,27 @@ function ChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const autoFocusConsumedRef = useRef(false);
   const placeholder = disabledReason ?? (hasActionRequired ? "Respond to action required..." : "Message agent...");
-  const canSubmit = draft.trim().length > 0 && !disabledReason;
+  const canSubmit = (draft.trim().length > 0 || attachments.length > 0) && !disabledReason;
+
+  const chooseAttachments = async () => {
+    try {
+      const selected = await open({
+        directory: false,
+        multiple: true,
+        title: "Attach files to agent",
+      });
+      const paths = typeof selected === "string" ? [selected] : selected ?? [];
+      if (paths.length === 0) return;
+
+      const knownPaths = new Set(attachments.map((attachment) => attachment.path.toLocaleLowerCase()));
+      const added = paths
+        .filter((path) => !knownPaths.has(path.toLocaleLowerCase()))
+        .map((path) => ({ name: fileNameFromPath(path), path }));
+      if (added.length > 0) onAttachmentsChange([...attachments, ...added]);
+    } catch (error) {
+      console.warn("Failed to choose chat attachments:", error);
+    }
+  };
 
   useEffect(() => {
     if (!autoFocus) {
@@ -916,7 +963,40 @@ function ChatComposer({
         onSubmit();
       }}
     >
+      {attachments.length > 0 ? (
+        <div className="mb-2 flex flex-wrap gap-1.5" aria-label="Attached files">
+          {attachments.map((attachment) => (
+            <span
+              className="inline-flex max-w-full items-center gap-1 rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] py-1 pl-2 pr-1 text-[11px] text-primary"
+              key={attachment.path}
+              title={attachment.path}
+            >
+              <FileText className="h-3 w-3 shrink-0 text-muted-neutral" aria-hidden="true" />
+              <span className="max-w-[20ch] truncate">{attachment.name}</span>
+              <button
+                aria-label={`Remove ${attachment.name}`}
+                className="rounded p-0.5 text-muted-neutral hover:bg-[var(--color-wardian-card)] hover:text-primary"
+                disabled={Boolean(disabledReason) || isSubmitting}
+                onClick={() => onAttachmentsChange(attachments.filter((item) => item.path !== attachment.path))}
+                type="button"
+              >
+                <X className="h-3 w-3" aria-hidden="true" />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div className="flex items-end gap-2">
+        <button
+          aria-label="Attach files"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] text-muted-neutral transition-colors hover:border-[var(--color-wardian-accent)] hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={Boolean(disabledReason) || isSubmitting}
+          onClick={() => void chooseAttachments()}
+          title="Attach files"
+          type="button"
+        >
+          <FilePlus2 className="h-4 w-4" aria-hidden="true" />
+        </button>
         <textarea
           aria-label="Message agent"
           className="max-h-28 min-h-9 flex-1 resize-none rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-3 py-2 text-[13px] leading-5 text-primary outline-none transition-colors placeholder:text-muted-neutral focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-70"
@@ -954,6 +1034,12 @@ function ChatComposer({
       ) : null}
     </form>
   );
+}
+
+function fileNameFromPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const segments = normalized.split("/").filter(Boolean);
+  return segments[segments.length - 1] || path;
 }
 
 function shouldSubmitComposerKey(event: KeyboardEvent<HTMLTextAreaElement>): boolean {

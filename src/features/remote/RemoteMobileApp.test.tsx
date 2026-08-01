@@ -1941,6 +1941,45 @@ describe("RemoteMobileApp", () => {
     expect(row).toHaveTextContent("terminal line 45");
   });
 
+  it("renders remote provider launch screens as compact lifecycle rows", async () => {
+    mockRemoteAgentDetailFetch("codex", {
+      chatEvents: [
+        {
+          id: "codex-launch",
+          session_id: "agent-1",
+          provider: "codex",
+          kind: "terminal_output",
+          role: null,
+          text: "OpenAI Codex\nmodel\nworkspace\nready",
+          title: "Codex started",
+          status: null,
+          turn_id: null,
+          source: "watch_output",
+          command: null,
+          exit_code: null,
+          path: null,
+          language: "terminal",
+          created_at: "2026-05-21T08:00:00.000Z",
+          sequence: 1,
+          metadata: { terminal_presentation: "launch" },
+        },
+      ],
+    });
+
+    render(<RemoteMobileApp />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /Open Coder details/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
+
+    const row = await screen.findByTestId("remote-activity-row-terminal-fallback");
+    expect(row).toHaveTextContent("Codex started");
+    expect(row).toHaveTextContent("Startup screen - 4 lines");
+    expect(row).not.toHaveTextContent("OpenAI Codex");
+
+    await userEvent.click(within(row).getByRole("button", { name: "View details" }));
+    expect(row).toHaveTextContent("OpenAI Codex");
+  });
+
   it("renders remote chat work logs with concrete tool call details", async () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url === "/remote/api/session") {

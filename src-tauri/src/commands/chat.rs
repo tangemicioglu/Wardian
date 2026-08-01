@@ -63,7 +63,7 @@ pub async fn load_agent_chat_transcript_for_state(
     let result = archive_agent_chat_events_for_state(state, &session_id).await?;
     let archived_events = state
         .conversation_archive
-        .chat_events_for_agent(&session_id)
+        .chat_events_for_active_conversation(&session_id)
         .unwrap_or_else(|error| {
             manager::log_debug(&format!(
                 "[WARDIAN] conversation archive chat replay failed for {session_id}: {error}"
@@ -72,8 +72,8 @@ pub async fn load_agent_chat_transcript_for_state(
         });
 
     // Provider logs and the watch snapshot are live, bounded sources. Replay
-    // the durable archive first so a restart or Antigravity log rotation does
-    // not erase previously captured chat rows from the view.
+    // only the active durable archive so a restart or log rotation does not
+    // erase current chat rows, while a new provider session starts empty.
     Ok(merge_chat_events(result.events, archived_events))
 }
 
@@ -1133,6 +1133,12 @@ fn terminal_output_event(
         "watch_sequence": sequence_from_cursor(&output.cursor),
     });
     let provider = provider_for_event(None, provider, &mut metadata);
+    let title = provider_launch_title(&provider, &output.text)
+        .map(|title| {
+            set_metadata(&mut metadata, "terminal_presentation", "launch");
+            title.to_string()
+        })
+        .unwrap_or_else(|| "Terminal output".to_string());
 
     AgentChatEvent {
         id: event_id(session_id, sequence, "terminal_output"),
@@ -1141,7 +1147,7 @@ fn terminal_output_event(
         kind: AgentChatEventKind::TerminalOutput,
         role: None,
         text: Some(output.text.clone()),
-        title: Some("Terminal output".to_string()),
+        title: Some(title),
         status: None,
         turn_id: None,
         source: Some("watch_output".to_string()),
@@ -1152,6 +1158,23 @@ fn terminal_output_event(
         created_at: None,
         sequence: Some(sequence),
         metadata,
+    }
+}
+
+/// Provider TUIs commonly write a branded startup screen before their
+/// structured transcript becomes available. Preserve that screen as terminal
+/// evidence, but mark it for the chat UI to render as a compact lifecycle row.
+fn provider_launch_title(provider: &str, output: &str) -> Option<&'static str> {
+    let output = output.to_ascii_lowercase();
+    match provider {
+        "codex" if output.contains("codex") => Some("Codex started"),
+        "claude" if output.contains("claude code") || output.contains("claude") => {
+            Some("Claude started")
+        }
+        "gemini" if output.contains("gemini") => Some("Gemini started"),
+        "opencode" if output.contains("opencode") => Some("OpenCode started"),
+        "antigravity" if output.contains("antigravity") => Some("Antigravity started"),
+        _ => None,
     }
 }
 
@@ -1553,6 +1576,22 @@ Do you want to proceed?
         assert!(chat_events
             .iter()
             .any(|event| event.kind == AgentChatEventKind::Status));
+    }
+
+    #[test]
+    fn provider_launch_screens_are_marked_for_compact_chat_presentation() {
+        for (provider, launch_output, title) in [
+            ("codex", "OpenAI Codex\nmodel", "Codex started"),
+            ("claude", "Claude Code\nready", "Claude started"),
+            ("gemini", "Gemini CLI\nready", "Gemini started"),
+            ("opencode", "OpenCode\nready", "OpenCode started"),
+            ("antigravity", "Antigravity\nready", "Antigravity started"),
+        ] {
+            let event = terminal_output_event("agent-1", provider, 1, &output(launch_output));
+
+            assert_eq!(event.title.as_deref(), Some(title));
+            assert_eq!(event.metadata["terminal_presentation"], "launch");
+        }
     }
 
     #[test]

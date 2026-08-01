@@ -236,6 +236,37 @@ impl ConversationArchiveState {
         Ok(events)
     }
 
+    /// Returns persisted chat events for the agent's open conversation only.
+    /// The live chat surface must not replay a closed conversation after a
+    /// user starts a new provider session.
+    pub fn chat_events_for_active_conversation(
+        &self,
+        agent_id: &str,
+    ) -> io::Result<Vec<AgentChatEvent>> {
+        let agent_id = agent_id.trim();
+        if agent_id.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "agent_id is required",
+            ));
+        }
+
+        let Some(handle) = lock_active(&self.active)?.get(agent_id).cloned() else {
+            return Ok(Vec::new());
+        };
+        let directory = conversation_dir(agent_id, &handle.conversation_id)?;
+        let mut events: Vec<AgentChatEvent> = read_jsonl_records(&directory.join("events.jsonl"))?;
+        for event in &mut events {
+            if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert(
+                    "conversation_archive_id".to_string(),
+                    serde_json::Value::String(handle.conversation_id.clone()),
+                );
+            }
+        }
+        Ok(events)
+    }
+
     pub fn append_chat_events(
         &self,
         agent_id: &str,
