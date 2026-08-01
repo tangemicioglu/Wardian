@@ -31,7 +31,18 @@ async function selectAgentResource(driver, resourceKey, timeoutMs) {
   );
   await driver.wait(until.elementIsVisible(row), timeoutMs);
   if (await row.getAttribute("data-selected") !== "true") {
-    await row.click();
+    // An ordinary roster click reveals the agent in an Agents surface, which
+    // can claim terminal ownership. This helper needs only the selection that
+    // parameterizes a resource-backed Workbench open.
+    const platform = await driver.executeScript(() => navigator.platform);
+    const selectionModifier = /Mac|iPhone|iPad/.test(String(platform))
+      ? Key.COMMAND
+      : Key.CONTROL;
+    await driver.actions()
+      .keyDown(selectionModifier)
+      .click(row)
+      .keyUp(selectionModifier)
+      .perform();
     await driver.wait(async () => await row.getAttribute("data-selected") === "true", timeoutMs);
   }
 }
