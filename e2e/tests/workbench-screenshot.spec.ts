@@ -99,6 +99,77 @@ test("renders a capture-ready tabs-and-splits workbench", async ({ page }, testI
   await testInfo.attach("tabs-and-splits", { path, contentType: "image/png" });
 });
 
+test("renders chat attachment chips alongside a compact provider launch row", async ({ page }, testInfo) => {
+  const overview = makeWorkbenchSurface("chat-attachment-evidence", "agents-overview", {
+    state: {
+      mode: "single",
+      focused_agent_id: "agent-alpha",
+      search_query: "",
+      status_filter: [],
+    },
+  });
+  const document = makeWorkbenchDocument({ revision: 3, surfaces: [overview] });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    localStorage.setItem("wardian-settings", JSON.stringify({
+      state: { gridCardDisplayMode: "chat" },
+      version: 2,
+    }));
+  });
+  await installWorkbenchIpcMock(page, {
+    agents: [{
+      session_id: "agent-alpha",
+      session_name: "Alpha",
+      agent_class: "Coder",
+      folder: "/workspace/alpha",
+      provider: "codex",
+      is_off: false,
+    }],
+    load_result: {
+      source: "primary",
+      document,
+      notice: null,
+      durable_revision: document.revision,
+      durable_token: "chat-attachment-evidence-token-3",
+    },
+    responses: {
+      load_agent_chat_transcript: [{
+        id: "codex-launch",
+        session_id: "agent-alpha",
+        provider: "codex",
+        kind: "terminal_output",
+        role: "system",
+        text: "OpenAI Codex\nReady for your task\n/workspace/alpha",
+        title: "Codex started",
+        status: null,
+        turn_id: null,
+        source: null,
+        command: null,
+        exit_code: null,
+        path: null,
+        language: null,
+        created_at: null,
+        sequence: 1,
+        metadata: { terminal_presentation: "launch" },
+      }],
+      "plugin:dialog|open": ["C:/evidence/dashboard.png", "C:/evidence/notes.txt"],
+    },
+  });
+
+  await page.goto("/");
+  await expect(page.getByTestId("agent-card")).toBeVisible();
+  await expect(page.getByText("Codex started", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Attach files" }).click();
+  await expect(page.getByText("dashboard.png", { exact: true })).toBeVisible();
+  await expect(page.getByText("notes.txt", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
+
+  const path = process.env.WARDIAN_CHAT_ATTACHMENTS_SCREENSHOT
+    ?? testInfo.outputPath("chat-attachments.png");
+  await page.locator('[data-testid="agent-card"]').screenshot({ path, animations: "disabled" });
+  await testInfo.attach("chat-attachments", { path, contentType: "image/png" });
+});
+
 test("renders a capture-ready new-tab surface launcher", async ({ page }, testInfo) => {
   const dashboard = makeWorkbenchSurface("dashboard-launcher-evidence", "dashboard");
   const document = makeWorkbenchDocument({ revision: 3, surfaces: [dashboard] });

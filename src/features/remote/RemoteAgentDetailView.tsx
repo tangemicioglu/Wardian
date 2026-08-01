@@ -1189,10 +1189,11 @@ function ActivityRow({
 }) {
   const block = entry?.block ?? toActivityBlock(event);
   const content = entry?.content ?? block.content;
-  const [expanded, setExpanded] = useState(!block.defaultCollapsed);
+  const isLaunch = event.metadata?.terminal_presentation === "launch";
+  const [expanded, setExpanded] = useState(!block.defaultCollapsed && !isLaunch);
   const output = outputWithoutCommandPrefix(content, event.command);
   const copyValue = entry ? formatPresentedEntryForCopy(entry) : output || content;
-  const visibleOutput = block.defaultCollapsed && !expanded ? previewActivityContent(output) : output;
+  const visibleOutput = isLaunch && !expanded ? "" : block.defaultCollapsed && !expanded ? previewActivityContent(output) : output;
   const isApproval = block.kind === "approval" || block.tone === "warning";
   const approvalChoices = isApproval ? parseApprovalChoices(event.text ?? content) : [];
   const presentation = toolPresentation(event, block, entry);
@@ -1221,19 +1222,21 @@ function ActivityRow({
             </span>
             <div className="min-w-0">
               <div className="truncate font-semibold text-primary">{presentation.title}</div>
-              {details.length > 0 && <div className="mt-1 truncate text-muted-neutral">{details.join(" - ")}</div>}
+              {isLaunch ? (
+                <div className="mt-1 truncate text-muted-neutral">Startup screen - {block.lineCount} {block.lineCount === 1 ? "line" : "lines"}</div>
+              ) : details.length > 0 ? <div className="mt-1 truncate text-muted-neutral">{details.join(" - ")}</div> : null}
             </div>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          {copyValue ? <RemoteCopyButton label="Copy activity output" value={copyValue} /> : null}
-          {block.defaultCollapsed ? (
+          {copyValue ? <RemoteCopyButton label={isLaunch ? "Copy launch details" : "Copy activity output"} value={copyValue} /> : null}
+          {block.defaultCollapsed || isLaunch ? (
             <button
               type="button"
               className="rounded border border-wardian-border px-2 py-1 text-[11px] font-semibold leading-4 text-muted-neutral hover:text-primary"
               onClick={() => setExpanded((value) => !value)}
             >
-              {expanded ? "Collapse" : "Show output"}
+              {expanded ? "Collapse" : isLaunch ? "View details" : "Show output"}
             </button>
           ) : null}
         </div>

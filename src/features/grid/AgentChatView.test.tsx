@@ -1,17 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { Image } from "@tauri-apps/api/image";
+import { open } from "@tauri-apps/plugin-dialog";
+import { writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEvent } from "../../types";
 import { AgentChatView } from "./AgentChatView";
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  writeImage: vi.fn(),
   writeText: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/image", () => ({
+  Image: { fromPath: vi.fn() },
 }));
 
 const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);
+const imageFromPathMock = vi.mocked(Image.fromPath);
+const openMock = vi.mocked(open);
+const writeImageMock = vi.mocked(writeImage);
 const writeTextMock = vi.mocked(writeText);
 
 function deferred<T>() {
@@ -50,6 +64,9 @@ describe("AgentChatView", () => {
     invokeMock.mockReset();
     listenMock.mockReset();
     listenMock.mockResolvedValue(() => {});
+    imageFromPathMock.mockReset();
+    openMock.mockReset();
+    writeImageMock.mockReset();
     writeTextMock.mockReset();
   });
 
@@ -869,6 +886,30 @@ describe("AgentChatView", () => {
     expect(within(row).getByText(/line 44/)).toBeInTheDocument();
   });
 
+  it("renders provider launch screens as a compact lifecycle row", async () => {
+    invokeMock.mockResolvedValue([
+      event({
+        id: "codex-launch",
+        kind: "terminal_output",
+        title: "Codex started",
+        text: "OpenAI Codex\nmodel\nworkspace\nready",
+        sequence: 1,
+        metadata: { terminal_presentation: "launch" },
+      }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const row = await screen.findByTestId("terminal-fallback-row");
+    expect(within(row).getByText("Codex started")).toBeInTheDocument();
+    expect(within(row).getByText("Startup screen - 4 lines")).toBeInTheDocument();
+    expect(within(row).queryByText("OpenAI Codex")).not.toBeInTheDocument();
+
+    fireEvent.click(within(row).getByRole("button", { name: "View details" }));
+
+    expect(row).toHaveTextContent("OpenAI Codex");
+  });
+
   it("renders markdown structure in message bubbles", async () => {
     invokeMock.mockResolvedValue([
       event({
@@ -1125,6 +1166,44 @@ describe("AgentChatView", () => {
     }));
     await waitFor(() => expect(screen.getByLabelText("user message")).toHaveTextContent("Run the focused tests."));
     expect(input).toHaveValue("");
+  });
+
+  it("stages image files with the provider paste shortcut and includes every attachment path in the sent prompt", async () => {
+    const selectedImage = "C:\\Users\\agent\\Desktop\\screen.png";
+    const selectedText = "C:\\Users\\agent\\Desktop\\notes.txt";
+    const clipboardImage = { rid: 1 } as never;
+    openMock.mockResolvedValue([selectedImage, selectedText]);
+    imageFromPathMock.mockResolvedValue(clipboardImage);
+    writeImageMock.mockResolvedValue(undefined);
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "inject_session_input") return Promise.resolve(undefined);
+      if (command === "submit_prompt_to_agent") return Promise.resolve(undefined);
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    render(<AgentChatView sessionId="agent-1" agent={{ session_name: "Alpha", agent_class: "Coder", provider: "codex" }} status="Idle" />);
+    await screen.findByText("No chat transcript yet");
+
+    fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
+    expect(await screen.findByText("screen.png")).toBeInTheDocument();
+    expect(screen.getByText("notes.txt")).toBeInTheDocument();
+
+    const input = screen.getByLabelText("Message agent");
+    fireEvent.change(input, { target: { value: "Review these." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(writeImageMock).toHaveBeenCalledWith(clipboardImage));
+    expect(invokeMock).toHaveBeenCalledWith("inject_session_input", {
+      sessionId: "agent-1",
+      text: "\u0016",
+    });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("submit_prompt_to_agent", {
+      sessionId: "agent-1",
+      prompt: `Review these.\n\nAttached files:\n- ${selectedImage}\n- ${selectedText}`,
+    }));
+    expect(screen.queryByText("screen.png")).not.toBeInTheDocument();
+    expect(screen.queryByText("notes.txt")).not.toBeInTheDocument();
   });
 
   it("keeps the latest transcript rows anchored after sending a chat message", async () => {
