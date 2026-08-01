@@ -17,12 +17,14 @@ vi.mock("../features/garden/GardenCanvas", () => ({
     selectedKey,
     onOpenAgent,
     onResetLayout,
+    onMoveUnit,
   }: {
     agentUnits: ReadonlyArray<{ ref: { id: string }; position: { x: number; y: number } }>;
     workflowUnits: readonly unknown[];
     selectedKey: string | null;
     onOpenAgent: (agentId: string) => void;
     onResetLayout: () => void;
+    onMoveUnit: (key: string, x: number, y: number) => void;
   }) => {
     canvasRenders.count += 1;
     const first = agentUnits[0];
@@ -35,6 +37,7 @@ vi.mock("../features/garden/GardenCanvas", () => ({
       {agentUnits.length}:{workflowUnits.length}
       <button type="button" onClick={() => onOpenAgent("a1")}>Open Agent</button>
       <button type="button" onClick={onResetLayout}>Reset Layout</button>
+      <button type="button" onClick={() => onMoveUnit("agent:a1", 50_000, 50_000)}>Drag Far</button>
     </div>
     );
   },
@@ -44,7 +47,7 @@ import { GardenView } from "./GardenView";
 import { useGardenStore } from "../store/useGardenStore";
 import type { AgentConfig } from "../types";
 import type { AgentTeam } from "../layout/watchlist/types";
-import { COMMONS_DISTRICT_ID } from "../features/garden/districts";
+import { COMMONS_DISTRICT_ID, MAX_DISTRICT_RADIUS } from "../features/garden/districts";
 
 beforeEach(() => {
   useGardenStore.getState().reset();
@@ -119,6 +122,47 @@ describe("GardenView", () => {
 
     expect(screen.getByTestId("garden-canvas").getAttribute("data-first-position")).not.toBe(seeded);
     expect(useGardenStore.getState().generation).toBeGreaterThan(0);
+  });
+
+
+  it("holds a unit dropped on a neighbour inside its own district", () => {
+    // Reported as a drag being "deflected far away". A drop into another
+    // district's territory was stored as an enormous offset from the unit's own
+    // district, which grew that district to match, grew every ring with it, and
+    // carried the unit outward on its own moving origin — 600 units from where
+    // it was released, with the whole map inflating 2.3x.
+    //
+    // Which district a unit belongs to comes from canonical facts about the
+    // agent, not from where a cursor was released, so the drop is clamped to the
+    // territory it can honestly claim.
+    const agents = [
+      { session_id: "a1", session_name: "Alpha", folder: "D:/one" } as AgentConfig,
+      { session_id: "a2", session_name: "Beta", folder: "D:/one" } as AgentConfig,
+      { session_id: "a3", session_name: "Gamma", folder: "D:/two" } as AgentConfig,
+    ];
+    render(
+      <GardenView
+        filteredAgents={agents}
+        telemetry={{}}
+        teams={[]}
+        activeList={null}
+        interactions={{}}
+        selectedAgentIds={new Set()}
+        offAgentIds={new Set()}
+        onSelectionChange={vi.fn()}
+        onOpenAgent={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      screen.getByRole("button", { name: "Drag Far" }).click();
+    });
+
+    const pin = useGardenStore.getState().scene.pins["agent:a1"];
+    expect(pin).toBeTruthy();
+    // Stored offsets stay within a district's reach rather than the 50,000 the
+    // drop asked for.
+    expect(Math.hypot(pin.dx, pin.dy)).toBeLessThan(MAX_DISTRICT_RADIUS);
   });
 
   it("routes the canvas open action through onOpenAgent", () => {

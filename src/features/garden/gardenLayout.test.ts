@@ -481,14 +481,15 @@ describe("district separation", () => {
     expect(seen[seen.length - 1]).toBe(seen[2]);
   });
 
-  it("grows a district to contain a unit the user dragged out of it", () => {
-    // A district contains what the user put in it. Pinned units were once
-    // excluded from the measurement, because a wider pitch moved the district
-    // origins, moved the pin's *world* position with them, and widened the pitch
-    // again. Pins are district-relative now, so that loop cannot form — and
-    // excluding them had become wrong in a way you could see: a dragged unit
-    // ended up sitting on top of a neighbouring district, because nothing had
-    // told its own district that it was now bigger.
+  it("does not let one dragged unit inflate the map", () => {
+    // Letting a pin count toward its district's extent was tried, to make the
+    // district "hold" what was dragged into it, and it was worse than the
+    // problem: a pin offset is arbitrary, so the district grew to match, every
+    // ring grew with it, and the pinned unit rode its own origin outward.
+    // Measured on a twelve-district map, dropping one unit on a neighbour
+    // inflated the span from 1259 to 2935 and left the unit 600 units from where
+    // it was released. Districts are sized by what the metric placed in them; a
+    // drag that would leave the district is clamped to it by the caller instead.
     const entities = [
       ...teamOf(6, "alpha", "D:\Dev\Alpha"),
       ...teamOf(6, "beta", "D:\Dev\Beta"),
@@ -505,19 +506,36 @@ describe("district separation", () => {
 
     const after = layoutGarden({ entities, scene: dragged, now });
 
-    // The pin is honoured exactly, as an offset from wherever its district now
-    // sits — the district may well have moved to make room for it.
-    const movedOrigin = after.districtOrigins.get("team:alpha")!;
-    const unit = after.units.find((u) => u.key === "agent:alpha-a0")!;
-    expect(unit.position.x - movedOrigin.x).toBeCloseTo(4000);
-    expect(unit.position.y - movedOrigin.y).toBeCloseTo(4000);
+    // Every other district stays exactly where it was: a drag places one unit,
+    // it does not rearrange the map.
+    for (const [id, at] of base.districtOrigins) {
+      expect(after.districtOrigins.get(id)!.x).toBeCloseTo(at.x);
+      expect(after.districtOrigins.get(id)!.y).toBeCloseTo(at.y);
+    }
 
-    // And it still belongs to its own district: nothing else is nearer.
-    const distances = [...after.districtOrigins].map(
-      ([id, at]) => [id, Math.hypot(unit.position.x - at.x, unit.position.y - at.y)] as const,
-    );
-    const nearest = distances.sort((l, r) => l[1] - r[1])[0][0];
-    expect(nearest).toBe("team:alpha");
+    // The pin is still honoured exactly, and against an origin that did not move
+    // — which is what stops the unit drifting away from where it was dropped.
+    const unit = after.units.find((u) => u.key === "agent:alpha-a0")!;
+    expect(unit.position.x).toBeCloseTo(origin.x + 4000);
+    expect(unit.position.y).toBeCloseTo(origin.y + 4000);
+  });
+
+  it("reports how far each district reaches, so a drag can be held inside it", () => {
+    // The caller cannot keep a drop in its district without knowing where the
+    // district ends, and only the layout knows that.
+    const entities = [...teamOf(6, "alpha", "D:\\Dev\\Alpha"), ...teamOf(6, "beta", "D:\\Dev\\Beta")];
+    const result = layoutGarden({ entities, scene: createScene(), now });
+
+    for (const districtId of ["team:alpha", "team:beta"]) {
+      const extent = result.districtExtents.get(districtId)!;
+      expect(extent).toBeGreaterThan(0);
+      const origin = result.districtOrigins.get(districtId)!;
+      for (const unit of result.units.filter((u) => u.districtId === districtId)) {
+        expect(Math.hypot(unit.position.x - origin.x, unit.position.y - origin.y)).toBeLessThanOrEqual(
+          extent + 1e-6,
+        );
+      }
+    }
   });
 
   it("stops growing once it has made room", () => {

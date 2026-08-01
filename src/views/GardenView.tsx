@@ -9,7 +9,7 @@ import {
   gardenLayoutSignature,
 } from "../features/garden/gardenProjection";
 import { GardenCanvas } from "../features/garden/GardenCanvas";
-import { unitKey } from "../features/garden/garden.types";
+import { unitKey, type GardenPosition } from "../features/garden/garden.types";
 import {
   GARDEN_AGENT_STATUS_LEGEND,
   gardenAgentStatusLabel,
@@ -28,6 +28,37 @@ const ALL_REASONS: Set<GraphRelationshipReason> = new Set([
   "shared_workspace",
   "same_worktree",
 ]);
+
+/**
+ * Hold a dropped unit inside the district it belongs to.
+ *
+ * A drag says where within its neighbourhood a unit should sit. It cannot say
+ * which neighbourhood the unit is in — that comes from canonical facts about the
+ * agent, not from where a cursor was released — so a drop into a neighbouring
+ * district is a placement the map cannot honour without lying about membership.
+ *
+ * Letting it through was worse than an approximation. The unit stayed a member
+ * of its own district at an enormous offset, so the district grew to that size,
+ * every ring grew with it, and the unit rode its own origin outward: dropped on
+ * a neighbour, it landed 600 units away, and the map inflated 2.3x in one drag.
+ *
+ * Clamping to the boundary keeps the gesture honest — you can place a unit
+ * anywhere in its own territory, and the edge is where the territory ends.
+ */
+function clampToDistrict(
+  point: GardenPosition,
+  where: { districtOrigin: GardenPosition; districtRadius: number },
+): GardenPosition {
+  const dx = point.x - where.districtOrigin.x;
+  const dy = point.y - where.districtOrigin.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance <= where.districtRadius || distance === 0) return point;
+  const scale = where.districtRadius / distance;
+  return {
+    x: where.districtOrigin.x + dx * scale,
+    y: where.districtOrigin.y + dy * scale,
+  };
+}
 
 export interface GardenViewProps {
   visibility?: "visible" | "hidden";
@@ -267,7 +298,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
           // placement survives the district being relocated on the grid.
           const where = placement.get(key);
           if (!where) return;
-          pinUnit(key, where.districtId, { x, y }, where.districtOrigin);
+          pinUnit(key, where.districtId, clampToDistrict({ x, y }, where), where.districtOrigin);
         }}
         onResetLayout={() => {
           resetLayout();

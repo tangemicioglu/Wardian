@@ -127,6 +127,16 @@ export interface LayoutResult {
    * district-relative pin, and it is the same origin pins resolve against.
    */
   districtOrigins: Map<string, GardenPosition>;
+  /**
+   * How far each district reaches from its origin, measured from the units the
+   * metric placed there.
+   *
+   * Published so a drag can be held inside the district it belongs to. A drop
+   * beyond this is not a placement the map can honour: it would put the unit in
+   * a neighbour's territory, where it reads as a member of a district it is not
+   * in.
+   */
+  districtExtents: Map<string, number>;
 }
 
 /**
@@ -286,14 +296,22 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
         // How far the district reaches from its own centre, footprints included,
         // so neighbours are sized against what is actually drawn.
         //
-        // Pinned units count. They did not always: a pin used to be excluded,
-        // because a wider pitch moved the district origins, which moved the
-        // pin's *world* position, which widened the pitch again. Pins and stored
-        // positions are district-relative now, so that loop cannot form — an
-        // offset does not change when its origin moves — and excluding them had
-        // become actively wrong. Dragging a unit past the edge of its district
-        // left it sitting on a neighbour, because nothing had told the district
-        // it was now bigger. A district contains what the user put in it.
+        // Pinned units are excluded, and the reason is worth stating precisely
+        // because letting them count was tried and was worse.
+        //
+        // A pin sets an offset that can be arbitrarily large — a user drags a
+        // unit wherever they like. Feeding that into the extent makes the ring
+        // radius grow to match, which moves every district in and outside that
+        // ring, which moves this district's own origin. The pin is an offset
+        // from that origin, so the unit travels with it: dropping a unit on a
+        // neighbouring district put it 600 units from where it was released, and
+        // inflated the whole map by 2.3x in a single drag. Both were reported.
+        //
+        // Districts are therefore sized by what the *metric* placed in them, and
+        // a drag that would land outside its district is clamped to it instead
+        // (see `districtExtents`). The district holds what was dragged by
+        // keeping it, not by chasing it.
+        if (input.scene.pins[key]) continue;
         extentByDistrict.set(
           districtId,
           Math.max(
@@ -359,6 +377,7 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
     corpus,
     districts: spacedDistricts,
     districtOrigins,
+    districtExtents: extentByDistrict,
   };
 }
 

@@ -79,6 +79,12 @@ export interface UnitPlacement {
   districtId: string;
   /** District origin, the frame a pin for this unit is stored against. */
   districtOrigin: GardenPosition;
+  /**
+   * How far the district reaches from that origin. A drag is held inside it, so
+   * a unit cannot be dropped into a neighbour's territory and read as belonging
+   * there.
+   */
+  districtRadius: number;
 }
 
 export interface GardenProjectionResult {
@@ -229,6 +235,7 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
         {
           districtId: unit.districtId,
           districtOrigin: result.districtOrigins.get(unit.districtId) ?? { x: 0, y: 0 },
+          districtRadius: result.districtExtents.get(unit.districtId) ?? 0,
         },
       ]),
     ),
