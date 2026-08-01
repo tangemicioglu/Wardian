@@ -41,6 +41,7 @@ const response: ChangeReviewLoadResponse = {
       turn_indices: [4],
       binary: false,
       truncated: false,
+      reviewed: false,
     }],
     computed_at: "2026-08-01T00:00:00Z",
     truncated: false,
@@ -128,6 +129,27 @@ describe("ChangesPanel", () => {
     ));
     const saves = invokeMock.mock.calls.filter(([command]) => command === "save_change_review_prefs");
     expect(saves).toHaveLength(1);
+  });
+
+  it("captures the current change signatures when marking reviewed", async () => {
+    renderPanel();
+
+    await screen.findByText("src/agent.ts");
+    fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "save_change_review_watermark",
+      expect.objectContaining({
+        watermark: expect.objectContaining({
+          reviewed_paths: [{
+            path: "src/agent.ts",
+            change_kind: "modified",
+            insertions: 3,
+            deletions: 1,
+          }],
+        }),
+      }),
+    ));
   });
 
   it("does not compute while hidden and recomputes when the sidebar becomes visible", async () => {

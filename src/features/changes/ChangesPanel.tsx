@@ -9,6 +9,7 @@ import type {
   ChangeReviewFileEntry,
   ChangeReviewLoadResponse,
   ChangeReviewPrefs,
+  ChangeReviewReviewedPath,
   ChangeReviewSummary,
   FilesComparisonBaseline,
 } from "../../types";
@@ -282,6 +283,12 @@ export function ChangesPanel({
 
   const markReviewed = useCallback(async () => {
     if (!workspace || !selectedAgentId || !summary) return;
+    const reviewed_paths: ChangeReviewReviewedPath[] = summary.files.map((file) => ({
+      path: file.path,
+      change_kind: file.change_kind,
+      insertions: file.insertions,
+      deletions: file.deletions,
+    }));
     await invoke("save_change_review_watermark", {
       watermark: {
         schema: 1,
@@ -290,6 +297,7 @@ export function ChangesPanel({
         reviewed_turn_index: summary.to_turn_index ?? 0,
         reviewed_at: new Date().toISOString(),
         reviewed_head: headRef,
+        reviewed_paths,
       },
     });
     setRefreshRevision((value) => value + 1);

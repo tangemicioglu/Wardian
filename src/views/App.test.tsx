@@ -5,7 +5,13 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { EventCallback } from "@tauri-apps/api/event";
 import App, { scrollAgentCardWithinOverview } from "./App";
-import type { AgentConfig, AgentClassDefinition, AgentClonePreview, ProviderReadiness } from "../types";
+import type {
+  AgentConfig,
+  AgentClassDefinition,
+  AgentClonePreview,
+  ChangeReviewLoadResponse,
+  ProviderReadiness,
+} from "../types";
 import type { AgentTelemetry } from "../types";
 import { useLayoutStore } from "../store/useLayoutStore";
 import { useLibraryStore } from "../store/useLibraryStore";
@@ -2836,6 +2842,63 @@ describe("Sidebar Navigation", () => {
     fireEvent.click(screen.getByTitle("Terminal"));
 
     expect(await screen.findByTestId("selected-terminal-workspace")).toHaveTextContent("C:/project");
+  });
+
+  it("refreshes Changes from the real agent turn completion event", async () => {
+    setupDefaultMocks(sampleAgents, defaultClasses);
+    const changeResponse: ChangeReviewLoadResponse = {
+      summary: {
+        schema: 1,
+        baseline: "last_effective_turn",
+        baseline_ref: null,
+        from_turn_index: 1,
+        to_turn_index: 1,
+        files: [{
+          path: "src/changed.ts",
+          change_kind: "modified",
+          old_path: null,
+          insertions: 2,
+          deletions: 1,
+          evidence: "inferred",
+          agent_ids: [],
+          turn_indices: [],
+          binary: false,
+          truncated: false,
+          reviewed: false,
+        }],
+        computed_at: "2026-08-01T00:00:00Z",
+        truncated: false,
+      },
+      git_available: true,
+      head_ref: "head-1",
+    };
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "load_change_review_prefs") {
+        return Promise.resolve({ schema: 1, baseline: "last_effective_turn" });
+      }
+      if (command === "get_explorer_root") return Promise.resolve("C:/project");
+      if (command === "load_change_review") return Promise.resolve(changeResponse);
+      return defaultInvoke?.(command, args) ?? Promise.resolve(null);
+    });
+    const { emitTurnCompletion } = captureQueueAgentListeners();
+
+    render(<App />);
+    await screen.findByTestId("terminal-agent-1");
+    fireEvent.click(screen.getByTestId("agent-card-header-agent-1"));
+    fireEvent.click(screen.getByTestId("sidebar-tab-changes"));
+    await screen.findByTestId("changes-panel");
+
+    const initialLoads = mockInvoke.mock.calls.filter(([command]) => command === "load_change_review").length;
+    await act(async () => {
+      emitTurnCompletion({ session_id: "agent-1" });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      const loads = mockInvoke.mock.calls.filter(([command]) => command === "load_change_review").length;
+      expect(loads).toBeGreaterThan(initialLoads);
+    });
   });
 
   it("shows the selected agent source-control change count on the activity rail", async () => {

@@ -956,6 +956,7 @@ export type ChangeReviewFileEntry = {
     turn_indices: number[];
     binary: boolean;
     truncated: boolean;
+    reviewed: boolean;
 };
 
 export type ChangeReviewSummary = {
@@ -969,6 +970,13 @@ export type ChangeReviewSummary = {
     truncated: boolean;
 };
 
+export type ChangeReviewReviewedPath = {
+    path: string;
+    change_kind: ChangeReviewChangeKind;
+    insertions: number | null;
+    deletions: number | null;
+};
+
 export type ChangeReviewWatermark = {
     schema: 1;
     agent_id: string;
@@ -976,6 +984,7 @@ export type ChangeReviewWatermark = {
     reviewed_turn_index: number;
     reviewed_at: string;
     reviewed_head: string | null;
+    reviewed_paths: ChangeReviewReviewedPath[];
 };
 
 export type ChangeReviewLoadResponse = {

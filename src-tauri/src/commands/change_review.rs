@@ -67,6 +67,7 @@ pub struct ChangeReviewFileEntry {
     pub turn_indices: Vec<u64>,
     pub binary: bool,
     pub truncated: bool,
+    pub reviewed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +90,16 @@ pub struct ChangeReviewWatermark {
     pub reviewed_turn_index: u64,
     pub reviewed_at: String,
     pub reviewed_head: Option<String>,
+    #[serde(default)]
+    pub reviewed_paths: Vec<ChangeReviewReviewedPath>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChangeReviewReviewedPath {
+    pub path: String,
+    pub change_kind: ChangeReviewChangeKind,
+    pub insertions: Option<u64>,
+    pub deletions: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -119,6 +130,17 @@ struct TurnWithContext {
 
 type WatermarkIndex = BTreeMap<String, ChangeReviewWatermark>;
 
+fn path_identity(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        path.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string()
+    }
+}
+
 fn normalized_path(cwd: &str, path: &str) -> String {
     let mut value = path.trim().replace('\\', "/");
     let normalized_cwd = cwd
@@ -126,8 +148,8 @@ fn normalized_path(cwd: &str, path: &str) -> String {
         .replace('\\', "/")
         .trim_end_matches('/')
         .to_string();
-    let cwd_compare = normalized_cwd.to_ascii_lowercase();
-    let value_compare = value.to_ascii_lowercase();
+    let cwd_compare = path_identity(&normalized_cwd);
+    let value_compare = path_identity(&value);
     if value_compare == cwd_compare {
         value.clear();
     } else if value_compare.starts_with(&(cwd_compare.clone() + "/")) {
@@ -136,11 +158,7 @@ fn normalized_path(cwd: &str, path: &str) -> String {
     while let Some(stripped) = value.strip_prefix("./") {
         value = stripped.to_string();
     }
-    if cfg!(windows) {
-        value.to_ascii_lowercase()
-    } else {
-        value
-    }
+    path_identity(&value)
 }
 
 fn same_workspace(cwd: &str, workspace: &str) -> bool {
@@ -397,9 +415,40 @@ fn build_files(
                     .unwrap_or_default(),
                 binary: numstat.is_some_and(|entry| entry.binary),
                 truncated: false,
+                reviewed: false,
             })
         })
         .collect()
+}
+
+fn reviewed_path_matches(
+    cwd: &str,
+    file: &ChangeReviewFileEntry,
+    reviewed_path: &ChangeReviewReviewedPath,
+) -> bool {
+    normalized_path(cwd, &file.path) == normalized_path(cwd, &reviewed_path.path)
+        && file.change_kind == reviewed_path.change_kind
+        && file.insertions == reviewed_path.insertions
+        && file.deletions == reviewed_path.deletions
+}
+
+fn annotate_reviewed_files(
+    baseline: ChangeReviewBaseline,
+    cwd: &str,
+    files: &mut [ChangeReviewFileEntry],
+    watermark: Option<&ChangeReviewWatermark>,
+) {
+    if baseline != ChangeReviewBaseline::Unreviewed {
+        return;
+    }
+    for file in files {
+        file.reviewed = watermark.is_some_and(|value| {
+            value
+                .reviewed_paths
+                .iter()
+                .any(|reviewed_path| reviewed_path_matches(cwd, file, reviewed_path))
+        });
+    }
 }
 
 fn build_non_git_files(claims: &HashMap<String, Attribution>) -> Vec<ChangeReviewFileEntry> {
@@ -420,6 +469,7 @@ fn build_non_git_files(claims: &HashMap<String, Attribution>) -> Vec<ChangeRevie
                 turn_indices: claim.turn_indices.iter().copied().collect(),
                 binary: false,
                 truncated: false,
+                reviewed: false,
             }
         })
         .collect()
@@ -510,6 +560,8 @@ pub async fn load_change_review(
     let status = match git_status_for_cwd(cwd) {
         Ok(status) => status,
         Err(_) => {
+            let mut files = build_non_git_files(&claims);
+            annotate_reviewed_files(request.baseline, cwd, &mut files, watermark.as_ref());
             return Ok(ChangeReviewLoadResponse {
                 summary: ChangeReviewSummary {
                     schema: CHANGE_REVIEW_SCHEMA,
@@ -517,7 +569,7 @@ pub async fn load_change_review(
                     baseline_ref: None,
                     from_turn_index,
                     to_turn_index,
-                    files: build_non_git_files(&claims),
+                    files,
                     computed_at: chrono::Utc::now().to_rfc3339(),
                     truncated: false,
                 },
@@ -529,15 +581,7 @@ pub async fn load_change_review(
 
     let numstats = git_diff_numstat_for_cwd(cwd, diff_revision.as_deref()).unwrap_or_default();
     let mut files = build_files(cwd, &status, numstats, &claims);
-    if request.baseline == ChangeReviewBaseline::Unreviewed
-        && watermark.as_ref().is_some_and(|value| {
-            value.reviewed_turn_index >= latest_effective_turn.unwrap_or(0)
-                && value.reviewed_head.is_some()
-                && value.reviewed_head.as_deref() == head.as_deref()
-        })
-    {
-        files.clear();
-    }
+    annotate_reviewed_files(request.baseline, cwd, &mut files, watermark.as_ref());
 
     Ok(ChangeReviewLoadResponse {
         summary: ChangeReviewSummary {
@@ -672,6 +716,171 @@ mod tests {
             .find(|file| file.path == "src/shell.ts")
             .unwrap();
         assert_eq!(inferred.evidence, ChangeReviewEvidence::Inferred);
+    }
+
+    #[test]
+    fn unreviewed_watermark_keeps_unclaimed_shell_path() {
+        let mut files = build_files(
+            "C:/repo",
+            &status_for("src/shell-written.ts", "M"),
+            vec![GitNumstatEntry {
+                path: "src/shell-written.ts".to_string(),
+                old_path: None,
+                insertions: Some(2),
+                deletions: Some(1),
+                binary: false,
+            }],
+            &HashMap::new(),
+        );
+        let watermark = ChangeReviewWatermark {
+            schema: CHANGE_REVIEW_SCHEMA,
+            agent_id: "agent-1".to_string(),
+            workspace: "C:/repo".to_string(),
+            reviewed_turn_index: 3,
+            reviewed_at: "2026-08-01T00:00:00Z".to_string(),
+            reviewed_head: Some("head-1".to_string()),
+            reviewed_paths: vec![ChangeReviewReviewedPath {
+                path: "src/agent-written.ts".to_string(),
+                change_kind: ChangeReviewChangeKind::Modified,
+                insertions: Some(1),
+                deletions: Some(0),
+            }],
+        };
+
+        annotate_reviewed_files(
+            ChangeReviewBaseline::Unreviewed,
+            "C:/repo",
+            &mut files,
+            Some(&watermark),
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].evidence, ChangeReviewEvidence::Inferred);
+        assert!(files[0].agent_ids.is_empty());
+        assert!(!files[0].reviewed);
+    }
+
+    #[test]
+    fn reviewed_path_signature_marks_only_the_matching_entry() {
+        let status = GitStatusResult {
+            files: vec![
+                GitFileEntry {
+                    path: "src/kept.ts".to_string(),
+                    status: "M".to_string(),
+                    is_staged: false,
+                },
+                GitFileEntry {
+                    path: "src/changed.ts".to_string(),
+                    status: "M".to_string(),
+                    is_staged: false,
+                },
+            ],
+            ..status_for("unused", "M")
+        };
+        let mut files = build_files(
+            "C:/repo",
+            &status,
+            vec![
+                GitNumstatEntry {
+                    path: "src/kept.ts".to_string(),
+                    old_path: None,
+                    insertions: Some(2),
+                    deletions: Some(1),
+                    binary: false,
+                },
+                GitNumstatEntry {
+                    path: "src/changed.ts".to_string(),
+                    old_path: None,
+                    insertions: Some(3),
+                    deletions: Some(1),
+                    binary: false,
+                },
+            ],
+            &HashMap::new(),
+        );
+        let watermark = ChangeReviewWatermark {
+            schema: CHANGE_REVIEW_SCHEMA,
+            agent_id: "agent-1".to_string(),
+            workspace: "C:/repo".to_string(),
+            reviewed_turn_index: 3,
+            reviewed_at: "2026-08-01T00:00:00Z".to_string(),
+            reviewed_head: Some("head-1".to_string()),
+            reviewed_paths: vec![ChangeReviewReviewedPath {
+                path: "src/kept.ts".to_string(),
+                change_kind: ChangeReviewChangeKind::Modified,
+                insertions: Some(2),
+                deletions: Some(1),
+            }],
+        };
+
+        annotate_reviewed_files(
+            ChangeReviewBaseline::Unreviewed,
+            "C:/repo",
+            &mut files,
+            Some(&watermark),
+        );
+
+        assert!(
+            files
+                .iter()
+                .find(|file| file.path == "src/kept.ts")
+                .unwrap()
+                .reviewed
+        );
+        assert!(
+            !files
+                .iter()
+                .find(|file| file.path == "src/changed.ts")
+                .unwrap()
+                .reviewed
+        );
+    }
+
+    #[test]
+    fn an_unreviewed_baseline_never_empties_a_non_empty_git_change_set() {
+        let mut files = build_files(
+            "C:/repo",
+            &status_for("src/current.ts", "M"),
+            Vec::new(),
+            &HashMap::new(),
+        );
+        let watermark = ChangeReviewWatermark {
+            schema: CHANGE_REVIEW_SCHEMA,
+            agent_id: "agent-1".to_string(),
+            workspace: "C:/repo".to_string(),
+            reviewed_turn_index: 3,
+            reviewed_at: "2026-08-01T00:00:00Z".to_string(),
+            reviewed_head: Some("head-1".to_string()),
+            reviewed_paths: Vec::new(),
+        };
+
+        annotate_reviewed_files(
+            ChangeReviewBaseline::Unreviewed,
+            "C:/repo",
+            &mut files,
+            Some(&watermark),
+        );
+
+        assert_eq!(files.len(), 1);
+        assert!(!files[0].reviewed);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn normalized_path_preserves_case_on_case_sensitive_targets() {
+        assert_ne!(
+            normalized_path("/repo", "/repo/src/README.md"),
+            normalized_path("/repo", "/repo/src/readme.md"),
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalized_path_is_case_insensitive_on_windows() {
+        assert_eq!(
+            normalized_path("C:/repo", "C:/repo/src/README.md"),
+            normalized_path("c:/REPO", "c:/repo/src/readme.md"),
+        );
     }
 
     #[test]
