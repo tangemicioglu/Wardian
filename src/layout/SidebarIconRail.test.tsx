@@ -21,6 +21,7 @@ describe("SidebarIconRail density", () => {
     expect(screen.getByTestId("sidebar-tab-explorer")).toHaveClass("p-3");
     expect(explorerIcon).toHaveClass("w-6");
     expect(explorerIcon).toHaveClass("h-6");
+    expect(screen.getByTestId("sidebar-tab-changes")).toHaveAttribute("title", "Changes");
   });
 
   it("does not reserve a persistent help slot on the icon rail", () => {

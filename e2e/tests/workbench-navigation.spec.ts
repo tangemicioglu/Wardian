@@ -46,7 +46,6 @@ const CORE_SINGLETON_SURFACES = [
   "inbox",
   "graph",
   "garden",
-  "changes",
   "library",
   "workflows",
 ] as const satisfies readonly CoreWorkbenchSurfaceType[];
@@ -730,7 +729,7 @@ test("offers a responsive keyboard-accessible launcher in an empty tab", async (
   const group = activeWorkbenchGroup(page);
   const launcher = group.getByLabel("Available surfaces");
   await expect(group.getByRole("heading", { name: "Choose a surface" })).toBeVisible();
-  await expect(launcher.getByRole("button")).toHaveCount(8);
+  await expect(launcher.getByRole("button")).toHaveCount(7);
   await expect.poll(() => launcher.evaluate((element) => (
     getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
   ))).toBe(1);
@@ -775,7 +774,7 @@ test("opens an inline New Tab in its captured pane and transitions Browse all to
   await expect(targetGroup.getByRole("tab", { name: "New Tab", exact: true }))
     .toHaveAttribute("aria-selected", "true");
   await expect(targetGroup.getByRole("heading", { name: "Choose a surface" })).toBeVisible();
-  await expect(targetGroup.getByLabel("Available surfaces").getByRole("button")).toHaveCount(8);
+  await expect(targetGroup.getByLabel("Available surfaces").getByRole("button")).toHaveCount(7);
   await targetGroup.getByRole("button", { name: /^Inbox:/ }).click();
 
   const queueTab = surfaceTab(page, "inbox");
@@ -1198,7 +1197,7 @@ test("splits, moves, zooms, joins, closes, and reopens through semantic controls
   await expect(groupOne.getByRole("heading", { name: "Choose a surface" })).toBeVisible();
 
   const availableSurfaces = groupOne.getByLabel("Available surfaces");
-  await expect(availableSurfaces.getByRole("button")).toHaveCount(8);
+  await expect(availableSurfaces.getByRole("button")).toHaveCount(7);
   await availableSurfaces.locator('[data-surface-type="agents-overview"]').focus();
   await page.keyboard.press("Enter");
   await expect(surfaceTab(page, "agents-overview")).toHaveCount(1);

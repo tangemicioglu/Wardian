@@ -30,31 +30,6 @@ describe("core workbench surface registry", () => {
     useFilesPresentationStore.getState().reset();
   });
 
-  it("registers the Changes surface with the Phase 1 baseline selector state", () => {
-    const registry = createCoreWorkbenchSurfaceRegistry();
-    const changes = registry.require("changes");
-
-    expect(changes).toMatchObject({
-      title: expect.any(Function),
-      icon: "changes",
-      open_policy: "singleton",
-      state_schema_version: 1,
-    });
-    expect(registry.default_state("changes")).toEqual({
-      baseline: "last_effective_turn",
-    });
-    expect(changes.restore_state({ baseline: "unreviewed" }, 1)).toEqual({
-      ok: true,
-      state: { baseline: "unreviewed" },
-    });
-    expect(CORE_SURFACE_CONTRIBUTIONS).toContainEqual({
-      surface_type: "changes",
-      title: "Changes",
-      description: "Review recent agent file changes.",
-      group: "Core views",
-    });
-  });
-
   it("registers a strict reserved Files resource surface", () => {
     const registry = createCoreWorkbenchSurfaceRegistry();
     const files = registry.require("files");

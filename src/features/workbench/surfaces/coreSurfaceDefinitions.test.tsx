@@ -79,14 +79,6 @@ describe("core view surface definitions", () => {
         max_state_bytes: CORE_VIEW_SURFACE_MAX_STATE_BYTES,
         command_id: "workbench.open.garden",
       },
-      {
-        type: "changes",
-        open_policy: "singleton",
-        render_policy: "recreate_from_state",
-        state_schema_version: CORE_VIEW_SURFACE_STATE_SCHEMA_VERSION,
-        max_state_bytes: CORE_VIEW_SURFACE_MAX_STATE_BYTES,
-        command_id: "workbench.open.changes",
-      },
     ]);
   });
 

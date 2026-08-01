@@ -10,23 +10,19 @@ import type {
   ChangeReviewLoadResponse,
   ChangeReviewSummary,
   FilesComparisonBaseline,
-} from "../../../types";
-import { FileComparisonLens } from "../../files/FileComparisonLens";
-import { FileEditorControllerRegistry } from "../../files/fileEditorController";
-import { fileResourceClient, type FileResourceClient } from "../../files/fileResourceClient";
-import { useFileResource } from "../../files/useFileResource";
-import type { ChangesSurfaceState, SurfaceVisibility } from "./coreSurfaceMetadata";
+} from "../../types";
+import { FileComparisonLens } from "../files/FileComparisonLens";
+import { FileEditorControllerRegistry } from "../files/fileEditorController";
+import { fileResourceClient, type FileResourceClient } from "../files/fileResourceClient";
+import { useFileResource } from "../files/useFileResource";
 
-type ChangesSurfaceProps = {
-  surface_id: string;
-  state: ChangesSurfaceState;
-  visibility: SurfaceVisibility;
+type ChangesPanelProps = {
+  visible: boolean;
   agents: readonly AgentConfig[];
   selected_agent_ids: ReadonlySet<string>;
   turn_revision: number;
   editor_registry: FileEditorControllerRegistry;
   client?: FileResourceClient;
-  on_state_change: (state: ChangesSurfaceState) => void;
 };
 
 const BASELINE_OPTIONS: readonly { value: ChangeReviewBaseline; label: string }[] = [
@@ -66,22 +62,22 @@ function baselineForFile(entry: ChangeReviewFileEntry, baselineRef: string | nul
 }
 
 function ChangeFileComparison({
-  surface_id,
+  panel_key,
   workspace,
   agent_id,
   entry,
   baseline_ref,
-  visibility,
+  visible,
   editor_registry,
   client = fileResourceClient,
   on_close,
 }: {
-  surface_id: string;
+  panel_key: string;
   workspace: string;
   agent_id: string;
   entry: ChangeReviewFileEntry;
   baseline_ref: string | null;
-  visibility: SurfaceVisibility;
+  visible: boolean;
   editor_registry: FileEditorControllerRegistry;
   client?: FileResourceClient;
   on_close: () => void;
@@ -100,7 +96,7 @@ function ChangeFileComparison({
   );
   const [baselineText, setBaselineText] = useState<string | null>(null);
   const [baselineError, setBaselineError] = useState<string | null>(null);
-  const comparisonSurfaceId = `${surface_id}:comparison:${entry.path}`;
+  const comparisonSurfaceId = `${panel_key}:comparison:${entry.path}`;
 
   useEffect(() => {
     if (!controller || !snapshot) return;
@@ -164,7 +160,7 @@ function ChangeFileComparison({
       baseline_text={baselineText}
       layout_preference="auto"
       language={extensionLanguage(entry.path)}
-      lifecycle={{ visible: visibility === "visible" }}
+      lifecycle={{ visible }}
       on_close={on_close}
       on_layout_preference_change={() => undefined}
       on_reload_from_disk={async () => undefined}
@@ -174,22 +170,20 @@ function ChangeFileComparison({
   );
 }
 
-export function ChangesSurface({
-  surface_id,
-  state,
-  visibility,
+export function ChangesPanel({
+  visible,
   agents,
   selected_agent_ids,
   turn_revision,
   editor_registry,
   client = fileResourceClient,
-  on_state_change,
-}: ChangesSurfaceProps) {
+}: ChangesPanelProps) {
   const selectedAgentId = selected_agent_ids.size === 1
     ? [...selected_agent_ids][0]
     : null;
   const selectedAgent = agents.find((agent) => agent.session_id === selectedAgentId) ?? null;
   const [workspace, setWorkspace] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState<ChangeReviewBaseline>("last_effective_turn");
   const [summary, setSummary] = useState<ChangeReviewSummary | null>(null);
   const [gitAvailable, setGitAvailable] = useState(true);
   const [headRef, setHeadRef] = useState<string | null>(null);
@@ -215,7 +209,7 @@ export function ChangesSurface({
   }, [selectedAgent, selectedAgentId]);
 
   const recompute = useCallback(async () => {
-    if (!workspace || !selectedAgentId || visibility !== "visible") return;
+    if (!workspace || !selectedAgentId || !visible) return;
     const generation = ++requestGeneration.current;
     setLoading(true);
     setError(null);
@@ -223,7 +217,7 @@ export function ChangesSurface({
       const response = await invoke<ChangeReviewLoadResponse>("load_change_review", {
         request: {
           cwd: workspace,
-          baseline: state.baseline,
+          baseline,
           agent_id: selectedAgentId,
         },
       });
@@ -236,14 +230,14 @@ export function ChangesSurface({
     } finally {
       if (generation === requestGeneration.current) setLoading(false);
     }
-  }, [selectedAgentId, state.baseline, visibility, workspace]);
+  }, [baseline, selectedAgentId, visible, workspace]);
 
   useEffect(() => {
     void recompute();
   }, [recompute, refreshRevision, turn_revision]);
 
   useEffect(() => {
-    if (!workspace || visibility !== "visible") return;
+    if (!workspace || !visible) return;
     let active = true;
     const unlistenPromise = listen<string>("git-changed", (event) => {
       if (active && sameWorkspacePath(event.payload, workspace)) void recompute();
@@ -252,7 +246,7 @@ export function ChangesSurface({
       active = false;
       void unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [recompute, visibility, workspace]);
+  }, [recompute, visible, workspace]);
 
   const markReviewed = useCallback(async () => {
     if (!workspace || !selectedAgentId || !summary) return;
@@ -269,11 +263,6 @@ export function ChangesSurface({
     setRefreshRevision((value) => value + 1);
   }, [headRef, selectedAgentId, summary, workspace]);
 
-  const updateBaseline = (baseline: ChangeReviewBaseline) => {
-    setExpandedPath(null);
-    on_state_change({ ...state, baseline });
-  };
-
   const toggleFile = (path: string) => {
     setExpandedPath((current) => current === path ? null : path);
     setExpandedPaths((current) => {
@@ -286,39 +275,42 @@ export function ChangesSurface({
 
   return (
     <section
-      aria-hidden={visibility === "hidden"}
-      className="flex h-full min-h-0 min-w-0 flex-col bg-[var(--color-wardian-bg)] text-[var(--color-wardian-text)]"
-      data-surface-id={surface_id}
-      data-surface-type="changes"
-      data-testid="changes-surface"
+      aria-hidden={!visible}
+      className="flex h-full min-h-0 min-w-0 flex-col text-[var(--color-wardian-text)]"
+      data-testid="changes-panel"
     >
-      <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--color-wardian-border)] px-4 py-3">
-        <div className="mr-auto">
-          <h2 className="text-base font-semibold">Changes</h2>
-          <p className="text-xs text-[var(--color-wardian-text-muted)]">Review the live working tree with turn attribution.</p>
+      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--color-wardian-border)] pb-3">
+        <div className="mr-auto min-w-0">
+          <h2 className="text-sm font-bold text-primary tracking-tight">Changes</h2>
+          <p className="text-[11px] text-[var(--color-wardian-text-muted)]">Review live file changes with turn attribution.</p>
         </div>
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex w-full items-center gap-2 text-[11px]">
           <span className="text-[var(--color-wardian-text-muted)]">Baseline</span>
           <select
             aria-label="Change review baseline"
-            className="rounded border border-[var(--color-wardian-border)] bg-[var(--color-wardian-surface)] px-2 py-1"
-            value={state.baseline}
-            onChange={(event) => updateBaseline(event.currentTarget.value as ChangeReviewBaseline)}
+            className="min-w-0 flex-1 rounded border border-[var(--color-wardian-border)] bg-[var(--color-wardian-input-bg)] px-1.5 py-1 text-[11px]"
+            value={baseline}
+            onChange={(event) => {
+              setExpandedPath(null);
+              setBaseline(event.currentTarget.value as ChangeReviewBaseline);
+            }}
           >
             {BASELINE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded border border-[var(--color-wardian-border)] px-2 py-1 text-sm"
+          className="inline-flex items-center gap-1 rounded border border-[var(--color-wardian-border)] px-2 py-1 text-[11px]"
           disabled={loading || !workspace}
           onClick={() => setRefreshRevision((value) => value + 1)}
+          title="Refresh Changes"
+          aria-label="Refresh Changes"
         >
-          <RefreshCw size={14} aria-hidden="true" /> Refresh
+          <RefreshCw size={13} aria-hidden="true" /> Refresh
         </button>
         <button
           type="button"
-          className="rounded border border-[var(--color-wardian-border)] px-2 py-1 text-sm"
+          className="rounded border border-[var(--color-wardian-border)] px-2 py-1 text-[11px]"
           disabled={loading || !summary || !workspace}
           onClick={() => void markReviewed()}
         >
@@ -326,25 +318,25 @@ export function ChangesSurface({
         </button>
       </header>
       {!selectedAgent ? (
-        <div className="m-4 rounded border border-[var(--color-wardian-border)] p-4 text-sm text-[var(--color-wardian-text-muted)]" role="status">
+        <div className="mt-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px] text-[var(--color-wardian-text-muted)]" role="status">
           Select one agent to inspect its workspace changes.
         </div>
       ) : !workspace ? (
-        <div className="m-4 rounded border border-[var(--color-wardian-border)] p-4 text-sm text-[var(--color-wardian-text-muted)]" role="status">
+        <div className="mt-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px] text-[var(--color-wardian-text-muted)]" role="status">
           Resolving the selected agent workspace…
         </div>
       ) : error ? (
-        <div className="m-4 rounded border border-[var(--color-wardian-border)] p-4 text-sm" role="alert">{error}</div>
+        <div className="mt-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px]" role="alert">{error}</div>
       ) : loading && !summary ? (
-        <div className="m-4 p-4 text-sm text-[var(--color-wardian-text-muted)]" role="status">Computing changes…</div>
+        <div className="mt-3 p-3 text-[11px] text-[var(--color-wardian-text-muted)]" role="status">Computing changes…</div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-auto p-4">
+        <div className="min-h-0 flex-1 overflow-auto pt-3">
           {!gitAvailable ? (
-            <div className="mb-3 rounded border border-[var(--color-wardian-border)] p-3 text-sm text-[var(--color-wardian-text-muted)]" role="status">
+            <div className="mb-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px] text-[var(--color-wardian-text-muted)]" role="status">
               This workspace is not a git repository. Turn-record file claims are shown without diff content.
             </div>
           ) : null}
-          <div className="mb-3 flex items-center gap-3 text-sm text-[var(--color-wardian-text-muted)]">
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-wardian-text-muted)]">
             <span>{summary?.files.length ?? 0} {summary?.files.length === 1 ? "file" : "files"}</span>
             {summary?.from_turn_index !== null && summary?.from_turn_index !== undefined ? <span>from turn {summary.from_turn_index}</span> : null}
             {summary?.to_turn_index !== null && summary?.to_turn_index !== undefined ? <span>through turn {summary.to_turn_index}</span> : null}
@@ -357,34 +349,39 @@ export function ChangesSurface({
                 <div className="border-b border-[var(--color-wardian-border)] last:border-b-0" key={entry.path}>
                   <button
                     type="button"
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--color-wardian-surface)]"
+                    className="flex w-full items-center gap-1.5 px-2 py-2 text-left hover:bg-wardian-card-bg-muted"
                     aria-expanded={expanded}
                     onClick={() => toggleFile(entry.path)}
                   >
-                    {expanded ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
-                    <span className="min-w-0 flex-1 truncate font-mono text-sm">{entry.path}</span>
-                    <span className="text-xs text-[var(--color-wardian-text-muted)]">{entry.evidence}</span>
-                    <span className="text-xs text-[var(--color-wardian-text-muted)]">{entry.insertions ?? "—"}/{entry.deletions ?? "—"}</span>
+                    {expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{entry.path}</span>
+                    <span className="text-[10px] text-[var(--color-wardian-text-muted)]">{entry.evidence}</span>
+                    <span className="text-[10px] text-[var(--color-wardian-text-muted)]">{entry.insertions ?? "—"}/{entry.deletions ?? "—"}</span>
                   </button>
                   {hasExpanded ? (
-                    <div aria-hidden={!expanded} className={expanded ? "" : "hidden"}>
+                    <div
+                      aria-hidden={!expanded}
+                      className={expanded
+                        ? "relative h-80 min-h-0 border-t border-[var(--color-wardian-border)]"
+                        : "hidden"}
+                    >
                       <ChangeFileComparison
-                      surface_id={surface_id}
-                      workspace={workspace}
-                      agent_id={selectedAgentId ?? ""}
-                      entry={entry}
-                      baseline_ref={summary?.baseline_ref ?? null}
-                      editor_registry={editor_registry}
-                      client={client}
-                      on_close={() => setExpandedPath(null)}
-                      visibility={expanded ? visibility : "hidden"}
+                        panel_key="changes"
+                        workspace={workspace}
+                        agent_id={selectedAgentId ?? ""}
+                        entry={entry}
+                        baseline_ref={summary?.baseline_ref ?? null}
+                        editor_registry={editor_registry}
+                        client={client}
+                        on_close={() => setExpandedPath(null)}
+                        visible={expanded && visible}
                       />
                     </div>
                   ) : null}
                 </div>
               );
             })}
-            {summary?.files.length === 0 ? <div className="p-4 text-sm text-[var(--color-wardian-text-muted)]">No changes in this baseline.</div> : null}
+            {summary?.files.length === 0 ? <div className="p-3 text-[11px] text-[var(--color-wardian-text-muted)]">No changes in this baseline.</div> : null}
           </div>
         </div>
       )}

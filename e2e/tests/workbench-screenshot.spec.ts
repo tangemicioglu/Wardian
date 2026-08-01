@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { openSurface, surfacePanel, surfaceTab } from "../fixtures/workbench";
+import { surfacePanel, surfaceTab } from "../fixtures/workbench";
 import {
   installWorkbenchIpcMock,
   makeWorkbenchDocument,
@@ -192,7 +192,7 @@ test("renders a capture-ready new-tab surface launcher", async ({ page }, testIn
   await expect(group.getByRole("tab", { name: "New Tab", exact: true }))
     .toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("heading", { name: "Choose a surface" })).toBeVisible();
-  await expect(page.getByLabel("Available surfaces").getByRole("button")).toHaveCount(8);
+  await expect(page.getByLabel("Available surfaces").getByRole("button")).toHaveCount(7);
   await expect(page.getByText("Monitor active agents.", { exact: true })).toBeVisible();
   await page.waitForTimeout(250);
 
@@ -200,79 +200,4 @@ test("renders a capture-ready new-tab surface launcher", async ({ page }, testIn
     ?? testInfo.outputPath("surface-launcher.png");
   await page.screenshot({ path, animations: "disabled" });
   await testInfo.attach("surface-launcher", { path, contentType: "image/png" });
-});
-
-test("renders the Changes workbench with turn attribution", async ({ page }, testInfo) => {
-  const dashboard = makeWorkbenchSurface("changes-dashboard", "dashboard");
-  const document = makeWorkbenchDocument({ revision: 4, surfaces: [dashboard] });
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await installWorkbenchIpcMock(page, {
-    load_result: {
-      source: "primary",
-      document,
-      notice: null,
-      durable_revision: document.revision,
-      durable_token: "changes-evidence-token-4",
-    },
-    agents,
-    explorer_root: "/workspace/alpha",
-    responses: {
-      load_change_review: {
-        summary: {
-          schema: 1,
-          baseline: "last_effective_turn",
-          baseline_ref: null,
-          from_turn_index: 7,
-          to_turn_index: 8,
-          files: [
-            {
-              path: "src/agent.ts",
-              change_kind: "modified",
-              old_path: null,
-              insertions: 12,
-              deletions: 4,
-              evidence: "attributed",
-              agent_ids: ["agent-alpha"],
-              turn_indices: [8],
-              binary: false,
-              truncated: false,
-            },
-            {
-              path: "notes/review.md",
-              change_kind: "untracked",
-              old_path: null,
-              insertions: null,
-              deletions: null,
-              evidence: "inferred",
-              agent_ids: [],
-              turn_indices: [],
-              binary: false,
-              truncated: false,
-            },
-          ],
-          computed_at: "2026-08-01T00:00:00Z",
-          truncated: false,
-        },
-        git_available: true,
-        head_ref: "abc1234",
-      },
-    },
-  });
-
-  await page.goto("/");
-  await page.getByLabel("Agent Alpha", { exact: true }).click();
-  await openSurface(page, "changes");
-
-  const changes = surfacePanel(page, "changes");
-  await expect(changes.getByRole("heading", { name: "Changes" })).toBeVisible();
-  await expect(changes.getByLabel("Change review baseline")).toHaveValue("last_effective_turn");
-  await expect(changes.getByText("src/agent.ts", { exact: true })).toBeVisible();
-  await expect(changes.getByText("attributed", { exact: true })).toBeVisible();
-  await expect(changes.getByText("inferred", { exact: true })).toBeVisible();
-  await expect(changes.getByRole("button", { name: "Mark reviewed", exact: true })).toBeVisible();
-
-  const path = process.env.WARDIAN_CHANGE_REVIEW_SCREENSHOT
-    ?? testInfo.outputPath("changes-workbench.png");
-  await page.screenshot({ path, animations: "disabled" });
-  await testInfo.attach("changes-workbench", { path, contentType: "image/png" });
 });
