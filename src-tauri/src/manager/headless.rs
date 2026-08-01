@@ -1192,6 +1192,7 @@ fn apply_headless_identity_env(cmd: &mut tokio::process::Command, wardian_sessio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
@@ -1230,6 +1231,43 @@ mod tests {
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false)
+    }
+
+    fn codex_completed_shell_commands(raw: &str) -> Vec<String> {
+        raw.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|event| {
+                (event.get("type").and_then(Value::as_str) == Some("item.completed"))
+                    .then(|| event.get("item"))
+                    .flatten()
+                    .filter(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("command_execution")
+                    })
+                    .and_then(|item| item.get("command").and_then(Value::as_str))
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn codex_completed_shell_commands_ignore_started_events() {
+        let raw = concat!(
+            r#"{"type":"item.started","item":{"id":"item-1","type":"command_execution","command":"Write-Output started"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"id":"item-1","type":"command_execution","command":"Write-Output completed"}}"#,
+        );
+
+        assert_eq!(
+            codex_completed_shell_commands(raw),
+            vec!["Write-Output completed"]
+        );
+    }
+
+    #[test]
+    fn codex_completed_shell_commands_ignore_uncompleted_function_calls() {
+        let raw = r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"Write-Output from-tool\"}"}}"#;
+
+        assert!(codex_completed_shell_commands(raw).is_empty());
     }
 
     #[cfg(windows)]
@@ -1303,6 +1341,19 @@ mod tests {
         assert!(
             !response.trim().is_empty(),
             "expected Codex to return a non-empty response"
+        );
+        let raw = result["raw"].as_str().expect("Codex JSON-lines output");
+        let shell_commands = codex_completed_shell_commands(raw);
+        assert_eq!(
+            shell_commands.len(),
+            1,
+            "expected exactly one completed Codex shell command, got {shell_commands:?}"
+        );
+        assert!(
+            shell_commands[0].contains("CODEX_HOME")
+                && shell_commands[0].contains(marker_file_name),
+            "expected the Codex shell command to use CODEX_HOME and create {marker_file_name:?}, got {:?}",
+            shell_commands[0]
         );
 
         let projected_codex_home = test_wardian_home
