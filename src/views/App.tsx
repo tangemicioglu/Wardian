@@ -73,9 +73,11 @@ import {
   GardenSurface,
   GraphSurface,
   InboxSurface,
+  normalizeChangesSurfaceState,
   normalizeGardenSurfaceState,
   normalizeGraphSurfaceState,
 } from "../features/workbench/surfaces/coreSurfaceDefinitions";
+import { ChangesSurface } from "../features/workbench/surfaces/ChangesSurface";
 import type { WorkbenchSurfaceRenderer } from "../layout/workbench/DockviewLayoutAdapter";
 import { LibrarySurface } from "../features/workbench/surfaces/LibrarySurface";
 import { WorkflowsSurface } from "../features/workbench/surfaces/WorkflowsSurface";
@@ -376,6 +378,7 @@ function AppBody() {
   const handleAgentTurnCompletion = useCallback((
     completion: AgentTurnCompletion,
   ) => {
+    setChangeReviewTurnRevision((revision) => revision + 1);
     const { session_id: sessionId, agent } = completion;
     const agentName = agent?.session_name.trim();
     // Never emit a durable notification with a session UUID while the roster
@@ -474,6 +477,7 @@ function AppBody() {
   const [teams, setTeams] = useState<AgentTeam[]>([]);
   const [watchlistPrefs, setWatchlistPrefs] = useState<WatchlistPrefs>(DEFAULT_WATCHLIST_PREFS);
   const [agentInteractions, setAgentInteractions] = useState<AgentInteractions>({});
+  const [changeReviewTurnRevision, setChangeReviewTurnRevision] = useState(0);
   const agentInteractionsRef = useRef<AgentInteractions>({});
   const interactionSaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const hasAutoPatched = useRef(false);
@@ -1314,6 +1318,29 @@ function AppBody() {
             if (result.accepted && legacyPresentationIntent !== undefined) {
               void workbenchPersistence.flush();
             }
+          }}
+        />
+      );
+    }
+
+    if (surface.surface_type === "changes") {
+      return (
+        <ChangesSurface
+          surface_id={surface.surface_id}
+          state={normalizeChangesSurfaceState(restoredSurface)}
+          visibility={visibility}
+          agents={agents}
+          selected_agent_ids={selectedAgentIds}
+          turn_revision={changeReviewTurnRevision}
+          editor_registry={filesEditorRegistry}
+          client={fileResourceClient}
+          on_state_change={(state) => {
+            workbenchPersistence.store.getState().apply_commands([{
+              type: "update_surface_state",
+              surface_id: surface.surface_id,
+              state_schema_version: 1,
+              state,
+            }]);
           }}
         />
       );

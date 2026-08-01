@@ -929,3 +929,60 @@ export type TerminalEventsReady = {
     runtime_generation: number;
     latest_sequence: number;
 };
+
+export type ChangeReviewBaseline =
+    | "last_effective_turn"
+    | "conversation_start"
+    | "branch_point"
+    | "head"
+    | "unreviewed";
+
+export type ChangeReviewEvidence = "attributed" | "inferred";
+export type ChangeReviewChangeKind = "added" | "modified" | "deleted" | "renamed" | "untracked";
+
+export type ChangeReviewFileEntry = {
+    path: string;
+    change_kind: ChangeReviewChangeKind;
+    old_path: string | null;
+    insertions: number | null;
+    deletions: number | null;
+    evidence: ChangeReviewEvidence;
+    agent_ids: string[];
+    turn_indices: number[];
+    binary: boolean;
+    truncated: boolean;
+};
+
+export type ChangeReviewSummary = {
+    schema: 1;
+    baseline: ChangeReviewBaseline;
+    baseline_ref: string | null;
+    from_turn_index: number | null;
+    to_turn_index: number | null;
+    files: ChangeReviewFileEntry[];
+    computed_at: string;
+    truncated: boolean;
+};
+
+export type ChangeReviewWatermark = {
+    schema: 1;
+    agent_id: string;
+    workspace: string;
+    reviewed_turn_index: number;
+    reviewed_at: string;
+    reviewed_head: string | null;
+};
+
+export type ChangeReviewLoadResponse = {
+    summary: ChangeReviewSummary;
+    git_available: boolean;
+    head_ref: string | null;
+};
+
+export type GitNumstatEntry = {
+    path: string;
+    old_path: string | null;
+    insertions: number | null;
+    deletions: number | null;
+    binary: boolean;
+};

@@ -2,6 +2,7 @@ use crate::state::AppState;
 use crate::utils::fs::create_directory_link;
 use crate::utils::process::apply_silent_std_command_policy;
 use notify::Watcher;
+use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -299,15 +300,19 @@ fn is_rebase_in_progress(cwd: &str) -> Result<bool, String> {
         || git_metadata_path(cwd, "rebase-apply")?.exists())
 }
 
-#[tauri::command]
-pub async fn git_status(cwd: String) -> Result<GitStatusResult, String> {
+pub(crate) fn git_status_for_cwd(cwd: &str) -> Result<GitStatusResult, String> {
     let raw = run_git(
-        &cwd,
+        cwd,
         &["status", "--porcelain=v1", "-b", "--untracked-files=all"],
     )?;
     let mut status = parse_porcelain_status(&raw);
-    status.rebase_in_progress = is_rebase_in_progress(&cwd)?;
+    status.rebase_in_progress = is_rebase_in_progress(cwd)?;
     Ok(status)
+}
+
+#[tauri::command]
+pub async fn git_status(cwd: String) -> Result<GitStatusResult, String> {
+    git_status_for_cwd(&cwd)
 }
 
 #[tauri::command]
@@ -574,6 +579,74 @@ pub async fn git_diff_file(cwd: String, path: String, staged: bool) -> Result<St
     args.push("--");
     args.push(&path);
     run_git(&cwd, &args)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitNumstatEntry {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub insertions: Option<u64>,
+    pub deletions: Option<u64>,
+    pub binary: bool,
+}
+
+fn parse_git_numstat(raw: &str) -> Vec<GitNumstatEntry> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let insertions = fields.next()?;
+            let deletions = fields.next()?;
+            let raw_path = fields.next()?.trim();
+            if raw_path.is_empty() {
+                return None;
+            }
+            let (path, old_path) = raw_path
+                .split_once(" => ")
+                .map(|(old_path, path)| (path.to_string(), Some(old_path.to_string())))
+                .unwrap_or_else(|| (raw_path.to_string(), None));
+
+            let binary = insertions == "-" || deletions == "-";
+            Some(GitNumstatEntry {
+                path: parse_porcelain_path(&path),
+                old_path: old_path.map(|path| parse_porcelain_path(&path)),
+                insertions: insertions.parse().ok(),
+                deletions: deletions.parse().ok(),
+                binary,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn git_diff_numstat_for_cwd(
+    cwd: &str,
+    revision: Option<&str>,
+) -> Result<Vec<GitNumstatEntry>, String> {
+    let revision = revision
+        .map(git_revision_name)
+        .transpose()?
+        .unwrap_or_else(|| "HEAD".to_string());
+    let raw = run_git(
+        cwd,
+        &[
+            "diff",
+            "--numstat",
+            "--find-renames",
+            "--no-color",
+            &revision,
+            "--",
+        ],
+    )?;
+    Ok(parse_git_numstat(&raw))
+}
+
+/// Return one numstat record per tracked path in the requested change set.
+/// Untracked paths are supplied by `git_status` and therefore have no counts.
+#[tauri::command]
+pub async fn git_diff_numstat(
+    cwd: String,
+    revision: Option<String>,
+) -> Result<Vec<GitNumstatEntry>, String> {
+    git_diff_numstat_for_cwd(&cwd, revision.as_deref())
 }
 
 #[tauri::command]
@@ -1661,6 +1734,24 @@ mod tests {
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].path, "new/path.rs");
         assert!(result.files[0].is_staged);
+    }
+
+    #[test]
+    fn parse_numstat_preserves_line_counts_and_binary_state() {
+        let result = parse_git_numstat(
+            "12\t4\tsrc/changed.rs\n-\t-\tassets/logo.png\n0\t0\told.rs => new.rs\n",
+        );
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].path, "src/changed.rs");
+        assert_eq!(result[0].insertions, Some(12));
+        assert_eq!(result[0].deletions, Some(4));
+        assert!(!result[0].binary);
+        assert!(result[1].binary);
+        assert_eq!(result[1].insertions, None);
+        assert_eq!(result[1].deletions, None);
+        assert_eq!(result[2].path, "new.rs");
+        assert_eq!(result[2].old_path.as_deref(), Some("old.rs"));
     }
 
     #[test]

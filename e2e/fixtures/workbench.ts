@@ -6,6 +6,7 @@ export type CoreWorkbenchSurfaceType =
   | "inbox"
   | "graph"
   | "garden"
+  | "changes"
   | "library"
   | "workflows"
   | "agent-session";

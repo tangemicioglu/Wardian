@@ -1,4 +1,5 @@
 import type {
+  ChangeReviewBaseline,
   SurfaceCommandDefinition,
   SurfaceBadge,
   SurfaceDefinition,
@@ -39,7 +40,7 @@ export const HEAVY_SURFACE_HIDDEN_GRACE_MS = resolveHeavySurfaceHiddenGraceMs(
 export const CORE_VIEW_SURFACE_STATE_SCHEMA_VERSION = 1;
 export const CORE_VIEW_SURFACE_MAX_STATE_BYTES = 4 * 1024;
 
-export type CoreViewSurfaceType = "dashboard" | "inbox" | "graph" | "garden";
+export type CoreViewSurfaceType = "dashboard" | "inbox" | "graph" | "garden" | "changes";
 export type EmptyCoreViewSurfaceState = Readonly<Record<string, never>>;
 export type GraphSurfaceState = Readonly<{
   enabled_reasons: readonly GraphRelationshipReason[];
@@ -49,7 +50,12 @@ export type GraphSurfaceState = Readonly<{
   picker_search: string;
 }>;
 export type GardenSurfaceState = Readonly<{ selected_unit_key: string | null }>;
-export type CoreViewSurfaceState = EmptyCoreViewSurfaceState | GraphSurfaceState | GardenSurfaceState;
+export type ChangesSurfaceState = Readonly<{ baseline: ChangeReviewBaseline }>;
+export type CoreViewSurfaceState =
+  | EmptyCoreViewSurfaceState
+  | GraphSurfaceState
+  | GardenSurfaceState
+  | ChangesSurfaceState;
 export type SurfaceVisibility = "visible" | "hidden";
 
 const EMPTY_STATE: EmptyCoreViewSurfaceState = Object.freeze({});
@@ -67,6 +73,9 @@ export const DEFAULT_GRAPH_SURFACE_STATE: GraphSurfaceState = Object.freeze({
 });
 export const DEFAULT_GARDEN_SURFACE_STATE: GardenSurfaceState = Object.freeze({
   selected_unit_key: null,
+});
+export const DEFAULT_CHANGES_SURFACE_STATE: ChangesSurfaceState = Object.freeze({
+  baseline: "last_effective_turn",
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -122,6 +131,22 @@ function restoreGardenState(value: unknown, version: number): SurfaceRestoreResu
     || (value.selected_unit_key !== null && typeof value.selected_unit_key !== "string")
   ) return { ok: false, error: "garden state is malformed" };
   return { ok: true, state: { selected_unit_key: value.selected_unit_key as string | null } };
+}
+
+function restoreChangesState(value: unknown, version: number): SurfaceRestoreResult<ChangesSurfaceState> {
+  if (version !== CORE_VIEW_SURFACE_STATE_SCHEMA_VERSION) {
+    return { ok: false, error: "unsupported changes state version" };
+  }
+  if (!isRecord(value) || ![
+    "last_effective_turn",
+    "conversation_start",
+    "branch_point",
+    "head",
+    "unreviewed",
+  ].includes(value.baseline as string)) {
+    return { ok: false, error: "changes state is malformed" };
+  }
+  return { ok: true, state: { baseline: value.baseline as ChangeReviewBaseline } };
 }
 
 function openCommand(surfaceType: CoreViewSurfaceType, title: string): SurfaceCommandDefinition {
@@ -197,12 +222,20 @@ export const GARDEN_SURFACE_DEFINITION = defineCoreViewSurface(
     restore_state: restoreGardenState,
   },
 );
+export const CHANGES_SURFACE_DEFINITION = defineCoreViewSurface(
+  "changes", "Changes", "recreate_from_state", {
+    default_state: () => DEFAULT_CHANGES_SURFACE_STATE,
+    serialize_state: (state) => state,
+    restore_state: restoreChangesState,
+  },
+);
 
 export const CORE_VIEW_SURFACE_DEFINITIONS: readonly SurfaceDefinition[] = Object.freeze([
   DASHBOARD_SURFACE_DEFINITION,
   INBOX_SURFACE_DEFINITION,
   GRAPH_SURFACE_DEFINITION,
   GARDEN_SURFACE_DEFINITION,
+  CHANGES_SURFACE_DEFINITION,
 ]);
 
 export function normalizeCoreViewSurfaceState(
@@ -210,12 +243,20 @@ export function normalizeCoreViewSurfaceState(
 ): CoreViewSurfaceState {
   if (surface.surface_type === "graph") return normalizeGraphSurfaceState(surface);
   if (surface.surface_type === "garden") return normalizeGardenSurfaceState(surface);
+  if (surface.surface_type === "changes") return normalizeChangesSurfaceState(surface);
   const definition = CORE_VIEW_SURFACE_DEFINITIONS.find(
     (candidate) => candidate.type === surface.surface_type,
   );
   if (!definition) return EMPTY_STATE;
   const restored = definition.restore_state(surface.state, surface.state_schema_version);
   return restored.ok ? restored.state as CoreViewSurfaceState : EMPTY_STATE;
+}
+
+export function normalizeChangesSurfaceState(
+  surface: Pick<WorkbenchSurfaceV1, "state" | "state_schema_version">,
+): ChangesSurfaceState {
+  const restored = CHANGES_SURFACE_DEFINITION.restore_state(surface.state, surface.state_schema_version);
+  return restored.ok ? restored.state as ChangesSurfaceState : DEFAULT_CHANGES_SURFACE_STATE;
 }
 
 export function normalizeGraphSurfaceState(

@@ -2671,6 +2671,15 @@ pub async fn kill_agent(
 
         // Cleanup: remove persisted references and the agent's private directory.
         if let Some(home) = crate::utils::fs::get_wardian_home() {
+            if let Err(error) = crate::commands::change_review::remove_change_review_watermarks_for_agent(
+                &home,
+                &session_id,
+            ) {
+                manager::log_debug(&format!(
+                    "[WARDIAN] Failed to clean change review watermarks for {}: {}",
+                    session_id, error
+                ));
+            }
             if let Some(remaining_agent_ids) = remaining_agent_ids.as_ref() {
                 match DeletedAgentReferenceCleanup::run(&home, remaining_agent_ids) {
                     Ok(cleanup) => {

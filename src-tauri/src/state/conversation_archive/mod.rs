@@ -10,6 +10,7 @@ use wardian_core::conversations::{
     write_jsonl_atomic, AgentConversationLoggingSetting, ConversationBoundaryReason,
     ConversationIndexEntry, ConversationLoggingSetting, ConversationManifest,
     ConversationNarrativeRecord, ConversationSourceRecord, ConversationSpeakerType,
+    ConversationTurnRecord,
 };
 use wardian_core::models::chat::AgentChatEvent;
 
@@ -196,6 +197,23 @@ impl ConversationArchiveState {
         let conversation = read_jsonl_records(&conversation_dir.join("conversation.jsonl"))?;
 
         Ok((manifest, conversation))
+    }
+
+    /// Reads the already-materialized turn records for the supplied archive
+    /// entries. Change review uses this rather than re-deriving turns from
+    /// provider transcripts.
+    pub fn turn_records_for_conversations(
+        &self,
+        entries: &[ConversationIndexEntry],
+    ) -> io::Result<Vec<(ConversationIndexEntry, ConversationTurnRecord)>> {
+        let mut records = Vec::new();
+        for entry in entries {
+            let directory = conversation_dir(&entry.agent_id, &entry.conversation_id)?;
+            let turns: Vec<ConversationTurnRecord> =
+                read_jsonl_records(&directory.join("turns.jsonl"))?;
+            records.extend(turns.into_iter().map(|turn| (entry.clone(), turn)));
+        }
+        Ok(records)
     }
 
     /// Returns the persisted chat events for every archived conversation owned

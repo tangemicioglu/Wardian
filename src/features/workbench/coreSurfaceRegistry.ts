@@ -56,6 +56,7 @@ export const CORE_SURFACE_CONTRIBUTIONS: readonly CoreSurfaceContribution[] = Ob
   { surface_type: "inbox", title: "Inbox", description: "Review updates and requests that need your input.", group: "Core views" },
   { surface_type: "graph", title: "Graph", description: "Explore agent relationships.", group: "Core views" },
   { surface_type: "garden", title: "Garden", description: "Explore the living habitat.", group: "Core views" },
+  { surface_type: "changes", title: "Changes", description: "Review recent agent file changes.", group: "Core views" },
   { surface_type: "library", title: "Library", description: "Browse reusable assets.", group: "Core views" },
   { surface_type: "workflows", title: "Workflows", description: "Build and monitor workflows.", group: "Core views" },
   { surface_type: "agent-session", title: "Agent Session", description: "Open a specific agent session.", group: "Sessions", requires_resource: true },
