@@ -1239,6 +1239,37 @@ test("traverses tabs and groups with workbench keyboard commands", async ({ page
   await expect(activeWorkbenchGroup(page)).toHaveAttribute("data-group-id", "group-1");
 });
 
+test("switches recent tabs in the active pane with Ctrl+Tab", async ({ page }) => {
+  await bootWorkbench(page, twoGroupDocument());
+
+  const dashboardTab = surfaceTab(page, "dashboard");
+  const queueTab = surfaceTab(page, "inbox");
+  await dashboardTab.focus();
+  // Dispatch the browser event directly: Chromium reserves physical Ctrl+Tab
+  // for its own browser-tab traversal, while the native workbench owns it.
+  await dashboardTab.dispatchEvent("keydown", {
+    key: "Tab",
+    code: "Tab",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  const switcher = page.getByRole("status", { name: "Recent tabs" });
+  await expect(switcher.getByRole("option", { name: "Inbox" }))
+    .toHaveAttribute("aria-selected", "true");
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent("keyup", {
+      key: "Control",
+      bubbles: true,
+      cancelable: true,
+    }));
+  });
+  await expect(queueTab).toHaveAttribute("aria-selected", "true");
+  await expect(queueTab).toBeFocused();
+  await expect(switcher).toHaveCount(0);
+});
+
 test("keeps the left rail auxiliary while routing its object action to a surface", async ({ page }) => {
   const dashboard = makeWorkbenchSurface("dashboard-1", "dashboard");
   await bootWorkbench(page, makeWorkbenchDocument({ surfaces: [dashboard] }));

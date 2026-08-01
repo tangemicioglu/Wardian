@@ -16,7 +16,7 @@ interface SidebarIconRailProps {
   onToggleSettings: () => void;
 }
 
-export const SidebarIconRail: React.FC<SidebarIconRailProps> = ({
+export const SidebarIconRail = React.forwardRef<HTMLElement, SidebarIconRailProps>(({
   activeTab,
   setActiveTab,
   setCollapsed,
@@ -27,7 +27,7 @@ export const SidebarIconRail: React.FC<SidebarIconRailProps> = ({
   sourceControlBusy = false,
   onToggleUserTerminal,
   onToggleSettings,
-}) => {
+}, ref) => {
   const handleTabClick = (tab: SidebarTab) => {
     setActiveTab(tab);
     setCollapsed(false);
@@ -36,9 +36,15 @@ export const SidebarIconRail: React.FC<SidebarIconRailProps> = ({
     sourceControlChangeCount > 99 ? "99+" : String(sourceControlChangeCount);
 
   return (
-    <aside data-testid="sidebar-icon-rail" className="w-[var(--sidebar-primary-width)] h-full bg-[var(--color-wardian-sidebar-primary)] border-r border-wardian-border flex flex-col items-center py-4 gap-3 z-30">
+    <aside
+      ref={ref}
+      data-testid="sidebar-icon-rail"
+      aria-label="Sidebar navigation"
+      className="w-[var(--sidebar-primary-width)] h-full bg-[var(--color-wardian-sidebar-primary)] border-r border-wardian-border flex flex-col items-center py-4 gap-3 z-30"
+    >
       <button
         data-testid="sidebar-tab-explorer"
+        data-sidebar-active={activeTab === "explorer" ? "true" : undefined}
         onClick={() => handleTabClick("explorer")}
         className={`relative p-3 rounded-xl transition-all group ${activeTab === "explorer" ? "bg-wardian-card-bg-muted text-[var(--color-wardian-accent)]" : "text-muted-neutral hover:text-bright-neutral"}`}
         title="File Explorer"
@@ -49,6 +55,7 @@ export const SidebarIconRail: React.FC<SidebarIconRailProps> = ({
 
       <button
         data-testid="sidebar-tab-git"
+        data-sidebar-active={activeTab === "git" ? "true" : undefined}
         onClick={() => handleTabClick("git")}
         className={`relative p-3 rounded-xl transition-all group ${activeTab === "git" ? "bg-wardian-card-bg-muted text-[var(--color-wardian-accent)]" : "text-muted-neutral hover:text-bright-neutral"}`}
         title="Source Control"
@@ -81,6 +88,7 @@ export const SidebarIconRail: React.FC<SidebarIconRailProps> = ({
 
       <button
         data-testid="sidebar-tab-agent-config"
+        data-sidebar-active={activeTab === "agent-config" ? "true" : undefined}
         onClick={() => handleTabClick("agent-config")}
         className={`relative p-3 rounded-xl transition-all group ${activeTab === "agent-config" ? "bg-wardian-card-bg-muted text-[var(--color-wardian-accent)]" : "text-muted-neutral hover:text-bright-neutral"}`}
         title="Agent Configuration"
@@ -91,6 +99,7 @@ export const SidebarIconRail: React.FC<SidebarIconRailProps> = ({
 
       <button
         data-testid="sidebar-tab-command"
+        data-sidebar-active={activeTab === "command" ? "true" : undefined}
         onClick={() => handleTabClick("command")}
         className={`relative p-3 rounded-xl transition-all group ${activeTab === "command" ? "bg-wardian-card-bg-muted text-[var(--color-wardian-accent)]" : "text-muted-neutral hover:text-bright-neutral"}`}
         title="Command"
@@ -101,6 +110,7 @@ export const SidebarIconRail: React.FC<SidebarIconRailProps> = ({
 
       <button
         data-testid="sidebar-tab-workflows"
+        data-sidebar-active={activeTab === "workflows" ? "true" : undefined}
         onClick={() => handleTabClick("workflows")}
         className={`relative p-3 rounded-xl transition-all group ${activeTab === "workflows" ? "bg-wardian-card-bg-muted text-[var(--color-wardian-accent)]" : "text-muted-neutral hover:text-bright-neutral"}`}
         title="Workflows"
@@ -141,4 +151,4 @@ export const SidebarIconRail: React.FC<SidebarIconRailProps> = ({
       </div>
     </aside>
   );
-};
+});

@@ -74,8 +74,11 @@ If several presentations show the same terminal, the active one is labeled **Own
 - `Ctrl+Shift+O`: Open Surface.
 - `Ctrl+W`: close the active surface presentation.
 - `Ctrl+Shift+T`: reopen the most recently closed surface.
+- `Ctrl+Tab` / `Ctrl+Shift+Tab`: preview and switch to the next or previous recent tab in the active pane.
 - `Ctrl+[` / `Ctrl+]`: previous or next tab.
 - `F6` / `Shift+F6`: next or previous pane.
+- `Ctrl+Alt+A` / `Ctrl+Alt+D` / `Ctrl+Alt+I`: open Agents, Dashboard, or Inbox.
+- `Ctrl+Alt+G` / `Ctrl+Alt+H` / `Ctrl+Alt+B` / `Ctrl+Alt+W`: open Graph, Garden, Library, or Workflows.
 - `Ctrl+0`: focus the Workbench.
 - `Ctrl+B`: toggle the left sidebar.
 

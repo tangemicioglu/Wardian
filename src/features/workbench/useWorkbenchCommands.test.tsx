@@ -225,4 +225,31 @@ describe("useWorkbenchCommands", () => {
     expect(onQuickOpen).toHaveBeenCalledOnce();
     expect(onCommandPalette).toHaveBeenCalledOnce();
   });
+
+  it("opens every core view from its mnemonic navigation shortcut", async () => {
+    const store = createWorkbenchStore({ initial_document: makeCommandDocument() });
+    render(<CommandHarness store={store} on_router={() => {}} />);
+
+    const activeTab = screen.getByRole("tab", { name: "surface-2" });
+    const shortcuts = [
+      ["a", "agents-overview"],
+      ["d", "dashboard"],
+      ["i", "inbox"],
+      ["g", "graph"],
+      ["h", "garden"],
+      ["b", "library"],
+      ["w", "workflows"],
+    ] as const;
+
+    for (const [key, surfaceType] of shortcuts) {
+      await act(async () => {
+        fireEvent.keyDown(activeTab, { key, ctrlKey: true, altKey: true });
+      });
+      expect(Object.values(store.getState().document.surfaces)).toContainEqual(
+        expect.objectContaining({ surface_type: surfaceType }),
+      );
+    }
+
+    expect(Object.keys(store.getState().document.surfaces)).toHaveLength(10);
+  });
 });

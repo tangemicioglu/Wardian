@@ -10,6 +10,65 @@
   color: var(--color-wardian-text);
 }
 
+.wardian-workbench-mru-switcher {
+  position: absolute;
+  top: clamp(2rem, 12vh, 7rem);
+  left: 50%;
+  z-index: 10000;
+  width: min(28rem, calc(100% - 2rem));
+  overflow: hidden;
+  transform: translateX(-50%);
+  border: 1px solid var(--color-wardian-border-heavy);
+  border-radius: 0.5rem;
+  background: var(--color-wardian-sidebar-primary);
+  box-shadow: var(--shadow-wardian-accent);
+  pointer-events: none;
+}
+
+.wardian-workbench-mru-switcher header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--color-wardian-border);
+  color: var(--color-wardian-text-muted);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+}
+
+.wardian-workbench-mru-switcher header span:last-child {
+  white-space: nowrap;
+}
+
+.wardian-workbench-mru-switcher kbd {
+  border: 1px solid var(--color-wardian-border-heavy);
+  border-radius: 0.2rem;
+  background: var(--color-wardian-card-bg-muted);
+  color: var(--color-wardian-text-muted);
+  padding: 0.05rem 0.25rem;
+  font: inherit;
+}
+
+.wardian-workbench-mru-switcher [role="listbox"] {
+  max-height: min(18rem, 45vh);
+  overflow: hidden;
+  padding: 0.25rem;
+}
+
+.wardian-workbench-mru-switcher-option {
+  overflow: hidden;
+  border-radius: 0.25rem;
+  color: var(--color-wardian-text);
+  padding: 0.5rem 0.625rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wardian-workbench-mru-switcher-option[aria-selected="true"] {
+  background: color-mix(in srgb, var(--color-wardian-accent), transparent 84%);
+  color: var(--color-wardian-text-bright);
+}
+
 .wardian-workbench-group-actions button,
 .wardian-workbench-new-surface-action button,
 .wardian-workbench-home button {

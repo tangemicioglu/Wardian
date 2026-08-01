@@ -274,6 +274,8 @@ function AppBody() {
   const confirm = useConfirm();
   const pendingQueueFlushRef = React.useRef<Set<string>>(new Set());
   const workbenchRootRef = useRef<HTMLDivElement>(null);
+  const sidebarIconRailRef = useRef<HTMLElement>(null);
+  const agentWatchlistRef = useRef<HTMLElement>(null);
   const workbenchPersistence = useWorkbenchPersistence({
     enabled: true,
     adapter: WORKBENCH_PERSISTENCE_ADAPTER,
@@ -422,6 +424,24 @@ function AppBody() {
   const setLeftCollapsed = useLayoutStore((state) => state.setLeftSidebarCollapsed);
   const rightCollapsed = useLayoutStore((state) => state.rightSidebarCollapsed);
   const setRightCollapsed = useLayoutStore((state) => state.setRightSidebarCollapsed);
+  const focusLeftDock = useCallback(() => {
+    setLeftCollapsed(false);
+    window.requestAnimationFrame(() => {
+      const target = sidebarIconRailRef.current?.querySelector<HTMLButtonElement>(
+        '[data-sidebar-active="true"]',
+      ) ?? sidebarIconRailRef.current?.querySelector<HTMLButtonElement>("button");
+      target?.focus();
+    });
+  }, [setLeftCollapsed]);
+  const focusRightDock = useCallback(() => {
+    setRightCollapsed(false);
+    window.requestAnimationFrame(() => {
+      const target = agentWatchlistRef.current?.querySelector<HTMLInputElement>(
+        'input[type="search"]',
+      ) ?? agentWatchlistRef.current;
+      target?.focus();
+    });
+  }, [setRightCollapsed]);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [tempName, setTempName] = useState("");
   const {
@@ -1553,6 +1573,7 @@ function AppBody() {
           )}
 
           leftRail={<SidebarIconRail
+          ref={sidebarIconRailRef}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           setCollapsed={setLeftCollapsed}
@@ -1589,6 +1610,8 @@ function AppBody() {
               root_ref={workbenchRootRef}
               new_tab_action={resolvedWorkbenchNewTabAction}
               on_quick_open={openWorkbenchLauncher}
+              on_focus_left_dock={focusLeftDock}
+              on_focus_right_dock={focusRightDock}
               resource_key={selectedWorkbenchResourceKey}
               render_surface={renderWorkbenchSurface}
               surface_title={(surface) => {
@@ -1628,6 +1651,7 @@ function AppBody() {
           </>}
 
           roster={<AgentWatchlist
+          focus_target_ref={agentWatchlistRef}
           agents={agents}
           telemetry={telemetry}
           terminalTitles={terminalTitles}
