@@ -792,12 +792,18 @@ fn merge_chat_events(
     provider_events: Vec<AgentChatEvent>,
 ) -> Vec<AgentChatEvent> {
     let mut seen = HashSet::new();
+    let mut archived_event_ids = HashSet::new();
+    let mut live_event_ids = HashSet::new();
     let mut provider_message_text_seen = HashSet::new();
     let mut provider_message_indexes_by_text = HashMap::new();
     let mut merged = Vec::with_capacity(watch_events.len() + provider_events.len());
 
     for mut event in provider_events {
         normalize_chat_event_visible_text(&mut event);
+        if is_cross_source_archive_duplicate(&event, &archived_event_ids, &live_event_ids) {
+            continue;
+        }
+        remember_archive_event_id(&event, &mut archived_event_ids, &mut live_event_ids);
         let key = chat_event_dedupe_key(&event);
         if seen.insert(key) {
             if let Some(message_key) = chat_message_text_key(&event) {
@@ -822,6 +828,10 @@ fn merge_chat_events(
 
     for mut event in watch_events {
         normalize_chat_event_visible_text(&mut event);
+        if is_cross_source_archive_duplicate(&event, &archived_event_ids, &live_event_ids) {
+            continue;
+        }
+        remember_archive_event_id(&event, &mut archived_event_ids, &mut live_event_ids);
         if chat_message_text_key(&event)
             .as_ref()
             .is_some_and(|key| provider_message_text_seen.contains(key))
@@ -840,6 +850,38 @@ fn merge_chat_events(
     }
 
     merged
+}
+
+fn is_cross_source_archive_duplicate(
+    event: &AgentChatEvent,
+    archived_event_ids: &HashSet<String>,
+    live_event_ids: &HashSet<String>,
+) -> bool {
+    if event_is_archived(event) {
+        live_event_ids.contains(&event.id)
+    } else {
+        archived_event_ids.contains(&event.id)
+    }
+}
+
+fn remember_archive_event_id(
+    event: &AgentChatEvent,
+    archived_event_ids: &mut HashSet<String>,
+    live_event_ids: &mut HashSet<String>,
+) {
+    if event_is_archived(event) {
+        archived_event_ids.insert(event.id.clone());
+    } else {
+        live_event_ids.insert(event.id.clone());
+    }
+}
+
+fn event_is_archived(event: &AgentChatEvent) -> bool {
+    event
+        .metadata
+        .get("conversation_archive_id")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 /// Normalizes archived records written before provider adapters learned to
@@ -1728,6 +1770,68 @@ Do you want to proceed?
         let chat_events = merge_chat_events(Vec::new(), vec![first, second]);
 
         assert_eq!(chat_events.len(), 2);
+    }
+
+    #[test]
+    fn merge_deduplicates_live_codex_work_events_already_replayed_from_archive() {
+        let archived_user = AgentChatEvent {
+            id: "agent-1:provider:user".to_string(),
+            session_id: "agent-1".to_string(),
+            provider: "codex".to_string(),
+            kind: AgentChatEventKind::Message,
+            role: Some(AgentChatRole::User),
+            text: Some("Update the chat timeline.".to_string()),
+            title: None,
+            status: None,
+            turn_id: Some("turn-1".to_string()),
+            source: Some("response_item".to_string()),
+            command: None,
+            exit_code: None,
+            path: None,
+            language: None,
+            created_at: None,
+            sequence: Some(1),
+            metadata: serde_json::json!({"conversation_archive_id": "conversation-one"}),
+        };
+        let mut archived_tool = archived_user.clone();
+        archived_tool.id = "agent-1:provider:tool".to_string();
+        archived_tool.kind = AgentChatEventKind::ToolCall;
+        archived_tool.role = None;
+        archived_tool.text = None;
+        archived_tool.title = Some("shell_command".to_string());
+        archived_tool.command = Some("npm run test".to_string());
+        archived_tool.sequence = Some(2);
+        let mut archived_assistant = archived_user.clone();
+        archived_assistant.id = "agent-1:provider:assistant".to_string();
+        archived_assistant.role = Some(AgentChatRole::Assistant);
+        archived_assistant.text = Some("The tests passed.".to_string());
+        archived_assistant.sequence = Some(3);
+
+        let live_events = [&archived_user, &archived_tool, &archived_assistant]
+            .into_iter()
+            .cloned()
+            .map(|mut event| {
+                event.metadata = serde_json::json!({});
+                event
+            })
+            .collect();
+        let chat_events = merge_chat_events(
+            live_events,
+            vec![archived_user, archived_tool, archived_assistant],
+        );
+
+        assert_eq!(chat_events.len(), 3);
+        assert_eq!(
+            chat_events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "agent-1:provider:user",
+                "agent-1:provider:tool",
+                "agent-1:provider:assistant",
+            ]
+        );
     }
 
     #[test]
