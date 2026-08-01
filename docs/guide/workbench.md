@@ -209,6 +209,7 @@ Selecting an agent does not silently replace the active Workbench tab.
 | Open Surface | `Ctrl+Shift+O` |
 | Close active surface | `Ctrl+W` |
 | Reopen closed surface | `Ctrl+Shift+T` |
+| Recent tab switcher | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Previous / next tab | `Ctrl+[` / `Ctrl+]` |
 | Previous / next pane | `Ctrl+Shift+[` / `Ctrl+Shift+]` |
 | Traverse panes | `Shift+F6` / `F6` |
@@ -217,8 +218,10 @@ Selecting an agent does not silently replace the active Workbench tab.
 | Toggle pane zoom | `Alt+Shift+Z` |
 | Focus left dock / right roster | `Ctrl+Alt+L` / `Ctrl+Alt+R` |
 | Focus Workbench | `Ctrl+0` |
+| Open Agents / Dashboard / Inbox | `Ctrl+Alt+A` / `Ctrl+Alt+D` / `Ctrl+Alt+I` |
+| Open Graph / Garden / Library / Workflows | `Ctrl+Alt+G` / `Ctrl+Alt+H` / `Ctrl+Alt+B` / `Ctrl+Alt+W` |
 
-Workbench shortcuts do not intercept normal typing inside text fields or terminal-owned key combinations. `F6` pane traversal remains available for keyboard navigation.
+The recent tab switcher is pane-local: hold `Ctrl`, press `Tab` to preview recent tabs, then release `Ctrl` to open the selected tab. Workbench shortcuts do not intercept normal typing inside text fields or terminal-owned key combinations. `F6` pane traversal remains available for keyboard navigation.
 
 ## Related Guides
 

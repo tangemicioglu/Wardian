@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -33,6 +34,7 @@ import {
   type WorkbenchSurfaceRenderer,
   type WorkbenchSurfaceTitle,
 } from "./DockviewLayoutAdapter";
+import { WorkbenchMruSwitcher } from "./WorkbenchMruSwitcher";
 import "./workbench.css";
 
 export type WorkbenchHostProps = {
@@ -53,6 +55,11 @@ export type WorkbenchHostProps = {
 };
 
 type WorkbenchDropPosition = "top" | "bottom" | "left" | "right" | "center";
+type MruSwitcherState = { surface_ids: readonly string[]; selected_index: number };
+
+function wrappedIndex(index: number, delta: number, length: number): number {
+  return ((index + delta) % length + length) % length;
+}
 
 /** Applies the shared split predicate to a canonical pane's current DOM geometry. */
 export function canSplitWorkbenchGroup(
@@ -149,6 +156,8 @@ export function WorkbenchHost({
   const [launcherPlaceholderId, setLauncherPlaceholderId] = useState<string | null>(null);
   const launcherReturnFocusRef = useRef<HTMLElement | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [mruSwitcher, setMruSwitcher] = useState<MruSwitcherState | null>(null);
+  const mruSwitcherRef = useRef<MruSwitcherState | null>(null);
   const state = useSyncExternalStore(
     (listener) => store.subscribe(() => listener()),
     store.getState,
@@ -165,6 +174,73 @@ export function WorkbenchHost({
     groupId: string,
     direction: "horizontal" | "vertical",
   ): boolean => canSplitWorkbenchGroup(rootRef.current, groupId, direction), []);
+  const dismissMruSwitcher = useCallback(() => {
+    mruSwitcherRef.current = null;
+    setMruSwitcher(null);
+  }, []);
+  const startMruSwitcher = useCallback((direction: -1 | 1) => {
+    const snapshot = store.getState();
+    const activeGroup = snapshot.document.groups[snapshot.document.active_group_id];
+    const activeSurfaceId = activeGroup?.active_surface_id;
+    if (!activeGroup || !activeSurfaceId || activeGroup.surface_ids.length < 2) return;
+    const groupSurfaceIds = new Set(activeGroup.surface_ids);
+    const surfaceIds = [
+      activeSurfaceId,
+      ...snapshot.surface_mru.filter((surfaceId) => (
+        surfaceId !== activeSurfaceId && groupSurfaceIds.has(surfaceId)
+      )),
+      ...activeGroup.surface_ids.filter((surfaceId) => (
+        surfaceId !== activeSurfaceId && !snapshot.surface_mru.includes(surfaceId)
+      )),
+    ];
+    const previous = mruSwitcherRef.current;
+    const next = previous && previous.surface_ids.every((surfaceId) => (
+      surfaceId in snapshot.document.surfaces
+    ))
+      ? {
+          ...previous,
+          selected_index: wrappedIndex(previous.selected_index, direction, previous.surface_ids.length),
+        }
+      : {
+          surface_ids: Object.freeze(surfaceIds),
+          selected_index: wrappedIndex(0, direction, surfaceIds.length),
+        };
+    mruSwitcherRef.current = next;
+    setMruSwitcher(next);
+  }, [store]);
+  const commitMruSwitcher = useCallback(() => {
+    const current = mruSwitcherRef.current;
+    dismissMruSwitcher();
+    const surfaceId = current?.surface_ids[current.selected_index];
+    if (!surfaceId || !(surfaceId in store.getState().document.surfaces)) return;
+    navigation.focus(surfaceId);
+    window.requestAnimationFrame(() => {
+      const tab = [...(rootRef.current?.querySelectorAll<HTMLElement>(
+        '[role="tab"][data-surface-id]',
+      ) ?? [])].find((candidate) => candidate.dataset.surfaceId === surfaceId);
+      tab?.focus();
+    });
+  }, [dismissMruSwitcher, navigation, rootRef, store]);
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || mruSwitcherRef.current === null) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      dismissMruSwitcher();
+    };
+    const handleKeyUp = (event: KeyboardEvent): void => {
+      if (mruSwitcherRef.current === null || event.ctrlKey || event.metaKey) return;
+      commitMruSwitcher();
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("keyup", handleKeyUp, true);
+    window.addEventListener("blur", dismissMruSwitcher);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("keyup", handleKeyUp, true);
+      window.removeEventListener("blur", dismissMruSwitcher);
+    };
+  }, [commitMruSwitcher, dismissMruSwitcher]);
 
   const openNewTabLauncher = useCallback((groupId: string) => {
     if (new_tab_action === "home") {
@@ -217,6 +293,7 @@ export function WorkbenchHost({
     on_command_palette: openCommandPalette,
     on_focus_left_dock,
     on_focus_right_dock,
+    on_mru_switcher: startMruSwitcher,
     create_id,
     can_split_group: canSplitGroup,
   });
@@ -382,6 +459,14 @@ export function WorkbenchHost({
         on_execute={commands.execute}
         on_close={() => setCommandPaletteOpen(false)}
       />
+      {mruSwitcher && (
+        <WorkbenchMruSwitcher
+          surface_ids={mruSwitcher.surface_ids}
+          selected_index={mruSwitcher.selected_index}
+          surfaces={state.document.surfaces}
+          title_for_surface={titleSurface}
+        />
+      )}
     </div>
   );
 }

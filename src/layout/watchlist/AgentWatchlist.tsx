@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { AgentConfig, AgentTelemetry, CloneMode } from "../../types";
@@ -123,6 +123,7 @@ interface AgentWatchlistProps {
   onPrefsChange?: (prefs: WatchlistPrefs) => void;
   interactions?: AgentInteractions;
   teams?: AgentTeam[];
+  focus_target_ref?: RefObject<HTMLElement | null>;
 }
 
 export default function AgentWatchlist({
@@ -169,6 +170,7 @@ export default function AgentWatchlist({
   onPrefsChange,
   interactions = {},
   teams = [],
+  focus_target_ref,
 }: AgentWatchlistProps) {
   // ── Column picker state ────────────────────────────────────────────
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -916,7 +918,10 @@ export default function AgentWatchlist({
   // ── Render ─────────────────────────────────────────────────────────
   return (
     <aside
+      ref={focus_target_ref}
       data-testid="agent-watchlist"
+      aria-label="Agent roster"
+      tabIndex={-1}
       className={`relative h-full bg-[var(--color-wardian-sidebar-secondary)] border-r border-wardian-border sidebar-transition overflow-hidden flex flex-col z-10 select-none ${collapsed ? "w-0" : "w-[var(--sidebar-secondary-width)]"}`}
     >
       <div className="px-[var(--density-panel-padding-x)] py-[var(--density-panel-padding-y)] h-full flex flex-col min-w-[var(--sidebar-secondary-width)] overflow-hidden">

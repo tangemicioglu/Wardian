@@ -52,6 +52,60 @@ function makeTwoPaneDocument() {
 }
 
 describe("WorkbenchHost", () => {
+  it("cycles MRU tabs with Ctrl+Tab and commits the selected tab when Ctrl is released", async () => {
+    const first = makeSurface("surface-1", { surface_type: "dashboard", state: {} });
+    const second = makeSurface("surface-2", { surface_type: "inbox", state: {} });
+    const third = makeSurface("surface-3", { surface_type: "graph", state: {} });
+    const store = createWorkbenchStore({ initial_document: makeSingleGroupDocument([first, second, third]) });
+    store.getState().apply_commands([{
+      type: "set_active_surface",
+      group_id: "group-1",
+      surface_id: first.surface_id,
+    }]);
+    store.getState().touch_surface(second.surface_id);
+    store.getState().touch_surface(first.surface_id);
+    const navigation = makeNavigation();
+    render(<WorkbenchHost store={store} navigation={navigation} />);
+
+    const dashboardTab = await screen.findByRole("tab", { name: "Dashboard" });
+    dashboardTab.focus();
+    fireEvent.keyDown(dashboardTab, { key: "Tab", ctrlKey: true });
+    const switcher = await screen.findByRole("status", { name: "Recent tabs" });
+    expect(within(switcher).getByRole("option", { name: "Inbox" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    fireEvent.keyDown(dashboardTab, { key: "Tab", ctrlKey: true });
+    expect(within(switcher).getByRole("option", { name: /graph/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    fireEvent.keyUp(window, { key: "Control" });
+
+    expect(navigation.focus).toHaveBeenCalledWith(third.surface_id);
+    expect(screen.queryByRole("status", { name: "Recent tabs" })).not.toBeInTheDocument();
+  });
+
+  it("cancels the MRU tab switcher with Escape", async () => {
+    const store = createWorkbenchStore({ initial_document: makeSingleGroupDocument([
+      makeSurface("surface-1", { surface_type: "dashboard", state: {} }),
+      makeSurface("surface-2", { surface_type: "inbox", state: {} }),
+    ]) });
+    const navigation = makeNavigation();
+    render(<WorkbenchHost store={store} navigation={navigation} />);
+
+    const inboxTab = await screen.findByRole("tab", { name: "Inbox" });
+    inboxTab.focus();
+    fireEvent.keyDown(inboxTab, { key: "Tab", ctrlKey: true });
+    expect(await screen.findByRole("status", { name: "Recent tabs" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyUp(window, { key: "Control" });
+
+    expect(navigation.focus).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status", { name: "Recent tabs" })).not.toBeInTheDocument();
+  });
+
   it("keeps programmatic splits enabled while pane geometry is not yet measurable", () => {
     expect(canSplitWorkbenchGroup(null, "group-1", "horizontal")).toBe(true);
     const root = document.createElement("div");

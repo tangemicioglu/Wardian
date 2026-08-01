@@ -22,7 +22,15 @@ export type WorkbenchCommandId =
   | "workbench.command_palette"
   | "workbench.focus_left_dock"
   | "workbench.focus_right_dock"
-  | "workbench.focus_workbench";
+  | "workbench.focus_workbench"
+  | "workbench.open_agents"
+  | "workbench.open_dashboard"
+  | "workbench.open_inbox"
+  | "workbench.open_graph"
+  | "workbench.open_garden"
+  | "workbench.open_library"
+  | "workbench.open_workflows"
+  | "workbench.mru_switcher";
 
 export type WorkbenchCommandAction = {
   command_id: WorkbenchCommandId;
@@ -47,6 +55,7 @@ export type UseWorkbenchCommandsOptions = {
   on_command_palette?: () => void;
   on_focus_left_dock?: () => void;
   on_focus_right_dock?: () => void;
+  on_mru_switcher?: (direction: -1 | 1) => void;
   can_split_group?: (groupId: string, direction: "horizontal" | "vertical") => boolean;
 };
 
@@ -69,6 +78,13 @@ export const WORKBENCH_COMMAND_ACTIONS: readonly WorkbenchCommandAction[] = Obje
   { command_id: "workbench.focus_left_dock", title: "Focus Left Dock", shortcut: "Mod+Alt+L" },
   { command_id: "workbench.focus_right_dock", title: "Focus Right Dock", shortcut: "Mod+Alt+R" },
   { command_id: "workbench.focus_workbench", title: "Focus Workbench", shortcut: "Mod+0" },
+  { command_id: "workbench.open_agents", title: "Open Agents", shortcut: "Mod+Alt+A" },
+  { command_id: "workbench.open_dashboard", title: "Open Dashboard", shortcut: "Mod+Alt+D" },
+  { command_id: "workbench.open_inbox", title: "Open Inbox", shortcut: "Mod+Alt+I" },
+  { command_id: "workbench.open_graph", title: "Open Graph", shortcut: "Mod+Alt+G" },
+  { command_id: "workbench.open_garden", title: "Open Garden", shortcut: "Mod+Alt+H" },
+  { command_id: "workbench.open_library", title: "Open Library", shortcut: "Mod+Alt+B" },
+  { command_id: "workbench.open_workflows", title: "Open Workflows", shortcut: "Mod+Alt+W" },
 ]);
 
 function defaultCreateId(kind: WorkbenchIdKind): string {
@@ -116,11 +132,14 @@ function shortcutForEvent(event: KeyboardEvent): WorkbenchCommandId | null {
   if (event.key === "F6") {
     return event.shiftKey ? "workbench.previous_group" : "workbench.next_group";
   }
+  if (primary && !event.altKey && key === "tab") return "workbench.mru_switcher";
   if (primary && event.shiftKey && key === "p") return "workbench.command_palette";
   if (primary && !event.shiftKey && key === "p") return "workbench.quick_open";
   if (primary && event.shiftKey && key === "t") return "workbench.reopen_closed_surface";
   if (primary && event.shiftKey && key === "o") return "workbench.open_surface";
-  if (primary && !event.shiftKey && key === "w") return "workbench.close_surface";
+  if (primary && !event.shiftKey && !event.altKey && key === "w") {
+    return "workbench.close_surface";
+  }
   if (primary && !event.shiftKey && event.key === "]") return "workbench.next_tab";
   if (primary && !event.shiftKey && event.key === "[") return "workbench.previous_tab";
   if (primary && event.shiftKey && event.key === "]") return "workbench.next_group";
@@ -136,6 +155,13 @@ function shortcutForEvent(event: KeyboardEvent): WorkbenchCommandId | null {
   if (event.altKey && event.shiftKey && key === "z") return "workbench.toggle_group_zoom";
   if (primary && event.altKey && key === "l") return "workbench.focus_left_dock";
   if (primary && event.altKey && key === "r") return "workbench.focus_right_dock";
+  if (primary && event.altKey && key === "a") return "workbench.open_agents";
+  if (primary && event.altKey && key === "d") return "workbench.open_dashboard";
+  if (primary && event.altKey && key === "i") return "workbench.open_inbox";
+  if (primary && event.altKey && key === "g") return "workbench.open_graph";
+  if (primary && event.altKey && key === "h") return "workbench.open_garden";
+  if (primary && event.altKey && key === "b") return "workbench.open_library";
+  if (primary && event.altKey && key === "w") return "workbench.open_workflows";
   if (primary && key === "0") return "workbench.focus_workbench";
   return null;
 }
@@ -162,6 +188,8 @@ export function useWorkbenchCommands(
       case "workbench.next_group":
       case "workbench.previous_group":
         return groupCount > 1;
+      case "workbench.mru_switcher":
+        return activeGroup.surface_ids.length > 1 && current.on_mru_switcher !== undefined;
       case "workbench.move_tab_next_group":
       case "workbench.move_tab_previous_group":
         return activeGroup.active_surface_id !== null && groupCount > 1;
@@ -308,6 +336,30 @@ export function useWorkbenchCommands(
       case "workbench.focus_workbench":
         focusActive(activeGroup.group_id, activeGroup.active_surface_id);
         return true;
+      case "workbench.open_agents":
+        current.navigation.open({ surface_type: "agents-overview" });
+        return true;
+      case "workbench.open_dashboard":
+        current.navigation.open({ surface_type: "dashboard" });
+        return true;
+      case "workbench.open_inbox":
+        current.navigation.open({ surface_type: "inbox" });
+        return true;
+      case "workbench.open_graph":
+        current.navigation.open({ surface_type: "graph" });
+        return true;
+      case "workbench.open_garden":
+        current.navigation.open({ surface_type: "garden" });
+        return true;
+      case "workbench.open_library":
+        current.navigation.open({ surface_type: "library" });
+        return true;
+      case "workbench.open_workflows":
+        current.navigation.open({ surface_type: "workflows" });
+        return true;
+      case "workbench.mru_switcher":
+        current.on_mru_switcher?.(1);
+        return current.on_mru_switcher !== undefined;
     }
   }, [isEnabled]);
 
@@ -331,6 +383,13 @@ export function useWorkbenchCommands(
       const isGroupTraversal = event.key === "F6";
       if (!isGroupTraversal && !isGlobalPalette
         && (isEditableTarget(event.target) || terminalOwnsShortcut(event.target))) {
+        return;
+      }
+      if (commandId === "workbench.mru_switcher") {
+        if (!isEnabled(commandId)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        optionsRef.current.on_mru_switcher?.(event.shiftKey ? -1 : 1);
         return;
       }
       event.preventDefault();
