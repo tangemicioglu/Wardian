@@ -50,4 +50,37 @@ describe("useGardenStore", () => {
     useGardenStore.getState().reset();
     expect(useGardenStore.getState().scene.pins).toEqual({});
   });
+
+  it("announces a reset as a new generation", () => {
+    // Emptying the scene is not enough to make a reset visible. The view carries
+    // the layout's own scene forward through a ref, outside the reactive chain,
+    // so the next pass warm-starts from that copy and puts every unit back
+    // exactly where it was — the reset happens and nothing moves. The counter is
+    // what lets the view tell "the scene moved on" from "it was thrown away".
+    const before = useGardenStore.getState().generation;
+    useGardenStore.getState().reset();
+    expect(useGardenStore.getState().generation).toBe(before + 1);
+  });
+
+  it("does not bump the generation for an ordinary edit", () => {
+    const before = useGardenStore.getState().generation;
+    useGardenStore.getState().pin("agent:a1", "team:hw", { x: 1, y: 1 }, { x: 0, y: 0 });
+    useGardenStore.getState().visit("agent:a1");
+    useGardenStore.getState().adoptScene(
+      recordPositions(createScene(), new Map([["agent:a1", { x: 3, y: 4 }]])),
+    );
+    expect(useGardenStore.getState().generation).toBe(before);
+  });
+
+  it("clears settled positions and district cells, not just pins", () => {
+    // These are the parts a reset exists to discard: they are what makes the
+    // next layout reproduce the arrangement being reset.
+    useGardenStore.getState().adoptScene(
+      recordPositions(createScene(), new Map([["agent:a1", { x: 7, y: 8 }]])),
+    );
+    useGardenStore.getState().reset();
+    const scene = useGardenStore.getState().scene;
+    expect(scene.positions).toEqual({});
+    expect(scene.districts.cells).toEqual({});
+  });
 });

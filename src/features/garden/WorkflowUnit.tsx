@@ -11,7 +11,7 @@ interface WorkflowUnitProps {
   selected: boolean;
   theme: GardenTheme;
   onSelect: (id: string) => void;
-  onDragMove: (x: number, y: number) => void;
+  onDragEnd: (x: number, y: number) => void;
 }
 
 const POD_WIDTH = 84;
@@ -23,7 +23,7 @@ export const WorkflowUnit: React.FC<WorkflowUnitProps> = ({
   selected,
   theme,
   onSelect,
-  onDragMove,
+  onDragEnd,
 }) => {
   const fill = resolveCssVar(workflowStatusColor(unit.runStatus));
   const active = isActiveWorkflowStatus(unit.runStatus);
@@ -36,7 +36,7 @@ export const WorkflowUnit: React.FC<WorkflowUnitProps> = ({
       draggable
       onClick={() => onSelect(unit.ref.id)}
       onTap={() => onSelect(unit.ref.id)}
-      onDragMove={(e) => onDragMove(e.target.x(), e.target.y())}
+      onDragEnd={(e) => onDragEnd(e.target.x(), e.target.y())}
     >
       {/* Named so the canvas' single pulse animation can find it; see
           `useGardenPulse` for why this is not animated through React. */}

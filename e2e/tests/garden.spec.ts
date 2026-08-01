@@ -175,11 +175,16 @@ test.describe("Garden View", () => {
     await expect(canvas).toBeVisible({ timeout: 10_000 });
 
     // Canvas units have no DOM handle, so the drag has to land on top of one.
-    // Positions are derived from the metric and are freely negative, and the
-    // canvas fits its content into view on open — so the only reliable way to
-    // aim is to read the applied transform and project the unit's world
-    // position through it. Poll until the transform stops changing, because the
-    // container is measured by a ResizeObserver and re-fits as it settles.
+    // This fixture seeds exactly one agent and no workflows, so the map holds a
+    // single unit — and the canvas fits its content into view, which puts that
+    // unit in the middle of the viewport whatever its world coordinates are.
+    // Aiming at the centre is therefore both simpler and sturdier than
+    // projecting a stored position: stored positions are district-relative, so
+    // projecting them as world coordinates aimed at empty canvas.
+    //
+    // The fit is still waited on, because the container is measured by a
+    // ResizeObserver and re-fits as it settles; dragging mid-fit would chase a
+    // moving unit.
     const container = surfacePanel(page, "garden").locator(".garden-canvas");
     let transform: string | null = null;
     await expect
@@ -194,22 +199,18 @@ test.describe("Garden View", () => {
       )
       .toBe(true);
 
-    const [fitX, fitY, fitScale] = transform!.split(",").map(Number);
-    const world = await page.evaluate(() => {
-      const raw = localStorage.getItem("wardian-garden");
-      const scene = raw ? JSON.parse(raw)?.state?.scene : null;
-      return scene?.positions?.["agent:garden-test-agent-01"] ?? null;
-    });
-    expect(world).toBeTruthy();
-
     const box = await canvas.boundingBox();
     if (!box) throw new Error("no canvas bounding box");
 
-    const startX = box.x + fitX + world.x * fitScale;
-    const startY = box.y + fitY + world.y * fitScale;
+    const startX = box.x + box.width / 2;
+    const startY = box.y + box.height / 2;
     const endX = startX + 160;
     const endY = startY + 120;
 
+    // Released explicitly: a drag is committed on `dragend` now, not on every
+    // intermediate move. Committing per move re-pinned the unit and re-ran the
+    // whole layout on each mouse event, so the map re-solved and slid under the
+    // cursor while the user was still dragging.
     await page.mouse.move(startX, startY);
     await page.mouse.down();
     await page.mouse.move(endX, endY, { steps: 8 });

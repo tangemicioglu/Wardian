@@ -23,7 +23,7 @@ vi.mock("react-konva", () => ({
 
 function filterProps(p: Record<string, unknown>) {
   // strip non-DOM props so React does not warn
-  const { draggable, listening, onDragMove, onDblClick, onTap, onDblTap, ...rest } = p;
+  const { draggable, listening, onDragEnd, onDblClick, onTap, onDblTap, ...rest } = p;
   return rest;
 }
 
@@ -74,7 +74,7 @@ function renderUnit(props: Partial<React.ComponentProps<typeof AgentUnit>> = {})
       onOpen={vi.fn()}
       onSelectSkill={vi.fn()}
       onOpenSkill={vi.fn()}
-      onDragMove={vi.fn()}
+      onDragEnd={vi.fn()}
       {...props}
     />,
   );

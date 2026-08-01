@@ -30,7 +30,8 @@ interface AgentUnitProps {
   onOpen: (id: string) => void;
   onSelectSkill: (glyph: GardenSkillGlyph) => void;
   onOpenSkill: (glyph: GardenSkillGlyph) => void;
-  onDragMove: (key: string, x: number, y: number) => void;
+  /** Fired once, when the drag finishes. See the note on the handler. */
+  onDragEnd: (key: string, x: number, y: number) => void;
 }
 
 const AgentUnitImpl: React.FC<AgentUnitProps> = ({
@@ -44,7 +45,7 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
   onOpen,
   onSelectSkill,
   onOpenSkill,
-  onDragMove,
+  onDragEnd,
 }) => {
   const fill = resolveCssVar(gardenAgentStatusColor(unit.status));
   const active = isActiveAgentStatus(unit.status);
@@ -62,7 +63,12 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
       onTap={() => onSelect(unit.ref.id)}
       onDblClick={() => onOpen(unit.ref.id)}
       onDblTap={() => onOpen(unit.ref.id)}
-      onDragMove={(e) => onDragMove(unit.ref.id, e.target.x(), e.target.y())}
+      // Committed on drag *end*, not on every move. A move-by-move commit
+      // pinned the unit and re-ran the whole layout on each mouse event, so
+      // the map re-solved and slid under the cursor while the user dragged.
+      // Konva moves the node locally in the meantime, which is all the
+      // feedback a drag needs.
+      onDragEnd={(e) => onDragEnd(unit.ref.id, e.target.x(), e.target.y())}
     >
       {/* Named so the canvas' single pulse animation can find it. The radius is
           mutated on the Konva node rather than through React, so a busy agent
@@ -147,7 +153,7 @@ function propsEqual(previous: AgentUnitProps, next: AgentUnitProps): boolean {
     previous.onOpen === next.onOpen &&
     previous.onSelectSkill === next.onSelectSkill &&
     previous.onOpenSkill === next.onOpenSkill &&
-    previous.onDragMove === next.onDragMove
+    previous.onDragEnd === next.onDragEnd
   );
 }
 

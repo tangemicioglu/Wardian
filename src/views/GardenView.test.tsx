@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 
 const gardenWorkflowSpy = vi.hoisted(() => vi.fn(() => (
   [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }]
@@ -16,17 +16,25 @@ vi.mock("../features/garden/GardenCanvas", () => ({
     workflowUnits,
     selectedKey,
     onOpenAgent,
+    onResetLayout,
   }: {
-    agentUnits: readonly unknown[];
+    agentUnits: ReadonlyArray<{ ref: { id: string }; position: { x: number; y: number } }>;
     workflowUnits: readonly unknown[];
     selectedKey: string | null;
     onOpenAgent: (agentId: string) => void;
+    onResetLayout: () => void;
   }) => {
     canvasRenders.count += 1;
+    const first = agentUnits[0];
     return (
-    <div data-testid="garden-canvas" data-selected-key={selectedKey ?? "none"}>
+    <div
+      data-testid="garden-canvas"
+      data-selected-key={selectedKey ?? "none"}
+      data-first-position={first ? `${Math.round(first.position.x)},${Math.round(first.position.y)}` : "none"}
+    >
       {agentUnits.length}:{workflowUnits.length}
       <button type="button" onClick={() => onOpenAgent("a1")}>Open Agent</button>
+      <button type="button" onClick={onResetLayout}>Reset Layout</button>
     </div>
     );
   },
@@ -36,6 +44,7 @@ import { GardenView } from "./GardenView";
 import { useGardenStore } from "../store/useGardenStore";
 import type { AgentConfig } from "../types";
 import type { AgentTeam } from "../layout/watchlist/types";
+import { COMMONS_DISTRICT_ID } from "../features/garden/districts";
 
 beforeEach(() => {
   useGardenStore.getState().reset();
@@ -61,6 +70,55 @@ describe("GardenView", () => {
     expect(screen.getByTestId("garden-canvas")).toHaveTextContent("1:1");
     expect(screen.getByRole("region", { name: "Garden status legend" })).toHaveTextContent("Action Required");
     expect(screen.getByTestId("garden-selection-summary")).toHaveTextContent("Select a unit to view its status.");
+  });
+
+
+  it("re-derives the arrangement on reset instead of restoring it", () => {
+    // The bug: the view carries the layout's own scene forward through a ref, so
+    // that settled positions cannot re-trigger the layout that produced them.
+    // A reset empties the store's scene — and the very next pass warm-started
+    // from the carried copy and put everything back. The button worked; nothing
+    // moved.
+    //
+    // Observed through a warm start deliberately far from where the metric would
+    // put this agent. If the reset is honoured, that seed is gone and the unit
+    // returns to its derived place.
+    const agents = [
+      { session_id: "a1", session_name: "Alpha" } as AgentConfig,
+      { session_id: "a2", session_name: "Beta" } as AgentConfig,
+    ];
+    useGardenStore.setState((state) => ({
+      scene: {
+        ...state.scene,
+        positions: { "agent:a1": { x: 420, y: -380 } },
+        position_districts: { "agent:a1": COMMONS_DISTRICT_ID },
+      },
+    }));
+
+    render(
+      <GardenView
+        filteredAgents={agents}
+        telemetry={{}}
+        teams={[]}
+        activeList={null}
+        interactions={{}}
+        selectedAgentIds={new Set()}
+        offAgentIds={new Set()}
+        onSelectionChange={vi.fn()}
+        onOpenAgent={vi.fn()}
+      />,
+    );
+
+    const canvas = screen.getByTestId("garden-canvas");
+    const seeded = canvas.getAttribute("data-first-position");
+    expect(seeded).not.toBe("none");
+
+    act(() => {
+      screen.getByRole("button", { name: "Reset Layout" }).click();
+    });
+
+    expect(screen.getByTestId("garden-canvas").getAttribute("data-first-position")).not.toBe(seeded);
+    expect(useGardenStore.getState().generation).toBeGreaterThan(0);
   });
 
   it("routes the canvas open action through onOpenAgent", () => {

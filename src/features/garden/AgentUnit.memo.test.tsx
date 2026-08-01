@@ -39,7 +39,7 @@ const handlers = {
   onOpen: vi.fn(),
   onSelectSkill: vi.fn(),
   onOpenSkill: vi.fn(),
-  onDragMove: vi.fn(),
+  onDragEnd: vi.fn(),
 };
 
 /**

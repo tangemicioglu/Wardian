@@ -17,6 +17,17 @@ interface GardenStoreState {
   /** True when stored geometry predates the current metric version. */
   needsRederive: boolean;
   /**
+   * Incremented whenever the scene is discarded rather than advanced.
+   *
+   * The view carries the layout's own scene forward through a ref, deliberately
+   * outside the reactive chain, so that settled positions cannot re-trigger the
+   * layout that produced them. That makes a reset invisible: the store's scene
+   * is emptied, and the next pass warm-starts from the carried copy and puts
+   * everything back exactly where it was. A counter is the smallest thing that
+   * distinguishes "the scene moved on" from "the scene was thrown away".
+   */
+  generation: number;
+  /**
    * Pin an entity at an absolute point, stored relative to its district origin
    * so the placement survives the district moving.
    */
@@ -51,6 +62,7 @@ export const useGardenStore = create<GardenStoreState>()(
     (set) => ({
       scene: createScene(),
       needsRederive: false,
+      generation: 0,
       pin: (entityKey, districtId, absolute, districtOrigin) =>
         set((state) => ({
           scene: pinEntity(state.scene, entityKey, districtId, absolute, districtOrigin),
@@ -67,7 +79,12 @@ export const useGardenStore = create<GardenStoreState>()(
       // which is what stops a relayout from provoking another one.
       adoptScene: (scene) =>
         set((state) => (scenesConverged(state.scene, scene) ? state : { scene })),
-      reset: () => set({ scene: createScene(), needsRederive: false }),
+      reset: () =>
+        set((state) => ({
+          scene: createScene(),
+          needsRederive: false,
+          generation: state.generation + 1,
+        })),
     }),
     {
       name: "wardian-garden",

@@ -134,7 +134,18 @@ export const GardenView: React.FC<GardenViewProps> = ({
     [projection, teams, workflowInputs, skillInputs],
   );
 
+  // A reset discards the scene rather than advancing it, and the carried copy
+  // would otherwise put everything straight back: it holds the settled positions
+  // and district cells the reset just cleared, and the next pass warm-starts
+  // from them. The counter is what tells the two cases apart.
+  const generation = useGardenStore((s) => s.generation);
+  const generationRef = useRef(generation);
+
   const layout = useMemo(() => {
+    if (generationRef.current !== generation) {
+      generationRef.current = generation;
+      carriedSceneRef.current = scene;
+    }
     const result = computeGardenLayout({
       projection: projectionRef.current,
       teams,
@@ -146,7 +157,12 @@ export const GardenView: React.FC<GardenViewProps> = ({
     return result;
     // `signature` stands in for projection/teams/workflows: it captures exactly
     // the geometry-relevant content and omits status, colour, and selection.
-  }, [signature, pins, exclusions]);
+    //
+    // `scene` is read only on a generation change, and is deliberately not a
+    // dependency: it is republished by every adopted layout, and depending on it
+    // would make the layout an input to itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature, pins, exclusions, generation]);
   const { placement } = layout;
 
   // Display fields are attached per render from the live projection, so status

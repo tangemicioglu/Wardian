@@ -200,6 +200,20 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     userAdjustedRef.current = true;
   }, [applyFit]);
 
+  /**
+   * Reset the arrangement, and hand the viewport back.
+   *
+   * Resetting only the layout is not a reset from where the user sits: if they
+   * had zoomed into a corner, the map rearranges somewhere off screen and
+   * nothing appears to happen. Releasing `userAdjusted` lets the automatic fit
+   * re-frame the new arrangement, which is the visible half of the action.
+   */
+  const handleResetLayout = useCallback(() => {
+    onResetLayout();
+    userAdjustedRef.current = false;
+    fitRef.current = null;
+  }, [onResetLayout]);
+
   // One animation for every breathing halo. See `useGardenPulse` for why this
   // is not per unit.
   //
@@ -233,7 +247,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     (glyph: GardenSkillGlyph) => onOpenSkill?.(glyph),
     [onOpenSkill],
   );
-  const handleMoveAgent = useCallback(
+  const handleDragAgent = useCallback(
     (id: string, x: number, y: number) => {
       userAdjustedRef.current = true;
       onMoveUnit(unitKey({ kind: "agent", id }), x, y);
@@ -307,7 +321,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               selected={selectedKey === unitKey(unit.ref)}
               theme={theme}
               onSelect={() => onSelect(unit.ref)}
-              onDragMove={(x, y) => onMoveUnit(unitKey(unit.ref), x, y)}
+              onDragEnd={(x, y) => onMoveUnit(unitKey(unit.ref), x, y)}
             />
           ))}
           {agentUnits.map((unit) => (
@@ -323,7 +337,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               onOpen={onOpenAgent}
               onSelectSkill={handleSelectSkill}
               onOpenSkill={handleOpenSkill}
-              onDragMove={handleMoveAgent}
+              onDragEnd={handleDragAgent}
             />
           ))}
         </Layer>
@@ -378,7 +392,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
           y={menu.y}
           agentId={menu.agentId}
           onOpenAgent={onOpenAgent}
-          onResetLayout={onResetLayout}
+          onResetLayout={handleResetLayout}
           onClose={() => setMenu(null)}
         />
       )}

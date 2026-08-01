@@ -286,13 +286,14 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
         // How far the district reaches from its own centre, footprints included,
         // so neighbours are sized against what is actually drawn.
         //
-        // Pinned units are excluded. A pin is authored placement, which outranks
-        // the metric by design, so a user dragging one unit toward the edge of
-        // the map is not a statement that every district should move apart —
-        // and letting it be one would ratchet: wider rings move the district
-        // origins, which moves the pin's world position, which widens the rings
-        // again. Geometry is derived from derived positions only.
-        if (input.scene.pins[key]) continue;
+        // Pinned units count. They did not always: a pin used to be excluded,
+        // because a wider pitch moved the district origins, which moved the
+        // pin's *world* position, which widened the pitch again. Pins and stored
+        // positions are district-relative now, so that loop cannot form — an
+        // offset does not change when its origin moves — and excluding them had
+        // become actively wrong. Dragging a unit past the edge of its district
+        // left it sitting on a neighbour, because nothing had told the district
+        // it was now bigger. A district contains what the user put in it.
         extentByDistrict.set(
           districtId,
           Math.max(
