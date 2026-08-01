@@ -17,7 +17,7 @@ use super::codex::{
 use super::opencode::opencode_env;
 use super::{
     interactive_provider_cwd, persisted_agent_config, session_bootstrap_prompt,
-    strip_flag_value_pairs, strip_standalone_flag,
+    strip_flag_value_pairs,
 };
 use crate::utils::logging::log_debug;
 
@@ -166,6 +166,29 @@ fn headless_provider_context(
         args_cwd,
         habitat_root,
     })
+}
+
+fn effective_headless_provider_config(
+    provider_name: &str,
+    cwd: &std::path::Path,
+    config_override: Option<&AgentConfig>,
+    persisted_config: Option<&AgentConfig>,
+) -> Option<AgentConfig> {
+    config_override
+        .cloned()
+        .or_else(|| persisted_config.cloned())
+        .or_else(|| {
+            // Provider-bound workflow workers do not have an agent profile,
+            // but Codex still needs the persisted runtime policy flags.
+            (provider_name == "codex").then(|| AgentConfig {
+                provider: "codex".to_string(),
+                folder: cwd.to_string_lossy().to_string(),
+                provider_config: wardian_core::models::ProviderConfig::Codex(
+                    wardian_core::models::CodexProviderConfig::default(),
+                ),
+                ..Default::default()
+            })
+        })
 }
 
 pub(crate) fn headless_provider_args(
@@ -334,9 +357,12 @@ pub async fn run_headless_with_options(
         config_override,
         persisted_config.as_ref(),
     )?;
-    let effective_provider_config = config_override
-        .cloned()
-        .or_else(|| persisted_config.clone());
+    let effective_provider_config = effective_headless_provider_config(
+        provider_name,
+        cwd,
+        config_override,
+        persisted_config.as_ref(),
+    );
     let (bin, _) = provider.get_executable();
     let claude_hook = if provider_name == "claude" {
         ensure_claude_permission_hook(wardian_session_id).ok()
@@ -434,6 +460,30 @@ pub async fn run_headless_with_options(
         launch_spec.args.len(),
         resume_session.is_some_and(|value| !value.trim().is_empty())
     ));
+    if provider_name == "codex" {
+        let bypasses_sandbox = launch_spec
+            .args
+            .iter()
+            .any(|arg| arg == "--dangerously-bypass-approvals-and-sandbox");
+        let sandbox_mode = launch_spec
+            .args
+            .iter()
+            .position(|arg| arg == "--sandbox")
+            .and_then(|index| launch_spec.args.get(index + 1))
+            .map(String::as_str)
+            .unwrap_or("<bypassed>");
+        let approval_policy = launch_spec
+            .args
+            .iter()
+            .position(|arg| arg == "--ask-for-approval")
+            .and_then(|index| launch_spec.args.get(index + 1))
+            .map(String::as_str)
+            .unwrap_or("<bypassed>");
+        log_debug(&format!(
+            "[Wardian] run_headless Codex policy: bypass={}, sandbox={}, approval={}",
+            bypasses_sandbox, sandbox_mode, approval_policy
+        ));
+    }
 
     // If the control request is cancelled, dropping the child must terminate
     // the provider rather than leaving it running against a leased session.
@@ -733,7 +783,6 @@ fn claude_headless_response(value: &serde_json::Value) -> Option<String> {
 
 fn append_codex_bootstrap_args(
     provider_args: &mut Vec<String>,
-    provider: &dyn AgentProvider,
     provider_cwd: &std::path::Path,
     config: Option<&AgentConfig>,
 ) {
@@ -743,9 +792,12 @@ fn append_codex_bootstrap_args(
     // Codex global options must precede `exec`; exec only accepts its own
     // subcommand options after this point.
     if let Some(config) = config {
-        let spawn_args =
-            strip_flag_value_pairs(provider.get_spawn_args(config, false), "--add-dir");
-        provider_args.extend(strip_standalone_flag(spawn_args, "--no-alt-screen"));
+        CodexProvider::new().append_headless_global_args(provider_args, config);
+        if let Some(custom) = config.custom_args.as_ref() {
+            if let Some(parsed) = shlex::split(custom) {
+                provider_args.extend(parsed);
+            }
+        }
     }
 
     provider_args.push("exec".to_string());
@@ -871,7 +923,6 @@ pub async fn obtain_session_id(
     if provider_name == "codex" {
         append_codex_bootstrap_args(
             &mut provider_args,
-            provider.as_ref(),
             &provider_cwd,
             config,
         );
@@ -1141,6 +1192,7 @@ fn apply_headless_identity_env(cmd: &mut tokio::process::Command, wardian_sessio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
@@ -1179,6 +1231,148 @@ mod tests {
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false)
+    }
+
+    fn codex_completed_shell_commands(raw: &str) -> Vec<String> {
+        raw.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|event| {
+                (event.get("type").and_then(Value::as_str) == Some("item.completed"))
+                    .then(|| event.get("item"))
+                    .flatten()
+                    .filter(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("command_execution")
+                    })
+                    .and_then(|item| item.get("command").and_then(Value::as_str))
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn codex_completed_shell_commands_ignore_started_events() {
+        let raw = concat!(
+            r#"{"type":"item.started","item":{"id":"item-1","type":"command_execution","command":"Write-Output started"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"id":"item-1","type":"command_execution","command":"Write-Output completed"}}"#,
+        );
+
+        assert_eq!(
+            codex_completed_shell_commands(raw),
+            vec!["Write-Output completed"]
+        );
+    }
+
+    #[test]
+    fn codex_completed_shell_commands_ignore_uncompleted_function_calls() {
+        let raw = r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"Write-Output from-tool\"}"}}"#;
+
+        assert!(codex_completed_shell_commands(raw).is_empty());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a logged-in Codex CLI; run with cargo test -p Wardian -- --ignored real_codex_headless_projected_home_runs_shell_on_windows"]
+    async fn real_codex_headless_projected_home_runs_shell_on_windows() {
+        let test_wardian_home = TestWardianHome::new();
+        let settings_path = test_wardian_home
+            ._home
+            .path()
+            .join("settings")
+            .join("shell.json");
+        std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+            .expect("create settings directory");
+        std::fs::write(
+            settings_path,
+            r#"{
+              "schema_version": 2,
+              "overrides": {
+                "codex_runtime_policy": {
+                  "sandbox_mode": "danger-full-access",
+                  "approval_policy": "never",
+                  "full_auto": false,
+                  "trust_workspaces": true
+                }
+              }
+            }"#,
+        )
+        .expect("write unrestricted Codex policy");
+
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace parent")
+            .to_path_buf();
+        let expected_path = workspace.to_string_lossy().to_string();
+        let session_id = "headless-codex-runtime-smoke";
+        let marker_file_name = "wardian-headless-codex-smoke.txt";
+        let config = AgentConfig {
+            session_id: session_id.to_string(),
+            folder: expected_path.clone(),
+            provider: "codex".to_string(),
+            provider_config: wardian_core::models::ProviderConfig::Codex(
+                wardian_core::models::CodexProviderConfig::default(),
+            ),
+            ..Default::default()
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(120),
+            run_headless_with_options(HeadlessRunOptions {
+                cwd: &workspace,
+                prompt: concat!(
+                    "Use the shell tool exactly once. In that one shell command, create a file ",
+                    "named wardian-headless-codex-smoke.txt in $env:CODEX_HOME whose contents ",
+                    "are the output of Get-Location. Then respond with only the returned absolute path."
+                ),
+                wardian_session_id: session_id,
+                resume_session: None,
+                output_format: "json",
+                provider_name: "codex",
+                config_override: Some(&config),
+                timeout: Duration::from_secs(110),
+                lease_owner: None,
+            }),
+        )
+        .await
+        .expect("headless Codex smoke test timed out")
+        .expect("headless Codex execution");
+
+        let response = result["response"].as_str().expect("Codex response text");
+        assert!(
+            !response.trim().is_empty(),
+            "expected Codex to return a non-empty response"
+        );
+        let raw = result["raw"].as_str().expect("Codex JSON-lines output");
+        let shell_commands = codex_completed_shell_commands(raw);
+        assert_eq!(
+            shell_commands.len(),
+            1,
+            "expected exactly one completed Codex shell command, got {shell_commands:?}"
+        );
+        assert!(
+            shell_commands[0].contains("CODEX_HOME")
+                && shell_commands[0].contains(marker_file_name),
+            "expected the Codex shell command to use CODEX_HOME and create {marker_file_name:?}, got {:?}",
+            shell_commands[0]
+        );
+
+        let projected_codex_home = test_wardian_home
+            ._home
+            .path()
+            .join("agents")
+            .join(session_id)
+            .join("habitat")
+            .join(".codex");
+        assert!(
+            projected_codex_home.join("auth.json").is_file(),
+            "headless Codex should run from Wardian's projected CODEX_HOME"
+        );
+        let marker = std::fs::read_to_string(projected_codex_home.join(marker_file_name))
+            .expect("Codex shell should create a marker under its projected CODEX_HOME");
+        assert!(
+            marker.contains(&expected_path),
+            "expected projected-home marker to contain {expected_path:?}, got {marker:?}"
+        );
     }
 
     #[cfg(windows)]
@@ -1435,6 +1629,53 @@ mod tests {
         assert!(skip_index > exec_index);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn temporary_codex_headless_worker_applies_unrestricted_runtime_policy() {
+        let test_wardian_home = TestWardianHome::new();
+        let settings_path = test_wardian_home
+            ._home
+            .path()
+            .join("settings")
+            .join("shell.json");
+        std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+            .expect("create settings directory");
+        std::fs::write(
+            settings_path,
+            r#"{
+              "schema_version": 2,
+              "overrides": {
+                "codex_runtime_policy": {
+                  "sandbox_mode": "danger-full-access",
+                  "approval_policy": "never"
+                }
+              }
+            }"#,
+        )
+        .expect("write unrestricted Codex policy");
+
+        let cwd = Path::new("D:/Development/Wardian");
+        let config = effective_headless_provider_config("codex", cwd, None, None)
+            .expect("temporary Codex worker config");
+        let provider = crate::providers::ProviderFactory::resolve("codex").unwrap();
+        let args = headless_provider_args(
+            "codex",
+            provider.as_ref(),
+            cwd,
+            "task",
+            "json",
+            None,
+            Some(&config),
+        );
+
+        let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
+        assert!(args[..exec_index]
+            .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(!args.contains(&"--sandbox".to_string()));
+        assert!(!args.contains(&"--ask-for-approval".to_string()));
+        assert_eq!(config.folder, cwd.to_string_lossy());
+    }
+
     #[test]
     fn codex_headless_args_keep_exec_only_flags_after_exec() {
         let provider = crate::providers::ProviderFactory::resolve("codex").unwrap();
@@ -1617,9 +1858,9 @@ mod tests {
 
     #[test]
     fn codex_bootstrap_places_global_flags_before_exec() {
-        let provider = crate::providers::ProviderFactory::resolve("codex").unwrap();
         let config = AgentConfig {
             provider: "codex".into(),
+            custom_args: Some("--custom-flag custom-value".into()),
             provider_config: wardian_core::models::ProviderConfig::Codex(
                 wardian_core::models::CodexProviderConfig {
                     sandbox_mode: Some("danger-full-access".into()),
@@ -1633,17 +1874,27 @@ mod tests {
 
         append_codex_bootstrap_args(
             &mut args,
-            provider.as_ref(),
             Path::new("/workspace"),
             Some(&config),
         );
 
         let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
-        let approval_index = args
+        let policy_index = args
             .iter()
-            .position(|arg| arg == "--ask-for-approval")
+            .position(|arg| {
+                arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--sandbox"
+            })
             .unwrap();
-        assert!(approval_index < exec_index);
+        assert!(policy_index < exec_index);
+        assert!(args[..exec_index].contains(&"--custom-flag".to_string()));
+        assert!(args[..exec_index].contains(&"custom-value".to_string()));
+        #[cfg(windows)]
+        {
+            assert!(args[..exec_index]
+                .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+            assert!(!args.contains(&"--sandbox".to_string()));
+            assert!(!args.contains(&"--ask-for-approval".to_string()));
+        }
         assert!(args[exec_index + 1..].contains(&"--json".to_string()));
         assert!(args[exec_index + 1..].contains(&"--skip-git-repo-check".to_string()));
     }
