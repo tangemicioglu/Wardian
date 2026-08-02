@@ -24,8 +24,16 @@ retry loop.
 | Target is busy | Existing idle/status observation | Keep the mailbox record pending. |
 | App restarts with pending work | Durable pending mailbox record | Restore it and give it one status-gated drain attempt. |
 | Prompt payload write | Native PTY writer completes `write_all` and `flush` | Do not press the submit key. Mark the state unknown/failed. |
-| Codex submit | The pasted payload becomes visible after its watch cursor | Do not press Enter; leave the delivery failed rather than re-send it. |
+| Codex submit | Native payload-write receipt plus a fixed 750 ms Codex settle window | Send Enter once, then require post-submit provider evidence. |
 | Provider acceptance | A provider-originated `turn_started` event after the submit cursor | Persist `provider_accepted` and mark the interaction delivered. |
+
+Codex's terminal echo is observational only. Its pasted text can be absent from
+Wardian's bounded watch output even when the PTY writer accepted it, so it must
+not gate Enter. Codex receives a fixed 750 ms provider-profile settle window
+after the write receipt so its TUI can apply bracketed paste before Enter. If no
+provider turn begins after the acknowledged payload and submit writes, the
+delivery fails without an automatic replay; the composer may still contain the
+text and a replay could duplicate it.
 
 The app no longer runs a two-second, per-agent mailbox polling worker and no
 longer expires otherwise valid mailbox entries based on age. Idle and
@@ -70,5 +78,6 @@ The implementation has focused coverage for:
 - restoring pending mailbox work and failing ambiguous in-flight work;
 - native writer acknowledgements;
 - refusing to press submit if the payload receipt cannot be persisted;
+- submitting Codex input even when no terminal echo is observed;
 - requiring a provider turn-start event after the captured submit cursor; and
 - native live delivery reaching `provider_accepted` only after that receipt.

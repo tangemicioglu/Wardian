@@ -314,19 +314,11 @@ pub async fn submit_live_surface_prompt(
         } else {
             None
         };
-        let payload_cursor = if native_write_receipts {
-            crate::control::codex_payload_echo_cursor(state, &provider, &request.session_id).await
-        } else {
-            None
-        };
         let wait_session_id = request.session_id.clone();
         let payload_session_id = request.session_id.clone();
         let payload_interaction_id = interaction_id.clone();
         let payload_sent_detail = payload_sent_detail.clone();
-        let echo_session_id = request.session_id.clone();
-        let echo_provider = provider.clone();
-        let echo_prompt = request.prompt.clone();
-        match crate::utils::terminal_input::submit_prompt_with_outcome_via_sender_after_payload_and_before_submit(
+        match crate::utils::terminal_input::submit_prompt_with_outcome_via_sender_after_payload(
             &input,
             &request.prompt,
             &provider,
@@ -353,19 +345,6 @@ pub async fn submit_live_surface_prompt(
                     .await;
                 }
                 Ok(())
-            },
-            || async move {
-                crate::control::wait_for_codex_payload_echo_before_submit(
-                    state,
-                    &echo_provider,
-                    &echo_session_id,
-                    payload_cursor.as_deref(),
-                    &echo_prompt,
-                )
-                .await
-                .map_err(|message| {
-                    TerminalDeliveryError::terminal_state_unknown("payload_echo_timeout", message)
-                })
             },
         )
         .await

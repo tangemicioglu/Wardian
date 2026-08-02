@@ -62,39 +62,6 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
 {
-    submit_prompt_with_outcome_chunks_via_sender_after_payload_and_before_submit(
-        tx,
-        provider_name,
-        prompt,
-        on_payload_sent,
-        || async { Ok(()) },
-    )
-    .await
-}
-
-pub async fn submit_prompt_with_outcome_chunks_via_sender_after_payload_and_before_submit<
-    S,
-    F,
-    Fut,
-    G,
-    Gfut,
->(
-    tx: &S,
-    provider_name: &str,
-    prompt: &str,
-    on_payload_sent: F,
-    on_before_submit: G,
-) -> Result<
-    crate::utils::delivery_transaction::TerminalDeliveryOutcome,
-    crate::utils::delivery_transaction::TerminalDeliveryError,
->
-where
-    S: TerminalInputSink + ?Sized,
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
-    G: FnOnce() -> Gfut,
-    Gfut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
-{
     let normalized = normalize_prompt_for_terminal_submit(prompt);
     if normalized.is_empty() {
         let profile = crate::utils::delivery_profile::delivery_profile(provider_name);
@@ -112,7 +79,7 @@ where
         &profile,
         &normalized,
         on_payload_sent,
-        on_before_submit,
+        || async { Ok(()) },
     )
     .await
 }
@@ -150,45 +117,11 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
 {
-    submit_prompt_with_outcome_via_sender_after_payload_and_before_submit(
-        tx,
-        prompt,
-        provider_name,
-        on_payload_sent,
-        || async { Ok(()) },
-    )
-    .await
-}
-
-pub async fn submit_prompt_with_outcome_via_sender_after_payload_and_before_submit<
-    S,
-    F,
-    Fut,
-    G,
-    Gfut,
->(
-    tx: &S,
-    prompt: &str,
-    provider_name: &str,
-    on_payload_sent: F,
-    on_before_submit: G,
-) -> Result<
-    crate::utils::delivery_transaction::TerminalDeliveryOutcome,
-    crate::utils::delivery_transaction::TerminalDeliveryError,
->
-where
-    S: TerminalInputSink + ?Sized,
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
-    G: FnOnce() -> Gfut,
-    Gfut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
-{
-    submit_prompt_with_outcome_chunks_via_sender_after_payload_and_before_submit(
+    submit_prompt_with_outcome_chunks_via_sender_after_payload(
         tx,
         provider_name,
         prompt,
         on_payload_sent,
-        on_before_submit,
     )
     .await
 }

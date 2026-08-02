@@ -28,7 +28,6 @@ use wardian_core::models::{AgentChatEvent, AgentChatEventKind, AgentChatRole};
 
 const STRUCTURED_ASK_INLINE_MESSAGE_MAX_BYTES: usize = 4096;
 const STRUCTURED_ASK_REQUESTS_DIR: &str = "requests";
-const CODEX_PAYLOAD_ECHO_TIMEOUT_MS: u64 = 5_000;
 const PROVIDER_TURN_START_TIMEOUT_MS: u64 = 10_000;
 const MAX_HEADLESS_DELIVERY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -2493,22 +2492,6 @@ async fn wait_for_terminal_output(
     ))
 }
 
-pub(crate) async fn codex_payload_echo_cursor(
-    state: &AppState,
-    provider: &str,
-    session_id: &str,
-) -> Option<String> {
-    if provider != "codex" {
-        return None;
-    }
-
-    let watch_state = {
-        let agents = state.agents.lock().await;
-        agents.get(session_id)?.watch_state.clone()
-    };
-    watch_state.lock().ok().map(|guard| guard.latest_cursor())
-}
-
 /// Captures the watch position before a native terminal submission. A later
 /// `turn_started` event is emitted only from provider output, so it proves the
 /// provider accepted a newly submitted prompt rather than merely rendering it
@@ -2569,68 +2552,6 @@ pub(crate) async fn wait_for_provider_turn_started_after_submit(
     ))
 }
 
-pub(crate) async fn wait_for_codex_payload_echo_before_submit(
-    state: &AppState,
-    provider: &str,
-    session_id: &str,
-    since_cursor: Option<&str>,
-    prompt: &str,
-) -> Result<(), String> {
-    if provider != "codex" {
-        return Ok(());
-    }
-
-    let Some(since_cursor) = since_cursor else {
-        return Ok(());
-    };
-
-    wait_for_codex_prompt_echo_since(
-        state,
-        session_id,
-        since_cursor,
-        prompt,
-        CODEX_PAYLOAD_ECHO_TIMEOUT_MS,
-    )
-    .await
-}
-
-async fn wait_for_codex_prompt_echo_since(
-    state: &AppState,
-    session_id: &str,
-    since_cursor: &str,
-    prompt: &str,
-    timeout_ms: u64,
-) -> Result<(), String> {
-    let started = std::time::Instant::now();
-    while started.elapsed() < std::time::Duration::from_millis(timeout_ms) {
-        let watch_state = {
-            let agents = state.agents.lock().await;
-            agents
-                .get(session_id)
-                .ok_or_else(|| format!("Agent {} not found or is off", session_id))?
-                .watch_state
-                .clone()
-        };
-        let output = watch_state
-            .lock()
-            .map_err(|_| format!("Agent {} watch state lock poisoned", session_id))?
-            .snapshot_since(Some(since_cursor), Some(16 * 1024))
-            .map(|snapshot| snapshot.output.text)
-            .map_err(|error| format!("watch state error: {}", error.code()))?;
-
-        if codex_output_has_prompt_echo(&output, prompt) {
-            return Ok(());
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-
-    Err(format!(
-        "Timed out waiting for {} Codex prompt echo before submit",
-        session_id
-    ))
-}
-
 fn codex_output_has_ready_prompt(output: &str) -> bool {
     let cleaned = strip_ansi_controls(output).replace('\r', "\n");
     if codex_output_has_workspace_trust_prompt(&cleaned) {
@@ -2660,31 +2581,6 @@ fn codex_output_has_workspace_trust_prompt(output: &str) -> bool {
         .join(" ")
         .to_ascii_lowercase()
         .contains("do you trust the contents of this directory?")
-}
-
-fn codex_output_has_prompt_echo(output: &str, prompt: &str) -> bool {
-    let Some(token) = codex_prompt_echo_token(prompt) else {
-        return false;
-    };
-    normalize_codex_prompt_echo_text(output).contains(&token)
-}
-
-fn codex_prompt_echo_token(prompt: &str) -> Option<String> {
-    let first_line = prompt
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())?;
-    let prefix: String = first_line.chars().take(96).collect();
-    let token = normalize_codex_prompt_echo_text(&prefix);
-    (!token.is_empty()).then_some(token)
-}
-
-fn normalize_codex_prompt_echo_text(text: &str) -> String {
-    strip_ansi_controls(text)
-        .replace('\r', "\n")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn codex_ready_prompt_trailing_metadata_line(line: &str) -> bool {
@@ -5325,22 +5221,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_prompt_echo_detects_payload_visible_after_send() {
-        assert!(codex_output_has_prompt_echo(
-            "\r\n› From Test: Ping. Reply with exactly: pong\r\n\r\n  Wardian request id: ask_123\r\n",
-            "From Test: Ping. Reply with exactly: pong\n\nWardian request id: ask_123"
-        ));
-    }
-
-    #[test]
-    fn codex_prompt_echo_rejects_output_without_current_payload() {
-        assert!(!codex_output_has_prompt_echo(
-            "\r\n› Explain this codebase\r\n\r\n  gpt-5.5 high · Context 100% left · ~\r\n",
-            "From Test: Ping. Reply with exactly: pong\n\nWardian request id: ask_123"
-        ));
-    }
-
-    #[test]
     fn gemini_ready_prompt_rejects_api_key_modal_over_composer() {
         assert!(!gemini_output_has_ready_prompt(
             "\r\n╭────────────────────────────────────────────────────────╮\r\n\
@@ -5430,15 +5310,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_live_delivery_becomes_delivered_only_after_provider_turn_start() {
+    async fn native_codex_delivery_submits_without_waiting_for_payload_echo() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
             let agents = state.agents.lock().await;
             let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
             *agent.current_status.lock().unwrap() = "Idle".to_string();
         }
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::PromptDetected)
+            .await;
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         install_test_terminal_runtime_with_write_receipts(&state, "agent-1", tx).await;
 
@@ -5460,12 +5343,15 @@ mod tests {
             request = rx.recv() => request.expect("payload write request"),
             result = &mut delivery => panic!("delivery completed before payload write: {result:?}"),
         };
-        assert_eq!(payload.bytes, b"hello".to_vec());
+        assert_eq!(payload.bytes, b"\x1b[200~hello\x1b[201~".to_vec());
         payload.completion.send(Ok(())).expect("payload receipt");
 
         let submit = tokio::select! {
             request = rx.recv() => request.expect("submit write request"),
             result = &mut delivery => panic!("delivery completed before submit write: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                panic!("Codex submit must not wait for a terminal echo")
+            }
         };
         assert_eq!(submit.bytes, b"\r".to_vec());
         submit.completion.send(Ok(())).expect("submit receipt");
