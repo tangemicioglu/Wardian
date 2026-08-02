@@ -125,6 +125,24 @@ Turn records are read from the conversation archive, which is already
 materialised on disk. The pane must not re-derive turns from provider
 transcripts.
 
+### Archive resilience
+
+A turn record the pane cannot parse is **skipped, not fatal.** The archive spans
+years of schema drift, so the pane reads every conversation in a workspace and
+will encounter records written by older writers. One unparseable record must
+never blank the change set.
+
+Git remains the source of the change set, so degraded attribution is a partial
+loss, not a failure: skipped records cost `attributed` evidence on their paths,
+which then present as `inferred`. The pane reports the skipped count rather than
+failing silently, and never surfaces a raw deserialization error as its only
+content.
+
+Legacy records may carry `null` for fields later typed as required. Reading
+those fields must tolerate an explicit `null` and fall back to a default, not
+merely a missing key: `#[serde(default)]` alone does not cover a present-but-null
+value.
+
 ### Attribution
 
 Every entry carries an `evidence` discriminant:
@@ -342,6 +360,10 @@ Untracked files are included, subject to `.gitignore`. Ignore rules are
 load-bearing: a workspace that snapshots `node_modules` churns hundreds of
 megabytes on a single install.
 
+An archive containing records the pane cannot parse still yields a change set.
+The unparseable records are skipped and counted; their paths lose `attributed`
+evidence and present as `inferred`.
+
 Path identity is compared case-insensitively only under the Windows target
 configuration. POSIX and macOS comparisons preserve case, so two workspaces or
 claimed paths differing only by case stay distinct.
@@ -371,6 +393,10 @@ watermark.
   the `unreviewed` baseline with `evidence: inferred`, empty `agent_ids`, and
   `reviewed: false`. No baseline ever empties a non-empty git change set.
 - Workspace and path identity comparisons are case-insensitive only on Windows.
+- A `turns.jsonl` containing a record with `"status_source": null` loads, and the
+  pane renders a change set rather than a deserialization error.
+- A single unparseable turn record does not empty the change set; the pane
+  reports the skipped count.
 - Phase 2 only: a turn-boundary snapshot completes within budget, leaves HEAD,
   the operator's index, and all branches unmodified, and adds no ref visible to
   `git branch`.
