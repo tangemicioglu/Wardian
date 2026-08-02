@@ -991,6 +991,7 @@ export type ChangeReviewLoadResponse = {
     summary: ChangeReviewSummary;
     git_available: boolean;
     head_ref: string | null;
+    skipped_turn_records: number;
 };
 
 export type GitNumstatEntry = {

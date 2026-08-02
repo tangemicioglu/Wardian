@@ -1,7 +1,7 @@
 use crate::commands::git::{
     git_diff_numstat_for_cwd, git_status_for_cwd, run_git, GitNumstatEntry,
 };
-use crate::state::AppState;
+use crate::state::{conversation_archive::ConversationArchiveState, AppState};
 use crate::utils::fs::get_wardian_home;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -114,6 +114,7 @@ pub struct ChangeReviewLoadResponse {
     pub summary: ChangeReviewSummary,
     pub git_available: bool,
     pub head_ref: Option<String>,
+    pub skipped_turn_records: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -238,23 +239,27 @@ fn load_watermark(agent_id: Option<&str>, workspace: &str) -> Option<ChangeRevie
     load_watermark_index(&home).remove(&watermark_key(agent_id, workspace))
 }
 
-fn read_turns_for_workspace(state: &AppState, cwd: &str) -> Result<Vec<TurnWithContext>, String> {
-    let entries = state
-        .conversation_archive
+fn read_turns_for_workspace(
+    archive: &ConversationArchiveState,
+    cwd: &str,
+) -> Result<(Vec<TurnWithContext>, u64), String> {
+    let entries = archive
         .list(None, true)
         .map_err(|error| error.to_string())?;
     let matching_entries = entries
         .into_iter()
         .filter(|entry| same_workspace(cwd, &entry.workspace))
         .collect::<Vec<_>>();
-    state
-        .conversation_archive
-        .turn_records_for_conversations(&matching_entries)
-        .map(|records| {
-            records
-                .into_iter()
-                .map(|(entry, turn)| TurnWithContext { entry, turn })
-                .collect()
+    archive
+        .turn_records_for_conversations_resilient(&matching_entries)
+        .map(|(records, skipped_records)| {
+            (
+                records
+                    .into_iter()
+                    .map(|(entry, turn)| TurnWithContext { entry, turn })
+                    .collect(),
+                skipped_records as u64,
+            )
         })
         .map_err(|error| error.to_string())
 }
@@ -527,17 +532,16 @@ fn revision_for_baseline(
     }
 }
 
-#[tauri::command]
-pub async fn load_change_review(
-    request: LoadChangeReviewRequest,
-    state: State<'_, AppState>,
+fn load_change_review_for_state(
+    request: &LoadChangeReviewRequest,
+    state: &AppState,
 ) -> Result<ChangeReviewLoadResponse, String> {
     let cwd = request.cwd.trim();
     if cwd.is_empty() {
         return Err("workspace is required".to_string());
     }
 
-    let turns = read_turns_for_workspace(&state, cwd)?;
+    let (turns, skipped_turn_records) = read_turns_for_workspace(&state.conversation_archive, cwd)?;
     let (claims, first_turn, latest_effective_turn) = attribution_for_turns(cwd, &turns);
     let watermark = load_watermark(request.agent_id.as_deref(), cwd);
     let head = current_head(cwd);
@@ -575,6 +579,7 @@ pub async fn load_change_review(
                 },
                 git_available: false,
                 head_ref: None,
+                skipped_turn_records,
             });
         }
     };
@@ -596,7 +601,16 @@ pub async fn load_change_review(
         },
         git_available: true,
         head_ref: head,
+        skipped_turn_records,
     })
+}
+
+#[tauri::command]
+pub async fn load_change_review(
+    request: LoadChangeReviewRequest,
+    state: State<'_, AppState>,
+) -> Result<ChangeReviewLoadResponse, String> {
+    load_change_review_for_state(&request, state.inner())
 }
 
 #[tauri::command]
@@ -918,5 +932,135 @@ mod tests {
 
         assert_eq!(load_prefs_from_home(temp.path()), prefs);
         assert!(prefs_path(temp.path()).is_file());
+    }
+
+    #[test]
+    fn malformed_turn_record_keeps_the_change_set_and_reports_skipped_count() {
+        let _env_guard = crate::utils::wardian_test_env_lock();
+        let previous_home = std::env::var_os("WARDIAN_HOME");
+        let home = tempfile::tempdir().expect("temporary Wardian home");
+        std::env::set_var("WARDIAN_HOME", home.path());
+
+        let workspace = home.path().join("workspace");
+        let workspace_string = workspace.to_string_lossy().to_string();
+        std::fs::create_dir_all(workspace.join("src")).expect("workspace");
+        run_git(&workspace_string, &["init"]).expect("initialize git workspace");
+        std::fs::write(workspace.join("src/attributed.ts"), "attributed\n")
+            .expect("attributed file");
+        std::fs::write(workspace.join("src/shell-written.ts"), "shell\n")
+            .expect("shell-written file");
+
+        let conversation_directory =
+            wardian_core::paths::agent_conversation_dir("agent-1", "conv-1")
+                .expect("conversation directory");
+        std::fs::create_dir_all(&conversation_directory).expect("conversation directory exists");
+        let index_path = wardian_core::paths::agent_conversations_dir("agent-1")
+            .expect("agent conversations directory")
+            .join("index.jsonl");
+        let index_entry = serde_json::json!({
+            "schema": 1,
+            "conversation_id": "conv-1",
+            "agent_id": "agent-1",
+            "agent_name": "Reviewer",
+            "agent_class": "default",
+            "workspace": workspace_string,
+            "provider": "mock",
+            "provider_session_ids": [],
+            "started_at": "2026-08-01T00:00:00.000Z",
+            "ended_at": null,
+            "status": "open",
+            "boundary_reason": "spawn",
+            "first_prompt_excerpt": null,
+            "last_record_excerpt": null,
+            "record_count": 1,
+            "turn_count": 1,
+            "has_turns": true,
+            "lifecycle_only": false,
+            "artifact_count": 0,
+            "path": conversation_directory.to_string_lossy()
+        });
+        std::fs::write(
+            &index_path,
+            format!("{}\n", serde_json::to_string(&index_entry).unwrap()),
+        )
+        .expect("conversation index");
+
+        let valid_turn = serde_json::json!({
+            "schema": 3,
+            "conversation_id": "conv-1",
+            "turn_index": 1,
+            "turn_key": "conv-1:turn:000001",
+            "status": "responded",
+            "status_source": "unknown",
+            "seq_start": 1,
+            "seq_end": 1,
+            "started_at": "2026-08-01T00:00:01.000Z",
+            "updated_at": "2026-08-01T00:00:01.000Z",
+            "request": {
+                "seq": 1,
+                "kind": "user_request",
+                "text": null,
+                "text_truncated": false
+            },
+            "counts": {
+                "records": 1,
+                "assistant_messages": 0,
+                "tool_calls": 0,
+                "tool_results": 0,
+                "nonzero_tool_results": 0,
+                "failed_tool_results": 0,
+                "timeouts": 0
+            },
+            "tools_used": {},
+            "files": {
+                "read": [],
+                "written": ["src/attributed.ts"],
+                "mentioned": []
+            },
+            "external_side_effects": [],
+            "failure_signals": [],
+            "record_refs": {
+                "seq_start": 1,
+                "seq_end": 1
+            }
+        });
+        std::fs::write(
+            conversation_directory.join("turns.jsonl"),
+            format!(
+                "{}\n{{not-json}}\n",
+                serde_json::to_string(&valid_turn).unwrap()
+            ),
+        )
+        .expect("turn records");
+
+        let state = AppState::new();
+        let response = load_change_review_for_state(
+            &LoadChangeReviewRequest {
+                cwd: workspace_string,
+                baseline: ChangeReviewBaseline::LastEffectiveTurn,
+                agent_id: Some("agent-1".to_string()),
+            },
+            &state,
+        )
+        .expect("change review response");
+
+        assert_eq!(response.skipped_turn_records, 1);
+        assert!(response
+            .summary
+            .files
+            .iter()
+            .any(|file| file.path == "src/shell-written.ts"));
+        let attributed = response
+            .summary
+            .files
+            .iter()
+            .find(|file| file.path == "src/attributed.ts")
+            .expect("attributed path");
+        assert_eq!(attributed.evidence, ChangeReviewEvidence::Attributed);
+
+        match previous_home {
+            Some(value) => std::env::set_var("WARDIAN_HOME", value),
+            None => std::env::remove_var("WARDIAN_HOME"),
+        }
     }
 }

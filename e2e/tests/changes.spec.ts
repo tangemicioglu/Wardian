@@ -68,6 +68,7 @@ test("selects Changes, chooses a baseline, and expands a file", async ({ page })
         },
         git_available: true,
         head_ref: "head-1",
+        skipped_turn_records: 0,
       },
       git_show_file_revision: "baseline\n",
     },

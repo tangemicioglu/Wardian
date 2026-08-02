@@ -6,11 +6,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use wardian_core::conversations::{
-    append_index_upsert, append_jsonl_record, read_jsonl_records, write_json_atomic,
-    write_jsonl_atomic, AgentConversationLoggingSetting, ConversationBoundaryReason,
-    ConversationIndexEntry, ConversationLoggingSetting, ConversationManifest,
-    ConversationNarrativeRecord, ConversationSourceRecord, ConversationSpeakerType,
-    ConversationTurnRecord,
+    append_index_upsert, append_jsonl_record, read_jsonl_records, read_jsonl_records_resilient,
+    write_json_atomic, write_jsonl_atomic, AgentConversationLoggingSetting,
+    ConversationBoundaryReason, ConversationIndexEntry, ConversationLoggingSetting,
+    ConversationManifest, ConversationNarrativeRecord, ConversationSourceRecord,
+    ConversationSpeakerType, ConversationTurnRecord,
 };
 use wardian_core::models::chat::AgentChatEvent;
 
@@ -214,6 +214,24 @@ impl ConversationArchiveState {
             records.extend(turns.into_iter().map(|turn| (entry.clone(), turn)));
         }
         Ok(records)
+    }
+
+    /// Reads materialized turn records for change review. Unlike the shared
+    /// archive readers, malformed turn records are skipped and counted so one
+    /// legacy line cannot blank the Git-derived change set.
+    pub fn turn_records_for_conversations_resilient(
+        &self,
+        entries: &[ConversationIndexEntry],
+    ) -> io::Result<(Vec<(ConversationIndexEntry, ConversationTurnRecord)>, usize)> {
+        let mut records = Vec::new();
+        let mut skipped_records = 0;
+        for entry in entries {
+            let directory = conversation_dir(&entry.agent_id, &entry.conversation_id)?;
+            let (turns, skipped) = read_jsonl_records_resilient(&directory.join("turns.jsonl"))?;
+            skipped_records += skipped;
+            records.extend(turns.into_iter().map(|turn| (entry.clone(), turn)));
+        }
+        Ok((records, skipped_records))
     }
 
     /// Returns the persisted chat events for every archived conversation owned

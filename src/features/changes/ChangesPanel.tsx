@@ -209,6 +209,7 @@ export function ChangesPanel({
   const [loading, setLoading] = useState(false);
   const [refreshRevision, setRefreshRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [skippedTurnRecords, setSkippedTurnRecords] = useState(0);
   const requestGeneration = useRef(0);
 
   useEffect(() => {
@@ -258,6 +259,7 @@ export function ChangesPanel({
       setSummary(response.summary);
       setGitAvailable(response.git_available);
       setHeadRef(response.head_ref);
+      setSkippedTurnRecords(response.skipped_turn_records);
     } catch (reason) {
       if (generation === requestGeneration.current) setError(errorMessage(reason));
     } finally {
@@ -373,12 +375,20 @@ export function ChangesPanel({
         <div className="mt-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px] text-[var(--color-wardian-text-muted)]" role="status">
           Resolving the selected agent workspace…
         </div>
-      ) : error ? (
-        <div className="mt-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px]" role="alert">{error}</div>
       ) : loading && !summary ? (
         <div className="mt-3 p-3 text-[11px] text-[var(--color-wardian-text-muted)]" role="status">Computing changes…</div>
       ) : (
         <div className="min-h-0 flex-1 overflow-auto pt-3">
+          {error ? (
+            <div className="mb-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px]" role="alert">
+              Unable to refresh change attribution; showing the last successful change set.
+            </div>
+          ) : null}
+          {skippedTurnRecords > 0 ? (
+            <div className="mb-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px] text-[var(--color-wardian-text-muted)]" role="status">
+              Attribution degraded: {skippedTurnRecords} turn {skippedTurnRecords === 1 ? "record was" : "records were"} not readable.
+            </div>
+          ) : null}
           {!gitAvailable ? (
             <div className="mb-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px] text-[var(--color-wardian-text-muted)]" role="status">
               This workspace is not a git repository. Turn-record file claims are shown without diff content.

@@ -48,6 +48,7 @@ const response: ChangeReviewLoadResponse = {
   },
   git_available: true,
   head_ref: "head-1",
+  skipped_turn_records: 0,
 };
 
 function renderPanel(visible = true, turn_revision = 1) {
@@ -196,5 +197,25 @@ describe("ChangesPanel", () => {
       const loads = invokeMock.mock.calls.filter(([command]) => command === "load_change_review").length;
       expect(loads).toBeGreaterThan(initialLoads);
     });
+  });
+
+  it("keeps the last change set visible when a refresh fails", async () => {
+    renderPanel();
+    await screen.findByText("src/agent.ts");
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "last_effective_turn" });
+      if (command === "get_explorer_root") return Promise.resolve("C:/workspace");
+      if (command === "load_change_review") return Promise.reject(new Error("invalid type: null"));
+      return Promise.resolve(undefined);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Changes" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(
+      "Unable to refresh change attribution; showing the last successful change set.",
+    ));
+    expect(screen.getByText("src/agent.ts")).toBeInTheDocument();
+    expect(screen.queryByText("invalid type: null")).not.toBeInTheDocument();
   });
 });

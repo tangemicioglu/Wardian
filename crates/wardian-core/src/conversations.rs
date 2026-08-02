@@ -96,6 +96,17 @@ fn default_turns_format_version() -> u8 {
     1
 }
 
+fn default_status_source() -> String {
+    "unknown".to_string()
+}
+
+fn deserialize_status_source<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_else(default_status_source))
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationTurnStatus {
@@ -256,6 +267,10 @@ pub struct ConversationTurnRecord {
     pub turn_index: u64,
     pub turn_key: String,
     pub status: ConversationTurnStatus,
+    #[serde(
+        default = "default_status_source",
+        deserialize_with = "deserialize_status_source"
+    )]
     pub status_source: String,
     pub seq_start: u64,
     pub seq_end: u64,
@@ -351,6 +366,35 @@ pub fn read_jsonl_records<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Resu
         records.push(serde_json::from_str(&line).map_err(io::Error::other)?);
     }
     Ok(records)
+}
+
+/// Reads JSONL records while skipping malformed records and returning their count.
+///
+/// This is intentionally opt-in. Callers that use shared archive files for
+/// authoritative state should continue using `read_jsonl_records`, which fails
+/// on the first malformed record.
+pub fn read_jsonl_records_resilient<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+) -> io::Result<(Vec<T>, usize)> {
+    if !path.exists() {
+        return Ok((Vec::new(), 0));
+    }
+
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    let mut skipped_records = 0;
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str(&line) {
+            Ok(record) => records.push(record),
+            Err(_) => skipped_records += 1,
+        }
+    }
+    Ok((records, skipped_records))
 }
 
 pub fn write_json_atomic<T: Serialize + ?Sized>(path: &Path, value: &T) -> io::Result<()> {
@@ -672,6 +716,52 @@ mod tests {
         assert!(json.get("capture_quality").is_none());
         assert!(json.get("notes_for_evolver").is_none());
         assert!(json.get("user_correction").is_none());
+    }
+
+    #[test]
+    fn turn_record_deserializes_null_status_source_as_unknown() {
+        let record: ConversationTurnRecord = serde_json::from_value(serde_json::json!({
+            "schema": 3,
+            "conversation_id": "conv-legacy",
+            "turn_index": 1,
+            "turn_key": "conv-legacy:turn:000001",
+            "status": "unknown",
+            "status_source": null,
+            "seq_start": 1,
+            "seq_end": 1,
+            "started_at": "2026-06-23T00:00:00.000Z",
+            "updated_at": "2026-06-23T00:00:00.000Z",
+            "request": {
+                "seq": 1,
+                "kind": "user_request",
+                "text": null,
+                "text_truncated": false
+            },
+            "counts": {
+                "records": 1,
+                "assistant_messages": 0,
+                "tool_calls": 0,
+                "tool_results": 0,
+                "nonzero_tool_results": 0,
+                "failed_tool_results": 0,
+                "timeouts": 0
+            },
+            "tools_used": {},
+            "files": {
+                "read": [],
+                "written": [],
+                "mentioned": []
+            },
+            "external_side_effects": [],
+            "failure_signals": [],
+            "record_refs": {
+                "seq_start": 1,
+                "seq_end": 1
+            }
+        }))
+        .expect("legacy turn record with null status_source");
+
+        assert_eq!(record.status_source, "unknown");
     }
 
     #[test]
