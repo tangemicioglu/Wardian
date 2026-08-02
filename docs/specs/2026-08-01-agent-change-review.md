@@ -158,9 +158,8 @@ is the same graceful degradation a skipped record produces.
 ### Archive resilience
 
 A turn record the pane cannot parse is **skipped, not fatal.** The archive spans
-years of schema drift, so the pane reads every conversation in a workspace and
-will encounter records written by older writers. One unparseable record must
-never blank the change set.
+years of schema drift, so even a bounded read will encounter records written by
+older writers. One unparseable record must never blank the change set.
 
 Git remains the source of the change set, so degraded attribution is a partial
 loss, not a failure: skipped records cost `attributed` evidence on their paths,
