@@ -78,10 +78,17 @@ test("selects Changes, chooses a baseline, and expands a file", async ({ page })
   await page.goto("/");
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await page.locator('[data-testid="agent-watchlist"] .watchlist-row[aria-label="Agent Agent Alpha"]').click();
-  await page.getByTestId("sidebar-tab-changes").click();
+  const changesTab = page.getByTestId("sidebar-tab-changes");
+  await changesTab.click();
+  await expect(changesTab).toHaveClass(/bg-wardian-card-bg-muted/);
 
   const panel = page.getByTestId("changes-panel");
   await expect(panel).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Changes" })).toBeVisible();
+  await expect(panel.getByText("Since")).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Refresh Changes" })).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "Mark reviewed" })).toHaveCount(0);
+  await expect(panel.getByText("Review live file changes with turn attribution.")).toHaveCount(0);
   const baseline = panel.getByLabel("Change review baseline");
   await expect(baseline).toHaveValue("last_effective_turn");
   await baseline.selectOption("head");
@@ -95,6 +102,7 @@ test("selects Changes, chooses a baseline, and expands a file", async ({ page })
   await file.click();
   await expect(file).toHaveAttribute("aria-expanded", "true");
   await expect.poll(async () => (await ipc.calls("git_show_file_revision")).length).toBe(1);
+  await expect.poll(async () => (await ipc.calls("save_change_review_watermark")).length).toBe(1);
 
   const comparison = panel.locator(".files-comparison-lens");
   await expect(comparison).toBeVisible();
@@ -113,7 +121,7 @@ test("selects Changes, chooses a baseline, and expands a file", async ({ page })
   const screenshotPath = path.resolve(
     "e2e/screenshots/agent-change-review",
     screenshotTimestamp(),
-    "changes-sidebar-pane-with-inline-diff.png",
+    "changes-sidebar-selected-attribution-inline-diff.png",
   );
   mkdirSync(path.dirname(screenshotPath), { recursive: true });
   await page.screenshot({ path: screenshotPath, fullPage: true });
