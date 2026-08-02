@@ -65,6 +65,11 @@ icon-rail entry beside Source Control and renders through
 `SidebarContentPane.tsx`, mirroring `GitPanel` in structure: a scoped file list
 above an inline diff.
 
+Its chrome is the sidebar standard: a title, the baseline selector, and the
+change set. No descriptive subtitle, and no manual refresh or review buttons.
+Sidebar panes are glanceable and self-maintaining; explanatory prose and manual
+controls are friction in a pane the operator checks dozens of times a session.
+
 Reviewing changes is peripheral and glanceable work performed *while* watching
 an agent. A workbench surface would consume a tab slot next to the agent session
 it describes, and would place Changes in a different structural class from
@@ -92,20 +97,34 @@ The pane composes existing modules and adds no backend subsystem:
 
 ### Invalidation
 
-The change set is recomputed on **turn boundaries**, not on file events.
+The pane refreshes itself. It carries no manual refresh control.
 
-`git_watch` watches only `.git/index` and `.git/HEAD`. An agent writing a file
-through an edit tool or a shell touches neither, so `git-changed` does not fire
-for the changes this pane exists to show. It is subscribed to as a secondary
-signal, covering the operator's own staging, commits, and branch switches, and
-must not be relied on for agent writes.
+Three signals drive recomputation, and between them the cached change set is
+served without any git invocation:
 
-Recomputation is therefore triggered by: a turn reaching an effective end, a
-`git-changed` event, a baseline change, and explicit operator refresh. Between
-those, the cached change set is served without any git invocation.
+- `explorer-changed` — the working-tree watcher behind `explorer_watch` in
+  `src-tauri/src/commands/fs.rs`. This is the primary signal, and the only one
+  that observes agent writes, whether through an edit tool or a shell.
+- turn completion — retained so attribution refreshes when a turn closes, even
+  if the tree did not change in the same window.
+- `git-changed` — the operator's own staging, commits, and branch switches.
 
-Live mid-turn updating is a non-goal. A turn in flight shows the change set as
-of its start until it ends.
+`git_watch` observes only `.git/index` and `.git/HEAD`, so `git-changed` alone
+can never see the writes this pane exists to show. It stays subscribed for
+operator git actions and must not be relied on for agent writes.
+
+`explorer_watch` already debounces at 150 ms and excludes `.git`,
+`node_modules`, `target`, `.venv`, `dist`, `build`, `.next`, `.turbo`, and
+`.cache`. The pane inherits that filtering rather than reimplementing it, and
+must coalesce bursts: an agent writing fifty files produces one recomputation,
+not fifty.
+
+The pane must not imitate `ExplorerPanel`'s three-second `git_status` poll. That
+interval exists to paint status badges on a file tree and is precisely the
+per-render cost these rules forbid.
+
+A turn in flight now updates the change set as its writes land. Mid-turn
+updating is a consequence of watching the working tree, not a separate feature.
 
 ### Cost rules
 
@@ -291,6 +310,11 @@ ChangeReviewWatermark {
 }
 ```
 
+Review state advances by **expanding a file's diff**, not by a button. Expanding
+is the act of reviewing, so the record follows the operator's actual attention
+per path rather than declaring a whole batch reviewed at once. The pane writes
+the watermark on expand and at no other time.
+
 The `unreviewed` baseline **never removes a path that git currently reports as
 changed.** It marks entries: an entry whose path and numstat signature match a
 `reviewed_paths` record is `reviewed`, and everything else is not. Presentation
@@ -393,6 +417,13 @@ watermark.
   the `unreviewed` baseline with `evidence: inferred`, empty `agent_ids`, and
   `reviewed: false`. No baseline ever empties a non-empty git change set.
 - Workspace and path identity comparisons are case-insensitive only on Windows.
+- An agent write refreshes the pane with no operator action and no `git-changed`
+  event, through `explorer-changed` alone.
+- A burst of writes across many files produces one recomputation, not one per
+  file.
+- Expanding a file marks that path reviewed; the next load under the
+  `unreviewed` baseline omits it while leaving unexpanded paths present.
+- The pane renders no refresh control, no review control, and no subtitle.
 - A `turns.jsonl` containing a record with `"status_source": null` loads, and the
   pane renders a change set rather than a deserialization error.
 - A single unparseable turn record does not empty the change set; the pane
