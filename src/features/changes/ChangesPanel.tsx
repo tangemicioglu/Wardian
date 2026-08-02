@@ -9,7 +9,9 @@ import type {
   ChangeReviewFileEntry,
   ChangeReviewLoadResponse,
   ChangeReviewPrefs,
+  ChangeReviewReviewedPath,
   ChangeReviewSummary,
+  ChangeReviewWatermark,
   FilesComparisonBaseline,
 } from "../../types";
 import { FileComparisonLens } from "../files/FileComparisonLens";
@@ -33,11 +35,11 @@ type ChangesPanelProps = {
 };
 
 const BASELINE_OPTIONS: readonly { value: ChangeReviewBaseline; label: string }[] = [
-  { value: "last_effective_turn", label: "Last effective turn" },
-  { value: "conversation_start", label: "Conversation start" },
-  { value: "branch_point", label: "Branch point" },
-  { value: "head", label: "HEAD" },
-  { value: "unreviewed", label: "Unreviewed" },
+  { value: "last_effective_turn", label: "Last turn" },
+  { value: "conversation_start", label: "This conversation" },
+  { value: "branch_point", label: "This branch" },
+  { value: "head", label: "Last commit" },
+  { value: "unreviewed", label: "I last looked" },
 ];
 
 const DEFAULT_CHANGE_REVIEW_BASELINE: ChangeReviewBaseline = "last_effective_turn";
@@ -207,6 +209,7 @@ export function ChangesPanel({
   const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [summary, setSummary] = useState<ChangeReviewSummary | null>(null);
   const [gitAvailable, setGitAvailable] = useState(true);
+  const [headRef, setHeadRef] = useState<string | null>(null);
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -260,6 +263,7 @@ export function ChangesPanel({
       if (generation !== requestGeneration.current) return;
       setSummary(response.summary);
       setGitAvailable(response.git_available);
+      setHeadRef(response.head_ref);
       setSkippedTurnRecords(response.skipped_turn_records);
     } catch (reason) {
       if (generation === requestGeneration.current) setError(errorMessage(reason));
@@ -323,7 +327,46 @@ export function ChangesPanel({
     };
   }, [recompute, visible, workspace]);
 
+  const reviewPathOnExpand = useCallback(async (path: string) => {
+    if (!workspace || !selectedAgentId || !summary) return;
+    const entry = summary.files.find((file) => file.path === path);
+    if (!entry) return;
+
+    const existing = await invoke<ChangeReviewWatermark | null>("load_change_review_watermark", {
+      agent_id: selectedAgentId,
+      workspace,
+    }).catch(() => null);
+    const reviewed_paths: ChangeReviewReviewedPath[] = [...(existing?.reviewed_paths ?? [])];
+    const alreadyReviewed = reviewed_paths.some((reviewedPath) => (
+      reviewedPath.path === entry.path
+      && reviewedPath.change_kind === entry.change_kind
+      && reviewedPath.insertions === entry.insertions
+      && reviewedPath.deletions === entry.deletions
+    ));
+    if (!alreadyReviewed) {
+      reviewed_paths.push({
+        path: entry.path,
+        change_kind: entry.change_kind,
+        insertions: entry.insertions,
+        deletions: entry.deletions,
+      });
+    }
+
+    await invoke("save_change_review_watermark", {
+      watermark: {
+        schema: 1,
+        agent_id: selectedAgentId,
+        workspace,
+        reviewed_turn_index: summary.to_turn_index ?? existing?.reviewed_turn_index ?? 0,
+        reviewed_at: new Date().toISOString(),
+        reviewed_head: headRef,
+        reviewed_paths,
+      },
+    }).catch(() => undefined);
+  }, [headRef, selectedAgentId, summary, workspace]);
+
   const toggleFile = (path: string) => {
+    const expanding = expandedPath !== path;
     setExpandedPath((current) => current === path ? null : path);
     setExpandedPaths((current) => {
       if (current.has(path)) return current;
@@ -331,6 +374,7 @@ export function ChangesPanel({
       next.add(path);
       return next;
     });
+    if (expanding) void reviewPathOnExpand(path);
   };
 
   const handleBaselineChange = useCallback((nextBaseline: ChangeReviewBaseline) => {
@@ -352,7 +396,7 @@ export function ChangesPanel({
           <h2 className="text-sm font-bold text-primary tracking-tight">Changes</h2>
         </div>
         <label className="flex w-full items-center gap-2 text-[11px]">
-          <span className="text-[var(--color-wardian-text-muted)]">Baseline</span>
+           <span className="text-[var(--color-wardian-text-muted)]">Since</span>
           <select
             aria-label="Change review baseline"
             className="min-w-0 flex-1 rounded border border-[var(--color-wardian-border)] bg-[var(--color-wardian-input-bg)] px-1.5 py-1 text-[11px]"

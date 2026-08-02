@@ -79,6 +79,7 @@ describe("ChangesPanel", () => {
       if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "last_effective_turn" });
       if (command === "get_explorer_root") return Promise.resolve("C:/workspace");
       if (command === "load_change_review") return Promise.resolve(response);
+      if (command === "load_change_review_watermark") return Promise.resolve(null);
       return Promise.resolve(undefined);
     });
   });
@@ -145,6 +146,56 @@ describe("ChangesPanel", () => {
     ));
     const saves = invokeMock.mock.calls.filter(([command]) => command === "save_change_review_prefs");
     expect(saves).toHaveLength(1);
+  });
+
+  it("uses descriptive baseline labels without changing wire values", async () => {
+    renderPanel();
+
+    await screen.findByText("src/agent.ts");
+
+    expect(screen.getByText("Since")).toBeInTheDocument();
+    const options = [...screen.getByLabelText("Change review baseline").querySelectorAll("option")]
+      .map((option) => ({ value: option.value, label: option.textContent }));
+    expect(options).toEqual([
+      { value: "last_effective_turn", label: "Last turn" },
+      { value: "conversation_start", label: "This conversation" },
+      { value: "branch_point", label: "This branch" },
+      { value: "head", label: "Last commit" },
+      { value: "unreviewed", label: "I last looked" },
+    ]);
+  });
+
+  it("writes a watermark only when a file is expanded", async () => {
+    renderPanel();
+    await screen.findByText("src/agent.ts");
+    expect(invokeMock).not.toHaveBeenCalledWith("save_change_review_watermark", expect.anything());
+
+    const fileButton = screen.getByRole("button", { name: /src\/agent\.ts/ });
+    fireEvent.click(fileButton);
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "save_change_review_watermark",
+      {
+        watermark: expect.objectContaining({
+          agent_id: "agent-1",
+          workspace: "C:/workspace",
+          reviewed_head: "head-1",
+          reviewed_paths: [{
+            path: "src/agent.ts",
+            change_kind: "modified",
+            insertions: 3,
+            deletions: 1,
+          }],
+        }),
+      },
+    ));
+    const savesAfterExpand = invokeMock.mock.calls.filter(([command]) => command === "save_change_review_watermark");
+    expect(savesAfterExpand).toHaveLength(1);
+
+    fireEvent.click(fileButton);
+    await Promise.resolve();
+    const savesAfterCollapse = invokeMock.mock.calls.filter(([command]) => command === "save_change_review_watermark");
+    expect(savesAfterCollapse).toHaveLength(1);
   });
 
   it("does not compute while hidden and recomputes when the sidebar becomes visible", async () => {
