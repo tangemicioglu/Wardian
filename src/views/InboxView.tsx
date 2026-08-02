@@ -106,6 +106,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const resolveApprovalRequest = useQueueStore((s) => s.resolveApprovalRequest);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const isAgent = queueItemIsAgentEvent(item);
   const isActionNeeded = item.type === "action_needed";
@@ -117,7 +118,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const canOpenAgent = Boolean(item.agent_session_id && onOpenAgent);
   const actionChoices = isActionNeeded ? parseQueueActionChoices(bodyText) : [];
   const canUseActionChoices = Boolean(item.agent_session_id && onSendAgentPrompt && actionChoices.length > 0);
-  const approvalChoices = isApprovalRequest && item.notification_status === "awaiting_reply"
+  const approvalChoices = isApprovalRequest && (item.workflow_approval || item.notification_status === "awaiting_reply")
     ? item.approval_choices ?? []
     : [];
   const canAcknowledge = !item.workflow_approval;
@@ -125,10 +126,14 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const handleActionChoice = async (choice: QueueActionChoice) => {
     if (!item.agent_session_id || !onSendAgentPrompt) return;
 
+    setActionError(null);
     setIsSending(true);
     try {
       await onSendAgentPrompt(item.agent_session_id, choice.value);
       markRead(item.id);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setActionError(`Could not send this response: ${detail}`);
     } finally {
       setIsSending(false);
     }
@@ -136,9 +141,13 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
 
   const handleApprovalChoice = async (choice: string) => {
     if (!item.inbox_notification_id && !item.workflow_approval) return;
+    setActionError(null);
     setIsSending(true);
     try {
       await resolveApprovalRequest(item, choice);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setActionError(`Could not resolve this approval: ${detail}`);
     } finally {
       setIsSending(false);
     }
@@ -259,7 +268,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
                       type="button"
                       disabled={isSending}
                       onClick={() => void handleApprovalChoice(choice)}
-                      className="inline-flex h-7 max-w-[220px] items-center rounded-md border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 text-[11px] font-semibold text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex h-7 max-w-[220px] cursor-pointer items-center rounded-md border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 text-[11px] font-semibold text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {choice}
                     </button>
@@ -268,6 +277,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
               )}
             </div>
           )}
+          {actionError ? <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">{actionError}</p> : null}
         </div>
 
         {!item.inbox_notification_id && !item.workflow_approval && <button

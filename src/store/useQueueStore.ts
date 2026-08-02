@@ -234,6 +234,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
         node: item.workflow_approval.node,
         granted: choice === "Approve",
         actor: "user",
+        note: null,
       });
     } else if (item.inbox_notification_id) {
       await invoke("resolve_inbox_notification", { notificationId: item.inbox_notification_id, choice });

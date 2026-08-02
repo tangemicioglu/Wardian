@@ -493,7 +493,8 @@ pub async fn workflow_resume(
     Ok(serde_json::json!({ "ok": true, "run_id": run_id }))
 }
 
-/// Grant or reject an approval gate, resuming the run when granted.
+/// Grant or reject an approval gate. Granting persists the decision before the
+/// remaining workflow continues in the background.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn workflow_approve(
@@ -515,7 +516,7 @@ pub async fn workflow_approve(
     let run_root =
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
 
-    let result = if granted {
+    if granted {
         let invocation = runs::read_run_invocation(&run_root)?;
         let provider = provider
             .or_else(|| invocation.as_ref().map(|value| value.provider.clone()))
@@ -544,29 +545,43 @@ pub async fn workflow_approve(
             &provider,
         )
         .await;
-        let _headless_execution =
+        let headless_execution =
             wardian_core::workflow_execution_lock::acquire_headless_execution_guard()?;
-        let exec = runs::live_executor_with_catalog_assignments_and_app(
-            app.clone(),
-            workspace,
-            provider,
-            bindings,
-            assignments,
-            agent_catalog,
+        let run_state = wardian_core::engine::Engine::record_approval_granted(
+            &blueprint, &run_root, &node, &actor, note,
         )
-        .with_owner_id(format!("{}/{}", blueprint.id, run_id));
-        wardian_core::engine::Engine::grant_approval(
-            &blueprint, &run_root, &node, &actor, note, &exec,
-        )
-        .await
+        .map_err(|error| error.to_string())?;
+        let owner_id = format!("{}/{}", blueprint.id, run_id);
+
+        tokio::spawn(async move {
+            let _headless_execution = headless_execution;
+            let exec = runs::live_executor_with_catalog_assignments_and_app(
+                app,
+                workspace,
+                provider,
+                bindings,
+                assignments,
+                agent_catalog,
+            )
+            .with_owner_id(owner_id);
+            if let Err(error) = wardian_core::engine::Engine::drive_from_state(
+                &blueprint, run_state, &run_root, &exec,
+            )
+            .await
+            {
+                crate::utils::logging::log_debug(&format!(
+                    "[workflow] approved run failed: {error}"
+                ));
+            }
+        });
+
+        Ok(serde_json::json!({ "ok": true }))
     } else {
         wardian_core::engine::Engine::reject_approval(&blueprint, &run_root, &node, &actor, note)
             .await
-    };
-
-    result
-        .map(|_| serde_json::json!({ "ok": true }))
-        .map_err(|e| e.to_string())
+            .map(|_| serde_json::json!({ "ok": true }))
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// Record a cancel request for a run. Cooperative cancellation of the live loop

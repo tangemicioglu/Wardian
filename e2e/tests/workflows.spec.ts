@@ -289,6 +289,68 @@ test("unified Workflows view edits, launches, observes, and returns to edit", as
   expect(invokes?.some((call) => call.command === "workflow_read_run")).toBe(true);
 });
 
+test("workflow Observe exposes approval controls and records the choice", async ({ page }) => {
+  await installWorkflowsIpcMock(page);
+  await page.setViewportSize({ width: 1700, height: 980 });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+
+  await openSurface(page, "workflows");
+  await page.getByTestId("blueprint-selector").getByRole("combobox").selectOption("/x/wf.md");
+  await page.getByTestId("workflows-view").getByRole("button", { name: /^Run$/ }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: /^Run$/ }).click();
+  await expect(page.getByTestId("workflows-observe-mode")).toBeVisible();
+
+  await page.evaluate(async () => {
+    const { useRunStore } = await import("/src/features/workflows/run/useRunStore.ts");
+    useRunStore.setState({
+      runs: [{
+        run_id: "run-1",
+        blueprint_id: "wf",
+        status: "awaiting_approval",
+        node_count: 3,
+        failure: null,
+        path: "/runs/run-1",
+        blueprint_path: "/x/wf.md",
+      }],
+      state: {
+        run_id: "run-1",
+        blueprint_id: "wf",
+        status: "awaiting_approval",
+        nodes: { plan: "completed", ship: "pending" },
+        registry: { nodes: { plan: { output: { ok: true } } }, trigger: { output: {} } },
+        loop_iter: {},
+        delivered: {},
+        skipped_edges: [],
+        next_seq: 4,
+        failure: null,
+      },
+      events: [
+        { seq: 0, ts: "t0", kind: "run_started", blueprint_id: "wf", schema: 2, trigger: {} },
+        { seq: 1, ts: "t1", kind: "node_completed", node: "plan", output: { ok: true } },
+        { seq: 2, ts: "t2", kind: "awaiting_approval", node: "approval" },
+      ],
+      blueprintPath: "/x/wf.md",
+      scrubIndex: 2,
+    });
+  });
+
+  const workflowView = page.getByTestId("workflows-view");
+  await expect(workflowView.getByRole("button", { name: /^Approve$/ })).toBeVisible();
+  await expect(workflowView.getByRole("button", { name: /^Reject$/ })).toBeVisible();
+  await expect(workflowView.getByRole("button", { name: /^Approve$/ })).toHaveCSS("cursor", "pointer");
+  fs.mkdirSync("e2e/screenshots/workflow-approval", { recursive: true });
+  await workflowView.screenshot({ path: "e2e/screenshots/workflow-approval/observe-approval-actions.png" });
+
+  await workflowView.getByRole("button", { name: /^Approve$/ }).click();
+  await expect.poll(async () => page.evaluate(() => (
+    window.__workflowsInvokes?.some((call) => (
+      call.command === "workflow_approve" && call.args?.granted === true
+    ))
+  ))).toBe(true);
+});
+
 test("workflow builder renders persisted loop workflow nodes on a visible canvas", async ({ page }) => {
   await installWorkflowsIpcMock(page, loopBlueprint);
   await page.setViewportSize({ width: 1700, height: 980 });

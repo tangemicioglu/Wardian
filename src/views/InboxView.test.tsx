@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { InboxView } from "./InboxView";
@@ -302,6 +302,70 @@ describe("InboxView", () => {
     expect(screen.queryByRole("button", { name: /clear item/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Release gate"));
     expect(useQueueStore.getState().items[0].read).toBe(false);
+  });
+
+  it("resolves workflow approval projections from the Inbox", async () => {
+    useQueueStore.setState({
+      items: [{
+        id: "workflow-approval:wf:run:gate",
+        type: "approval_request",
+        timestamp: Date.now(),
+        read: false,
+        notification_title: "Release gate",
+        summary: "Approve the deployment?",
+        approval_choices: ["Approve", "Reject"],
+        workflow_approval: {
+          blueprint_id: "wf",
+          blueprint_path: "workflow.json",
+          run_id: "run",
+          node: "gate",
+        },
+      }],
+    });
+
+    render(<InboxView />);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("workflow_approve", {
+        blueprintId: "wf",
+        runId: "run",
+        blueprintPath: "workflow.json",
+        node: "gate",
+        granted: true,
+        actor: "user",
+        note: null,
+      });
+    });
+  });
+
+  it("keeps a workflow approval actionable and reports a resolution failure", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("run is no longer awaiting approval"));
+    useQueueStore.setState({
+      items: [{
+        id: "workflow-approval:wf:run:gate",
+        type: "approval_request",
+        timestamp: Date.now(),
+        read: false,
+        notification_title: "Release gate",
+        summary: "Approve the deployment?",
+        approval_choices: ["Approve", "Reject"],
+        workflow_approval: {
+          blueprint_id: "wf",
+          blueprint_path: "workflow.json",
+          run_id: "run",
+          node: "gate",
+        },
+      }],
+    });
+
+    render(<InboxView />);
+    fireEvent.click(screen.getByRole("button", { name: /^reject$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not resolve this approval: run is no longer awaiting approval",
+    );
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeEnabled();
   });
 
   it("mark all read button appears and calls markAllRead", () => {
