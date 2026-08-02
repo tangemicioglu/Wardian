@@ -181,6 +181,18 @@ impl CodexProvider {
             args.push("--model".into());
             args.push(model.clone());
         }
+        if let Some(effort) = codex
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            args.push("-c".into());
+            args.push(format!(
+                "model_reasoning_effort={}",
+                toml_basic_string(effort)
+            ));
+        }
 
         if let Some(ref profile) = codex.profile {
             if !profile.trim().is_empty() {
@@ -281,6 +293,21 @@ impl CodexProvider {
 
         args
     }
+}
+
+fn toml_basic_string(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            other => escaped.push(other),
+        }
+    }
+    format!("\"{escaped}\"")
 }
 
 fn toml_basic_string_key(value: &str) -> String {
@@ -608,6 +635,7 @@ mod tests {
             resume_session: Some("session-abc".into()),
             model: Some("gpt-5.4".into()),
             provider_config: ProviderConfig::Codex(CodexProviderConfig {
+                reasoning_effort: Some("high".into()),
                 profile: Some("wardian".into()),
                 sandbox_mode: Some("workspace-write".into()),
                 approval_policy: Some("on-request".into()),
@@ -621,6 +649,7 @@ mod tests {
         assert!(args.contains(&"session-abc".to_string()));
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"gpt-5.4".to_string()));
+        assert!(args.contains(&"model_reasoning_effort=\"high\"".to_string()));
         assert!(args.contains(&"--profile".to_string()));
         assert!(args.contains(&"wardian".to_string()));
         assert!(args.contains(&"--sandbox".to_string()));
@@ -717,7 +746,9 @@ mod tests {
         assert!(headless_args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
         assert!(!headless_args.contains(&"--sandbox".to_string()));
         assert!(!headless_args.contains(&"--ask-for-approval".to_string()));
-        assert!(!interactive_args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(
+            !interactive_args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string())
+        );
         assert!(interactive_args.contains(&"--sandbox".to_string()));
         assert!(interactive_args.contains(&"danger-full-access".to_string()));
         assert!(interactive_args.contains(&"--ask-for-approval".to_string()));

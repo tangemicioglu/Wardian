@@ -41,6 +41,15 @@ const spawnResponse = {
 const mockSpawnInvokes = (providerReadiness = allProvidersReady) => {
   invokeMock.mockImplementation(async (command) => {
     if (command === "list_provider_readiness") return providerReadiness;
+    if (command === "list_provider_model_catalog") {
+      return {
+        provider: "claude",
+        version: "2.1.220",
+        source: "provider_aliases",
+        refresh_error: null,
+        models: [],
+      };
+    }
     if (command === "validate_directory_path") return true;
     if (command === "spawn_agent") return spawnResponse;
     return null;
@@ -85,7 +94,7 @@ describe("SpawnAgentPanel", () => {
     expect(providerSelect).toHaveTextContent("Antigravity");
   });
 
-  it("shows dismissible provider and first-run help before spawning", () => {
+  it("shows dismissible provider and first-run help before spawning", async () => {
     render(
       <SpawnAgentPanel
         agentClasses={[{ name: "Generalist", description: "", is_default: true }]}
@@ -102,6 +111,7 @@ describe("SpawnAgentPanel", () => {
       "href",
       "https://docs.wardian.org/providers",
     );
+    await screen.findByText("Provider aliases follow the installed CLI’s current model mapping.");
   });
 
   it("sets the workspace path from the native folder picker", async () => {

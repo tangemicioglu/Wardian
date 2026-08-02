@@ -162,16 +162,6 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                   )}
               </div>
 
-              <div>
-                  <label className="block text-[10px] font-bold text-muted-neutral mb-1">Model Override</label>
-                  <input
-                  className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-1.5 text-xs text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
-                  placeholder="e.g. gemini-2.5-flash / claude-3-7-sonnet / gpt-5.4 / openai/gpt-5"
-                  value={config.model || ""}
-                  onChange={(e) => updateField("model", e.target.value || undefined)}
-                  />
-              </div>
-
               <ListEditor 
                 label="Include Directories" 
                 values={config.include_directories} 

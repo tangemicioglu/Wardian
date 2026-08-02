@@ -136,6 +136,37 @@ async function installCustomCloneIpcMock(page: Page, options: { includeRecentSor
             { provider: "opencode", display_name: "OpenCode", available: true, executable: "C:/tools/opencode.cmd", reason: null },
           ];
         }
+        if (command === "list_provider_model_catalog") {
+          const provider = typeof args?.provider === "string" ? args.provider : "claude";
+          if (provider === "codex") {
+            return {
+              provider,
+              version: "codex-cli 0.146.0",
+              source: "live_catalog",
+              refresh_error: null,
+              models: [{
+                id: "gpt-5.6-sol",
+                display_name: "GPT-5.6 Sol",
+                effort_options: ["low", "medium", "high"],
+                default_effort: "medium",
+                is_default: true,
+              }],
+            };
+          }
+          return {
+            provider,
+            version: "2.1.220",
+            source: "provider_aliases",
+            refresh_error: null,
+            models: [{
+              id: "sonnet",
+              display_name: "Latest Sonnet",
+              effort_options: ["low", "medium", "high"],
+              default_effort: null,
+              is_default: true,
+            }],
+          };
+        }
         if (command === "load_watchlists") return [];
         if (command === "load_watchlist_prefs") return null;
         if (command === "load_agent_interactions") {
@@ -339,6 +370,31 @@ test.describe("Custom Agent Clone", () => {
 
     await page.screenshot({
       path: path.join("e2e", "screenshots", "agent-descriptions", "2026-07-27", "roster-and-agent-config.png"),
+      animations: "disabled",
+    });
+  });
+
+  test("shows compatible provider model and effort controls in agent configuration", async ({ page }) => {
+    await installCustomCloneIpcMock(page);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+
+    const sourceRow = page.locator('[data-testid="agent-watchlist"] .watchlist-row', { hasText: "E2E Mock Agent" });
+    await sourceRow.click();
+    await page.locator('[data-testid="sidebar-tab-agent-config"]').click();
+
+    await page.getByLabel("Provider").selectOption("codex");
+    const model = page.getByLabel("Model", { exact: true });
+    await expect(model).toContainText("GPT-5.6 Sol");
+    await model.selectOption("gpt-5.6-sol");
+
+    const effort = page.getByLabel("Effort");
+    await expect(effort).toBeVisible();
+    await effort.selectOption("high");
+    await expect(effort).toHaveValue("high");
+
+    await page.screenshot({
+      path: path.join("e2e", "screenshots", "agent-model-selection", "2026-08-02", "provider-model-effort.png"),
       animations: "disabled",
     });
   });

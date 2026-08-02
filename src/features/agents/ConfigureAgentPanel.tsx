@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentConfig, AgentClassDefinition, AgentTelemetry, ProviderReadiness, UserFacingProviderName } from "../../types";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { normalizeAgentConfig, requiresRestart, toPersistedAgentConfig, withProvider } from "./configUtils";
+import { normalizeAgentConfig, reasoningEffortForConfig, requiresRestart, toPersistedAgentConfig, withProvider, withReasoningEffort } from "./configUtils";
+import { ProviderModelSelector } from "./ProviderModelSelector";
 import { AdvancedSettings } from '../../components/AdvancedSettings';
 import { useLibraryStore } from "../../store/useLibraryStore";
 import { buildProviderOptions, buildUngatedProviderOptions, isUserFacingProviderName } from "./providerOptions";
@@ -210,6 +211,19 @@ export const ConfigureAgentPanel: React.FC<Props> = ({
               <p className="mt-1 text-[10px] text-wardian-warning">{providerNote}</p>
             )}
           </div>
+          <ProviderModelSelector
+            idPrefix="configure-agent"
+            provider={config.provider}
+            selection={{
+              model: config.model,
+              reasoning_effort: reasoningEffortForConfig(config),
+            }}
+            onSelectionChange={(selection) => {
+              setConfig((current) => current
+                ? withReasoningEffort({ ...current, model: selection.model }, selection.reasoning_effort) as AgentConfig
+                : null);
+            }}
+          />
           <div>
             <div className="flex justify-between items-center mb-1">
               <label className="block text-[10px] font-bold text-muted-neutral">Agent ID</label>

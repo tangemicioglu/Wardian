@@ -2303,6 +2303,14 @@ pub fn list_provider_readiness(
 }
 
 #[tauri::command]
+pub async fn list_provider_model_catalog(
+    provider: String,
+    force_refresh: Option<bool>,
+) -> Result<crate::providers::models::ProviderModelCatalog, String> {
+    Ok(crate::providers::models::model_catalog(&provider, force_refresh.unwrap_or(false)).await)
+}
+
+#[tauri::command]
 pub async fn spawn_agent(
     req: SpawnAgentRequest,
     state: State<'_, AppState>,
@@ -3420,6 +3428,55 @@ pub async fn update_agent_config(
 }
 
 #[tauri::command]
+pub async fn update_agent_model_selection(
+    session_id: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<AgentConfig, String> {
+    let mut config = {
+        let agents = state.agents.lock().await;
+        let agent = agents
+            .get(&session_id)
+            .ok_or_else(|| format!("Agent {session_id} not found"))?;
+        let agent_config = agent.config.lock().unwrap();
+        agent_config.clone()
+    };
+
+    config.model = normalized_optional_agent_setting(model);
+    let reasoning_effort = normalized_optional_agent_setting(reasoning_effort);
+    match &mut config.provider_config {
+        ProviderConfig::Codex(provider_config) => {
+            provider_config.reasoning_effort = reasoning_effort;
+        }
+        ProviderConfig::Claude(provider_config) => {
+            provider_config.reasoning_effort = reasoning_effort;
+        }
+        ProviderConfig::Antigravity(provider_config) => {
+            provider_config.reasoning_effort = reasoning_effort;
+        }
+        _ if reasoning_effort.is_some() => {
+            return Err(format!(
+                "{} does not support launch-time reasoning effort selection",
+                config.provider
+            ));
+        }
+        _ => {}
+    }
+
+    update_agent_config(config.clone(), state, app).await?;
+    Ok(config)
+}
+
+fn normalized_optional_agent_setting(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+#[tauri::command]
 pub async fn build_agent_cli_command(
     session_id: String,
     state: State<'_, AppState>,
@@ -4037,8 +4094,8 @@ mod tests {
         DeletedAgentReferenceCleanup, DiscoveredGitWorktree, GIT_WORKTREE_DISCOVERY_CONCURRENCY,
         MAX_AGENT_DESCRIPTION_CHARS,
     };
-    use crate::providers::GeminiProvider;
     use crate::providers::antigravity::AntigravityProvider;
+    use crate::providers::GeminiProvider;
     use crate::state::{ActiveAgent, AppState};
     use crate::utils::fs::create_directory_link;
     use crate::utils::{ShellOption, ShellSettings};

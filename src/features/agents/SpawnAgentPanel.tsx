@@ -6,7 +6,8 @@ import { AgentConfig, AgentClassDefinition, ProviderReadiness, UserFacingProvide
 import { AdvancedSettings } from "../../components/AdvancedSettings";
 import { DocsLink } from "../../components/DocsLink";
 import { OnboardingHint } from "../../components/OnboardingHint";
-import { defaultProviderConfig, withProvider } from "./configUtils";
+import { defaultProviderConfig, reasoningEffortForConfig, withProvider, withReasoningEffort } from "./configUtils";
+import { ProviderModelSelector } from "./ProviderModelSelector";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { buildProviderOptions, buildUngatedProviderOptions, isUserFacingProviderName, resolveEffectiveProvider } from "./providerOptions";
 
@@ -306,6 +307,20 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
             <p className="mt-1 text-[10px] text-wardian-warning">{providerNote}</p>
           )}
         </div>
+        <ProviderModelSelector
+          idPrefix="spawn-agent"
+          provider={spawnAdvancedConfig.provider}
+          selection={{
+            model: spawnAdvancedConfig.model,
+            reasoning_effort: reasoningEffortForConfig(spawnAdvancedConfig),
+          }}
+          onSelectionChange={(selection) => {
+            setSpawnAdvancedConfig((current) => withReasoningEffort({
+              ...current,
+              model: selection.model,
+            }, selection.reasoning_effort));
+          }}
+        />
         <div>
           <label className="block text-[10px] font-bold text-muted-neutral mb-1">
             Session ID (Optional)

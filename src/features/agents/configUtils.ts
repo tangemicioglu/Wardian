@@ -175,6 +175,27 @@ export function withProvider(
   };
 }
 
+export function reasoningEffortForConfig(config: Partial<AgentConfig>): string | undefined {
+  const providerConfig = providerConfigFor(config);
+  return "reasoning_effort" in providerConfig && typeof providerConfig.reasoning_effort === "string"
+    ? providerConfig.reasoning_effort
+    : undefined;
+}
+
+export function withReasoningEffort(
+  config: Partial<AgentConfig>,
+  reasoningEffort: string | undefined,
+): Partial<AgentConfig> {
+  const providerConfig = providerConfigFor(config);
+  return {
+    ...config,
+    provider_config: {
+      ...providerConfig,
+      reasoning_effort: reasoningEffort,
+    } as AgentConfig["provider_config"],
+  };
+}
+
 /**
  * Checks if the changes between two AgentConfigs require an agent restart.
  * Restarts are required if any runtime-affecting field changes.
