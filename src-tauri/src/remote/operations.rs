@@ -97,6 +97,18 @@ pub fn remote_watchlist_state() -> Result<RemoteWatchlistResponse, String> {
     })
 }
 
+/// Reads the same persisted Inbox items used by the desktop application.
+pub fn remote_queue_items() -> Vec<serde_json::Value> {
+    let Some(home) = crate::utils::fs::get_wardian_home() else {
+        return Vec::new();
+    };
+
+    std::fs::read_to_string(home.join("queue").join("items.json"))
+        .ok()
+        .and_then(|data| serde_json::from_str::<Vec<serde_json::Value>>(&data).ok())
+        .unwrap_or_default()
+}
+
 pub async fn remote_agent_chat_transcript(
     state: &AppState,
     session_id: &str,
@@ -425,6 +437,26 @@ mod tests {
         assert_eq!(response.watchlists, serde_json::json!([]));
         assert_eq!(response.teams, serde_json::json!([]));
         assert!(response.prefs.is_none());
+    }
+
+    #[test]
+    fn remote_queue_items_reads_the_desktop_inbox_file() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        let queue_dir = temp.path().join("queue");
+        std::fs::create_dir_all(&queue_dir).expect("queue dir");
+        std::fs::write(
+            queue_dir.join("items.json"),
+            serde_json::json!([{ "id": "desktop-inbox-1", "type": "approval_request" }])
+                .to_string(),
+        )
+        .expect("queue json");
+
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        let items = remote_queue_items();
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+
+        assert_eq!(items[0]["id"], "desktop-inbox-1");
     }
 
     #[tokio::test]

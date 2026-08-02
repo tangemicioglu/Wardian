@@ -2,6 +2,7 @@ import type {
   AuthChallengeResponse,
   AuthSessionResponse,
   AgentChatEvent,
+  QueueItem,
   PairingSubmitResponse,
   RemoteAgentActionRequest,
   RemoteAgentInputMode,
@@ -117,6 +118,10 @@ export const remoteClient = {
   async listAgents() {
     const result = await remoteJson<{ agents: RemoteAgentSummary[] }>("/remote/api/agents");
     return result.agents;
+  },
+  async loadQueueItems() {
+    const result = await remoteJson<{ items: QueueItem[] }>("/remote/api/queue");
+    return result.items;
   },
   async loadAgentChat(sessionId: string) {
     const result = await remoteJson<{ events: AgentChatEvent[] }>(

@@ -727,7 +727,6 @@ function TerminalPane({
   const socketRef = useRef<WebSocket | null>(null);
   const [streamError, setStreamError] = useState("");
   const [connected, setConnected] = useState(false);
-  const appendRemoteTerminalQueueOutput = useRemoteStore((state) => state.appendRemoteTerminalQueueOutput);
   const remoteTerminalFontSize = useRemoteStore((state) => state.remoteTerminalFontSize);
 
   useEffect(() => {
@@ -919,7 +918,6 @@ function TerminalPane({
         const output = liveDecoder.decode(base64ToTerminalBytes(event.bytes_base64), { stream: true });
         if (!output) continue;
         const plan = planRemoteTerminalOutput(output);
-        appendRemoteTerminalQueueOutput(agent.session_id, plan.output, agent.provider);
         await writeRemoteTerminal(
           terminal,
           normalizeRemoteTerminalLiveOutput(

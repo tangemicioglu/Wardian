@@ -15,7 +15,6 @@ import {
 } from "../../layout/watchlist/types";
 import { normalizeWatchlistState } from "../../layout/watchlist/watchlistUtils";
 import { normalizedRemoteAgentStatus } from "./remoteAgentStatus";
-import { extractTerminalQueueContent } from "../../utils/statusUtils";
 import {
   clearStoredRemoteIdentity,
   createRemoteDeviceKeyPair,
@@ -48,8 +47,6 @@ interface RemoteState {
   agents: RemoteAgentSummary[];
   workflows: RemoteWorkflowSummary[];
   remoteQueueItems: QueueItem[];
-  remoteQueueBuffers: Record<string, string>;
-  remoteAgentStatuses: Record<string, string>;
   watchlists: Watchlist[];
   teams: AgentTeam[];
   watchlistPrefs: WatchlistPrefs;
@@ -87,7 +84,6 @@ interface RemoteState {
   refreshActiveAgentTerminal: (options?: { background?: boolean }) => Promise<void>;
   refreshActiveAgentChat: (options?: { background?: boolean }) => Promise<void>;
   loadOlderActiveAgentChat: () => Promise<void>;
-  appendRemoteTerminalQueueOutput: (sessionId: string, data: string, provider?: string) => void;
   sendPromptToActiveAgent: (prompt: string, inputMode?: RemoteAgentInputMode) => Promise<void>;
   runAgentAction: (action: string, target: string) => Promise<void>;
   runWorkflow: (workflowId: string) => Promise<void>;
@@ -108,8 +104,6 @@ const REMOTE_HISTORY_DETAIL_VIEW = "agent_detail";
 const BACKGROUND_CHAT_REFRESH_MIN_INTERVAL_MS = 750;
 const STATUS_STREAM_RECONNECT_BASE_DELAY_MS = 250;
 const STATUS_STREAM_RECONNECT_MAX_DELAY_MS = 5_000;
-const REMOTE_QUEUE_SUMMARY_MAX_CHARS = 500;
-const REMOTE_QUEUE_MAX_ITEMS = 100;
 
 const storedActiveWatchlistId = () => {
   try {
@@ -339,66 +333,10 @@ const activeAgentStatusShouldRefreshChat = (status: string) => {
   return normalized === "processing" || normalized === "running" || normalized === "action_required" || normalized === "action_needed";
 };
 
-const statusCanFlushRemoteCompletion = (previousStatus: string | undefined, nextStatus: string) => {
-  const previous = previousStatus ? normalizedRemoteAgentStatus(previousStatus) : "";
-  const next = normalizedRemoteAgentStatus(nextStatus);
-  return (previous === "processing" || previous === "running") && next === "idle";
-};
-
-const boundRemoteQueueSummary = (text: string): string => {
-  if (text.length <= REMOTE_QUEUE_SUMMARY_MAX_CHARS) return text;
-  const marker = "\n...\n";
-  const available = REMOTE_QUEUE_SUMMARY_MAX_CHARS - marker.length;
-  const headLength = Math.ceil(available * 0.72);
-  const tailLength = available - headLength;
-  return `${text.slice(0, headLength)}${marker}${text.slice(-tailLength)}`;
-};
-
-const newRemoteQueueItemId = () => {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `remote-queue-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-};
-
-const remoteAgentStatusMap = (agents: RemoteAgentSummary[]) =>
-  Object.fromEntries(agents.map((agent) => [agent.session_id, agent.status]));
-
 const pruneActiveAgentViewModes = (
   modesById: Record<string, RemoteAgentViewMode>,
   liveAgentIds: Set<string>,
 ) => Object.fromEntries(Object.entries(modesById).filter(([agentId]) => liveAgentIds.has(agentId)));
-
-const remoteQueuePatchForAgents = (state: RemoteState, agents: RemoteAgentSummary[]): Partial<RemoteState> => {
-  let items = state.remoteQueueItems;
-  let buffers = state.remoteQueueBuffers;
-  let changed = false;
-
-  for (const agent of agents) {
-    if (!statusCanFlushRemoteCompletion(state.remoteAgentStatuses[agent.session_id], agent.status)) continue;
-    const summary = (buffers[agent.session_id] ?? "").trim();
-    if (!summary) continue;
-
-    const item: QueueItem = {
-      id: newRemoteQueueItemId(),
-      type: "agent_completed",
-      timestamp: Date.now(),
-      read: false,
-      agent_session_id: agent.session_id,
-      agent_name: agent.session_name,
-      summary: boundRemoteQueueSummary(summary),
-      evidence_source: "live_runtime",
-    };
-    items = [item, ...items].slice(0, REMOTE_QUEUE_MAX_ITEMS);
-    buffers = { ...buffers, [agent.session_id]: "" };
-    changed = true;
-  }
-
-  return {
-    remoteAgentStatuses: remoteAgentStatusMap(agents),
-    ...(changed ? { remoteQueueItems: items, remoteQueueBuffers: buffers } : {}),
-  };
-};
 
 const scheduleStatusStreamReconnect = (set: RemoteSet, get: RemoteGet) => {
   if (statusStreamReconnectTimer !== null || statusStreamSocket || get().status === "session_expired") return;
@@ -431,7 +369,6 @@ const ensureStatusStream = async (set: RemoteSet, get: RemoteGet) => {
         agents,
         status: "ready",
         activeAgentViewModesById: pruneActiveAgentViewModes(state.activeAgentViewModesById, liveAgentIds),
-        ...remoteQueuePatchForAgents(state, agents),
         ...(activeAgent
           ? {}
           : {
@@ -448,6 +385,10 @@ const ensureStatusStream = async (set: RemoteSet, get: RemoteGet) => {
               chatError: "",
             }),
       }));
+      void remoteClient.loadQueueItems().then(
+        (remoteQueueItems) => set({ remoteQueueItems }),
+        () => undefined,
+      );
       if (activeAgent) {
         const nextRefreshKey = activeAgentRefreshKey(activeAgent);
         const refreshKeyChanged = nextRefreshKey !== lastActiveAgentRefreshKey;
@@ -631,7 +572,7 @@ const ensureAuthenticatedSession = async (set: RemoteSet) => {
 };
 
 const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
-  const [agents, workflows, remoteWatchlists] = await Promise.all([
+  const [agents, workflows, remoteWatchlists, remoteQueueItems] = await Promise.all([
     remoteClient.listAgents(),
     remoteClient.listWorkflows().catch((error: unknown) => {
       if (error instanceof RemoteRequestError && error.status === 404) return [];
@@ -641,6 +582,10 @@ const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
       if (error instanceof RemoteRequestError && error.status === 404) {
         return { watchlists: [], teams: [], prefs: null };
       }
+      throw error;
+    }),
+    remoteClient.loadQueueItems().catch((error: unknown) => {
+      if (error instanceof RemoteRequestError && error.status === 404) return [];
       throw error;
     }),
   ]);
@@ -665,7 +610,7 @@ const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
     return {
       agents,
       workflows,
-      remoteAgentStatuses: remoteAgentStatusMap(agents),
+      remoteQueueItems,
       activeAgentViewModesById: pruneActiveAgentViewModes(state.activeAgentViewModesById, liveAgentIds),
       watchlists: watchlistState.watchlists,
       teams: watchlistState.teams,
@@ -698,8 +643,6 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
   agents: [],
   workflows: [],
   remoteQueueItems: [],
-  remoteQueueBuffers: {},
-  remoteAgentStatuses: {},
   watchlists: [],
   teams: [],
   watchlistPrefs: DEFAULT_WATCHLIST_PREFS,
@@ -942,19 +885,6 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
         status: statusFromError(error),
       });
     }
-  },
-  appendRemoteTerminalQueueOutput(sessionId, data, provider) {
-    if (provider && provider !== "opencode") return;
-    const text = extractTerminalQueueContent(data);
-    if (!text) return;
-    set((state) => ({
-      remoteQueueBuffers: {
-        ...state.remoteQueueBuffers,
-        [sessionId]: boundRemoteQueueSummary(
-          `${state.remoteQueueBuffers[sessionId] ? `${state.remoteQueueBuffers[sessionId]}\n` : ""}${text}`,
-        ),
-      },
-    }));
   },
   async sendPromptToActiveAgent(prompt, inputMode = "message") {
     const trimmed = prompt.trim();
