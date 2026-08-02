@@ -16,6 +16,12 @@ import { FileComparisonLens } from "../files/FileComparisonLens";
 import { FileEditorControllerRegistry } from "../files/fileEditorController";
 import { fileResourceClient, type FileResourceClient } from "../files/fileResourceClient";
 import { useFileResource } from "../files/useFileResource";
+import { normalizeExplorerPathForCompare } from "../explorer/pathUtils";
+
+interface ExplorerChangedEvent {
+  root_path: string;
+  changed_paths: string[];
+}
 
 type ChangesPanelProps = {
   visible: boolean;
@@ -65,8 +71,7 @@ function extensionLanguage(path: string): string {
 }
 
 function sameWorkspacePath(left: string, right: string): boolean {
-  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/\/+$/g, "").toLocaleLowerCase();
-  return normalize(left) === normalize(right);
+  return normalizeExplorerPathForCompare(left) === normalizeExplorerPathForCompare(right);
 }
 
 function baselineForFile(entry: ChangeReviewFileEntry, baselineRef: string | null): FilesComparisonBaseline {
@@ -276,6 +281,45 @@ export function ChangesPanel({
     return () => {
       active = false;
       void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [recompute, visible, workspace]);
+
+  useEffect(() => {
+    if (!workspace || !visible) return;
+
+    let disposed = false;
+    let watchActive = false;
+    const unlistenPromise = listen<ExplorerChangedEvent>("explorer-changed", (event) => {
+      if (
+        normalizeExplorerPathForCompare(event.payload.root_path) !==
+        normalizeExplorerPathForCompare(workspace)
+      ) {
+        return;
+      }
+      void recompute();
+    });
+
+    void unlistenPromise
+      .then(async () => {
+        if (disposed) return;
+        await invoke("explorer_watch", { rootPath: workspace });
+        watchActive = true;
+        if (disposed) {
+          watchActive = false;
+          void invoke("explorer_unwatch", { rootPath: workspace }).catch(() => undefined);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!disposed) console.error("Failed to watch Changes workspace:", reason);
+      });
+
+    return () => {
+      disposed = true;
+      if (watchActive) {
+        watchActive = false;
+        void invoke("explorer_unwatch", { rootPath: workspace }).catch(() => undefined);
+      }
+      void unlistenPromise.then((unlisten) => unlisten()).catch(() => undefined);
     };
   }, [recompute, visible, workspace]);
 

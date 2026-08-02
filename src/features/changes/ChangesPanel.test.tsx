@@ -11,6 +11,13 @@ const { invokeMock, listenMock } = vi.hoisted(() => ({
   listenMock: vi.fn(),
 }));
 
+type ExplorerChangedEvent = {
+  payload: {
+    root_path: string;
+    changed_paths: string[];
+  };
+};
+
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 
@@ -86,6 +93,11 @@ describe("ChangesPanel", () => {
     expect(screen.queryByRole("button", { name: "Mark reviewed" })).not.toBeInTheDocument();
     expect(screen.queryByText("Review live file changes with turn attribution.")).not.toBeInTheDocument();
     expect(listenMock).toHaveBeenCalledWith("git-changed", expect.any(Function));
+    expect(listenMock).toHaveBeenCalledWith("explorer-changed", expect.any(Function));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "explorer_watch",
+      { rootPath: "C:/workspace" },
+    ));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
       "load_change_review",
       expect.objectContaining({
@@ -179,6 +191,49 @@ describe("ChangesPanel", () => {
       const loads = invokeMock.mock.calls.filter(([command]) => command === "load_change_review").length;
       expect(loads).toBeGreaterThan(initialLoads);
     });
+  });
+
+  it("recomputes once for one debounced explorer change payload", async () => {
+    let explorerHandler: ((event: ExplorerChangedEvent) => void) | undefined;
+    listenMock.mockImplementation(async (event: string, callback: unknown) => {
+      if (event === "explorer-changed") {
+        explorerHandler = callback as (event: ExplorerChangedEvent) => void;
+      }
+      return () => undefined;
+    });
+
+    renderPanel();
+    await screen.findByText("src/agent.ts");
+    await waitFor(() => expect(explorerHandler).toBeDefined());
+    const initialLoads = invokeMock.mock.calls.filter(([command]) => command === "load_change_review").length;
+
+    explorerHandler?.({
+      payload: {
+        root_path: "C:/workspace",
+        changed_paths: Array.from({ length: 50 }, (_, index) => `C:/workspace/file-${index}.ts`),
+      },
+    });
+
+    await waitFor(() => {
+      const loads = invokeMock.mock.calls.filter(([command]) => command === "load_change_review").length;
+      expect(loads).toBe(initialLoads + 1);
+    });
+  });
+
+  it("unwatches the workspace when the pane unmounts", async () => {
+    const { unmount } = renderPanel();
+    await screen.findByText("src/agent.ts");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "explorer_watch",
+      { rootPath: "C:/workspace" },
+    ));
+
+    unmount();
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "explorer_unwatch",
+      { rootPath: "C:/workspace" },
+    ));
   });
 
 });
