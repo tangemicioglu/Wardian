@@ -41,6 +41,10 @@ The inspector's neighbors panel lists every agent visible through the topology. 
 - Click an edge to select it, then press Delete — or use the disconnect (×) button on the edge's row in the inspector.
 - All edges are manual and deletable. Deleting a team-seeded edge is a permanent delete; reconnecting requires drawing the edge again.
 
+**Selection:**
+- Graph selection is exclusive: selecting an edge clears the selected agent node, and selecting a node clears the selected edge.
+- Selecting an edge also clears the shared agent selection, so the highlighted edge is the only selected graph object and Delete targets that edge.
+
 **Ghost edges (unmapped traffic):**
 - Recent communication between agents with no manual connection appears as a sparse-dashed edge, and the inspector's neighbors panel labels the pair as "Unmapped communication".
 - **Formalize**: write a manual edge to make it a permanent connection.
