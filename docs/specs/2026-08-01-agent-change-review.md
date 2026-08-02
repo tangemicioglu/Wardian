@@ -144,6 +144,17 @@ Turn records are read from the conversation archive, which is already
 materialised on disk. The pane must not re-derive turns from provider
 transcripts.
 
+The turn read is **bounded**, not whole-archive. Every baseline the pane offers
+is recent: the last effective turn, the active conversation, a branch point, a
+commit, or the operator's last look. None requires months of history. Reading
+every conversation in a workspace makes recomputation cost grow with total
+archive size forever, which no baseline justifies.
+
+The pane reads the active conversation, plus at most a bounded window of the
+most recently updated conversations for the workspace. A path whose writing turn
+falls outside that window presents as `inferred` rather than `attributed`, which
+is the same graceful degradation a skipped record produces.
+
 ### Archive resilience
 
 A turn record the pane cannot parse is **skipped, not fatal.** The archive spans
@@ -153,9 +164,23 @@ never blank the change set.
 
 Git remains the source of the change set, so degraded attribution is a partial
 loss, not a failure: skipped records cost `attributed` evidence on their paths,
-which then present as `inferred`. The pane reports the skipped count rather than
-failing silently, and never surfaces a raw deserialization error as its only
-content.
+which then present as `inferred`. The pane never surfaces a raw deserialization
+error as its only content.
+
+Skipped records are counted but **not reported as a routine warning.** Measured
+on this archive, 7381 of 12381 turn records predate the current schema and
+cannot be parsed at all, missing nine required fields rather than merely
+carrying a null. For one agent in this workspace the ratio is 3201 legacy to 255
+current. A visible count in that range reads as breakage while describing
+ordinary history. The count belongs in diagnostics; the pane stays quiet unless
+attribution is degraded for a path the operator is actually looking at.
+
+Legacy-shaped records are not rehabilitated. Supporting a schema that lacks
+`conversation_id`, `turn_index`, `turn_key`, `started_at`, `updated_at`,
+`request`, `counts`, `files`, and `record_refs` would mean maintaining a second
+record shape to recover attribution for conversations months old, which no
+baseline in this pane looks at. The bounded read keeps them out of the hot path
+instead.
 
 Legacy records may carry `null` for fields later typed as required. Reading
 those fields must tolerate an explicit `null` and fall back to a default, not
@@ -426,8 +451,10 @@ watermark.
 - The pane renders no refresh control, no review control, and no subtitle.
 - A `turns.jsonl` containing a record with `"status_source": null` loads, and the
   pane renders a change set rather than a deserialization error.
-- A single unparseable turn record does not empty the change set; the pane
-  reports the skipped count.
+- A single unparseable turn record does not empty the change set.
+- An archive whose records are majority legacy-shaped yields a working pane with
+  no visible warning, and recomputation cost does not scale with total archive
+  size.
 - Phase 2 only: a turn-boundary snapshot completes within budget, leaves HEAD,
   the operator's index, and all branches unmodified, and adds no ref visible to
   `git branch`.
