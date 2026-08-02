@@ -82,6 +82,9 @@ describe("ChangesPanel", () => {
     expect(await screen.findByText("src/agent.ts")).toBeInTheDocument();
     expect(screen.getByText("attributed")).toBeInTheDocument();
     expect(screen.getByLabelText("Change review baseline")).toHaveValue("last_effective_turn");
+    expect(screen.queryByRole("button", { name: "Refresh Changes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Mark reviewed" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Review live file changes with turn attribution.")).not.toBeInTheDocument();
     expect(listenMock).toHaveBeenCalledWith("git-changed", expect.any(Function));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
       "load_change_review",
@@ -132,27 +135,6 @@ describe("ChangesPanel", () => {
     expect(saves).toHaveLength(1);
   });
 
-  it("captures the current change signatures when marking reviewed", async () => {
-    renderPanel();
-
-    await screen.findByText("src/agent.ts");
-    fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
-
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
-      "save_change_review_watermark",
-      expect.objectContaining({
-        watermark: expect.objectContaining({
-          reviewed_paths: [{
-            path: "src/agent.ts",
-            change_kind: "modified",
-            insertions: 3,
-            deletions: 1,
-          }],
-        }),
-      }),
-    ));
-  });
-
   it("does not compute while hidden and recomputes when the sidebar becomes visible", async () => {
     const view = renderPanel(false);
 
@@ -199,23 +181,4 @@ describe("ChangesPanel", () => {
     });
   });
 
-  it("keeps the last change set visible when a refresh fails", async () => {
-    renderPanel();
-    await screen.findByText("src/agent.ts");
-
-    invokeMock.mockImplementation((command: string) => {
-      if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "last_effective_turn" });
-      if (command === "get_explorer_root") return Promise.resolve("C:/workspace");
-      if (command === "load_change_review") return Promise.reject(new Error("invalid type: null"));
-      return Promise.resolve(undefined);
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Refresh Changes" }));
-
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(
-      "Unable to refresh change attribution; showing the last successful change set.",
-    ));
-    expect(screen.getByText("src/agent.ts")).toBeInTheDocument();
-    expect(screen.queryByText("invalid type: null")).not.toBeInTheDocument();
-  });
 });

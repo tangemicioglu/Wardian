@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
@@ -9,7 +9,6 @@ import type {
   ChangeReviewFileEntry,
   ChangeReviewLoadResponse,
   ChangeReviewPrefs,
-  ChangeReviewReviewedPath,
   ChangeReviewSummary,
   FilesComparisonBaseline,
 } from "../../types";
@@ -203,11 +202,9 @@ export function ChangesPanel({
   const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [summary, setSummary] = useState<ChangeReviewSummary | null>(null);
   const [gitAvailable, setGitAvailable] = useState(true);
-  const [headRef, setHeadRef] = useState<string | null>(null);
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(new Set());
   const [loading, setLoading] = useState(false);
-  const [refreshRevision, setRefreshRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [skippedTurnRecords, setSkippedTurnRecords] = useState(0);
   const requestGeneration = useRef(0);
@@ -258,7 +255,6 @@ export function ChangesPanel({
       if (generation !== requestGeneration.current) return;
       setSummary(response.summary);
       setGitAvailable(response.git_available);
-      setHeadRef(response.head_ref);
       setSkippedTurnRecords(response.skipped_turn_records);
     } catch (reason) {
       if (generation === requestGeneration.current) setError(errorMessage(reason));
@@ -269,7 +265,7 @@ export function ChangesPanel({
 
   useEffect(() => {
     void recompute();
-  }, [recompute, refreshRevision, turn_revision]);
+  }, [recompute, turn_revision]);
 
   useEffect(() => {
     if (!workspace || !visible) return;
@@ -282,28 +278,6 @@ export function ChangesPanel({
       void unlistenPromise.then((unlisten) => unlisten());
     };
   }, [recompute, visible, workspace]);
-
-  const markReviewed = useCallback(async () => {
-    if (!workspace || !selectedAgentId || !summary) return;
-    const reviewed_paths: ChangeReviewReviewedPath[] = summary.files.map((file) => ({
-      path: file.path,
-      change_kind: file.change_kind,
-      insertions: file.insertions,
-      deletions: file.deletions,
-    }));
-    await invoke("save_change_review_watermark", {
-      watermark: {
-        schema: 1,
-        agent_id: selectedAgentId,
-        workspace,
-        reviewed_turn_index: summary.to_turn_index ?? 0,
-        reviewed_at: new Date().toISOString(),
-        reviewed_head: headRef,
-        reviewed_paths,
-      },
-    });
-    setRefreshRevision((value) => value + 1);
-  }, [headRef, selectedAgentId, summary, workspace]);
 
   const toggleFile = (path: string) => {
     setExpandedPath((current) => current === path ? null : path);
@@ -332,7 +306,6 @@ export function ChangesPanel({
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--color-wardian-border)] pb-3">
         <div className="mr-auto min-w-0">
           <h2 className="text-sm font-bold text-primary tracking-tight">Changes</h2>
-          <p className="text-[11px] text-[var(--color-wardian-text-muted)]">Review live file changes with turn attribution.</p>
         </div>
         <label className="flex w-full items-center gap-2 text-[11px]">
           <span className="text-[var(--color-wardian-text-muted)]">Baseline</span>
@@ -348,24 +321,6 @@ export function ChangesPanel({
             {BASELINE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
-        <button
-          type="button"
-          className="inline-flex items-center gap-1 rounded border border-[var(--color-wardian-border)] px-2 py-1 text-[11px]"
-          disabled={loading || !workspace}
-          onClick={() => setRefreshRevision((value) => value + 1)}
-          title="Refresh Changes"
-          aria-label="Refresh Changes"
-        >
-          <RefreshCw size={13} aria-hidden="true" /> Refresh
-        </button>
-        <button
-          type="button"
-          className="rounded border border-[var(--color-wardian-border)] px-2 py-1 text-[11px]"
-          disabled={loading || !summary || !workspace}
-          onClick={() => void markReviewed()}
-        >
-          Mark reviewed
-        </button>
       </header>
       {!selectedAgent ? (
         <div className="mt-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px] text-[var(--color-wardian-text-muted)]" role="status">
