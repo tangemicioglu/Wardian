@@ -11,6 +11,7 @@ use wardian_core::conversations::{ConversationIndexEntry, ConversationTurnRecord
 use wardian_core::models::git::GitStatusResult;
 
 const CHANGE_REVIEW_SCHEMA: u8 = 1;
+const CHANGE_REVIEW_RECENT_CONVERSATION_LIMIT: usize = 20;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -250,8 +251,19 @@ fn read_turns_for_workspace(
         .into_iter()
         .filter(|entry| same_workspace(cwd, &entry.workspace))
         .collect::<Vec<_>>();
+    let mut active_conversation_ids = BTreeSet::new();
+    for entry in &matching_entries {
+        if let Some(conversation_id) = archive
+            .active_conversation_id(&entry.agent_id)
+            .map_err(|error| error.to_string())?
+        {
+            active_conversation_ids.insert(conversation_id);
+        }
+    }
+    let selected_entries =
+        select_conversation_entries_for_change_review(matching_entries, &active_conversation_ids);
     archive
-        .turn_records_for_conversations_resilient(&matching_entries)
+        .turn_records_for_conversations_resilient(&selected_entries)
         .map(|(records, skipped_records)| {
             (
                 records
@@ -262,6 +274,42 @@ fn read_turns_for_workspace(
             )
         })
         .map_err(|error| error.to_string())
+}
+
+fn conversation_recency(entry: &ConversationIndexEntry) -> &str {
+    entry
+        .ended_at
+        .as_deref()
+        .unwrap_or(entry.started_at.as_str())
+}
+
+fn select_conversation_entries_for_change_review(
+    mut entries: Vec<ConversationIndexEntry>,
+    active_conversation_ids: &BTreeSet<String>,
+) -> Vec<ConversationIndexEntry> {
+    entries.sort_by(|left, right| {
+        conversation_recency(right)
+            .cmp(conversation_recency(left))
+            .then_with(|| right.conversation_id.cmp(&left.conversation_id))
+    });
+
+    let mut selected = entries
+        .iter()
+        .take(CHANGE_REVIEW_RECENT_CONVERSATION_LIMIT)
+        .cloned()
+        .collect::<Vec<_>>();
+    for entry in entries
+        .iter()
+        .filter(|entry| active_conversation_ids.contains(&entry.conversation_id))
+    {
+        if selected
+            .iter()
+            .all(|selected_entry| selected_entry.conversation_id != entry.conversation_id)
+        {
+            selected.push(entry.clone());
+        }
+    }
+    selected
 }
 
 fn add_claim(
@@ -658,7 +706,37 @@ pub async fn save_change_review_watermark(watermark: ChangeReviewWatermark) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wardian_core::conversations::{ConversationBoundaryReason, ConversationStatus};
     use wardian_core::models::git::GitFileEntry;
+
+    fn conversation_entry(
+        conversation_id: &str,
+        started_at: &str,
+        ended_at: Option<&str>,
+    ) -> ConversationIndexEntry {
+        ConversationIndexEntry {
+            schema: 1,
+            conversation_id: conversation_id.to_string(),
+            agent_id: "agent-1".to_string(),
+            agent_name: "Reviewer".to_string(),
+            agent_class: "default".to_string(),
+            workspace: "C:/repo".to_string(),
+            provider: "mock".to_string(),
+            provider_session_ids: Vec::new(),
+            started_at: started_at.to_string(),
+            ended_at: ended_at.map(str::to_string),
+            status: ConversationStatus::Closed,
+            boundary_reason: ConversationBoundaryReason::Shutdown,
+            first_prompt_excerpt: None,
+            last_record_excerpt: None,
+            record_count: 0,
+            turn_count: 0,
+            has_turns: false,
+            lifecycle_only: false,
+            artifact_count: 0,
+            path: format!("C:/archive/{conversation_id}"),
+        }
+    }
 
     fn status_for(path: &str, status: &str) -> GitStatusResult {
         GitStatusResult {
@@ -674,6 +752,31 @@ mod tests {
             behind: 0,
             rebase_in_progress: false,
         }
+    }
+
+    #[test]
+    fn bounded_turn_read_keeps_active_conversation_outside_recent_window() {
+        let entries = (0..22)
+            .map(|index| {
+                let timestamp = format!("2026-08-01T00:{index:02}:00.000Z");
+                conversation_entry(&format!("conv-{index}"), &timestamp, Some(&timestamp))
+            })
+            .collect::<Vec<_>>();
+        let active_conversation_ids = ["conv-0".to_string()].into_iter().collect();
+
+        let selected =
+            select_conversation_entries_for_change_review(entries, &active_conversation_ids);
+
+        assert_eq!(selected.len(), CHANGE_REVIEW_RECENT_CONVERSATION_LIMIT + 1);
+        assert!(selected
+            .iter()
+            .any(|entry| entry.conversation_id == "conv-0"));
+        assert!(selected
+            .iter()
+            .any(|entry| entry.conversation_id == "conv-21"));
+        assert!(!selected
+            .iter()
+            .any(|entry| entry.conversation_id == "conv-1"));
     }
 
     #[test]

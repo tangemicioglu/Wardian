@@ -198,6 +198,24 @@ describe("ChangesPanel", () => {
     expect(savesAfterCollapse).toHaveLength(1);
   });
 
+  it("keeps skipped record counts diagnostic-only", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "last_effective_turn" });
+      if (command === "get_explorer_root") return Promise.resolve("C:/workspace");
+      if (command === "load_change_review") return Promise.resolve({
+        ...response,
+        skipped_turn_records: 3201,
+      });
+      return Promise.resolve(undefined);
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText("src/agent.ts")).toBeInTheDocument();
+    expect(screen.queryByText(/Attribution degraded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not readable/)).not.toBeInTheDocument();
+  });
+
   it("does not compute while hidden and recomputes when the sidebar becomes visible", async () => {
     const view = renderPanel(false);
 

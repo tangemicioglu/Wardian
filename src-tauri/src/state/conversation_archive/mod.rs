@@ -139,6 +139,12 @@ pub fn effective_conversation_logging(
 }
 
 impl ConversationArchiveState {
+    pub fn active_conversation_id(&self, agent_id: &str) -> io::Result<Option<String>> {
+        Ok(lock_active(&self.active)?
+            .get(agent_id)
+            .map(|handle| handle.conversation_id.clone()))
+    }
+
     pub fn list(
         &self,
         agent: Option<&str>,
@@ -730,10 +736,7 @@ impl ConversationArchiveState {
 
     #[cfg(test)]
     pub fn active_conversation_id_for_test(&self, agent_id: &str) -> Option<String> {
-        self.active
-            .lock()
+        self.active_conversation_id(agent_id)
             .expect("active conversation lock")
-            .get(agent_id)
-            .map(|handle| handle.conversation_id.clone())
     }
 }

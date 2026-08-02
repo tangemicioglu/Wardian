@@ -214,7 +214,6 @@ export function ChangesPanel({
   const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [skippedTurnRecords, setSkippedTurnRecords] = useState(0);
   const requestGeneration = useRef(0);
 
   useEffect(() => {
@@ -264,7 +263,6 @@ export function ChangesPanel({
       setSummary(response.summary);
       setGitAvailable(response.git_available);
       setHeadRef(response.head_ref);
-      setSkippedTurnRecords(response.skipped_turn_records);
     } catch (reason) {
       if (generation === requestGeneration.current) setError(errorMessage(reason));
     } finally {
@@ -425,11 +423,6 @@ export function ChangesPanel({
           {error ? (
             <div className="mb-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px]" role="alert">
               Unable to refresh change attribution; showing the last successful change set.
-            </div>
-          ) : null}
-          {skippedTurnRecords > 0 ? (
-            <div className="mb-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px] text-[var(--color-wardian-text-muted)]" role="status">
-              Attribution degraded: {skippedTurnRecords} turn {skippedTurnRecords === 1 ? "record was" : "records were"} not readable.
             </div>
           ) : null}
           {!gitAvailable ? (
