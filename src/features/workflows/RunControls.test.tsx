@@ -41,15 +41,31 @@ describe('RunControls', () => {
 
   it('shows approve/reject when awaiting approval', async () => {
     invokeMock.mockResolvedValueOnce({ ok: true });
+    const onChanged = vi.fn();
 
-    render(<RunControls {...base} status="awaiting_approval" awaitingNode="gate" onChanged={() => {}} />);
+    render(<RunControls {...base} status="awaiting_approval" awaitingNode="gate" onChanged={onChanged} />);
     fireEvent.click(screen.getByRole('button', { name: /approve/i }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
         'workflow_approve',
-        expect.objectContaining({ blueprintId: 'wf', runId: 'run-1', node: 'gate', granted: true }),
+        expect.objectContaining({ blueprintId: 'wf', runId: 'run-1', node: 'gate', granted: true, note: null }),
       );
+      expect(onChanged).toHaveBeenCalledOnce();
     });
+  });
+
+  it('keeps the approval visible and reports a backend failure', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('run is no longer awaiting approval'));
+    const onChanged = vi.fn();
+
+    render(<RunControls {...base} status="awaiting_approval" awaitingNode="gate" onChanged={onChanged} />);
+    fireEvent.click(screen.getByRole('button', { name: /^reject$/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not reject this workflow run: run is no longer awaiting approval',
+    );
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /^approve$/i })).toBeEnabled();
   });
 });

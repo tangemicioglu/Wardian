@@ -30,6 +30,8 @@ pub enum EngineError {
     Workflow(#[from] crate::workflow::WorkflowError),
     #[error("run is not awaiting approval at node `{0}`")]
     NotAwaitingApproval(String),
+    #[error("approval decision is already being resolved for this run")]
+    ApprovalDecisionInProgress,
     #[error("unresolved interpolation: {0}")]
     Interpolation(String),
     #[error("invalid run state: {0}")]

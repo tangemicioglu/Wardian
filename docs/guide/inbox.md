@@ -39,6 +39,7 @@ Inbox preferences persist under the active Wardian home.
 - Use **Open** on an agent card to open or focus the related agent-session surface.
 - Use recognized provider choices only on a provider-sourced **Action needed** card.
 - Use the explicit choices on a manual **Approval request** card. Wardian records the decision durably and returns it to the requesting agent; it does not send a free-text response to the provider terminal.
+- Use **Approve** or **Reject** on a workflow approval card to resolve its waiting gate from Inbox. Wardian records the decision before it continues an approved workflow in the background.
 - Use **Mark all read**, **Clear read**, or the item trash control for reviewed, non-pending items.
 
 An unresolved approval cannot be cleared or dismissed. When it expires, the agent must not treat the absence of a response as approval.

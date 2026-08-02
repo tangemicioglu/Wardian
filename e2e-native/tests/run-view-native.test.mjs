@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 import {
   createNativeHarness,
@@ -23,6 +23,39 @@ async function invokeTauri(driver, command, args = {}) {
 
   assert.equal(result.ok, true, `${command} failed: ${result.error}`);
   return result.value;
+}
+
+async function invokeWorkflowApprovalPair(driver, first, second) {
+  return driver.executeAsyncScript((commandName, firstArgs, secondArgs, done) => {
+    Promise.allSettled([
+      window.__TAURI_INTERNALS__.invoke(commandName, firstArgs),
+      window.__TAURI_INTERNALS__.invoke(commandName, secondArgs),
+    ]).then((results) => done(results.map((result) => (
+      result.status === "fulfilled"
+        ? { status: result.status, value: result.value }
+        : { status: result.status, reason: String(result.reason) }
+    ))));
+  }, "workflow_approve", first, second);
+}
+
+async function waitForWorkflowStatus(runDir, expectedStatus, timeoutMs = 15000) {
+  const statePath = path.join(runDir, "state.json");
+  const startedAt = Date.now();
+  let lastState = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      if (existsSync(statePath)) {
+        lastState = JSON.parse(readFileSync(statePath, "utf8"));
+        if (lastState.status === expectedStatus) return lastState;
+      }
+    } catch {
+      // The engine may be replacing the checkpoint while this test reads it.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  assert.fail(`Timed out waiting for workflow status ${expectedStatus}: ${JSON.stringify(lastState)}`);
 }
 
 function seedRun(home) {
@@ -138,4 +171,172 @@ test("native run commands list and read seeded workflow run state", { timeout: 1
   assert.equal(run.events.length, 4);
   assert.equal(run.events[2].kind, "node_completed");
   assert.equal(run.blueprint.id, seeded.blueprintId);
+});
+
+test("native workflow approval persists before continuation and serializes concurrent decisions", { timeout: 180000 }, async (t) => {
+  const harness = await createNativeHarness();
+  assert.ok(harness.appPath);
+
+  try {
+    if (!skipNativeBuild) {
+      ensureNativeAppBuilt(harness);
+    }
+  } catch (error) {
+    t.skip(String(error));
+    return;
+  }
+
+  prepareIsolatedHome(harness);
+  const blueprintId = "native-approval-run";
+  const workflowsDir = path.join(harness.isolatedHome, "library", "workflows");
+  const workflowPath = path.join(workflowsDir, `${blueprintId}.md`);
+  const delayedCommand = process.platform === "win32"
+    ? "powershell -NoProfile -Command Start-Sleep -Milliseconds 1500"
+    : "sleep 1.5";
+  mkdirSync(workflowsDir, { recursive: true });
+  writeFileSync(
+    workflowPath,
+    `---
+schema: 2
+id: ${blueprintId}
+name: Native Approval Run
+nodes:
+  - id: trigger
+    type: manual_trigger
+  - id: approval
+    type: approval
+    fields:
+      prompt: Approve the delayed continuation?
+  - id: delayed-step
+    type: shell
+    fields:
+      command: ${JSON.stringify(delayedCommand)}
+edges:
+  - from: trigger
+    to: approval
+    from_port: out
+    to_port: in
+  - from: approval
+    to: delayed-step
+    from_port: out
+    to_port: in
+---
+
+# Native Approval Run
+`,
+    "utf8",
+  );
+
+  let session;
+  try {
+    session = await startNativeSession(harness);
+  } catch (error) {
+    t.skip(String(error));
+    return;
+  }
+
+  t.after(async () => {
+    await session.close();
+  });
+
+  await waitForAppShell(session.driver, 20000);
+  const run = await invokeTauri(session.driver, "workflow_run", {
+    path: workflowPath,
+    provider: "mock",
+    workspace: harness.repoRoot,
+    input: {},
+    bindings: {},
+  });
+
+  await waitForWorkflowStatus(run.run_dir, "awaiting_approval");
+  const approvalStartedAt = Date.now();
+  const approvalArgs = {
+    blueprintId,
+    runId: run.run_id,
+    blueprintPath: workflowPath,
+    node: "approval",
+    granted: true,
+    actor: "user",
+    note: null,
+  };
+  const approvalResults = await invokeWorkflowApprovalPair(
+    session.driver,
+    approvalArgs,
+    { ...approvalArgs },
+  );
+
+  assert.equal(approvalResults.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(approvalResults.filter((result) => result.status === "rejected").length, 1);
+  assert.match(
+    approvalResults.find((result) => result.status === "rejected").reason,
+    /approval decision is already being resolved|run is not awaiting approval/,
+  );
+  assert.ok(
+    Date.now() - approvalStartedAt < 1000,
+    "workflow_approve must return before the delayed continuation completes",
+  );
+  const acceptedState = await waitForWorkflowStatus(run.run_dir, "running");
+  assert.equal(acceptedState.status, "running");
+
+  const completedState = await waitForWorkflowStatus(run.run_dir, "completed");
+  assert.equal(completedState.nodes["delayed-step"], "completed");
+  const events = readFileSync(path.join(run.run_dir, "events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(events.filter((event) => event.kind === "approval_granted").length, 1);
+  assert.equal(events.filter((event) => event.kind === "node_started" && event.node === "delayed-step").length, 1);
+  assert.deepEqual(events.map((event) => event.seq), events.map((_, index) => index));
+
+  const conflictingRun = await invokeTauri(session.driver, "workflow_run", {
+    path: workflowPath,
+    provider: "mock",
+    workspace: harness.repoRoot,
+    input: {},
+    bindings: {},
+  });
+  await waitForWorkflowStatus(conflictingRun.run_dir, "awaiting_approval");
+  const conflictingArgs = {
+    ...approvalArgs,
+    runId: conflictingRun.run_id,
+  };
+  const conflictingResults = await invokeWorkflowApprovalPair(
+    session.driver,
+    conflictingArgs,
+    { ...conflictingArgs, granted: false },
+  );
+  assert.equal(conflictingResults.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(conflictingResults.filter((result) => result.status === "rejected").length, 1);
+
+  let conflictingEvents;
+  const rejection = conflictingResults.find((result) => result.status === "rejected");
+  assert.match(rejection.reason, /approval decision is already being resolved|run is not awaiting approval/);
+  conflictingEvents = readFileSync(path.join(conflictingRun.run_dir, "events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const grantedEvents = conflictingEvents.filter((event) => event.kind === "approval_granted");
+  const rejectedEvents = conflictingEvents.filter((event) => event.kind === "approval_rejected");
+  assert.equal(grantedEvents.length + rejectedEvents.length, 1);
+  assert.deepEqual(conflictingEvents.map((event) => event.seq), conflictingEvents.map((_, index) => index));
+
+  if (grantedEvents.length === 1) {
+    const conflictCompleted = await waitForWorkflowStatus(conflictingRun.run_dir, "completed");
+    assert.equal(conflictCompleted.nodes["delayed-step"], "completed");
+    conflictingEvents = readFileSync(path.join(conflictingRun.run_dir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(
+      conflictingEvents.filter((event) => event.kind === "node_started" && event.node === "delayed-step").length,
+      1,
+    );
+  } else {
+    const conflictRejected = await waitForWorkflowStatus(conflictingRun.run_dir, "failed");
+    assert.match(conflictRejected.failure, /approval rejected/);
+    assert.equal(
+      conflictingEvents.filter((event) => event.kind === "node_started" && event.node === "delayed-step").length,
+      0,
+    );
+  }
 });

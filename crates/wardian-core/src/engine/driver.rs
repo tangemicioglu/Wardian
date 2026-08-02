@@ -126,6 +126,21 @@ impl Engine {
         note: Option<String>,
         exec: &dyn StepExecutor,
     ) -> crate::engine::Result<RunState> {
+        let s = Self::record_approval_granted(bp, run_root, node, actor, note)?;
+        Self::drive_from_state(bp, s, run_root, exec).await
+    }
+
+    /// Persist an approval decision without executing the remainder of the
+    /// workflow. Callers that detach long-running continuation work can use
+    /// the returned running state with [`Self::drive_from_state`].
+    pub fn record_approval_granted(
+        bp: &Blueprint,
+        run_root: &Path,
+        node: &str,
+        actor: &str,
+        note: Option<String>,
+    ) -> crate::engine::Result<RunState> {
+        let _approval_decision = acquire_approval_decision_guard(run_root)?;
         let g = Graph::new(bp);
         let mut s = load_state(&g, run_root)?;
         if s.status != RunStatus::AwaitingApproval {
@@ -141,7 +156,6 @@ impl Engine {
                 note,
             },
         )?;
-        drive(&g, &mut s, run_root, exec).await?;
         Ok(s)
     }
 
@@ -153,6 +167,7 @@ impl Engine {
         actor: &str,
         note: Option<String>,
     ) -> crate::engine::Result<RunState> {
+        let _approval_decision = acquire_approval_decision_guard(run_root)?;
         let g = Graph::new(bp);
         let mut s = load_state(&g, run_root)?;
         if s.status != RunStatus::AwaitingApproval {
@@ -169,6 +184,20 @@ impl Engine {
             },
         )?;
         Ok(s)
+    }
+}
+
+fn acquire_approval_decision_guard(
+    run_root: &Path,
+) -> crate::engine::Result<crate::workflow_approval_lock::ApprovalDecisionGuard> {
+    match crate::workflow_approval_lock::acquire_approval_decision_guard(run_root) {
+        Ok(guard) => Ok(guard),
+        Err(crate::workflow_approval_lock::ApprovalDecisionLockError::Contended) => {
+            Err(EngineError::ApprovalDecisionInProgress)
+        }
+        Err(crate::workflow_approval_lock::ApprovalDecisionLockError::Io(error)) => {
+            Err(EngineError::Io(error))
+        }
     }
 }
 
@@ -519,6 +548,116 @@ mod tests {
         assert_eq!(state.run_id, "run-xyz");
         let checkpoint = read_checkpoint(dir.path()).unwrap().unwrap();
         assert_eq!(checkpoint.run_id, "run-xyz");
+    }
+
+    fn approval_blueprint() -> Blueprint {
+        Blueprint {
+            schema: 2,
+            id: "wf".into(),
+            name: "Workflow".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                Node {
+                    id: "gate".into(),
+                    r#type: "approval".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                Node {
+                    id: "task".into(),
+                    r#type: "task".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({
+                        "agent": "role:worker",
+                        "prompt": "work"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+            ],
+            edges: vec![
+                crate::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "gate".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "gate".into(),
+                    from_port: "out".into(),
+                    to: "task".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn record_approval_granted_persists_running_state_before_continuation() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = approval_blueprint();
+        let exec = MockExecutor::new();
+
+        let parked = Engine::start_with_id(
+            &blueprint,
+            "run-xyz",
+            serde_json::json!({}),
+            dir.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+        assert_eq!(parked.status, RunStatus::AwaitingApproval);
+
+        let accepted =
+            Engine::record_approval_granted(&blueprint, dir.path(), "gate", "user", None).unwrap();
+
+        assert_eq!(accepted.status, RunStatus::Running);
+        assert_eq!(
+            read_checkpoint(dir.path()).unwrap().unwrap().status,
+            RunStatus::Running
+        );
+        assert!(!exec.calls().contains(&"task:work".to_string()));
+    }
+
+    #[tokio::test]
+    async fn approval_transitions_reject_another_in_progress_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = approval_blueprint();
+        let exec = MockExecutor::new();
+        Engine::start_with_id(
+            &blueprint,
+            "run-xyz",
+            serde_json::json!({}),
+            dir.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+        let _approval_decision =
+            crate::workflow_approval_lock::acquire_approval_decision_guard(dir.path()).unwrap();
+
+        assert!(matches!(
+            Engine::record_approval_granted(&blueprint, dir.path(), "gate", "user", None),
+            Err(EngineError::ApprovalDecisionInProgress)
+        ));
+        assert!(matches!(
+            Engine::reject_approval(&blueprint, dir.path(), "gate", "user", None).await,
+            Err(EngineError::ApprovalDecisionInProgress)
+        ));
     }
 
     #[test]
