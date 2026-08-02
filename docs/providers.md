@@ -19,6 +19,23 @@ Wardian provides one orchestration layer over five supported CLI providers: Anti
 - Workflow Agent nodes choose one run mode: `ephemeral`, `inherit_fresh`, or `inherit_resume`.
 - Wardian keeps user repositories clean by adapting provider-native discovery instead of copying agent-specific instruction and skill files into the project root.
 
+## Model and Effort Selection
+
+Choose a model when you spawn an agent or from **Agent Configuration** for an
+existing agent. The same compact control is available in Chat. Wardian keeps
+the selection on the agent and applies it the next time that provider starts or
+restarts; changing it does not interrupt an active turn.
+
+The picker reads the installed provider's available models instead of pinning a
+dated list into Wardian. It refreshes automatically while open and has a manual
+refresh action. If a provider cannot expose its current catalogue, Wardian
+keeps a saved model rather than replacing it with a guess.
+
+Where a provider exposes compatible reasoning levels, the picker also shows an
+**Effort** control for the selected model. Providers without a stable
+launch-time effort option show only model selection. Leave either control on
+**Provider default** to use the provider's normal default.
+
 ## Antigravity (`agy`)
 
 Antigravity runs directly in the real target workspace.
