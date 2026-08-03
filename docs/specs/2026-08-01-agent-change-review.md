@@ -228,6 +228,14 @@ operator still sees which files that turn touched and their current content.
 Phase 2 adds per-turn content snapshots. It ships only if it meets the budgets
 below under measurement; it does not ship on the strength of this document.
 
+**Superseded by [Agent Change Snapshots](2026-08-02-agent-change-snapshots.md).**
+That document reports the measurement this section demanded. Phase 2 passes on
+cost, and the `≤ 250 ms` p95 budget below was withdrawn: it is under the
+four-process spawn floor on Windows, so it mandated in-process libgit2 by
+accident rather than by decision. It is replaced by `≤ 1 s` p95 with a 5 s hard
+abandon. The section below is retained as written for provenance; where the two
+disagree, the newer document governs.
+
 ### Placement
 
 Snapshots are parentless commits written into the **working tree's own object
@@ -259,8 +267,12 @@ exceeds its budget is abandoned, not queued.
 
 ### Required optimisations
 
-The per-workspace index file is persistent. Its loss re-incurs the cold cost and
-it must survive restarts.
+The per-workspace index file is persistent and must survive restarts.
+
+Measurement corrected this: its loss re-incurs a re-seed, not the cold cost,
+because the index is byte-copied from `.git/index` rather than built. Seeded
+`add -A` measured 78 ms against 85582 ms for a fresh index. Seeding is a
+shipping requirement, not an optimisation.
 
 A turn whose `files.written` is empty and whose `tools_used` contains no shell
 tool is skipped without a tree walk.
