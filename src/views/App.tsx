@@ -1597,8 +1597,6 @@ function AppBody() {
           telemetry={telemetry}
           sourceControlStatus={sourceControlStatus}
           turnRevision={changeReviewTurnRevision}
-          editorRegistry={filesEditorRegistry}
-          fileResourceClient={fileResourceClient}
           onAgentsUpdated={fetchAgents}
           broadcastMessage={broadcastMessage}
           setBroadcastMessage={setBroadcastMessage}

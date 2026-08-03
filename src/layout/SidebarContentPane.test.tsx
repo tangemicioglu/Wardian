@@ -4,8 +4,6 @@ import { SidebarContentPane } from "./SidebarContentPane";
 import type { SidebarTab } from "./SidebarIconRail";
 import type { AgentClassDefinition, AgentConfig, OpenSurfaceRequest } from "../types";
 import type { SelectedAgentGitStatus } from "../features/git/useSelectedAgentGitStatus";
-import { FileEditorControllerRegistry } from "../features/files/fileEditorController";
-import { fileResourceClient } from "../features/files/fileResourceClient";
 
 const loadSchedulesMock = vi.hoisted(() => vi.fn());
 const pauseScheduleMock = vi.hoisted(() => vi.fn());
@@ -144,8 +142,6 @@ function renderPane({
       telemetry={{}}
       sourceControlStatus={sourceControlStatus}
       turnRevision={7}
-      editorRegistry={new FileEditorControllerRegistry(fileResourceClient)}
-      fileResourceClient={fileResourceClient}
       onAgentsUpdated={vi.fn()}
       broadcastMessage=""
       setBroadcastMessage={vi.fn()}

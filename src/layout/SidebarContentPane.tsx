@@ -16,8 +16,6 @@ import { ExplorerPanel } from "../features/explorer/ExplorerPanel";
 import { GitPanel } from "../features/git/GitPanel";
 import type { SelectedAgentGitStatus } from "../features/git/useSelectedAgentGitStatus";
 import { ChangesPanel } from "../features/changes/ChangesPanel";
-import type { FileEditorControllerRegistry } from "../features/files/fileEditorController";
-import type { FileResourceClient } from "../features/files/fileResourceClient";
 import { useRunStore } from "../features/workflows/run/useRunStore";
 import { useSchedulesStore } from "../store/useSchedulesStore";
 import { useWorkflowsView } from "../store/useWorkflowsView";
@@ -32,8 +30,6 @@ interface SidebarContentPaneProps {
   telemetry: Record<string, AgentTelemetry>;
   sourceControlStatus: SelectedAgentGitStatus;
   turnRevision: number;
-  editorRegistry: FileEditorControllerRegistry;
-  fileResourceClient: FileResourceClient;
   onAgentsUpdated: (agent?: AgentConfig) => void;
   broadcastMessage: string;
   setBroadcastMessage: (msg: string) => void;
@@ -51,8 +47,6 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
   telemetry,
   sourceControlStatus,
   turnRevision,
-  editorRegistry,
-  fileResourceClient,
   onAgentsUpdated,
   broadcastMessage,
   setBroadcastMessage,
@@ -82,8 +76,6 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
             agents={agents}
             selected_agent_ids={selectedAgentIds}
             turn_revision={turnRevision}
-            editor_registry={editorRegistry}
-            client={fileResourceClient}
           />
         )}
 

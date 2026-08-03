@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ChevronDown, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
@@ -13,11 +12,11 @@ import type {
   ChangeReviewSummary,
   ChangeReviewWatermark,
   FilesComparisonBaseline,
+  FilesSurfaceStateV2,
 } from "../../types";
-import { FileComparisonLens } from "../files/FileComparisonLens";
-import { FileEditorControllerRegistry } from "../files/fileEditorController";
-import { fileResourceClient, type FileResourceClient } from "../files/fileResourceClient";
-import { useFileResource } from "../files/useFileResource";
+import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
+import type { WorkbenchNavigationService } from "../workbench/navigationService";
+import { fileResourceKey } from "../files/fileResourceKey";
 import { normalizeExplorerPathForCompare } from "../explorer/pathUtils";
 
 interface ExplorerChangedEvent {
@@ -30,8 +29,7 @@ type ChangesPanelProps = {
   agents: readonly AgentConfig[];
   selected_agent_ids: ReadonlySet<string>;
   turn_revision: number;
-  editor_registry: FileEditorControllerRegistry;
-  client?: FileResourceClient;
+  navigation?: WorkbenchNavigationService | null;
 };
 
 const BASELINE_OPTIONS: readonly { value: ChangeReviewBaseline; label: string }[] = [
@@ -67,129 +65,46 @@ function pathForWorkspace(workspace: string, path: string): string {
   return `${workspace.replace(/[\\/]+$/g, "")}/${path.replace(/^[\\/]+/g, "")}`;
 }
 
-function extensionLanguage(path: string): string {
-  const extension = path.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase();
-  return extension && extension.length > 0 ? extension : "plaintext";
-}
-
 function sameWorkspacePath(left: string, right: string): boolean {
   return normalizeExplorerPathForCompare(left) === normalizeExplorerPathForCompare(right);
 }
 
-function baselineForFile(entry: ChangeReviewFileEntry, baselineRef: string | null): FilesComparisonBaseline {
+/**
+ * Builds the comparison baseline for a change-review entry.
+ *
+ * `old_path` is used when present so a renamed file is compared against the name
+ * it had at the baseline. Added and untracked files are marked `absent` rather
+ * than pointed at a revision that does not contain them.
+ */
+function baselineForFile(
+  entry: ChangeReviewFileEntry,
+  baselineRef: string | null,
+  workspace: string,
+  label: string,
+): FilesComparisonBaseline {
   return {
-    kind: "prompt_checkpoint",
-    checkpoint_id: `change-review:${baselineRef ?? "working-tree"}:${entry.path}`,
+    kind: "git_revision",
+    revision: baselineRef ?? "HEAD",
+    cwd: workspace,
+    path: entry.old_path ?? entry.path,
+    label,
+    absent: entry.change_kind === "added" || entry.change_kind === "untracked",
   };
 }
 
-function ChangeFileComparison({
-  panel_key,
-  workspace,
-  agent_id,
-  entry,
-  baseline_ref,
-  visible,
-  editor_registry,
-  client = fileResourceClient,
-  on_close,
-}: {
-  panel_key: string;
-  workspace: string;
-  agent_id: string;
-  entry: ChangeReviewFileEntry;
-  baseline_ref: string | null;
-  visible: boolean;
-  editor_registry: FileEditorControllerRegistry;
-  client?: FileResourceClient;
-  on_close: () => void;
-}) {
-  const path = pathForWorkspace(workspace, entry.path);
-  const resourceRequest = useMemo(() => ({
-    path,
-    agent_id: agent_id || null,
-    user_file_capability_id: null,
-  }), [agent_id, path]);
-  const resource = useFileResource(resourceRequest, client);
-  const snapshot = resource.snapshot;
-  const controller = useMemo(
-    () => snapshot ? editor_registry.forResource(snapshot.resource_id) : null,
-    [editor_registry, snapshot],
-  );
-  const [baselineText, setBaselineText] = useState<string | null>(null);
-  const [baselineError, setBaselineError] = useState<string | null>(null);
-  const comparisonSurfaceId = `${panel_key}:comparison:${entry.path}`;
-
-  useEffect(() => {
-    if (!controller || !snapshot) return;
-    const membership = controller.attachPresentation(comparisonSurfaceId, {});
-    let active = true;
-    void editor_registry.synchronizeAuthoritative(
-      snapshot,
-      () => client.readText(snapshot),
-      comparisonSurfaceId,
-    ).catch((error: unknown) => {
-      if (active) setBaselineError(`Unable to load current file: ${errorMessage(error)}`);
-    });
-    return () => {
-      active = false;
-      membership.detach();
-      editor_registry.releaseAfterPostcommit(
-        snapshot.resource_id,
-        controller.getSnapshot().presentation_generation,
-      );
-    };
-  }, [client, comparisonSurfaceId, controller, editor_registry, snapshot]);
-
-  useEffect(() => {
-    let active = true;
-    setBaselineText(null);
-    setBaselineError(null);
-    const contentRevision = baseline_ref ?? "HEAD";
-    if (entry.change_kind === "added" || entry.change_kind === "untracked") {
-      setBaselineText("");
-      return () => { active = false; };
-    }
-    void invoke<string>("git_show_file_revision", {
-      cwd: workspace,
-      path: entry.old_path ?? entry.path,
-      revision: contentRevision,
-    }).then((text) => {
-      if (active) setBaselineText(text);
-    }).catch((error: unknown) => {
-      if (active) setBaselineError(`Unable to load baseline: ${errorMessage(error)}`);
-    });
-    return () => { active = false; };
-  }, [baseline_ref, entry.change_kind, entry.old_path, entry.path, workspace]);
-
-  if (entry.binary) {
-    return <div className="px-3 py-2 text-sm text-[var(--color-wardian-text-muted)]">Binary content is listed but not rendered.</div>;
-  }
-  if (resource.status === "loading" || !controller || !snapshot) {
-    return <div className="px-3 py-2 text-sm text-[var(--color-wardian-text-muted)]" role="status">Loading file comparison…</div>;
-  }
-  if (resource.status === "error" || resource.error || baselineError) {
-    return <div className="px-3 py-2 text-sm text-[var(--color-wardian-text-muted)]" role="status">{baselineError ?? resource.error?.message ?? "File content is unavailable."}</div>;
-  }
-
-  return baselineText === null ? (
-    <div className="px-3 py-2 text-sm text-[var(--color-wardian-text-muted)]" role="status">Loading baseline…</div>
-  ) : (
-    <FileComparisonLens
-      controller={controller}
-      surface_id={comparisonSurfaceId}
-      baseline={baselineForFile(entry, baseline_ref)}
-      baseline_text={baselineText}
-      layout_preference="auto"
-      language={extensionLanguage(entry.path)}
-      lifecycle={{ visible }}
-      on_close={on_close}
-      on_layout_preference_change={() => undefined}
-      on_reload_from_disk={async () => undefined}
-      on_keep_working_buffer={() => undefined}
-      on_merge={async () => undefined}
-    />
-  );
+/** Opens a change-review diff in the workbench with its comparison already open. */
+function changeSurfaceState(baseline: FilesComparisonBaseline): FilesSurfaceStateV2 {
+  return {
+    resource_kind: "file",
+    transient_preview: false,
+    presentation: "editor",
+    comparison_open: true,
+    comparison_layout_preference: "auto",
+    comparison_baseline: baseline,
+    review_drawer_open: false,
+    selected_version_id: null,
+    optional_checkpoint_id: null,
+  };
 }
 
 export function ChangesPanel({
@@ -197,9 +112,10 @@ export function ChangesPanel({
   agents,
   selected_agent_ids,
   turn_revision,
-  editor_registry,
-  client = fileResourceClient,
+  navigation,
 }: ChangesPanelProps) {
+  const appShellNavigation = useAppShellWorkbenchNavigation();
+  const workbenchNavigation = navigation === undefined ? appShellNavigation : navigation;
   const selectedAgentId = selected_agent_ids.size === 1
     ? [...selected_agent_ids][0]
     : null;
@@ -210,10 +126,10 @@ export function ChangesPanel({
   const [summary, setSummary] = useState<ChangeReviewSummary | null>(null);
   const [gitAvailable, setGitAvailable] = useState(true);
   const [headRef, setHeadRef] = useState<string | null>(null);
-  const [expandedPath, setExpandedPath] = useState<string | null>(null);
-  const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(new Set());
+  const [openedPath, setOpenedPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
   const requestGeneration = useRef(0);
 
   useEffect(() => {
@@ -363,21 +279,42 @@ export function ChangesPanel({
     }).catch(() => undefined);
   }, [headRef, selectedAgentId, summary, workspace]);
 
-  const toggleFile = (path: string) => {
-    const expanding = expandedPath !== path;
-    setExpandedPath((current) => current === path ? null : path);
-    setExpandedPaths((current) => {
-      if (current.has(path)) return current;
-      const next = new Set(current);
-      next.add(path);
-      return next;
-    });
-    if (expanding) void reviewPathOnExpand(path);
-  };
+  const baselineLabel = useMemo(
+    () => BASELINE_OPTIONS.find((option) => option.value === baseline)?.label ?? "Baseline",
+    [baseline],
+  );
+
+  const openFile = useCallback((entry: ChangeReviewFileEntry) => {
+    if (!workspace) return;
+    if (!workbenchNavigation) {
+      setOpenError("Workbench navigation is unavailable.");
+      return;
+    }
+    if (entry.binary) {
+      setOpenError("Binary content is listed but not rendered.");
+      return;
+    }
+    try {
+      const surfaceId = workbenchNavigation.open({
+        surface_type: "files",
+        resource_key: fileResourceKey(pathForWorkspace(workspace, entry.path)),
+        state: changeSurfaceState(
+          baselineForFile(entry, summary?.baseline_ref ?? null, workspace, baselineLabel),
+        ),
+      });
+      workbenchNavigation.pin_transient(surfaceId);
+      setOpenError(null);
+      setOpenedPath(entry.path);
+      // Opening the diff is the act of reviewing, as expanding was before it.
+      void reviewPathOnExpand(entry.path);
+    } catch (error) {
+      setOpenError(`Unable to open the comparison: ${errorMessage(error)}`);
+    }
+  }, [baselineLabel, reviewPathOnExpand, summary?.baseline_ref, workbenchNavigation, workspace]);
 
   const handleBaselineChange = useCallback((nextBaseline: ChangeReviewBaseline) => {
     if (nextBaseline === baseline) return;
-    setExpandedPath(null);
+    setOpenedPath(null);
     setBaseline(nextBaseline);
     const prefs: ChangeReviewPrefs = { schema: 1, baseline: nextBaseline };
     void invoke("save_change_review_prefs", { prefs }).catch(() => undefined);
@@ -430,6 +367,11 @@ export function ChangesPanel({
               This workspace is not a git repository. Turn-record file claims are shown without diff content.
             </div>
           ) : null}
+          {openError ? (
+            <div className="mb-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px]" role="alert">
+              {openError}
+            </div>
+          ) : null}
           <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-wardian-text-muted)]">
             <span>{summary?.files.length ?? 0} {summary?.files.length === 1 ? "file" : "files"}</span>
             {summary?.from_turn_index !== null && summary?.from_turn_index !== undefined ? <span>from turn {summary.from_turn_index}</span> : null}
@@ -437,42 +379,25 @@ export function ChangesPanel({
           </div>
           <div className="overflow-hidden rounded border border-[var(--color-wardian-border)]">
             {summary?.files.map((entry) => {
-              const expanded = expandedPath === entry.path;
-              const hasExpanded = expandedPaths.has(entry.path);
+              const opened = openedPath === entry.path;
               return (
-                <div className="border-b border-[var(--color-wardian-border)] last:border-b-0" key={entry.path}>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-1.5 px-2 py-2 text-left hover:bg-wardian-card-bg-muted"
-                    aria-expanded={expanded}
-                    onClick={() => toggleFile(entry.path)}
-                  >
-                    {expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{entry.path}</span>
-                    <span className="text-[10px] text-[var(--color-wardian-text-muted)]">{entry.evidence}</span>
-                    <span className="text-[10px] text-[var(--color-wardian-text-muted)]">{entry.insertions ?? "—"}/{entry.deletions ?? "—"}</span>
-                  </button>
-                  {hasExpanded ? (
-                    <div
-                      aria-hidden={!expanded}
-                      className={expanded
-                        ? "relative h-80 min-h-0 border-t border-[var(--color-wardian-border)]"
-                        : "hidden"}
-                    >
-                      <ChangeFileComparison
-                        panel_key="changes"
-                        workspace={workspace}
-                        agent_id={selectedAgentId ?? ""}
-                        entry={entry}
-                        baseline_ref={summary?.baseline_ref ?? null}
-                        editor_registry={editor_registry}
-                        client={client}
-                        on_close={() => setExpandedPath(null)}
-                        visible={expanded && visible}
-                      />
-                    </div>
+                <button
+                  type="button"
+                  key={entry.path}
+                  aria-current={opened ? "true" : undefined}
+                  title={entry.path}
+                  className={`flex w-full items-center gap-1.5 border-b border-[var(--color-wardian-border)] px-2 py-2 text-left last:border-b-0 hover:bg-wardian-card-bg-muted${
+                    opened ? " bg-wardian-card-bg-muted" : ""
+                  }`}
+                  onClick={() => openFile(entry)}
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{entry.path}</span>
+                  {entry.reviewed ? (
+                    <span className="text-[10px] text-[var(--color-wardian-text-muted)]">reviewed</span>
                   ) : null}
-                </div>
+                  <span className="text-[10px] text-[var(--color-wardian-text-muted)]">{entry.evidence}</span>
+                  <span className="text-[10px] text-[var(--color-wardian-text-muted)]">{entry.insertions ?? "—"}/{entry.deletions ?? "—"}</span>
+                </button>
               );
             })}
             {summary?.files.length === 0 ? <div className="p-3 text-[11px] text-[var(--color-wardian-text-muted)]">No changes in this baseline.</div> : null}

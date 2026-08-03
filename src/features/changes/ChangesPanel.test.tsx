@@ -2,8 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentConfig, ChangeReviewLoadResponse } from "../../types";
-import { FileEditorControllerRegistry } from "../files/fileEditorController";
-import { fileResourceClient } from "../files/fileResourceClient";
+import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { ChangesPanel } from "./ChangesPanel";
 
 const { invokeMock, listenMock } = vi.hoisted(() => ({
@@ -58,6 +57,15 @@ const response: ChangeReviewLoadResponse = {
   skipped_turn_records: 0,
 };
 
+let navigation: {
+  open: ReturnType<typeof vi.fn>;
+  pin_transient: ReturnType<typeof vi.fn>;
+};
+
+function navigationService(): WorkbenchNavigationService {
+  return navigation as unknown as WorkbenchNavigationService;
+}
+
 function renderPanel(visible = true, turn_revision = 1) {
   return render(
     <ChangesPanel
@@ -65,7 +73,7 @@ function renderPanel(visible = true, turn_revision = 1) {
       agents={[agent]}
       selected_agent_ids={new Set([agent.session_id])}
       turn_revision={turn_revision}
-      editor_registry={new FileEditorControllerRegistry(fileResourceClient)}
+      navigation={navigationService()}
     />,
   );
 }
@@ -74,6 +82,7 @@ describe("ChangesPanel", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     listenMock.mockReset();
+    navigation = { open: vi.fn(() => "surface-1"), pin_transient: vi.fn() };
     listenMock.mockResolvedValue(() => undefined);
     invokeMock.mockImplementation((command: string) => {
       if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "last_effective_turn" });
@@ -165,13 +174,114 @@ describe("ChangesPanel", () => {
     ]);
   });
 
-  it("writes a watermark only when a file is expanded", async () => {
+  it("opens the diff in a workbench surface instead of rendering it inline", async () => {
+    renderPanel();
+    await screen.findByText("src/agent.ts");
+
+    fireEvent.click(screen.getByRole("button", { name: /src\/agent\.ts/ }));
+
+    expect(navigation.open).toHaveBeenCalledWith({
+      surface_type: "files",
+      resource_key: "file:C:/workspace/src/agent.ts",
+      state: expect.objectContaining({
+        resource_kind: "file",
+        presentation: "editor",
+        comparison_open: true,
+        comparison_baseline: {
+          kind: "git_revision",
+          revision: "HEAD",
+          cwd: "C:/workspace",
+          path: "src/agent.ts",
+          label: "Last turn",
+          absent: false,
+        },
+      }),
+    });
+    expect(navigation.pin_transient).toHaveBeenCalledWith("surface-1");
+    // The sidebar never loads diff content itself; the surface owns it.
+    expect(invokeMock).not.toHaveBeenCalledWith("git_show_file_revision", expect.anything());
+  });
+
+  it("carries the selected baseline wording into the comparison", async () => {
+    renderPanel();
+    await screen.findByText("src/agent.ts");
+
+    fireEvent.change(screen.getByLabelText("Change review baseline"), { target: { value: "branch_point" } });
+    await waitFor(() => expect(screen.getByLabelText("Change review baseline")).toHaveValue("branch_point"));
+    fireEvent.click(screen.getByRole("button", { name: /src\/agent\.ts/ }));
+
+    expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
+      state: expect.objectContaining({
+        comparison_baseline: expect.objectContaining({ label: "This branch" }),
+      }),
+    }));
+  });
+
+  it("marks an added file absent rather than reading a revision without it", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "last_effective_turn" });
+      if (command === "get_explorer_root") return Promise.resolve("C:/workspace");
+      if (command === "load_change_review") return Promise.resolve({
+        ...response,
+        summary: {
+          ...response.summary,
+          baseline_ref: "abc123",
+          files: [{ ...response.summary.files[0], path: "src/new.ts", change_kind: "added" as const }],
+        },
+      });
+      if (command === "load_change_review_watermark") return Promise.resolve(null);
+      return Promise.resolve(undefined);
+    });
+
+    renderPanel();
+    await screen.findByText("src/new.ts");
+    fireEvent.click(screen.getByRole("button", { name: /src\/new\.ts/ }));
+
+    expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
+      state: expect.objectContaining({
+        comparison_baseline: expect.objectContaining({ revision: "abc123", absent: true }),
+      }),
+    }));
+  });
+
+  it("compares a renamed file against the name it had at the baseline", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "last_effective_turn" });
+      if (command === "get_explorer_root") return Promise.resolve("C:/workspace");
+      if (command === "load_change_review") return Promise.resolve({
+        ...response,
+        summary: {
+          ...response.summary,
+          files: [{
+            ...response.summary.files[0],
+            path: "src/renamed.ts",
+            old_path: "src/original.ts",
+            change_kind: "renamed" as const,
+          }],
+        },
+      });
+      if (command === "load_change_review_watermark") return Promise.resolve(null);
+      return Promise.resolve(undefined);
+    });
+
+    renderPanel();
+    await screen.findByText("src/renamed.ts");
+    fireEvent.click(screen.getByRole("button", { name: /src\/renamed\.ts/ }));
+
+    expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
+      resource_key: "file:C:/workspace/src/renamed.ts",
+      state: expect.objectContaining({
+        comparison_baseline: expect.objectContaining({ path: "src/original.ts", absent: false }),
+      }),
+    }));
+  });
+
+  it("writes a watermark when a file diff is opened", async () => {
     renderPanel();
     await screen.findByText("src/agent.ts");
     expect(invokeMock).not.toHaveBeenCalledWith("save_change_review_watermark", expect.anything());
 
-    const fileButton = screen.getByRole("button", { name: /src\/agent\.ts/ });
-    fireEvent.click(fileButton);
+    fireEvent.click(screen.getByRole("button", { name: /src\/agent\.ts/ }));
 
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
       "save_change_review_watermark",
@@ -189,13 +299,26 @@ describe("ChangesPanel", () => {
         }),
       },
     ));
-    const savesAfterExpand = invokeMock.mock.calls.filter(([command]) => command === "save_change_review_watermark");
-    expect(savesAfterExpand).toHaveLength(1);
+    const saves = invokeMock.mock.calls.filter(([command]) => command === "save_change_review_watermark");
+    expect(saves).toHaveLength(1);
+  });
 
-    fireEvent.click(fileButton);
-    await Promise.resolve();
-    const savesAfterCollapse = invokeMock.mock.calls.filter(([command]) => command === "save_change_review_watermark");
-    expect(savesAfterCollapse).toHaveLength(1);
+  it("reports an unavailable workbench instead of silently doing nothing", async () => {
+    render(
+      <ChangesPanel
+        visible
+        agents={[agent]}
+        selected_agent_ids={new Set([agent.session_id])}
+        turn_revision={1}
+        navigation={null}
+      />,
+    );
+    await screen.findByText("src/agent.ts");
+
+    fireEvent.click(screen.getByRole("button", { name: /src\/agent\.ts/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Workbench navigation is unavailable.");
+    expect(invokeMock).not.toHaveBeenCalledWith("save_change_review_watermark", expect.anything());
   });
 
   it("keeps skipped record counts diagnostic-only", async () => {
@@ -231,7 +354,7 @@ describe("ChangesPanel", () => {
         agents={[agent]}
         selected_agent_ids={new Set([agent.session_id])}
         turn_revision={1}
-        editor_registry={new FileEditorControllerRegistry(fileResourceClient)}
+        navigation={navigationService()}
       />,
     );
 
@@ -252,7 +375,7 @@ describe("ChangesPanel", () => {
         agents={[agent]}
         selected_agent_ids={new Set([agent.session_id])}
         turn_revision={2}
-        editor_registry={new FileEditorControllerRegistry(fileResourceClient)}
+        navigation={navigationService()}
       />,
     );
 

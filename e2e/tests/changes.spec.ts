@@ -11,7 +11,7 @@ function screenshotTimestamp(date = new Date()): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-test("selects Changes, chooses a baseline, and expands a file", async ({ page }) => {
+test("selects Changes, chooses a baseline, and opens a file diff in the workbench", async ({ page }) => {
   const ipc = await installWorkbenchIpcMock(page, {
     agents: [{
       session_id: "agent-1",
@@ -98,30 +98,28 @@ test("selects Changes, chooses a baseline, and expands a file", async ({ page })
   await expect(panel.getByRole("button", { name: /src\/agent\.ts/ })).toBeVisible();
   await expect(panel.getByText("attributed")).toBeVisible();
   await expect(panel.getByText("inferred")).toBeVisible();
-  await expect(file).toHaveAttribute("aria-expanded", "false");
+
+  // The sidebar lists changes; it never renders diff content itself.
+  await expect(panel.locator(".files-comparison-lens")).toHaveCount(0);
   await file.click();
-  await expect(file).toHaveAttribute("aria-expanded", "true");
-  await expect.poll(async () => (await ipc.calls("git_show_file_revision")).length).toBe(1);
+  await expect(file).toHaveAttribute("aria-current", "true");
   await expect.poll(async () => (await ipc.calls("save_change_review_watermark")).length).toBe(1);
 
-  const comparison = panel.locator(".files-comparison-lens");
+  // Opening escalates the diff to a workbench surface, outside the sidebar.
+  const comparison = page.locator(".files-comparison-lens");
   await expect(comparison).toBeVisible();
-  const resizeHandle = page.getByTestId("sidebar-resize-handle").first();
-  const resizeBox = await resizeHandle.boundingBox();
-  if (!resizeBox) throw new Error("Changes sidebar resize handle is not visible");
-  await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(resizeBox.x + 100, resizeBox.y + resizeBox.height / 2, { steps: 10 });
-  await page.mouse.up();
-  await page.getByRole("button", { name: "Hide Left Sidebar" }).click();
-  await page.getByRole("button", { name: "Show Left Sidebar" }).click();
+  await expect(panel.locator(".files-comparison-lens")).toHaveCount(0);
+  await expect.poll(async () => (await ipc.calls("git_show_file_revision")).length).toBe(1);
   await expect(comparison.locator(".files-comparison-body")).not.toHaveAttribute("data-layout", "measuring");
   await expect(comparison.locator(".monaco-diff-editor")).toBeVisible({ timeout: 30_000 });
+
+  // The comparison header repeats the baseline wording chosen in the sidebar.
+  await expect(comparison.getByText("Last commit")).toBeVisible();
 
   const screenshotPath = path.resolve(
     "e2e/screenshots/agent-change-review",
     screenshotTimestamp(),
-    "changes-sidebar-selected-attribution-inline-diff.png",
+    "changes-sidebar-list-with-diff-in-workbench-surface.png",
   );
   mkdirSync(path.dirname(screenshotPath), { recursive: true });
   await page.screenshot({ path: screenshotPath, fullPage: true });
