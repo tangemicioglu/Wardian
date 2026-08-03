@@ -151,9 +151,6 @@ export const ConfigureAgentPanel: React.FC<Props> = ({
               value={config.description ?? ""}
               onChange={(e) => updateField("description", e.target.value)}
             />
-            <p className="mt-1 text-[10px] text-muted-neutral">
-              A memo shown in agent lists. It does not change instructions or capabilities.
-            </p>
           </div>
           <div>
             <label className="block text-[10px] font-bold text-muted-neutral mb-1">Agent Class</label>

@@ -110,6 +110,7 @@ describe("ConfigureAgentPanel", () => {
 
     const description = screen.getByLabelText(/Description/);
     expect(description).toHaveAttribute("maxlength", "280");
+    expect(screen.queryByText(/A memo shown in agent lists/i)).not.toBeInTheDocument();
     await user.type(description, "Owns frontend release follow-up");
     await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
