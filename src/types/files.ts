@@ -13,7 +13,30 @@ export type FilesComparisonBaseline =
   | { kind: "saved_file" }
   | { kind: "prompt_checkpoint"; checkpoint_id: string }
   | { kind: "presented_version"; version_id: string }
-  | { kind: "previous_presented_version"; version_id: string };
+  | { kind: "previous_presented_version"; version_id: string }
+  /**
+   * Content at a git revision, used by change review. Carries its own `cwd` and
+   * repo-relative `path` so the baseline stays self-contained across surface
+   * persistence and restore, and so renaming is expressible: `path` is the name
+   * the file had at `revision`, which is not always its current name.
+   *
+   * `label` is the operator-facing baseline wording chosen in the Changes pane
+   * ("This branch", "Last commit"), carried through so the diff header repeats
+   * the phrase the operator selected instead of a raw revision.
+   *
+   * `absent` marks a file that did not exist at `revision`, which is the common
+   * case for agent-created files. The baseline is then empty by definition, and
+   * reading it must not be attempted: `git show <revision>:<path>` fails for a
+   * path that is not in that tree, and an added file is not an error.
+   */
+  | {
+      kind: "git_revision";
+      revision: string;
+      cwd: string;
+      path: string;
+      label: string;
+      absent: boolean;
+    };
 
 export type FilesSurfaceStateV2 = {
   resource_kind: "file" | "artifact";

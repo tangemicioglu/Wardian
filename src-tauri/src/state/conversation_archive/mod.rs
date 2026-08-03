@@ -6,10 +6,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use wardian_core::conversations::{
-    append_index_upsert, append_jsonl_record, read_jsonl_records, write_json_atomic,
-    write_jsonl_atomic, AgentConversationLoggingSetting, ConversationBoundaryReason,
-    ConversationIndexEntry, ConversationLoggingSetting, ConversationManifest,
-    ConversationNarrativeRecord, ConversationSourceRecord, ConversationSpeakerType,
+    append_index_upsert, append_jsonl_record, read_jsonl_records, read_jsonl_records_resilient,
+    write_json_atomic, write_jsonl_atomic, AgentConversationLoggingSetting,
+    ConversationBoundaryReason, ConversationIndexEntry, ConversationLoggingSetting,
+    ConversationManifest, ConversationNarrativeRecord, ConversationSourceRecord,
+    ConversationSpeakerType, ConversationTurnRecord,
 };
 use wardian_core::models::chat::AgentChatEvent;
 
@@ -138,6 +139,12 @@ pub fn effective_conversation_logging(
 }
 
 impl ConversationArchiveState {
+    pub fn active_conversation_id(&self, agent_id: &str) -> io::Result<Option<String>> {
+        Ok(lock_active(&self.active)?
+            .get(agent_id)
+            .map(|handle| handle.conversation_id.clone()))
+    }
+
     pub fn list(
         &self,
         agent: Option<&str>,
@@ -196,6 +203,41 @@ impl ConversationArchiveState {
         let conversation = read_jsonl_records(&conversation_dir.join("conversation.jsonl"))?;
 
         Ok((manifest, conversation))
+    }
+
+    /// Reads the already-materialized turn records for the supplied archive
+    /// entries. Change review uses this rather than re-deriving turns from
+    /// provider transcripts.
+    pub fn turn_records_for_conversations(
+        &self,
+        entries: &[ConversationIndexEntry],
+    ) -> io::Result<Vec<(ConversationIndexEntry, ConversationTurnRecord)>> {
+        let mut records = Vec::new();
+        for entry in entries {
+            let directory = conversation_dir(&entry.agent_id, &entry.conversation_id)?;
+            let turns: Vec<ConversationTurnRecord> =
+                read_jsonl_records(&directory.join("turns.jsonl"))?;
+            records.extend(turns.into_iter().map(|turn| (entry.clone(), turn)));
+        }
+        Ok(records)
+    }
+
+    /// Reads materialized turn records for change review. Unlike the shared
+    /// archive readers, malformed turn records are skipped and counted so one
+    /// legacy line cannot blank the Git-derived change set.
+    pub fn turn_records_for_conversations_resilient(
+        &self,
+        entries: &[ConversationIndexEntry],
+    ) -> io::Result<(Vec<(ConversationIndexEntry, ConversationTurnRecord)>, usize)> {
+        let mut records = Vec::new();
+        let mut skipped_records = 0;
+        for entry in entries {
+            let directory = conversation_dir(&entry.agent_id, &entry.conversation_id)?;
+            let (turns, skipped) = read_jsonl_records_resilient(&directory.join("turns.jsonl"))?;
+            skipped_records += skipped;
+            records.extend(turns.into_iter().map(|turn| (entry.clone(), turn)));
+        }
+        Ok((records, skipped_records))
     }
 
     /// Returns the persisted chat events for every archived conversation owned
@@ -694,10 +736,7 @@ impl ConversationArchiveState {
 
     #[cfg(test)]
     pub fn active_conversation_id_for_test(&self, agent_id: &str) -> Option<String> {
-        self.active
-            .lock()
+        self.active_conversation_id(agent_id)
             .expect("active conversation lock")
-            .get(agent_id)
-            .map(|handle| handle.conversation_id.clone())
     }
 }

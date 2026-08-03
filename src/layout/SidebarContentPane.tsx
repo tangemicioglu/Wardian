@@ -15,6 +15,7 @@ import { WorkflowMonitorGlance } from "../features/workflows/monitor/WorkflowMon
 import { ExplorerPanel } from "../features/explorer/ExplorerPanel";
 import { GitPanel } from "../features/git/GitPanel";
 import type { SelectedAgentGitStatus } from "../features/git/useSelectedAgentGitStatus";
+import { ChangesPanel } from "../features/changes/ChangesPanel";
 import { useRunStore } from "../features/workflows/run/useRunStore";
 import { useSchedulesStore } from "../store/useSchedulesStore";
 import { useWorkflowsView } from "../store/useWorkflowsView";
@@ -28,6 +29,7 @@ interface SidebarContentPaneProps {
   agentClasses: AgentClassDefinition[];
   telemetry: Record<string, AgentTelemetry>;
   sourceControlStatus: SelectedAgentGitStatus;
+  turnRevision: number;
   onAgentsUpdated: (agent?: AgentConfig) => void;
   broadcastMessage: string;
   setBroadcastMessage: (msg: string) => void;
@@ -44,6 +46,7 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
   agentClasses,
   telemetry,
   sourceControlStatus,
+  turnRevision,
   onAgentsUpdated,
   broadcastMessage,
   setBroadcastMessage,
@@ -64,6 +67,15 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
             onAgentsUpdated={onAgentsUpdated}
             telemetry={telemetry}
             sourceControlStatus={sourceControlStatus}
+          />
+        )}
+
+        {activeTab === "changes" && (
+          <ChangesPanel
+            visible={activeTab === "changes" && !leftCollapsed}
+            agents={agents}
+            selected_agent_ids={selectedAgentIds}
+            turn_revision={turnRevision}
           />
         )}
 

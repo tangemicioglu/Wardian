@@ -67,6 +67,7 @@ function baselineLabel(baseline: FilesComparisonBaseline): string {
     case "prompt_checkpoint": return "Since last prompt";
     case "presented_version": return "Presented version";
     case "previous_presented_version": return "Previous presented version";
+    case "git_revision": return baseline.label;
   }
 }
 
@@ -177,6 +178,10 @@ export function FileComparisonLens({
   const effectiveLayoutRef = useRef(effectiveLayout);
   effectiveLayoutRef.current = effectiveLayout;
 
+  // `available` and `loadError` gate whether the measured body is mounted at all.
+  // They belong in the dependencies: a baseline that resolves asynchronously
+  // mounts the body after this effect first runs, and without re-running there is
+  // nothing observing it, so the lens stays in "measuring" forever.
   useEffect(() => {
     const root = rootRef.current;
     if (!root || !lifecycle.visible) return;
@@ -187,7 +192,7 @@ export function FileComparisonLens({
     });
     observer.observe(root);
     return () => observer.disconnect();
-  }, [lifecycle.visible]);
+  }, [available, lifecycle.visible, loadError]);
 
   useEffect(() => {
     if (!available || !lifecycle.visible || !measured) return;

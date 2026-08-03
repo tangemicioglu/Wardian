@@ -376,6 +376,7 @@ function AppBody() {
   const handleAgentTurnCompletion = useCallback((
     completion: AgentTurnCompletion,
   ) => {
+    setChangeReviewTurnRevision((revision) => revision + 1);
     const { session_id: sessionId, agent } = completion;
     const agentName = agent?.session_name.trim();
     // Never emit a durable notification with a session UUID while the roster
@@ -474,6 +475,7 @@ function AppBody() {
   const [teams, setTeams] = useState<AgentTeam[]>([]);
   const [watchlistPrefs, setWatchlistPrefs] = useState<WatchlistPrefs>(DEFAULT_WATCHLIST_PREFS);
   const [agentInteractions, setAgentInteractions] = useState<AgentInteractions>({});
+  const [changeReviewTurnRevision, setChangeReviewTurnRevision] = useState(0);
   const agentInteractionsRef = useRef<AgentInteractions>({});
   const interactionSaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const hasAutoPatched = useRef(false);
@@ -1594,6 +1596,7 @@ function AppBody() {
           agentClasses={agentClasses}
           telemetry={telemetry}
           sourceControlStatus={sourceControlStatus}
+          turnRevision={changeReviewTurnRevision}
           onAgentsUpdated={fetchAgents}
           broadcastMessage={broadcastMessage}
           setBroadcastMessage={setBroadcastMessage}

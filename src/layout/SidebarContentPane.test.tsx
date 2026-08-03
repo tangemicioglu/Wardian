@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarContentPane } from "./SidebarContentPane";
+import type { SidebarTab } from "./SidebarIconRail";
 import type { AgentClassDefinition, AgentConfig, OpenSurfaceRequest } from "../types";
 import type { SelectedAgentGitStatus } from "../features/git/useSelectedAgentGitStatus";
 
@@ -89,6 +90,12 @@ vi.mock("../features/git/GitPanel", () => ({
   GitPanel: () => <div />,
 }));
 
+vi.mock("../features/changes/ChangesPanel", () => ({
+  ChangesPanel: ({ visible, turn_revision }: { visible: boolean; turn_revision: number }) => (
+    <div data-testid="changes-panel-mock" data-visible={String(visible)}>{turn_revision}</div>
+  ),
+}));
+
 const agentClasses: AgentClassDefinition[] = [
   { name: "Generalist", description: "", is_default: true },
 ];
@@ -120,7 +127,7 @@ function renderPane({
   selectedAgentIds = new Set<string>(),
   onOpenSurface = vi.fn(),
 }: {
-  activeTab?: "agent-config" | "workflows";
+  activeTab?: SidebarTab;
   selectedAgentIds?: Set<string>;
   onOpenSurface?: (request: OpenSurfaceRequest) => void;
 } = {}) {
@@ -134,6 +141,7 @@ function renderPane({
       agentClasses={agentClasses}
       telemetry={{}}
       sourceControlStatus={sourceControlStatus}
+      turnRevision={7}
       onAgentsUpdated={vi.fn()}
       broadcastMessage=""
       setBroadcastMessage={vi.fn()}
@@ -162,6 +170,13 @@ describe("SidebarContentPane", () => {
 
     expect(screen.getByRole("heading", { name: "Agent Configuration", level: 2 })).toHaveClass("text-sm");
     expect(screen.getByRole("heading", { name: "Spawn Agent", level: 3 })).toHaveClass("text-xs");
+  });
+
+  it("renders the Changes pane with the sidebar visibility and turn revision", () => {
+    renderPane({ activeTab: "changes" });
+
+    expect(screen.getByTestId("changes-panel-mock")).toHaveAttribute("data-visible", "true");
+    expect(screen.getByTestId("changes-panel-mock")).toHaveTextContent("7");
   });
 
   it("opens the Workflows surface before switching the glance to monitor", () => {

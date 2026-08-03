@@ -53,6 +53,30 @@ describe("Files surface state V2", () => {
     }, 2)).toEqual({ ok: false, error: "files state is malformed" });
   });
 
+  it("round-trips a change-review git baseline and rejects a partial one", () => {
+    const gitBaseline = {
+      kind: "git_revision" as const,
+      revision: "abc123",
+      cwd: "C:/workspace",
+      path: "src/agent.ts",
+      label: "This branch",
+      absent: false,
+    };
+    const state = { ...v2(), comparison_open: true, comparison_baseline: gitBaseline };
+    expect(restoreFilesSurfaceState(state, 2)).toEqual({ ok: true, state });
+
+    // A dropped field must invalidate rather than restore a baseline that cannot
+    // be read back, which would leave the comparison pointing at nothing.
+    for (const missing of ["revision", "cwd", "path", "label", "absent"] as const) {
+      const partial: Record<string, unknown> = { ...gitBaseline };
+      delete partial[missing];
+      expect(restoreFilesSurfaceState(
+        { ...v2(), comparison_open: true, comparison_baseline: partial },
+        2,
+      )).toEqual({ ok: false, error: "files state is malformed" });
+    }
+  });
+
   it("migrates preview, changes, and byte-free draft intent deterministically", () => {
     expect(migrateFilesSurfaceStateV1(v1("preview"))).toMatchObject({
       presentation: "rendered",

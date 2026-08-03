@@ -197,7 +197,6 @@ export const GARDEN_SURFACE_DEFINITION = defineCoreViewSurface(
     restore_state: restoreGardenState,
   },
 );
-
 export const CORE_VIEW_SURFACE_DEFINITIONS: readonly SurfaceDefinition[] = Object.freeze([
   DASHBOARD_SURFACE_DEFINITION,
   INBOX_SURFACE_DEFINITION,

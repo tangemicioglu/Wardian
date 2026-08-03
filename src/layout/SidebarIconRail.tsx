@@ -1,7 +1,7 @@
 import React from "react";
-import { Folder, MessageSquareCode } from "lucide-react";
+import { FileDiff, Folder, MessageSquareCode } from "lucide-react";
 
-export type SidebarTab = "explorer" | "git" | "agent-config" | "command" | "workflows";
+export type SidebarTab = "explorer" | "git" | "changes" | "agent-config" | "command" | "workflows";
 
 interface SidebarIconRailProps {
   activeTab: SidebarTab;
@@ -84,6 +84,16 @@ export const SidebarIconRail = React.forwardRef<HTMLElement, SidebarIconRailProp
             className="absolute -right-0.5 bottom-0.5 h-2.5 w-2.5 rounded-full border border-[var(--color-wardian-sidebar-primary)] bg-[var(--color-wardian-processing)] animate-pulse"
           />
         )}
+      </button>
+
+      <button
+        data-testid="sidebar-tab-changes"
+        onClick={() => handleTabClick("changes")}
+        className={`relative p-3 rounded-xl transition-all group ${activeTab === "changes" ? "bg-wardian-card-bg-muted text-[var(--color-wardian-accent)]" : "text-muted-neutral hover:text-bright-neutral"}`}
+        title="Changes"
+      >
+        {activeTab === "changes" && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-[var(--color-wardian-accent)] rounded-r-full" />}
+        <FileDiff className="w-6 h-6 group-hover:scale-110 transition-transform" strokeWidth={2} />
       </button>
 
       <button
