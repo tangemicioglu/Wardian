@@ -71,6 +71,17 @@ function validBaseline(value: unknown): value is FilesComparisonBaseline | null 
       return hasExactKeys(value, ["kind", "version_id"])
         && nullableNonEmptyString(value.version_id)
         && value.version_id !== null;
+    case "git_revision":
+      return hasExactKeys(value, ["absent", "cwd", "kind", "label", "path", "revision"])
+        && typeof value.absent === "boolean"
+        && nullableNonEmptyString(value.revision)
+        && value.revision !== null
+        && nullableNonEmptyString(value.cwd)
+        && value.cwd !== null
+        && nullableNonEmptyString(value.path)
+        && value.path !== null
+        && nullableNonEmptyString(value.label)
+        && value.label !== null;
     default:
       return false;
   }

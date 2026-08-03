@@ -248,6 +248,48 @@ function ActiveFilesSurface(props: ActiveFilesSurfaceProps) {
   ]);
   const comparisonOpen = Boolean(stateV2?.comparison_open && stateV2.comparison_baseline);
   const activeComparisonOpen = Boolean(stateV2?.comparison_open);
+
+  const gitBaseline = stateV2?.comparison_baseline?.kind === "git_revision"
+    ? stateV2.comparison_baseline
+    : null;
+  const gitBaselineCwd = gitBaseline?.cwd ?? null;
+  const gitBaselinePath = gitBaseline?.path ?? null;
+  const gitBaselineRevision = gitBaseline?.revision ?? null;
+  const gitBaselineAbsent = gitBaseline?.absent ?? false;
+  const [gitBaselineText, setGitBaselineText] = useState<string | null>(null);
+  const [gitBaselineError, setGitBaselineError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (gitBaselineCwd === null || gitBaselinePath === null || gitBaselineRevision === null) {
+      setGitBaselineText(null);
+      setGitBaselineError(null);
+      return;
+    }
+    // A file that did not exist at the baseline diffs against empty, and asking
+    // git for it would fail rather than report the addition.
+    if (gitBaselineAbsent) {
+      setGitBaselineText("");
+      setGitBaselineError(null);
+      return;
+    }
+    let active = true;
+    setGitBaselineText(null);
+    setGitBaselineError(null);
+    void invoke<string>("git_show_file_revision", {
+      cwd: gitBaselineCwd,
+      path: gitBaselinePath,
+      revision: gitBaselineRevision,
+    }).then((text) => {
+      if (active) setGitBaselineText(text);
+    }).catch((error: unknown) => {
+      if (active) {
+        setGitBaselineError(
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    });
+    return () => { active = false; };
+  }, [gitBaselineAbsent, gitBaselineCwd, gitBaselinePath, gitBaselineRevision]);
   const updateComparisonState = useCallback((patch: Partial<FilesSurfaceStateV2>) => {
     if (!stateV2) return;
     void props.on_state_change({ ...stateV2, ...patch });
@@ -261,12 +303,17 @@ function ActiveFilesSurface(props: ActiveFilesSurfaceProps) {
     updateComparisonState({
       comparison_open: true,
       presentation: renderer?.editor ? "editor" : stateV2.presentation,
-      comparison_baseline: props.artifact_resource
-        ? {
-            kind: "presented_version",
-            version_id: props.artifact_resource.selected_version.version_id,
-          }
-        : { kind: "saved_file" },
+      // A change-review baseline survives close and reopen. It was chosen in the
+      // Changes pane, and silently swapping it for the saved file would answer a
+      // different question than the operator asked.
+      comparison_baseline: stateV2.comparison_baseline?.kind === "git_revision"
+        ? stateV2.comparison_baseline
+        : props.artifact_resource
+          ? {
+              kind: "presented_version",
+              version_id: props.artifact_resource.selected_version.version_id,
+            }
+          : { kind: "saved_file" },
     });
   }, [activeComparisonOpen, props.artifact_resource, renderer?.editor, stateV2, updateComparisonState]);
 
@@ -506,7 +553,20 @@ function ActiveFilesSurface(props: ActiveFilesSurfaceProps) {
           </div>
         ) : null}
         {comparisonOpen && stateV2?.comparison_baseline ? (
-          props.editor_controller && renderer?.capabilities.changes === "line" ? (
+          gitBaselineError !== null ? (
+            <section className="files-comparison-lens" aria-label="File comparison">
+              <div className="files-resource-state" role="status">
+                Unable to load the comparison baseline: {gitBaselineError}
+              </div>
+              <button
+                type="button"
+                className="files-comparison-unavailable-close"
+                onClick={() => updateComparisonState({ comparison_open: false })}
+              >
+                Close comparison
+              </button>
+            </section>
+          ) : props.editor_controller && renderer?.capabilities.changes === "line" ? (
             <FileComparisonLens
               controller={props.editor_controller}
               surface_id={props.surface_id}
@@ -521,7 +581,9 @@ function ActiveFilesSurface(props: ActiveFilesSurfaceProps) {
               on_reload_from_disk={() => props.editor_controller!.reloadFromDisk()}
               on_keep_working_buffer={() => props.editor_controller!.keepWorkingBuffer()}
               on_merge={() => props.editor_controller!.mergeStaleBuffer()}
-              baseline_text={props.artifact_resource?.selected_text ?? null}
+              baseline_text={gitBaseline
+                ? gitBaselineText
+                : props.artifact_resource?.selected_text ?? null}
             />
           ) : (
             <section className="files-comparison-lens" aria-label="File comparison">
