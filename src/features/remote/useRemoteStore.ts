@@ -265,6 +265,7 @@ let statusStreamReconnectAttempts = 0;
 let lastActiveAgentRefreshKey: string | null = null;
 let terminalRefreshRequestSerial = 0;
 let chatRefreshRequestSerial = 0;
+let queueRefreshRequestSerial = 0;
 let suppressNextStatusStreamReconnect = false;
 
 const clearBackgroundChatRefresh = () => {
@@ -385,8 +386,11 @@ const ensureStatusStream = async (set: RemoteSet, get: RemoteGet) => {
               chatError: "",
             }),
       }));
+      const requestSerial = ++queueRefreshRequestSerial;
       void remoteClient.loadQueueItems().then(
-        (remoteQueueItems) => set({ remoteQueueItems }),
+        (remoteQueueItems) => {
+          if (requestSerial === queueRefreshRequestSerial) set({ remoteQueueItems });
+        },
         () => undefined,
       );
       if (activeAgent) {
@@ -572,6 +576,7 @@ const ensureAuthenticatedSession = async (set: RemoteSet) => {
 };
 
 const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
+  const queueRequestSerial = ++queueRefreshRequestSerial;
   const [agents, workflows, remoteWatchlists, remoteQueueItems] = await Promise.all([
     remoteClient.listAgents(),
     remoteClient.listWorkflows().catch((error: unknown) => {
@@ -610,7 +615,7 @@ const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
     return {
       agents,
       workflows,
-      remoteQueueItems,
+      ...(queueRequestSerial === queueRefreshRequestSerial ? { remoteQueueItems } : {}),
       activeAgentViewModesById: pruneActiveAgentViewModes(state.activeAgentViewModesById, liveAgentIds),
       watchlists: watchlistState.watchlists,
       teams: watchlistState.teams,

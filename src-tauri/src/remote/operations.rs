@@ -4,7 +4,7 @@ use crate::remote::models::{
 use crate::state::AppState;
 use std::collections::HashMap;
 use tauri::{AppHandle, Manager};
-use wardian_core::control::MessageInputMode;
+use wardian_core::control::{InboxNotificationKind, InteractionStatus, MessageInputMode};
 use wardian_core::models::chat::AgentChatEvent;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -97,16 +97,86 @@ pub fn remote_watchlist_state() -> Result<RemoteWatchlistResponse, String> {
     })
 }
 
-/// Reads the same persisted Inbox items used by the desktop application.
-pub fn remote_queue_items() -> Vec<serde_json::Value> {
-    let Some(home) = crate::utils::fs::get_wardian_home() else {
-        return Vec::new();
-    };
-
-    std::fs::read_to_string(home.join("queue").join("items.json"))
-        .ok()
+/// Builds the same Inbox projection as the desktop queue store.
+pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
+    let persisted_items = crate::utils::fs::get_wardian_home()
+        .and_then(|home| std::fs::read_to_string(home.join("queue").join("items.json")).ok())
         .and_then(|data| serde_json::from_str::<Vec<serde_json::Value>>(&data).ok())
+        .unwrap_or_default();
+    let read_notification_ids = persisted_items
+        .iter()
+        .filter(|item| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some("agent_update")
+                && item.get("read").and_then(serde_json::Value::as_bool) == Some(true)
+        })
+        .filter_map(|item| {
+            item.get("inbox_notification_id")
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::to_string)
+        .collect::<std::collections::HashSet<_>>();
+    let legacy_items = persisted_items.into_iter().filter(|item| {
+        item.get("inbox_notification_id").is_none() && item.get("workflow_approval").is_none()
+    });
+    let notifications = crate::commands::inbox::list_inbox_notifications_for_state(state)
+        .await
         .unwrap_or_default()
+        .into_iter()
+        .map(|notification| {
+            let is_approval = matches!(&notification.kind, InboxNotificationKind::Approval);
+            serde_json::json!({
+                "id": format!("notification:{}", notification.id),
+                "type": if is_approval { "approval_request" } else { "agent_update" },
+                "timestamp": queue_timestamp(&notification.created_at),
+                "read": if is_approval { notification.status != InteractionStatus::AwaitingReply } else { read_notification_ids.contains(notification.id.as_str()) },
+                "agent_session_id": notification.sender_session_id,
+                "notification_title": notification.title,
+                "inbox_notification_id": notification.id,
+                "notification_status": notification.status,
+                "summary": notification.body,
+                "proposed_action": notification.proposed_action,
+                "risk": notification.risk,
+                "approval_choices": notification.choices,
+                "approval_decision": notification.decision.map(|decision| decision.choice),
+                "expires_at": notification.expires_at,
+            })
+        });
+    let workflow_approvals = crate::commands::inbox::list_workflow_inbox_approvals()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|approval| serde_json::json!({
+            "id": format!("workflow-approval:{}:{}:{}", approval.blueprint_id, approval.run_id, approval.node),
+            "type": "approval_request",
+            "timestamp": approval.created_at.as_deref().map(queue_timestamp).unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
+            "read": false,
+            "workflow_id": approval.blueprint_id,
+            "workflow_run_id": approval.run_id,
+            "workflow_name": approval.title,
+            "notification_title": approval.title,
+            "summary": approval.prompt,
+            "proposed_action": "Continue this workflow beyond its approval gate",
+            "risk": "The workflow will execute the next authored steps after approval.",
+            "approval_choices": ["Approve", "Reject"],
+            "workflow_approval": { "blueprint_id": approval.blueprint_id, "blueprint_path": approval.blueprint_path, "run_id": approval.run_id, "node": approval.node },
+        }));
+    let mut items = notifications
+        .chain(workflow_approvals)
+        .chain(legacy_items)
+        .collect::<Vec<_>>();
+    items.sort_by_key(|item| {
+        std::cmp::Reverse(
+            item.get("timestamp")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or_default(),
+        )
+    });
+    items
+}
+
+fn queue_timestamp(value: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp.timestamp_millis())
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis())
 }
 
 pub async fn remote_agent_chat_transcript(
@@ -439,8 +509,8 @@ mod tests {
         assert!(response.prefs.is_none());
     }
 
-    #[test]
-    fn remote_queue_items_reads_the_desktop_inbox_file() {
+    #[tokio::test]
+    async fn remote_queue_items_reads_the_desktop_inbox_file() {
         let _guard = crate::utils::wardian_test_env_lock();
         let temp = tempfile::tempdir().expect("temp home");
         let queue_dir = temp.path().join("queue");
@@ -453,10 +523,50 @@ mod tests {
         .expect("queue json");
 
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
-        let items = remote_queue_items();
+        let items = remote_queue_items(&AppState::new()).await;
         unsafe { std::env::remove_var("WARDIAN_HOME") };
 
         assert_eq!(items[0]["id"], "desktop-inbox-1");
+    }
+
+    #[tokio::test]
+    async fn remote_queue_items_projects_live_inbox_notifications() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
+            .expect("initialize state db");
+        let state = AppState::new();
+        let notification = state
+            .interactions
+            .create_notification_durable(
+                "agent-1".to_string(),
+                wardian_core::control::InboxNotificationPayload {
+                    kind: InboxNotificationKind::Approval,
+                    title: "Approve deployment".to_string(),
+                    body: "Deploy the reviewed change.".to_string(),
+                    proposed_action: Some("Deploy".to_string()),
+                    risk: Some("Changes production".to_string()),
+                    choices: vec!["Approve".to_string(), "Reject".to_string()],
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("create notification");
+
+        let items = remote_queue_items(&state).await;
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+
+        let item = items
+            .iter()
+            .find(|item| item["inbox_notification_id"] == notification.id)
+            .expect("live inbox notification");
+        assert_eq!(item["type"], "approval_request");
+        assert_eq!(item["notification_title"], "Approve deployment");
+        assert_eq!(
+            item["approval_choices"],
+            serde_json::json!(["Approve", "Reject"])
+        );
     }
 
     #[tokio::test]
@@ -513,21 +623,36 @@ mod tests {
         let latest = page_remote_agent_chat_events(events.clone(), None, 40);
 
         assert_eq!(latest.events.len(), 40);
-        assert_eq!(latest.events.first().map(|event| event.id.as_str()), Some("event-46"));
-        assert_eq!(latest.events.last().map(|event| event.id.as_str()), Some("event-85"));
+        assert_eq!(
+            latest.events.first().map(|event| event.id.as_str()),
+            Some("event-46")
+        );
+        assert_eq!(
+            latest.events.last().map(|event| event.id.as_str()),
+            Some("event-85")
+        );
         assert!(latest.has_older);
         assert_eq!(latest.next_before, Some(45));
 
         let older = page_remote_agent_chat_events(events.clone(), latest.next_before, 40);
         assert_eq!(older.events.len(), 40);
-        assert_eq!(older.events.first().map(|event| event.id.as_str()), Some("event-6"));
-        assert_eq!(older.events.last().map(|event| event.id.as_str()), Some("event-45"));
+        assert_eq!(
+            older.events.first().map(|event| event.id.as_str()),
+            Some("event-6")
+        );
+        assert_eq!(
+            older.events.last().map(|event| event.id.as_str()),
+            Some("event-45")
+        );
         assert!(older.has_older);
         assert_eq!(older.next_before, Some(5));
 
         let first_page = page_remote_agent_chat_events(events, older.next_before, 40);
         assert_eq!(first_page.events.len(), 5);
-        assert_eq!(first_page.events.first().map(|event| event.id.as_str()), Some("event-1"));
+        assert_eq!(
+            first_page.events.first().map(|event| event.id.as_str()),
+            Some("event-1")
+        );
         assert!(!first_page.has_older);
         assert_eq!(first_page.next_before, None);
     }

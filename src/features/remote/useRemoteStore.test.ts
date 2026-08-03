@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_WATCHLIST_PREFS } from "../../layout/watchlist/types";
-import type { AgentChatEvent } from "../../types";
+import type { AgentChatEvent, QueueItem } from "../../types";
 import { type RemoteAgentChatPage, RemoteRequestError, remoteClient } from "./remoteClient";
 import { useRemoteStore } from "./useRemoteStore";
 
@@ -14,6 +14,7 @@ vi.mock("./remoteClient", async (importOriginal) => {
         listAgents: vi.fn(),
         listWorkflows: vi.fn(),
         loadWatchlists: vi.fn(),
+        loadQueueItems: vi.fn(),
         loadAgentChatPage: vi.fn(),
         openStatusStream: vi.fn(),
       },
@@ -63,7 +64,8 @@ describe("useRemoteStore watchlists", () => {
     vi.mocked(remoteClient.loadSession).mockResolvedValue(session);
     vi.mocked(remoteClient.listAgents).mockResolvedValue([]);
     vi.mocked(remoteClient.listWorkflows).mockResolvedValue([]);
-    vi.mocked(remoteClient.loadWatchlists).mockReset();
+    vi.mocked(remoteClient.loadWatchlists).mockResolvedValue({ watchlists: [], teams: [], prefs: null });
+    vi.mocked(remoteClient.loadQueueItems).mockResolvedValue([]);
     vi.mocked(remoteClient.loadAgentChatPage).mockReset();
     vi.mocked(remoteClient.loadAgentChatPage).mockResolvedValue({ events: [], has_older: false, next_before: null });
     vi.mocked(remoteClient.openStatusStream).mockResolvedValue({ close: vi.fn() } as unknown as WebSocket);
@@ -109,6 +111,34 @@ describe("useRemoteStore watchlists", () => {
     expect(useRemoteStore.getState().teams[0]?.agentIds).toEqual(["agent-2", "agent-1"]);
     expect(useRemoteStore.getState().activeWatchlistId).toBe("main");
     expect(useRemoteStore.getState().mobileCollapsedTeamIds).toEqual([]);
+  });
+
+  it("keeps the newest queue response when overlapping loads resolve out of order", async () => {
+    const first = deferred<QueueItem[]>();
+    const second = deferred<QueueItem[]>();
+    vi.mocked(remoteClient.loadQueueItems)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    const initialLoad = useRemoteStore.getState().load();
+    const refreshLoad = useRemoteStore.getState().load();
+    const newest = [{
+      id: "newest",
+      type: "approval_request" as const,
+      timestamp: 2,
+      read: false,
+      notification_title: "Newest approval",
+      summary: "New state",
+    }];
+    const oldest = [{ ...newest[0], id: "oldest", timestamp: 1, notification_title: "Old approval" }];
+
+    second.resolve(newest);
+    await refreshLoad;
+    expect(useRemoteStore.getState().remoteQueueItems).toEqual(newest);
+
+    first.resolve(oldest);
+    await initialLoad;
+    expect(useRemoteStore.getState().remoteQueueItems).toEqual(newest);
   });
 
   it("scopes collapsed team state to the active remote watchlist", () => {
