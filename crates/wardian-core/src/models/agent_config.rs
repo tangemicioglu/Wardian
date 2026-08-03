@@ -1127,6 +1127,7 @@ mod tests {
                 skip_git_repo_check: Some(false),
                 ephemeral: Some(true),
                 cleared_provider_sessions: vec!["old-thread".into()],
+                reasoning_effort: Some("high".into()),
             }),
             ..Default::default()
         };
