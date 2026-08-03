@@ -37,6 +37,12 @@ pub struct WorkflowInboxApprovalDto {
 pub async fn list_inbox_notifications(
     state: State<'_, AppState>,
 ) -> Result<Vec<InboxNotificationDto>, String> {
+    list_inbox_notifications_for_state(&state).await
+}
+
+pub async fn list_inbox_notifications_for_state(
+    state: &AppState,
+) -> Result<Vec<InboxNotificationDto>, String> {
     let records = state.interactions.inbox_notifications().await;
     let mut notifications = Vec::new();
     for record in records {
@@ -100,7 +106,10 @@ pub fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApprovalDto>, 
         let Some(run_id) = run.get("run_id").and_then(serde_json::Value::as_str) else {
             continue;
         };
-        let Some(blueprint_path) = run.get("blueprint_path").and_then(serde_json::Value::as_str) else {
+        let Some(blueprint_path) = run
+            .get("blueprint_path")
+            .and_then(serde_json::Value::as_str)
+        else {
             continue;
         };
         let detail = crate::commands::workflow::workflow_read_run(
@@ -110,19 +119,29 @@ pub fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApprovalDto>, 
         let Some(node) = detail
             .get("events")
             .and_then(serde_json::Value::as_array)
-            .and_then(|events| events.iter().rev().find_map(|event| {
-                (event.get("kind").and_then(serde_json::Value::as_str) == Some("awaiting_approval"))
+            .and_then(|events| {
+                events.iter().rev().find_map(|event| {
+                    (event.get("kind").and_then(serde_json::Value::as_str)
+                        == Some("awaiting_approval"))
                     .then(|| event.get("node").and_then(serde_json::Value::as_str))
                     .flatten()
-            }))
+                })
+            })
         else {
             continue;
         };
         let blueprint: wardian_core::workflow::Blueprint = serde_json::from_value(
-            detail.get("blueprint").cloned().unwrap_or(serde_json::Value::Null),
+            detail
+                .get("blueprint")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|_| "could not read workflow approval blueprint".to_string())?;
-        let Some(approval_node) = blueprint.nodes.iter().find(|candidate| candidate.id == node) else {
+        let Some(approval_node) = blueprint
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == node)
+        else {
             continue;
         };
         let prompt = approval_node
@@ -150,7 +169,9 @@ pub fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApprovalDto>, 
     Ok(approvals)
 }
 
-fn notification_payload(record: &wardian_core::control::InteractionRecord) -> Option<InboxNotificationPayload> {
+fn notification_payload(
+    record: &wardian_core::control::InteractionRecord,
+) -> Option<InboxNotificationPayload> {
     let InteractionBodyRef::Inline { body } = &record.body_ref else {
         return None;
     };

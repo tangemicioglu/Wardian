@@ -97,6 +97,7 @@ fn remote_router(app: AppHandle, config: RemoteGatewayConfig) -> Router {
         .route("/remote/api/auth/challenge", post(create_auth_challenge))
         .route("/remote/api/auth/session", post(create_auth_session))
         .route("/remote/api/agents", get(list_remote_agents))
+        .route("/remote/api/queue", get(load_remote_queue))
         .route("/remote/api/watchlists", get(load_remote_watchlists))
         .route("/remote/api/workflows", get(list_remote_workflows))
         .route(
@@ -591,6 +592,24 @@ async fn list_remote_agents(
     Ok(Json(serde_json::json!({ "agents": agents })))
 }
 
+async fn load_remote_queue(
+    State(ctx): State<RemoteGatewayContext>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, RemoteGatewayError> {
+    let origin = require_audited_request_boundary(&ctx.config, &headers, false, "load_queue")?;
+    let session =
+        require_audited_remote_session(&ctx, &headers, &origin, "roster_read", "load_queue")
+            .await?;
+    let state = ctx.app.state::<crate::state::AppState>();
+    let items = crate::remote::operations::remote_queue_items(&state).await;
+    audit_gateway_event(
+        &session,
+        &origin,
+        GatewayAuditEvent::accepted("roster_read", "load_queue"),
+    );
+    Ok(Json(serde_json::json!({ "items": items })))
+}
+
 async fn load_remote_watchlists(
     State(ctx): State<RemoteGatewayContext>,
     headers: HeaderMap,
@@ -650,9 +669,10 @@ async fn load_remote_agent_chat(
         .limit
         .unwrap_or(REMOTE_CHAT_DEFAULT_PAGE_EVENTS)
         .clamp(1, REMOTE_CHAT_MAX_PAGE_EVENTS);
-    let page = crate::remote::operations::remote_agent_chat_page(&state, &session_id, query.before, limit)
-        .await
-        .map_err(|_| RemoteGatewayError::bad_request("agent_chat_failed"))?;
+    let page =
+        crate::remote::operations::remote_agent_chat_page(&state, &session_id, query.before, limit)
+            .await
+            .map_err(|_| RemoteGatewayError::bad_request("agent_chat_failed"))?;
     audit_gateway_event(
         &session,
         &origin,

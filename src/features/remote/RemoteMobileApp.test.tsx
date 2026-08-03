@@ -304,8 +304,6 @@ describe("RemoteMobileApp", () => {
       agents: [],
       workflows: [],
       remoteQueueItems: [],
-      remoteQueueBuffers: {},
-      remoteAgentStatuses: {},
       watchlists: [],
       teams: [],
       watchlistPrefs: { columns: [], sort: null, preserve_team_grouping_when_sorted: false, collapsed_team_ids: [] },
@@ -3794,7 +3792,7 @@ describe("RemoteMobileApp", () => {
     expect(terminalInstance.write).toHaveBeenLastCalledWith("\u20ac", expect.any(Function));
   });
 
-  it("adds streamed remote terminal output to the mobile queue when the agent returns idle", async () => {
+  it("shows the desktop Inbox items in the mobile Inbox", async () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url === "/remote/api/session") {
         return Promise.resolve(
@@ -3807,6 +3805,20 @@ describe("RemoteMobileApp", () => {
             { status: 200 },
           ),
         );
+      }
+      if (url === "/remote/api/queue") {
+        return Promise.resolve(new Response(JSON.stringify({
+          items: [{
+            id: "desktop-inbox-1",
+            type: "approval_request",
+            timestamp: 1779417600000,
+            read: false,
+            workflow_name: "Release workflow",
+            summary: "Approve the release deployment.",
+            workflow_approval: true,
+            approval_choices: ["Approve", "Reject"],
+          }],
+        }), { status: 200 }));
       }
       if (url === "/remote/api/agents") {
         return Promise.resolve(
@@ -3843,51 +3855,11 @@ describe("RemoteMobileApp", () => {
 
     render(<RemoteMobileApp />);
 
-    await userEvent.click(await screen.findByRole("button", { name: /Open Coder details/i }));
-    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+    await userEvent.click(await screen.findByRole("button", { name: "Inbox" }));
 
-    act(() => {
-      MockWebSocket.instances[1]?.emit("open");
-      MockWebSocket.instances[1]?.emit("message", {
-        data: JSON.stringify(remoteTerminalRegisteredMessage({ owner: true, state: "" })),
-      });
-      MockWebSocket.instances[1]?.emit("message", {
-        data: JSON.stringify(remoteTerminalEventsMessage([
-          new TextEncoder().encode("Finished the requested update."),
-        ])),
-      });
-    });
-
-    await waitFor(() => {
-      expect(useRemoteStore.getState().remoteQueueBuffers["agent-1"]).toContain("Finished the requested update.");
-    });
-
-    act(() => {
-      MockWebSocket.instances[0]?.emit("message", {
-        data: JSON.stringify({
-          type: "agent_status",
-          agents: [
-            {
-              session_id: "agent-1",
-              session_name: "Coder",
-              agent_class: "Coder",
-              provider: "opencode",
-              workspace: "<absolute-workspace-path>",
-              status: "Idle",
-              latest_text: "Ready",
-            },
-          ],
-        }),
-      });
-    });
-    await waitFor(() => expect(useRemoteStore.getState().remoteQueueItems).toHaveLength(1));
-
-    await userEvent.click(screen.getByRole("button", { name: "Back to remote agents" }));
-    await userEvent.click(screen.getByRole("button", { name: "Inbox" }));
-
-    expect(screen.getByText("Agent task completed")).toBeVisible();
-    expect(screen.getByText("Coder")).toBeVisible();
-    expect(screen.getByText("Finished the requested update.")).toBeVisible();
+    expect(screen.getByText("Approval requested")).toBeVisible();
+    expect(screen.getByText("Release workflow")).toBeVisible();
+    expect(screen.getByText("Approve the release deployment.")).toBeVisible();
   });
 
   it("does not poll terminal snapshots when the status stream updates the attached terminal", async () => {

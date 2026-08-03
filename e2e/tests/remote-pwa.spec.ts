@@ -82,6 +82,22 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await page.route("**/remote/api/workflows", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ workflows: [] }) });
   });
+  await page.route("**/remote/api/queue", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [{
+          id: "desktop-inbox-1",
+          type: "agent_update",
+          timestamp: 1779417600000,
+          read: false,
+          agent_session_id: "agent-1",
+          notification_title: "Agent task completed",
+          summary: "Finished remote e2e update.",
+        }],
+      }),
+    });
+  });
   await page.route("**/remote/api/agents/agent-1/chat", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -427,7 +443,7 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
 
   await page.getByRole("button", { name: "Back to remote agents" }).click();
   await page.getByRole("button", { name: "Inbox" }).click();
-  await expect(page.getByText("Agent task completed")).toBeVisible();
+  await expect(page.getByText("Important update")).toBeVisible();
   await expect(page.getByText("Finished remote e2e update.")).toBeVisible();
   await captureFeatureScreenshot("inbox-summary.png", page.locator("main"));
 });

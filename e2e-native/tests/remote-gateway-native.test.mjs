@@ -590,10 +590,18 @@ test("remote gateway authenticates broker ownership transitions across desktop a
   const unauthorized = await fetch(`${baseUrl}/remote/api/agents`);
   assert.equal(unauthorized.status, 401);
 
+  const queueUnauthorized = await fetch(`${baseUrl}/remote/api/queue`);
+  assert.equal(queueUnauthorized.status, 401);
+
   const badOrigin = await fetch(`${baseUrl}/remote/api/agents`, {
     headers: { Origin: "https://wrong.tailnet.ts.net" },
   });
   assert.equal(badOrigin.status, 403);
+
+  const queueBadOrigin = await fetch(`${baseUrl}/remote/api/queue`, {
+    headers: { Origin: "https://wrong.tailnet.ts.net" },
+  });
+  assert.equal(queueBadOrigin.status, 403);
 
   const response = await fetch(`${baseUrl}/remote/api/agents`, {
     headers: {
@@ -606,6 +614,12 @@ test("remote gateway authenticates broker ownership transitions across desktop a
     body.agents.some((entry) => entry.session_id === sessionId),
     true,
   );
+
+  const queueResponse = await fetch(`${baseUrl}/remote/api/queue`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(queueResponse.status, 200);
+  assert.equal(Array.isArray((await queueResponse.json()).items), true);
 
   const missingOriginMutation = await fetch(`${baseUrl}/remote/api/agents/action`, {
     method: "POST",
