@@ -51,6 +51,9 @@ const response: ChangeReviewLoadResponse = {
     }],
     computed_at: "2026-08-01T00:00:00Z",
     truncated: false,
+    diverged: false,
+    turns_since_baseline: 0,
+    paths_since_baseline: 1,
   },
   git_available: true,
   head_ref: "head-1",
@@ -301,6 +304,50 @@ describe("ChangesPanel", () => {
     ));
     const saves = invokeMock.mock.calls.filter(([command]) => command === "save_change_review_watermark");
     expect(saves).toHaveLength(1);
+  });
+
+  it("offers to re-anchor a diverged baseline without moving it silently", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "conversation_start" });
+      if (command === "get_explorer_root") return Promise.resolve("C:/workspace");
+      if (command === "load_change_review") return Promise.resolve({
+        ...response,
+        summary: {
+          ...response.summary,
+          baseline: "conversation_start" as const,
+          diverged: true,
+          turns_since_baseline: 140,
+          paths_since_baseline: 260,
+        },
+      });
+      if (command === "load_change_review_watermark") return Promise.resolve(null);
+      return Promise.resolve(undefined);
+    });
+
+    renderPanel();
+    await screen.findByText("src/agent.ts");
+
+    expect(await screen.findByText(/drifted 140 turns and 260 files/)).toBeInTheDocument();
+    // The pin is the operator's explicit choice, so it must still be selected
+    // until they act on the offer.
+    expect(screen.getByLabelText("Change review baseline")).toHaveValue("conversation_start");
+
+    fireEvent.click(screen.getByRole("button", { name: "Compare from the last turn instead" }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "save_change_review_prefs",
+      { prefs: { schema: 1, baseline: "last_effective_turn" } },
+    ));
+  });
+
+  it("shows no divergence notice for an undiverged baseline", async () => {
+    renderPanel();
+    await screen.findByText("src/agent.ts");
+
+    expect(screen.queryByText(/drifted/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Compare from the last turn instead" }),
+    ).not.toBeInTheDocument();
   });
 
   it("reports an unavailable workbench instead of silently doing nothing", async () => {

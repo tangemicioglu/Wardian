@@ -372,6 +372,31 @@ export function ChangesPanel({
               {openError}
             </div>
           ) : null}
+          {summary?.diverged ? (
+            <div
+              className="mb-3 rounded border border-[var(--color-wardian-border)] p-3 text-[11px]"
+              role="status"
+            >
+              <p className="mb-2 text-[var(--color-wardian-text-muted)]">
+                This baseline has drifted{" "}
+                {summary.turns_since_baseline !== null
+                  ? `${summary.turns_since_baseline} turns and `
+                  : ""}
+                {summary.paths_since_baseline} files. Holding it keeps every
+                superseded version of those files on disk.
+              </p>
+              {/* Re-anchoring is offered, never applied silently: the pinned
+                  baseline is the operator's explicit choice of comparison, and
+                  moving it without consent answers a different question. */}
+              <button
+                type="button"
+                className="rounded border border-[var(--color-wardian-border)] px-2 py-1 hover:bg-wardian-card-bg-muted"
+                onClick={() => handleBaselineChange("last_effective_turn")}
+              >
+                Compare from the last turn instead
+              </button>
+            </div>
+          ) : null}
           <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-wardian-text-muted)]">
             <span>{summary?.files.length ?? 0} {summary?.files.length === 1 ? "file" : "files"}</span>
             {summary?.from_turn_index !== null && summary?.from_turn_index !== undefined ? <span>from turn {summary.from_turn_index}</span> : null}

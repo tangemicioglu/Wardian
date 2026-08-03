@@ -968,6 +968,15 @@ export type ChangeReviewSummary = {
     files: ChangeReviewFileEntry[];
     computed_at: string;
     truncated: boolean;
+    /**
+     * True when a pinned baseline has drifted far enough to be worth
+     * re-anchoring. Measured in turns and paths, never in bytes held: both
+     * counters below are byproducts of building this summary, while bytes
+     * uniquely held by the pin would need a repository-wide object walk.
+     */
+    diverged: boolean;
+    turns_since_baseline: number | null;
+    paths_since_baseline: number;
 };
 
 export type ChangeReviewReviewedPath = {
@@ -985,6 +994,12 @@ export type ChangeReviewWatermark = {
     reviewed_at: string;
     reviewed_head: string | null;
     reviewed_paths: ChangeReviewReviewedPath[];
+    /**
+     * Snapshot commit captured at the moment of review. Resolved by the backend,
+     * not sent by the pane. It is the content anchor Phase 1 lacked: with it, a
+     * file edited and then reverted to its reviewed content reads as unchanged.
+     */
+    reviewed_snapshot?: string | null;
 };
 
 export type ChangeReviewLoadResponse = {
