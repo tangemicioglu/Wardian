@@ -2662,6 +2662,12 @@ pub async fn kill_agent(
             }
         }
         lifecycle_heartbeat.ensure_active("remove")?;
+        let agent_workspace = agent
+            .config
+            .lock()
+            .ok()
+            .map(|config| config.folder.clone())
+            .filter(|folder| !folder.trim().is_empty());
         manager::terminate_active_agent_process(&mut agent);
 
         // Phase 2: Remove from SQLite
@@ -2670,6 +2676,19 @@ pub async fn kill_agent(
         let _ = app.emit("agents-updated", ());
 
         // Cleanup: remove persisted references and the agent's private directory.
+        // Snapshot refs go with the agent. They live in the operator's own object
+        // store, so leaving them behind would keep superseded blobs reachable for
+        // an agent that no longer exists.
+        if let Some(workspace) = agent_workspace.as_deref() {
+            if let Err(error) =
+                crate::commands::change_snapshot::drop_agent_snapshots(workspace, &session_id)
+            {
+                manager::log_debug(&format!(
+                    "[WARDIAN] Failed to drop change snapshots for {}: {}",
+                    session_id, error
+                ));
+            }
+        }
         if let Some(home) = crate::utils::fs::get_wardian_home() {
             if let Err(error) = crate::commands::change_review::remove_change_review_watermarks_for_agent(
                 &home,
