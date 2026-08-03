@@ -366,7 +366,7 @@ test.describe("Custom Agent Clone", () => {
 
     const description = page.getByLabel("Description (optional)");
     await expect(description).toHaveValue("Owns release notes and keeps deployment guidance current.");
-    await expect(page.getByText("A memo shown in agent lists. It does not change instructions or capabilities.")).toBeVisible();
+    await expect(page.getByText("A memo shown in agent lists. It does not change instructions or capabilities.")).not.toBeVisible();
 
     await page.screenshot({
       path: path.join("e2e", "screenshots", "agent-descriptions", "2026-07-27", "roster-and-agent-config.png"),
