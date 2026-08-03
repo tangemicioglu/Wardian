@@ -24,17 +24,30 @@ pub enum ControlRequest {
     AgentResume {
         target: String,
     },
+    AgentModels {
+        provider: String,
+        #[serde(default)]
+        force_refresh: bool,
+    },
     AgentSpawn {
         provider: String,
         class: String,
         name: Option<String>,
         workspace: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
     },
     AgentUpdate {
         target: String,
         class: Option<String>,
         workspace: Option<String>,
         description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
     },
     AgentDoctor {
         target: String,
@@ -940,12 +953,46 @@ mod tests {
             class: "Reviewer".to_string(),
             name: Some("CLI-Codex-Review".to_string()),
             workspace: Some("D:/Development/Wardian".to_string()),
+            model: Some("gpt-5.6-sol".to_string()),
+            reasoning_effort: Some("high".to_string()),
         };
         let json = serde_json::to_string(&req).unwrap();
 
         assert!(json.contains(r#""command":"agent_spawn""#));
         assert!(json.contains(r#""provider":"codex""#));
         assert!(json.contains(r#""class":"Reviewer""#));
+        assert!(json.contains(r#""model":"gpt-5.6-sol""#));
+        assert!(json.contains(r#""reasoning_effort":"high""#));
+    }
+
+    #[test]
+    fn agent_models_request_serializes_refresh_intent() {
+        let req = ControlRequest::AgentModels {
+            provider: "codex".to_string(),
+            force_refresh: true,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+
+        assert!(json.contains(r#""command":"agent_models""#));
+        assert!(json.contains(r#""provider":"codex""#));
+        assert!(json.contains(r#""force_refresh":true"#));
+    }
+
+    #[test]
+    fn legacy_agent_spawn_request_deserializes_without_model_fields() {
+        let request: ControlRequest = serde_json::from_str(
+            r#"{"command":"agent_spawn","provider":"codex","class":"Reviewer","name":null,"workspace":null}"#,
+        )
+        .expect("legacy spawn request");
+
+        assert!(matches!(
+            request,
+            ControlRequest::AgentSpawn {
+                model: None,
+                reasoning_effort: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -955,6 +1002,8 @@ mod tests {
             class: Some("Reviewer".to_string()),
             workspace: Some("D:/Development/Wardian".to_string()),
             description: Some("Reviews release changes".to_string()),
+            model: Some("gpt-5.6-sol".to_string()),
+            reasoning_effort: Some("high".to_string()),
         };
         let request_json = serde_json::to_string(&req).unwrap();
 
@@ -963,6 +1012,8 @@ mod tests {
         assert!(request_json.contains(r#""class":"Reviewer""#));
         assert!(request_json.contains(r#""workspace":"D:/Development/Wardian""#));
         assert!(request_json.contains(r#""description":"Reviews release changes""#));
+        assert!(request_json.contains(r#""model":"gpt-5.6-sol""#));
+        assert!(request_json.contains(r#""reasoning_effort":"high""#));
 
         let response = AgentUpdateResponse {
             schema: CONTROL_SCHEMA,
@@ -985,12 +1036,16 @@ mod tests {
                 "class".to_string(),
                 "workspace".to_string(),
                 "description".to_string(),
+                "model".to_string(),
+                "reasoning_effort".to_string(),
             ],
             restart_required: true,
         };
         let response_json = serde_json::to_string(&response).unwrap();
 
-        assert!(response_json.contains(r#""updated_fields":["class","workspace","description"]"#));
+        assert!(response_json.contains(
+            r#""updated_fields":["class","workspace","description","model","reasoning_effort"]"#
+        ));
         assert!(response_json.contains(r#""restart_required":true"#));
     }
 

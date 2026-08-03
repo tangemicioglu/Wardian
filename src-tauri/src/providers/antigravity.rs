@@ -388,6 +388,24 @@ impl AgentProvider for AntigravityProvider {
         if antigravity.dangerously_skip_permissions.unwrap_or(false) {
             args.push("--dangerously-skip-permissions".to_string());
         }
+        if let Some(model) = config
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            args.push("--model".to_string());
+            args.push(model.to_string());
+        }
+        if let Some(effort) = antigravity
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            args.push("--effort".to_string());
+            args.push(effort.to_string());
+        }
 
         if is_resume {
             if let Some(session_id) = config
@@ -544,10 +562,12 @@ SET dp0=%~dp0
     fn spawn_args_include_context_dirs_sandbox_permissions_and_resume() {
         let provider = make_provider();
         let config = AgentConfig {
+            model: Some("pro".into()),
             system_include_directories: Some(vec!["common".into(), "class".into()]),
             include_directories: Some(vec!["class".into(), "user".into()]),
             resume_session: Some("conversation-123".into()),
             ..make_antigravity_config(AntigravityProviderConfig {
+                reasoning_effort: Some("high".into()),
                 sandbox: Some(true),
                 dangerously_skip_permissions: Some(true),
                 ..Default::default()
@@ -567,6 +587,10 @@ SET dp0=%~dp0
                 "user",
                 "--sandbox",
                 "--dangerously-skip-permissions",
+                "--model",
+                "pro",
+                "--effort",
+                "high",
                 "--conversation",
                 "conversation-123",
             ]

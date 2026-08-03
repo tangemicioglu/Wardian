@@ -4,6 +4,7 @@ import { Image } from "@tauri-apps/api/image";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEvent } from "../../types";
 import { AgentChatView } from "./AgentChatView";
@@ -1166,6 +1167,58 @@ describe("AgentChatView", () => {
     }));
     await waitFor(() => expect(screen.getByLabelText("user message")).toHaveTextContent("Run the focused tests."));
     expect(input).toHaveValue("");
+  });
+
+  it("persists chat model and effort selections as agent configuration for the next restart", async () => {
+    invokeMock.mockImplementation((command, args) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "list_provider_model_catalog") {
+        return Promise.resolve({
+          provider: "codex",
+          version: "codex-cli 0.146.0",
+          source: "live_catalog",
+          refresh_error: null,
+          models: [{
+            id: "gpt-5.6-sol",
+            display_name: "GPT-5.6 Sol",
+            effort_options: ["low", "high"],
+            default_effort: "low",
+            is_default: true,
+          }],
+        });
+      }
+      if (command === "update_agent_model_selection") {
+        expect(args).toEqual({
+          sessionId: "agent-1",
+          model: "gpt-5.6-sol",
+          reasoningEffort: "low",
+        });
+        return Promise.resolve({
+          session_id: "agent-1",
+          session_name: "Alpha",
+          agent_class: "Coder",
+          folder: "C:/repo",
+          is_off: false,
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          provider_config: { type: "codex", reasoning_effort: "low" },
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<AgentChatView sessionId="agent-1" agent={{ session_name: "Alpha", agent_class: "Coder", provider: "codex" }} status="Idle" />);
+
+    await screen.findByRole("option", { name: "GPT-5.6 Sol" });
+    await user.selectOptions(screen.getByLabelText("Model"), "gpt-5.6-sol");
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("update_agent_model_selection", {
+      sessionId: "agent-1",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "low",
+    }));
+    expect(screen.getByText("Applies when this agent next starts or restarts.")).toBeInTheDocument();
   });
 
   it("stages image files with the provider paste shortcut and includes every attachment path in the sent prompt", async () => {

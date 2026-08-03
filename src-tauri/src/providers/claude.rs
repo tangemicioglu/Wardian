@@ -212,6 +212,15 @@ impl AgentProvider for ClaudeProvider {
             args.push("--model".into());
             args.push(model.clone());
         }
+        if let Some(effort) = claude
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            args.push("--effort".into());
+            args.push(effort.to_string());
+        }
 
         if is_resume {
             // Rule: Old session -> --resume
@@ -461,6 +470,28 @@ SET dp0=%~dp0
                 "stream-json"
             ]
         );
+    }
+
+    #[test]
+    fn spawn_args_include_model_reasoning_effort() {
+        let provider = make_provider();
+        let config = AgentConfig {
+            model: Some("sonnet".into()),
+            provider_config: ProviderConfig::Claude(ClaudeProviderConfig {
+                reasoning_effort: Some("high".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let args = provider.get_spawn_args(&config, false);
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--model" && pair[1] == "sonnet"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--effort" && pair[1] == "high"));
     }
 
     #[test]

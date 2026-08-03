@@ -50,6 +50,28 @@ Do not create, edit, schedule, or run a workflow merely because the request
 matches. Keep one-off work as a direct request, and wait for the user to choose
 workflow authoring before making a blueprint or changing workflow state.
 
+## Select a Provider Model Deliberately
+
+When spawning an agent, use the selected provider's default model and effort
+unless the task's complexity makes an explicit override useful. Before setting
+an override, inspect the provider-owned catalogue through the running app:
+
+```bash
+wardian agent models --provider <provider> --refresh
+```
+
+- Keep the provider default for bounded implementation, routine investigation,
+  summarization, formatting, and straightforward review.
+- Select a stronger compatible model or a higher available effort only for
+  complex, ambiguous, multi-step work such as architecture, deep debugging,
+  security review, or a difficult integration plan.
+- Treat model and effort as a latency and capacity trade-off. Do not use high
+  effort merely because an agent's class sounds senior.
+- Never invent a model ID or effort level. Use only values returned by
+  `agent models`; some provider versions expose no launch-time effort option.
+- Pass an explicit selection at spawn, or update it and restart before relying
+  on it. Selection changes do not alter an active provider turn.
+
 ## Non-Negotiable Defaults
 
 - Use `agent update` rather than editing `settings/state.json`; restart an

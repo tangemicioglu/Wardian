@@ -73,6 +73,7 @@ export interface ProviderReadiness {
 
 export interface ClaudeProviderConfig {
     type: "claude";
+    reasoning_effort?: string;
     permission_mode?: "default" | "plan" | "auto-accept";
     max_turns?: number;
     allowed_tools?: string[];
@@ -96,6 +97,7 @@ export interface GeminiProviderConfig {
 
 export interface CodexProviderConfig {
     type: "codex";
+    reasoning_effort?: string;
     sandbox_mode?: "read-only" | "workspace-write" | "danger-full-access";
     approval_policy?: "untrusted" | "on-failure" | "on-request" | "never";
     profile?: string;
@@ -108,6 +110,7 @@ export interface CodexProviderConfig {
 
 export interface AntigravityProviderConfig {
     type: "antigravity";
+    reasoning_effort?: string;
     sandbox?: boolean;
     dangerously_skip_permissions?: boolean;
     print_timeout?: string;
@@ -121,6 +124,22 @@ export interface OpenCodeProviderConfig {
 
 export interface MockProviderConfig {
     type: "mock";
+}
+
+export interface ProviderModelOption {
+    id: string;
+    display_name: string;
+    effort_options: string[];
+    default_effort: string | null;
+    is_default: boolean;
+}
+
+export interface ProviderModelCatalog {
+    provider: string;
+    version: string | null;
+    source: "live_catalog" | "provider_aliases" | "unavailable";
+    models: ProviderModelOption[];
+    refresh_error: string | null;
 }
 
 export interface UnknownProviderConfig {

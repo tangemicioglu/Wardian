@@ -7,6 +7,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { AgentChatEvent, AgentChatRole, AgentConfig, AgentTelemetry } from "../../types";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { reasoningEffortForConfig } from "../agents/configUtils";
+import { ProviderModelSelector, type ModelSelection } from "../agents/ProviderModelSelector";
 import {
   promptWithChatAttachments,
   stageChatImageAttachments,
@@ -30,7 +32,7 @@ import {
 
 interface AgentChatViewBaseProps {
   sessionId: string;
-  agent?: Pick<AgentConfig, "session_name" | "agent_class" | "provider">;
+  agent?: Pick<AgentConfig, "session_name" | "agent_class" | "provider" | "model" | "provider_config">;
   provider?: AgentConfig["provider"];
   isMaximized?: boolean;
   theme?: "dark" | "light" | "system";
@@ -365,6 +367,7 @@ export function AgentChatView({
         ) : null}
       </div>
       <ChatComposer
+        agent={agent}
         autoFocus={autoFocusComposer}
         disabledReason={disabledReason}
         draft={activeDraft}
@@ -375,6 +378,7 @@ export function AgentChatView({
         onAttachmentsChange={setAttachments}
         onChange={setActiveDraft}
         onSubmit={handleSubmit}
+        sessionId={sessionId}
         submitError={submitError}
       />
     </section>
@@ -894,6 +898,7 @@ function TerminalFallback({ event, block }: { event: AgentChatEvent; block: Acti
 }
 
 function ChatComposer({
+  agent,
   attachments,
   autoFocus,
   disabledReason,
@@ -904,8 +909,10 @@ function ChatComposer({
   onAttachmentsChange,
   onChange,
   onSubmit,
+  sessionId,
   submitError,
 }: {
+  agent?: Pick<AgentConfig, "session_name" | "agent_class" | "provider" | "model" | "provider_config">;
   attachments: readonly ChatAttachment[];
   autoFocus: boolean;
   disabledReason: string | null;
@@ -916,6 +923,7 @@ function ChatComposer({
   onAttachmentsChange: (attachments: ChatAttachment[]) => void;
   onChange: (value: string) => void;
   onSubmit: () => void;
+  sessionId: string;
   submitError: string | null;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -963,6 +971,7 @@ function ChatComposer({
         onSubmit();
       }}
     >
+      <ChatModelSelection agent={agent} sessionId={sessionId} />
       {attachments.length > 0 ? (
         <div className="mb-2 flex flex-wrap gap-1.5" aria-label="Attached files">
           {attachments.map((attachment) => (
@@ -1033,6 +1042,72 @@ function ChatComposer({
         </div>
       ) : null}
     </form>
+  );
+}
+
+function ChatModelSelection({
+  agent,
+  sessionId,
+}: {
+  agent?: Pick<AgentConfig, "session_name" | "agent_class" | "provider" | "model" | "provider_config">;
+  sessionId: string;
+}) {
+  const provider = agent?.provider;
+  const [selection, setSelection] = useState<ModelSelection>(() => ({
+    model: agent?.model,
+    reasoning_effort: reasoningEffortForConfig(agent ?? {}),
+  }));
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    setSelection({
+      model: agent?.model,
+      reasoning_effort: reasoningEffortForConfig(agent ?? {}),
+    });
+    setSaveError(null);
+  }, [agent?.model, agent?.provider_config, sessionId]);
+
+  if (!provider?.trim()) return null;
+
+  const saveSelection = async (nextSelection: ModelSelection) => {
+    const previousSelection = selection;
+    setSelection(nextSelection);
+    setSaveError(null);
+    setIsSaving(true);
+    try {
+      const saved = await invoke<AgentConfig>("update_agent_model_selection", {
+        sessionId,
+        model: nextSelection.model ?? null,
+        reasoningEffort: nextSelection.reasoning_effort ?? null,
+      });
+      setSelection({
+        model: saved.model,
+        reasoning_effort: reasoningEffortForConfig(saved),
+      });
+    } catch (reason) {
+      setSelection(previousSelection);
+      setSaveError(errorMessage(reason));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="mb-2">
+      <ProviderModelSelector
+        compact
+        idPrefix={`chat-${sessionId}`}
+        provider={provider}
+        selection={selection}
+        onSelectionChange={(nextSelection) => void saveSelection(nextSelection)}
+      />
+      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-neutral">
+        <span>Applies when this agent next starts or restarts.</span>
+        {isSaving ? <span>Saving…</span> : null}
+      </div>
+      {saveError ? <p className="mt-1 text-[10px] text-wardian-error" role="alert">{saveError}</p> : null}
+    </div>
   );
 }
 

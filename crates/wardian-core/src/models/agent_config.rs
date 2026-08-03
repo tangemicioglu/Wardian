@@ -72,6 +72,8 @@ impl Default for ProviderConfig {
 #[serde(default)]
 pub struct ClaudeProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
@@ -112,6 +114,8 @@ pub struct GeminiProviderConfig {
 #[serde(default)]
 pub struct CodexProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<String>,
@@ -132,6 +136,8 @@ pub struct CodexProviderConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AntigravityProviderConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -498,6 +504,7 @@ impl AgentConfigCompat {
                 skip_git_repo_check: self.codex_skip_git_repo_check,
                 ephemeral: self.codex_ephemeral,
                 cleared_provider_sessions: self.codex_cleared_provider_sessions.clone(),
+                reasoning_effort: None,
             }),
             "antigravity" => ProviderConfig::Antigravity(AntigravityProviderConfig::default()),
             "opencode" => ProviderConfig::OpenCode(OpenCodeProviderConfig {
@@ -512,6 +519,7 @@ impl AgentConfigCompat {
                 disallowed_tools: self.disallowed_tools.clone(),
                 append_system_prompt: self.append_system_prompt.clone(),
                 mcp_config: self.mcp_config.clone(),
+                reasoning_effort: None,
             }),
             "" if self.provider.trim().is_empty() => ProviderConfig::Claude(ClaudeProviderConfig {
                 permission_mode: self.permission_mode.clone(),
@@ -520,6 +528,7 @@ impl AgentConfigCompat {
                 disallowed_tools: self.disallowed_tools.clone(),
                 append_system_prompt: self.append_system_prompt.clone(),
                 mcp_config: self.mcp_config.clone(),
+                reasoning_effort: None,
             }),
             "" => ProviderConfig::default_for_provider(&self.provider),
             _ => unreachable!("provider_key only returns known provider keys or an empty marker"),
@@ -1118,6 +1127,7 @@ mod tests {
                 skip_git_repo_check: Some(false),
                 ephemeral: Some(true),
                 cleared_provider_sessions: vec!["old-thread".into()],
+                reasoning_effort: Some("high".into()),
             }),
             ..Default::default()
         };

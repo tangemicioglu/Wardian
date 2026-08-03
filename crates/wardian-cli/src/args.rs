@@ -642,6 +642,14 @@ pub enum AgentCommand {
         #[arg(long)]
         workspace: Option<String>,
     },
+    /// List models and compatible reasoning efforts for one installed provider.
+    Models {
+        #[arg(long)]
+        provider: String,
+        /// Bypass the short provider catalogue cache.
+        #[arg(long)]
+        refresh: bool,
+    },
     Kill {
         target: String,
         /// Confirm permanent removal of the agent, its habitat, and its session history.
@@ -667,20 +675,32 @@ pub enum AgentCommand {
         name: Option<String>,
         #[arg(long)]
         workspace: Option<String>,
+        /// Provider-discovered model identifier. Omit for the provider default.
+        #[arg(long)]
+        model: Option<String>,
+        /// Provider-discovered reasoning effort. Omit for the provider default.
+        #[arg(long = "reasoning-effort")]
+        reasoning_effort: Option<String>,
     },
     /// Update live agent configuration without restarting the provider process.
     Update {
         /// Agent name or UUID.
         target: String,
         /// Assign an existing class and regenerate its instruction include directories.
-        #[arg(long, required_unless_present_any = ["workspace", "description"])]
+        #[arg(long, required_unless_present_any = ["workspace", "description", "model", "reasoning_effort"])]
         class: Option<String>,
         /// Move an ordinary agent workspace to an existing path.
-        #[arg(long, required_unless_present_any = ["class", "description"])]
+        #[arg(long, required_unless_present_any = ["class", "description", "model", "reasoning_effort"])]
         workspace: Option<String>,
         /// Set the optional purpose memo. Pass an empty value to clear it.
-        #[arg(long, required_unless_present_any = ["class", "workspace"])]
+        #[arg(long, required_unless_present_any = ["class", "workspace", "model", "reasoning_effort"])]
         description: Option<String>,
+        /// Provider-discovered model identifier. Pass an empty value to clear it.
+        #[arg(long, required_unless_present_any = ["class", "workspace", "description", "reasoning_effort"])]
+        model: Option<String>,
+        /// Provider-discovered reasoning effort. Pass an empty value to clear it.
+        #[arg(long = "reasoning-effort", required_unless_present_any = ["class", "workspace", "description", "model"])]
+        reasoning_effort: Option<String>,
     },
     /// Show effective provider policy and launch diagnostics for one agent.
     Doctor {
@@ -776,6 +796,8 @@ mod tests {
                 class: Some(ref class),
                 workspace: Some(ref workspace),
                 description: None,
+                model: None,
+                reasoning_effort: None,
             }) if target == "coder-a1"
                 && class == "Reviewer"
                 && workspace == "D:/Development/Wardian"
@@ -805,6 +827,73 @@ mod tests {
                 description: Some(ref description),
                 ..
             }) if description == "Owns frontend release follow-up"
+        ));
+    }
+
+    #[test]
+    fn parses_agent_model_catalog_and_selection_flags() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "agent",
+            "models",
+            "--provider",
+            "codex",
+            "--refresh",
+        ])
+        .unwrap();
+        let Command::Agent(args) = cli.command else {
+            panic!("expected Agent")
+        };
+        assert!(matches!(
+            args.command,
+            Some(AgentCommand::Models { ref provider, refresh: true }) if provider == "codex"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "agent",
+            "spawn",
+            "--provider",
+            "codex",
+            "--class",
+            "Reviewer",
+            "--model",
+            "gpt-5.6-sol",
+            "--reasoning-effort",
+            "high",
+        ])
+        .unwrap();
+        let Command::Agent(args) = cli.command else {
+            panic!("expected Agent")
+        };
+        assert!(matches!(
+            args.command,
+            Some(AgentCommand::Spawn {
+                model: Some(ref model),
+                reasoning_effort: Some(ref reasoning_effort),
+                ..
+            }) if model == "gpt-5.6-sol" && reasoning_effort == "high"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "agent",
+            "update",
+            "reviewer-a1",
+            "--model",
+            "gpt-5.6-sol",
+        ])
+        .unwrap();
+        let Command::Agent(args) = cli.command else {
+            panic!("expected Agent")
+        };
+        assert!(matches!(
+            args.command,
+            Some(AgentCommand::Update {
+                model: Some(ref model),
+                reasoning_effort: None,
+                ..
+            }) if model == "gpt-5.6-sol"
         ));
     }
 
@@ -1529,7 +1618,7 @@ mod tests {
         };
         assert!(matches!(
             args.command,
-            Some(AgentCommand::Spawn { ref provider, ref class, ref name, ref workspace })
+            Some(AgentCommand::Spawn { ref provider, ref class, ref name, ref workspace, .. })
             if provider == "codex"
                 && class == "Coder"
                 && name.as_deref() == Some("coder-b1")
