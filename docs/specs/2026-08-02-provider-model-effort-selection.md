@@ -58,6 +58,14 @@ uses the focused `update_agent_model_selection` command and states that the
 selection applies when the agent next starts or restarts. Wardian does not
 interrupt an active provider turn or claim that a session changed in place.
 
+The `wardian` CLI exposes the same provider-owned catalogue through
+`agent models --provider <provider> [--refresh]`, then accepts explicit
+`--model` and `--reasoning-effort` values on `agent spawn` and `agent update`.
+Agent-facing CLI guidance keeps the provider default for bounded work and
+reserves a listed stronger model or higher effort for complex, ambiguous,
+multi-step tasks. Updating either selection reports `restart_required` for an
+active agent.
+
 ## Compatibility
 
 Older persisted agents deserialize without an effort value. A discovered

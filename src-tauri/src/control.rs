@@ -255,14 +255,29 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             ok_json(&OkResponse::new())
         }
 
+        ControlRequest::AgentModels {
+            provider,
+            force_refresh,
+        } => ok_json(&crate::providers::models::model_catalog(&provider, force_refresh).await),
+
         ControlRequest::AgentSpawn {
             provider,
             class,
             name,
             workspace,
+            model,
+            reasoning_effort,
         } => {
             use crate::commands::agent::spawn_agent;
-            let req = build_spawn_agent_request(provider, class, name, workspace);
+            let req = build_spawn_agent_request(
+                provider,
+                class,
+                name,
+                workspace,
+                model,
+                reasoning_effort,
+            )
+            .map_err(ControlError::bad_request)?;
             let config = spawn_agent(req, app.state::<AppState>(), app.clone())
                 .await
                 .map_err(ControlError::request_failed)?;
@@ -275,6 +290,8 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             class,
             workspace,
             description,
+            model,
+            reasoning_effort,
         } => {
             let uuid = resolve_target_uuid(app, &target)
                 .await
@@ -298,9 +315,13 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             let outcome = crate::commands::agent::update_agent_fields_in_state(
                 state.inner(),
                 &uuid,
-                class.as_deref(),
-                workspace.as_deref(),
-                description.as_deref(),
+                crate::commands::agent::AgentUpdateFields {
+                    class: class.as_deref(),
+                    workspace: workspace.as_deref(),
+                    description: description.as_deref(),
+                    model: model.as_deref(),
+                    reasoning_effort: reasoning_effort.as_deref(),
+                },
                 &classes,
             )
             .await
@@ -723,20 +744,27 @@ fn build_spawn_agent_request(
     class: String,
     name: Option<String>,
     workspace: Option<String>,
-) -> crate::commands::agent::SpawnAgentRequest {
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+) -> Result<crate::commands::agent::SpawnAgentRequest, String> {
     let mut config_override = wardian_core::models::AgentConfig {
         provider,
         ..Default::default()
     };
     config_override.reset_provider_config_for_provider();
-    crate::commands::agent::SpawnAgentRequest {
+    crate::commands::agent::apply_agent_model_selection_update(
+        &mut config_override,
+        model.as_deref(),
+        reasoning_effort.as_deref(),
+    )?;
+    Ok(crate::commands::agent::SpawnAgentRequest {
         session_name: name.unwrap_or_default(),
         agent_class: class,
         folder: workspace.unwrap_or_default(),
         resume_session: None,
         is_off: None,
         config_override: Some(config_override),
-    }
+    })
 }
 
 fn build_clone_agent_request(
@@ -4804,9 +4832,12 @@ fn snapshot_agent_with_leases(
 
 fn agent_update_requires_restart(updated_fields: &[String], is_off: bool) -> bool {
     !is_off
-        && updated_fields
-            .iter()
-            .any(|field| matches!(field.as_str(), "class" | "workspace"))
+        && updated_fields.iter().any(|field| {
+            matches!(
+                field.as_str(),
+                "class" | "workspace" | "model" | "reasoning_effort"
+            )
+        })
 }
 
 #[cfg(test)]
@@ -6149,8 +6180,15 @@ mod tests {
 
     #[test]
     fn spawn_request_preserves_provider_and_defaults_optional_fields() {
-        let req =
-            build_spawn_agent_request("codex".to_string(), "Reviewer".to_string(), None, None);
+        let req = build_spawn_agent_request(
+            "codex".to_string(),
+            "Reviewer".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("spawn request");
 
         assert_eq!(req.session_name, "");
         assert_eq!(req.agent_class, "Reviewer");
@@ -6168,6 +6206,36 @@ mod tests {
                 .map(|config| &config.provider_config),
             Some(wardian_core::models::ProviderConfig::Codex(_))
         ));
+    }
+
+    #[test]
+    fn spawn_request_applies_model_and_effort_to_the_provider_config() {
+        let req = build_spawn_agent_request(
+            "codex".to_string(),
+            "Reviewer".to_string(),
+            None,
+            None,
+            Some("gpt-5.6-sol".to_string()),
+            Some("high".to_string()),
+        )
+        .expect("spawn request");
+        let config = req.config_override.expect("config override");
+
+        assert_eq!(config.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            config.codex_config().reasoning_effort.as_deref(),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn model_and_effort_updates_require_a_restart_for_running_agents() {
+        assert!(agent_update_requires_restart(&["model".to_string()], false));
+        assert!(agent_update_requires_restart(
+            &["reasoning_effort".to_string()],
+            false
+        ));
+        assert!(!agent_update_requires_restart(&["model".to_string()], true));
     }
 
     #[test]

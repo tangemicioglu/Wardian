@@ -81,6 +81,7 @@ enum ControlOperation {
     AgentRestart,
     AgentPause,
     AgentResume,
+    AgentModels,
     AgentSpawn,
     AgentUpdate,
     AgentClone,
@@ -335,6 +336,8 @@ pub fn agent_spawn(
     class: &str,
     name: Option<&str>,
     workspace: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
 ) -> io::Result<AgentIdentity> {
     let runtime = build_runtime()?;
     let value = timeout_block(
@@ -345,6 +348,8 @@ pub fn agent_spawn(
             class: class.to_string(),
             name: name.map(str::to_string),
             workspace: workspace.map(str::to_string),
+            model: model.map(str::to_string),
+            reasoning_effort: reasoning_effort.map(str::to_string),
         }),
     )?;
     let resp: AgentResponse =
@@ -352,11 +357,25 @@ pub fn agent_spawn(
     Ok(resp.agent)
 }
 
+pub fn agent_models(provider: &str, force_refresh: bool) -> io::Result<serde_json::Value> {
+    let runtime = build_runtime()?;
+    timeout_block(
+        &runtime,
+        ControlOperation::AgentModels,
+        send_request(ControlRequest::AgentModels {
+            provider: provider.to_string(),
+            force_refresh,
+        }),
+    )
+}
+
 pub fn agent_update(
     target: &str,
     class: Option<&str>,
     workspace: Option<&str>,
     description: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
 ) -> io::Result<AgentUpdateResponse> {
     let runtime = build_runtime()?;
     let value = timeout_block(
@@ -367,6 +386,8 @@ pub fn agent_update(
             class: class.map(str::to_string),
             workspace: workspace.map(str::to_string),
             description: description.map(str::to_string),
+            model: model.map(str::to_string),
+            reasoning_effort: reasoning_effort.map(str::to_string),
         }),
     )?;
     serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))
@@ -983,6 +1004,7 @@ fn operation_timeout(operation: &ControlOperation) -> Duration {
         | ControlOperation::AgentRestart
         | ControlOperation::AgentPause
         | ControlOperation::AgentResume
+        | ControlOperation::AgentModels
         | ControlOperation::AgentSpawn
         | ControlOperation::AgentUpdate
         | ControlOperation::AgentClone
@@ -1300,6 +1322,10 @@ mod tests {
         assert!(operation_timeout(&ControlOperation::AgentSpawn) > CONTROL_TIMEOUT);
         assert_eq!(
             operation_timeout(&ControlOperation::AgentUpdate),
+            CONTROL_MUTATION_TIMEOUT
+        );
+        assert_eq!(
+            operation_timeout(&ControlOperation::AgentModels),
             CONTROL_MUTATION_TIMEOUT
         );
         assert!(operation_timeout(&ControlOperation::AgentClone) > CONTROL_TIMEOUT);

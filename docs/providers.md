@@ -36,6 +36,20 @@ Where a provider exposes compatible reasoning levels, the picker also shows an
 launch-time effort option show only model selection. Leave either control on
 **Provider default** to use the provider's normal default.
 
+Agents and scripts can inspect the same live catalogue through the CLI:
+
+```bash
+wardian agent models --provider <provider> --refresh
+```
+
+Use the provider default for routine, bounded work. For complex, ambiguous,
+multi-step work such as architecture, deep debugging, or security review, an
+orchestrator may choose a listed compatible model and higher available effort.
+Do not guess model IDs or effort values, and do not infer a need for high
+effort from an agent class alone. The CLI accepts selections at spawn or update;
+updating an existing running agent requires a restart before the provider sees
+the change.
+
 ## Antigravity (`agy`)
 
 Antigravity runs directly in the real target workspace.

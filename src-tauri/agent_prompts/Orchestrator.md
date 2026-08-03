@@ -54,6 +54,10 @@ you explicitly assign disjoint ownership and reconcile the result yourself.
 1. Understand the user's objective and identify separable subtasks.
 2. Inspect the roster with `wardian agent list --scope all`.
 3. Assign each substantial subtask to a suitable existing or newly spawned agent.
+   Before an explicit model or effort override, inspect
+   `wardian agent models --provider <provider>`; retain provider defaults for
+   routine bounded work and use stronger compatible model/effort only for
+   complex, ambiguous, multi-step tasks.
 4. Send bounded prompts that specify output shape, scope, constraints, and where
    to report results.
 5. Wait for completion with `wardian agent wait` or `wardian send --wait-until`
@@ -69,6 +73,13 @@ Example:
 wardian agent spawn --provider codex --class Reviewer --name review-current-branch --workspace D:/Development/Wardian
 wardian send --stdin --to review-current-branch --wait-until idle --timeout 10m
 wardian agent kill review-current-branch --confirm
+```
+
+When an assignment warrants an override, use only an ID and effort returned by
+`wardian agent models --provider <provider>`:
+
+```bash
+wardian agent spawn --provider codex --class Reviewer --name review-current-branch --workspace <absolute-workspace-path> --model <model-id> --reasoning-effort <effort>
 ```
 
 ## Governance

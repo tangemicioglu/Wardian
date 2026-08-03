@@ -187,6 +187,7 @@ fn handle_agent(args: AgentArgs) -> Result<String, CliError> {
             workspace.clone(),
             &args,
         ),
+        Some(AgentCommand::Models { provider, refresh }) => handle_agent_models(provider, *refresh),
         None => handle_show(args.target.as_deref(), &args),
         Some(AgentCommand::Kill { target, confirm }) => handle_agent_kill(target, *confirm),
         Some(AgentCommand::Restart { target }) => handle_agent_restart(target),
@@ -197,11 +198,15 @@ fn handle_agent(args: AgentArgs) -> Result<String, CliError> {
             class,
             name,
             workspace,
+            model,
+            reasoning_effort,
         }) => handle_agent_spawn(
             provider,
             class,
             name.as_deref(),
             workspace.as_deref(),
+            model.as_deref(),
+            reasoning_effort.as_deref(),
             &args,
         ),
         Some(AgentCommand::Update {
@@ -209,11 +214,15 @@ fn handle_agent(args: AgentArgs) -> Result<String, CliError> {
             class,
             workspace,
             description,
+            model,
+            reasoning_effort,
         }) => handle_agent_update(
             target,
             class.as_deref(),
             workspace.as_deref(),
             description.as_deref(),
+            model.as_deref(),
+            reasoning_effort.as_deref(),
         ),
         Some(AgentCommand::Doctor { target }) => handle_agent_doctor(target),
         Some(AgentCommand::Clone { target, name }) => {
@@ -303,10 +312,20 @@ fn handle_agent_spawn(
     class: &str,
     name: Option<&str>,
     workspace: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
     args: &AgentArgs,
 ) -> Result<String, CliError> {
-    let agent = live::agent_spawn(provider, class, name, workspace).map_err(control_error)?;
+    let agent = live::agent_spawn(provider, class, name, workspace, model, reasoning_effort)
+        .map_err(control_error)?;
     render_show(&agent, &render_options(args))
+}
+
+fn handle_agent_models(provider: &str, force_refresh: bool) -> Result<String, CliError> {
+    let catalog = live::agent_models(provider, force_refresh).map_err(control_error)?;
+    serde_json::to_string_pretty(&catalog)
+        .map(|json| format!("{json}\n"))
+        .map_err(|error| CliError::generic(error.to_string()))
 }
 
 fn handle_agent_update(
@@ -314,9 +333,18 @@ fn handle_agent_update(
     class: Option<&str>,
     workspace: Option<&str>,
     description: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
 ) -> Result<String, CliError> {
-    let response =
-        live::agent_update(target, class, workspace, description).map_err(control_error)?;
+    let response = live::agent_update(
+        target,
+        class,
+        workspace,
+        description,
+        model,
+        reasoning_effort,
+    )
+    .map_err(control_error)?;
     serde_json::to_string_pretty(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))

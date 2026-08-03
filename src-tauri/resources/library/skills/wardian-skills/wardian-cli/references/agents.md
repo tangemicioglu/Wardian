@@ -71,6 +71,34 @@ capabilities. Pass `--description ""` to clear the memo. Run
 workspace. Restart preserves the Wardian agent, habitat, and saved session
 history. Do not use it to move a managed-worktree agent.
 
+## Select A Provider Model And Effort
+
+The model catalogue belongs to the installed provider and can change with the
+provider version or account. Ask Wardian for the current compatible choices;
+use `--refresh` when a newly installed provider version or account change
+needs to be reflected immediately:
+
+```bash
+wardian agent models --provider codex --refresh
+```
+
+For routine, bounded tasks, leave model and effort on the provider default.
+For complex, ambiguous, multi-step work such as architecture, deep debugging,
+or security review, choose an explicit model and a higher effort only when
+that catalogue lists the combination. Do not guess identifiers or apply high
+effort based on an agent class alone.
+
+```bash
+wardian agent spawn --provider codex --class Reviewer --name reviewer-a1 --workspace <absolute-workspace-path> --model <model-id> --reasoning-effort <effort>
+wardian agent update reviewer-a1 --model <model-id> --reasoning-effort <effort>
+wardian agent restart reviewer-a1
+```
+
+`agent update` reports `restart_required` when a changed model or effort must
+be applied to a running provider. Pass `--model ""` or
+`--reasoning-effort ""` to return an existing agent to its provider default.
+Providers that do not list an effort control accept model selection only.
+
 ## Assign A Managed Workspace
 
 Worktrees are one way to assign a managed workspace; they are not an agent

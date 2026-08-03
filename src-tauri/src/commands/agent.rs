@@ -1949,6 +1949,8 @@ fn apply_agent_update_fields(
     class: Option<&str>,
     workspace: Option<&str>,
     description: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
     classes: &[wardian_core::models::AgentClassDefinition],
 ) -> Result<Vec<String>, String> {
     let mut updated_fields = Vec::new();
@@ -1987,7 +1989,61 @@ fn apply_agent_update_fields(
         }
     }
 
+    updated_fields.extend(apply_agent_model_selection_update(
+        config,
+        model,
+        reasoning_effort,
+    )?);
+
     Ok(updated_fields)
+}
+
+pub(crate) fn apply_agent_model_selection_update(
+    config: &mut AgentConfig,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let mut updated_fields = Vec::new();
+
+    if let Some(model) = model {
+        let normalized = normalized_optional_agent_setting(Some(model.to_string()));
+        if config.model != normalized {
+            config.model = normalized;
+            updated_fields.push("model".to_string());
+        }
+    }
+
+    if let Some(reasoning_effort) = reasoning_effort {
+        let normalized = normalized_optional_agent_setting(Some(reasoning_effort.to_string()));
+        if set_agent_reasoning_effort(config, normalized)? {
+            updated_fields.push("reasoning_effort".to_string());
+        }
+    }
+
+    Ok(updated_fields)
+}
+
+fn set_agent_reasoning_effort(
+    config: &mut AgentConfig,
+    reasoning_effort: Option<String>,
+) -> Result<bool, String> {
+    let setting = match &mut config.provider_config {
+        ProviderConfig::Codex(provider_config) => &mut provider_config.reasoning_effort,
+        ProviderConfig::Claude(provider_config) => &mut provider_config.reasoning_effort,
+        ProviderConfig::Antigravity(provider_config) => &mut provider_config.reasoning_effort,
+        _ if reasoning_effort.is_some() => {
+            return Err(format!(
+                "{} does not support launch-time reasoning effort selection",
+                config.provider
+            ));
+        }
+        _ => return Ok(false),
+    };
+    if *setting == reasoning_effort {
+        return Ok(false);
+    }
+    *setting = reasoning_effort;
+    Ok(true)
 }
 
 pub(crate) struct AgentUpdateOutcome {
@@ -1998,15 +2054,26 @@ pub(crate) struct AgentUpdateOutcome {
     _lifecycle_guard: tokio::sync::OwnedMutexGuard<()>,
 }
 
+pub(crate) struct AgentUpdateFields<'a> {
+    pub class: Option<&'a str>,
+    pub workspace: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub reasoning_effort: Option<&'a str>,
+}
+
 pub(crate) async fn update_agent_fields_in_state(
     state: &AppState,
     session_id: &str,
-    class: Option<&str>,
-    workspace: Option<&str>,
-    description: Option<&str>,
+    update: AgentUpdateFields<'_>,
     classes: &[wardian_core::models::AgentClassDefinition],
 ) -> Result<AgentUpdateOutcome, String> {
-    if class.is_none() && workspace.is_none() && description.is_none() {
+    if update.class.is_none()
+        && update.workspace.is_none()
+        && update.description.is_none()
+        && update.model.is_none()
+        && update.reasoning_effort.is_none()
+    {
         return Err("At least one agent update field is required".to_string());
     }
 
@@ -2018,8 +2085,15 @@ pub(crate) async fn update_agent_fields_in_state(
         .ok_or_else(|| format!("Agent {session_id} not found"))?;
     let previous_config = agent.config.lock().unwrap().clone();
     let mut config = previous_config.clone();
-    let updated_fields =
-        apply_agent_update_fields(&mut config, class, workspace, description, classes)?;
+    let updated_fields = apply_agent_update_fields(
+        &mut config,
+        update.class,
+        update.workspace,
+        update.description,
+        update.model,
+        update.reasoning_effort,
+        classes,
+    )?;
 
     if updated_fields.iter().any(|field| field == "class") {
         config.system_include_directories =
@@ -3445,25 +3519,10 @@ pub async fn update_agent_model_selection(
     };
 
     config.model = normalized_optional_agent_setting(model);
-    let reasoning_effort = normalized_optional_agent_setting(reasoning_effort);
-    match &mut config.provider_config {
-        ProviderConfig::Codex(provider_config) => {
-            provider_config.reasoning_effort = reasoning_effort;
-        }
-        ProviderConfig::Claude(provider_config) => {
-            provider_config.reasoning_effort = reasoning_effort;
-        }
-        ProviderConfig::Antigravity(provider_config) => {
-            provider_config.reasoning_effort = reasoning_effort;
-        }
-        _ if reasoning_effort.is_some() => {
-            return Err(format!(
-                "{} does not support launch-time reasoning effort selection",
-                config.provider
-            ));
-        }
-        _ => {}
-    }
+    set_agent_reasoning_effort(
+        &mut config,
+        normalized_optional_agent_setting(reasoning_effort),
+    )?;
 
     update_agent_config(config.clone(), state, app).await?;
     Ok(config)
@@ -4056,12 +4115,12 @@ mod tests {
     use super::{
         acquire_agent_lifecycle_guard, acquire_agent_lifecycle_transition_lease,
         acquire_agent_lifecycle_transition_lease_for_session, agent_status_update_payload,
-        apply_agent_update_fields, archive_agent_lifecycle_boundary,
-        archive_agent_lifecycle_boundary_from_snapshot, assign_worktree_config,
-        build_agent_cli_command_for_session_id_with_shells, build_agent_cli_command_with_shells,
-        build_agent_clone_preview, capture_resume_runtime_snapshot,
-        clone_cleanup_created_profile_dirs, clone_collect_eligible_file_tree,
-        clone_copy_agent_profile_files, clone_copy_profile_plan,
+        apply_agent_model_selection_update, apply_agent_update_fields,
+        archive_agent_lifecycle_boundary, archive_agent_lifecycle_boundary_from_snapshot,
+        assign_worktree_config, build_agent_cli_command_for_session_id_with_shells,
+        build_agent_cli_command_with_shells, build_agent_clone_preview,
+        capture_resume_runtime_snapshot, clone_cleanup_created_profile_dirs,
+        clone_collect_eligible_file_tree, clone_copy_agent_profile_files, clone_copy_profile_plan,
         clone_copy_selected_agent_profile_files, clone_copy_selected_agent_skills,
         clone_ensure_profile_destination_available, clone_match_selected_agent_skills,
         clone_refresh_profile_system_include_directories, clone_remove_existing_path,
@@ -4090,7 +4149,7 @@ mod tests {
         take_agent_runtime_for_termination, terminal_cleared_payload, update_agent_fields_in_state,
         validate_assignable_worktree_for_agent, validate_deletable_agent_worktree,
         workspace_paths_match, worktree_deletion_is_already_complete, AgentOrderPlacement,
-        AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
+        AgentUpdateFields, AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
         DeletedAgentReferenceCleanup, DiscoveredGitWorktree, GIT_WORKTREE_DISCOVERY_CONCURRENCY,
         MAX_AGENT_DESCRIPTION_CHARS,
     };
@@ -5659,6 +5718,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             Some("reviewer"),
             Some(&workspace.to_string_lossy()),
             Some("  Reviews release changes  "),
+            None,
+            None,
             &classes,
         )
         .expect("update fields");
@@ -5688,6 +5749,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             None,
             Some(&workspace.to_string_lossy()),
             None,
+            None,
+            None,
             &[],
         )
         .expect_err("managed worktree must use worktree commands");
@@ -5695,9 +5758,16 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert!(error.contains("agent worktree"));
 
         let current_workspace = config.folder.clone();
-        let no_op_error =
-            apply_agent_update_fields(&mut config, None, Some(&current_workspace), None, &[])
-                .expect_err("managed worktree no-op must still use worktree commands");
+        let no_op_error = apply_agent_update_fields(
+            &mut config,
+            None,
+            Some(&current_workspace),
+            None,
+            None,
+            None,
+            &[],
+        )
+        .expect_err("managed worktree no-op must still use worktree commands");
         assert!(no_op_error.contains("agent worktree"));
     }
 
@@ -5711,17 +5781,26 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             ..Default::default()
         };
 
-        let blank = apply_agent_update_fields(&mut config, None, Some("   "), None, &[])
-            .expect_err("blank workspace must be rejected");
+        let blank =
+            apply_agent_update_fields(&mut config, None, Some("   "), None, None, None, &[])
+                .expect_err("blank workspace must be rejected");
         assert!(blank.contains("cannot be empty"));
 
-        let relative = apply_agent_update_fields(&mut config, None, Some("."), None, &[])
-            .expect_err("relative workspace must be rejected");
+        let relative =
+            apply_agent_update_fields(&mut config, None, Some("."), None, None, None, &[])
+                .expect_err("relative workspace must be rejected");
         assert!(relative.contains("absolute"));
 
-        let file_error =
-            apply_agent_update_fields(&mut config, None, Some(&file.to_string_lossy()), None, &[])
-                .expect_err("workspace file must be rejected");
+        let file_error = apply_agent_update_fields(
+            &mut config,
+            None,
+            Some(&file.to_string_lossy()),
+            None,
+            None,
+            None,
+            &[],
+        )
+        .expect_err("workspace file must be rejected");
         assert!(file_error.contains("directory"));
     }
 
@@ -5732,15 +5811,46 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             ..Default::default()
         };
 
-        let cleared = apply_agent_update_fields(&mut config, None, None, Some("  "), &[])
-            .expect("clear description");
+        let cleared =
+            apply_agent_update_fields(&mut config, None, None, Some("  "), None, None, &[])
+                .expect("clear description");
         assert_eq!(cleared, vec!["description"]);
         assert!(config.description.is_empty());
 
         let too_long = "x".repeat(MAX_AGENT_DESCRIPTION_CHARS + 1);
-        let error = apply_agent_update_fields(&mut config, None, None, Some(&too_long), &[])
-            .expect_err("oversized description must be rejected");
+        let error =
+            apply_agent_update_fields(&mut config, None, None, Some(&too_long), None, None, &[])
+                .expect_err("oversized description must be rejected");
         assert!(error.contains("280 characters or fewer"));
+    }
+
+    #[test]
+    fn agent_update_model_and_effort_use_the_provider_configuration() {
+        let mut config = AgentConfig {
+            provider: "codex".to_string(),
+            ..Default::default()
+        };
+        config.reset_provider_config_for_provider();
+
+        let updated =
+            apply_agent_model_selection_update(&mut config, Some("gpt-5.6-sol"), Some("high"))
+                .expect("Codex selection should be supported");
+
+        assert_eq!(updated, vec!["model", "reasoning_effort"]);
+        assert_eq!(config.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            config.codex_config().reasoning_effort.as_deref(),
+            Some("high")
+        );
+
+        let mut unsupported = AgentConfig {
+            provider: "opencode".to_string(),
+            ..Default::default()
+        };
+        unsupported.reset_provider_config_for_provider();
+        let error = apply_agent_model_selection_update(&mut unsupported, None, Some("high"))
+            .expect_err("OpenCode does not expose launch-time effort");
+        assert!(error.contains("does not support launch-time reasoning effort"));
     }
 
     #[tokio::test]
@@ -5780,9 +5890,13 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         let outcome = update_agent_fields_in_state(
             &state,
             "agent-1",
-            Some("Reviewer"),
-            Some(&workspace.to_string_lossy()),
-            Some("Reviews release changes"),
+            AgentUpdateFields {
+                class: Some("Reviewer"),
+                workspace: Some(&workspace.to_string_lossy()),
+                description: Some("Reviews release changes"),
+                model: None,
+                reasoning_effort: None,
+            },
             &classes,
         )
         .await
@@ -5847,9 +5961,13 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             update_agent_fields_in_state(
                 &state_for_update,
                 "agent-1",
-                None,
-                Some(&workspace_for_update),
-                None,
+                AgentUpdateFields {
+                    class: None,
+                    workspace: Some(&workspace_for_update),
+                    description: None,
+                    model: None,
+                    reasoning_effort: None,
+                },
                 &[],
             )
             .await

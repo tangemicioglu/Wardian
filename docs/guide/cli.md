@@ -124,11 +124,14 @@ wardian agent restart <name-or-uuid>
 wardian agent kill <name-or-uuid> --confirm
 wardian agent pause <name-or-uuid>
 wardian agent resume <name-or-uuid>
+wardian agent models --provider codex --refresh
 wardian agent spawn --provider codex --class Reviewer --name reviewer-a1 --workspace <absolute-workspace-path>
+wardian agent spawn --provider codex --class Reviewer --name reviewer-a1 --workspace <absolute-workspace-path> --model <model-id> --reasoning-effort <effort>
 wardian agent update <name-or-uuid> --class Reviewer
 wardian agent update <name-or-uuid> --workspace <absolute-workspace-path>
 wardian agent update <name-or-uuid> --description "Owns frontend release follow-up"
 wardian agent update <name-or-uuid> --description "" # clear the memo
+wardian agent update <name-or-uuid> --model <model-id> --reasoning-effort <effort>
 wardian agent clone <name-or-uuid> --name coder-a2
 wardian agent worktree list
 wardian agent worktree enable <name-or-uuid> --name review-fixes
@@ -360,6 +363,13 @@ Mutating commands use Wardian's local control endpoint and require the desktop a
 
 `agent spawn` requires both `--provider` and `--class` so the created agent's runtime and role are explicit.
 
+`agent models --provider <provider>` returns the installed provider's current
+model catalogue and compatible effort levels. Use `--refresh` after a provider
+or account change. Keep the provider default for routine bounded tasks; for
+complex, ambiguous, multi-step work, choose only a listed model/effort pair.
+Do not guess provider IDs or use high effort solely because an agent's class
+sounds senior.
+
 `agent update <target>` changes an existing agent through the running app. Use
 `--class <ClassName>` to assign an existing class and regenerate the agent's
 instruction include directories. Use `--workspace <absolute-path>` when an
@@ -368,7 +378,9 @@ already exist. Both flags can be supplied together and are committed to live
 and persisted state as one update. The JSON response reports `updated_fields`
 and `restart_required`. Wardian does not interrupt a running provider process,
 so restart the agent when `restart_required` is true before relying on the new
-class instructions or working directory. Managed worktree agents must use
+class instructions, working directory, model, or reasoning effort. Pass
+`--model ""` or `--reasoning-effort ""` to return to the provider default.
+Managed worktree agents must use
 `agent worktree join` or `agent worktree disable` instead.
 
 `agent worktree list` returns the worktrees currently managed by Wardian with source folder, worktree folder, display name, and member agent IDs. `agent worktree enable`, `join`, and `disable` are live-control commands. They reuse the same backend logic as the Source Control panel and force a fresh agent session after changing the runtime workspace. `disable` removes the assignment only; it does not delete the physical worktree folder.
