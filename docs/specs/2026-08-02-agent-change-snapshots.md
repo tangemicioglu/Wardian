@@ -307,6 +307,53 @@ converts a snapshot failure into a pane failure.
   erroring.
 - Snapshot cost does not scale with total archive size.
 
+## As Built
+
+Phase 2 shipped. Three things resolved differently from the design above, each
+in the direction of less machinery.
+
+**Divergence counters are derived, not stored.** The design proposed a
+`ChangeSnapshotPin` record carrying `turns_since_pin` and `paths_since_pin`. No
+such record exists. Both numbers already fall out of the change-review summary —
+turns from `to_turn_index - from_turn_index`, paths from the change-set length —
+so a pin record would have persisted state that the summary recomputes anyway.
+`diverged`, `turns_since_baseline`, and `paths_since_baseline` are fields on
+`ChangeReviewSummary`. Only `conversation_start` can diverge; `head` and
+`branch_point` are recomputed from the repository each time and pin nothing.
+
+**Garbage collection is `gc --auto`, run after retention drops a ref.** The
+design said "idle-only, under the lock, never during a turn". There is no
+separate idle scheduler. Collection runs at the end of a snapshot, but only when
+retention actually released refs, and only through `--auto`, which is a no-op
+unless git's own thresholds are exceeded. Snapshots are already asynchronous and
+serialized per workspace, so this satisfies the constraint the rule protects —
+never on a turn boundary, never against itself — without a scheduler whose only
+job would be to find a moment that snapshots already occupy.
+
+**The content anchor is resolved by the backend.** `ChangeReviewWatermark` gains
+`reviewed_snapshot`, filled in by `save_change_review_watermark` from the latest
+snapshot at the moment of review. The pane has no notion of snapshot commits and
+did not need one, so the frontend contract for writing a watermark is unchanged.
+A watermark written before Phase 2 has no anchor and keeps the Phase 1 signature
+comparison.
+
+### What the budget test does and does not prove
+
+`snapshots_stay_within_their_measured_budgets` asserts the first snapshot inside
+2 s and per-turn p95 inside 1 s on a 300-file fixture. A fixture is smaller than
+the 1466-file repository the budgets were measured on, so the test does not
+reproduce that measurement. It catches a pathological regression — an unseeded
+index, a per-file invocation, a full re-hash — each of which misses by one to two
+orders of magnitude rather than by a few percent. The headroom is deliberate so
+ordinary CI variance cannot fail the build.
+
+### Test isolation
+
+Snapshot tests set `WARDIAN_HOME`, which is process-global, so they require
+`--test-threads=1`. CI already runs `cargo test --workspace -- --test-threads=1`.
+Running plain `cargo test` locally will fail these tests on the environment
+variable, not on behaviour.
+
 ## Implementation Plan
 
 Ordered so each step is independently verifiable, and so the risky part is
