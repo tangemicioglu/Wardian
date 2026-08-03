@@ -1,5 +1,6 @@
 use crate::state::active_agent::ActiveAgent;
 use crate::state::artifact_runtime::ArtifactRuntime;
+use crate::state::change_snapshot_runtime::ChangeSnapshotRuntime;
 use crate::state::conversation_archive::ConversationArchiveState;
 use crate::state::file_resources::FileResourceRuntime;
 use crate::state::interactions::InteractionState;
@@ -61,6 +62,8 @@ pub struct AppState {
     pub ask_requests: Mutex<HashMap<String, AskRequestRecord>>,
     pub interactions: InteractionState,
     pub conversation_archive: ConversationArchiveState,
+    // Serializes and coalesces per-turn change snapshots, one slot per workspace.
+    pub change_snapshots: ChangeSnapshotRuntime,
     // Live-only remote-control authentication and ticket records.
     pub remote_runtime: Mutex<crate::remote::models::RemoteRuntimeState>,
     // Last frontend-reported effective theme. The frontend resolves "system"
@@ -220,6 +223,7 @@ impl Default for AppState {
             ask_requests: Mutex::new(HashMap::new()),
             interactions: InteractionState::default(),
             conversation_archive: ConversationArchiveState::default(),
+            change_snapshots: ChangeSnapshotRuntime::new(),
             remote_runtime: Mutex::new(crate::remote::models::RemoteRuntimeState::default()),
             terminal_theme: RwLock::new("dark".to_string()),
             terminal_sessions: Arc::new(TerminalSessionBroker::default()),
