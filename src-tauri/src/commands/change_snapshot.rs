@@ -731,10 +731,15 @@ mod tests {
         _home: tempfile::TempDir,
         repo: tempfile::TempDir,
         previous_home: Option<std::ffi::OsString>,
+        // `WARDIAN_HOME` is process-global, and the Linux coverage job runs
+        // `cargo llvm-cov --workspace` without `--test-threads=1`. Without this
+        // guard the home directory races between concurrently running tests.
+        _env_guard: std::sync::MutexGuard<'static, ()>,
     }
 
     impl TestRepo {
         fn new() -> Self {
+            let _env_guard = crate::utils::wardian_test_env_lock();
             let home = tempfile::tempdir().unwrap();
             let repo = tempfile::tempdir().unwrap();
             let previous_home = std::env::var_os("WARDIAN_HOME");
@@ -746,7 +751,7 @@ mod tests {
             run_git(cwd, &["config", "user.name", "Test"]).unwrap();
             run_git(cwd, &["config", "commit.gpgsign", "false"]).unwrap();
 
-            let this = Self { _home: home, repo, previous_home };
+            let this = Self { _home: home, repo, previous_home, _env_guard };
             this.write("tracked.txt", "one\n");
             run_git(this.cwd(), &["add", "-A"]).unwrap();
             run_git(this.cwd(), &["commit", "-m", "initial"]).unwrap();
@@ -914,6 +919,7 @@ mod tests {
 
     #[test]
     fn a_non_git_workspace_yields_no_snapshot_rather_than_an_error() {
+        let _env_guard = crate::utils::wardian_test_env_lock();
         let home = tempfile::tempdir().unwrap();
         let previous = std::env::var_os("WARDIAN_HOME");
         std::env::set_var("WARDIAN_HOME", home.path());

@@ -349,10 +349,16 @@ ordinary CI variance cannot fail the build.
 
 ### Test isolation
 
-Snapshot tests set `WARDIAN_HOME`, which is process-global, so they require
-`--test-threads=1`. CI already runs `cargo test --workspace -- --test-threads=1`.
-Running plain `cargo test` locally will fail these tests on the environment
-variable, not on behaviour.
+Snapshot tests set `WARDIAN_HOME`, which is process-global, so every test that
+touches it holds `crate::utils::wardian_test_env_lock()` for its lifetime.
+
+`--test-threads=1` is not sufficient on its own and is not what protects these
+tests. The Windows job runs `cargo test --workspace -- --test-threads=1`, but the
+Linux coverage job runs `cargo llvm-cov --workspace` with no thread limit, so
+tests execute in parallel there. Relying on the flag passes on one platform and
+fails on the other, which is exactly what happened: unguarded snapshot tests
+widened an existing race window and took a previously passing change-review test
+down with them. The lock makes the tests correct under both invocations.
 
 ## Implementation Plan
 

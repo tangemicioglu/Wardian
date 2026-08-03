@@ -1314,16 +1314,20 @@ mod tests {
         _home: tempfile::TempDir,
         repo: tempfile::TempDir,
         previous_home: Option<std::ffi::OsString>,
+        // `WARDIAN_HOME` is process-global and the coverage job runs tests in
+        // parallel, so the home directory has to be serialized.
+        _env_guard: std::sync::MutexGuard<'static, ()>,
     }
 
     impl SnapshotRepo {
         fn new() -> Self {
+            let _env_guard = crate::utils::wardian_test_env_lock();
             let home = tempfile::tempdir().unwrap();
             let repo = tempfile::tempdir().unwrap();
             let previous_home = std::env::var_os("WARDIAN_HOME");
             std::env::set_var("WARDIAN_HOME", home.path());
 
-            let this = Self { _home: home, repo, previous_home };
+            let this = Self { _home: home, repo, previous_home, _env_guard };
             let cwd = this.cwd().to_string();
             run_git(&cwd, &["init"]).unwrap();
             run_git(&cwd, &["config", "user.email", "test@example.com"]).unwrap();
