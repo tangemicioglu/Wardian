@@ -1,4 +1,6 @@
-use super::{TerminalBrokerError, TerminalRuntimeHandles, TerminalSessionBroker};
+use super::{
+    NativeTerminalWriteRequest, TerminalBrokerError, TerminalRuntimeHandles, TerminalSessionBroker,
+};
 use portable_pty::{MasterPty, PtySize};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc;
@@ -18,10 +20,10 @@ pub fn native_pty_resize_gate() -> Arc<Mutex<()>> {
 
 /// Moves native input and resize authority into the terminal-session actor.
 pub fn native_terminal_runtime(
-    input_tx: mpsc::Sender<Vec<u8>>,
+    input_tx: mpsc::Sender<NativeTerminalWriteRequest>,
     master: SharedPtyMaster,
 ) -> TerminalRuntimeHandles {
-    TerminalRuntimeHandles::new(input_tx, move |geometry| {
+    TerminalRuntimeHandles::new_with_write_ack(input_tx, move |geometry| {
         resize_native_master(master.clone(), geometry)
     })
 }
@@ -133,6 +135,10 @@ mod tests {
             )
             .await
             .expect("native runtime");
+        assert!(broker
+            .native_write_receipts_enabled("native-session")
+            .await
+            .expect("native write receipt capability"));
 
         for presentation_id in ["owner", "mirror"] {
             broker
@@ -202,14 +208,18 @@ mod tests {
             "only activation geometry reached native resize"
         );
 
-        broker
-            .send_input(wardian_core::models::TerminalInputRequest {
-                lease: owner_lease,
-                bytes: b"owned".to_vec(),
-            })
-            .await
-            .expect("owner input");
-        assert_eq!(input_rx.recv().await.as_deref(), Some(b"owned".as_slice()));
+        let input = broker.send_input(wardian_core::models::TerminalInputRequest {
+            lease: owner_lease,
+            bytes: b"owned".to_vec(),
+        });
+        tokio::pin!(input);
+        let pending = tokio::select! {
+            pending = input_rx.recv() => pending.expect("native input request"),
+            result = &mut input => panic!("input completed before native write receipt: {result:?}"),
+        };
+        assert_eq!(pending.bytes, b"owned".to_vec());
+        pending.completion.send(Ok(())).expect("write receipt");
+        input.await.expect("owner input");
     }
 
     #[tokio::test]

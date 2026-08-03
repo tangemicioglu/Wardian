@@ -35,7 +35,11 @@ pub fn delivery_profile(provider: &str) -> DeliveryProfile {
         "codex" => DeliveryProfile {
             provider: normalized,
             submit_key: SubmitKey::CarriageReturn,
-            submit_delay_ms: 0,
+            // A PTY flush only proves that ConPTY accepted the bracketed paste.
+            // Codex still needs one event-loop turn to apply it to the TUI before
+            // receiving Enter. This is a bounded provider settle delay, not an
+            // output-echo requirement.
+            submit_delay_ms: 750,
             bracketed_paste: BracketedPasteProfile {
                 enabled: true,
                 min_bytes: 1,
@@ -106,12 +110,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_profile_uses_immediate_bracketed_paste_and_return_key() {
+    fn codex_profile_uses_settled_bracketed_paste_and_return_key() {
         let profile = delivery_profile("codex");
 
         assert_eq!(profile.provider, "codex");
         assert_eq!(profile.submit_key, SubmitKey::CarriageReturn);
-        assert_eq!(profile.submit_delay_ms, 0);
+        assert_eq!(profile.submit_delay_ms, 750);
         assert!(profile.bracketed_paste.enabled);
         assert_eq!(profile.bracketed_paste.min_bytes, 1);
     }

@@ -22,8 +22,8 @@ use super::{
     apply_agent_event, apply_agent_event_with_policy, apply_agent_status_event,
     apply_agent_status_event_with_policy, apply_terminal_identity_env, debug_preview_bytes,
     extract_terminal_titles, finalize_interactive_spawn_args, interactive_provider_args,
-    interactive_provider_cwd, interactive_provider_launch, provider_status_from_event,
-    set_agent_status, ProviderStatusEventPolicy,
+    interactive_provider_cwd, interactive_provider_launch, set_agent_status,
+    ProviderStatusEventPolicy,
 };
 use crate::providers::gemini::gemini_status_from_title;
 
@@ -42,8 +42,8 @@ fn antigravity_watcher_conversation(
         return (existing, false);
     }
 
-    let capture_identity = changed_workspace_conversation(workspace_before, discovered.as_deref())
-        .is_some();
+    let capture_identity =
+        changed_workspace_conversation(workspace_before, discovered.as_deref()).is_some();
     (discovered, capture_identity)
 }
 
@@ -324,19 +324,21 @@ fn should_cleanup_stale_session_processes_before_spawn(is_restored: bool) -> boo
 }
 
 fn pty_status_event_policy_for_provider(provider_name: &str) -> ProviderStatusEventPolicy {
-    if provider_name == "claude" || provider_name == "codex" {
-        ProviderStatusEventPolicy::PreserveActionRequired
-    } else {
-        ProviderStatusEventPolicy::Normal
+    match provider_name {
+        "claude" => ProviderStatusEventPolicy::PreserveActionRequiredUntilTurnCompleted,
+        "codex" => ProviderStatusEventPolicy::PreserveActionRequired,
+        "mock" => ProviderStatusEventPolicy::RequireTurnCompleted,
+        _ => ProviderStatusEventPolicy::Normal,
     }
 }
 
+#[cfg(test)]
 fn line_event_status_for_pty_provider(
     provider_name: &str,
     current_status: &str,
     event: &AgentEvent,
 ) -> Option<&'static str> {
-    provider_status_from_event(
+    super::provider_status_from_event(
         current_status,
         event,
         pty_status_event_policy_for_provider(provider_name),
@@ -629,7 +631,9 @@ pub async fn spawn_agent(
         std::sync::Arc::new(std::sync::Mutex::new(pair.master));
     drop(pair.slave);
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<
+        crate::state::terminal_session::NativeTerminalWriteRequest,
+    >(256);
     let terminal_runtime = crate::state::terminal_session::native_terminal_runtime(tx, pty_master);
     let terminal_runtime = if config.provider == "codex" {
         terminal_runtime.ignore_scrollback_erase()
@@ -646,16 +650,33 @@ pub async fn spawn_agent(
 
     std::thread::spawn(move || {
         while let Some(input) = rx.blocking_recv() {
+            let bytes = input.bytes;
             if provider_name_for_input == "opencode" {
                 log_debug(&format!(
                     "[Wardian] OpenCode PTY input for session {}: {}",
                     sid_for_input,
-                    debug_preview_bytes(&input, 128)
+                    debug_preview_bytes(&bytes, 128)
                 ));
             }
-            log_terminal_trace_bytes(&sid_for_input, &provider_name_for_input, "IN", &input);
-            let _ = writer.write_all(&input);
-            let _ = writer.flush();
+            log_terminal_trace_bytes(&sid_for_input, &provider_name_for_input, "IN", &bytes);
+            let write_result = writer
+                .write_all(&bytes)
+                .and_then(|_| writer.flush())
+                .map_err(|error| error.to_string());
+            match write_result {
+                Ok(()) => {
+                    let _ = input.completion.send(Ok(()));
+                }
+                Err(error) => {
+                    let _ = input.completion.send(Err(error.clone()));
+                    log_terminal_trace_note(
+                        &sid_for_input,
+                        &provider_name_for_input,
+                        &format!("PTY input write failed: {error}"),
+                    );
+                    break;
+                }
+            }
         }
         log_terminal_trace_note(
             &sid_for_input,
@@ -828,32 +849,13 @@ pub async fn spawn_agent(
                                     return;
                                 }
                             }
-                            if provider_name_for_pty == "claude" {
-                                apply_agent_status_event_with_policy(
-                                    &pty_app,
-                                    &sid_for_pty,
-                                    event,
-                                    &current_status_clone,
-                                    ProviderStatusEventPolicy::PreserveActionRequired,
-                                );
-                                continue;
-                            }
-                            let current = current_status_clone
-                                .lock()
-                                .map(|status| status.clone())
-                                .unwrap_or_default();
-                            if let Some(next_status) = line_event_status_for_pty_provider(
-                                &provider_name_for_pty,
-                                &current,
-                                &event,
-                            ) {
-                                set_agent_status(
-                                    &pty_app,
-                                    &sid_for_pty,
-                                    &current_status_clone,
-                                    next_status,
-                                );
-                            }
+                            apply_agent_status_event_with_policy(
+                                &pty_app,
+                                &sid_for_pty,
+                                event,
+                                &current_status_clone,
+                                pty_status_event_policy_for_provider(&provider_name_for_pty),
+                            );
                         }
                     }
 
@@ -964,13 +966,6 @@ pub async fn spawn_agent(
                                             }
                                         }
 
-                                        let status_policy = if provider_name_for_pty == "claude"
-                                            || provider_name_for_pty == "codex"
-                                        {
-                                            ProviderStatusEventPolicy::PreserveActionRequired
-                                        } else {
-                                            ProviderStatusEventPolicy::Normal
-                                        };
                                         apply_agent_event_with_policy(
                                             &pty_app,
                                             &sid_for_pty,
@@ -978,7 +973,9 @@ pub async fn spawn_agent(
                                             &query_count_clone,
                                             &init_timestamp_clone,
                                             &current_status_clone,
-                                            status_policy,
+                                            pty_status_event_policy_for_provider(
+                                                &provider_name_for_pty,
+                                            ),
                                         );
                                     }
                                     let _ = pty_emit_app.emit("agent-json-event", serde_json::json!({ "session_id": sid_out, "data": parsed }));
@@ -1109,7 +1106,7 @@ pub async fn spawn_agent(
                                             &watcher_query_count,
                                             &watcher_init_timestamp,
                                             &watcher_current_status,
-                                            ProviderStatusEventPolicy::PreserveActionRequired,
+                                            pty_status_event_policy_for_provider("codex"),
                                         );
                                     }
                                     let _ = watcher_app.emit(
@@ -1218,49 +1215,56 @@ pub async fn spawn_agent(
                                                                 == ClaudeUserEventKind::ToolResult;
                                                     if is_tool_result {
                                                         *waiting = false;
-                                                        apply_agent_status_event(
+                                                        apply_agent_status_event_with_policy(
                                                             &watcher_app,
                                                             &watcher_session,
                                                             event,
                                                             &watcher_current_status,
+                                                            pty_status_event_policy_for_provider(
+                                                                "claude",
+                                                            ),
                                                         );
                                                     }
                                                 }
                                             }
                                             AgentEvent::ModelResponse => {
                                                 *waiting = false;
-                                                apply_agent_status_event(
+                                                apply_agent_status_event_with_policy(
                                                     &watcher_app,
                                                     &watcher_session,
                                                     event,
                                                     &watcher_current_status,
+                                                    pty_status_event_policy_for_provider("claude"),
                                                 );
                                             }
                                             AgentEvent::ActionRequired { .. } => {
-                                                apply_agent_status_event(
+                                                apply_agent_status_event_with_policy(
                                                     &watcher_app,
                                                     &watcher_session,
                                                     event,
                                                     &watcher_current_status,
+                                                    pty_status_event_policy_for_provider("claude"),
                                                 );
                                             }
                                             AgentEvent::TurnCompleted => {
                                                 *waiting = false;
-                                                apply_agent_status_event(
+                                                apply_agent_status_event_with_policy(
                                                     &watcher_app,
                                                     &watcher_session,
                                                     event,
                                                     &watcher_current_status,
+                                                    pty_status_event_policy_for_provider("claude"),
                                                 );
                                             }
                                             AgentEvent::Init { .. } | AgentEvent::Unknown => {}
                                         }
                                     } else {
-                                        apply_agent_status_event(
+                                        apply_agent_status_event_with_policy(
                                             &watcher_app,
                                             &watcher_session,
                                             event,
                                             &watcher_current_status,
+                                            pty_status_event_policy_for_provider("claude"),
                                         );
                                     }
                                 }
@@ -1721,6 +1725,18 @@ mod tests {
                 "Action Needed",
                 &AgentEvent::TurnCompleted,
             ),
+            Some("Idle")
+        );
+    }
+
+    #[test]
+    fn mock_line_status_waits_for_explicit_turn_completion() {
+        assert_eq!(
+            line_event_status_for_pty_provider("mock", "Processing...", &AgentEvent::ModelResponse),
+            None
+        );
+        assert_eq!(
+            line_event_status_for_pty_provider("mock", "Processing...", &AgentEvent::TurnCompleted),
             Some("Idle")
         );
     }

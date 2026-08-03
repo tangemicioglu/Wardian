@@ -2,7 +2,7 @@ use crate::manager;
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
 };
-use crate::state::{AppState, MailboxMessageDraft};
+use crate::state::{AppState, MailboxMessageDraft, MailboxMessageRecord};
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -28,7 +28,7 @@ use wardian_core::models::{AgentChatEvent, AgentChatEventKind, AgentChatRole};
 
 const STRUCTURED_ASK_INLINE_MESSAGE_MAX_BYTES: usize = 4096;
 const STRUCTURED_ASK_REQUESTS_DIR: &str = "requests";
-const CODEX_PAYLOAD_ECHO_TIMEOUT_MS: u64 = 750;
+const PROVIDER_TURN_START_TIMEOUT_MS: u64 = 10_000;
 const MAX_HEADLESS_DELIVERY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 async fn rollback_agent_update(
@@ -1309,14 +1309,15 @@ async fn deliver_message_to_target_with_headless_timeout(
             origin.map(|MessageOrigin::WardianAgent { session_id }| session_id.clone());
         let interaction = state
             .interactions
-            .create_message(
+            .create_message_durable(
                 sender_session_id,
                 vec![info.uuid.clone()],
                 InteractionBodyRef::Inline {
                     body: outbound_message.clone(),
                 },
             )
-            .await;
+            .await
+            .map_err(ControlError::request_failed)?;
         let interaction_id = interaction.id.clone();
         if let Some(app) = app {
             let _ = app.emit("pair-activity-changed", ());
@@ -1367,7 +1368,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                     origin,
                     runtime_state,
                 )
-                .await;
+                .await?;
                 persist_interaction_delivery_attempt(
                     state,
                     &interaction_id,
@@ -1503,7 +1504,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                             origin,
                             "conversation_leased",
                         )
-                        .await;
+                        .await?;
                         persist_interaction_delivery_attempt(
                             state,
                             &interaction_id,
@@ -1667,17 +1668,23 @@ pub(crate) async fn submit_approval_action_via_sender<S>(
     tx: &S,
     provider: &str,
     action: &ApprovalAction,
-) -> Result<crate::utils::delivery_transaction::TerminalDeliveryOutcome, String>
+) -> Result<
+    crate::utils::delivery_transaction::TerminalDeliveryOutcome,
+    crate::utils::delivery_transaction::TerminalDeliveryError,
+>
 where
     S: crate::utils::delivery_transaction::TerminalInputSink + ?Sized,
 {
     let bytes = approval_action_bytes(provider, action);
-    tx.send_bytes(bytes).await?;
+    tx.send_bytes(bytes).await.map_err(|error| {
+        crate::utils::delivery_transaction::TerminalDeliveryError::terminal_state_unknown(
+            "approval_send_failed",
+            format!("Failed to send approval action: {error}"),
+        )
+    })?;
     Ok(
         crate::utils::delivery_transaction::TerminalDeliveryOutcome {
-            delivery_state:
-                crate::utils::delivery_transaction::DELIVERY_STATE_SUBMIT_SENT_UNCONFIRMED
-                    .to_string(),
+            delivery_state: "approval_submitted".to_string(),
             delivery_phase: "approval_key_sent".to_string(),
             observed_state: Some("bytes_sent".to_string()),
             reason: None,
@@ -1696,19 +1703,28 @@ async fn enqueue_mailbox_delivery(
     approval_action: Option<&ApprovalAction>,
     origin: Option<&MessageOrigin>,
     runtime_state: &str,
-) -> DeliveryDetail {
-    let mut mailbox = state.mailbox.lock().await;
-    let record = mailbox.enqueue(MailboxMessageDraft {
-        interaction_id,
-        target_session_id: info.uuid.clone(),
-        body,
-        input_mode,
-        queue_policy,
-        approval_action: approval_action.cloned(),
-        origin: origin.cloned(),
-    });
+) -> Result<DeliveryDetail, ControlError> {
+    let record = {
+        let mut mailbox = state.mailbox.lock().await;
+        let record = mailbox.enqueue(MailboxMessageDraft {
+            interaction_id,
+            target_session_id: info.uuid.clone(),
+            body,
+            input_mode,
+            queue_policy,
+            approval_action: approval_action.cloned(),
+            origin: origin.cloned(),
+        });
+        if let Err(error) = wardian_core::db::upsert_mailbox_message(&record) {
+            mailbox.remove(&record.id);
+            return Err(ControlError::request_failed(format!(
+                "failed to persist queued mailbox message: {error}"
+            )));
+        }
+        record
+    };
 
-    DeliveryDetail {
+    Ok(DeliveryDetail {
         uuid: info.uuid,
         name: info.name,
         provider: info.provider,
@@ -1722,7 +1738,7 @@ async fn enqueue_mailbox_delivery(
         reason: Some("target was not safe for live delivery".to_string()),
         profile: None,
         error: None,
-    }
+    })
 }
 
 enum HeadlessMessageDelivery {
@@ -2476,86 +2492,63 @@ async fn wait_for_terminal_output(
     ))
 }
 
-pub(crate) async fn codex_payload_echo_cursor(
+/// Captures the watch position before a native terminal submission. A later
+/// `turn_started` event is emitted only from provider output, so it proves the
+/// provider accepted a newly submitted prompt rather than merely rendering it
+/// in the terminal composer.
+pub(crate) async fn provider_turn_start_cursor(
     state: &AppState,
-    provider: &str,
     session_id: &str,
-) -> Option<String> {
-    if provider != "codex" {
-        return None;
-    }
-
+) -> Result<String, String> {
     let watch_state = {
         let agents = state.agents.lock().await;
-        agents.get(session_id)?.watch_state.clone()
+        agents
+            .get(session_id)
+            .ok_or_else(|| format!("Agent {session_id} not found or is off"))?
+            .watch_state
+            .clone()
     };
-    watch_state.lock().ok().map(|guard| guard.latest_cursor())
+    watch_state
+        .lock()
+        .map(|watch_state| watch_state.latest_cursor())
+        .map_err(|_| format!("Agent {session_id} watch state lock poisoned"))
 }
 
-pub(crate) async fn wait_for_codex_payload_echo_before_submit(
-    state: &AppState,
-    provider: &str,
-    session_id: &str,
-    since_cursor: Option<&str>,
-    prompt: &str,
-) {
-    if provider != "codex" {
-        return;
-    }
-
-    let Some(since_cursor) = since_cursor else {
-        return;
-    };
-
-    if let Err(error) = wait_for_codex_prompt_echo_since(
-        state,
-        session_id,
-        since_cursor,
-        prompt,
-        CODEX_PAYLOAD_ECHO_TIMEOUT_MS,
-    )
-    .await
-    {
-        manager::log_debug(&format!(
-            "[Wardian] [{session_id}] Codex prompt echo wait before submit did not complete: {error}"
-        ));
-    }
-}
-
-async fn wait_for_codex_prompt_echo_since(
+/// Waits for provider output that starts a turn after a native terminal submit
+/// key was written. The timeout is deliberately a delivery failure, not a
+/// retry trigger: at that point the composer may still contain the payload.
+pub(crate) async fn wait_for_provider_turn_started_after_submit(
     state: &AppState,
     session_id: &str,
     since_cursor: &str,
-    prompt: &str,
-    timeout_ms: u64,
 ) -> Result<(), String> {
+    let watch_state = {
+        let agents = state.agents.lock().await;
+        agents
+            .get(session_id)
+            .ok_or_else(|| format!("Agent {session_id} not found or is off"))?
+            .watch_state
+            .clone()
+    };
     let started = std::time::Instant::now();
-    while started.elapsed() < std::time::Duration::from_millis(timeout_ms) {
-        let watch_state = {
-            let agents = state.agents.lock().await;
-            agents
-                .get(session_id)
-                .ok_or_else(|| format!("Agent {} not found or is off", session_id))?
-                .watch_state
-                .clone()
-        };
-        let output = watch_state
+    while started.elapsed() < std::time::Duration::from_millis(PROVIDER_TURN_START_TIMEOUT_MS) {
+        let snapshot = watch_state
             .lock()
-            .map_err(|_| format!("Agent {} watch state lock poisoned", session_id))?
-            .snapshot_since(Some(since_cursor), Some(16 * 1024))
-            .map(|snapshot| snapshot.output.text)
+            .map_err(|_| format!("Agent {session_id} watch state lock poisoned"))?
+            .snapshot_since(Some(since_cursor), Some(0))
             .map_err(|error| format!("watch state error: {}", error.code()))?;
-
-        if codex_output_has_prompt_echo(&output, prompt) {
+        if snapshot
+            .events
+            .iter()
+            .any(|event| event.kind == "turn_started")
+        {
             return Ok(());
         }
-
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 
     Err(format!(
-        "Timed out waiting for {} Codex prompt echo before submit",
-        session_id
+        "Timed out waiting for {session_id} provider turn start after terminal submit"
     ))
 }
 
@@ -2588,31 +2581,6 @@ fn codex_output_has_workspace_trust_prompt(output: &str) -> bool {
         .join(" ")
         .to_ascii_lowercase()
         .contains("do you trust the contents of this directory?")
-}
-
-fn codex_output_has_prompt_echo(output: &str, prompt: &str) -> bool {
-    let Some(token) = codex_prompt_echo_token(prompt) else {
-        return false;
-    };
-    normalize_codex_prompt_echo_text(output).contains(&token)
-}
-
-fn codex_prompt_echo_token(prompt: &str) -> Option<String> {
-    let first_line = prompt
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())?;
-    let prefix: String = first_line.chars().take(96).collect();
-    let token = normalize_codex_prompt_echo_text(&prefix);
-    (!token.is_empty()).then_some(token)
-}
-
-fn normalize_codex_prompt_echo_text(text: &str) -> String {
-    strip_ansi_controls(text)
-        .replace('\r', "\n")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn codex_ready_prompt_trailing_metadata_line(line: &str) -> bool {
@@ -3539,10 +3507,20 @@ async fn handle_agent_watch(
         .await
         .ok_or_else(|| ControlError::not_found(format!("agent not found: {target}")))?;
     let watch_state = agent_watch_state(&state, &uuid).await?;
+    // A conditional watch answers whether a new observation satisfies the
+    // condition. An unanchored snapshot intentionally still returns retained
+    // history, but treating retained history as a completion signal made
+    // `--until status:idle` succeed on an old idle blip.
+    let since = {
+        let guard = watch_state
+            .lock()
+            .map_err(|_| ControlError::request_failed("watch state lock poisoned"))?;
+        watch_start_cursor(&guard, options.since, condition.is_some())
+    };
     let snapshot = if let Some(condition) = condition {
         wait_for_watch_condition(
             watch_state,
-            options.since,
+            since,
             condition,
             Duration::from_millis(options.timeout_ms.unwrap_or(30_000)),
             options.tail_bytes,
@@ -3553,13 +3531,21 @@ async fn handle_agent_watch(
         watch_state
             .lock()
             .map_err(|_| ControlError::request_failed("watch state lock poisoned"))?
-            .snapshot_since(options.since.as_deref(), options.tail_bytes)
+            .snapshot_since(since.as_deref(), options.tail_bytes)
             .map_err(control_error_from_watch_state)?
     };
     let agent = watch_agent_snapshot(&state, &uuid).await?;
     let includes = WatchIncludes::from_values(&options.include);
 
     ok_json(&build_agent_watch_response(agent, snapshot, &includes))
+}
+
+fn watch_start_cursor(
+    state: &crate::state::AgentWatchState,
+    requested_since: Option<String>,
+    has_condition: bool,
+) -> Option<String> {
+    requested_since.or_else(|| has_condition.then(|| state.latest_cursor()))
 }
 
 struct AgentWatchControlOptions {
@@ -4232,7 +4218,7 @@ async fn record_conversation_delivery(
 fn conversation_delivery_state_is_recordable(delivery_state: &str) -> bool {
     matches!(
         delivery_state,
-        "submitted" | "submit_sent_unverified" | "submit_sent_unconfirmed"
+        "submitted" | "submit_sent_unverified" | "provider_accepted" | "approval_submitted"
     )
 }
 
@@ -4281,7 +4267,10 @@ pub(crate) async fn submit_approval_action_for_delivery_service<S>(
     tx: &S,
     provider: &str,
     action: &ApprovalAction,
-) -> Result<crate::utils::delivery_transaction::TerminalDeliveryOutcome, String>
+) -> Result<
+    crate::utils::delivery_transaction::TerminalDeliveryOutcome,
+    crate::utils::delivery_transaction::TerminalDeliveryError,
+>
 where
     S: crate::utils::delivery_transaction::TerminalInputSink + ?Sized,
 {
@@ -4317,7 +4306,6 @@ pub(crate) fn spawn_mailbox_drain_if_idle(
     if normalize_status(observed_status) != "idle" {
         return;
     }
-
     let app = app.clone();
     let session_id = session_id.to_string();
     tauri::async_runtime::spawn(async move {
@@ -4326,13 +4314,13 @@ pub(crate) fn spawn_mailbox_drain_if_idle(
     });
 }
 
-fn spawn_delayed_mailbox_drain_retry(app: Option<&AppHandle>, session_id: &str) {
-    let Some(app) = app.cloned() else {
-        return;
-    };
+/// Gives restored durable mailbox work one immediate, status-gated chance to
+/// drain. Later provider idle observations remain the normal delivery trigger;
+/// this does not poll or retry terminal input.
+pub(crate) fn spawn_mailbox_drain_after_restore(app: &AppHandle, session_id: &str) {
+    let app = app.clone();
     let session_id = session_id.to_string();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(2_000)).await;
         let state = app.state::<AppState>();
         let _ = drain_next_mailbox_message_for_idle_agent(Some(&app), &state, &session_id).await;
     });
@@ -4374,6 +4362,27 @@ async fn drain_next_mailbox_message_for_idle_agent(
         return Ok(None);
     };
 
+    let dispatch_persist_error = wardian_core::db::upsert_mailbox_message(&record)
+        .err()
+        .map(|error| error.to_string());
+    if let Some(error) = dispatch_persist_error {
+        state.mailbox.lock().await.mark_pending(&record.id);
+        return Err(ControlError::request_failed(format!(
+            "failed to persist mailbox dispatch state: {error}"
+        )));
+    }
+    if let Err(error) = state
+        .interactions
+        .update_message_status_durable(&record.interaction_id, InteractionStatus::Delivering)
+        .await
+    {
+        let requeued = state.mailbox.lock().await.mark_pending(&record.id);
+        if let Some(requeued) = requeued {
+            let _ = wardian_core::db::upsert_mailbox_message(&requeued);
+        }
+        return Err(ControlError::request_failed(error));
+    }
+
     let target_uuid = info.uuid.clone();
     let submit_started = DeliveryDetail {
         uuid: info.uuid.clone(),
@@ -4412,16 +4421,50 @@ async fn drain_next_mailbox_message_for_idle_agent(
     let detail = match result {
         Ok(result) => {
             state.mailbox.lock().await.mark_delivered(&record.id);
+            let _ = wardian_core::db::delete_mailbox_message(&record.id);
+            let _ = state
+                .interactions
+                .update_message_status_durable(&record.interaction_id, InteractionStatus::Delivered)
+                .await;
             let mut detail = result.detail;
             detail.message_id = Some(record.id.clone());
             detail
         }
         Err(error) => {
-            let retry_safe = error.retry_safe;
+            let missing_ready_input_channel = error.detail.as_ref().is_some_and(|detail| {
+                detail
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == "no_input_channel")
+            }) && matches!(
+                provider_input_current_state(state, session_id).await,
+                Some(ProviderInputReadiness::Ready)
+            );
+            let retry_safe = error.retry_safe && !missing_ready_input_channel;
             if retry_safe {
-                state.mailbox.lock().await.mark_pending(&record.id);
+                let requeued = state.mailbox.lock().await.mark_pending(&record.id);
+                if let Some(requeued) = requeued {
+                    let _ = wardian_core::db::upsert_mailbox_message(&requeued);
+                }
+                let _ = state
+                    .interactions
+                    .update_message_status_durable(
+                        &record.interaction_id,
+                        InteractionStatus::Queued,
+                    )
+                    .await;
             } else {
-                state.mailbox.lock().await.mark_failed(&record.id);
+                let terminal = state.mailbox.lock().await.mark_failed(&record.id);
+                if let Some(terminal) = terminal {
+                    persist_terminal_mailbox_record(&terminal);
+                }
+                let _ = state
+                    .interactions
+                    .update_message_status_durable(
+                        &record.interaction_id,
+                        InteractionStatus::Failed,
+                    )
+                    .await;
             }
             let service_recorded_detail = error.detail.is_some();
             let mut detail = if let Some(detail) = error.detail {
@@ -4445,7 +4488,9 @@ async fn drain_next_mailbox_message_for_idle_agent(
                 });
             }
             detail.reason = Some(if retry_safe {
-                "queued message remains pending for retry".to_string()
+                "queued message remains pending until a new idle or ready observation".to_string()
+            } else if missing_ready_input_channel {
+                "agent reported ready but its input channel was unavailable; delivery stopped to prevent late delivery".to_string()
             } else {
                 "queued message marked failed because terminal state is partial or unknown"
                     .to_string()
@@ -4461,14 +4506,29 @@ async fn drain_next_mailbox_message_for_idle_agent(
                 .await;
                 record_delivery_attempt(state, &detail).await;
             }
-            if retry_safe {
-                spawn_delayed_mailbox_drain_retry(app, session_id);
-            }
             detail
         }
     };
 
     Ok(Some(detail))
+}
+
+fn persist_terminal_mailbox_record(record: &MailboxMessageRecord) {
+    // Persist the terminal marker before removing the durable queue row. If a
+    // shutdown lands between the two writes, startup still fails the in-flight
+    // record rather than replaying an ambiguous terminal payload.
+    if let Err(error) = wardian_core::db::upsert_mailbox_message(record) {
+        manager::log_debug(&format!(
+            "[Wardian] failed to persist terminal mailbox message {}: {error}",
+            record.id
+        ));
+    }
+    if let Err(error) = wardian_core::db::delete_mailbox_message(&record.id) {
+        manager::log_debug(&format!(
+            "[Wardian] failed to remove terminal mailbox message {}: {error}",
+            record.id
+        ));
+    }
 }
 
 async fn agent_config_to_identity(
@@ -5037,6 +5097,30 @@ mod tests {
         }
     }
 
+    async fn install_test_terminal_runtime_with_write_receipts(
+        state: &AppState,
+        session_id: &str,
+        input_tx: tokio::sync::mpsc::Sender<
+            crate::state::terminal_session::NativeTerminalWriteRequest,
+        >,
+    ) {
+        let generation = state
+            .terminal_sessions
+            .start_or_replace_runtime(
+                session_id,
+                crate::state::terminal_session::TerminalRuntimeHandles::new_with_write_ack(
+                    input_tx,
+                    |_| Ok(()),
+                ),
+                wardian_core::models::TerminalGeometry { cols: 80, rows: 24 },
+            )
+            .await
+            .expect("test terminal runtime");
+        if let Some(agent) = state.agents.lock().await.get_mut(session_id) {
+            agent.runtime_generation = Some(generation);
+        }
+    }
+
     fn expected_terminal_chunks(provider: &str, prompt: &str) -> Vec<Vec<u8>> {
         let chunks =
             crate::utils::terminal_input::provider_submit_chunks(provider, prompt).unwrap();
@@ -5137,22 +5221,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_prompt_echo_detects_payload_visible_after_send() {
-        assert!(codex_output_has_prompt_echo(
-            "\r\n› From Test: Ping. Reply with exactly: pong\r\n\r\n  Wardian request id: ask_123\r\n",
-            "From Test: Ping. Reply with exactly: pong\n\nWardian request id: ask_123"
-        ));
-    }
-
-    #[test]
-    fn codex_prompt_echo_rejects_output_without_current_payload() {
-        assert!(!codex_output_has_prompt_echo(
-            "\r\n› Explain this codebase\r\n\r\n  gpt-5.5 high · Context 100% left · ~\r\n",
-            "From Test: Ping. Reply with exactly: pong\n\nWardian request id: ask_123"
-        ));
-    }
-
-    #[test]
     fn gemini_ready_prompt_rejects_api_key_modal_over_composer() {
         assert!(!gemini_output_has_ready_prompt(
             "\r\n╭────────────────────────────────────────────────────────╮\r\n\
@@ -5242,6 +5310,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_codex_delivery_submits_without_waiting_for_payload_echo() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::PromptDetected)
+            .await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        install_test_terminal_runtime_with_write_receipts(&state, "agent-1", tx).await;
+
+        let delivery = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "hello",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        );
+        tokio::pin!(delivery);
+
+        let payload = tokio::select! {
+            request = rx.recv() => request.expect("payload write request"),
+            result = &mut delivery => panic!("delivery completed before payload write: {result:?}"),
+        };
+        assert_eq!(payload.bytes, b"\x1b[200~hello\x1b[201~".to_vec());
+        payload.completion.send(Ok(())).expect("payload receipt");
+
+        let submit = tokio::select! {
+            request = rx.recv() => request.expect("submit write request"),
+            result = &mut delivery => panic!("delivery completed before submit write: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                panic!("Codex submit must not wait for a terminal echo")
+            }
+        };
+        assert_eq!(submit.bytes, b"\r".to_vec());
+        submit.completion.send(Ok(())).expect("submit receipt");
+
+        crate::manager::record_agent_turn_started_for_watch(&state, "agent-1").await;
+        let delivery = delivery.await.expect("delivered after provider receipt");
+
+        assert_eq!(delivery[0].delivery_state, "provider_accepted");
+        assert_eq!(delivery[0].delivery_phase.as_deref(), Some("turn_started"));
+    }
+
+    #[tokio::test]
     async fn message_delivery_archives_unconfirmed_live_input_with_agent_origin() {
         let _home = TestWardianHome::new();
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
@@ -5262,7 +5384,7 @@ mod tests {
             name: "CoderOne".to_string(),
             provider: "mock".to_string(),
             runtime_state: "live_pty_available".to_string(),
-            delivery_state: "submit_sent_unconfirmed".to_string(),
+            delivery_state: "provider_accepted".to_string(),
             input_mode: MessageInputMode::Message,
             queue_policy: QueuePolicy::QueueIfBusy,
             message_id: None,
@@ -5329,7 +5451,7 @@ mod tests {
             name: "CoderOne".to_string(),
             provider: "mock".to_string(),
             runtime_state: "live_pty_available".to_string(),
-            delivery_state: "submit_sent_unconfirmed".to_string(),
+            delivery_state: "provider_accepted".to_string(),
             input_mode: MessageInputMode::Message,
             queue_policy: QueuePolicy::QueueIfBusy,
             message_id: None,
@@ -5364,7 +5486,9 @@ mod tests {
             message_id: Some("msg-1".to_string()),
             delivery_phase: Some("queued".to_string()),
             observed_state: None,
-            reason: Some("queued message remains pending for retry".to_string()),
+            reason: Some(
+                "queued message remains pending until a new idle or ready observation".to_string(),
+            ),
             profile: None,
             error: None,
         }];
@@ -5654,6 +5778,28 @@ mod tests {
             .collect();
 
         assert_eq!(statuses, ["headless", "off"]);
+    }
+
+    #[tokio::test]
+    async fn provider_turn_start_receipt_requires_an_event_after_the_submit_cursor() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+
+        crate::manager::record_agent_turn_started_for_watch(&state, "agent-1").await;
+        let cursor = provider_turn_start_cursor(&state, "agent-1")
+            .await
+            .expect("cursor");
+        let wait = wait_for_provider_turn_started_after_submit(&state, "agent-1", &cursor);
+        tokio::pin!(wait);
+
+        tokio::select! {
+            result = &mut wait => panic!("pre-submit event must not satisfy receipt: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+
+        crate::manager::record_agent_turn_started_for_watch(&state, "agent-1").await;
+        wait.await.expect("post-submit provider turn receipt");
     }
 
     #[tokio::test]
@@ -6564,11 +6710,24 @@ mod tests {
 
         assert_eq!(rx.recv().await.unwrap(), b"\r".to_vec());
         assert_eq!(delivery[0].runtime_state, "live_pty_available");
-        assert_eq!(delivery[0].delivery_state, "submit_sent_unconfirmed");
+        assert_eq!(delivery[0].delivery_state, "approval_submitted");
         assert_eq!(
             delivery[0].delivery_phase.as_deref(),
             Some("approval_key_sent")
         );
+    }
+
+    #[tokio::test]
+    async fn approval_send_failure_is_not_retry_safe_after_the_terminal_boundary() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+
+        let error = submit_approval_action_via_sender(&tx, "codex", &ApprovalAction::Accept)
+            .await
+            .expect_err("closed input channel");
+
+        assert_eq!(error.phase, "approval_send_failed");
+        assert!(!error.retry_safe);
     }
 
     #[tokio::test]
@@ -7291,7 +7450,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mailbox_drain_missing_sender_leaves_message_pending_for_retry() {
+    async fn mailbox_drain_missing_sender_leaves_message_pending_for_next_observation() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -7340,6 +7499,70 @@ mod tests {
             crate::state::MailboxMessageStatus::Pending
         );
         assert_eq!(records[0].phase, crate::state::MailboxDeliveryPhase::Queued);
+    }
+
+    #[tokio::test]
+    async fn mailbox_drain_stops_when_a_ready_agent_has_no_input_channel() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            *agent.current_status.lock().unwrap() = "Action Required".to_string();
+        }
+
+        let queued = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "queued work",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let message_id = queued[0].message_id.clone().unwrap();
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        state
+            .interactions
+            .record_provider_input_state(
+                "agent-1",
+                1,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+
+        let attempt = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+            .await
+            .unwrap()
+            .expect("drain attempt");
+
+        assert_eq!(attempt.delivery_state, "failed");
+        assert_eq!(attempt.message_id.as_deref(), Some(message_id.as_str()));
+        assert_eq!(
+            attempt.error.as_ref().map(|error| error.code.as_str()),
+            Some("no_input_channel")
+        );
+        assert!(attempt
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("delivery stopped"));
+        let records = state.mailbox.lock().await.list_for_target("agent-1");
+        assert_eq!(
+            records[0].status,
+            crate::state::MailboxMessageStatus::Failed
+        );
     }
 
     #[tokio::test]
@@ -7427,7 +7650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mailbox_drain_payload_send_failure_does_not_emit_submit_started() {
+    async fn mailbox_drain_payload_send_failure_fails_without_replay() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -7481,7 +7704,7 @@ mod tests {
         let records = state.mailbox.lock().await.list_for_target("agent-1");
         assert_eq!(
             records[0].status,
-            crate::state::MailboxMessageStatus::Pending
+            crate::state::MailboxMessageStatus::Failed
         );
         let agents = state.agents.lock().await;
         let agent = agents.get("agent-1").unwrap();
@@ -8103,6 +8326,43 @@ mod tests {
             response.raw_output.as_ref().unwrap().text,
             "\u{1b}[31mreadable\u{1b}[0m"
         );
+    }
+
+    #[test]
+    fn conditional_watch_ignores_retained_idle_until_a_new_observation_arrives() {
+        let mut state = crate::state::AgentWatchState::new("agent-1".to_string(), 16, 1024);
+        state.push_event("status", serde_json::json!({"status":"idle"}));
+
+        let since = watch_start_cursor(&state, None, true).expect("conditional baseline");
+        let stale_snapshot = state.snapshot_since(Some(&since), Some(1024)).unwrap();
+        assert!(!watch_condition_matches(
+            &WatchCondition::Status("idle".to_string()),
+            &stale_snapshot,
+            None,
+        ));
+
+        state.push_event("status", serde_json::json!({"status":"idle"}));
+        let fresh_snapshot = state.snapshot_since(Some(&since), Some(1024)).unwrap();
+        assert!(watch_condition_matches(
+            &WatchCondition::Status("idle".to_string()),
+            &fresh_snapshot,
+            None,
+        ));
+    }
+
+    #[test]
+    fn conditional_watch_honors_an_explicit_historical_cursor() {
+        let mut state = crate::state::AgentWatchState::new("agent-1".to_string(), 16, 1024);
+        let historical_cursor = state.latest_cursor();
+        state.push_event("status", serde_json::json!({"status":"idle"}));
+
+        let since = watch_start_cursor(&state, Some(historical_cursor), true);
+        let snapshot = state.snapshot_since(since.as_deref(), Some(1024)).unwrap();
+        assert!(watch_condition_matches(
+            &WatchCondition::Status("idle".to_string()),
+            &snapshot,
+            None,
+        ));
     }
 
     #[test]

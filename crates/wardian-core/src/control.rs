@@ -204,6 +204,68 @@ pub enum ApprovalAction {
     FreeText { text: String },
 }
 
+/// An outbound message that is waiting for a live provider surface to become
+/// safe for delivery.
+///
+/// This record is shared with the durable store so a queued message survives
+/// an application restart instead of existing only in a process-local queue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MailboxMessageDraft {
+    pub interaction_id: String,
+    pub target_session_id: String,
+    pub body: String,
+    pub input_mode: MessageInputMode,
+    pub queue_policy: QueuePolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_action: Option<ApprovalAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MessageOrigin>,
+}
+
+/// A persisted live-surface mailbox entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MailboxMessageRecord {
+    pub id: String,
+    pub interaction_id: String,
+    pub target_session_id: String,
+    pub body: String,
+    pub input_mode: MessageInputMode,
+    pub queue_policy: QueuePolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_action: Option<ApprovalAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MessageOrigin>,
+    pub created_at: String,
+    pub status: MailboxMessageStatus,
+    pub phase: MailboxDeliveryPhase,
+}
+
+/// The durable state of a mailbox entry.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxMessageStatus {
+    Pending,
+    InFlight,
+    Delivered,
+    Failed,
+}
+
+impl MailboxMessageStatus {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Delivered | Self::Failed)
+    }
+}
+
+/// The furthest safe delivery phase Wardian has recorded for a mailbox entry.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxDeliveryPhase {
+    Queued,
+    Dispatching,
+    Submitted,
+    Terminal,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentListResponse {
     pub schema: u8,

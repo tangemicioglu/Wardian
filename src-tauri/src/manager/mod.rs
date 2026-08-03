@@ -40,8 +40,8 @@ use crate::state::{ActiveAgent, AppState};
 use portable_pty::CommandBuilder;
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter, Manager};
-use wardian_core::conversations::write_json_atomic;
 use wardian_core::control::{ProviderInputReadiness, ProviderReadyEvidence};
+use wardian_core::conversations::write_json_atomic;
 use wardian_core::models::{AgentConfig, AgentEvent};
 pub(crate) fn session_bootstrap_prompt() -> &'static str {
     "Introduce yourself"
@@ -204,7 +204,12 @@ pub(crate) fn set_agent_status(
     if let Ok(mut status) = current_status.lock() {
         if *status != next_status {
             *status = next_status.to_string();
-            schedule_agent_status_observation(app, session_id, current_status, next_status.to_string());
+            schedule_agent_status_observation(
+                app,
+                session_id,
+                current_status,
+                next_status.to_string(),
+            );
         }
     }
 }
@@ -369,6 +374,12 @@ async fn record_provider_input_from_status_state(
 }
 
 pub(crate) fn emit_agent_turn_completed(app: &AppHandle, session_id: &str) {
+    let watch_app = app.clone();
+    let watch_session_id = session_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let state = watch_app.state::<AppState>();
+        record_agent_turn_completed_for_watch(&state, &watch_session_id).await;
+    });
     let _ = app.emit(
         "agent-turn-completed",
         serde_json::json!({
@@ -389,6 +400,63 @@ pub(crate) fn emit_agent_turn_completed(app: &AppHandle, session_id: &str) {
         )
         .await;
     });
+}
+
+pub(crate) fn emit_agent_turn_started(app: &AppHandle, session_id: &str) {
+    let watch_app = app.clone();
+    let watch_session_id = session_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let state = watch_app.state::<AppState>();
+        record_agent_turn_started_for_watch(&state, &watch_session_id).await;
+    });
+    let _ = app.emit(
+        "agent-turn-started",
+        serde_json::json!({
+            "session_id": session_id,
+        }),
+    );
+}
+
+/// Adds the provider-confirmed start of a turn to the control-plane watch
+/// stream. This is distinct from a locally written submit key: providers emit
+/// it only after they have accepted input and started the turn.
+pub(crate) async fn record_agent_turn_started_for_watch(state: &AppState, session_id: &str) {
+    let watch_state = {
+        let agents = state.agents.lock().await;
+        let Some(agent) = agents.get(session_id) else {
+            return;
+        };
+        agent.watch_state.clone()
+    };
+    if let Ok(mut watch_state) = watch_state.lock() {
+        watch_state.push_event(
+            "turn_started",
+            serde_json::json!({
+                "session_id": session_id,
+            }),
+        );
+    };
+}
+
+/// Adds the provider-confirmed end of a turn to the control-plane watch
+/// stream. Unlike an `idle` status observation, this is only produced from a
+/// provider completion event while the agent was actively processing work.
+pub(crate) async fn record_agent_turn_completed_for_watch(state: &AppState, session_id: &str) {
+    let watch_state = {
+        let agents = state.agents.lock().await;
+        let Some(agent) = agents.get(session_id) else {
+            return;
+        };
+        agent.watch_state.clone()
+    };
+    if let Ok(mut watch_state) = watch_state.lock() {
+        watch_state.push_event(
+            "turn_completed",
+            serde_json::json!({
+                "session_id": session_id,
+            }),
+        );
+    };
 }
 
 pub(crate) fn mark_agent_prompt_started(agent: &crate::state::ActiveAgent) -> bool {
@@ -504,6 +572,7 @@ pub(crate) fn apply_agent_event_with_policy(
     current_status: &std::sync::Arc<std::sync::Mutex<String>>,
     policy: ProviderStatusEventPolicy,
 ) {
+    let provider_turn_started = matches!(&event, AgentEvent::UserQuery);
     match &event {
         AgentEvent::UserQuery => {
             if let Ok(mut count) = query_count.lock() {
@@ -517,6 +586,9 @@ pub(crate) fn apply_agent_event_with_policy(
         }
         _ => {}
     }
+    if provider_turn_started {
+        emit_agent_turn_started(app, session_id);
+    }
     apply_agent_status_event_with_policy(app, session_id, event, current_status, policy);
 }
 
@@ -524,6 +596,28 @@ pub(crate) fn apply_agent_event_with_policy(
 pub(crate) enum ProviderStatusEventPolicy {
     Normal,
     PreserveActionRequired,
+    /// The provider emits a `TurnCompleted` event after its final model
+    /// response. Keep the agent processing until that definitive event.
+    RequireTurnCompleted,
+    /// Combines the Claude action-needed guard with an explicit end-of-turn
+    /// requirement.
+    PreserveActionRequiredUntilTurnCompleted,
+}
+
+impl ProviderStatusEventPolicy {
+    fn preserves_action_required(self) -> bool {
+        matches!(
+            self,
+            Self::PreserveActionRequired | Self::PreserveActionRequiredUntilTurnCompleted
+        )
+    }
+
+    fn requires_turn_completed(self) -> bool {
+        matches!(
+            self,
+            Self::RequireTurnCompleted | Self::PreserveActionRequiredUntilTurnCompleted
+        )
+    }
 }
 
 pub(crate) fn provider_status_from_event(
@@ -533,7 +627,7 @@ pub(crate) fn provider_status_from_event(
 ) -> Option<&'static str> {
     match event {
         AgentEvent::UserQuery | AgentEvent::Generating => {
-            if policy == ProviderStatusEventPolicy::PreserveActionRequired
+            if policy.preserves_action_required()
                 && wardian_core::identity::normalize_status(current_status) == "action_required"
             {
                 None
@@ -541,6 +635,7 @@ pub(crate) fn provider_status_from_event(
                 Some("Processing...")
             }
         }
+        AgentEvent::ModelResponse if policy.requires_turn_completed() => None,
         AgentEvent::ModelResponse | AgentEvent::TurnCompleted => Some("Idle"),
         AgentEvent::ActionRequired { .. } => Some("Action Needed"),
         AgentEvent::Init { .. } | AgentEvent::Unknown => None,
@@ -623,13 +718,14 @@ pub(crate) fn try_save_state_snapshot(configs: &[AgentConfig]) -> Result<(), Str
     std::fs::create_dir_all(&app_dir).map_err(|error| error.to_string())?;
     let settings_dir = app_dir.join("settings");
     std::fs::create_dir_all(&settings_dir).map_err(|error| error.to_string())?;
-    write_json_atomic(&settings_dir.join("state.json"), configs)
-        .map_err(|error| error.to_string())
+    write_json_atomic(&settings_dir.join("state.json"), configs).map_err(|error| error.to_string())
 }
 
 pub(crate) fn save_state_snapshot(_app: &AppHandle, configs: &[AgentConfig]) {
     if let Err(error) = try_save_state_snapshot(configs) {
-        log_debug(&format!("[WARDIAN] Failed to persist state snapshot: {error}"));
+        log_debug(&format!(
+            "[WARDIAN] Failed to persist state snapshot: {error}"
+        ));
     }
 }
 
@@ -997,8 +1093,11 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         let home = temp.path().join("wardian-home");
         std::fs::create_dir_all(home.join("settings")).expect("create settings dir");
-        std::fs::write(home.join("settings/state.json"), r#"[{"session_id":"old"}]"#)
-            .expect("seed old snapshot");
+        std::fs::write(
+            home.join("settings/state.json"),
+            r#"[{"session_id":"old"}]"#,
+        )
+        .expect("seed old snapshot");
         let previous_home = std::env::var_os("WARDIAN_HOME");
         unsafe { std::env::set_var("WARDIAN_HOME", &home) };
 
@@ -1639,6 +1738,62 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn provider_turn_start_is_visible_to_agent_watch() {
+        let state = AppState::new();
+        let agent = test_active_agent("Idle");
+        {
+            let mut config = agent.config.lock().unwrap();
+            config.session_id = "agent-1".to_string();
+        }
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
+
+        record_agent_turn_started_for_watch(&state, "agent-1").await;
+
+        let agents = state.agents.lock().await;
+        let snapshot = agents["agent-1"]
+            .watch_state
+            .lock()
+            .unwrap()
+            .snapshot_since(None, None)
+            .unwrap();
+        assert!(snapshot.events.iter().any(|event| {
+            event.kind == "turn_started" && event.payload["session_id"] == "agent-1"
+        }));
+    }
+
+    #[tokio::test]
+    async fn provider_turn_completion_is_visible_to_agent_watch() {
+        let state = AppState::new();
+        let agent = test_active_agent("Idle");
+        {
+            let mut config = agent.config.lock().unwrap();
+            config.session_id = "agent-1".to_string();
+        }
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
+
+        record_agent_turn_completed_for_watch(&state, "agent-1").await;
+
+        let agents = state.agents.lock().await;
+        let snapshot = agents["agent-1"]
+            .watch_state
+            .lock()
+            .unwrap()
+            .snapshot_since(None, None)
+            .unwrap();
+        assert!(snapshot.events.iter().any(|event| {
+            event.kind == "turn_completed" && event.payload["session_id"] == "agent-1"
+        }));
+    }
+
     #[test]
     fn status_event_policy_preserves_action_needed_until_explicit_completion() {
         assert_eq!(
@@ -1655,6 +1810,26 @@ mod tests {
                 "Action Needed",
                 &AgentEvent::ModelResponse,
                 ProviderStatusEventPolicy::PreserveActionRequired,
+            ),
+            Some("Idle")
+        );
+    }
+
+    #[test]
+    fn status_event_policy_can_wait_for_provider_turn_completion() {
+        assert_eq!(
+            provider_status_from_event(
+                "Processing...",
+                &AgentEvent::ModelResponse,
+                ProviderStatusEventPolicy::RequireTurnCompleted,
+            ),
+            None
+        );
+        assert_eq!(
+            provider_status_from_event(
+                "Processing...",
+                &AgentEvent::TurnCompleted,
+                ProviderStatusEventPolicy::RequireTurnCompleted,
             ),
             Some("Idle")
         );

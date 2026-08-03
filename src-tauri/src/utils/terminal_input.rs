@@ -1,5 +1,5 @@
-use std::future::Future;
 use crate::utils::delivery_transaction::TerminalInputSink;
+use std::future::Future;
 
 pub fn normalize_prompt_for_terminal_submit(prompt: &str) -> String {
     prompt
@@ -43,7 +43,7 @@ pub async fn submit_prompt_with_outcome_chunks_via_sender<S: TerminalInputSink +
         tx,
         provider_name,
         prompt,
-        || async {},
+        || async { Ok(()) },
     )
     .await
 }
@@ -60,7 +60,7 @@ pub async fn submit_prompt_with_outcome_chunks_via_sender_after_payload<S, F, Fu
 where
     S: TerminalInputSink + ?Sized,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = ()>,
+    Fut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
 {
     let normalized = normalize_prompt_for_terminal_submit(prompt);
     if normalized.is_empty() {
@@ -74,11 +74,12 @@ where
     }
 
     let profile = crate::utils::delivery_profile::delivery_profile(provider_name);
-    crate::utils::delivery_transaction::submit_terminal_transaction_with_payload_hook(
+    crate::utils::delivery_transaction::submit_terminal_transaction_with_hooks(
         tx,
         &profile,
         &normalized,
         on_payload_sent,
+        || async { Ok(()) },
     )
     .await
 }
@@ -114,7 +115,7 @@ pub async fn submit_prompt_with_outcome_via_sender_after_payload<S, F, Fut>(
 where
     S: TerminalInputSink + ?Sized,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = ()>,
+    Fut: Future<Output = Result<(), crate::utils::delivery_transaction::TerminalDeliveryError>>,
 {
     submit_prompt_with_outcome_chunks_via_sender_after_payload(
         tx,

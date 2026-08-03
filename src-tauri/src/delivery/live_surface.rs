@@ -7,10 +7,8 @@ use wardian_core::control::{
 use crate::state::AppState;
 use crate::utils::delivery_transaction::{BrokerTerminalInputSink, TerminalDeliveryError};
 
-type LiveSurfaceTargetResult = Result<
-    (String, String),
-    (Option<LiveSurfaceTarget>, FailedLiveSurfaceAttempt),
->;
+type LiveSurfaceTargetResult =
+    Result<(String, String), (Option<LiveSurfaceTarget>, FailedLiveSurfaceAttempt)>;
 
 #[derive(Debug, Clone)]
 pub struct LiveSurfacePromptRequest {
@@ -64,6 +62,38 @@ impl LiveSurfacePromptRequest {
             delivery_message_id: None,
         }
     }
+}
+
+fn automatic_payload_started_detail(
+    request: &LiveSurfacePromptRequest,
+    interaction_id: &str,
+    name: &str,
+    provider: &str,
+) -> Option<DeliveryDetail> {
+    matches!(
+        request.input_mode,
+        MessageInputMode::Message | MessageInputMode::Command
+    )
+    .then(|| DeliveryDetail {
+        uuid: request.session_id.clone(),
+        name: name.to_string(),
+        provider: provider.to_string(),
+        runtime_state: request.runtime_state.to_string(),
+        delivery_state: "submit_started".to_string(),
+        input_mode: request.input_mode,
+        queue_policy: request.queue_policy,
+        message_id: Some(
+            request
+                .delivery_message_id
+                .clone()
+                .unwrap_or_else(|| interaction_id.to_string()),
+        ),
+        delivery_phase: Some("payload_sent".to_string()),
+        observed_state: Some("payload_sent".to_string()),
+        reason: None,
+        profile: Some(crate::utils::delivery_profile::delivery_profile(provider).provider),
+        error: None,
+    })
 }
 
 pub async fn submit_live_surface_prompt(
@@ -166,11 +196,48 @@ pub async fn submit_live_surface_prompt(
         )
         .await);
     }
-    let input = BrokerTerminalInputSink::new(
-        state.terminal_sessions.clone(),
-        request.session_id.clone(),
-    );
-
+    let native_write_receipts = match state
+        .terminal_sessions
+        .native_write_receipts_enabled(&request.session_id)
+        .await
+    {
+        Ok(enabled) => enabled,
+        Err(error) => {
+            return Err(record_failed_live_surface_attempt(
+                state,
+                &request,
+                &interaction_id,
+                Some(LiveSurfaceTarget {
+                    name: name.clone(),
+                    provider: provider.clone(),
+                }),
+                FailedLiveSurfaceAttempt {
+                    runtime_state: request.runtime_state,
+                    error_code: "input_receipt_unavailable",
+                    message: error.to_string(),
+                    delivery_phase: Some("input_receipt_check_failed".to_string()),
+                    retry_safe: true,
+                },
+            )
+            .await);
+        }
+    };
+    let input =
+        BrokerTerminalInputSink::new(state.terminal_sessions.clone(), request.session_id.clone());
+    // This event is emitted after the payload has been acknowledged by the
+    // native PTY writer but before the submit key. It gives send-and-watch an
+    // ordering boundary that precedes every provider response for this exact
+    // message.
+    let payload_sent_detail = request
+        .payload_sent_detail
+        .clone()
+        .or_else(|| automatic_payload_started_detail(&request, &interaction_id, &name, &provider));
+    let requires_provider_turn_receipt = native_write_receipts
+        && matches!(
+            request.input_mode,
+            MessageInputMode::Message | MessageInputMode::Command
+        );
+    let mut turn_start_cursor = None;
     let outcome = if let (MessageInputMode::ApprovalAction, Some(action)) =
         (request.input_mode, request.approval_action.as_ref())
     {
@@ -190,9 +257,9 @@ pub async fn submit_live_surface_prompt(
                     FailedLiveSurfaceAttempt {
                         runtime_state: request.runtime_state,
                         error_code: "send_failed",
-                        message,
-                        delivery_phase: Some("approval_send_failed".to_string()),
-                        retry_safe: true,
+                        message: message.message,
+                        delivery_phase: Some(message.phase.to_string()),
+                        retry_safe: message.retry_safe,
                     },
                 )
                 .await);
@@ -221,33 +288,63 @@ pub async fn submit_live_surface_prompt(
             )
             .await);
         }
-        let payload_cursor =
-            crate::control::codex_payload_echo_cursor(state, &provider, &request.session_id).await;
+        turn_start_cursor = if requires_provider_turn_receipt {
+            match crate::control::provider_turn_start_cursor(state, &request.session_id).await {
+                Ok(cursor) => Some(cursor),
+                Err(message) => {
+                    return Err(record_failed_live_surface_attempt(
+                        state,
+                        &request,
+                        &interaction_id,
+                        Some(LiveSurfaceTarget {
+                            name: name.clone(),
+                            provider: provider.clone(),
+                        }),
+                        FailedLiveSurfaceAttempt {
+                            runtime_state: request.runtime_state,
+                            error_code: "turn_start_watch_unavailable",
+                            message,
+                            delivery_phase: Some("turn_start_cursor_failed".to_string()),
+                            retry_safe: true,
+                        },
+                    )
+                    .await);
+                }
+            }
+        } else {
+            None
+        };
         let wait_session_id = request.session_id.clone();
-        let wait_provider = provider.clone();
-        let wait_prompt = request.prompt.clone();
-        let payload_sent_detail = request.payload_sent_detail.clone();
+        let payload_session_id = request.session_id.clone();
+        let payload_interaction_id = interaction_id.clone();
+        let payload_sent_detail = payload_sent_detail.clone();
         match crate::utils::terminal_input::submit_prompt_with_outcome_via_sender_after_payload(
             &input,
             &request.prompt,
             &provider,
-            || async move {
-                if let Some(detail) = payload_sent_detail.as_ref() {
+            move || async move {
+                if let Some(detail) = payload_sent_detail {
+                    persist_live_surface_delivery_detail(
+                        state,
+                        &payload_interaction_id,
+                        &payload_session_id,
+                        &detail,
+                    )
+                    .await
+                    .map_err(|message| {
+                        TerminalDeliveryError::terminal_state_unknown(
+                            "payload_receipt_persist_failed",
+                            message,
+                        )
+                    })?;
                     crate::control::push_delivery_for_delivery_service(
                         state,
                         &wait_session_id,
-                        detail,
+                        &detail,
                     )
                     .await;
                 }
-                crate::control::wait_for_codex_payload_echo_before_submit(
-                    state,
-                    &wait_provider,
-                    &wait_session_id,
-                    payload_cursor.as_deref(),
-                    &wait_prompt,
-                )
-                .await;
+                Ok(())
             },
         )
         .await
@@ -267,7 +364,7 @@ pub async fn submit_live_surface_prompt(
         }
     };
 
-    let detail = wardian_core::control::DeliveryDetail {
+    let mut detail = wardian_core::control::DeliveryDetail {
         uuid: request.session_id.clone(),
         name,
         provider: provider.clone(),
@@ -288,25 +385,7 @@ pub async fn submit_live_surface_prompt(
         error: None,
     };
 
-    let generation = state
-        .interactions
-        .current_provider_input_generation(&request.session_id)
-        .await
-        .unwrap_or(0);
-    state
-        .interactions
-        .record_delivery_attempt_durable(
-            &interaction_id,
-            &request.session_id,
-            DeliveryTransportKind::LiveSurface,
-            generation,
-            &detail.runtime_state,
-            &detail.delivery_state,
-            detail.delivery_phase.clone(),
-            detail.observed_state.clone(),
-            detail.reason.clone(),
-            detail.error.clone(),
-        )
+    persist_live_surface_delivery_detail(state, &interaction_id, &request.session_id, &detail)
         .await
         .map_err(|message| LiveSurfaceDeliveryError {
             message,
@@ -315,7 +394,49 @@ pub async fn submit_live_surface_prompt(
         })?;
     crate::control::push_delivery_for_delivery_service(state, &request.session_id, &detail).await;
 
-    if request.mark_prompt_started {
+    if let Some(turn_start_cursor) = turn_start_cursor {
+        if let Err(message) = crate::control::wait_for_provider_turn_started_after_submit(
+            state,
+            &request.session_id,
+            &turn_start_cursor,
+        )
+        .await
+        {
+            return Err(record_failed_live_surface_attempt(
+                state,
+                &request,
+                &interaction_id,
+                Some(LiveSurfaceTarget {
+                    name: detail.name.clone(),
+                    provider: provider.clone(),
+                }),
+                FailedLiveSurfaceAttempt {
+                    runtime_state: request.runtime_state,
+                    error_code: "provider_turn_start_timeout",
+                    message,
+                    delivery_phase: Some("provider_turn_start_timeout".to_string()),
+                    retry_safe: false,
+                },
+            )
+            .await);
+        }
+
+        detail.delivery_state = "provider_accepted".to_string();
+        detail.delivery_phase = Some("turn_started".to_string());
+        detail.observed_state = Some("turn_started".to_string());
+        detail.reason = Some(
+            "provider emitted a turn-start event after native terminal submission".to_string(),
+        );
+        persist_live_surface_delivery_detail(state, &interaction_id, &request.session_id, &detail)
+            .await
+            .map_err(|message| LiveSurfaceDeliveryError {
+                message,
+                detail: Some(detail.clone()),
+                retry_safe: false,
+            })?;
+        crate::control::push_delivery_for_delivery_service(state, &request.session_id, &detail)
+            .await;
+    } else if request.mark_prompt_started {
         crate::control::mark_delivered_agents_prompt_started_for_delivery_service(
             app,
             state,
@@ -328,6 +449,35 @@ pub async fn submit_live_surface_prompt(
         interaction_id,
         detail,
     })
+}
+
+async fn persist_live_surface_delivery_detail(
+    state: &AppState,
+    interaction_id: &str,
+    session_id: &str,
+    detail: &DeliveryDetail,
+) -> Result<(), String> {
+    let generation = state
+        .interactions
+        .current_provider_input_generation(session_id)
+        .await
+        .unwrap_or(0);
+    state
+        .interactions
+        .record_delivery_attempt_durable(
+            interaction_id,
+            session_id,
+            DeliveryTransportKind::LiveSurface,
+            generation,
+            &detail.runtime_state,
+            &detail.delivery_state,
+            detail.delivery_phase.clone(),
+            detail.observed_state.clone(),
+            detail.reason.clone(),
+            detail.error.clone(),
+        )
+        .await
+        .map(|_| ())
 }
 
 #[derive(Debug, Clone)]
@@ -481,5 +631,38 @@ mod tests {
         assert_eq!(request.queue_policy, QueuePolicy::LiveOnly);
         assert_eq!(request.runtime_state, "live_pty_available");
         assert!(request.mark_prompt_started);
+    }
+
+    #[test]
+    fn live_message_gets_a_submit_started_event_before_the_submit_key() {
+        let mut request = LiveSurfacePromptRequest::message("agent-1", "hello");
+        request.delivery_message_id = Some("msg_1".to_string());
+
+        let detail = automatic_payload_started_detail(&request, "int_1", "Coder", "codex")
+            .expect("message delivery detail");
+
+        assert_eq!(detail.delivery_state, "submit_started");
+        assert_eq!(detail.delivery_phase.as_deref(), Some("payload_sent"));
+        assert_eq!(detail.message_id.as_deref(), Some("msg_1"));
+    }
+
+    #[test]
+    fn live_command_gets_the_same_payload_receipt_boundary() {
+        let mut request = LiveSurfacePromptRequest::message("agent-1", "/status");
+        request.input_mode = MessageInputMode::Command;
+
+        let detail = automatic_payload_started_detail(&request, "int_1", "Coder", "codex")
+            .expect("command delivery detail");
+
+        assert_eq!(detail.delivery_state, "submit_started");
+        assert_eq!(detail.input_mode, MessageInputMode::Command);
+    }
+
+    #[test]
+    fn approval_delivery_does_not_emit_a_message_submit_started_event() {
+        let mut request = LiveSurfacePromptRequest::message("agent-1", "hello");
+        request.input_mode = MessageInputMode::ApprovalAction;
+
+        assert!(automatic_payload_started_detail(&request, "int_1", "Coder", "codex").is_none());
     }
 }

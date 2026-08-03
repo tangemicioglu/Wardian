@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use tokio::sync::Mutex;
 use wardian_core::control::{
-    DeliveryErrorDetail, DeliveryTransportKind, InteractionBodyRef,
-    InboxNotificationDecision, InboxNotificationKind, InboxNotificationPayload,
-    InteractionDeliveryAttemptRecord, InteractionKind, InteractionRecord, InteractionStatus,
-    InteractionTriggerPolicy, ProviderInputReadiness, ProviderInputState, ProviderReadyEvidence,
-    ReplyStatus, StructuredReply,
+    DeliveryErrorDetail, DeliveryTransportKind, InboxNotificationDecision, InboxNotificationKind,
+    InboxNotificationPayload, InteractionBodyRef, InteractionDeliveryAttemptRecord,
+    InteractionKind, InteractionRecord, InteractionStatus, InteractionTriggerPolicy,
+    ProviderInputReadiness, ProviderInputState, ProviderReadyEvidence, ReplyStatus,
+    StructuredReply,
 };
 
 #[derive(Debug, Default)]
@@ -104,6 +104,43 @@ impl InteractionState {
         Ok(record)
     }
 
+    /// Advances the durable lifecycle of one ordinary outbound message.
+    ///
+    /// A message has one target per interaction, so this state remains an
+    /// authoritative answer to whether that target is queued, being sent, or
+    /// has reached a terminal transport outcome.
+    pub async fn update_message_status_durable(
+        &self,
+        interaction_id: &str,
+        status: InteractionStatus,
+    ) -> Result<InteractionRecord, String> {
+        let mut records = self.records.lock().await;
+        let current = records
+            .get(interaction_id)
+            .cloned()
+            .ok_or_else(|| format!("message interaction not found: {interaction_id}"))?;
+        if current.kind != InteractionKind::Message {
+            return Err(format!("interaction is not a message: {interaction_id}"));
+        }
+        if current.status == status {
+            return Ok(current);
+        }
+
+        let now = now_rfc3339_millis();
+        let mut updated = current;
+        updated.status = status;
+        updated.updated_at = now.clone();
+        updated.completed_at = matches!(
+            status,
+            InteractionStatus::Delivered | InteractionStatus::Failed
+        )
+        .then_some(now);
+        wardian_core::db::upsert_interaction_record(&updated)
+            .map_err(|error| format!("failed to persist message status: {error}"))?;
+        records.insert(updated.id.clone(), updated.clone());
+        Ok(updated)
+    }
+
     pub async fn create_notification_durable(
         &self,
         sender_session_id: String,
@@ -163,7 +200,9 @@ impl InteractionState {
                 existing.kind == InteractionKind::Notification
                     && existing.sender_session_id.as_deref() == Some(sender_session_id.as_str())
                     && existing.status == InteractionStatus::AwaitingReply
-                    && !expired_records.iter().any(|expired| expired.id == existing.id)
+                    && !expired_records
+                        .iter()
+                        .any(|expired| expired.id == existing.id)
             });
         if has_open_approval {
             return Err("approval_already_open");
@@ -250,7 +289,10 @@ impl InteractionState {
                 resolution.clone(),
             ])
             .map_err(|_| "persistence_failed")?;
-            records.insert(updated_notification.id.clone(), updated_notification.clone());
+            records.insert(
+                updated_notification.id.clone(),
+                updated_notification.clone(),
+            );
             records.insert(resolution.id.clone(), resolution.clone());
             decision
         };
@@ -264,8 +306,8 @@ impl InteractionState {
         self.records.lock().await.values().find_map(|record| {
             (record.kind == InteractionKind::Reply
                 && record.parent_interaction_id.as_deref() == Some(notification_id))
-                .then(|| notification_decision(record))
-                .flatten()
+            .then(|| notification_decision(record))
+            .flatten()
         })
     }
 
@@ -357,7 +399,33 @@ impl InteractionState {
         );
         wardian_core::db::upsert_interaction_delivery_attempt(&attempt)
             .map_err(|error| format!("failed to persist delivery attempt: {error}"))?;
+        if let Some(status) = Self::message_status_for_delivery_state(delivery_state) {
+            let is_message = self
+                .records
+                .lock()
+                .await
+                .get(interaction_id)
+                .is_some_and(|record| record.kind == InteractionKind::Message);
+            if is_message {
+                self.update_message_status_durable(interaction_id, status)
+                    .await?;
+            }
+        }
         Ok(attempt)
+    }
+
+    fn message_status_for_delivery_state(delivery_state: &str) -> Option<InteractionStatus> {
+        match delivery_state {
+            "queued" => Some(InteractionStatus::Queued),
+            "submit_started" | "submit_sent_unconfirmed" => Some(InteractionStatus::Delivering),
+            "submitted"
+            | "submit_sent_unverified"
+            | "provider_applied"
+            | "provider_accepted"
+            | "approval_submitted" => Some(InteractionStatus::Delivered),
+            "failed" => Some(InteractionStatus::Failed),
+            _ => None,
+        }
     }
 
     pub async fn record_provider_input_state(
@@ -811,6 +879,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_delivery_attempts_advance_message_transport_status() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
+        let state = InteractionState::default();
+        let message = state
+            .create_message_durable(
+                None,
+                vec!["target-agent".to_string()],
+                InteractionBodyRef::Inline {
+                    body: "hello".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+        state
+            .record_delivery_attempt_durable(
+                &message.id,
+                "target-agent",
+                DeliveryTransportKind::LiveSurface,
+                1,
+                "live_pty_available",
+                "submit_started",
+                Some("payload_sent".to_string()),
+                Some("payload_sent".to_string()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            state.interaction(&message.id).await.unwrap().status,
+            InteractionStatus::Delivering
+        );
+
+        state
+            .record_delivery_attempt_durable(
+                &message.id,
+                "target-agent",
+                DeliveryTransportKind::LiveSurface,
+                1,
+                "live_pty_available",
+                "submit_sent_unconfirmed",
+                Some("submit_key_sent".to_string()),
+                Some("bytes_sent".to_string()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let unconfirmed = state.interaction(&message.id).await.unwrap();
+        assert_eq!(unconfirmed.status, InteractionStatus::Delivering);
+        assert!(unconfirmed.completed_at.is_none());
+
+        state
+            .record_delivery_attempt_durable(
+                &message.id,
+                "target-agent",
+                DeliveryTransportKind::LiveSurface,
+                1,
+                "live_pty_available",
+                "provider_accepted",
+                Some("turn_started".to_string()),
+                Some("turn_started".to_string()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let delivered = state.interaction(&message.id).await.unwrap();
+        assert_eq!(delivered.status, InteractionStatus::Delivered);
+        assert!(delivered.completed_at.is_some());
+    }
+
+    #[tokio::test]
     async fn expired_approval_does_not_block_a_new_approval_from_the_same_agent() {
         let _guard = crate::utils::wardian_test_env_lock();
         let home = tempfile::tempdir().unwrap();
@@ -826,7 +970,9 @@ mod tests {
                     proposed_action: Some("Deploy".to_string()),
                     risk: Some("Changes production".to_string()),
                     choices: vec!["Approve".to_string(), "Reject".to_string()],
-                    expires_at: Some((chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339()),
+                    expires_at: Some(
+                        (chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339(),
+                    ),
                 },
             )
             .await
@@ -842,7 +988,9 @@ mod tests {
                     proposed_action: Some("Deploy".to_string()),
                     risk: Some("Changes production".to_string()),
                     choices: vec!["Approve".to_string(), "Reject".to_string()],
-                    expires_at: Some((chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339()),
+                    expires_at: Some(
+                        (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+                    ),
                 },
             )
             .await

@@ -83,40 +83,6 @@ fn windows_conpty_runtime_diagnostics() -> Option<WindowsConptyRuntimeDiagnostic
     None
 }
 
-#[cfg(test)]
-pub(crate) async fn submit_prompt_to_agent_with_codex_echo_guard(
-    state: &AppState,
-    session_id: &str,
-    provider_name: &str,
-    tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
-    prompt: &str,
-) -> Result<(), String> {
-    let payload_cursor =
-        crate::control::codex_payload_echo_cursor(state, provider_name, session_id).await;
-    let wait_provider = provider_name.to_string();
-    let wait_session_id = session_id.to_string();
-    let wait_prompt = prompt.to_string();
-
-    crate::utils::terminal_input::submit_prompt_with_outcome_via_sender_after_payload(
-        tx,
-        prompt,
-        provider_name,
-        || async move {
-            crate::control::wait_for_codex_payload_echo_before_submit(
-                state,
-                &wait_provider,
-                &wait_session_id,
-                payload_cursor.as_deref(),
-                &wait_prompt,
-            )
-            .await;
-        },
-    )
-    .await
-    .map(|_| ())
-    .map_err(|error| error.to_string())
-}
-
 pub(crate) async fn archive_delivered_prompt_for_agent_state(
     state: &AppState,
     session_id: &str,
@@ -802,8 +768,8 @@ pub async fn set_user_terminal_cwd(path: String, state: State<'_, AppState>) -> 
 mod tests {
     use super::{
         archive_completed_raw_terminal_prompts, archive_delivered_prompt_for_agent_state,
-        read_pty_buffer, submit_prompt_to_agent_with_codex_echo_guard, validate_user_terminal_cwd,
-        RawTerminalPromptAccumulator, ReadAgentPtyOptions,
+        read_pty_buffer, validate_user_terminal_cwd, RawTerminalPromptAccumulator,
+        ReadAgentPtyOptions,
     };
     use crate::state::{ActiveAgent, AppState};
     use std::sync::{Arc, Mutex};
@@ -890,25 +856,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_submit_waits_for_prompt_echo_before_enter() {
-        let state = AppState::new();
-        let watch_state = Arc::new(Mutex::new(crate::state::AgentWatchState::new(
-            "agent-1".to_string(),
-            16,
-            262_144,
-        )));
-        state.agents.lock().await.insert(
-            "agent-1".to_string(),
-            test_agent("agent-1", "codex", watch_state.clone()),
-        );
+    async fn codex_submit_writes_enter_after_its_profile_settle_delay_without_terminal_echo() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
         let submit = tokio::spawn(async move {
-            submit_prompt_to_agent_with_codex_echo_guard(
-                &state,
-                "agent-1",
-                "codex",
+            crate::utils::terminal_input::submit_prompt_via_sender(
                 &tx,
                 "Check composer injection",
+                "codex",
             )
             .await
         });
@@ -917,19 +871,15 @@ mod tests {
             rx.recv().await.expect("payload"),
             b"\x1b[200~Check composer injection\x1b[201~".to_vec()
         );
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
                 .await
-                .is_err(),
-            "submit key should wait for the Codex prompt echo"
+                .expect(
+                    "submit key should follow the bounded Codex settle delay, not terminal echo"
+                )
+                .expect("submit key"),
+            b"\r".to_vec()
         );
-
-        watch_state
-            .lock()
-            .unwrap()
-            .push_output("› Check composer injection".as_bytes());
-
-        assert_eq!(rx.recv().await.expect("submit key"), b"\r".to_vec());
         submit.await.expect("submit task").expect("submit succeeds");
     }
 

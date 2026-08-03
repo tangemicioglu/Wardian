@@ -1,61 +1,8 @@
-use serde::{Deserialize, Serialize};
-use wardian_core::control::{ApprovalAction, MessageInputMode, MessageOrigin, QueuePolicy};
+pub use wardian_core::control::{
+    MailboxDeliveryPhase, MailboxMessageDraft, MailboxMessageRecord, MailboxMessageStatus,
+};
 
 const MAX_TERMINAL_RECORDS_PER_TARGET: usize = 64;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MailboxMessageDraft {
-    pub interaction_id: String,
-    pub target_session_id: String,
-    pub body: String,
-    pub input_mode: MessageInputMode,
-    pub queue_policy: QueuePolicy,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval_action: Option<ApprovalAction>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<MessageOrigin>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MailboxMessageRecord {
-    pub id: String,
-    pub interaction_id: String,
-    pub target_session_id: String,
-    pub body: String,
-    pub input_mode: MessageInputMode,
-    pub queue_policy: QueuePolicy,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval_action: Option<ApprovalAction>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<MessageOrigin>,
-    pub created_at: String,
-    pub status: MailboxMessageStatus,
-    pub phase: MailboxDeliveryPhase,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MailboxMessageStatus {
-    Pending,
-    InFlight,
-    Delivered,
-    Failed,
-}
-
-impl MailboxMessageStatus {
-    fn is_terminal(self) -> bool {
-        matches!(self, Self::Delivered | Self::Failed)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MailboxDeliveryPhase {
-    Queued,
-    Dispatching,
-    Submitted,
-    Terminal,
-}
 
 #[derive(Debug, Default)]
 pub struct MailboxState {
@@ -85,6 +32,28 @@ impl MailboxState {
         record
     }
 
+    /// Restores queued records from the durable interaction store. Terminal
+    /// records are not stored there, so this only rehydrates work that may
+    /// still need delivery or recovery.
+    pub fn hydrate(&mut self, records: Vec<MailboxMessageRecord>) {
+        self.records = records;
+        self.records.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then(left.id.cmp(&right.id))
+        });
+        self.last_millis = 0;
+        self.counter = 0;
+        let record_ids = self
+            .records
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>();
+        for id in record_ids {
+            self.observe_message_id(&id);
+        }
+    }
+
     pub fn all(&self) -> Vec<MailboxMessageRecord> {
         self.records.clone()
     }
@@ -95,6 +64,16 @@ impl MailboxState {
             .filter(|record| record.target_session_id == target_session_id)
             .cloned()
             .collect()
+    }
+
+    pub fn next_pending_for_target(&self, target_session_id: &str) -> Option<MailboxMessageRecord> {
+        self.records
+            .iter()
+            .find(|record| {
+                record.target_session_id == target_session_id
+                    && record.status == MailboxMessageStatus::Pending
+            })
+            .cloned()
     }
 
     pub fn take_next_pending_for_target(
@@ -123,6 +102,11 @@ impl MailboxState {
         record.status = MailboxMessageStatus::Pending;
         record.phase = MailboxDeliveryPhase::Queued;
         Some(record.clone())
+    }
+
+    pub fn remove(&mut self, id: &str) -> Option<MailboxMessageRecord> {
+        let index = self.records.iter().position(|record| record.id == id)?;
+        Some(self.records.remove(index))
     }
 
     pub fn remove_for_target(&mut self, target_session_id: &str) -> usize {
@@ -184,6 +168,24 @@ impl MailboxState {
         }
 
         format!("msg_{millis:013}_{:06}", self.counter)
+    }
+
+    fn observe_message_id(&mut self, id: &str) {
+        let Some((millis, counter)) = id
+            .strip_prefix("msg_")
+            .and_then(|suffix| suffix.split_once('_'))
+            .and_then(|(millis, counter)| {
+                Some((millis.parse::<i64>().ok()?, counter.parse::<u64>().ok()?))
+            })
+        else {
+            return;
+        };
+        if millis > self.last_millis {
+            self.last_millis = millis;
+            self.counter = counter;
+        } else if millis == self.last_millis {
+            self.counter = self.counter.max(counter);
+        }
     }
 }
 
@@ -354,5 +356,29 @@ mod tests {
         assert_eq!(requeued.phase, MailboxDeliveryPhase::Queued);
         let pending = mailbox.take_next_pending_for_target("agent-1").unwrap();
         assert_eq!(pending.id, record.id);
+    }
+
+    #[test]
+    fn hydrate_preserves_pending_records_and_advances_the_id_allocator() {
+        let mut mailbox = MailboxState::default();
+        let record = MailboxMessageRecord {
+            id: "msg_9999999999999_000003".to_string(),
+            interaction_id: "int_restored".to_string(),
+            target_session_id: "agent-1".to_string(),
+            body: "restored work".to_string(),
+            input_mode: MessageInputMode::Message,
+            queue_policy: QueuePolicy::QueueIfBusy,
+            approval_action: None,
+            origin: None,
+            created_at: "2026-08-01T00:00:00.000Z".to_string(),
+            status: MailboxMessageStatus::Pending,
+            phase: MailboxDeliveryPhase::Queued,
+        };
+
+        mailbox.hydrate(vec![record.clone()]);
+        let next = mailbox.enqueue(message_for("agent-1", "new work"));
+
+        assert_eq!(mailbox.all()[0], record);
+        assert_eq!(next.id, "msg_9999999999999_000004");
     }
 }

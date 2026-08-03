@@ -181,10 +181,10 @@ The CLI live-control `agent_watch`, `ask`, `send_message`, `submit_reply`, `noti
   "payload": {
     "uuid": "uuid-1",
     "provider": "codex",
-    "runtime_state": "provider_input_ready",
-    "delivery_state": "submit_sent_unconfirmed",
+    "runtime_state": "live_pty_available",
+    "delivery_state": "provider_accepted",
     "input_mode": "message",
-    "delivery_phase": "submit_key_sent"
+    "delivery_phase": "turn_started"
   }
 }
 ```
