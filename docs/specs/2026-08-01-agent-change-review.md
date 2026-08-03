@@ -62,8 +62,22 @@ analysis turn must not blank a diff the operator is still reading.
 
 Changes is a left-sidebar pane, not a workbench surface. It takes its own
 icon-rail entry beside Source Control and renders through
-`SidebarContentPane.tsx`, mirroring `GitPanel` in structure: a scoped file list
-above an inline diff.
+`SidebarContentPane.tsx`, mirroring `GitPanel` in structure: a scoped file list.
+
+**The pane lists changes; it never renders diff content.** Opening a file opens
+the existing `files` surface in the workbench with its comparison already open,
+against a `git_revision` baseline carrying the operator's selected wording.
+
+An inline lens was tried first and rejected on evidence. A sidebar column is
+roughly 310 px wide, and `FileComparisonLens` brings its own toolbar, layout
+control, and close affordance; at that width it rendered a single truncated line
+of content under three rows of chrome while the entire workbench sat empty. A
+diff is content, and content belongs on a surface. The split matches the pane's
+purpose: the list is the glanceable part and stays where glancing happens, and
+the diff is the reading part and goes where there is room to read.
+
+This does not make Changes a surface. The pane keeps its sidebar placement and
+its own rail entry; only the content it points at is escalated.
 
 Its chrome is the sidebar standard: a title, the baseline selector, and the
 change set. No descriptive subtitle, and no manual refresh or review buttons.
@@ -133,8 +147,10 @@ These rules are binding, not advisory.
 The pane must not poll `git_status` on a timer, and must not scan the working
 tree on render.
 
-Diff content is fetched per file on expansion, never eagerly for the whole
-change set. A change set of 200 files costs one status call, not 200 diff calls.
+Diff content is fetched per file when the operator opens it, never eagerly for
+the whole change set, and never by the pane itself. A change set of 200 files
+costs one status call, not 200 diff calls. The sidebar issues no
+`git_show_file_revision` at all; the surface reads the baseline it was handed.
 
 Line counts for the whole change set are obtained in a single `git diff
 --numstat` invocation, never per file. No such command exists in
@@ -334,10 +350,10 @@ ChangeReviewWatermark {
 }
 ```
 
-Review state advances by **expanding a file's diff**, not by a button. Expanding
-is the act of reviewing, so the record follows the operator's actual attention
-per path rather than declaring a whole batch reviewed at once. The pane writes
-the watermark on expand and at no other time.
+Review state advances by **opening a file's diff**, not by a button. Opening is
+the act of reviewing, so the record follows the operator's actual attention per
+path rather than declaring a whole batch reviewed at once. The pane writes the
+watermark on open and at no other time.
 
 The `unreviewed` baseline **never removes a path that git currently reports as
 changed.** It marks entries: an entry whose path and numstat signature match a
@@ -426,8 +442,8 @@ watermark.
   without any `git-changed` event having fired.
 - Line counts for a change set of any size cost one `git diff --numstat`
   invocation.
-- Expanding a file fetches exactly one diff; collapsing and re-expanding within
-  a change set fetches none.
+- Opening a file fetches exactly one diff, and the fetch is issued by the
+  surface rather than by the sidebar.
 - A turn that writes no file leaves the `last_effective_turn` baseline and its
   rendered diff unchanged.
 - A file written through a shell command appears in the change set with
@@ -445,8 +461,14 @@ watermark.
   event, through `explorer-changed` alone.
 - A burst of writes across many files produces one recomputation, not one per
   file.
-- Expanding a file marks that path reviewed; the next load under the
-  `unreviewed` baseline omits it while leaving unexpanded paths present.
+- Opening a file marks that path reviewed; the next load under the `unreviewed`
+  baseline omits it while leaving unopened paths present.
+- The pane renders no diff content at any width: opening a file opens a `files`
+  surface whose comparison header repeats the baseline wording selected in the
+  sidebar.
+- A file added since the baseline opens against an empty baseline rather than
+  failing to read a revision that does not contain it.
+- A renamed file is compared against the name it had at the baseline.
 - The pane renders no refresh control, no review control, and no subtitle.
 - A `turns.jsonl` containing a record with `"status_source": null` loads, and the
   pane renders a change set rather than a deserialization error.
