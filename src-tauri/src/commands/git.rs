@@ -22,6 +22,52 @@ pub(crate) fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
     run_git_with_candidates(cwd, args, &git_command_candidates())
 }
 
+/// Run a git command with extra environment variables.
+///
+/// Change snapshots need `GIT_INDEX_FILE` so `add -A` and `write-tree` operate
+/// on a dedicated index, leaving the operator's `.git/index` untouched.
+pub(crate) fn run_git_with_env(
+    cwd: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> Result<String, String> {
+    let mut last_not_found = None;
+
+    for candidate in git_command_candidates() {
+        let mut command = build_git_command(&candidate, cwd, args);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+
+        let output = match command.output() {
+            Ok(output) => output,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                last_not_found = Some(error);
+                continue;
+            }
+            Err(error) => return Err(format!("Failed to execute git: {}", error)),
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(git_failure_message(
+                output.status.code(),
+                stdout.as_ref(),
+                stderr.as_ref(),
+            ));
+        }
+
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+
+    let message = last_not_found.map_or_else(
+        || "no git command candidates configured".to_string(),
+        |error| error.to_string(),
+    );
+    Err(format!("Failed to execute git: {}", message))
+}
+
 fn run_git_allowing_status(
     cwd: &str,
     args: &[&str],
