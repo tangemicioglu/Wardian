@@ -3,6 +3,7 @@ pub mod artifacts;
 pub mod chat;
 pub mod class;
 pub mod change_review;
+pub mod change_snapshot;
 pub mod conversation;
 pub mod debug;
 pub mod file_recovery;

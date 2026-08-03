@@ -375,6 +375,20 @@ pub(crate) fn emit_agent_turn_completed(app: &AppHandle, session_id: &str) {
             "session_id": session_id,
         }),
     );
+
+    // Change snapshots run off the turn boundary, never on it. Spawning here is
+    // what keeps the agent's critical path clear; the snapshot itself coalesces
+    // per workspace and skips turns that wrote nothing.
+    let snapshot_app = app.clone();
+    let snapshot_session_id = session_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let state = snapshot_app.state::<AppState>();
+        crate::commands::change_snapshot::snapshot_completed_turn(
+            state.inner(),
+            &snapshot_session_id,
+        )
+        .await;
+    });
 }
 
 pub(crate) fn mark_agent_prompt_started(agent: &crate::state::ActiveAgent) -> bool {

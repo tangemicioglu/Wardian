@@ -1,6 +1,9 @@
 use crate::commands::git::{
     git_diff_numstat_for_cwd, git_status_for_cwd, run_git, GitNumstatEntry,
 };
+use crate::commands::change_snapshot::{
+    baseline_diverged, commit_resolves, first_snapshot_commit, latest_snapshot_commit,
+};
 use crate::state::{conversation_archive::ConversationArchiveState, AppState};
 use crate::utils::fs::get_wardian_home;
 use serde::{Deserialize, Serialize};
@@ -81,6 +84,19 @@ pub struct ChangeReviewSummary {
     pub files: Vec<ChangeReviewFileEntry>,
     pub computed_at: String,
     pub truncated: bool,
+    /// True when a pinned baseline has drifted far enough to be worth
+    /// re-anchoring.
+    ///
+    /// Divergence is measured in turns and paths, never in bytes held. Both
+    /// counters below are byproducts of work already done to build this summary,
+    /// whereas bytes uniquely held by the pin would need a repository-wide object
+    /// walk run only to decide whether to show a warning.
+    #[serde(default)]
+    pub diverged: bool,
+    #[serde(default)]
+    pub turns_since_baseline: Option<u64>,
+    #[serde(default)]
+    pub paths_since_baseline: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,6 +109,15 @@ pub struct ChangeReviewWatermark {
     pub reviewed_head: Option<String>,
     #[serde(default)]
     pub reviewed_paths: Vec<ChangeReviewReviewedPath>,
+    /// Snapshot commit captured at the moment of review.
+    ///
+    /// This is the content anchor Phase 1 lacked. With it, a file edited and then
+    /// reverted to its reviewed content reads as unchanged, because the
+    /// comparison is against bytes rather than against a numstat signature.
+    /// Absent for watermarks written before Phase 2, which keep the Phase 1
+    /// signature comparison.
+    #[serde(default)]
+    pub reviewed_snapshot: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -485,6 +510,21 @@ fn reviewed_path_matches(
         && file.deletions == reviewed_path.deletions
 }
 
+/// Paths whose content differs from the reviewed snapshot.
+///
+/// One `git diff --numstat` against the snapshot commit answers the question for
+/// the whole change set, so the content anchor costs one invocation rather than
+/// one per file.
+fn paths_changed_since_snapshot(cwd: &str, snapshot: &str) -> Option<BTreeSet<String>> {
+    let entries = git_diff_numstat_for_cwd(cwd, Some(snapshot)).ok()?;
+    Some(
+        entries
+            .into_iter()
+            .map(|entry| normalized_path(cwd, &entry.path))
+            .collect(),
+    )
+}
+
 fn annotate_reviewed_files(
     baseline: ChangeReviewBaseline,
     cwd: &str,
@@ -494,13 +534,27 @@ fn annotate_reviewed_files(
     if baseline != ChangeReviewBaseline::Unreviewed {
         return;
     }
+
+    // Prefer the content anchor. Phase 1 could only compare a numstat signature,
+    // so a file edited back to its reviewed state read as reviewed by accident;
+    // with a snapshot the same conclusion is reached on the bytes.
+    let changed_since_snapshot = watermark
+        .and_then(|value| value.reviewed_snapshot.as_deref())
+        .filter(|snapshot| commit_resolves(cwd, snapshot))
+        .and_then(|snapshot| paths_changed_since_snapshot(cwd, snapshot));
+
     for file in files {
-        file.reviewed = watermark.is_some_and(|value| {
-            value
-                .reviewed_paths
-                .iter()
-                .any(|reviewed_path| reviewed_path_matches(cwd, file, reviewed_path))
-        });
+        file.reviewed = match &changed_since_snapshot {
+            // Reviewed means "identical to what I looked at", which is exactly
+            // "absent from the diff against the snapshot I looked at".
+            Some(changed) => !changed.contains(&normalized_path(cwd, &file.path)),
+            None => watermark.is_some_and(|value| {
+                value
+                    .reviewed_paths
+                    .iter()
+                    .any(|reviewed_path| reviewed_path_matches(cwd, file, reviewed_path))
+            }),
+        };
     }
 }
 
@@ -561,21 +615,57 @@ fn branch_point(cwd: &str, head: Option<&str>) -> Option<String> {
     Some(head.to_string())
 }
 
+/// Resolves a turn-scoped baseline to a snapshot commit when one exists.
+///
+/// This is what Phase 2 buys: `last_effective_turn` and `conversation_start`
+/// compare against real content rather than falling back to `HEAD`. An orphaned
+/// snapshot — a commit lost to an operator rebase, amend, or `gc --prune` —
+/// degrades to the Phase 1 behaviour instead of erroring.
+fn snapshot_revision_for_baseline(
+    cwd: &str,
+    baseline: ChangeReviewBaseline,
+    agent_id: Option<&str>,
+    conversation_id: Option<&str>,
+) -> Option<String> {
+    let agent_id = agent_id?;
+    let commit = match baseline {
+        ChangeReviewBaseline::LastEffectiveTurn => {
+            latest_snapshot_commit(cwd, agent_id, conversation_id)
+        }
+        ChangeReviewBaseline::ConversationStart => {
+            first_snapshot_commit(cwd, agent_id, conversation_id)
+        }
+        _ => None,
+    }?;
+    commit_resolves(cwd, &commit).then_some(commit)
+}
+
 fn revision_for_baseline(
     cwd: &str,
     baseline: ChangeReviewBaseline,
     head: Option<&str>,
     watermark: Option<&ChangeReviewWatermark>,
+    agent_id: Option<&str>,
+    conversation_id: Option<&str>,
 ) -> Option<String> {
     match baseline {
         ChangeReviewBaseline::BranchPoint => branch_point(cwd, head),
-        ChangeReviewBaseline::Head
-        | ChangeReviewBaseline::LastEffectiveTurn
-        | ChangeReviewBaseline::ConversationStart => head.map(ToString::to_string),
+        ChangeReviewBaseline::Head => head.map(ToString::to_string),
+        ChangeReviewBaseline::LastEffectiveTurn
+        | ChangeReviewBaseline::ConversationStart => {
+            snapshot_revision_for_baseline(cwd, baseline, agent_id, conversation_id)
+                .or_else(|| head.map(ToString::to_string))
+        }
         ChangeReviewBaseline::Unreviewed => watermark
-            .and_then(|value| value.reviewed_head.as_deref())
-            .filter(|revision| run_git(cwd, &["rev-parse", "--verify", revision]).is_ok())
+            .and_then(|value| value.reviewed_snapshot.as_deref())
+            .filter(|commit| commit_resolves(cwd, commit))
             .map(ToString::to_string)
+            .or_else(|| {
+                watermark
+                    .and_then(|value| value.reviewed_head.as_deref())
+                    .filter(|revision| run_git(cwd, &["rev-parse", "--verify", revision]).is_ok())
+                    .map(ToString::to_string)
+            })
             .or_else(|| head.map(ToString::to_string)),
     }
 }
@@ -593,10 +683,34 @@ fn load_change_review_for_state(
     let (claims, first_turn, latest_effective_turn) = attribution_for_turns(cwd, &turns);
     let watermark = load_watermark(request.agent_id.as_deref(), cwd);
     let head = current_head(cwd);
-    let diff_revision =
-        revision_for_baseline(cwd, request.baseline, head.as_deref(), watermark.as_ref());
+    let active_conversation = request.agent_id.as_deref().and_then(|agent_id| {
+        state
+            .conversation_archive
+            .active_conversation_id(agent_id)
+            .ok()
+            .flatten()
+    });
+    let snapshot_revision = snapshot_revision_for_baseline(
+        cwd,
+        request.baseline,
+        request.agent_id.as_deref(),
+        active_conversation.as_deref(),
+    );
+    let diff_revision = revision_for_baseline(
+        cwd,
+        request.baseline,
+        head.as_deref(),
+        watermark.as_ref(),
+        request.agent_id.as_deref(),
+        active_conversation.as_deref(),
+    );
+    // A turn-scoped baseline now carries a ref when a snapshot backs it, so the
+    // surface can read real content. Without a snapshot it stays absent, which is
+    // the Phase 1 signal that only a file list is available.
     let baseline_ref = match request.baseline {
-        ChangeReviewBaseline::LastEffectiveTurn | ChangeReviewBaseline::ConversationStart => None,
+        ChangeReviewBaseline::LastEffectiveTurn | ChangeReviewBaseline::ConversationStart => {
+            snapshot_revision.clone()
+        }
         _ => diff_revision.clone(),
     };
     let from_turn_index = match request.baseline {
@@ -624,6 +738,9 @@ fn load_change_review_for_state(
                     files,
                     computed_at: chrono::Utc::now().to_rfc3339(),
                     truncated: false,
+                    diverged: false,
+                    turns_since_baseline: None,
+                    paths_since_baseline: 0,
                 },
                 git_available: false,
                 head_ref: None,
@@ -636,6 +753,17 @@ fn load_change_review_for_state(
     let mut files = build_files(cwd, &status, numstats, &claims);
     annotate_reviewed_files(request.baseline, cwd, &mut files, watermark.as_ref());
 
+    let turns_since_baseline = match (from_turn_index, to_turn_index) {
+        (Some(from), Some(to)) => Some(to.saturating_sub(from)),
+        _ => None,
+    };
+    let paths_since_baseline = files.len() as u64;
+    // Only a pinned baseline can accumulate unbounded cost. `head` and
+    // `branch_point` are recomputed from the repository every time and pin
+    // nothing, so they never warn.
+    let diverged = matches!(request.baseline, ChangeReviewBaseline::ConversationStart)
+        && baseline_diverged(turns_since_baseline.unwrap_or(0), paths_since_baseline);
+
     Ok(ChangeReviewLoadResponse {
         summary: ChangeReviewSummary {
             schema: CHANGE_REVIEW_SCHEMA,
@@ -646,6 +774,9 @@ fn load_change_review_for_state(
             files,
             computed_at: chrono::Utc::now().to_rfc3339(),
             truncated: false,
+            diverged,
+            turns_since_baseline,
+            paths_since_baseline,
         },
         git_available: true,
         head_ref: head,
@@ -692,10 +823,17 @@ pub async fn save_change_review_watermark(watermark: ChangeReviewWatermark) -> R
     std::fs::create_dir_all(&changes_dir).map_err(|error| error.to_string())?;
     let path = watermark_path(&home);
     let mut index = load_watermark_index(&home);
+    // The content anchor is resolved here rather than sent by the caller: the
+    // frontend has no notion of snapshot commits, and the latest snapshot at the
+    // moment of review is exactly what "what I looked at" means.
+    let reviewed_snapshot = watermark.reviewed_snapshot.clone().or_else(|| {
+        latest_snapshot_commit(&watermark.workspace, &watermark.agent_id, None)
+    });
     index.insert(
         watermark_key(&watermark.agent_id, &watermark.workspace),
         ChangeReviewWatermark {
             schema: CHANGE_REVIEW_SCHEMA,
+            reviewed_snapshot,
             ..watermark
         },
     );
@@ -856,6 +994,7 @@ mod tests {
             reviewed_turn_index: 3,
             reviewed_at: "2026-08-01T00:00:00Z".to_string(),
             reviewed_head: Some("head-1".to_string()),
+            reviewed_snapshot: None,
             reviewed_paths: vec![ChangeReviewReviewedPath {
                 path: "src/agent-written.ts".to_string(),
                 change_kind: ChangeReviewChangeKind::Modified,
@@ -922,6 +1061,7 @@ mod tests {
             reviewed_turn_index: 3,
             reviewed_at: "2026-08-01T00:00:00Z".to_string(),
             reviewed_head: Some("head-1".to_string()),
+            reviewed_snapshot: None,
             reviewed_paths: vec![ChangeReviewReviewedPath {
                 path: "src/kept.ts".to_string(),
                 change_kind: ChangeReviewChangeKind::Modified,
@@ -968,6 +1108,7 @@ mod tests {
             reviewed_turn_index: 3,
             reviewed_at: "2026-08-01T00:00:00Z".to_string(),
             reviewed_head: Some("head-1".to_string()),
+            reviewed_snapshot: None,
             reviewed_paths: Vec::new(),
         };
 
@@ -1165,5 +1306,252 @@ mod tests {
             Some(value) => std::env::set_var("WARDIAN_HOME", value),
             None => std::env::remove_var("WARDIAN_HOME"),
         }
+    }
+
+    // ---- Phase 2: snapshot-backed baselines --------------------------------
+
+    struct SnapshotRepo {
+        _home: tempfile::TempDir,
+        repo: tempfile::TempDir,
+        previous_home: Option<std::ffi::OsString>,
+        // `WARDIAN_HOME` is process-global and the coverage job runs tests in
+        // parallel, so the home directory has to be serialized.
+        _env_guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl SnapshotRepo {
+        fn new() -> Self {
+            let _env_guard = crate::utils::wardian_test_env_lock();
+            let home = tempfile::tempdir().unwrap();
+            let repo = tempfile::tempdir().unwrap();
+            let previous_home = std::env::var_os("WARDIAN_HOME");
+            std::env::set_var("WARDIAN_HOME", home.path());
+
+            let this = Self { _home: home, repo, previous_home, _env_guard };
+            let cwd = this.cwd().to_string();
+            run_git(&cwd, &["init"]).unwrap();
+            run_git(&cwd, &["config", "user.email", "test@example.com"]).unwrap();
+            run_git(&cwd, &["config", "user.name", "Test"]).unwrap();
+            run_git(&cwd, &["config", "commit.gpgsign", "false"]).unwrap();
+            this.write("tracked.txt", "committed\n");
+            run_git(&cwd, &["add", "-A"]).unwrap();
+            run_git(&cwd, &["commit", "-m", "initial"]).unwrap();
+            this
+        }
+
+        fn cwd(&self) -> &str {
+            self.repo.path().to_str().unwrap()
+        }
+
+        fn write(&self, name: &str, contents: &str) {
+            std::fs::write(self.repo.path().join(name), contents).unwrap();
+        }
+
+        fn snapshot(&self, turn_index: u64) -> String {
+            let request = crate::commands::change_snapshot::SnapshotRequest {
+                cwd: self.cwd().to_string(),
+                agent_id: "agent-1".to_string(),
+                conversation_id: "conv-1".to_string(),
+                turn_index,
+            };
+            match crate::commands::change_snapshot::take_snapshot(&request).unwrap() {
+                crate::commands::change_snapshot::SnapshotOutcome::Created(snapshot) => {
+                    snapshot.commit_id.clone()
+                }
+                other => panic!("expected a snapshot, got {other:?}"),
+            }
+        }
+    }
+
+    impl Drop for SnapshotRepo {
+        fn drop(&mut self) {
+            match self.previous_home.take() {
+                Some(value) => std::env::set_var("WARDIAN_HOME", value),
+                None => std::env::remove_var("WARDIAN_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_turn_scoped_baseline_resolves_to_a_snapshot_commit() {
+        let repo = SnapshotRepo::new();
+        repo.write("tracked.txt", "turn one\n");
+        let first = repo.snapshot(1);
+        repo.write("tracked.txt", "turn two\n");
+        let latest = repo.snapshot(2);
+
+        assert_eq!(
+            snapshot_revision_for_baseline(
+                repo.cwd(),
+                ChangeReviewBaseline::ConversationStart,
+                Some("agent-1"),
+                Some("conv-1"),
+            ),
+            Some(first),
+        );
+        assert_eq!(
+            snapshot_revision_for_baseline(
+                repo.cwd(),
+                ChangeReviewBaseline::LastEffectiveTurn,
+                Some("agent-1"),
+                Some("conv-1"),
+            ),
+            Some(latest),
+        );
+    }
+
+    #[test]
+    fn a_baseline_without_an_agent_falls_back_to_head() {
+        let repo = SnapshotRepo::new();
+        repo.write("tracked.txt", "turn one\n");
+        repo.snapshot(1);
+        let head = current_head(repo.cwd());
+
+        // Without an agent there is nothing to attribute a snapshot to, so the
+        // Phase 1 behaviour has to survive intact.
+        assert_eq!(
+            snapshot_revision_for_baseline(
+                repo.cwd(),
+                ChangeReviewBaseline::LastEffectiveTurn,
+                None,
+                None,
+            ),
+            None,
+        );
+        assert_eq!(
+            revision_for_baseline(
+                repo.cwd(),
+                ChangeReviewBaseline::LastEffectiveTurn,
+                head.as_deref(),
+                None,
+                None,
+                None,
+            ),
+            head,
+        );
+    }
+
+    #[test]
+    fn a_file_reverted_to_its_reviewed_content_reads_as_reviewed() {
+        // This is the Phase 1 limitation the content anchor removes. Phase 1
+        // compared a numstat signature and could not tell a revert from a fresh
+        // edit; the snapshot compares bytes.
+        let repo = SnapshotRepo::new();
+        repo.write("tracked.txt", "reviewed state\n");
+        let reviewed = repo.snapshot(1);
+
+        let watermark = ChangeReviewWatermark {
+            schema: CHANGE_REVIEW_SCHEMA,
+            agent_id: "agent-1".to_string(),
+            workspace: repo.cwd().to_string(),
+            reviewed_turn_index: 1,
+            reviewed_at: "2026-08-02T00:00:00Z".to_string(),
+            reviewed_head: None,
+            reviewed_snapshot: Some(reviewed),
+            reviewed_paths: Vec::new(),
+        };
+
+        let mut files = vec![ChangeReviewFileEntry {
+            path: "tracked.txt".to_string(),
+            change_kind: ChangeReviewChangeKind::Modified,
+            old_path: None,
+            insertions: Some(1),
+            deletions: Some(1),
+            evidence: ChangeReviewEvidence::Inferred,
+            agent_ids: Vec::new(),
+            turn_indices: Vec::new(),
+            binary: false,
+            truncated: false,
+            reviewed: false,
+        }];
+
+        // The working tree still matches what was reviewed.
+        annotate_reviewed_files(
+            ChangeReviewBaseline::Unreviewed,
+            repo.cwd(),
+            &mut files,
+            Some(&watermark),
+        );
+        assert!(files[0].reviewed, "content identical to the snapshot is reviewed");
+
+        // Edit it, and it stops being reviewed.
+        repo.write("tracked.txt", "edited after review\n");
+        annotate_reviewed_files(
+            ChangeReviewBaseline::Unreviewed,
+            repo.cwd(),
+            &mut files,
+            Some(&watermark),
+        );
+        assert!(!files[0].reviewed, "content differing from the snapshot is not reviewed");
+
+        // Revert it, and it is reviewed again. Phase 1 could not reach this.
+        repo.write("tracked.txt", "reviewed state\n");
+        annotate_reviewed_files(
+            ChangeReviewBaseline::Unreviewed,
+            repo.cwd(),
+            &mut files,
+            Some(&watermark),
+        );
+        assert!(files[0].reviewed, "a revert to the reviewed bytes reads as reviewed");
+    }
+
+    #[test]
+    fn the_content_anchor_never_removes_a_path_from_the_change_set() {
+        // The annotate-never-filter rule, restated against the new mechanism:
+        // a snapshot is a better baseline, never a filter.
+        let repo = SnapshotRepo::new();
+        repo.write("tracked.txt", "reviewed state\n");
+        let reviewed = repo.snapshot(1);
+        repo.write("shell-written.txt", "written through a shell\n");
+
+        let watermark = ChangeReviewWatermark {
+            schema: CHANGE_REVIEW_SCHEMA,
+            agent_id: "agent-1".to_string(),
+            workspace: repo.cwd().to_string(),
+            reviewed_turn_index: 1,
+            reviewed_at: "2026-08-02T00:00:00Z".to_string(),
+            reviewed_head: None,
+            reviewed_snapshot: Some(reviewed),
+            reviewed_paths: Vec::new(),
+        };
+
+        let mut files = vec![
+            ChangeReviewFileEntry {
+                path: "tracked.txt".to_string(),
+                change_kind: ChangeReviewChangeKind::Modified,
+                old_path: None,
+                insertions: Some(1),
+                deletions: Some(1),
+                evidence: ChangeReviewEvidence::Inferred,
+                agent_ids: Vec::new(),
+                turn_indices: Vec::new(),
+                binary: false,
+                truncated: false,
+                reviewed: false,
+            },
+            ChangeReviewFileEntry {
+                path: "shell-written.txt".to_string(),
+                change_kind: ChangeReviewChangeKind::Untracked,
+                old_path: None,
+                insertions: None,
+                deletions: None,
+                evidence: ChangeReviewEvidence::Inferred,
+                agent_ids: Vec::new(),
+                turn_indices: Vec::new(),
+                binary: false,
+                truncated: false,
+                reviewed: false,
+            },
+        ];
+
+        annotate_reviewed_files(
+            ChangeReviewBaseline::Unreviewed,
+            repo.cwd(),
+            &mut files,
+            Some(&watermark),
+        );
+
+        assert_eq!(files.len(), 2, "annotation must never drop an entry");
+        assert!(files.iter().any(|file| file.path == "shell-written.txt"));
     }
 }
