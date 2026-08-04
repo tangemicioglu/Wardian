@@ -20,6 +20,7 @@ interface MockAgent {
   folder: string;
   provider: string;
   is_off: boolean;
+  description?: string;
 }
 
 async function installGraphTopologyIpcMock(
@@ -139,6 +140,7 @@ test.describe("Graph Topology", () => {
       folder: "/test/alpha",
       provider: "claude",
       is_off: false,
+      description: "Coordinates the alpha workstream",
     };
 
     const agent2: MockAgent = {
@@ -173,6 +175,7 @@ test.describe("Graph Topology", () => {
     // Verify the inspector header shows Alpha's info
     const inspectorHeader = page.locator(".graph-inspector h2");
     await expect(inspectorHeader).toContainText("Alpha");
+    await expect(page.locator(".graph-inspector")).toContainText("Coordinates the alpha workstream");
 
     // Wait for and verify the neighbors panel is visible
     await expect(page.locator(".graph-neighbors-list")).toBeVisible();
@@ -182,6 +185,10 @@ test.describe("Graph Topology", () => {
     const neighborsRow = page.locator(".graph-neighbors-row").first();
     await expect(neighborsRow).toContainText("Beta");
     await expect(neighborsRow.locator(".graph-inspector-unmapped")).toHaveCount(0);
+    await page.locator(".graph-inspector").screenshot({
+      path: path.join("e2e", "screenshots", "graph", "2026-08-04", "agent-description-inspector.png"),
+      animations: "disabled",
+    });
   });
 
   test("add-connection picker opens and filters agents", async () => {
