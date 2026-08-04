@@ -770,6 +770,7 @@ pub fn run() {
             commands::remote::debug_create_remote_session,
             commands::settings::load_shell_settings,
             commands::settings::get_settings_folder_path,
+            commands::settings::get_wardian_home_path,
             commands::settings::get_update_eligibility,
             commands::settings::restart_app,
             commands::settings::install_update_with_windows_handoff,
@@ -782,6 +783,7 @@ pub fn run() {
             commands::settings::load_onboarding_hints,
             commands::settings::dismiss_onboarding_hint,
             commands::settings::set_contextual_tips_enabled,
+            commands::settings::set_guided_tour_state,
             commands::settings::reset_onboarding_hints,
         ])
         .build(tauri::generate_context!())

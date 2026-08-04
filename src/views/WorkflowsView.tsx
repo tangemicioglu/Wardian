@@ -234,7 +234,7 @@ export function WorkflowsView({ theme }: WorkflowsViewProps) {
   };
 
   return (
-    <div data-testid="workflows-view" className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-wardian-border bg-[var(--color-wardian-bg)] text-primary">
+    <div data-testid="workflows-view" data-tour-target="workflow-view" className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-wardian-border bg-[var(--color-wardian-bg)] text-primary">
       <div className={`workflows-toolbar ${mode === 'monitor' ? 'workflows-toolbar--monitor' : ''} flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-wardian-border bg-[var(--color-wardian-card)] px-3`}>
         <div className={`workflows-toolbar__primary flex min-w-0 flex-1 items-center gap-2 ${mode === 'monitor' ? 'flex-nowrap' : ''}`}>
           <BlueprintSelector selectedPath={blueprintPath} onOpen={(path) => void openBlueprint(path)} onNew={newBlueprint} />
@@ -300,6 +300,7 @@ export function WorkflowsView({ theme }: WorkflowsViewProps) {
           ) : null}
           <button
             type="button"
+            data-tour-target="workflow-run-button"
             className="cursor-pointer select-none rounded bg-[var(--color-wardian-accent)] px-4 py-1.5 text-xs font-bold text-[var(--color-wardian-bg)] transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
             disabled={runDisabled}
             onClick={() => setLaunchOpen(true)}

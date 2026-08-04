@@ -520,7 +520,7 @@ describe("SettingsModal", () => {
     expect(checkNow).toHaveBeenCalledTimes(1);
   });
 
-  it("controls contextual tips and opens the optional guided tour", async () => {
+  it("controls contextual tips and can request the app-level guided tour", async () => {
     render(<SettingsModal isOpen onClose={vi.fn()} />);
 
     const tips = screen.getByLabelText("Contextual tips");
@@ -537,10 +537,13 @@ describe("SettingsModal", () => {
       expect(mockInvoke).toHaveBeenCalledWith("reset_onboarding_hints");
     });
     expect(useOnboardingStore.getState().dismissedHintIds).toEqual([]);
+    expect(screen.getByText("Create an Evolver, let it spawn its partner, then schedule a review.")).toBeInTheDocument();
 
+    const startTour = vi.fn();
+    window.addEventListener("wardian:start-guided-tour", startTour);
     fireEvent.click(screen.getByRole("button", { name: "Open guided tour" }));
-    expect(screen.getByTestId("onboarding-tour")).toBeInTheDocument();
-    expect(screen.getByText("Start with a reliable agent")).toBeInTheDocument();
+    expect(startTour).toHaveBeenCalledTimes(1);
+    window.removeEventListener("wardian:start-guided-tour", startTour);
   });
 
   it("shows restarting state after update installation", () => {
