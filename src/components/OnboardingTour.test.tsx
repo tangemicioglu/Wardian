@@ -13,6 +13,7 @@ const evolver = {
 function tourProps(agents: AgentConfig[] = []) {
   return {
     agents,
+    reviewMode: false,
     onClose: vi.fn(),
     onComplete: vi.fn(),
     onPrepareAgentCreation: vi.fn(),
@@ -46,6 +47,31 @@ describe("OnboardingTour", () => {
     await user.click(screen.getByRole("button", { name: "Exit guided tour" }));
 
     expect(props.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays every area from Settings instead of skipping to incomplete setup", async () => {
+    const user = userEvent.setup();
+    const props = tourProps([
+      evolver,
+      { ...evolver, session_id: "orchestrator-id", session_name: "orchestrator", agent_class: "Orchestrator" },
+    ]);
+    render(<OnboardingTour {...props} reviewMode />);
+
+    expect(screen.getByText("Create an Evolver")).toBeInTheDocument();
+    expect(screen.getByText("Tour review · 1 of 4")).toBeInTheDocument();
+    expect(props.onPrepareAgentCreation).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Next area" }));
+
+    expect(screen.getByText("Let the Evolver create its partner")).toBeInTheDocument();
+    expect(props.onPrepareEvolver).toHaveBeenCalledWith(evolver);
+  });
+
+  it("does not intercept the focused target while it is being located", () => {
+    const props = tourProps();
+    render(<OnboardingTour {...props} />);
+
+    expect(screen.getByTestId("onboarding-tour")).toHaveClass("pointer-events-none");
   });
 
   it("offers first-launch users an explicit choice", async () => {

@@ -43,9 +43,11 @@ creation.
 
 The tour uses sentence case for its progress label and step titles. A spotlight
 leaves the relevant control interactive while dimming the rest of the
-workbench. There is no Next button: the Evolver, Orchestrator, graph edge, and
-schedule are the observable completion signals. The peer-creation step also
-includes a bounded prompt that visibly names the Wardian CLI actions the
+workbench. The first-run setup has no Next button: the Evolver, Orchestrator,
+graph edge, and schedule are the observable completion signals. The Settings
+entry is a review mode that starts at the first area and provides Next area
+navigation, so an existing habitat can revisit every surface. The
+peer-creation step also includes a bounded prompt that visibly names the Wardian CLI actions the
 Evolver will use.
 
 ## Verification

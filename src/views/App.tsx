@@ -462,6 +462,7 @@ function AppBody() {
   const guidedTourState = useOnboardingStore((state) => state.guidedTourState);
   const loadOnboardingHints = useOnboardingStore((state) => state.loadOnboardingHints);
   const setGuidedTourState = useOnboardingStore((state) => state.setGuidedTourState);
+  const [guidedTourMode, setGuidedTourMode] = useState<"setup" | "review">("setup");
   const appUpdate = useAppUpdate();
   const [updateNoticeDismissed, setUpdateNoticeDismissed] = useState(false);
   const resolvedTitlebarTelemetryVisible = app_settings_loaded && titlebarTelemetryVisible;
@@ -1070,7 +1071,8 @@ function AppBody() {
     });
   }, [workbenchNavigation]);
 
-  const beginGuidedTour = useCallback(() => {
+  const beginGuidedTour = useCallback((mode: "setup" | "review") => {
+    setGuidedTourMode(mode);
     setSettingsOpen(false);
     void setGuidedTourState("in_progress");
   }, [setGuidedTourState, setSettingsOpen]);
@@ -1101,7 +1103,7 @@ function AppBody() {
   }, [openWorkflowsView]);
 
   useEffect(() => {
-    const startTour = () => beginGuidedTour();
+    const startTour = () => beginGuidedTour("review");
     window.addEventListener("wardian:start-guided-tour", startTour);
     return () => window.removeEventListener("wardian:start-guided-tour", startTour);
   }, [beginGuidedTour]);
@@ -1700,11 +1702,12 @@ function AppBody() {
             <SettingsModal appUpdate={appUpdate} isOpen={true} onClose={() => setSettingsOpen(false)} />
             )}
             {onboardingHintsLoaded && guidedTourState === "unseen" ? (
-              <OnboardingWelcome onStart={beginGuidedTour} onSkip={leaveGuidedTour} />
+              <OnboardingWelcome onStart={() => beginGuidedTour("setup")} onSkip={leaveGuidedTour} />
             ) : null}
             {onboardingHintsLoaded && guidedTourState === "in_progress" ? (
               <OnboardingTour
                 agents={agents}
+                reviewMode={guidedTourMode === "review"}
                 onClose={leaveGuidedTour}
                 onComplete={completeGuidedTour}
                 onPrepareAgentCreation={prepareTourAgentCreation}

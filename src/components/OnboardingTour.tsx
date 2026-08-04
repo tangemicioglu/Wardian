@@ -6,6 +6,7 @@ import type { WorkflowSchedule } from "../types/workflow";
 
 interface OnboardingTourProps {
   agents: AgentConfig[];
+  reviewMode: boolean;
   onClose: () => void;
   onComplete: () => void;
   onPrepareAgentCreation: () => void;
@@ -53,7 +54,7 @@ const STEPS: readonly TourStep[] = [
     id: "schedule-review",
     title: "Schedule a conversation review",
     detail: "Open Conversation Pattern Review, choose Run, switch to Schedule, bind the evolver role, and choose a weekly cadence. The workflow only reports recommendations.",
-    target: '[data-tour-target="workflow-blueprint-selector"]',
+    target: '[data-tour-target="workflow-view"]',
   },
 ] as const;
 
@@ -105,6 +106,7 @@ export function OnboardingWelcome({ onStart, onSkip }: OnboardingWelcomeProps) {
 
 export function OnboardingTour({
   agents,
+  reviewMode,
   onClose,
   onComplete,
   onPrepareAgentCreation,
@@ -116,11 +118,14 @@ export function OnboardingTour({
   const orchestrator = useMemo(() => agentWithClass(agents, "orchestrator"), [agents]);
   const [linked, setLinked] = useState(false);
   const [reviewScheduled, setReviewScheduled] = useState(false);
-  const activeStepId = nextStep(agents, linked, reviewScheduled);
+  const [reviewStepIndex, setReviewStepIndex] = useState(0);
+  const activeStepId = reviewMode
+    ? STEPS[reviewStepIndex]?.id ?? null
+    : nextStep(agents, linked, reviewScheduled);
   const step = STEPS.find((candidate) => candidate.id === activeStepId) ?? null;
 
   useEffect(() => {
-    if (!evolver || !orchestrator || activeStepId !== "connect-graph") return;
+    if (reviewMode || !evolver || !orchestrator || activeStepId !== "connect-graph") return;
     let cancelled = false;
     const refresh = async () => {
       try {
@@ -140,10 +145,10 @@ export function OnboardingTour({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeStepId, evolver, orchestrator]);
+  }, [activeStepId, evolver, orchestrator, reviewMode]);
 
   useEffect(() => {
-    if (activeStepId !== "schedule-review") return;
+    if (reviewMode || activeStepId !== "schedule-review") return;
     let cancelled = false;
     const refresh = async () => {
       try {
@@ -159,7 +164,7 @@ export function OnboardingTour({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeStepId]);
+  }, [activeStepId, reviewMode]);
 
   useEffect(() => {
     if (activeStepId === "create-evolver") onPrepareAgentCreation();
@@ -191,10 +196,33 @@ export function OnboardingTour({
     );
   }
 
-  return <Spotlight step={step} onClose={onClose} />;
+  return (
+    <Spotlight
+      step={step}
+      reviewMode={reviewMode}
+      onClose={onClose}
+      onNext={() => {
+        if (reviewStepIndex === STEPS.length - 1) {
+          onClose();
+          return;
+        }
+        setReviewStepIndex((index) => index + 1);
+      }}
+    />
+  );
 }
 
-function Spotlight({ step, onClose }: { step: TourStep; onClose: () => void }) {
+function Spotlight({
+  step,
+  reviewMode,
+  onClose,
+  onNext,
+}: {
+  step: TourStep;
+  reviewMode: boolean;
+  onClose: () => void;
+  onNext: () => void;
+}) {
   const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
 
   useLayoutEffect(() => {
@@ -236,26 +264,24 @@ function Spotlight({ step, onClose }: { step: TourStep; onClose: () => void }) {
   const tooltipLeft = Math.min(Math.max(16, left), Math.max(16, viewportWidth - 380));
 
   return (
-    <div className="fixed inset-0 z-[100]" data-testid="onboarding-tour" role="presentation">
+    <div className="pointer-events-none fixed inset-0 z-[100]" data-testid="onboarding-tour" role="presentation">
       {targetRect ? (
         <>
-          <div className="fixed left-0 right-0 top-0 bg-black/65" style={{ height: top }} />
-          <div className="fixed bottom-0 left-0 right-0 bg-black/65" style={{ top: bottom }} />
-          <div className="fixed left-0 bg-black/65" style={{ top, height: bottom - top, width: left }} />
-          <div className="fixed right-0 bg-black/65" style={{ top, height: bottom - top, left: right }} />
+          <div className="pointer-events-auto fixed left-0 right-0 top-0 bg-black/65" style={{ height: top }} />
+          <div className="pointer-events-auto fixed bottom-0 left-0 right-0 bg-black/65" style={{ top: bottom }} />
+          <div className="pointer-events-auto fixed left-0 bg-black/65" style={{ top, height: bottom - top, width: left }} />
+          <div className="pointer-events-auto fixed right-0 bg-black/65" style={{ top, height: bottom - top, left: right }} />
           <div className="pointer-events-none fixed rounded-lg border-2 border-[var(--color-wardian-accent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-wardian-bg),transparent_25%)]" style={{ top, left, width: right - left, height: bottom - top }} />
         </>
-      ) : (
-        <div className="fixed inset-0 bg-black/65" />
-      )}
+      ) : null}
       <section
         aria-live="polite"
-        className="fixed z-[101] w-[min(360px,calc(100vw-2rem))] rounded-xl border border-wardian-border bg-[var(--color-wardian-card)] p-4 shadow-2xl"
+        className="pointer-events-auto fixed z-[101] w-[min(360px,calc(100vw-2rem))] rounded-xl border border-wardian-border bg-[var(--color-wardian-card)] p-4 shadow-2xl"
         style={{ top: tooltipTop, left: tooltipLeft }}
       >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] font-semibold text-[var(--color-wardian-accent)]">Guided setup · {STEPS.findIndex((candidate) => candidate.id === step.id) + 1} of {STEPS.length}</p>
+            <p className="text-[11px] font-semibold text-[var(--color-wardian-accent)]">{reviewMode ? "Tour review" : "Guided setup"} · {STEPS.findIndex((candidate) => candidate.id === step.id) + 1} of {STEPS.length}</p>
             <h2 className="mt-1 text-sm font-semibold text-primary">{step.title}</h2>
           </div>
           <button aria-label="Exit guided tour" className="rounded p-1 text-muted-neutral transition-colors hover:bg-wardian-card-bg hover:text-primary" onClick={onClose} type="button">
@@ -266,9 +292,16 @@ function Spotlight({ step, onClose }: { step: TourStep; onClose: () => void }) {
         {step.id === "create-orchestrator" ? (
           <code className="mt-3 block max-h-32 overflow-y-auto rounded border border-wardian-border bg-[var(--color-wardian-bg)] p-2 text-[10px] leading-4 text-primary">{EVOLVER_PROMPT}</code>
         ) : null}
-        <button className="mt-3 text-xs font-medium text-muted underline-offset-2 hover:text-primary hover:underline" onClick={onClose} type="button">
-          Exit tour
-        </button>
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <button className="text-xs font-medium text-muted underline-offset-2 hover:text-primary hover:underline" onClick={onClose} type="button">
+            Exit tour
+          </button>
+          {reviewMode ? (
+            <button className="rounded-md bg-[var(--color-wardian-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-wardian-bg)] transition-opacity hover:opacity-90" onClick={onNext} type="button">
+              {step.id === STEPS[STEPS.length - 1].id ? "Finish review" : "Next area"}
+            </button>
+          ) : null}
+        </div>
       </section>
     </div>
   );
