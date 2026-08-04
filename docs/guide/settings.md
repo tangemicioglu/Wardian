@@ -66,8 +66,14 @@ The **General** category controls optional in-app guidance:
   every tip without deleting its dismissal history.
 - **Reset dismissed tips** makes individually dismissed tips eligible to appear
   again. It does not change the contextual-tips setting.
-- **Guided tour** opens a short, non-blocking overview of core Wardian work
-  loops. It remains available even when contextual tips are hidden.
+- **Guided tour** is offered once to a new habitat. Choose **Take the tour** to
+  open the relevant surface for each action with the rest of the workbench
+  dimmed, or choose **Not now**. It remains available here later, even when
+  contextual tips are hidden. The tour waits for the Evolver, Orchestrator,
+  graph edge, and conversation-review schedule to exist before it advances; it
+  does not create them automatically. You choose the provider, workspace,
+  conversation scope, and cadence in the relevant surfaces. The Wardian home
+  stores habitat state; it is not the peer agent's default workspace.
 
 Wardian checks for updates silently when the desktop app starts. If a newer
 stable release is available, Wardian shows one in-app **Review update** notice

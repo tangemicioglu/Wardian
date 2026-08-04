@@ -782,6 +782,7 @@ pub fn run() {
             commands::settings::load_onboarding_hints,
             commands::settings::dismiss_onboarding_hint,
             commands::settings::set_contextual_tips_enabled,
+            commands::settings::set_guided_tour_state,
             commands::settings::reset_onboarding_hints,
         ])
         .build(tauri::generate_context!())

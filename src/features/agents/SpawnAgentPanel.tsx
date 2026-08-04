@@ -191,7 +191,7 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
           Verify one provider CLI, authenticate it in a normal terminal, then choose the workspace this agent should use.
         </OnboardingHint>
       </div>
-      <form className="flex flex-col gap-4" onSubmit={spawnAgent}>
+      <form className="flex flex-col gap-4" data-tour-target="spawn-agent-form" onSubmit={spawnAgent}>
         <div>
           <label className="block text-[10px] font-bold text-muted-neutral mb-1">
             Agent Name

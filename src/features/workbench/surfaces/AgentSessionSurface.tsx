@@ -188,6 +188,7 @@ export function AgentSessionSurface({
       data-presentation-mode={mode}
       data-resource-key={resource_key}
       data-surface-id={surface_id}
+      data-tour-target={resolvedAgent.agent_class.trim().toLocaleLowerCase() === "evolver" ? "evolver-terminal" : undefined}
       data-testid="agent-session-surface"
     >
       <header className="flex min-h-9 shrink-0 items-center gap-2 border-b border-wardian-border bg-[var(--color-wardian-sidebar-secondary)] px-3 py-1.5">

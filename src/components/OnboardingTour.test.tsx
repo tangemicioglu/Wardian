@@ -1,40 +1,63 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { OnboardingTour } from "./OnboardingTour";
+import type { AgentConfig } from "../types";
+import { OnboardingTour, OnboardingWelcome } from "./OnboardingTour";
+
+const evolver = {
+  session_id: "evolver-id",
+  session_name: "evolver",
+  agent_class: "Evolver",
+} as AgentConfig;
+
+function tourProps(agents: AgentConfig[] = []) {
+  return {
+    agents,
+    onClose: vi.fn(),
+    onComplete: vi.fn(),
+    onPrepareAgentCreation: vi.fn(),
+    onPrepareEvolver: vi.fn(),
+    onPrepareGraph: vi.fn(),
+    onPrepareWorkflow: vi.fn(),
+  };
+}
 
 describe("OnboardingTour", () => {
-  it("moves through the core work loops and closes when complete", async () => {
-    const user = userEvent.setup();
-    const onClose = vi.fn();
+  it("opens the real creation surface and waits for an Evolver before advancing", () => {
+    const props = tourProps();
+    const { rerender } = render(<OnboardingTour {...props} />);
 
-    render(<OnboardingTour onClose={onClose} />);
+    expect(screen.getByText("Create an Evolver")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next" })).not.toBeInTheDocument();
+    expect(props.onPrepareAgentCreation).toHaveBeenCalledTimes(1);
 
-    expect(screen.getByText("Start with a reliable agent")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Back" })).toBeDisabled();
-    expect(screen.getByRole("link", { name: "First-run guide" })).toHaveAttribute(
-      "href",
-      "https://docs.wardian.org/guide/getting-started",
-    );
+    rerender(<OnboardingTour {...props} agents={[evolver]} />);
 
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    expect(screen.getByText("Keep the agent list readable")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    expect(screen.getByText("Turn repeatable work into workflows")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Done" }));
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Let the Evolver create its partner")).toBeInTheDocument();
+    expect(screen.getByText(/Do not create a graph connection/)).toBeInTheDocument();
+    expect(props.onPrepareEvolver).toHaveBeenCalledWith(evolver);
   });
 
-  it("can close without completing the tour", async () => {
+  it("lets a user leave the action-gated tour", async () => {
     const user = userEvent.setup();
-    const onClose = vi.fn();
+    const props = tourProps();
+    render(<OnboardingTour {...props} />);
 
-    render(<OnboardingTour onClose={onClose} />);
-    await user.click(screen.getByRole("button", { name: "Close guided tour" }));
+    await user.click(screen.getByRole("button", { name: "Exit guided tour" }));
 
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers first-launch users an explicit choice", async () => {
+    const user = userEvent.setup();
+    const onStart = vi.fn();
+    const onSkip = vi.fn();
+    render(<OnboardingWelcome onStart={onStart} onSkip={onSkip} />);
+
+    expect(screen.getByRole("dialog", { name: "Build your first habitat" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Take the tour" }));
+    expect(onStart).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+    expect(onSkip).toHaveBeenCalledTimes(1);
   });
 });

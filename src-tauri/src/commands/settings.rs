@@ -801,6 +801,13 @@ pub fn set_contextual_tips_enabled(enabled: bool) -> Result<OnboardingHintsState
 }
 
 #[tauri::command]
+pub fn set_guided_tour_state(
+    state: crate::utils::GuidedTourState,
+) -> Result<OnboardingHintsState, String> {
+    crate::utils::set_guided_tour_state(state)
+}
+
+#[tauri::command]
 pub fn reset_onboarding_hints() -> Result<OnboardingHintsState, String> {
     crate::utils::reset_onboarding_hints()
 }

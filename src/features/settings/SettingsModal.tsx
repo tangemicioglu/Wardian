@@ -12,7 +12,6 @@ import {
 } from "../../store/useSettingsStore";
 import { useAppUpdate, type AppUpdateState } from "./useAppUpdate";
 import { RemoteAccessSettings } from "./RemoteAccessSettings";
-import { OnboardingTour } from "../../components/OnboardingTour";
 import { useOnboardingStore } from "../../store/useOnboardingStore";
 import { QUEUE_EVENT_LABELS, QUEUE_EVENT_TYPES } from "../queue/queueFilters";
 import { useQueueStore } from "../../store/useQueueStore";
@@ -86,7 +85,7 @@ const rowDefinitions: SettingsRowDefinition[] = [
     id: "guided-tour",
     category: "General",
     label: "Guided tour",
-    detail: "Review Wardian's core work loops without leaving your current work.",
+    detail: "Create an Evolver, let it spawn its partner, then schedule a review.",
     keywords: ["onboarding", "help", "tour", "learn", "tutorial"],
   },
   {
@@ -396,7 +395,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
   const [patchStatus, setPatchStatus] = useState<"idle" | "running" | "saved" | "error">("idle");
   const [advancedStatus, setAdvancedStatus] = useState<"idle" | "copied" | "error">("idle");
   const [terminalFontSizeDraft, setTerminalFontSizeDraft] = useState("14");
-  const [onboardingTourOpen, setOnboardingTourOpen] = useState(false);
   const localAppUpdate = useAppUpdate({ autoCheck: sharedAppUpdate === undefined });
   const appUpdate = sharedAppUpdate ?? localAppUpdate;
 
@@ -755,7 +753,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
       case "guided-tour":
         return (
           <SettingRow key={row.id} label={row.label} detail={row.detail}>
-            <button type="button" onClick={() => setOnboardingTourOpen(true)} className={buttonClass}>
+            <button type="button" onClick={() => window.dispatchEvent(new Event("wardian:start-guided-tour"))} className={buttonClass}>
               Open guided tour
             </button>
           </SettingRow>
@@ -1252,9 +1250,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
                     <div className="overflow-hidden rounded-lg border border-wardian-border bg-wardian-card-bg-muted/45">
                       {renderRowsWithSubgroups(group.rows, renderRow)}
                     </div>
-                    {group.category === "General" && onboardingTourOpen && (
-                      <OnboardingTour onClose={() => setOnboardingTourOpen(false)} />
-                    )}
                     {group.category === "Terminal" && (
                       <div className="mt-4 flex items-center justify-end gap-3">
                         {terminalMessage && (

@@ -1,14 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import type { OnboardingHintsState } from "../types/onboarding";
+import type { GuidedTourState, OnboardingHintsState } from "../types/onboarding";
 
 interface OnboardingState {
   dismissedHintIds: string[];
   contextualTipsEnabled: boolean;
+  guidedTourState: GuidedTourState;
   hintsLoaded: boolean;
   loadOnboardingHints: () => Promise<void>;
   dismissOnboardingHint: (hintId: string) => Promise<void>;
   setContextualTipsEnabled: (enabled: boolean) => Promise<void>;
+  setGuidedTourState: (state: GuidedTourState) => Promise<void>;
   resetOnboardingHints: () => Promise<void>;
 }
 
@@ -30,9 +32,16 @@ function normalizeContextualTipsEnabled(value: unknown): boolean {
   return value !== false;
 }
 
+function normalizeGuidedTourState(value: unknown): GuidedTourState {
+  return value === "unseen" || value === "in_progress" || value === "skipped" || value === "completed"
+    ? value
+    : "skipped";
+}
+
 export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   dismissedHintIds: [],
   contextualTipsEnabled: true,
+  guidedTourState: "skipped",
   hintsLoaded: false,
   loadOnboardingHints: async () => {
     try {
@@ -40,11 +49,12 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
       set({
         dismissedHintIds: normalizeDismissedHintIds(state?.dismissed_hint_ids),
         contextualTipsEnabled: normalizeContextualTipsEnabled(state?.contextual_tips_enabled),
+        guidedTourState: normalizeGuidedTourState(state?.guided_tour_state),
         hintsLoaded: true,
       });
     } catch (error) {
       console.error("Failed to load onboarding hints:", error);
-      set({ dismissedHintIds: [], contextualTipsEnabled: true, hintsLoaded: true });
+      set({ dismissedHintIds: [], contextualTipsEnabled: true, guidedTourState: "skipped", hintsLoaded: true });
     }
   },
   dismissOnboardingHint: async (hintId) => {
@@ -57,6 +67,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
       set({
         dismissedHintIds: normalizeDismissedHintIds(state?.dismissed_hint_ids),
         contextualTipsEnabled: normalizeContextualTipsEnabled(state?.contextual_tips_enabled),
+        guidedTourState: normalizeGuidedTourState(state?.guided_tour_state),
         hintsLoaded: true,
       });
     } catch (error) {
@@ -73,11 +84,29 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
       set({
         dismissedHintIds: normalizeDismissedHintIds(state?.dismissed_hint_ids),
         contextualTipsEnabled: normalizeContextualTipsEnabled(state?.contextual_tips_enabled),
+        guidedTourState: normalizeGuidedTourState(state?.guided_tour_state),
         hintsLoaded: true,
       });
     } catch (error) {
       console.error("Failed to update contextual tips preference:", error);
       set({ contextualTipsEnabled: previousEnabled, hintsLoaded: true });
+    }
+  },
+  setGuidedTourState: async (guidedTourState) => {
+    const previousState = get().guidedTourState;
+    set({ guidedTourState, hintsLoaded: true });
+
+    try {
+      const state = await invoke<OnboardingHintsState>("set_guided_tour_state", { state: guidedTourState });
+      set({
+        dismissedHintIds: normalizeDismissedHintIds(state?.dismissed_hint_ids),
+        contextualTipsEnabled: normalizeContextualTipsEnabled(state?.contextual_tips_enabled),
+        guidedTourState: normalizeGuidedTourState(state?.guided_tour_state),
+        hintsLoaded: true,
+      });
+    } catch (error) {
+      console.error("Failed to update guided tour state:", error);
+      set({ guidedTourState: previousState, hintsLoaded: true });
     }
   },
   resetOnboardingHints: async () => {
@@ -89,6 +118,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
       set({
         dismissedHintIds: normalizeDismissedHintIds(state?.dismissed_hint_ids),
         contextualTipsEnabled: normalizeContextualTipsEnabled(state?.contextual_tips_enabled),
+        guidedTourState: normalizeGuidedTourState(state?.guided_tour_state),
         hintsLoaded: true,
       });
     } catch (error) {

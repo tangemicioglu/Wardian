@@ -1,91 +1,275 @@
-import { useState } from "react";
-import { ArrowLeft, ArrowRight, X } from "lucide-react";
-import { DocsLink } from "./DocsLink";
+import { invoke } from "@tauri-apps/api/core";
+import { Check, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import type { AgentConfig, TopologySnapshot } from "../types";
+import type { WorkflowSchedule } from "../types/workflow";
 
 interface OnboardingTourProps {
+  agents: AgentConfig[];
   onClose: () => void;
+  onComplete: () => void;
+  onPrepareAgentCreation: () => void;
+  onPrepareEvolver: (agent: AgentConfig) => void;
+  onPrepareGraph: () => void;
+  onPrepareWorkflow: () => void;
 }
 
-const STEPS = [
+interface OnboardingWelcomeProps {
+  onStart: () => void;
+  onSkip: () => void;
+}
+
+type TourStepId = "create-evolver" | "create-orchestrator" | "connect-graph" | "schedule-review";
+
+type TourStep = {
+  id: TourStepId;
+  title: string;
+  detail: string;
+  target: string;
+};
+
+const EVOLVER_PROMPT = "Use the Wardian CLI to inspect your own provider and workspace. Spawn an Orchestrator peer named orchestrator with the same provider and an explicit workspace. Do not use the Wardian home as its workspace and do not choose a model or effort unless I ask. Do not create a graph connection; I will connect the pair in Graph. Report the name and workspace you used.";
+
+const STEPS: readonly TourStep[] = [
   {
-    title: "Start with a reliable agent",
-    detail: "Verify a provider, choose a workspace, and spawn one agent before scaling out.",
-    docsPath: "/guide/getting-started",
-    docsLabel: "First-run guide",
+    id: "create-evolver",
+    title: "Create an Evolver",
+    detail: "Give it a provider and a real workspace it can inspect, then spawn it. Wardian will wait here until the Evolver exists.",
+    target: '[data-tour-target="spawn-agent-form"]',
   },
   {
-    title: "Keep the agent list readable",
-    detail: "Use agents, teams, and watchlists to monitor work without opening every terminal.",
-    docsPath: "/guide/watchlists",
-    docsLabel: "Watchlist guide",
+    id: "create-orchestrator",
+    title: "Let the Evolver create its partner",
+    detail: "Paste this into the Evolver's terminal. It uses its Wardian CLI to spawn an Orchestrator with the same workspace. The tour advances when the Orchestrator appears in the roster.",
+    target: '[data-tour-target="evolver-terminal"]',
   },
   {
-    title: "Coordinate deliberately",
-    detail: "Select recipients before sending a command, then use the Graph to inspect and adjust communication boundaries.",
-    docsPath: "/guide/graph",
-    docsLabel: "Graph guide",
+    id: "connect-graph",
+    title: "Connect the pair in Graph",
+    detail: "Shift-drag between the Evolver and Orchestrator. The tour advances only after Wardian records their graph edge.",
+    target: '[data-tour-target="graph-canvas"]',
   },
   {
-    title: "Turn repeatable work into workflows",
-    detail: "Author a blueprint, validate it, then run and observe it from the workflow surface.",
-    docsPath: "/guide/workflows",
-    docsLabel: "Workflow guide",
+    id: "schedule-review",
+    title: "Schedule a conversation review",
+    detail: "Open Conversation Pattern Review, choose Run, switch to Schedule, bind the evolver role, and choose a weekly cadence. The workflow only reports recommendations.",
+    target: '[data-tour-target="workflow-blueprint-selector"]',
   },
 ] as const;
 
-export function OnboardingTour({ onClose }: OnboardingTourProps) {
-  const [stepIndex, setStepIndex] = useState(0);
-  const step = STEPS[stepIndex];
-  const isFirst = stepIndex === 0;
-  const isLast = stepIndex === STEPS.length - 1;
+function agentWithClass(agents: AgentConfig[], agentClass: string): AgentConfig | undefined {
+  return agents.find((agent) => agent.agent_class.trim().toLocaleLowerCase() === agentClass);
+}
+
+function nextStep(agents: AgentConfig[], linked: boolean, reviewScheduled: boolean): TourStepId | null {
+  const evolver = agentWithClass(agents, "evolver");
+  if (!evolver) return "create-evolver";
+  if (!agentWithClass(agents, "orchestrator")) return "create-orchestrator";
+  if (!linked) return "connect-graph";
+  if (!reviewScheduled) return "schedule-review";
+  return null;
+}
+
+/**
+ * The first-launch decision is deliberately separate from the contextual
+ * hints. It is only shown when the persisted onboarding state says that this
+ * is a new habitat, and the choice is durable before a tour surface opens.
+ */
+export function OnboardingWelcome({ onStart, onSkip }: OnboardingWelcomeProps) {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/65 p-5" role="presentation">
+      <section
+        aria-labelledby="onboarding-welcome-title"
+        aria-modal="true"
+        className="w-full max-w-md rounded-xl border border-wardian-border bg-[var(--color-wardian-card)] p-6 shadow-2xl"
+        data-testid="onboarding-welcome"
+        role="dialog"
+      >
+        <p className="text-xs font-semibold text-[var(--color-wardian-accent)]">Welcome to Wardian</p>
+        <h1 id="onboarding-welcome-title" className="mt-2 text-xl font-semibold text-primary">Build your first habitat</h1>
+        <p className="mt-3 text-sm leading-6 text-muted">
+          Take a short, hands-on tour that guides you through creating an Evolver, growing its Orchestrator partner, connecting them, and scheduling a review.
+        </p>
+        <div className="mt-6 flex flex-wrap justify-end gap-3">
+          <button type="button" className="rounded-md px-3 py-2 text-sm font-medium text-muted transition-colors hover:text-primary" onClick={onSkip}>
+            Not now
+          </button>
+          <button type="button" className="rounded-md bg-[var(--color-wardian-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-wardian-bg)] transition-opacity hover:opacity-90" onClick={onStart}>
+            Take the tour
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+export function OnboardingTour({
+  agents,
+  onClose,
+  onComplete,
+  onPrepareAgentCreation,
+  onPrepareEvolver,
+  onPrepareGraph,
+  onPrepareWorkflow,
+}: OnboardingTourProps) {
+  const evolver = useMemo(() => agentWithClass(agents, "evolver"), [agents]);
+  const orchestrator = useMemo(() => agentWithClass(agents, "orchestrator"), [agents]);
+  const [linked, setLinked] = useState(false);
+  const [reviewScheduled, setReviewScheduled] = useState(false);
+  const activeStepId = nextStep(agents, linked, reviewScheduled);
+  const step = STEPS.find((candidate) => candidate.id === activeStepId) ?? null;
+
+  useEffect(() => {
+    if (!evolver || !orchestrator || activeStepId !== "connect-graph") return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const topology = await invoke<TopologySnapshot>("get_topology");
+        const edgeExists = topology.edges.some((edge) => (
+          (edge.a === evolver.session_id && edge.b === orchestrator.session_id)
+          || (edge.a === orchestrator.session_id && edge.b === evolver.session_id)
+        ));
+        if (!cancelled) setLinked(edgeExists);
+      } catch {
+        // The visible graph handles its own error presentation. Keep this guide non-invasive.
+      }
+    };
+    void refresh();
+    const intervalId = window.setInterval(() => { void refresh(); }, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeStepId, evolver, orchestrator]);
+
+  useEffect(() => {
+    if (activeStepId !== "schedule-review") return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const schedules = await invoke<WorkflowSchedule[]>("schedule_list");
+        if (!cancelled) setReviewScheduled(schedules.some((schedule) => schedule.blueprint_id === "conversation-pattern-review"));
+      } catch {
+        // Scheduling remains usable even if the guide cannot observe this optional state.
+      }
+    };
+    void refresh();
+    const intervalId = window.setInterval(() => { void refresh(); }, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeStepId]);
+
+  useEffect(() => {
+    if (activeStepId === "create-evolver") onPrepareAgentCreation();
+    if (activeStepId === "create-orchestrator" && evolver) onPrepareEvolver(evolver);
+    if (activeStepId === "connect-graph") onPrepareGraph();
+    if (activeStepId === "schedule-review") onPrepareWorkflow();
+  }, [activeStepId, evolver, onPrepareAgentCreation, onPrepareEvolver, onPrepareGraph, onPrepareWorkflow]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  if (!step) {
+    return (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/65 p-5" role="presentation">
+        <section className="w-full max-w-sm rounded-xl border border-[var(--color-wardian-success)]/60 bg-[var(--color-wardian-card)] p-6 text-center shadow-2xl" data-testid="onboarding-tour-complete">
+          <Check className="mx-auto h-8 w-8 text-[var(--color-wardian-success)]" aria-hidden="true" />
+          <h2 className="mt-3 text-lg font-semibold text-primary">Habitat underway</h2>
+          <p className="mt-2 text-sm leading-6 text-muted">Your first pair is connected and the conversation review is scheduled.</p>
+          <button type="button" className="mt-5 rounded-md bg-[var(--color-wardian-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-wardian-bg)]" onClick={onComplete}>
+            Finish tour
+          </button>
+        </section>
+      </div>
+    );
+  }
+
+  return <Spotlight step={step} onClose={onClose} />;
+}
+
+function Spotlight({ step, onClose }: { step: TourStep; onClose: () => void }) {
+  const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
+
+  useLayoutEffect(() => {
+    let frameId = 0;
+    let observer: ResizeObserver | null = null;
+    let mutationObserver: MutationObserver | null = null;
+    const update = () => {
+      window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(() => {
+        const target = document.querySelector<HTMLElement>(step.target);
+        setTargetRect(target?.getBoundingClientRect() ?? null);
+        observer?.disconnect();
+        observer = target && typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+        if (observer && target) observer.observe(target);
+      });
+    };
+    update();
+    mutationObserver = new MutationObserver(update);
+    mutationObserver.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      observer?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [step.target]);
+
+  const padding = 10;
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const top = Math.max(0, (targetRect?.top ?? 0) - padding);
+  const left = Math.max(0, (targetRect?.left ?? 0) - padding);
+  const right = Math.min(viewportWidth, (targetRect?.right ?? viewportWidth) + padding);
+  const bottom = Math.min(viewportHeight, (targetRect?.bottom ?? viewportHeight) + padding);
+  const tooltipTop = targetRect && bottom + 14 < viewportHeight - 220 ? bottom + 14 : Math.max(16, top - 190);
+  const tooltipLeft = Math.min(Math.max(16, left), Math.max(16, viewportWidth - 380));
 
   return (
-    <section
-      data-testid="onboarding-tour"
-      aria-labelledby="onboarding-tour-title"
-      className="mt-4 rounded-lg border border-[var(--color-wardian-accent)]/45 bg-[color-mix(in_srgb,var(--color-wardian-accent),transparent_94%)] p-4"
-    >
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-wide text-[var(--color-wardian-accent)]">
-            Guided tour · {stepIndex + 1} of {STEPS.length}
-          </p>
-          <h4 id="onboarding-tour-title" className="mt-1 text-sm font-semibold text-primary">
-            {step.title}
-          </h4>
+    <div className="fixed inset-0 z-[100]" data-testid="onboarding-tour" role="presentation">
+      {targetRect ? (
+        <>
+          <div className="fixed left-0 right-0 top-0 bg-black/65" style={{ height: top }} />
+          <div className="fixed bottom-0 left-0 right-0 bg-black/65" style={{ top: bottom }} />
+          <div className="fixed left-0 bg-black/65" style={{ top, height: bottom - top, width: left }} />
+          <div className="fixed right-0 bg-black/65" style={{ top, height: bottom - top, left: right }} />
+          <div className="pointer-events-none fixed rounded-lg border-2 border-[var(--color-wardian-accent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-wardian-bg),transparent_25%)]" style={{ top, left, width: right - left, height: bottom - top }} />
+        </>
+      ) : (
+        <div className="fixed inset-0 bg-black/65" />
+      )}
+      <section
+        aria-live="polite"
+        className="fixed z-[101] w-[min(360px,calc(100vw-2rem))] rounded-xl border border-wardian-border bg-[var(--color-wardian-card)] p-4 shadow-2xl"
+        style={{ top: tooltipTop, left: tooltipLeft }}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold text-[var(--color-wardian-accent)]">Guided setup · {STEPS.findIndex((candidate) => candidate.id === step.id) + 1} of {STEPS.length}</p>
+            <h2 className="mt-1 text-sm font-semibold text-primary">{step.title}</h2>
+          </div>
+          <button aria-label="Exit guided tour" className="rounded p-1 text-muted-neutral transition-colors hover:bg-wardian-card-bg hover:text-primary" onClick={onClose} type="button">
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
-        <button
-          type="button"
-          aria-label="Close guided tour"
-          onClick={onClose}
-          className="rounded-md p-1 text-muted-neutral transition-colors hover:bg-wardian-card-bg hover:text-primary"
-        >
-          <X className="h-4 w-4" aria-hidden="true" />
+        <p className="mt-2 text-xs leading-5 text-muted">{step.detail}</p>
+        {step.id === "create-orchestrator" ? (
+          <code className="mt-3 block max-h-32 overflow-y-auto rounded border border-wardian-border bg-[var(--color-wardian-bg)] p-2 text-[10px] leading-4 text-primary">{EVOLVER_PROMPT}</code>
+        ) : null}
+        <button className="mt-3 text-xs font-medium text-muted underline-offset-2 hover:text-primary hover:underline" onClick={onClose} type="button">
+          Exit tour
         </button>
-      </div>
-      <p className="mt-2 max-w-2xl text-xs leading-5 text-muted">{step.detail}</p>
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-        <DocsLink path={step.docsPath}>{step.docsLabel}</DocsLink>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setStepIndex((index) => Math.max(0, index - 1))}
-            disabled={isFirst}
-            className="inline-flex items-center gap-1 rounded-md border border-wardian-border px-2 py-1 text-[11px] font-semibold text-muted-neutral transition-colors hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-            Back
-          </button>
-          <button
-            type="button"
-            onClick={() => isLast ? onClose() : setStepIndex((index) => index + 1)}
-            className="inline-flex items-center gap-1 rounded-md border border-[var(--color-wardian-accent)] px-2 py-1 text-[11px] font-semibold text-[var(--color-wardian-accent)] transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-accent),transparent_88%)]"
-          >
-            {isLast ? "Done" : "Next"}
-            {!isLast && <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />}
-          </button>
-        </div>
-      </div>
-    </section>
+      </section>
+    </div>
   );
 }
