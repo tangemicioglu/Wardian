@@ -42,6 +42,17 @@ fn default_guided_tour_state() -> GuidedTourState {
     GuidedTourState::Unseen
 }
 
+fn default_onboarding_state_for_runtime() -> OnboardingHintsState {
+    let mut state = OnboardingHintsState::default();
+    // Native E2E launches a throwaway desktop app with an empty Wardian home.
+    // That app is a test harness, not a first-time user, and an onboarding
+    // overlay would intercept the workbench interactions being exercised.
+    if std::env::var_os("WARDIAN_E2E_NATIVE_HOME").is_some() {
+        state.guided_tour_state = GuidedTourState::Skipped;
+    }
+    state
+}
+
 pub fn load_onboarding_hints() -> Result<OnboardingHintsState, String> {
     let path = onboarding_hints_path()?;
     load_onboarding_hints_from_path(&path)
@@ -80,7 +91,7 @@ fn onboarding_hints_path() -> Result<PathBuf, String> {
 
 fn load_onboarding_hints_from_path(path: &Path) -> Result<OnboardingHintsState, String> {
     if !path.exists() {
-        return Ok(OnboardingHintsState::default());
+        return Ok(default_onboarding_state_for_runtime());
     }
 
     let content = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
@@ -235,6 +246,28 @@ mod tests {
 
         let loaded = load_onboarding_hints().expect("load tour choice");
         assert_eq!(loaded.guided_tour_state, GuidedTourState::InProgress);
+    }
+
+    #[test]
+    fn native_e2e_home_does_not_trigger_first_launch_tour() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().expect("temp dir");
+        let previous_marker = std::env::var_os("WARDIAN_E2E_NATIVE_HOME");
+        unsafe {
+            std::env::set_var("WARDIAN_HOME", home.path());
+            std::env::set_var("WARDIAN_E2E_NATIVE_HOME", home.path());
+        }
+
+        let loaded = load_onboarding_hints().expect("load native e2e home");
+
+        assert_eq!(loaded.guided_tour_state, GuidedTourState::Skipped);
+        unsafe {
+            if let Some(marker) = previous_marker {
+                std::env::set_var("WARDIAN_E2E_NATIVE_HOME", marker);
+            } else {
+                std::env::remove_var("WARDIAN_E2E_NATIVE_HOME");
+            }
+        }
     }
 
     #[test]
