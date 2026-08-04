@@ -240,6 +240,20 @@ describe("GraphView", () => {
     expect(screen.getByText("Coder / Codex")).toBeInTheDocument();
   });
 
+  it("shows the selected agent description in the inspector", () => {
+    const describedAgent = { ...agent("a"), description: "Coordinates graph topology work" };
+    render(
+      <GraphView
+        {...defaultProps}
+        filteredAgents={[describedAgent, agent("b")]}
+        allAgents={[describedAgent, agent("b")]}
+      />,
+    );
+
+    expect(screen.getByText("Description")).toBeInTheDocument();
+    expect(screen.getByText("Coordinates graph topology work")).toBeInTheDocument();
+  });
+
   it("clears node selection when an edge is selected", () => {
     render(<GraphView {...defaultProps} selectedAgentIds={new Set(["a"])} />);
 

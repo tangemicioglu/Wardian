@@ -53,7 +53,7 @@ The inspector's neighbors panel lists every agent visible through the topology. 
 ## Inspector and Actions
 
 Select any node to open the inspector with:
-- Agent identity, current status, workspace, and telemetry.
+- Agent identity, description (when provided), current status, workspace, and telemetry.
 - **Neighbors panel**: all agents you see through the topology (manual, team-seeded, workspace fallback); ghost pairs are badged "Unmapped".
 - **Add connection…**: searchable picker to create new manual edges.
 - Right-click to access the same context menu as the roster and other views.
