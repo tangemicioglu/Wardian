@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Check } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
@@ -41,6 +42,52 @@ const BASELINE_OPTIONS: readonly { value: ChangeReviewBaseline; label: string }[
 ];
 
 const DEFAULT_CHANGE_REVIEW_BASELINE: ChangeReviewBaseline = "last_effective_turn";
+
+const CHANGE_KIND_PRESENTATION: Record<ChangeReviewFileEntry["change_kind"], {
+  label: string;
+  markerClass: string;
+  textClass: string;
+}> = {
+  added: {
+    label: "Added",
+    markerClass: "bg-[var(--color-wardian-success)]",
+    textClass: "text-[var(--color-wardian-success)]",
+  },
+  modified: {
+    label: "Modified",
+    markerClass: "bg-[var(--color-wardian-warning)]",
+    textClass: "text-[var(--color-wardian-warning)]",
+  },
+  deleted: {
+    label: "Deleted",
+    markerClass: "bg-[var(--color-wardian-error)]",
+    textClass: "text-[var(--color-wardian-error)]",
+  },
+  renamed: {
+    label: "Renamed",
+    markerClass: "bg-[var(--color-wardian-processing)]",
+    textClass: "text-[var(--color-wardian-processing)]",
+  },
+  untracked: {
+    label: "Untracked",
+    markerClass: "bg-[var(--color-wardian-success)]",
+    textClass: "text-[var(--color-wardian-success)]",
+  },
+};
+
+function splitDisplayPath(path: string): { directory: string; filename: string } {
+  const normalized = path.replace(/\\/g, "/");
+  const separator = normalized.lastIndexOf("/");
+  return separator === -1
+    ? { directory: "", filename: normalized }
+    : { directory: normalized.slice(0, separator), filename: normalized.slice(separator + 1) };
+}
+
+function changeEvidenceLabel(entry: ChangeReviewFileEntry): string {
+  return entry.evidence === "attributed"
+    ? "attributed to an agent edit"
+    : "detected from workspace changes";
+}
 
 function isChangeReviewBaseline(value: unknown): value is ChangeReviewBaseline {
   return BASELINE_OPTIONS.some((option) => option.value === value);
@@ -405,23 +452,44 @@ export function ChangesPanel({
           <div className="overflow-hidden rounded border border-[var(--color-wardian-border)]">
             {summary?.files.map((entry) => {
               const opened = openedPath === entry.path;
+              const { directory, filename } = splitDisplayPath(entry.path);
+              const presentation = CHANGE_KIND_PRESENTATION[entry.change_kind];
               return (
                 <button
                   type="button"
                   key={entry.path}
                   aria-current={opened ? "true" : undefined}
                   title={entry.path}
-                  className={`flex w-full items-center gap-1.5 border-b border-[var(--color-wardian-border)] px-2 py-2 text-left last:border-b-0 hover:bg-wardian-card-bg-muted${
+                  className={`flex min-h-8 w-full items-center gap-2 border-b border-[var(--color-wardian-border)] px-2 py-1.5 text-left last:border-b-0 hover:bg-wardian-card-bg-muted${
                     opened ? " bg-wardian-card-bg-muted" : ""
                   }`}
                   onClick={() => openFile(entry)}
                 >
-                  <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{entry.path}</span>
-                  {entry.reviewed ? (
-                    <span className="text-[10px] text-[var(--color-wardian-text-muted)]">reviewed</span>
-                  ) : null}
-                  <span className="text-[10px] text-[var(--color-wardian-text-muted)]">{entry.evidence}</span>
-                  <span className="text-[10px] text-[var(--color-wardian-text-muted)]">{entry.insertions ?? "—"}/{entry.deletions ?? "—"}</span>
+                  <span
+                    aria-label={`${presentation.label} change, ${changeEvidenceLabel(entry)}`}
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${presentation.markerClass}`}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-[11px] leading-5">
+                    <span className={`font-medium ${presentation.textClass}`}>{filename}</span>
+                    {directory ? <span className="ml-1.5 text-[var(--color-wardian-text-muted)]">{directory}</span> : null}
+                  </span>
+                  <span className="sr-only">{entry.path}</span>
+                  <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] tabular-nums">
+                    {entry.binary ? (
+                      <span className="text-[var(--color-wardian-text-muted)]">Binary</span>
+                    ) : (
+                      <>
+                        {entry.insertions !== null ? <span className="text-[var(--color-wardian-success)]">+{entry.insertions}</span> : null}
+                        {entry.deletions !== null ? <span className="text-[var(--color-wardian-error)]">-{entry.deletions}</span> : null}
+                        {entry.insertions === null && entry.deletions === null ? <span className="text-[var(--color-wardian-text-muted)]">—</span> : null}
+                      </>
+                    )}
+                    {entry.reviewed ? (
+                      <span aria-label="Reviewed" title="Reviewed" className="text-[var(--color-wardian-success)]">
+                        <Check className="h-3 w-3" strokeWidth={2.5} aria-hidden="true" />
+                      </span>
+                    ) : null}
+                  </span>
                 </button>
               );
             })}

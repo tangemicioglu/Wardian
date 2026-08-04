@@ -96,11 +96,15 @@ describe("ChangesPanel", () => {
     });
   });
 
-  it("renders the scoped change set with attribution and the default baseline", async () => {
+  it("renders a compact, file-first change list with accessible attribution", async () => {
     renderPanel();
 
-    expect(await screen.findByText("src/agent.ts")).toBeInTheDocument();
-    expect(screen.getByText("attributed")).toBeInTheDocument();
+    expect(await screen.findByText("agent.ts")).toBeInTheDocument();
+    expect(screen.getByText("src")).toBeInTheDocument();
+    expect(screen.getByText("+3")).toHaveClass("text-[var(--color-wardian-success)]");
+    expect(screen.getByText("-1")).toHaveClass("text-[var(--color-wardian-error)]");
+    expect(screen.getByLabelText("Modified change, attributed to an agent edit")).toHaveClass("rounded-full");
+    expect(screen.queryByText("attributed")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Change review baseline")).toHaveValue("last_effective_turn");
     expect(screen.queryByRole("button", { name: "Refresh Changes" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Mark reviewed" })).not.toBeInTheDocument();
@@ -122,6 +126,33 @@ describe("ChangesPanel", () => {
       }),
     ));
     expect(invokeMock).not.toHaveBeenCalledWith("git_show_file_revision", expect.anything());
+  });
+
+  it("keeps inferred evidence out of the row while preserving its line statistics", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "load_change_review_prefs") return Promise.resolve({ schema: 1, baseline: "last_effective_turn" });
+      if (command === "get_explorer_root") return Promise.resolve("C:/workspace");
+      if (command === "load_change_review") return Promise.resolve({
+        ...response,
+        summary: {
+          ...response.summary,
+          files: [{
+            ...response.summary.files[0],
+            evidence: "inferred" as const,
+            insertions: 9,
+            deletions: 7,
+          }],
+        },
+      });
+      return Promise.resolve(undefined);
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText("+9")).toHaveClass("text-[var(--color-wardian-success)]");
+    expect(screen.getByText("-7")).toHaveClass("text-[var(--color-wardian-error)]");
+    expect(screen.getByLabelText("Modified change, detected from workspace changes")).toBeInTheDocument();
+    expect(screen.queryByText("inferred")).not.toBeInTheDocument();
   });
 
   it("restores the global baseline before the first change-set load", async () => {
