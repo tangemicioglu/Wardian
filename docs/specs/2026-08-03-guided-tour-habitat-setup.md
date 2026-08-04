@@ -4,7 +4,8 @@
 
 Replace the abstract Guided tour slides with a practical, four-step setup path:
 
-1. Create an Evolver.
+1. Configure and create an Evolver through focused name, class, workspace,
+   provider, and spawn controls.
 2. Prompt the Evolver to create an Orchestrator through Wardian's CLI.
 3. Verify the pair's connection in Graph.
 4. Schedule a conversation-pattern review on the Evolver.
@@ -42,13 +43,15 @@ creation.
 ## Visual Language
 
 The tour uses sentence case for its progress label and step titles. A spotlight
-leaves the relevant control interactive while dimming the rest of the
-workbench. The first-run setup has no Next button: the Evolver, Orchestrator,
-graph edge, and schedule are the observable completion signals. The Settings
-entry is a review mode that starts at the first area and provides Next area
-navigation, so an existing habitat can revisit every surface. The
-peer-creation step also includes a bounded prompt that visibly names the Wardian CLI actions the
-Evolver will use.
+leaves every workbench control interactive while dimming the rest of the
+workbench, so it never prevents a tab change or another needed navigation
+action. The guide places itself below the tab strip and chooses a corner that
+does not overlap its focused control. The Evolver setup uses Next field between
+its form controls and waits only for the final spawn action. The Settings entry
+is a review mode that starts at the first area and provides Next area
+navigation, so an existing habitat can revisit every surface. The peer-creation
+step includes a bounded, copyable prompt that visibly names the Wardian CLI
+actions the Evolver will use.
 
 ## Verification
 

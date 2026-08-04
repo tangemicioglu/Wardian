@@ -24,17 +24,28 @@ function tourProps(agents: AgentConfig[] = []) {
 }
 
 describe("OnboardingTour", () => {
-  it("opens the real creation surface and waits for an Evolver before advancing", () => {
+  it("guides each Evolver field before waiting for the spawn action", async () => {
+    const user = userEvent.setup();
     const props = tourProps();
     const { rerender } = render(<OnboardingTour {...props} />);
 
-    expect(screen.getByText("Create an Evolver")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Next" })).not.toBeInTheDocument();
+    expect(screen.getByText("Name your Evolver")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next field" })).toBeInTheDocument();
     expect(props.onPrepareAgentCreation).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Next field" }));
+    expect(screen.getByText("Choose the Evolver class")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Next field" }));
+    expect(screen.getByText("Choose its workspace")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Next field" }));
+    expect(screen.getByText("Choose a provider")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Next field" }));
+    expect(screen.getByText("Spawn the Evolver")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next field" })).not.toBeInTheDocument();
 
     rerender(<OnboardingTour {...props} agents={[evolver]} />);
 
-    expect(screen.getByText("Let the Evolver create its partner")).toBeInTheDocument();
+    expect(screen.getByText("Ask the Evolver to create its partner")).toBeInTheDocument();
     expect(screen.getByText(/Do not create a graph connection/)).toBeInTheDocument();
     expect(props.onPrepareEvolver).toHaveBeenCalledWith(evolver);
   });
@@ -57,14 +68,13 @@ describe("OnboardingTour", () => {
     ]);
     render(<OnboardingTour {...props} reviewMode />);
 
-    expect(screen.getByText("Create an Evolver")).toBeInTheDocument();
-    expect(screen.getByText("Tour review · 1 of 4")).toBeInTheDocument();
+    expect(screen.getByText("Name your Evolver")).toBeInTheDocument();
+    expect(screen.getByText("Tour review · 1 of 8")).toBeInTheDocument();
     expect(props.onPrepareAgentCreation).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "Next area" }));
 
-    expect(screen.getByText("Let the Evolver create its partner")).toBeInTheDocument();
-    expect(props.onPrepareEvolver).toHaveBeenCalledWith(evolver);
+    expect(screen.getByText("Choose the Evolver class")).toBeInTheDocument();
   });
 
   it("does not intercept the focused target while it is being located", () => {

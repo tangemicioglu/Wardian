@@ -50,7 +50,7 @@ test("offers first-launch users an opt-in, action-gated guided setup", async ({ 
   await welcome.getByRole("button", { name: "Take the tour" }).click();
 
   const tour = page.getByTestId("onboarding-tour");
-  await expect(tour.getByRole("heading", { name: "Create an Evolver" })).toBeVisible();
+  await expect(tour.getByRole("heading", { name: "Name your Evolver" })).toBeVisible();
   await expect(page.getByTestId("spawn-submit")).toBeVisible();
   await page.getByTestId("spawn-agent-name").fill("evolver");
 
@@ -68,8 +68,11 @@ test("offers first-launch users an opt-in, action-gated guided setup", async ({ 
     provider: "mock",
     is_off: false,
   }]);
-  await expect(tour.getByRole("heading", { name: "Let the Evolver create its partner" })).toBeVisible();
+  await expect(tour.getByRole("heading", { name: "Ask the Evolver to create its partner" })).toBeVisible();
   await expect(tour.getByText(/Do not create a graph connection/)).toBeVisible();
+  const handoffScreenshotPath = testInfo.outputPath("evolver-partner-handoff.png");
+  await page.screenshot({ path: handoffScreenshotPath, animations: "disabled" });
+  await testInfo.attach("evolver-partner-handoff", { path: handoffScreenshotPath, contentType: "image/png" });
 });
 
 test("replays the Settings tour from its first area", async ({ page }) => {
@@ -128,7 +131,7 @@ test("replays the Settings tour from its first area", async ({ page }) => {
   await page.evaluate(() => window.dispatchEvent(new Event("wardian:start-guided-tour")));
 
   const tour = page.getByTestId("onboarding-tour");
-  await expect(tour.getByRole("heading", { name: "Create an Evolver" })).toBeVisible();
+  await expect(tour.getByRole("heading", { name: "Name your Evolver" })).toBeVisible();
   await tour.getByRole("button", { name: "Next area" }).click();
-  await expect(tour.getByRole("heading", { name: "Let the Evolver create its partner" })).toBeVisible();
+  await expect(tour.getByRole("heading", { name: "Choose the Evolver class" })).toBeVisible();
 });

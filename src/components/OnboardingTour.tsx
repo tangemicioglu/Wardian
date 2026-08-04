@@ -20,7 +20,15 @@ interface OnboardingWelcomeProps {
   onSkip: () => void;
 }
 
-type TourStepId = "create-evolver" | "create-orchestrator" | "connect-graph" | "schedule-review";
+type TourStepId =
+  | "evolver-name"
+  | "evolver-class"
+  | "evolver-workspace"
+  | "evolver-provider"
+  | "create-evolver"
+  | "create-orchestrator"
+  | "connect-graph"
+  | "schedule-review";
 
 type TourStep = {
   id: TourStepId;
@@ -33,15 +41,39 @@ const EVOLVER_PROMPT = "Use the Wardian CLI to inspect your own provider and wor
 
 const STEPS: readonly TourStep[] = [
   {
+    id: "evolver-name",
+    title: "Name your Evolver",
+    detail: "Choose a short name that describes what this agent will improve. You can rename it later.",
+    target: '[data-tour-target="spawn-agent-name"]',
+  },
+  {
+    id: "evolver-class",
+    title: "Choose the Evolver class",
+    detail: "Select Evolver so this agent has a clear role in the habitat.",
+    target: '[data-tour-target="spawn-agent-class"]',
+  },
+  {
+    id: "evolver-workspace",
+    title: "Choose its workspace",
+    detail: "Point the Evolver at a real project it can inspect. This is not the Wardian home.",
+    target: '[data-tour-target="spawn-workspace-path"]',
+  },
+  {
+    id: "evolver-provider",
+    title: "Choose a provider",
+    detail: "Use an installed provider. Leave model and effort at the provider default unless you need an explicit override.",
+    target: '[data-tour-target="spawn-provider"]',
+  },
+  {
     id: "create-evolver",
-    title: "Create an Evolver",
-    detail: "Give it a provider and a real workspace it can inspect, then spawn it. Wardian will wait here until the Evolver exists.",
-    target: '[data-tour-target="spawn-agent-form"]',
+    title: "Spawn the Evolver",
+    detail: "Create it when the name, class, workspace, and provider look right. Wardian will wait here until the Evolver exists.",
+    target: '[data-tour-target="spawn-submit"]',
   },
   {
     id: "create-orchestrator",
-    title: "Let the Evolver create its partner",
-    detail: "Paste this into the Evolver's terminal. It uses its Wardian CLI to spawn an Orchestrator with the same workspace. The tour advances when the Orchestrator appears in the roster.",
+    title: "Ask the Evolver to create its partner",
+    detail: "Copy this task, then click inside the Evolver terminal, paste, and send it. The Evolver uses its Wardian CLI to spawn an Orchestrator with the same workspace. The tour advances when the Orchestrator appears in the roster.",
     target: '[data-tour-target="evolver-terminal"]',
   },
   {
@@ -58,13 +90,26 @@ const STEPS: readonly TourStep[] = [
   },
 ] as const;
 
+const EVOLVER_SETUP_STEP_IDS = new Set<TourStepId>([
+  "evolver-name",
+  "evolver-class",
+  "evolver-workspace",
+  "evolver-provider",
+  "create-evolver",
+]);
+
 function agentWithClass(agents: AgentConfig[], agentClass: string): AgentConfig | undefined {
   return agents.find((agent) => agent.agent_class.trim().toLocaleLowerCase() === agentClass);
 }
 
-function nextStep(agents: AgentConfig[], linked: boolean, reviewScheduled: boolean): TourStepId | null {
+function nextStep(
+  agents: AgentConfig[],
+  linked: boolean,
+  reviewScheduled: boolean,
+  evolverSetupIndex: number,
+): TourStepId | null {
   const evolver = agentWithClass(agents, "evolver");
-  if (!evolver) return "create-evolver";
+  if (!evolver) return STEPS[evolverSetupIndex]?.id ?? "create-evolver";
   if (!agentWithClass(agents, "orchestrator")) return "create-orchestrator";
   if (!linked) return "connect-graph";
   if (!reviewScheduled) return "schedule-review";
@@ -119,10 +164,18 @@ export function OnboardingTour({
   const [linked, setLinked] = useState(false);
   const [reviewScheduled, setReviewScheduled] = useState(false);
   const [reviewStepIndex, setReviewStepIndex] = useState(0);
+  const [evolverSetupIndex, setEvolverSetupIndex] = useState(0);
   const activeStepId = reviewMode
     ? STEPS[reviewStepIndex]?.id ?? null
-    : nextStep(agents, linked, reviewScheduled);
+    : nextStep(agents, linked, reviewScheduled, evolverSetupIndex);
   const step = STEPS.find((candidate) => candidate.id === activeStepId) ?? null;
+  const canAdvanceSetup = Boolean(
+    !reviewMode
+    && !evolver
+    && step
+    && EVOLVER_SETUP_STEP_IDS.has(step.id)
+    && step.id !== "create-evolver",
+  );
 
   useEffect(() => {
     if (reviewMode || !evolver || !orchestrator || activeStepId !== "connect-graph") return;
@@ -167,7 +220,7 @@ export function OnboardingTour({
   }, [activeStepId, reviewMode]);
 
   useEffect(() => {
-    if (activeStepId === "create-evolver") onPrepareAgentCreation();
+    if (activeStepId && EVOLVER_SETUP_STEP_IDS.has(activeStepId)) onPrepareAgentCreation();
     if (activeStepId === "create-orchestrator" && evolver) onPrepareEvolver(evolver);
     if (activeStepId === "connect-graph") onPrepareGraph();
     if (activeStepId === "schedule-review") onPrepareWorkflow();
@@ -201,12 +254,20 @@ export function OnboardingTour({
       step={step}
       reviewMode={reviewMode}
       onClose={onClose}
+      showNext={reviewMode || canAdvanceSetup}
+      nextLabel={reviewMode
+        ? (step.id === STEPS[STEPS.length - 1].id ? "Finish review" : "Next area")
+        : "Next field"}
       onNext={() => {
-        if (reviewStepIndex === STEPS.length - 1) {
-          onClose();
+        if (reviewMode) {
+          if (reviewStepIndex === STEPS.length - 1) {
+            onClose();
+            return;
+          }
+          setReviewStepIndex((index) => index + 1);
           return;
         }
-        setReviewStepIndex((index) => index + 1);
+        setEvolverSetupIndex((index) => index + 1);
       }}
     />
   );
@@ -216,14 +277,19 @@ function Spotlight({
   step,
   reviewMode,
   onClose,
+  showNext,
+  nextLabel,
   onNext,
 }: {
   step: TourStep;
   reviewMode: boolean;
   onClose: () => void;
+  showNext: boolean;
+  nextLabel: string;
   onNext: () => void;
 }) {
   const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
 
   useLayoutEffect(() => {
     let frameId = 0;
@@ -260,24 +326,53 @@ function Spotlight({
   const left = Math.max(0, (targetRect?.left ?? 0) - padding);
   const right = Math.min(viewportWidth, (targetRect?.right ?? viewportWidth) + padding);
   const bottom = Math.min(viewportHeight, (targetRect?.bottom ?? viewportHeight) + padding);
-  const tooltipTop = targetRect && bottom + 14 < viewportHeight - 220 ? bottom + 14 : Math.max(16, top - 190);
-  const tooltipLeft = Math.min(Math.max(16, left), Math.max(16, viewportWidth - 380));
+  const tooltipWidth = Math.min(360, viewportWidth - 32);
+  const tooltipHeight = step.id === "create-orchestrator" ? 330 : 210;
+  const chromeOffset = 72;
+  const candidates = [
+    { top: chromeOffset, left: 16 },
+    { top: chromeOffset, left: Math.max(16, viewportWidth - tooltipWidth - 16) },
+    { top: Math.max(chromeOffset, viewportHeight - tooltipHeight - 16), left: 16 },
+    { top: Math.max(chromeOffset, viewportHeight - tooltipHeight - 16), left: Math.max(16, viewportWidth - tooltipWidth - 16) },
+  ];
+  const tooltipPosition = candidates.reduce((best, candidate) => {
+    if (!targetRect) return best;
+    const overlapWidth = Math.max(0, Math.min(candidate.left + tooltipWidth, right) - Math.max(candidate.left, left));
+    const overlapHeight = Math.max(0, Math.min(candidate.top + tooltipHeight, bottom) - Math.max(candidate.top, top));
+    const overlap = overlapWidth * overlapHeight;
+    const bestOverlapWidth = Math.max(0, Math.min(best.left + tooltipWidth, right) - Math.max(best.left, left));
+    const bestOverlapHeight = Math.max(0, Math.min(best.top + tooltipHeight, bottom) - Math.max(best.top, top));
+    return overlap < bestOverlapWidth * bestOverlapHeight ? candidate : best;
+  }, candidates[0]);
+
+  useEffect(() => {
+    setCopiedPrompt(false);
+  }, [step.id]);
+
+  const copyEvolverPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(EVOLVER_PROMPT);
+      setCopiedPrompt(true);
+    } catch {
+      setCopiedPrompt(false);
+    }
+  };
 
   return (
     <div className="pointer-events-none fixed inset-0 z-[100]" data-testid="onboarding-tour" role="presentation">
       {targetRect ? (
         <>
-          <div className="pointer-events-auto fixed left-0 right-0 top-0 bg-black/65" style={{ height: top }} />
-          <div className="pointer-events-auto fixed bottom-0 left-0 right-0 bg-black/65" style={{ top: bottom }} />
-          <div className="pointer-events-auto fixed left-0 bg-black/65" style={{ top, height: bottom - top, width: left }} />
-          <div className="pointer-events-auto fixed right-0 bg-black/65" style={{ top, height: bottom - top, left: right }} />
+          <div className="pointer-events-none fixed left-0 right-0 top-0 bg-black/65" style={{ height: top }} />
+          <div className="pointer-events-none fixed bottom-0 left-0 right-0 bg-black/65" style={{ top: bottom }} />
+          <div className="pointer-events-none fixed left-0 bg-black/65" style={{ top, height: bottom - top, width: left }} />
+          <div className="pointer-events-none fixed right-0 bg-black/65" style={{ top, height: bottom - top, left: right }} />
           <div className="pointer-events-none fixed rounded-lg border-2 border-[var(--color-wardian-accent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-wardian-bg),transparent_25%)]" style={{ top, left, width: right - left, height: bottom - top }} />
         </>
       ) : null}
       <section
         aria-live="polite"
         className="pointer-events-auto fixed z-[101] w-[min(360px,calc(100vw-2rem))] rounded-xl border border-wardian-border bg-[var(--color-wardian-card)] p-4 shadow-2xl"
-        style={{ top: tooltipTop, left: tooltipLeft }}
+        style={tooltipPosition}
       >
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -290,15 +385,20 @@ function Spotlight({
         </div>
         <p className="mt-2 text-xs leading-5 text-muted">{step.detail}</p>
         {step.id === "create-orchestrator" ? (
-          <code className="mt-3 block max-h-32 overflow-y-auto rounded border border-wardian-border bg-[var(--color-wardian-bg)] p-2 text-[10px] leading-4 text-primary">{EVOLVER_PROMPT}</code>
+          <>
+            <code className="mt-3 block max-h-28 overflow-y-auto rounded border border-wardian-border bg-[var(--color-wardian-bg)] p-2 text-[10px] leading-4 text-primary">{EVOLVER_PROMPT}</code>
+            <button className="mt-2 rounded border border-wardian-border px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-wardian-card-bg" onClick={() => void copyEvolverPrompt()} type="button">
+              {copiedPrompt ? "Copied — paste into Evolver" : "Copy task"}
+            </button>
+          </>
         ) : null}
         <div className="mt-3 flex items-center justify-between gap-3">
           <button className="text-xs font-medium text-muted underline-offset-2 hover:text-primary hover:underline" onClick={onClose} type="button">
             Exit tour
           </button>
-          {reviewMode ? (
+          {showNext ? (
             <button className="rounded-md bg-[var(--color-wardian-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-wardian-bg)] transition-opacity hover:opacity-90" onClick={onNext} type="button">
-              {step.id === STEPS[STEPS.length - 1].id ? "Finish review" : "Next area"}
+              {nextLabel}
             </button>
           ) : null}
         </div>

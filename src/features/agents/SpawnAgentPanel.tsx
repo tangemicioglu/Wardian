@@ -198,6 +198,7 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
           </label>
           <input
             data-testid="spawn-agent-name"
+            data-tour-target="spawn-agent-name"
             className={`w-full bg-[var(--color-wardian-input-bg)] border ${nameError ? 'border-wardian-error' : 'border-wardian-light'} rounded px-3 py-2 text-sm text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors`}
             placeholder="e.g. coder-alpha"
             value={newSessionName}
@@ -216,6 +217,7 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
           </label>
           <select
             data-testid="spawn-agent-class"
+            data-tour-target="spawn-agent-class"
             className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-2 text-sm text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
             value={newAgentClass}
             onChange={(e) => setNewAgentClass(e.currentTarget.value)}
@@ -256,6 +258,7 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
             <div className="relative min-w-0 flex-1">
               <input
                 data-testid="spawn-workspace-path"
+                data-tour-target="spawn-workspace-path"
                 className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-2 text-sm text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors pr-10"
                 placeholder="C:/projects/my-app"
                 value={newFolder}
@@ -287,6 +290,7 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
           </label>
           <select
             data-testid="spawn-provider"
+            data-tour-target="spawn-provider"
             className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-2 text-sm text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
             value={spawnAdvancedConfig.provider || "claude"}
             onChange={(e) => {
@@ -341,6 +345,7 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
 
         <button
           data-testid="spawn-submit"
+          data-tour-target="spawn-submit"
           type="submit"
           disabled={isSpawning || !selectedProviderAvailable || !isUserFacingProviderName(spawnAdvancedConfig.provider)}
           className="w-full mt-2 bg-wardian-success/80 hover:bg-wardian-success/60 disabled:bg-wardian-off/30 disabled:cursor-not-allowed text-[var(--color-wardian-bg)] py-2.5 rounded-lg font-bold text-xs tracking-wide transition-all flex items-center justify-center gap-2 shadow-lg shadow-wardian-success/10"

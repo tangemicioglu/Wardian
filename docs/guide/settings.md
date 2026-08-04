@@ -71,9 +71,10 @@ The **General** category controls optional in-app guidance:
   dimmed, or choose **Not now**. It remains available here later, even when
   contextual tips are hidden. On first launch, the tour waits for the Evolver,
   Orchestrator, graph edge, and conversation-review schedule to exist before it
-  advances; it does not create them automatically. Opening it later from
-  Settings starts a review at the first area and provides **Next area** so an
-  existing habitat can revisit every surface. You choose the provider,
+  advances; it does not create them automatically. The Evolver setup first
+  focuses its name, class, workspace, provider, and spawn controls in turn.
+  Opening it later from Settings starts a review at the first area and provides
+  **Next area** so an existing habitat can revisit every surface. You choose the provider,
   workspace, conversation scope, and cadence in the relevant surfaces. The
   Wardian home stores habitat state; it is not the peer agent's default
   workspace.
