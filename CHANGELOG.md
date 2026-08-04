@@ -4,6 +4,51 @@ All notable changes to Wardian will be documented in this file. The format is ba
 
 Entries from `0.3.0` onward are generated automatically by release-please from Conventional Commits. Entries for `0.1.0` through `0.2.1` were backfilled from git history and are thematic summaries rather than exhaustive commit lists.
 
+## [0.5.2](https://github.com/wardian-app/Wardian/compare/v0.5.1...v0.5.2) (2026-08-04)
+
+
+### Features
+
+* **agents:** add optional purpose descriptions ([#774](https://github.com/wardian-app/Wardian/issues/774)) ([5bf84ac](https://github.com/wardian-app/Wardian/commit/5bf84ac367da5938e8ec1adc6b30c3d3a81ad68c))
+* **agents:** add provider-aware model selection ([#824](https://github.com/wardian-app/Wardian/issues/824)) ([b3d2318](https://github.com/wardian-app/Wardian/commit/b3d231866466ecc94c1446cc3beaf5e42a403125))
+* **changes:** add agent change review sidebar pane ([#809](https://github.com/wardian-app/Wardian/issues/809)) ([7cf418f](https://github.com/wardian-app/Wardian/commit/7cf418f0cea23c569dc6e34b923987bd799f9d91))
+* **changes:** implement per-turn change snapshots (Phase 2) ([#825](https://github.com/wardian-app/Wardian/issues/825)) ([0579f4d](https://github.com/wardian-app/Wardian/commit/0579f4d077aa85931cc0efbc738c5aae74a64d41))
+* **garden:** lay the Garden out on an explainable metric map ([#803](https://github.com/wardian-app/Wardian/issues/803)) ([dff4c7f](https://github.com/wardian-app/Wardian/commit/dff4c7fefc30ff3cb03a157e93e58d89d1121456))
+* **graph:** show agent descriptions in inspector ([#835](https://github.com/wardian-app/Wardian/issues/835)) ([59ea934](https://github.com/wardian-app/Wardian/commit/59ea934a3250f4e2a36c2d9430e42e02d3bf8434))
+* **onboarding:** guide first habitats through setup ([#836](https://github.com/wardian-app/Wardian/issues/836)) ([f2781f7](https://github.com/wardian-app/Wardian/commit/f2781f75c7623ab094d930e967e052f8a2b826f1))
+* **workbench:** add keyboard navigation shortcuts ([#808](https://github.com/wardian-app/Wardian/issues/808)) ([3f8b67d](https://github.com/wardian-app/Wardian/commit/3f8b67ddcdafc93844feb0670da21dc491c4719d))
+* **workflows:** bundle privacy-safe samples ([#776](https://github.com/wardian-app/Wardian/issues/776)) ([075c3c8](https://github.com/wardian-app/Wardian/commit/075c3c869381b37a150f57c98c924db99bf36c8e))
+
+
+### Bug Fixes
+
+* **agents:** polish provider model selection ([#832](https://github.com/wardian-app/Wardian/issues/832)) ([e706171](https://github.com/wardian-app/Wardian/commit/e706171b784a6de56f18dee2c75d7926425d354d))
+* **build:** stabilize direct desktop builds ([#785](https://github.com/wardian-app/Wardian/issues/785)) ([a2e3f64](https://github.com/wardian-app/Wardian/commit/a2e3f642b9cb68cb2feca774c0edba136d55c188))
+* **changes:** clarify review list rows ([#838](https://github.com/wardian-app/Wardian/issues/838)) ([d27ecee](https://github.com/wardian-app/Wardian/commit/d27ecee31f4ecc8e6db0793f47cfd630439af24c))
+* **chat:** keep Codex work logs chronological ([#805](https://github.com/wardian-app/Wardian/issues/805)) ([8ceffc8](https://github.com/wardian-app/Wardian/commit/8ceffc8e0dd69b5423bf036537d1f85b3dfc6205))
+* **chat:** reset sessions and add attachments ([#811](https://github.com/wardian-app/Wardian/issues/811)) ([e4b3646](https://github.com/wardian-app/Wardian/commit/e4b364646d977ad32a195268cc77ce0ae8a2ab55))
+* **comms:** require provider receipts for mailbox delivery ([#813](https://github.com/wardian-app/Wardian/issues/813)) ([a1fb9da](https://github.com/wardian-app/Wardian/commit/a1fb9dac1131e2262ccf70ab201c8e30c4a7a572))
+* **delivery:** restore Antigravity provider receipts ([#841](https://github.com/wardian-app/Wardian/issues/841)) ([f24ae00](https://github.com/wardian-app/Wardian/commit/f24ae00a59ae8e7c7ce89ba3c7b89e08e67f332c))
+* **files:** keep workbench tabs visible during previews ([#790](https://github.com/wardian-app/Wardian/issues/790)) ([ca998c3](https://github.com/wardian-app/Wardian/commit/ca998c34ff762f757f35a522b7909b010f10fb3c))
+* **files:** open Explorer files in a new tab with Ctrl-click ([#797](https://github.com/wardian-app/Wardian/issues/797)) ([9be0a24](https://github.com/wardian-app/Wardian/commit/9be0a2447d870d552c46e545dea3306fe5a97fb4))
+* **frontend:** converge status and interaction conventions ([#779](https://github.com/wardian-app/Wardian/issues/779)) ([6ca5759](https://github.com/wardian-app/Wardian/commit/6ca5759bc6bc0fec5f33fddb1a68988819250ab3))
+* **graph:** contain unmapped connection actions ([#830](https://github.com/wardian-app/Wardian/issues/830)) ([3b57c5d](https://github.com/wardian-app/Wardian/commit/3b57c5daa3f744a005c5d4f0eff8856903913108))
+* **graph:** unify node and edge selection ([#815](https://github.com/wardian-app/Wardian/issues/815)) ([d368717](https://github.com/wardian-app/Wardian/commit/d368717db857edd2a7371a16549834eb19181dd5))
+* **remote:** page mobile chat transcripts ([#793](https://github.com/wardian-app/Wardian/issues/793)) ([216a41a](https://github.com/wardian-app/Wardian/commit/216a41af8dea547e1420cf242902c9d1e55ad8cb))
+* **remote:** share desktop inbox with mobile ([#822](https://github.com/wardian-app/Wardian/issues/822)) ([a04aa3b](https://github.com/wardian-app/Wardian/commit/a04aa3b60700526d9bc2b996011893166f2a9fe4))
+* **terminal:** keep visible renderers updating ([#796](https://github.com/wardian-app/Wardian/issues/796)) ([ba177eb](https://github.com/wardian-app/Wardian/commit/ba177ebd3053bbcbc6414bd3e90cc3d481776b01))
+* **terminal:** unify scrollback ownership ([#773](https://github.com/wardian-app/Wardian/issues/773)) ([070f1f4](https://github.com/wardian-app/Wardian/commit/070f1f4971e325408acfcc55e4be2fe7d14b68a3))
+* **watchlist:** show most recent Last entry first ([#801](https://github.com/wardian-app/Wardian/issues/801)) ([2bac6d3](https://github.com/wardian-app/Wardian/commit/2bac6d3bbef59b1549b323697ded67bf98fc2ce2))
+* **workflows:** resolve approval gates from Observe and Inbox ([#818](https://github.com/wardian-app/Wardian/issues/818)) ([41e1fd1](https://github.com/wardian-app/Wardian/commit/41e1fd1dffa1376a519e8a72fc84fdbff5273ae2))
+* **workflows:** skip idle scheduler persistence ([#828](https://github.com/wardian-app/Wardian/issues/828)) ([7c101dd](https://github.com/wardian-app/Wardian/commit/7c101dd46a19f7d09394e1ea287baf934542ed7e))
+* **workflows:** unblock Windows headless Codex shells ([#802](https://github.com/wardian-app/Wardian/issues/802)) ([c93cacd](https://github.com/wardian-app/Wardian/commit/c93cacd2bf168460564222e7cbec3b6018e55f5b))
+
+
+### Documentation
+
+* **contributing:** document CLI screenshot evidence ([#781](https://github.com/wardian-app/Wardian/issues/781)) ([5455d53](https://github.com/wardian-app/Wardian/commit/5455d53deff86211b67a6c0a1f5c269052e75163))
+* **specs:** specify agent change snapshots (Phase 2) ([#820](https://github.com/wardian-app/Wardian/issues/820)) ([b2d72da](https://github.com/wardian-app/Wardian/commit/b2d72da1d1092984e7903f69478a6c8679c2990c))
+
 ## [0.5.1](https://github.com/wardian-app/Wardian/compare/v0.5.0...v0.5.1) (2026-07-27)
 
 
