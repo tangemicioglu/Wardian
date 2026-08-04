@@ -146,6 +146,47 @@ impl AntigravityTurnCompletionGate {
 }
 
 #[derive(Default)]
+struct AntigravityUserTurnReceiptTracker {
+    initialized: bool,
+    last_step_index: Option<u64>,
+}
+
+impl AntigravityUserTurnReceiptTracker {
+    /// Positions restored agents at their existing history while allowing a
+    /// fresh conversation to acknowledge a user step already present by the
+    /// time the watcher first observes the database.
+    fn observe(&mut self, latest_step_index: Option<u64>, skip_existing: bool) -> bool {
+        if !self.initialized {
+            self.initialized = true;
+            if skip_existing {
+                self.last_step_index = latest_step_index;
+                return false;
+            }
+        }
+
+        let Some(latest_step_index) = latest_step_index else {
+            return false;
+        };
+        if self
+            .last_step_index
+            .is_some_and(|last_step_index| latest_step_index < last_step_index)
+        {
+            self.last_step_index = Some(latest_step_index);
+            return false;
+        }
+        if self
+            .last_step_index
+            .is_some_and(|last_step_index| latest_step_index == last_step_index)
+        {
+            return false;
+        }
+
+        self.last_step_index = Some(latest_step_index);
+        true
+    }
+}
+
+#[derive(Default)]
 struct CodexTerminalThemeProbeResponder {
     answered_light_dark: bool,
     answered_foreground: bool,
@@ -1392,6 +1433,7 @@ pub async fn spawn_agent(
             let mut offset: u64 = 0;
             let mut positioned_initial_log = !watcher_skip_existing_log;
             let mut last_conversation_id = String::new();
+            let mut user_turn_receipt_tracker = AntigravityUserTurnReceiptTracker::default();
             loop {
                 let current = watcher_current_status
                     .lock()
@@ -1455,13 +1497,54 @@ pub async fn spawn_agent(
                     })
                 });
 
-                if let (Some(conversation_id), Some(path)) = (conversation_id, path) {
+                if let Some(conversation_id) = conversation_id.as_deref() {
                     if last_conversation_id != conversation_id {
                         offset = 0;
                         positioned_initial_log = !watcher_skip_existing_log;
-                        last_conversation_id = conversation_id.clone();
+                        user_turn_receipt_tracker = AntigravityUserTurnReceiptTracker::default();
+                        last_conversation_id = conversation_id.to_string();
                     }
+                }
 
+                let database_path = if path
+                    .as_ref()
+                    .is_some_and(|path| path.extension().is_some_and(|extension| extension == "db"))
+                {
+                    path.clone()
+                } else if path.is_none() {
+                    conversation_id.as_deref().and_then(|conversation_id| {
+                        home.as_ref().and_then(|home| {
+                            let database = AntigravityProvider::conversation_database_path(
+                                home,
+                                conversation_id,
+                            );
+                            database.is_file().then_some(database)
+                        })
+                    })
+                } else {
+                    None
+                };
+
+                if let Some(database_path) = database_path {
+                    if let Ok(latest_step_index) =
+                        AntigravityProvider::latest_user_message_step_index(&database_path)
+                    {
+                        if user_turn_receipt_tracker
+                            .observe(latest_step_index, watcher_skip_existing_log)
+                        {
+                            apply_agent_event(
+                                &watcher_app,
+                                &watcher_session,
+                                AgentEvent::UserQuery,
+                                &watcher_query_count,
+                                &watcher_init_timestamp,
+                                &watcher_current_status,
+                            );
+                        }
+                    }
+                }
+
+                if let (Some(_conversation_id), Some(path)) = (conversation_id, path) {
                     if let Ok(mut out) = watcher_log_path.lock() {
                         *out = Some(path.clone());
                     }
@@ -1783,6 +1866,25 @@ mod tests {
         let mut gate = AntigravityTurnCompletionGate::default();
 
         assert!(!gate.observe_output("antigravity", "Idle", "\r\n>\r\n? for shortcuts\r\n",));
+    }
+
+    #[test]
+    fn antigravity_user_turn_receipt_tracker_skips_restored_history_and_deduplicates() {
+        let mut tracker = AntigravityUserTurnReceiptTracker::default();
+
+        assert!(!tracker.observe(Some(8), true));
+        assert!(!tracker.observe(Some(8), true));
+        assert!(tracker.observe(Some(12), true));
+        assert!(!tracker.observe(Some(12), true));
+    }
+
+    #[test]
+    fn antigravity_user_turn_receipt_tracker_accepts_first_fresh_step() {
+        let mut tracker = AntigravityUserTurnReceiptTracker::default();
+
+        assert!(!tracker.observe(None, false));
+        assert!(tracker.observe(Some(4), false));
+        assert!(!tracker.observe(Some(4), false));
     }
 
     #[test]
