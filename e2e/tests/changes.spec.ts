@@ -96,8 +96,11 @@ test("selects Changes, chooses a baseline, and opens a file diff in the workbenc
 
   const file = panel.getByRole("button", { name: /src\/changed\.ts/ });
   await expect(panel.getByRole("button", { name: /src\/agent\.ts/ })).toBeVisible();
-  await expect(panel.getByText("attributed")).toBeVisible();
-  await expect(panel.getByText("inferred")).toBeVisible();
+  await expect(panel.getByLabel("Modified change, attributed to an agent edit")).toBeVisible();
+  await expect(panel.getByLabel("Modified change, detected from workspace changes")).toBeVisible();
+  await expect(panel.getByText("+2")).toBeVisible();
+  await expect(panel.getByText("-1")).toBeVisible();
+  await expect(panel.getByText("inferred", { exact: true })).toHaveCount(0);
 
   // The sidebar lists changes; it never renders diff content itself.
   await expect(panel.locator(".files-comparison-lens")).toHaveCount(0);
