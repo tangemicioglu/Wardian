@@ -300,6 +300,7 @@ export function WorkflowsView({ theme }: WorkflowsViewProps) {
           ) : null}
           <button
             type="button"
+            data-tour-target="workflow-run-button"
             className="cursor-pointer select-none rounded bg-[var(--color-wardian-accent)] px-4 py-1.5 text-xs font-bold text-[var(--color-wardian-bg)] transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
             disabled={runDisabled}
             onClick={() => setLaunchOpen(true)}

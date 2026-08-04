@@ -578,6 +578,17 @@ pub fn get_settings_folder_path() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub fn get_wardian_home_path() -> Result<String, String> {
+    crate::utils::get_wardian_home()
+        .map(|home| wardian_home_path_from_home(&home))
+        .ok_or_else(|| "Could not find Wardian home".to_string())
+}
+
+fn wardian_home_path_from_home(wardian_home: &std::path::Path) -> String {
+    wardian_home.to_string_lossy().into_owned()
+}
+
+#[tauri::command]
 pub fn get_update_eligibility() -> UpdateEligibility {
     let install_mismatch_reason =
         if !cfg!(debug_assertions) && option_env!("WARDIAN_UPDATE_CHANNEL") == Some("stable") {
@@ -816,7 +827,7 @@ pub fn reset_onboarding_hints() -> Result<OnboardingHintsState, String> {
 mod settings_path_tests {
     use super::{
         ensure_settings_folder_path_from_home, save_shell_settings_for_state,
-        settings_folder_path_from_home,
+        settings_folder_path_from_home, wardian_home_path_from_home,
     };
     use crate::state::{ActiveAgent, AgentWatchState, AppState};
     use crate::utils::{ShellSettings, ShellSettingsDocument, ShellSettingsOverrides};
@@ -837,6 +848,13 @@ mod settings_path_tests {
             settings_folder_path_from_home(home).replace('\\', "/"),
             "/tmp/wardian-home/settings"
         );
+    }
+
+    #[test]
+    fn wardian_home_path_preserves_the_resolved_home() {
+        let home = std::path::Path::new("/tmp/wardian-home");
+
+        assert_eq!(wardian_home_path_from_home(home), "/tmp/wardian-home");
     }
 
     #[test]

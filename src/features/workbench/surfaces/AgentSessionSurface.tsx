@@ -26,6 +26,7 @@ export interface AgentSessionSurfaceProps {
   presentation_state?: TerminalPresentationState | null;
   on_title_change?: (agent_id: string, title: string) => void;
   on_terminal_focus?: (agent_id: string) => void;
+  auto_focus_terminal?: boolean;
   on_refresh_agents?: () => void;
   rebind_candidates?: AgentConfig[];
   on_rebind_agent?: (agent_id: string) => void;
@@ -69,6 +70,7 @@ export function AgentSessionSurface({
   presentation_state,
   on_title_change,
   on_terminal_focus,
+  auto_focus_terminal = false,
   on_refresh_agents,
   rebind_candidates = [],
   on_rebind_agent,
@@ -230,6 +232,7 @@ export function AgentSessionSurface({
             : resolvedAgent.folder}
           onTitleChange={handleTitleChange}
           onTerminalFocus={handleTerminalFocus}
+          autoFocus={auto_focus_terminal}
           onPresentationStateChange={(nextBrokerState, nextPresentationState) => {
             setObservedBrokerState(nextBrokerState);
             setObservedPresentationState(nextPresentationState);

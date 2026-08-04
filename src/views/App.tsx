@@ -463,6 +463,7 @@ function AppBody() {
   const loadOnboardingHints = useOnboardingStore((state) => state.loadOnboardingHints);
   const setGuidedTourState = useOnboardingStore((state) => state.setGuidedTourState);
   const [guidedTourMode, setGuidedTourMode] = useState<"setup" | "review">("setup");
+  const [tourEvolverSessionId, setTourEvolverSessionId] = useState<string | null>(null);
   const appUpdate = useAppUpdate();
   const [updateNoticeDismissed, setUpdateNoticeDismissed] = useState(false);
   const resolvedTitlebarTelemetryVisible = app_settings_loaded && titlebarTelemetryVisible;
@@ -1072,16 +1073,19 @@ function AppBody() {
   }, [workbenchNavigation]);
 
   const beginGuidedTour = useCallback((mode: "setup" | "review") => {
+    setTourEvolverSessionId(null);
     setGuidedTourMode(mode);
     setSettingsOpen(false);
     void setGuidedTourState("in_progress");
   }, [setGuidedTourState, setSettingsOpen]);
 
   const leaveGuidedTour = useCallback(() => {
+    setTourEvolverSessionId(null);
     void setGuidedTourState("skipped");
   }, [setGuidedTourState]);
 
   const completeGuidedTour = useCallback(() => {
+    setTourEvolverSessionId(null);
     void setGuidedTourState("completed");
   }, [setGuidedTourState]);
 
@@ -1091,6 +1095,7 @@ function AppBody() {
   }, [setLeftCollapsed]);
 
   const prepareTourEvolver = useCallback((agent: AgentConfig) => {
+    setTourEvolverSessionId(agent.session_id);
     openAgent(agent.session_id);
   }, [openAgent]);
 
@@ -1287,6 +1292,7 @@ function AppBody() {
           theme={theme}
           visibility={lifecycle?.visible === false ? "hidden" : "visible"}
           render_state={lifecycle?.visible === false ? "suspended" : "mounted"}
+          auto_focus_terminal={resourceKey === tourEvolverSessionId}
           on_title_change={handleTitleChange}
           on_refresh_agents={() => { void fetchAgents(); }}
           rebind_candidates={agents}

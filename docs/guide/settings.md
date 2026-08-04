@@ -73,11 +73,12 @@ The **General** category controls optional in-app guidance:
   Orchestrator, graph edge, and conversation-review schedule to exist before it
   advances; it does not create them automatically. The Evolver setup first
   focuses its name, class, workspace, provider, and spawn controls in turn.
-  Opening it later from Settings starts a review at the first area and provides
-  **Next area** so an existing habitat can revisit every surface. You choose the provider,
-  workspace, conversation scope, and cadence in the relevant surfaces. The
-  Wardian home stores habitat state; it is not the peer agent's default
-  workspace.
+  Wardian resolves and displays the current habitat's `.wardian` path for the
+  Evolver workspace: the Evolver analyzes Wardian conversation history across
+  the habitat, rather than one project. Opening it later from Settings starts a
+  review at the first area and provides **Next area** so an existing habitat
+  can revisit every surface. You choose the provider, conversation scope, and
+  cadence in the relevant surfaces.
 
 Wardian checks for updates silently when the desktop app starts. If a newer
 stable release is available, Wardian shows one in-app **Review update** notice

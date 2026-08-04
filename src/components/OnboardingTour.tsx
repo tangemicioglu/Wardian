@@ -28,7 +28,12 @@ type TourStepId =
   | "create-evolver"
   | "create-orchestrator"
   | "connect-graph"
-  | "schedule-review";
+  | "workflow-blueprint"
+  | "workflow-run"
+  | "workflow-schedule-mode"
+  | "workflow-evolver-assignment"
+  | "workflow-cadence"
+  | "workflow-save-schedule";
 
 type TourStep = {
   id: TourStepId;
@@ -37,7 +42,7 @@ type TourStep = {
   target: string;
 };
 
-const EVOLVER_PROMPT = "Use the Wardian CLI to inspect your own provider and workspace. Spawn an Orchestrator peer named orchestrator with the same provider and an explicit workspace. Do not use the Wardian home as its workspace and do not choose a model or effort unless I ask. Do not create a graph connection; I will connect the pair in Graph. Report the name and workspace you used.";
+const EVOLVER_PROMPT = "Use the Wardian CLI to inspect your own provider and workspace. Spawn an Orchestrator peer named orchestrator with the same provider and the Wardian home workspace I configured for you. Do not choose a model or effort unless I ask. Do not create a graph connection; I will connect the pair in Graph. Report the name and workspace you used.";
 
 const STEPS: readonly TourStep[] = [
   {
@@ -55,7 +60,7 @@ const STEPS: readonly TourStep[] = [
   {
     id: "evolver-workspace",
     title: "Choose its workspace",
-    detail: "Point the Evolver at a real project it can inspect. This is not the Wardian home.",
+    detail: "The Evolver manages your habitat from Wardian's own conversation archive, so use the Wardian home rather than a project folder.",
     target: '[data-tour-target="spawn-workspace-path"]',
   },
   {
@@ -83,10 +88,40 @@ const STEPS: readonly TourStep[] = [
     target: '[data-tour-target="graph-canvas"]',
   },
   {
-    id: "schedule-review",
-    title: "Schedule a conversation review",
-    detail: "Open Conversation Pattern Review, choose Run, switch to Schedule, bind the evolver role, and choose a weekly cadence. The workflow only reports recommendations.",
-    target: '[data-tour-target="workflow-view"]',
+    id: "workflow-blueprint",
+    title: "Open Conversation Pattern Review",
+    detail: "Choose Conversation Pattern Review from the blueprint picker. It analyzes prior conversations and reports recommendations only.",
+    target: '[data-tour-target="workflow-blueprint-selector"]',
+  },
+  {
+    id: "workflow-run",
+    title: "Open its launch settings",
+    detail: "Choose Run. This opens the one-off and scheduled invocation settings for this workflow.",
+    target: '[data-tour-target="workflow-run-button"]',
+  },
+  {
+    id: "workflow-schedule-mode",
+    title: "Switch to Schedule",
+    detail: "In the launch settings, choose Schedule so this analysis will recur instead of running only once.",
+    target: '[data-tour-target="workflow-schedule-mode"]',
+  },
+  {
+    id: "workflow-evolver-assignment",
+    title: "Assign the Evolver",
+    detail: "For the evolver role, choose your Evolver agent. It will inspect past Wardian conversations without making changes.",
+    target: '[data-tour-target="workflow-evolver-assignment"]',
+  },
+  {
+    id: "workflow-cadence",
+    title: "Choose a weekly cadence",
+    detail: "Set the schedule to Weekly and choose the day and time that suits your habitat.",
+    target: '[data-tour-target="workflow-schedule-editor"]',
+  },
+  {
+    id: "workflow-save-schedule",
+    title: "Save the review schedule",
+    detail: "Save the schedule when the Evolver assignment and weekly cadence look right. Wardian will wait here until it exists.",
+    target: '[data-tour-target="workflow-save-schedule"]',
   },
 ] as const;
 
@@ -98,6 +133,18 @@ const EVOLVER_SETUP_STEP_IDS = new Set<TourStepId>([
   "create-evolver",
 ]);
 
+const WORKFLOW_SETUP_STEP_IDS = new Set<TourStepId>([
+  "workflow-blueprint",
+  "workflow-run",
+  "workflow-schedule-mode",
+  "workflow-evolver-assignment",
+  "workflow-cadence",
+  "workflow-save-schedule",
+]);
+
+const EVOLVER_SETUP_STEPS = STEPS.filter((step) => EVOLVER_SETUP_STEP_IDS.has(step.id));
+const WORKFLOW_SETUP_STEPS = STEPS.filter((step) => WORKFLOW_SETUP_STEP_IDS.has(step.id));
+
 function agentWithClass(agents: AgentConfig[], agentClass: string): AgentConfig | undefined {
   return agents.find((agent) => agent.agent_class.trim().toLocaleLowerCase() === agentClass);
 }
@@ -107,12 +154,13 @@ function nextStep(
   linked: boolean,
   reviewScheduled: boolean,
   evolverSetupIndex: number,
+  workflowSetupIndex: number,
 ): TourStepId | null {
   const evolver = agentWithClass(agents, "evolver");
-  if (!evolver) return STEPS[evolverSetupIndex]?.id ?? "create-evolver";
+  if (!evolver) return EVOLVER_SETUP_STEPS[evolverSetupIndex]?.id ?? "create-evolver";
   if (!agentWithClass(agents, "orchestrator")) return "create-orchestrator";
   if (!linked) return "connect-graph";
-  if (!reviewScheduled) return "schedule-review";
+  if (!reviewScheduled) return WORKFLOW_SETUP_STEPS[workflowSetupIndex]?.id ?? "workflow-save-schedule";
   return null;
 }
 
@@ -165,9 +213,11 @@ export function OnboardingTour({
   const [reviewScheduled, setReviewScheduled] = useState(false);
   const [reviewStepIndex, setReviewStepIndex] = useState(0);
   const [evolverSetupIndex, setEvolverSetupIndex] = useState(0);
+  const [workflowSetupIndex, setWorkflowSetupIndex] = useState(0);
+  const [wardianHome, setWardianHome] = useState<string | null>(null);
   const activeStepId = reviewMode
     ? STEPS[reviewStepIndex]?.id ?? null
-    : nextStep(agents, linked, reviewScheduled, evolverSetupIndex);
+    : nextStep(agents, linked, reviewScheduled, evolverSetupIndex, workflowSetupIndex);
   const step = STEPS.find((candidate) => candidate.id === activeStepId) ?? null;
   const canAdvanceSetup = Boolean(
     !reviewMode
@@ -176,6 +226,29 @@ export function OnboardingTour({
     && EVOLVER_SETUP_STEP_IDS.has(step.id)
     && step.id !== "create-evolver",
   );
+  const canAdvanceWorkflow = Boolean(
+    !reviewMode
+    && evolver
+    && orchestrator
+    && linked
+    && !reviewScheduled
+    && step
+    && WORKFLOW_SETUP_STEP_IDS.has(step.id)
+    && step.id !== "workflow-save-schedule",
+  );
+
+  useEffect(() => {
+    if (activeStepId !== "evolver-workspace") return;
+    let cancelled = false;
+    void Promise.resolve(invoke<string>("get_wardian_home_path"))
+      .then((path) => {
+        if (!cancelled) setWardianHome(typeof path === "string" ? path : null);
+      })
+      .catch(() => {
+        if (!cancelled) setWardianHome(null);
+      });
+    return () => { cancelled = true; };
+  }, [activeStepId]);
 
   useEffect(() => {
     if (reviewMode || !evolver || !orchestrator || activeStepId !== "connect-graph") return;
@@ -201,7 +274,7 @@ export function OnboardingTour({
   }, [activeStepId, evolver, orchestrator, reviewMode]);
 
   useEffect(() => {
-    if (reviewMode || activeStepId !== "schedule-review") return;
+    if (reviewMode || activeStepId !== "workflow-save-schedule") return;
     let cancelled = false;
     const refresh = async () => {
       try {
@@ -221,9 +294,11 @@ export function OnboardingTour({
 
   useEffect(() => {
     if (activeStepId && EVOLVER_SETUP_STEP_IDS.has(activeStepId)) onPrepareAgentCreation();
-    if (activeStepId === "create-orchestrator" && evolver) onPrepareEvolver(evolver);
+    if (activeStepId === "create-orchestrator" && evolver) {
+      onPrepareEvolver(evolver);
+    }
     if (activeStepId === "connect-graph") onPrepareGraph();
-    if (activeStepId === "schedule-review") onPrepareWorkflow();
+    if (activeStepId && WORKFLOW_SETUP_STEP_IDS.has(activeStepId)) onPrepareWorkflow();
   }, [activeStepId, evolver, onPrepareAgentCreation, onPrepareEvolver, onPrepareGraph, onPrepareWorkflow]);
 
   useEffect(() => {
@@ -253,11 +328,12 @@ export function OnboardingTour({
     <Spotlight
       step={step}
       reviewMode={reviewMode}
+      wardianHome={wardianHome}
       onClose={onClose}
-      showNext={reviewMode || canAdvanceSetup}
+      showNext={reviewMode || canAdvanceSetup || canAdvanceWorkflow}
       nextLabel={reviewMode
         ? (step.id === STEPS[STEPS.length - 1].id ? "Finish review" : "Next area")
-        : "Next field"}
+        : canAdvanceSetup ? "Next field" : "Next action"}
       onNext={() => {
         if (reviewMode) {
           if (reviewStepIndex === STEPS.length - 1) {
@@ -267,7 +343,11 @@ export function OnboardingTour({
           setReviewStepIndex((index) => index + 1);
           return;
         }
-        setEvolverSetupIndex((index) => index + 1);
+        if (canAdvanceSetup) {
+          setEvolverSetupIndex((index) => index + 1);
+          return;
+        }
+        setWorkflowSetupIndex((index) => index + 1);
       }}
     />
   );
@@ -276,6 +356,7 @@ export function OnboardingTour({
 function Spotlight({
   step,
   reviewMode,
+  wardianHome,
   onClose,
   showNext,
   nextLabel,
@@ -283,6 +364,7 @@ function Spotlight({
 }: {
   step: TourStep;
   reviewMode: boolean;
+  wardianHome: string | null;
   onClose: () => void;
   showNext: boolean;
   nextLabel: string;
@@ -290,6 +372,7 @@ function Spotlight({
 }) {
   const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const [copiedWorkspace, setCopiedWorkspace] = useState(false);
 
   useLayoutEffect(() => {
     let frameId = 0;
@@ -347,6 +430,7 @@ function Spotlight({
 
   useEffect(() => {
     setCopiedPrompt(false);
+    setCopiedWorkspace(false);
   }, [step.id]);
 
   const copyEvolverPrompt = async () => {
@@ -355,6 +439,16 @@ function Spotlight({
       setCopiedPrompt(true);
     } catch {
       setCopiedPrompt(false);
+    }
+  };
+
+  const copyWorkspacePath = async () => {
+    if (!wardianHome) return;
+    try {
+      await navigator.clipboard.writeText(wardianHome);
+      setCopiedWorkspace(true);
+    } catch {
+      setCopiedWorkspace(false);
     }
   };
 
@@ -384,6 +478,16 @@ function Spotlight({
           </button>
         </div>
         <p className="mt-2 text-xs leading-5 text-muted">{step.detail}</p>
+        {step.id === "evolver-workspace" ? (
+          <>
+            <code className="mt-3 block break-all rounded border border-wardian-border bg-[var(--color-wardian-bg)] p-2 text-[10px] leading-4 text-primary">
+              {wardianHome ?? "Resolving your Wardian home…"}
+            </code>
+            <button className="mt-2 rounded border border-wardian-border px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-wardian-card-bg disabled:opacity-50" disabled={!wardianHome} onClick={() => void copyWorkspacePath()} type="button">
+              {copiedWorkspace ? "Copied — paste into Workspace Path" : "Copy Wardian home"}
+            </button>
+          </>
+        ) : null}
         {step.id === "create-orchestrator" ? (
           <>
             <code className="mt-3 block max-h-28 overflow-y-auto rounded border border-wardian-border bg-[var(--color-wardian-bg)] p-2 text-[10px] leading-4 text-primary">{EVOLVER_PROMPT}</code>

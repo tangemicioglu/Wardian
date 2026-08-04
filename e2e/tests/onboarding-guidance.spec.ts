@@ -39,6 +39,7 @@ test("offers first-launch users an opt-in, action-gated guided setup", async ({ 
         contextual_tips_enabled: true,
         guided_tour_state: "in_progress",
       },
+      get_wardian_home_path: "/tmp/wardian-e2e-home",
     },
   });
   await page.goto("/", { waitUntil: "domcontentloaded" });
@@ -53,6 +54,11 @@ test("offers first-launch users an opt-in, action-gated guided setup", async ({ 
   await expect(tour.getByRole("heading", { name: "Name your Evolver" })).toBeVisible();
   await expect(page.getByTestId("spawn-submit")).toBeVisible();
   await page.getByTestId("spawn-agent-name").fill("evolver");
+  await tour.getByRole("button", { name: "Next field" }).click();
+  await expect(tour.getByRole("heading", { name: "Choose the Evolver class" })).toBeVisible();
+  await tour.getByRole("button", { name: "Next field" }).click();
+  await expect(tour.getByRole("heading", { name: "Choose its workspace" })).toBeVisible();
+  await expect(tour.getByText("/tmp/wardian-e2e-home")).toBeVisible();
 
   const screenshotPath = process.env.WARDIAN_ONBOARDING_SCREENSHOT
     ?? testInfo.outputPath("action-gated-guided-setup.png");

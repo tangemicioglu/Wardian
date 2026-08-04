@@ -69,12 +69,21 @@ describe("OnboardingTour", () => {
     render(<OnboardingTour {...props} reviewMode />);
 
     expect(screen.getByText("Name your Evolver")).toBeInTheDocument();
-    expect(screen.getByText("Tour review · 1 of 8")).toBeInTheDocument();
+    expect(screen.getByText("Tour review · 1 of 13")).toBeInTheDocument();
     expect(props.onPrepareAgentCreation).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "Next area" }));
 
     expect(screen.getByText("Choose the Evolver class")).toBeInTheDocument();
+
+    for (let index = 0; index < 6; index += 1) {
+      await user.click(screen.getByRole("button", { name: "Next area" }));
+    }
+
+    expect(screen.getByText("Open Conversation Pattern Review")).toBeInTheDocument();
+    expect(props.onPrepareWorkflow).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Next area" }));
+    expect(screen.getByText("Open its launch settings")).toBeInTheDocument();
   });
 
   it("does not intercept the focused target while it is being located", () => {

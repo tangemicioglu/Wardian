@@ -20,11 +20,12 @@ Evolver's explicit user-prompted CLI action creates only the peer; the user
 creates the visible relationship in Graph. Provider, workspace, archive scope, and cadence
 are operator decisions.
 
-The tutorial must distinguish the Wardian home from an agent workspace. The
-Wardian home stores habitat state and is made available to the agent so its CLI
-can control the running app. The peer spawn must instead use the Evolver's
-explicit current workspace; an omitted workspace falls back to the operating
-system user directory and must not be presented as a Wardian-home default.
+The Evolver is the habitat-level agent: its workspace is the resolved Wardian
+home, normally the current user's `.wardian` directory. It analyzes Wardian
+conversation history and coordinates the evolution of agents across the
+habitat, rather than one project. The guide resolves and displays the exact
+home path from the running app and provides a copy action for the workspace
+field. Its Orchestrator peer uses the same Wardian-home workspace.
 
 ## Conversation Pattern Review Sample
 
@@ -51,7 +52,9 @@ its form controls and waits only for the final spawn action. The Settings entry
 is a review mode that starts at the first area and provides Next area
 navigation, so an existing habitat can revisit every surface. The peer-creation
 step includes a bounded, copyable prompt that visibly names the Wardian CLI
-actions the Evolver will use.
+actions the Evolver will use. Workflow scheduling likewise focuses the
+blueprint picker, Run control, Schedule mode, Evolver assignment, weekly
+cadence, and Save schedule control in turn.
 
 ## Verification
 

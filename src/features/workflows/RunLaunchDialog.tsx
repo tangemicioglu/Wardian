@@ -269,7 +269,7 @@ export function RunLaunchDialog({
     >
       <div className="shrink-0">
         <h3 id="run-launch-dialog-title" className="mb-2 text-sm font-semibold">Run workflow</h3>
-        <div className="wardian-segmented-control mb-3" role="radiogroup" aria-label="Launch mode">
+        <div className="wardian-segmented-control mb-3" data-tour-target="workflow-schedule-mode" role="radiogroup" aria-label="Launch mode">
           {(['run', 'schedule'] as const).map((mode) => (
             <button
               key={mode}
@@ -301,7 +301,7 @@ export function RunLaunchDialog({
               const selectedTarget = selectedRoleTargets[role.name] ?? providerTarget(provider);
               const pickerOpen = pickerRole === role.name;
               return (
-                <div key={role.name} className="relative rounded border border-wardian-border bg-[var(--color-wardian-bg)] p-2">
+                <div key={role.name} data-tour-target={role.name.trim().toLocaleLowerCase() === 'evolver' ? 'workflow-evolver-assignment' : undefined} className="relative rounded border border-wardian-border bg-[var(--color-wardian-bg)] p-2">
                   <div className="flex min-w-0 items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div id={id} className="text-xs font-bold text-primary">
@@ -480,7 +480,7 @@ export function RunLaunchDialog({
           </div>
         )}
         {launchMode === 'schedule' && (
-          <div className="mb-3 border-t border-wardian-border pt-3">
+          <div className="mb-3 border-t border-wardian-border pt-3" data-tour-target="workflow-schedule-editor">
             <label className="mb-1 block text-xs text-muted" htmlFor="schedule-name">
               Schedule name
             </label>
@@ -515,6 +515,7 @@ export function RunLaunchDialog({
         ) : (
           <button
             type="button"
+            data-tour-target="workflow-save-schedule"
             className="wardian-button wardian-button--primary"
             disabled={busy || !launchProviderAvailable}
             onClick={saveSchedule}

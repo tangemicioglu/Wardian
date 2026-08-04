@@ -770,6 +770,7 @@ pub fn run() {
             commands::remote::debug_create_remote_session,
             commands::settings::load_shell_settings,
             commands::settings::get_settings_folder_path,
+            commands::settings::get_wardian_home_path,
             commands::settings::get_update_eligibility,
             commands::settings::restart_app,
             commands::settings::install_update_with_windows_handoff,
