@@ -111,7 +111,7 @@ describe("SpawnAgentPanel", () => {
       "href",
       "https://docs.wardian.org/providers",
     );
-    await screen.findByText("Provider aliases follow the installed CLI’s current model mapping.");
+    expect(screen.queryByText("Provider aliases follow the installed CLI’s current model mapping.")).not.toBeInTheDocument();
   });
 
   it("sets the workspace path from the native folder picker", async () => {

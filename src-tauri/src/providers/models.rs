@@ -148,9 +148,10 @@ async fn discover_model_catalog(provider: &str) -> ProviderModelCatalog {
                 provider,
                 version,
                 &[
-                    ("sonnet", "Latest Sonnet"),
-                    ("opus", "Latest Opus"),
-                    ("haiku", "Latest Haiku"),
+                    ("sonnet", "Sonnet"),
+                    ("opus", "Opus"),
+                    ("haiku", "Haiku"),
+                    ("fable", "Fable"),
                 ],
                 &["low", "medium", "high", "xhigh", "max"],
             )
@@ -326,6 +327,9 @@ fn parse_codex_catalog(output: &str) -> Result<Vec<ProviderModelOption>, String>
             if id.is_empty() {
                 return None;
             }
+            if id == "codex-auto-review" {
+                return None;
+            }
             let display_name = model
                 .get("display_name")
                 .or_else(|| model.get("displayName"))
@@ -433,13 +437,21 @@ mod tests {
     #[test]
     fn parses_current_codex_catalogue_shape() {
         let output = r#"{
-          "models": [{
-            "slug": "gpt-5.6-sol",
-            "display_name": "GPT-5.6-Sol",
-            "default_reasoning_level": "medium",
-            "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
-            "priority": 1
-          }]
+          "models": [
+            {
+              "slug": "gpt-5.6-sol",
+              "display_name": "GPT-5.6-Sol",
+              "default_reasoning_level": "medium",
+              "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
+              "priority": 1
+            },
+            {
+              "slug": "codex-auto-review",
+              "display_name": "Codex Auto Review",
+              "default_reasoning_level": "medium",
+              "supported_reasoning_levels": [{"effort": "low"}, {"effort": "medium"}]
+            }
+          ]
         }"#;
 
         assert_eq!(

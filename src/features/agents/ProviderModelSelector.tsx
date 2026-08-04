@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentConfig, ProviderModelCatalog } from "../../types";
 
@@ -96,19 +95,7 @@ export function ProviderModelSelector({
     <div className={`rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] ${compact ? "px-2 py-1.5" : "p-3"}`}>
       <div className={compact && showEffort ? "flex gap-2" : "grid gap-2"}>
         <div className={compact && showEffort ? "min-w-0 flex-1" : "min-w-0"}>
-          <div className="mb-1 flex items-center justify-between gap-2">
-            <label className="block text-[10px] font-bold text-muted-neutral" htmlFor={modelId}>Model</label>
-            <button
-              aria-label="Refresh models"
-              className="rounded p-0.5 text-muted-neutral transition-colors hover:text-primary disabled:opacity-50"
-              disabled={loading || !provider}
-              onClick={() => void loadCatalog(true)}
-              title="Refresh models from the provider"
-              type="button"
-            >
-              <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
-            </button>
-          </div>
+          <label className="mb-1 block text-[10px] font-bold text-muted-neutral" htmlFor={modelId}>Model</label>
           <select
             aria-label="Model"
             className="w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-60"
@@ -150,11 +137,6 @@ export function ProviderModelSelector({
       {error ? (
         <p className="mt-1.5 text-[10px] leading-4 text-wardian-warning" role="status">
           {error}
-        </p>
-      ) : null}
-      {!error && catalog?.source === "provider_aliases" ? (
-        <p className="mt-1.5 text-[10px] leading-4 text-muted-neutral">
-          Provider aliases follow the installed CLI’s current model mapping.
         </p>
       ) : null}
     </div>

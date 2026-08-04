@@ -29,7 +29,7 @@ impl OpenCodeProvider {
         for path in paths {
             let direct_exe = path.join("opencode.exe");
             if direct_exe.exists() {
-                return Some("opencode".to_string());
+                return Some(direct_exe.to_string_lossy().to_string());
             }
 
             let bare = path.join("opencode");
@@ -37,12 +37,15 @@ impl OpenCodeProvider {
             for ext in path_exts {
                 let candidate = path.join(format!("opencode{ext}"));
                 if candidate.exists() {
-                    return Some("opencode".to_string());
+                    return Some(candidate.to_string_lossy().to_string());
                 }
             }
 
-            if bare.exists() || powershell.exists() {
-                return Some("opencode".to_string());
+            if bare.exists() {
+                return Some(bare.to_string_lossy().to_string());
+            }
+            if powershell.exists() {
+                return Some(powershell.to_string_lossy().to_string());
             }
         }
 
@@ -385,7 +388,10 @@ mod tests {
             &[".exe".into(), ".cmd".into(), ".bat".into()],
         );
 
-        assert_eq!(resolved, Some("opencode".to_string()));
+        assert_eq!(
+            resolved,
+            Some(temp.path().join("opencode.cmd").to_string_lossy().to_string())
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -410,7 +416,10 @@ mod tests {
             &[".exe".into(), ".cmd".into(), ".bat".into()],
         );
 
-        assert_eq!(resolved, Some("opencode".to_string()));
+        assert_eq!(
+            resolved,
+            Some(temp.path().join("opencode.ps1").to_string_lossy().to_string())
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -427,7 +436,10 @@ mod tests {
             &[".exe".into(), ".cmd".into(), ".bat".into()],
         );
 
-        assert_eq!(resolved, Some("opencode".to_string()));
+        assert_eq!(
+            resolved,
+            Some(temp.path().join("opencode.cmd").to_string_lossy().to_string())
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -445,7 +457,10 @@ mod tests {
             &[".exe".into(), ".cmd".into(), ".bat".into()],
         );
 
-        assert_eq!(resolved, Some("opencode".to_string()));
+        assert_eq!(
+            resolved,
+            Some(shim_dir.path().join("opencode.cmd").to_string_lossy().to_string())
+        );
     }
 
     #[cfg(target_os = "windows")]
