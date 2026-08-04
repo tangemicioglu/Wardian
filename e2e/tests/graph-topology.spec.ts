@@ -22,6 +22,13 @@ interface MockAgent {
   is_off: boolean;
 }
 
+interface PairActivity {
+  a: string;
+  b: string;
+  last_message_at: string;
+  active_ask: boolean;
+}
+
 async function installGraphTopologyIpcMock(
   page: Page,
   topology: {
@@ -30,8 +37,9 @@ async function installGraphTopologyIpcMock(
     fallback_groups: string[][];
   },
   agents: MockAgent[],
+  pairActivity: PairActivity[] = [],
 ) {
-  await page.addInitScript(({ topologyFixture, agentsFixture }) => {
+  await page.addInitScript(({ topologyFixture, agentsFixture, activityFixture }) => {
     let callbackId = 1;
     const callbacks = new Map<number, unknown>();
     const tauriWindow = window as Window & {
@@ -99,14 +107,14 @@ async function installGraphTopologyIpcMock(
         if (command === "get_topology") {
           return topologyFixture;
         }
-        if (command === "get_pair_activity") return [];
+        if (command === "get_pair_activity") return activityFixture;
         if (command === "plugin:event|listen") return callbackId++;
         if (command === "plugin:event|unlisten") return null;
         if (command === "sync_provider_theme_settings") return null;
         return null;
       },
     };
-  }, { topologyFixture: topology, agentsFixture: agents });
+  }, { topologyFixture: topology, agentsFixture: agents, activityFixture: pairActivity });
 }
 
 async function openGraphView(page: Page) {
@@ -262,6 +270,60 @@ test.describe("Graph Topology", () => {
       true,
       "@native-only: Ghost edges require pair activity data from backend, which is not available in browser mock layer. Test in native E2E with real IPC."
     );
+  });
+
+  test("unmapped neighbor actions fit the inspector row", async () => {
+    const agent1: MockAgent = {
+      session_id: "ghost-style-1",
+      session_name: "Source",
+      agent_class: "TestClass",
+      folder: "/test/source",
+      provider: "claude",
+      is_off: false,
+    };
+    const agent2: MockAgent = {
+      session_id: "ghost-style-2",
+      session_name: "BionicFace-PCB",
+      agent_class: "TestClass",
+      folder: "/test/target",
+      provider: "claude",
+      is_off: false,
+    };
+    const topology = {
+      edges: [],
+      ignored_pairs: [],
+      fallback_groups: [],
+    };
+
+    await installGraphTopologyIpcMock(page, topology, [agent1, agent2], [
+      {
+        a: agent1.session_id,
+        b: agent2.session_id,
+        last_message_at: new Date(Date.now() - 60_000).toISOString(),
+        active_ask: false,
+      },
+    ]);
+    await openGraphView(page);
+
+    const neighborsRow = page.locator(".graph-neighbors-row").first();
+    await expect(neighborsRow).toContainText("BionicFace-PCB");
+    await expect(neighborsRow.locator(".graph-inspector-unmapped")).toHaveText("Unmapped");
+
+    const formalize = neighborsRow.locator(".graph-neighbors-action-formalize");
+    const ignore = neighborsRow.locator(".graph-neighbors-action-ignore");
+    await expect(formalize).toHaveText("Formalize");
+    await expect(ignore).toHaveText("Ignore");
+
+    const rowBox = await neighborsRow.boundingBox();
+    const formalizeBox = await formalize.boundingBox();
+    const ignoreBox = await ignore.boundingBox();
+    expect(rowBox).not.toBeNull();
+    expect(formalizeBox).not.toBeNull();
+    expect(ignoreBox).not.toBeNull();
+    expect(formalizeBox!.x + formalizeBox!.width).toBeLessThanOrEqual(rowBox!.x + rowBox!.width + 1);
+    expect(ignoreBox!.x + ignoreBox!.width).toBeLessThanOrEqual(rowBox!.x + rowBox!.width + 1);
+
+    await neighborsRow.screenshot({ path: "e2e/screenshots/graph/20260804-unmapped-neighbor-actions.png" });
   });
 
   test("formalize and ignore actions on ghost edges", async () => {

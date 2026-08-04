@@ -462,6 +462,38 @@ describe("GraphView", () => {
       expect(mockInvoke).toHaveBeenCalledWith("add_topology_edge", { a: "a", b: "b" });
     });
 
+    it("keeps ghost relationship controls inline and readable", async () => {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const mockInvoke = vi.mocked(invoke);
+
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "get_topology") {
+          return { edges: [], ignored_pairs: [] };
+        }
+        if (command === "get_pair_activity") {
+          return [
+            { a: "a", b: "b", last_message_at: new Date(Date.now() - 60000).toISOString(), active_ask: false },
+          ];
+        }
+        return undefined;
+      });
+
+      const { container } = render(<GraphView {...defaultProps} selectedAgentIds={new Set(["a"])} />);
+
+      const unmappedBadge = await screen.findByText("Unmapped");
+      expect(unmappedBadge.closest("li")).toHaveClass("graph-neighbors-row");
+      expect(screen.getByTitle("Formalize edge")).toHaveClass("graph-neighbors-action-formalize");
+      expect(screen.getByTitle("Ignore this pair")).toHaveClass("graph-neighbors-action-ignore");
+
+      const appCss = readFileSync(resolve(process.cwd(), "src/styles/App.css"), "utf8");
+      expect(appCss).not.toMatch(/\.graph-relationships li\s*\{/);
+      expect(appCss).toMatch(
+        /\.graph-neighbors-ghost-actions \.graph-neighbors-action-btn\s*\{[^}]*width:\s*auto;[^}]*white-space:\s*nowrap;/s,
+      );
+      expect(appCss).toMatch(/\.graph-inspector-unmapped\s*\{[^}]*text-transform:\s*none;/s);
+      expect(container.querySelector(".graph-neighbors-ghost-actions")).toBeInTheDocument();
+    });
+
     it("ignore click → invoke called with ignore_topology_pair", async () => {
       const { invoke } = await import("@tauri-apps/api/core");
       const mockInvoke = vi.mocked(invoke);
