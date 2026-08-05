@@ -92,13 +92,15 @@ export function ProviderModelSelector({
   };
 
   return (
-    <div className={`rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] ${compact ? "px-2 py-1.5" : "p-3"}`}>
+    <div className={compact ? "flex min-w-0 items-center gap-1.5" : "rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] p-3"}>
       <div className={compact && showEffort ? "flex gap-2" : "grid gap-2"}>
         <div className={compact && showEffort ? "min-w-0 flex-1" : "min-w-0"}>
-          <label className="mb-1 block text-[10px] font-bold text-muted-neutral" htmlFor={modelId}>Model</label>
+          <label className={compact ? "sr-only" : "mb-1 block text-[10px] font-bold text-muted-neutral"} htmlFor={modelId}>Model</label>
           <select
             aria-label="Model"
-            className="w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-60"
+            className={compact
+              ? "max-w-[15rem] rounded border border-transparent bg-transparent px-1 py-1 text-[11px] font-medium text-primary outline-none transition-colors hover:border-wardian-light focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-60"
+              : "w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-60"}
             disabled={loading || models.length === 0}
             id={modelId}
             onChange={(event) => chooseModel(event.target.value)}
@@ -114,11 +116,13 @@ export function ProviderModelSelector({
           </select>
         </div>
         {showEffort ? (
-          <div className={compact ? "w-24 shrink-0" : "min-w-0"}>
-            <label className="mb-1 block text-[10px] font-bold text-muted-neutral" htmlFor={effortId}>Effort</label>
+          <div className={compact ? "w-20 shrink-0" : "min-w-0"}>
+            <label className={compact ? "sr-only" : "mb-1 block text-[10px] font-bold text-muted-neutral"} htmlFor={effortId}>Effort</label>
             <select
               aria-label="Effort"
-              className="w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)]"
+              className={compact
+                ? "w-full rounded border border-transparent bg-transparent px-1 py-1 text-[11px] font-medium text-muted-neutral outline-none transition-colors hover:border-wardian-light focus:border-[var(--color-wardian-accent)]"
+                : "w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)]"}
               id={effortId}
               onChange={(event) => onSelectionChange({
                 model: selection.model,

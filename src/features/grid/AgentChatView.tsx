@@ -926,6 +926,7 @@ function ChatComposer({
   sessionId: string;
   submitError: string | null;
 }) {
+  const composerRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const autoFocusConsumedRef = useRef(false);
   const placeholder = disabledReason ?? (hasActionRequired ? "Respond to action required..." : "Message agent...");
@@ -951,6 +952,45 @@ function ChatComposer({
     }
   };
 
+  const addAttachmentPaths = (paths: readonly string[]) => {
+    const knownPaths = new Set(attachments.map((attachment) => attachment.path.toLocaleLowerCase()));
+    const added = paths
+      .filter((path) => path.trim() && !knownPaths.has(path.toLocaleLowerCase()))
+      .map((path) => ({ name: fileNameFromPath(path), path }));
+    if (added.length > 0) onAttachmentsChange([...attachments, ...added]);
+  };
+
+  const pathsFromDataTransfer = (dataTransfer: DataTransfer): string[] => {
+    const files = Array.from(dataTransfer.files) as Array<File & { path?: string }>;
+    const filePaths = files.map((file) => file.path).filter((path): path is string => Boolean(path));
+    if (filePaths.length > 0) return filePaths;
+    return dataTransfer.getData("text/uri-list")
+      .split(/\r?\n/)
+      .filter((value) => value.startsWith("file://"))
+      .map((value) => decodeURIComponent(value.replace(/^file:\/\//, "")));
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen<{ paths?: string[]; position?: { x?: number; y?: number } }>("tauri://drag-drop", (event) => {
+      if (disposed || disabledReason || isSubmitting || !event.payload?.paths?.length) return;
+      const position = event.payload.position;
+      const bounds = composerRef.current?.getBoundingClientRect();
+      if (position && bounds && (position.x ?? -1) >= bounds.left && (position.x ?? -1) <= bounds.right
+        && (position.y ?? -1) >= bounds.top && (position.y ?? -1) <= bounds.bottom) {
+        addAttachmentPaths(event.payload.paths);
+      }
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    }).catch((error) => console.warn("Failed to listen for chat file drops:", error));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [attachments, disabledReason, isSubmitting]);
+
   useEffect(() => {
     if (!autoFocus) {
       autoFocusConsumedRef.current = false;
@@ -966,12 +1006,33 @@ function ChatComposer({
   return (
     <form
       className="border-t border-wardian-light bg-[var(--color-wardian-card)] px-3 py-2"
+      data-testid="chat-composer"
+      ref={composerRef}
+      onDragOver={(event) => {
+        if (pathsFromDataTransfer(event.dataTransfer).length > 0) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }
+      }}
+      onDrop={(event) => {
+        const paths = pathsFromDataTransfer(event.dataTransfer);
+        if (paths.length > 0) {
+          event.preventDefault();
+          addAttachmentPaths(paths);
+        }
+      }}
+      onPaste={(event) => {
+        const paths = pathsFromDataTransfer(event.clipboardData);
+        if (paths.length > 0) {
+          event.preventDefault();
+          addAttachmentPaths(paths);
+        }
+      }}
       onSubmit={(event) => {
         event.preventDefault();
         onSubmit();
       }}
     >
-      <ChatModelSelection agent={agent} sessionId={sessionId} />
       {attachments.length > 0 ? (
         <div className="mb-2 flex flex-wrap gap-1.5" aria-label="Attached files">
           {attachments.map((attachment) => (
@@ -1023,6 +1084,7 @@ function ChatComposer({
           rows={1}
           value={draft}
         />
+        <ChatModelSelection agent={agent} sessionId={sessionId} />
         <button
           aria-label={isSubmitting ? "Sending message" : "Send message"}
           className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-[var(--color-wardian-accent)] bg-[color-mix(in_srgb,var(--color-wardian-accent),transparent_86%)] text-[var(--color-wardian-accent)] transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-accent),transparent_78%)] disabled:cursor-not-allowed disabled:border-wardian-light disabled:bg-[var(--color-wardian-card-bg-muted)] disabled:text-muted-neutral"
@@ -1072,6 +1134,7 @@ function ChatModelSelection({
 
   const saveSelection = async (nextSelection: ModelSelection) => {
     const previousSelection = selection;
+    let persisted = false;
     setSelection(nextSelection);
     setSaveError(null);
     setIsSaving(true);
@@ -1085,16 +1148,20 @@ function ChatModelSelection({
         model: saved.model,
         reasoning_effort: reasoningEffortForConfig(saved),
       });
+      persisted = true;
+      if (saved.model) {
+        await submitInputToAgent(sessionId, `/model ${saved.model}`);
+      }
     } catch (reason) {
-      setSelection(previousSelection);
-      setSaveError(errorMessage(reason));
+      if (!persisted) setSelection(previousSelection);
+      setSaveError(persisted ? `Saved, but the live model could not be changed: ${errorMessage(reason)}` : errorMessage(reason));
     } finally {
       setIsSaving(false);
     }
   };
 
   return (
-    <div className="mb-2">
+    <div className="min-w-0 shrink-0">
       <ProviderModelSelector
         compact
         idPrefix={`chat-${sessionId}`}
@@ -1102,10 +1169,7 @@ function ChatModelSelection({
         selection={selection}
         onSelectionChange={(nextSelection) => void saveSelection(nextSelection)}
       />
-      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-neutral">
-        <span>Applies when this agent next starts or restarts.</span>
-        {isSaving ? <span>Saving…</span> : null}
-      </div>
+      {isSaving ? <span className="sr-only">Saving model…</span> : null}
       {saveError ? <p className="mt-1 text-[10px] text-wardian-error" role="alert">{saveError}</p> : null}
     </div>
   );

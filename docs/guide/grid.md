@@ -37,7 +37,7 @@ The default card display comes from **Settings > Agents > Agent card display**. 
 
 Terminal mode uses the provider's real PTY, including raw keys, approvals, TUIs, scrollback, and clickable supported links. Click inside a terminal to explicitly activate that presentation before typing. A mirrored presentation stays read-only until activated.
 
-Chat mode shows normalized user, assistant, status, tool, approval, and terminal-output events. Use `Enter` to send and `Shift+Enter` for a newline. Switch back to Terminal when you need provider-specific keys or a raw approval screen.
+Chat mode shows normalized user, assistant, status, tool, approval, and terminal-output events. Use `Enter` to send and `Shift+Enter` for a newline. The composer accepts file-picker selections, native file drops, and filesystem-backed file pastes; changing its model applies `/model` to the live provider and persists the selection. Switch back to Terminal when you need provider-specific keys or a raw approval screen.
 
 Wardian preserves terminal state across tab changes, pane moves, Agents layout changes, and remote handoff. Reclaimed renderers restore and fit automatically when their presentation becomes visible.
 

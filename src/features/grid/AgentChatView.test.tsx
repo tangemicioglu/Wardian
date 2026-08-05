@@ -1169,7 +1169,7 @@ describe("AgentChatView", () => {
     expect(input).toHaveValue("");
   });
 
-  it("persists chat model and effort selections as agent configuration for the next restart", async () => {
+  it("persists chat model and applies it to the live provider", async () => {
     invokeMock.mockImplementation((command, args) => {
       if (command === "load_agent_chat_transcript") return Promise.resolve([]);
       if (command === "list_provider_model_catalog") {
@@ -1204,6 +1204,10 @@ describe("AgentChatView", () => {
           provider_config: { type: "codex", reasoning_effort: "low" },
         });
       }
+      if (command === "submit_prompt_to_agent") {
+        expect(args).toEqual({ sessionId: "agent-1", prompt: "/model gpt-5.6-sol" });
+        return Promise.resolve(undefined);
+      }
       return Promise.reject(new Error(`unexpected command: ${command}`));
     });
     const user = userEvent.setup();
@@ -1218,7 +1222,7 @@ describe("AgentChatView", () => {
       model: "gpt-5.6-sol",
       reasoningEffort: "low",
     }));
-    expect(screen.getByText("Applies when this agent next starts or restarts.")).toBeInTheDocument();
+    expect(screen.queryByText("Applies when this agent next starts or restarts.")).not.toBeInTheDocument();
   });
 
   it("stages image files with the provider paste shortcut and includes every attachment path in the sent prompt", async () => {
@@ -1257,6 +1261,27 @@ describe("AgentChatView", () => {
     }));
     expect(screen.queryByText("screen.png")).not.toBeInTheDocument();
     expect(screen.queryByText("notes.txt")).not.toBeInTheDocument();
+  });
+
+  it("captures file paths from drop and paste events", async () => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+
+    render(<AgentChatView sessionId="agent-1" status="Idle" />);
+    await screen.findByText("No chat transcript yet");
+    const composer = screen.getByTestId("chat-composer");
+    const droppedFile = new File(["drop"], "dropped.txt", { type: "text/plain" }) as File & { path?: string };
+    const pastedFile = new File(["paste"], "pasted.md", { type: "text/markdown" }) as File & { path?: string };
+    droppedFile.path = "C:\\Users\\agent\\Desktop\\dropped.txt";
+    pastedFile.path = "C:\\Users\\agent\\Desktop\\pasted.md";
+
+    fireEvent.drop(composer, { dataTransfer: { files: [droppedFile], getData: () => "" } });
+    fireEvent.paste(composer, { clipboardData: { files: [pastedFile], getData: () => "" } });
+
+    expect(await screen.findByText("dropped.txt")).toBeInTheDocument();
+    expect(screen.getByText("pasted.md")).toBeInTheDocument();
   });
 
   it("keeps the latest transcript rows anchored after sending a chat message", async () => {
