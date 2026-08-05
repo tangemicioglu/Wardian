@@ -1,10 +1,51 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
 
-vi.mock("react-konva", () => ({
-  Stage: ({ children }: any) => <div data-konva="stage">{children}</div>,
-  Layer: ({ children }: any) => <div data-konva="layer">{children}</div>,
-}));
+const konvaMocks = vi.hoisted(() => {
+  let position = { x: 0, y: 0 };
+  const stage = {
+    x: vi.fn(() => position.x),
+    y: vi.fn(() => position.y),
+    position: vi.fn((next?: { x: number; y: number }) => {
+      if (next) position = next;
+      return position;
+    }),
+    scale: vi.fn(),
+    batchDraw: vi.fn(),
+    getPointerPosition: vi.fn(() => ({ x: 100, y: 80 })),
+  };
+  return {
+    stage,
+    reset: () => {
+      position = { x: 0, y: 0 };
+      stage.x.mockClear();
+      stage.y.mockClear();
+      stage.position.mockClear();
+      stage.scale.mockClear();
+      stage.batchDraw.mockClear();
+      stage.getPointerPosition.mockClear();
+    },
+  };
+});
+
+vi.mock("react-konva", async () => {
+  const React = await import("react");
+  return {
+    Stage: React.forwardRef((props: any, ref) => {
+      React.useImperativeHandle(ref, () => konvaMocks.stage);
+      return React.createElement(
+        "div",
+        {
+          "data-konva": "stage",
+          "data-testid": "garden-stage",
+          onWheel: (event: WheelEvent) => props.onWheel?.({ evt: event }),
+        },
+        props.children,
+      );
+    }),
+    Layer: ({ children }: any) => <div data-konva="layer">{children}</div>,
+  };
+});
 vi.mock("./AgentUnit", () => ({
   AGENT_UNIT_NAME: "agent-unit",
   AgentUnit: ({ unit }: any) => <div data-testid="agent-unit">{unit.label}</div>,
@@ -14,6 +55,8 @@ vi.mock("./WorkflowUnit", () => ({ WorkflowUnit: ({ unit }: any) => <div data-te
 import { GardenCanvas } from "./GardenCanvas";
 
 describe("GardenCanvas", () => {
+  beforeEach(() => konvaMocks.reset());
+
   it("renders one node per agent and workflow unit", () => {
     render(
       <GardenCanvas
@@ -74,5 +117,31 @@ describe("GardenCanvas", () => {
       expect(screen.getByTestId("garden-fit-view")).toHaveAttribute("title", expect.stringContaining("0"));
       expect(screen.getByLabelText("Zoom in")).toHaveAttribute("title", expect.stringContaining("+"));
     });
+  });
+
+  it("applies the shared delta-based zoom to Konva imperatively", () => {
+    render(
+      <GardenCanvas
+        agentUnits={[{ ref: { kind: "agent", id: "a1" }, label: "Alpha", status: "Idle", color: "#fff", position: { x: 0, y: 0 }, crown: [] }]}
+        workflowUnits={[]}
+        selectedKey={null}
+        onSelect={vi.fn()}
+        onOpenAgent={vi.fn()}
+        onMoveUnit={vi.fn()}
+        onResetLayout={vi.fn()}
+      />,
+    );
+
+    fireEvent.wheel(screen.getByTestId("garden-stage"), { deltaY: -60 });
+
+    expect(konvaMocks.stage.scale).toHaveBeenCalledWith({
+      x: Math.sqrt(1.05),
+      y: Math.sqrt(1.05),
+    });
+    expect(konvaMocks.stage.position).toHaveBeenCalledWith({
+      x: 100 - 100 * Math.sqrt(1.05),
+      y: 80 - 80 * Math.sqrt(1.05),
+    });
+    expect(screen.getByTestId("garden-zoom-level")).toHaveTextContent("102%");
   });
 });

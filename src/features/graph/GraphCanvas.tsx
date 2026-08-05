@@ -5,6 +5,7 @@ import { RELATIONSHIP_REASON_LABELS, type AgentGraphProjection, type GraphRelati
 import { EdgeActivityOverlay } from "./EdgeActivityOverlay";
 import { resolveGraphColor, withAlpha } from "./graphColorUtils";
 import { formatAgentStatusLabel } from "../../utils/statusUtils";
+import { wheelZoomFactor } from "../../utils/wheelZoom";
 
 const EDGE_REASON_COLORS: Record<GraphRelationshipReason, string> = {
   same_team: "var(--color-wardian-accent)",
@@ -119,6 +120,31 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     rendererRef.current = renderer;
     setSigmaInstance(renderer);
 
+    // Sigma's built-in wheel path animates coarse steps and drops nearby
+    // same-direction events. Handle the native event before Sigma's captor so
+    // high-resolution wheels and trackpads use the same small, delta-based
+    // zoom as Garden while preserving the point under the cursor.
+    const handleWheel = (event: WheelEvent) => {
+      const factor = wheelZoomFactor(event.deltaY, event.deltaMode);
+      if (factor === 1) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = container.getBoundingClientRect();
+      const camera = renderer.getCamera();
+      const currentState = camera.getState();
+      const nextRatio = camera.getBoundedRatio(currentState.ratio / factor);
+      if (nextRatio === currentState.ratio) return;
+      const nextState = renderer.getViewportZoomedState(
+        { x: event.clientX - rect.left, y: event.clientY - rect.top },
+        nextRatio,
+      );
+      // One frame is enough to interrupt a reset animation without reintroducing
+      // Sigma's visibly stepped wheel tween.
+      void camera.animate(nextState, { duration: 1, easing: "linear" });
+    };
+    container.addEventListener("wheel", handleWheel, { capture: true, passive: false });
+
     renderer.on("downNode", ({ node, event }: SigmaPointerPayload) => {
       const original = event?.original ?? event?.originalEvent;
       const isShiftKey = original && "shiftKey" in original && original.shiftKey;
@@ -209,6 +235,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       }
       rendererRef.current = null;
       graphRef.current = null;
+      container.removeEventListener("wheel", handleWheel, { capture: true });
       setSigmaInstance(null);
     };
   }, []);

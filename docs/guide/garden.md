@@ -48,8 +48,9 @@ commons until a schedule deploys it somewhere.
 
 ## Navigating the Map
 
-- **Scroll** to zoom. Zoom is anchored at the pointer, so the point under the
-  cursor stays put.
+- **Scroll** to zoom. Zoom uses the wheel delta, so high-resolution trackpads
+  move continuously while a normal wheel notch remains a small step. It is
+  anchored at the pointer, so the point under the cursor stays put.
 - **Drag the background** to pan.
 - **Arrow keys** to pan; hold Shift for larger steps.
 - **`+` / `-`** to zoom in and out.
