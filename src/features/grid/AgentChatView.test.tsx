@@ -1337,6 +1337,23 @@ describe("AgentChatView", () => {
     expect(await screen.findByLabelText("Message agent")).toHaveFocus();
   });
 
+  it("keeps an empty composer compact and grows its message field for multiline input", async () => {
+    const scrollHeightSpy = vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(72);
+    invokeMock.mockResolvedValue([]);
+
+    try {
+      render(<AgentChatView sessionId="agent-1" status="Idle" />);
+
+      const input = await screen.findByLabelText("Message agent");
+      expect(input).toHaveStyle({ height: "72px", overflowY: "hidden" });
+      expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
+      fireEvent.change(input, { target: { value: "line one\nline two" } });
+      expect(input).toHaveValue("line one\nline two");
+    } finally {
+      scrollHeightSpy.mockRestore();
+    }
+  });
+
   it("notifies the parent when the requested composer focus is applied", async () => {
     invokeMock.mockResolvedValue([]);
     const onComposerAutoFocused = vi.fn();

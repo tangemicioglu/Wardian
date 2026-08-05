@@ -108,7 +108,7 @@ export function ProviderModelSelector({
               onChange={(event) => chooseModel(event.target.value)}
               value={modelValue}
             >
-              <option value="">Provider default</option>
+              <option value="">{compact ? "Default" : "Provider default"}</option>
               {modelIsCurrentButUndiscovered ? (
                 <option value={selection.model}>{selection.model} (saved)</option>
               ) : null}
@@ -135,7 +135,7 @@ export function ProviderModelSelector({
                 })}
                 value={selection.reasoning_effort ?? ""}
               >
-                <option value="">Provider default</option>
+                <option value="">{compact ? "Default" : "Provider default"}</option>
                 {effortOptions.map((effort) => (
                   <option key={effort} value={effort}>{effort}</option>
                 ))}

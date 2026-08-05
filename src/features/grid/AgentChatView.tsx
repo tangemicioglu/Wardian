@@ -1003,6 +1003,16 @@ function ChatComposer({
     }
   }, [autoFocus, disabledReason, onAutoFocused]);
 
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "0px";
+    const maxHeight = 112;
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${Math.max(nextHeight, 28)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [draft]);
+
   return (
     <form
       className="chat-composer mx-3 mb-3 rounded-2xl border border-wardian-light bg-[var(--color-wardian-input-bg)] px-3 pb-1.5 pt-2 shadow-sm"
@@ -1058,7 +1068,7 @@ function ChatComposer({
       ) : null}
       <textarea
         aria-label="Message agent"
-        className="max-h-28 min-h-9 w-full resize-none bg-transparent px-0 py-0 text-[13px] leading-6 text-primary outline-none placeholder:text-muted-neutral disabled:cursor-not-allowed disabled:opacity-70"
+        className="max-h-28 min-h-7 w-full resize-none bg-transparent px-0 py-0 text-[13px] leading-5 text-primary outline-none placeholder:text-muted-neutral disabled:cursor-not-allowed disabled:opacity-70"
         disabled={Boolean(disabledReason)}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
@@ -1094,18 +1104,20 @@ function ChatComposer({
         </div>
         <div className="ml-auto flex min-w-0 items-center gap-1">
           <ChatModelSelection agent={agent} sessionId={sessionId} />
-        <button
-          aria-label={isSubmitting ? "Sending message" : "Send message"}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-bg)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-wardian-light disabled:bg-[var(--color-wardian-card-bg-muted)] disabled:text-muted-neutral"
-          disabled={!canSubmit}
-          type="submit"
-        >
-          {isSubmitting ? (
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          ) : (
-            <SendHorizontal className="h-4 w-4" aria-hidden="true" />
-          )}
-        </button>
+        {canSubmit || isSubmitting ? (
+          <button
+            aria-label={isSubmitting ? "Sending message" : "Send message"}
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-wardian-light disabled:bg-[var(--color-wardian-card-bg-muted)] disabled:text-muted-neutral"
+            disabled={!canSubmit}
+            type="submit"
+          >
+            {isSubmitting ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <SendHorizontal className="h-4 w-4" aria-hidden="true" />
+            )}
+          </button>
+        ) : null}
         </div>
       </div>
       {submitError ? (
