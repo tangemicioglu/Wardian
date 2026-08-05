@@ -271,6 +271,55 @@ describe("TerminalSessionClient", () => {
     ]));
   });
 
+  it("requeues foreground recovery when visibility changes during an in-flight snapshot", async () => {
+    const firstSnapshot = deferred<TerminalSnapshot>();
+    let snapshotRequests = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === "register_terminal_presentation") {
+        return registeredResult("pane-a");
+      }
+      if (command === "subscribe_terminal_events") {
+        return { broker_state: brokerState(1, 4), initial_snapshot: snapshot(1, 4) };
+      }
+      if (command === "request_terminal_snapshot") {
+        snapshotRequests += 1;
+        return snapshotRequests === 1 ? firstSnapshot.promise : snapshot(1, 200);
+      }
+      if (command === "ack_terminal_events") {
+        return { runtime_generation: 1, acknowledged_sequence: 200 };
+      }
+      if (command === "read_terminal_events") {
+        return eventsBatch([], 200, 200);
+      }
+      if (command === "unregister_terminal_presentation") {
+        return brokerState();
+      }
+      if (command === "unsubscribe_terminal_events") {
+        return undefined;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const client = terminalSessionClientFor("agent-1");
+    await client.registerPresentation(registration("pane-a"), {
+      applySnapshot: () => undefined,
+      applyEvents: () => undefined,
+    });
+
+    await setTerminalApplicationVisibility(false);
+    const firstForeground = setTerminalApplicationVisibility(true);
+    await vi.waitFor(() => expect(snapshotRequests).toBe(1));
+
+    await setTerminalApplicationVisibility(false);
+    const secondForeground = setTerminalApplicationVisibility(true);
+    firstSnapshot.resolve(snapshot(1, 100));
+
+    await firstForeground;
+    await secondForeground;
+    await vi.waitFor(() => expect(snapshotRequests).toBe(2));
+    expect(tauri.invoke).toHaveBeenCalledWith("ack_terminal_events", expect.anything());
+  });
+
   it("keeps a backgrounded client paused when its foreground snapshot fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     tauri.invoke.mockImplementation(async (command: string) => {

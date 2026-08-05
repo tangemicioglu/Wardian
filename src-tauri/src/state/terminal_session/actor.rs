@@ -1607,6 +1607,7 @@ struct TerminalSessionActor {
     activation_sequence: u64,
     resync_sequence: u64,
     snapshot_sequence: u64,
+    cached_snapshot: Option<TerminalSnapshot>,
     geometry: TerminalGeometry,
     compatibility_geometry_sequence: u64,
     compatibility_read_sequence: u64,
@@ -1659,6 +1660,7 @@ impl TerminalSessionActor {
             activation_sequence: 0,
             resync_sequence: 0,
             snapshot_sequence: 0,
+            cached_snapshot: None,
             geometry,
             compatibility_geometry_sequence: 0,
             compatibility_read_sequence: 0,
@@ -1896,6 +1898,10 @@ impl TerminalSessionActor {
             return Ok(());
         }
         let bytes = self.output_filter.filter(&bytes);
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        self.cached_snapshot = None;
         for chunk in bytes.chunks(MAX_BATCH_BYTES as usize) {
             self.parser.process(chunk);
             self.emit_event(TerminalBrokerEventKind::Output {
@@ -2789,6 +2795,7 @@ impl TerminalSessionActor {
             .screen_mut()
             .set_size(geometry.rows, geometry.cols);
         self.geometry = geometry;
+        self.cached_snapshot = None;
         self.emit_event(TerminalBrokerEventKind::Geometry {
             geometry,
             geometry_sequence,
@@ -2890,15 +2897,20 @@ impl TerminalSessionActor {
     }
 
     fn snapshot(&mut self) -> TerminalSnapshot {
+        if let Some(snapshot) = &self.cached_snapshot {
+            return snapshot.clone();
+        }
         self.snapshot_sequence = self.snapshot_sequence.saturating_add(1);
-        build_snapshot(
+        let snapshot = build_snapshot(
             &self.session_id,
             self.runtime_generation,
             self.stream_sequence,
             self.geometry,
             self.parser.screen(),
             self.snapshot_sequence,
-        )
+        );
+        self.cached_snapshot = Some(snapshot.clone());
+        snapshot
     }
 
     fn broker_state(&self) -> TerminalBrokerState {
