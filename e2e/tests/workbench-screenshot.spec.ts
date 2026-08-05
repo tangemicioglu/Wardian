@@ -124,6 +124,8 @@ test("renders chat attachment chips alongside a compact provider launch row", as
       folder: "/workspace/alpha",
       provider: "codex",
       is_off: false,
+      model: "gpt-5.6-sol",
+      provider_config: { type: "codex", reasoning_effort: "high" },
     }],
     load_result: {
       source: "primary",
@@ -153,6 +155,19 @@ test("renders chat attachment chips alongside a compact provider launch row", as
         metadata: { terminal_presentation: "launch" },
       }],
       "plugin:dialog|open": ["C:/evidence/dashboard.png", "C:/evidence/notes.txt"],
+      list_provider_model_catalog: {
+        provider: "codex",
+        version: "codex-cli 0.146.0",
+        source: "live_catalog",
+        refresh_error: null,
+        models: [{
+          id: "gpt-5.6-sol",
+          display_name: "5.6 Terra",
+          effort_options: ["low", "high"],
+          default_effort: "high",
+          is_default: true,
+        }],
+      },
     },
   });
 

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Check, FilePlus2, FileText, GitCompare, ListChecks, Loader2, Search, SendHorizontal, ShieldAlert, Terminal, Wrench, X } from "lucide-react";
+import { Check, FileText, GitCompare, Hand, ListChecks, Loader2, Plus, Search, SendHorizontal, ShieldAlert, Terminal, Wrench, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
@@ -1005,7 +1005,7 @@ function ChatComposer({
 
   return (
     <form
-      className="border-t border-wardian-light bg-[var(--color-wardian-card)] px-3 py-2"
+      className="chat-composer mx-3 mb-3 rounded-2xl border border-wardian-light bg-[var(--color-wardian-input-bg)] px-3 pb-1.5 pt-2 shadow-sm"
       data-testid="chat-composer"
       ref={composerRef}
       onDragOver={(event) => {
@@ -1056,38 +1056,47 @@ function ChatComposer({
           ))}
         </div>
       ) : null}
-      <div className="flex items-end gap-2">
+      <textarea
+        aria-label="Message agent"
+        className="max-h-28 min-h-9 w-full resize-none bg-transparent px-0 py-0 text-[13px] leading-6 text-primary outline-none placeholder:text-muted-neutral disabled:cursor-not-allowed disabled:opacity-70"
+        disabled={Boolean(disabledReason)}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (shouldSubmitComposerKey(event)) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (canSubmit) onSubmit();
+          }
+        }}
+        placeholder={placeholder}
+        ref={textareaRef}
+        rows={1}
+        value={draft}
+      />
+      <div className="mt-1.5 flex min-h-7 flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <div className="flex min-w-0 items-center gap-1">
         <button
           aria-label="Attach files"
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] text-muted-neutral transition-colors hover:border-[var(--color-wardian-accent)] hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-neutral transition-colors hover:bg-[var(--color-wardian-card-bg-muted)] hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
           disabled={Boolean(disabledReason) || isSubmitting}
           onClick={() => void chooseAttachments()}
           title="Attach files"
           type="button"
         >
-          <FilePlus2 className="h-4 w-4" aria-hidden="true" />
+          <Plus className="h-4 w-4" aria-hidden="true" />
         </button>
-        <textarea
-          aria-label="Message agent"
-          className="max-h-28 min-h-9 flex-1 resize-none rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-3 py-2 text-[13px] leading-5 text-primary outline-none transition-colors placeholder:text-muted-neutral focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-70"
-          disabled={Boolean(disabledReason)}
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (shouldSubmitComposerKey(event)) {
-              event.preventDefault();
-              event.stopPropagation();
-              if (canSubmit) onSubmit();
-            }
-          }}
-          placeholder={placeholder}
-          ref={textareaRef}
-          rows={1}
-          value={draft}
-        />
-        <ChatModelSelection agent={agent} sessionId={sessionId} />
+        {hasActionRequired ? (
+          <span className="inline-flex min-w-0 items-center gap-1 rounded-md px-1.5 text-[11px] text-muted-neutral" title="Agent is waiting for your approval">
+            <Hand className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="truncate">Ask for approval</span>
+          </span>
+        ) : null}
+        </div>
+        <div className="ml-auto flex min-w-0 items-center gap-1">
+          <ChatModelSelection agent={agent} sessionId={sessionId} />
         <button
           aria-label={isSubmitting ? "Sending message" : "Send message"}
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-[var(--color-wardian-accent)] bg-[color-mix(in_srgb,var(--color-wardian-accent),transparent_86%)] text-[var(--color-wardian-accent)] transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-accent),transparent_78%)] disabled:cursor-not-allowed disabled:border-wardian-light disabled:bg-[var(--color-wardian-card-bg-muted)] disabled:text-muted-neutral"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-bg)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-wardian-light disabled:bg-[var(--color-wardian-card-bg-muted)] disabled:text-muted-neutral"
           disabled={!canSubmit}
           type="submit"
         >
@@ -1097,6 +1106,7 @@ function ChatComposer({
             <SendHorizontal className="h-4 w-4" aria-hidden="true" />
           )}
         </button>
+        </div>
       </div>
       {submitError ? (
         <div className="mt-1 text-[11px] leading-4 text-[var(--color-wardian-error)]" role="alert">
