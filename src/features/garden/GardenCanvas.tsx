@@ -11,6 +11,7 @@ import type { GardenAgentUnit, GardenEntityRef, GardenWorkflowUnit } from "./gar
 import { unitKey } from "./garden.types";
 import { isActiveAgentStatus, isActiveWorkflowStatus } from "./gardenStatus";
 import { useGardenTheme } from "./useGardenTheme";
+import { wheelZoomFactor } from "../../utils/wheelZoom";
 
 interface GardenCanvasProps {
   agentUnits: GardenAgentUnit[];
@@ -31,7 +32,6 @@ interface GardenMenuState {
   agentId: string | null;
 }
 
-const ZOOM_STEP = 1.05;
 /** Coarser than the wheel: a keypress is a deliberate step, not a nudge. */
 const KEY_ZOOM_STEP = 1.25;
 /** Screen pixels moved per arrow press, so panning feels the same at any zoom. */
@@ -53,6 +53,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   const layerRef = useRef<Konva.Layer>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [scale, setScale] = useState(1);
+  const transformRef = useRef({ scale: 1, position: { x: 0, y: 0 } });
   const [menu, setMenu] = useState<GardenMenuState | null>(null);
   // The transform the last automatic fit applied, published on the container as
   // `data-garden-fit`. Canvas units have no DOM handles, so this is the only way
@@ -62,6 +63,21 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   const fitRef = useRef<string | null>(null);
   const minScaleRef = useRef(MIN_SCALE);
   const theme = useGardenTheme();
+
+  // Konva owns the live viewport transform. React still receives the scale so
+  // detail labels and the readout can react to it, but the Stage transform is
+  // not passed back as props: doing both lets reconciliation briefly restore a
+  // stale scale while a wheel event is moving the stage position.
+  const applyTransform = useCallback((transform: { scale: number; position: { x: number; y: number } }) => {
+    const stage = stageRef.current;
+    transformRef.current = transform;
+    if (stage) {
+      stage.scale({ x: transform.scale, y: transform.scale });
+      stage.position(transform.position);
+      stage.batchDraw();
+    }
+    setScale(transform.scale);
+  }, []);
 
   // Progressive disclosure. Detail is a pure function of zoom and touches only
   // what is painted — the layout reserved the crown's footprint regardless, so
@@ -114,22 +130,15 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   // map slides across the viewport as it grows — which reads as panning, not
   // zooming, and is why the wheel felt like it was scrolling the canvas.
   const zoomAround = useCallback((screenPoint: { x: number; y: number }, factor: number) => {
-    const stage = stageRef.current;
-    if (!stage) return;
+    if (!stageRef.current) return;
     userAdjustedRef.current = true;
-    setScale((previous) => {
-      const next = zoomAt(
-        screenPoint,
-        { scale: previous, position: { x: stage.x(), y: stage.y() } },
-        factor,
-        { min: minScaleRef.current, max: MAX_SCALE },
-      );
-      if (next.scale === previous) return previous;
-      stage.position(next.position);
-      stage.batchDraw();
-      return next.scale;
+    const next = zoomAt(screenPoint, transformRef.current, factor, {
+      min: minScaleRef.current,
+      max: MAX_SCALE,
     });
-  }, []);
+    if (next.scale === transformRef.current.scale) return;
+    applyTransform(next);
+  }, [applyTransform]);
 
   /** Zoom about the middle of the viewport, for the keyboard and the buttons. */
   const zoomByStep = useCallback(
@@ -141,9 +150,11 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     const stage = stageRef.current;
     if (!stage) return;
     userAdjustedRef.current = true;
-    stage.position({ x: stage.x() - dx, y: stage.y() - dy });
-    stage.batchDraw();
-  }, []);
+    applyTransform({
+      scale: transformRef.current.scale,
+      position: { x: stage.x() - dx, y: stage.y() - dy },
+    });
+  }, [applyTransform]);
 
   // Fit the map into view until the user takes control of the viewport.
   //
@@ -177,12 +188,10 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
       fitRef.current = applied;
       // The wheel must not snap the user back the moment they touch it.
       minScaleRef.current = Math.min(MIN_SCALE, transform.scale);
-      setScale(transform.scale);
-      stage.position(transform.position);
-      stage.batchDraw();
+      applyTransform(transform);
       setFit(applied);
     },
-    [agentUnits, workflowUnits, size],
+    [agentUnits, workflowUnits, size, applyTransform],
   );
 
   useEffect(() => {
@@ -262,7 +271,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     e.evt.preventDefault();
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition() ?? { x: size.width / 2, y: size.height / 2 };
-    zoomAround(pointer, e.evt.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
+    zoomAround(pointer, wheelZoomFactor(e.evt.deltaY, e.evt.deltaMode));
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -289,7 +298,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   return (
     <div
       ref={containerRef}
-      className="relative flex-1 min-h-0 garden-canvas"
+      className="relative flex-1 min-h-0 min-w-0 overflow-hidden garden-canvas"
       data-garden-fit={fit ?? undefined}
       // Focusable so the canvas can own its navigation keys. Without a tabIndex
       // the map is reachable only by mouse, which is the one input the report
@@ -304,13 +313,19 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
         width={size.width}
         height={size.height}
         draggable
-        scaleX={scale}
-        scaleY={scale}
         onWheel={handleWheel}
         onDragEnd={(event) => {
           // Only a pan of the Stage itself; a unit drag reports the unit as
           // target and is handled by onMoveUnit.
-          if (event.target === event.currentTarget) userAdjustedRef.current = true;
+          if (event.target !== event.currentTarget) return;
+          userAdjustedRef.current = true;
+          const stage = stageRef.current;
+          if (stage) {
+            transformRef.current = {
+              scale: transformRef.current.scale,
+              position: { x: stage.x(), y: stage.y() },
+            };
+          }
         }}
       >
         <Layer ref={layerRef}>

@@ -251,7 +251,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
       : null;
 
   return (
-    <div className="garden-view relative flex min-h-0 flex-1 flex-col">
+    <div className="garden-view relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <section
         aria-label="Garden status legend"
         className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-wardian-border bg-[var(--color-wardian-bg)]/90 px-2 py-1.5 text-[10px] shadow-sm backdrop-blur"
