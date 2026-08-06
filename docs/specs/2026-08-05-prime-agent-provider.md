@@ -144,11 +144,18 @@ deeper values are RLM descendants. Phase 4 depends on it.
 | `auto_retry_start` | `Generating` |
 | everything else | `Unknown` |
 
-`ActionRequired` has no source under `--mode json`. Prime has no permission
-prompts, and the nearest structured equivalent is an RPC extension UI request
-(`confirm` / `select` / `input`), only available in RPC mode. Under
-`--mode json`, `ActionRequired` is unreachable; `pty_status_event_policy_for_provider`
-therefore keeps `ProviderStatusEventPolicy::Normal` for `prime`.
+`ActionRequired` has one source: an extension UI request. Prime has no
+permission prompts, so nothing else in the stream represents the agent waiting
+on a person. `pty_status_event_policy_for_provider` keeps
+`ProviderStatusEventPolicy::Normal` for `prime`.
+
+The method decides, not the event type. `select`, `confirm`, and `input` block
+on a reply, while `notify`, `setStatus`, and the widget methods are
+fire-and-forget in `rpc-extension-ui-context.js` and arrive as the same
+`extension_ui_request` type. Mapping all of them to `ActionRequired` would
+leave a working agent showing amber with nothing for the user to answer, so
+`parse_output` maps only the blocking three and passes the dialog's own title
+or message through as the event text.
 
 Two shape details confirmed in the spike that the mapping must tolerate:
 
@@ -260,22 +267,56 @@ worker has no owner and is visible to all. Two consequences follow:
 
 | Wardian action | RPC command |
 |---|---|
-| Send a chat message | `{"type":"prompt","message":…}` |
-| Queue steering message | `{"type":"steer","message":…}` |
-| Queue follow-up | `{"type":"follow_up","message":…}` |
+| Send a chat message | `{"type":"prompt","message":…,"streamingBehavior":…}` |
 | Interrupt | `{"type":"abort"}` |
 | Change model | `{"type":"set_model","provider":…,"modelId":…}` |
 | Change effort | `{"type":"set_thinking_level","level":…}` |
 | Compact context | `{"type":"compact"}` |
-| Read transcript | `{"type":"get_messages"}` |
+| Watch a subagent | `{"type":"observe","activeSessionId":…}` |
+| Answer a dialog | `{"type":"extension_ui_response","id":…,…}` |
 
-This maps onto `useQueueStore`'s existing steer/follow-up distinction more
-directly than the keystroke path it currently drives.
+#### One prompt command, always scheduled *(verified)*
 
-Framing is strict JSONL with LF as the only record delimiter. The upstream docs
-explicitly warn that Node `readline` is non-compliant because it also splits on
-`U+2028`/`U+2029`, which are legal inside JSON strings. Wardian's reader is
-Rust-side and must split on `\n` only, tolerating a trailing `\r`.
+An earlier revision of this table listed `steer` and `follow_up` as separate
+Wardian actions, chosen by first reading whether the session was streaming.
+That is wrong in a way a live run exposes immediately. Sending a bare `prompt`
+to a busy session is rejected:
+
+```text
+Agent is already processing. Specify streamingBehavior ('steer' or 'followUp')
+to queue the message.
+```
+
+Reading `_promptInjectedMessage` explains it: the gate only fires when work is
+already queued, and `streamingBehavior` is otherwise unused. So a single
+`prompt` carrying the field covers both states, while a check-then-send design
+races -- the session can start streaming between the check and the write.
+`prompt_delivery` therefore never consults a streaming flag; it maps
+`QueuePolicy` alone:
+
+| Queue policy | `streamingBehavior` |
+|---|---|
+| `LiveOnly` | `steer` |
+| `QueueIfBusy` | `followUp` |
+| `MailboxOnly` | withheld; not an RPC send |
+
+`MessageInputMode::ApprovalAction` forces `steer` regardless, since the agent
+is blocked on that answer and deferring it would deadlock the turn.
+
+Note the spelling: the standalone command is `follow_up`, but the scheduling
+field is `followUp`. Two sequential prompts carrying the field were verified
+live to both acknowledge `success: true` and run in order, where the earlier
+design produced a hard failure on one of them.
+
+#### Framing *(corrected)*
+
+An earlier revision claimed the delimiter rule came from Node `readline` being
+non-compliant on `U+2028`/`U+2029`. Prime does not use `readline`. Its
+`attachJsonlLineReader` splits on `\n` and strips one trailing `\r`, so CRLF is
+tolerated on input and `JsonlFramer` mirrors exactly that. The real constraint
+is on the writing side: a command must occupy one physical line, so
+`encode_command` rejects any payload containing a raw newline rather than
+trusting `serde_json` to have escaped it.
 
 Register a conservative fallback `DeliveryProfile` for the interactive TUI path
 so `delivery_profile("prime")` is never the unknown-provider default, but do
@@ -595,9 +636,11 @@ that keeps spending tokens after the user believes they stopped it.
   and a bash dependency on Windows. Worse, prime 0.7.0 cannot bootstrap that
   kernel on Windows at all, so Wardian must provision and manage the venv
   itself until upstream fixes the layout bug.
-- **Negative**: `ActionRequired` is unreachable under `--mode json`, so
-  Wardian's amber status will not appear for this provider until RPC delivery
-  lands, and only via extension UI requests thereafter.
+- **Negative**: `ActionRequired` reaches Wardian only through extension UI
+  requests, so a Prime session with no extension installed never shows amber.
+  That is accurate rather than lossy -- Prime genuinely never blocks on the
+  user otherwise -- but it means the status carries less information for this
+  provider than for Claude or Codex.
 - **Negative**: Two schedulers exist in the system. The read-only surfacing
   decision manages the risk but does not remove the duplication.
 - **Negative**: Prime is a young project on a young upstream fork; its daemon

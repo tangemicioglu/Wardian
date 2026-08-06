@@ -588,6 +588,19 @@ impl AgentProvider for PrimeProvider {
             }
             "turn_start" => Some(AgentEvent::UserQuery),
             "agent_end" => Some(AgentEvent::TurnCompleted),
+            // The only event where Prime is waiting on a person. Non-blocking
+            // methods such as `notify` and `setStatus` reach the same event
+            // type and must not stall the agent, so the method decides.
+            "extension_ui_request" => {
+                let request = crate::providers::prime_rpc::parse_extension_ui_request(line)
+                    .filter(|request| request.blocks_the_agent());
+                Some(match request {
+                    Some(request) => AgentEvent::ActionRequired {
+                        message: request.prompt_text(),
+                    },
+                    None => AgentEvent::Generating,
+                })
+            }
             "agent_start"
             | "turn_end"
             | "message_start"
@@ -764,6 +777,28 @@ mod tests {
             PrimeProvider::stop_args("6e65660fc3ea"),
             vec!["stop", "6e65660fc3ea", "--json"]
         );
+    }
+
+    #[test]
+    fn a_blocking_dialog_is_the_only_action_required_signal() {
+        let provider = make_provider();
+
+        // The dialog's own text is carried through so the user sees what is
+        // being asked instead of a bare "action required".
+        assert!(matches!(
+            provider.parse_output(
+                r#"{"type":"extension_ui_request","id":"1","method":"confirm","title":"Overwrite?"}"#
+            ),
+            Some(AgentEvent::ActionRequired { message }) if message == "Overwrite?"
+        ));
+        // A notification is fire-and-forget; treating it as action required
+        // would leave a working agent looking stuck.
+        assert!(matches!(
+            provider.parse_output(
+                r#"{"type":"extension_ui_request","id":"2","method":"notify","message":"done"}"#
+            ),
+            Some(AgentEvent::Generating)
+        ));
     }
 
     #[test]
