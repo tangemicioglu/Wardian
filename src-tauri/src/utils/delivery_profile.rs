@@ -80,6 +80,21 @@ pub fn delivery_profile(provider: &str) -> DeliveryProfile {
             input_ready_markers: &[">"],
             busy_markers: &["Working"],
         },
+        // Prime Agent is driven over its RPC command channel rather than by
+        // emulated keystrokes, so this profile only exists so the interactive
+        // TUI path does not fall through to the unknown-provider default.
+        // Delivery receipts must not depend on these markers.
+        "prime" => DeliveryProfile {
+            provider: normalized,
+            submit_key: SubmitKey::CarriageReturn,
+            submit_delay_ms: 500,
+            bracketed_paste: BracketedPasteProfile {
+                enabled: true,
+                min_bytes: 2048,
+            },
+            input_ready_markers: &[],
+            busy_markers: &[],
+        },
         "antigravity" => DeliveryProfile {
             provider: normalized,
             submit_key: SubmitKey::CarriageReturn,
@@ -129,7 +144,7 @@ mod tests {
 
     #[test]
     fn every_user_provider_has_a_profile() {
-        for provider in ["codex", "claude", "gemini", "opencode", "antigravity"] {
+        for provider in ["codex", "claude", "gemini", "opencode", "antigravity", "prime"] {
             let profile = delivery_profile(provider);
             assert_eq!(profile.provider, provider);
         }

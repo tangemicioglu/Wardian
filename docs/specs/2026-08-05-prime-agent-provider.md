@@ -179,7 +179,32 @@ removes the need to discover a provider-owned session directory. Resume uses
 
 Because the directory is Wardian-owned and per-agent, session discovery can
 fall back to "newest JSONL in the agent's session dir" if the `Init` line is
-ever missed.
+ever missed. That fallback is not merely defensive: **the session header `id`
+is not the session file name** *(verified)*. A run whose header id was
+`019fd4aa-dfbc-…` wrote `019fd4aa-d94b-….jsonl`. Never derive one from the
+other.
+
+`--resume` does accept the header id and resolves it to the right file, and the
+header id is stable across resume *(verified)*, so it is the correct value to
+persist in `resume_session`.
+
+**Resume can transiently fail while the previous worker's lease is still held**
+*(verified)*. Immediately re-running against a just-completed one-shot session
+produced:
+
+```text
+Error: Session is already active in 3a87eadc7fe1: …\019fd4aa-d94b-….jsonl
+```
+
+At that moment `prime-agent stop 3a87eadc7fe1` reported
+`Unknown active session`, so the lease outlived the worker that owned it. The
+same resume succeeded once the daemon's cleanup grace period elapsed. Wardian's
+resume path must therefore treat `session_already_active` as retryable with
+backoff rather than a hard failure, and must not assume the agent id named in
+that error is still stoppable.
+
+Note also that the error message embeds the owning agent id, which is a
+practical fallback source for `daemon_agent_id`.
 
 ### Input delivery: RPC, not keystrokes
 
@@ -388,7 +413,7 @@ Each phase is independently landable and independently reviewable.
 | Phase | Scope | Gate |
 |---|---|---|
 | 0 | Environment spike: install, capture the real event stream, establish kernel viability | **Done** — see verified findings above |
-| 1 | Provider contract via `--mode json`: `providers/prime.rs`, `PrimeProviderConfig`, factory, readiness, model catalog, headless args, chat transcript normalization, frontend provider option | Working provider, opaque root |
+| 1 | Provider contract via `--mode json`: `providers/prime.rs`, `PrimeProviderConfig`, factory, readiness, model catalog, headless args, chat transcript normalization, frontend provider option | **Done** — working provider, opaque root |
 | 2 | Chat delivery over `--mode rpc`; wire `steer`/`follow_up` to `useQueueStore` | Deletes keystroke tuning for this provider |
 | 3 | Lifecycle correctness: `stop <agent>` on kill, detached status, startup reconciliation | **Non-optional. Do not ship 1–2 without it.** |
 | 4 | Subagent projection via `observe` | Nested cards in Grid and Watchlist |

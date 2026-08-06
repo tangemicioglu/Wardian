@@ -3,6 +3,7 @@ use crate::providers::antigravity::{
 };
 use crate::providers::codex::CodexProvider;
 use crate::providers::opencode::OpenCodeProvider;
+use crate::providers::prime::PrimeProvider;
 use crate::providers::ProviderFactory;
 use crate::utils::fs::*;
 use crate::utils::process::new_headless_command;
@@ -287,6 +288,27 @@ pub(crate) fn headless_provider_args(
             provider_args.push(provider_cwd.to_string_lossy().to_string());
             provider_args
                 .push(crate::utils::terminal_input::normalize_prompt_for_terminal_submit(prompt));
+        }
+        "prime" => {
+            // Prime Agent emits the same structured event stream in print mode
+            // as interactively, so headless runs reuse get_spawn_args verbatim
+            // and only add the run mode. `output_format` is ignored: --mode json
+            // is the only machine-readable print format Prime offers.
+            if let Some(config) = config_override {
+                let mut config = config.clone();
+                config.resume_session = resume_session.map(str::to_string);
+                provider_args.extend(provider.get_spawn_args(&config, resume_session.is_some()));
+                PrimeProvider::append_autonomous_args(&mut provider_args, &config);
+            } else if let Some(resume_id) = resume_session.filter(|s| !s.trim().is_empty()) {
+                provider_args.push("--resume".to_string());
+                provider_args.push(resume_id.to_string());
+            }
+            provider_args.push("--cwd".to_string());
+            provider_args.push(provider_cwd.to_string_lossy().to_string());
+            provider_args.push("--mode".to_string());
+            provider_args.push("json".to_string());
+            provider_args.push("--print".to_string());
+            provider_args.push(prompt.to_string());
         }
         "antigravity" => {
             if let Some(config) = config_override {
@@ -1175,6 +1197,14 @@ fn bootstrap_output_session_id(provider_name: &str, output: &str) -> Option<Stri
                 .and_then(|value| value.as_str())
                 .filter(|value| value.starts_with("ses_") && value.len() > "ses_".len())
                 .map(str::to_string),
+            // Prime Agent's first stream line is its session header.
+            "prime" if parsed.get("type").and_then(|value| value.as_str()) == Some("session") => {
+                parsed
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_string)
+            }
             _ => None,
         }
     })

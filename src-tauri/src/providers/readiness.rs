@@ -38,6 +38,10 @@ const USER_FACING_PROVIDER_DESCRIPTORS: &[ProviderDescriptor] = &[
         id: "opencode",
         display_name: "OpenCode",
     },
+    ProviderDescriptor {
+        id: "prime",
+        display_name: "Prime Agent",
+    },
 ];
 
 pub fn user_facing_provider_descriptors() -> &'static [ProviderDescriptor] {
@@ -66,7 +70,49 @@ pub fn provider_readiness(provider_id: &str) -> ProviderReadiness {
     };
 
     let (executable, base_args) = provider.get_executable();
-    readiness_from_launch_parts(&provider_id, &display_name, &executable, &base_args, None)
+    let readiness =
+        readiness_from_launch_parts(&provider_id, &display_name, &executable, &base_args, None);
+
+    if provider_id == "prime" && readiness.available {
+        if let Some(reason) = prime_kernel_blocker() {
+            return unavailable(&provider_id, &display_name, &reason);
+        }
+    }
+
+    readiness
+}
+
+/// Prime Agent's only tool is an IPython kernel, so a resolvable binary with no
+/// usable kernel yields an agent that fails every tool call. Returns a reason
+/// when the kernel cannot be satisfied.
+///
+/// This is deliberately a filesystem check rather than a live `ipython` call:
+/// readiness populates the provider list on every render, and executing a real
+/// agent turn per refresh would be far too slow.
+///
+/// `prime-agent doctor` is *not* the probe here. It inspects background
+/// services and reports success on an install whose kernel is entirely broken.
+fn prime_kernel_blocker() -> Option<String> {
+    if crate::providers::prime::kernel_python().is_some() {
+        return None;
+    }
+
+    // Prime Agent 0.7.0's own bootstrap is broken on Windows (it assumes the
+    // POSIX `bin/python` virtualenv layout), so a missing Wardian-managed
+    // environment is fatal there. On other platforms its bootstrap is expected
+    // to work, so absence is not treated as a blocker.
+    #[cfg(target_os = "windows")]
+    {
+        Some(
+            "Prime Agent is installed but its Python kernel is not set up. Prime Agent 0.7.0 cannot bootstrap the kernel on Windows. Set PRIME_AGENT_KERNEL_PYTHON to a Python with ipykernel and prime-agent-runtime installed, or let Wardian provision one. See docs/guide/provider-readiness.md."
+                .to_string(),
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
 }
 
 pub fn ensure_provider_available_for_launch(provider_id: &str) -> Result<(), String> {
@@ -264,8 +310,18 @@ mod tests {
 
         assert_eq!(
             ids,
-            vec!["claude", "codex", "gemini", "antigravity", "opencode"]
+            vec!["claude", "codex", "gemini", "antigravity", "opencode", "prime"]
         );
+    }
+
+    #[test]
+    fn prime_descriptor_uses_the_full_product_name() {
+        let descriptor = user_facing_provider_descriptors()
+            .iter()
+            .find(|provider| provider.id == "prime")
+            .expect("prime descriptor");
+
+        assert_eq!(descriptor.display_name, "Prime Agent");
     }
 
     #[test]
