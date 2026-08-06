@@ -298,6 +298,70 @@ pub fn parse_extension_ui_request(line: &str) -> Option<ExtensionUiRequest> {
     })
 }
 
+/// An event belonging to a session other than the connection's own.
+///
+/// `observe` wraps a watched session's stream rather than merging it, so a
+/// subagent's events stay attributable. Wardian projects these as read-only
+/// nested activity under the root rather than as agents of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObservedSession {
+    /// One event from the observed session, already unwrapped.
+    Event {
+        active_session_id: String,
+        event: String,
+    },
+    /// The observed session ended; `error` is set when it ended badly.
+    Closed {
+        active_session_id: String,
+        error: Option<String>,
+    },
+}
+
+impl ObservedSession {
+    pub fn active_session_id(&self) -> &str {
+        match self {
+            Self::Event {
+                active_session_id, ..
+            }
+            | Self::Closed {
+                active_session_id, ..
+            } => active_session_id,
+        }
+    }
+}
+
+/// Parses an observation envelope, returning `None` for the connection's own
+/// events.
+///
+/// The inner event is re-serialized rather than returned as a `Value` so it
+/// can be fed straight back through the same provider parsing that handles a
+/// root session's stream. A subagent's events have the same shapes.
+pub fn parse_observed_session(line: &str) -> Option<ObservedSession> {
+    let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+    let active_session_id = parsed
+        .get("activeSessionId")?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+
+    match parsed.get("type")?.as_str()? {
+        "observed_session_event" => Some(ObservedSession::Event {
+            active_session_id,
+            event: parsed.get("event")?.to_string(),
+        }),
+        "observed_session_closed" => Some(ObservedSession::Closed {
+            active_session_id,
+            error: parsed
+                .get("error")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty()),
+        }),
+        _ => None,
+    }
+}
+
 /// The outcome of a command Wardian sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandOutcome {
@@ -551,6 +615,63 @@ mod tests {
             extension_ui_response_command("3", &ExtensionUiAnswer::Cancelled),
             serde_json::json!({"type":"extension_ui_response","id":"3","cancelled":true})
         );
+    }
+
+    #[test]
+    fn an_observed_event_keeps_its_session_and_unwraps_cleanly() {
+        let observed = parse_observed_session(
+            r#"{"type":"observed_session_event","activeSessionId":"child-1","event":{"type":"turn_start"}}"#,
+        )
+        .expect("observed event");
+
+        assert_eq!(observed.active_session_id(), "child-1");
+        // The inner event must survive intact so the same provider parsing
+        // that handles a root's stream can handle a subagent's.
+        let ObservedSession::Event { event, .. } = &observed else {
+            panic!("expected an event");
+        };
+        use wardian_core::models::provider::{AgentEvent, AgentProvider};
+        assert_eq!(
+            crate::providers::PrimeProvider::new().parse_output(event),
+            Some(AgentEvent::UserQuery)
+        );
+    }
+
+    #[test]
+    fn an_observed_close_distinguishes_clean_from_failed() {
+        assert_eq!(
+            parse_observed_session(
+                r#"{"type":"observed_session_closed","activeSessionId":"child-1"}"#
+            ),
+            Some(ObservedSession::Closed {
+                active_session_id: "child-1".to_string(),
+                error: None
+            })
+        );
+        assert_eq!(
+            parse_observed_session(
+                r#"{"type":"observed_session_closed","activeSessionId":"child-1","error":"worker died"}"#
+            ),
+            Some(ObservedSession::Closed {
+                active_session_id: "child-1".to_string(),
+                error: Some("worker died".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn the_connections_own_events_are_not_observations() {
+        // Without this the root's own stream would be projected as a subagent.
+        assert!(parse_observed_session(r#"{"type":"turn_start"}"#).is_none());
+        assert!(parse_observed_session(
+            r#"{"id":"1","type":"response","command":"observe","success":true}"#
+        )
+        .is_none());
+        // An observation with no session cannot be attributed to anything.
+        assert!(parse_observed_session(
+            r#"{"type":"observed_session_event","event":{"type":"turn_start"}}"#
+        )
+        .is_none());
     }
 
     #[test]

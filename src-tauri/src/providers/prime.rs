@@ -187,6 +187,27 @@ impl PrimeDaemonSession {
     }
 }
 
+/// One Prime worker's session tree: a root and the subagents under it.
+///
+/// This is a projection for display, not a Wardian agent. Only the root
+/// corresponds to something the user created; the subagents are Prime's own
+/// `rlm` children and are read-only.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrimeSessionTree {
+    pub worker_pid: u64,
+    /// Absent when the listing shows subagents whose root has already
+    /// finished, which is possible mid-teardown.
+    pub root: Option<PrimeDaemonSession>,
+    pub subagents: Vec<PrimeDaemonSession>,
+}
+
+impl PrimeSessionTree {
+    /// True when Prime is running subagents under this root right now.
+    pub fn has_subagents(&self) -> bool {
+        !self.subagents.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrimeRunSummary {
     pub session_id: Option<String>,
@@ -406,6 +427,53 @@ impl PrimeProvider {
                 Some((wardian_session_id.to_string(), matched.clone()))
             })
             .collect()
+    }
+
+    /// Groups hosted sessions into root trees for read-only projection.
+    ///
+    /// Prime runs one worker per root session tree, so every row reporting the
+    /// same `workerPid` belongs to one tree: the `rlmDepth == 0` row is the
+    /// root and the deeper rows are the subagents it spawned through `rlm`.
+    /// That grouping is the only parentage the listing exposes -- rows carry
+    /// no parent pointer -- so a tree deeper than one level is reported flat,
+    /// with each subagent's own depth preserved.
+    ///
+    /// Rows with no `workerPid` are skipped: without a worker there is no tree
+    /// to attribute them to.
+    pub fn group_session_trees(sessions: &[PrimeDaemonSession]) -> Vec<PrimeSessionTree> {
+        let mut trees: Vec<PrimeSessionTree> = Vec::new();
+
+        for session in sessions.iter().filter(|s| s.is_hosted_by_daemon()) {
+            let Some(worker_pid) = session.worker_pid else {
+                continue;
+            };
+
+            let tree = match trees.iter_mut().find(|tree| tree.worker_pid == worker_pid) {
+                Some(existing) => existing,
+                None => {
+                    trees.push(PrimeSessionTree {
+                        worker_pid,
+                        root: None,
+                        subagents: Vec::new(),
+                    });
+                    trees.last_mut().expect("just pushed")
+                }
+            };
+
+            if session.is_root() && tree.root.is_none() {
+                tree.root = Some(session.clone());
+            } else {
+                tree.subagents.push(session.clone());
+            }
+        }
+
+        // Shallowest first, so a projection renders parents before children
+        // even though the listing does not order them.
+        for tree in &mut trees {
+            tree.subagents.sort_by_key(|session| session.rlm_depth);
+        }
+
+        trees
     }
 
     /// Extracts the session id and final assistant text from a completed
@@ -1048,6 +1116,56 @@ mod tests {
             PrimeProvider::detached_agent_sessions(&sessions, [("agent-1", Some("99dd42ff3d92"))]);
 
         assert_eq!(adopted.len(), 1);
+    }
+
+    #[test]
+    fn subagents_group_under_the_root_sharing_their_worker() {
+        // One worker per root tree, so workerPid is the grouping key; the
+        // listing carries no parent pointer of any kind.
+        let sessions = PrimeProvider::parse_list_output(
+            r#"{"sessions":[
+              {"id":"r1","activeSessionId":"r1","workerPid":100,"rlmDepth":0,"lifecycle":"live","attachedClients":1},
+              {"id":"c2","activeSessionId":"c2","workerPid":100,"rlmDepth":2,"lifecycle":"live","attachedClients":0},
+              {"id":"c1","activeSessionId":"c1","workerPid":100,"rlmDepth":1,"lifecycle":"live","attachedClients":0},
+              {"id":"r2","activeSessionId":"r2","workerPid":200,"rlmDepth":0,"lifecycle":"live","attachedClients":1}
+            ]}"#,
+        )
+        .expect("parse");
+
+        let trees = PrimeProvider::group_session_trees(&sessions);
+
+        assert_eq!(trees.len(), 2);
+        let first = trees.iter().find(|t| t.worker_pid == 100).expect("tree");
+        assert_eq!(first.root.as_ref().expect("root").id, "r1");
+        // Shallowest first, since the listing does not order them.
+        assert_eq!(
+            first
+                .subagents
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c1", "c2"]
+        );
+
+        let second = trees.iter().find(|t| t.worker_pid == 200).expect("tree");
+        assert!(!second.has_subagents());
+    }
+
+    #[test]
+    fn rows_with_no_worker_are_left_out_of_every_tree() {
+        // A saved session has no worker and no tree to belong to; attributing
+        // it to one would invent a subagent that does not exist.
+        let sessions = PrimeProvider::parse_list_output(
+            r#"{"sessions":[
+              {"id":"saved","sessionId":"saved","rlmDepth":0,"lifecycle":"live"},
+              {"id":"hosted","activeSessionId":"hosted","rlmDepth":0,"lifecycle":"live"}
+            ]}"#,
+        )
+        .expect("parse");
+
+        // "hosted" is hosted but reports no workerPid, so it has no tree
+        // either; only rows with a worker are grouped.
+        assert!(PrimeProvider::group_session_trees(&sessions).is_empty());
     }
 
     #[test]

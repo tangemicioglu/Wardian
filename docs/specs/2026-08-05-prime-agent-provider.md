@@ -555,6 +555,26 @@ the Grid and Watchlist, with per-child token and cost attribution. Children are
 not independent Wardian agents: they have no workspace, no class, and no
 independent lifecycle. They are a projection of the root's subtree.
 
+#### Parentage comes from the worker, not from the row *(verified)*
+
+The listing exposes no parent pointer. Rows carry `rlmDepth` and
+`hasRunningRlmChildren`, but nothing naming a row's parent, so a tree cannot be
+reconstructed from depth alone once a root has more than one child.
+
+What the rows do carry is `workerPid`, and Prime runs one worker per root
+session tree. `group_session_trees` therefore groups by `workerPid`: the
+`rlmDepth == 0` row in a group is the root and the rest are its subagents,
+sorted shallowest first so a projection renders parents before children. A tree
+deeper than one level is reported flat with each subagent's own depth
+preserved, because grouping cannot recover which child spawned which
+grandchild. Rows with no worker are excluded rather than guessed at.
+
+This gives read-only projection without RPC. `observe` adds the live event
+stream on top: `parse_observed_session` unwraps `observed_session_event` back
+into a plain event, so a subagent's stream feeds the same `parse_output` a
+root's does, and `observed_session_closed` distinguishes a clean exit from a
+failed one.
+
 Explicitly out of scope: making Wardian workflow nodes participate in prime's
 A2A mesh. That would require implementing prime's daemon protocol v4 as a
 client and reconciling two independent lease, journal, and recovery models.
