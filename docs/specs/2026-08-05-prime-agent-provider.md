@@ -289,6 +289,25 @@ Three consequences:
 }]}
 ```
 
+**The supervisor is machine-wide, and Wardian's kill is not** *(verified)*.
+Prime runs one supervisor for every root tree, on a single named pipe
+(`\\.\pipe\prime-agent-daemon`, one pid, confirmed by `shutdown` stopping
+exactly one background service). Wardian's `terminate_active_agent_process`
+force-kills the process tree and then drops a Job Object with
+`KILL_ON_JOB_CLOSE` (`manager/mod.rs:150`).
+
+Phase 3 must therefore establish empirically whether Prime's detached
+supervisor and workers are inside the killed job. Both outcomes need handling
+and they pull in opposite directions:
+
+- if they **are** in the job, killing one Wardian agent tears down the shared
+  supervisor and disrupts every other Prime agent on the machine;
+- if they **are not**, the worker survives as an orphan and keeps spending
+  tokens, which is the case the `stop` path exists for.
+
+Do not assume either. This is the single highest-risk unknown remaining, and it
+is why phase 3 is gated on measurement rather than on reading the daemon docs.
+
 `activity`, `isStreaming`, and `attachedClients` map directly onto Wardian's
 status vocabulary plus the new detached state, and `sessionActions` exposes
 queue depth that Wardian otherwise has to infer. `stop <agent> --json` is the
