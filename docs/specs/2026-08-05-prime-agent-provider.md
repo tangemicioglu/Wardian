@@ -723,10 +723,15 @@ rather than broken-looking.
 Identity now has two sources, because one is exact and the other is early, and
 neither is both:
 
-- **The transcript.** Wardian pins `--session-dir` per agent and Prime names
-  each transcript after the session UUID, so the newest `<uuid>.jsonl` there is
-  the agent's session. Exact, but Prime defers writing that file until the
-  first assistant message.
+- **The transcript.** Wardian pins `--session-dir` per agent, so the newest
+  transcript there belongs to that agent. The id is read from the file's
+  `{"type":"session"}` header, *not* its name: under `--session-dir` those are
+  different UUIDs, because Prime reserves a file name when it constructs the
+  session and then writes a header carrying another one. `--resume` accepts the
+  header id and rejects the file name. Verified on prime-agent 0.7.0 against a
+  completed run and an aborted one, after an earlier revision here assumed the
+  name was the identity and shipped a reader that returned the wrong id.
+  Exact, but Prime defers writing the file until the first assistant message.
 - **The daemon listing.** Prime *reserves* the transcript path when it creates
   the session, so `list --json` reports `sessionFile` immediately, pointing
   into the pinned directory. That identifies the worker of an agent that has

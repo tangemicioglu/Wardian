@@ -59,9 +59,9 @@ pub fn wardian_kernel_venv_dir() -> Option<std::path::PathBuf> {
 /// JSONL transcript lands in the agent's own workspace instead of the shared
 /// `~/.prime/agent/sessions` pool.
 ///
-/// This keeps a session readable with no live provider process and makes
-/// "newest JSONL in this directory" a reliable fallback when the session header
-/// is missed.
+/// This keeps a session readable with no live provider process, and because the
+/// directory belongs to exactly one agent it is also how Wardian recovers an
+/// identity the interactive TUI never announced. See [`session_id_in_dir`].
 pub fn session_dir_for_agent(wardian_session_id: &str) -> Option<std::path::PathBuf> {
     let trimmed = wardian_session_id.trim();
     if trimmed.is_empty() {
@@ -76,41 +76,71 @@ pub fn session_dir_for_agent(wardian_session_id: &str) -> Option<std::path::Path
 ///
 /// Prime Agent's interactive TUI emits no structured events, so the session
 /// header that gives every other transport its identity never reaches Wardian.
-/// The pinned directory closes that gap: Prime Agent names each transcript
-/// after the session's own UUIDv7, and the directory belongs to exactly one
-/// Wardian agent, so the file name *is* the identity.
+/// The pinned directory closes that gap: it belongs to exactly one Wardian
+/// agent, and every transcript in it opens with that session's own header.
 ///
-/// Newest rather than only: Prime Agent writes a fresh transcript whenever a
-/// session is branched or a launch is abandoned before its first reply, so a
-/// directory can accumulate several. Names that do not parse as a UUID are
-/// ignored, which keeps an unrelated file from being read as an identity.
+/// The identity is read *from inside* the file, not from its name. Those two
+/// disagree: under `--session-dir`, Prime Agent reserves a transcript name when
+/// it constructs the session and then writes a header carrying a different
+/// UUID. `--resume` accepts the header's id and rejects the file name, so the
+/// name is not an identity at all -- observed on prime-agent 0.7.0, on both a
+/// completed run and an aborted one.
 ///
-/// Returns `None` until Prime Agent materializes the transcript, which it
-/// defers until the first assistant message. A session with no transcript has
-/// nothing to resume, so there is nothing to capture yet either.
+/// Newest rather than only: a directory accumulates a transcript per launch,
+/// including launches abandoned before their first reply.
+///
+/// Returns `None` until Prime Agent materializes a transcript, which it defers
+/// until the first assistant message. A session with no transcript has nothing
+/// to resume, so there is nothing to capture yet either.
 pub fn session_id_in_dir(session_dir: &std::path::Path) -> Option<String> {
-    let mut newest: Option<(std::time::SystemTime, String)> = None;
+    let mut transcripts = std::fs::read_dir(session_dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().and_then(|meta| meta.modified()).ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    transcripts.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
 
-    for entry in std::fs::read_dir(session_dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+    // Newest first, but skip a transcript with no readable header rather than
+    // reporting no identity: an interrupted write should not mask the session
+    // before it.
+    transcripts
+        .into_iter()
+        .find_map(|(_, path)| session_id_in_transcript(&path))
+}
+
+/// Extracts the session id from a transcript's header line.
+fn session_id_in_transcript(path: &std::path::Path) -> Option<String> {
+    use std::io::BufRead;
+
+    let file = std::fs::File::open(path).ok()?;
+    // The header is the first entry, but a rewritten file can carry a leading
+    // blank line, so scan a bounded prefix instead of exactly one line.
+    for line in std::io::BufReader::new(file)
+        .lines()
+        .take(8)
+        .map_while(Result::ok)
+    {
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
             continue;
         };
-        if uuid::Uuid::parse_str(stem).is_err() {
+        if parsed.get("type").and_then(|value| value.as_str()) != Some("session") {
             continue;
         }
-        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
-            continue;
-        };
-        if newest.as_ref().is_none_or(|(latest, _)| modified > *latest) {
-            newest = Some((modified, stem.to_string()));
-        }
+        let id = parsed.get("id").and_then(|value| value.as_str())?;
+        return uuid::Uuid::parse_str(id).is_ok().then(|| id.to_string());
     }
 
-    newest.map(|(_, session_id)| session_id)
+    None
 }
 
 /// Compares two paths for identity without requiring either to exist.
@@ -982,20 +1012,52 @@ mod tests {
         assert_eq!(make_provider().name(), "Prime Agent");
     }
 
-    #[test]
-    fn session_id_comes_from_the_transcript_file_name() {
-        let dir = tempfile::tempdir().expect("session dir");
-        let session_id = "019fd4bc-e365-74c0-a386-5af7124f3beb";
-        std::fs::write(dir.path().join(format!("{session_id}.jsonl")), "{}\n")
-            .expect("write transcript");
+    /// Writes a transcript the way prime-agent 0.7.0 does under
+    /// `--session-dir`: the header's id and the file name are different UUIDs.
+    fn write_transcript(dir: &std::path::Path, file_uuid: &str, header_id: &str) {
+        let header = format!(
+            r#"{{"type":"session","version":3,"id":"{header_id}","timestamp":"2026-08-06T11:48:20.693Z","cwd":"D:\\work","rlmDepth":0}}"#
+        );
+        std::fs::write(
+            dir.join(format!("{file_uuid}.jsonl")),
+            format!("{header}\n{{\"type\":\"session_state\",\"id\":\"229cc41d\"}}\n"),
+        )
+        .expect("write transcript");
+    }
 
-        assert_eq!(session_id_in_dir(dir.path()).as_deref(), Some(session_id),);
+    fn age(path: &std::path::Path, seconds: u64) {
+        let file = std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("reopen transcript");
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(seconds))
+            .expect("age transcript");
     }
 
     #[test]
-    fn session_id_ignores_files_that_are_not_prime_transcripts() {
+    fn session_id_comes_from_the_header_not_the_file_name() {
+        // These really do disagree. Observed on prime-agent 0.7.0: a run
+        // written to a pinned session dir produced
+        // `019fd6e7-1d6d-...jsonl` whose header read `019fd6e7-2655-...`, and
+        // only the header id was accepted by `--resume`.
         let dir = tempfile::tempdir().expect("session dir");
-        std::fs::write(dir.path().join("notes.jsonl"), "{}\n").expect("write non-uuid");
+        write_transcript(
+            dir.path(),
+            "019fd6e7-1d6d-773b-95da-0d95dea8be8f",
+            "019fd6e7-2655-753d-99d5-083016d338ba",
+        );
+
+        assert_eq!(
+            session_id_in_dir(dir.path()).as_deref(),
+            Some("019fd6e7-2655-753d-99d5-083016d338ba"),
+        );
+    }
+
+    #[test]
+    fn session_id_ignores_files_that_carry_no_session_header() {
+        let dir = tempfile::tempdir().expect("session dir");
+        std::fs::write(dir.path().join("notes.jsonl"), "{\"type\":\"message\"}\n")
+            .expect("write headerless");
         std::fs::write(
             dir.path().join("019fd4bc-e365-74c0-a386-5af7124f3beb.log"),
             "",
@@ -1008,21 +1070,55 @@ mod tests {
     #[test]
     fn session_id_prefers_the_most_recently_written_transcript() {
         let dir = tempfile::tempdir().expect("session dir");
-        let older = "019fd4bc-e365-74c0-a386-5af7124f3beb";
-        let newer = "019fd6b4-7150-77bd-8ea5-3f93134d1169";
-        std::fs::write(dir.path().join(format!("{older}.jsonl")), "{}\n").expect("write older");
-        std::fs::write(dir.path().join(format!("{newer}.jsonl")), "{}\n").expect("write newer");
-
+        write_transcript(
+            dir.path(),
+            "019fd4bc-e365-74c0-a386-5af7124f3beb",
+            "019fd4bc-0000-74c0-a386-5af7124f3beb",
+        );
+        write_transcript(
+            dir.path(),
+            "019fd6b4-7150-77bd-8ea5-3f93134d1169",
+            "019fd6b4-9999-77bd-8ea5-3f93134d1169",
+        );
         // Creation order is not enough: the filesystem may report identical
         // mtimes for files written in the same tick, so age one explicitly.
-        let aged = std::fs::File::options()
-            .write(true)
-            .open(dir.path().join(format!("{older}.jsonl")))
-            .expect("reopen older transcript");
-        aged.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600))
-            .expect("age the older transcript");
+        age(
+            &dir.path()
+                .join("019fd4bc-e365-74c0-a386-5af7124f3beb.jsonl"),
+            600,
+        );
 
-        assert_eq!(session_id_in_dir(dir.path()).as_deref(), Some(newer));
+        assert_eq!(
+            session_id_in_dir(dir.path()).as_deref(),
+            Some("019fd6b4-9999-77bd-8ea5-3f93134d1169"),
+        );
+    }
+
+    #[test]
+    fn a_truncated_newest_transcript_does_not_hide_the_session_before_it() {
+        let dir = tempfile::tempdir().expect("session dir");
+        write_transcript(
+            dir.path(),
+            "019fd4bc-e365-74c0-a386-5af7124f3beb",
+            "019fd4bc-0000-74c0-a386-5af7124f3beb",
+        );
+        // A launch that died before its header was flushed.
+        std::fs::write(
+            dir.path()
+                .join("019fd6b4-7150-77bd-8ea5-3f93134d1169.jsonl"),
+            "",
+        )
+        .expect("write empty transcript");
+        age(
+            &dir.path()
+                .join("019fd4bc-e365-74c0-a386-5af7124f3beb.jsonl"),
+            600,
+        );
+
+        assert_eq!(
+            session_id_in_dir(dir.path()).as_deref(),
+            Some("019fd4bc-0000-74c0-a386-5af7124f3beb"),
+        );
     }
 
     #[test]
