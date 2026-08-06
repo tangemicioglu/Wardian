@@ -676,7 +676,7 @@ Each phase is independently landable and independently reviewable.
 |---|---|---|
 | 0 | Environment spike: install, capture the real event stream, establish kernel viability | **Done** — see verified findings above |
 | 1 | Provider contract via `--mode json`: `providers/prime.rs`, `PrimeProviderConfig`, factory, readiness, model catalog, headless args, chat transcript normalization, frontend provider option | **Done** — working provider, opaque root |
-| 2 | Chat delivery over `--mode rpc` | **Protocol done** — `providers/prime_rpc.rs`; transport swap outstanding |
+| 2 | Chat delivery off keystrokes | **Done** — `delivery/prime_send.rs` over `prime-agent send`, verified against a real agent. `providers/prime_rpc.rs` holds the JSONL protocol for a channel Wardian does not own; see the correction below for why |
 | 3 | Lifecycle correctness: `stop <agent>` on kill, detached status, startup reconciliation | **Done** — **Non-optional. Do not ship 1–2 without it.** |
 | 4 | Subagent projection | **Model done** — `group_session_trees`, `parse_observed_session`; UI outstanding |
 | 5 | Autonomous gates from `AGENTS.md`; read-only schedule surfacing | **Done** — `providers/prime_gates.rs`, `parse_schedule_list_output` |
@@ -691,11 +691,14 @@ that keeps spending tokens after the user believes they stopped it.
 The phases above landed their provider-side logic. Three integration pieces
 remain, each deliberately deferred rather than half-built:
 
-1. **The RPC transport.** Prime still runs on its interactive TUI through the
-   PTY path, which works and has a registered `DeliveryProfile`. Swapping it
-   replaces the process model, the event pump, and the terminal surface for one
-   provider, and phase 4's live subagent streaming depends on it because
-   nothing can send `observe` until then.
+1. **The RPC transport, and it may never be built.** Input delivery no longer
+   depends on it: `prime-agent send` is a second client of the same resident
+   worker, so messages leave the keystroke path without Wardian owning the
+   JSONL channel. What is still missing is `abort`, `set_model`, `compact`, and
+   `observe`, which means phase 4's live subagent streaming stays unbuilt.
+   Owning the channel costs the whole detached-worker lifecycle, for the
+   reasons above, so this is a trade to decide deliberately rather than a
+   deferred task.
 2. **The projection UI.** `PrimeSessionTree` and `PrimeScheduledJob` are shaped
    for the Grid, Watchlist, and schedule surfaces but nothing renders them yet.
 3. **Skill promotion.** `promotable_skills` identifies candidates;
@@ -781,8 +784,53 @@ uses, and `wait_for_terminal_ready_for_control_send` gained a `prime` arm
 because Prime's agent status never leaves its spawn value on this transport.
 Prime is now part of the real-delivery matrix rather than excluded from it.
 
-These markers become redundant when the RPC transport lands, and should be
-removed with it.
+These markers still drive the agent's *status*, but they no longer decide
+whether a message was delivered. See the next section.
+
+### Input delivery lands on `send`, not an RPC child *(corrected)*
+
+The plan above was to swap Prime's interactive transport to `--mode rpc` and
+drive everything over the JSONL channel. Reading the supervisor rules that out
+as written: `--mode rpc` and `--print` both pass `clientOwned: true`, and
+`isVisibleWorker` is `ownerClientId === undefined`. A client-owned worker is
+hidden from every other client and reaped with the client that asked for one.
+
+So the transport swap and phase 3 are mutually exclusive. Owning the RPC
+channel would delete detached workers, the Detached status, startup
+reconciliation, `prime-agent list`, `stop`, and the native lifecycle test --
+the phase this spec marks "Non-optional. Do not ship 1–2 without it." The spec
+asked for both without noticing they contradict.
+
+Delivery therefore moves to `prime-agent send`, which is a second client of the
+same resident worker. That satisfies the requirement this section actually
+cares about -- Prime is not driven by emulated keystrokes -- while the TUI
+stays, the worker stays resident, and phase 3 stays true. What it does not
+provide is `abort`, `set_model`, `compact`, and `observe`, so live subagent
+streaming remains unbuilt.
+
+Three things about `send` had to be established by running it, because the
+help text is wrong:
+
+- **`--steer` and `--follow-up` do not exist.** `prime-agent help send` lists
+  both; `parseSendArgs` in 0.7.0 accepts only `--from`, `--message`, and `--`,
+  and rejects the two flags in every position. Scheduling is the daemon's
+  decision, and the receipt reports which it made. Wardian's `QueuePolicy`
+  cannot influence it, so `queued` is surfaced in `observed_state` rather than
+  being papered over as a live turn.
+- **`--json` prints the receipt, not the command envelope.** Unlike `stop`,
+  which answers `{command, success}`, `send` prints its payload:
+  `deliveryStatus` plus the `target` it resolved to. A failure never reaches
+  that point at all -- the client exits non-zero with a plain-text `Error:`
+  line and no JSON -- so both channels are checked.
+- **The message goes through `--message`.** As a positional it is space-joined
+  with any other operands, and a message beginning with `--` is rejected as an
+  unknown option.
+
+Two ordering facts also came out of real runs. Queue policy is spent before
+delivery reaches this layer, so an early `Withhold` gate rejected every drained
+mailbox message; and a message can be queued before Prime has registered its
+worker, so the selector lookup waits for registration on the same budget the
+keystroke path spends waiting for terminal readiness.
 
 The same test also surfaced a defect with nothing to do with Prime's lifecycle:
 `AgentConfigCompat::legacy_provider_config` matched every key `provider_key`
