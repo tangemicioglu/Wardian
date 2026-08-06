@@ -800,6 +800,20 @@ select:focus {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-wardian-accent), transparent 85%);
 }
 
+/* The chat composer uses text-like selectors in its bottom toolbar. */
+.chat-composer select,
+.chat-composer select:focus {
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none;
+  padding-right: 1.25rem !important;
+}
+
+.chat-composer select:hover {
+  border-color: var(--color-wardian-border-light) !important;
+}
+
 select optgroup {
   background-color: var(--color-wardian-card);
   color: var(--color-wardian-text);
