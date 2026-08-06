@@ -23,7 +23,49 @@ import type {
 const MAX_EVENTS_PER_BATCH = 256;
 const MAX_BYTES_PER_BATCH = 256 * 1024;
 const MAX_BATCHES_PER_TURN = 32;
+const FOREGROUND_RESUME_YIELD_MS = 16;
+const FOREGROUND_RESUME_IDLE_TIMEOUT_MS = 250;
+const TERMINAL_TIMING_LOG_THRESHOLD_MS = 50;
 let terminalApplicationVisible = true;
+
+type ForegroundResumeTiming = {
+  snapshot_request_ms: number;
+  snapshot_apply_ms: number;
+  acknowledge_ms: number;
+  total_ms: number;
+};
+
+function terminalTimingNow() {
+  return typeof performance === "undefined" ? Date.now() : performance.now();
+}
+
+function terminalTimingDebugEnabled() {
+  return import.meta.env.DEV || import.meta.env.VITE_WARDIAN_TERMINAL_DEBUG === "1";
+}
+
+function recordForegroundResumeTiming(
+  sessionId: string,
+  queueWaitMs: number,
+  priority: number,
+  presentationCount: number,
+  timing: ForegroundResumeTiming,
+) {
+  if (
+    !terminalTimingDebugEnabled() ||
+    timing.total_ms < TERMINAL_TIMING_LOG_THRESHOLD_MS
+  ) {
+    return;
+  }
+  console.debug("[Wardian] terminal foreground resume timing", {
+    session_id: sessionId,
+    queue_wait_ms: Math.round(queueWaitMs),
+    priority,
+    presentation_count: presentationCount,
+    ...Object.fromEntries(
+      Object.entries(timing).map(([key, value]) => [key, Math.round(value)]),
+    ),
+  });
+}
 
 export type TerminalPresentationCallbacks = {
   applySnapshot: (snapshot: TerminalSnapshot) => void | Promise<void>;
@@ -115,6 +157,10 @@ export class TerminalSessionClient {
 
   get presentationCount() {
     return this.#presentations.size;
+  }
+
+  get foregroundResumeRequired() {
+    return this.#needsForegroundResume();
   }
 
   /** Refreshes a mounted view's callbacks without replaying broker registration. */
@@ -477,6 +523,7 @@ export class TerminalSessionClient {
     if (!this.#needsForegroundResume()) {
       return;
     }
+    const startedAt = terminalTimingNow();
     return this.#serialize(async () => {
       if (!this.#needsForegroundResume() || this.#runtimeTransitionPending) {
         return;
@@ -490,9 +537,11 @@ export class TerminalSessionClient {
       if (!this.#foregroundResyncIsCurrent(visibilityEpoch)) {
         return;
       }
+      const snapshotStartedAt = terminalTimingNow();
       const snapshot = await invoke<TerminalSnapshot>("request_terminal_snapshot", {
         request: { session_id: this.sessionId },
       });
+      const snapshotRequestMs = terminalTimingNow() - snapshotStartedAt;
       if (!this.#foregroundResyncIsCurrent(visibilityEpoch)) {
         return;
       }
@@ -504,18 +553,45 @@ export class TerminalSessionClient {
         this.#runtimeGeneration = snapshot.runtime_generation;
         await this.#ensureSubscription(snapshot.runtime_generation);
       } else {
+        const snapshotApplyStartedAt = terminalTimingNow();
         await this.#applySnapshotToAll(snapshot);
+        const snapshotApplyMs = terminalTimingNow() - snapshotApplyStartedAt;
         this.#cursor = snapshot.sequence_barrier;
+        if (!this.#foregroundResyncIsCurrent(visibilityEpoch)) {
+          return;
+        }
+        const acknowledgeStartedAt = terminalTimingNow();
+        await this.#ackCursor();
+        const acknowledgeMs = terminalTimingNow() - acknowledgeStartedAt;
+        if (!this.#foregroundResyncIsCurrent(visibilityEpoch)) {
+          return;
+        }
+        this.#foregroundSnapshotRequired = false;
+        this.queueDrain();
+        return {
+          snapshot_request_ms: snapshotRequestMs,
+          snapshot_apply_ms: snapshotApplyMs,
+          acknowledge_ms: acknowledgeMs,
+          total_ms: terminalTimingNow() - startedAt,
+        } satisfies ForegroundResumeTiming;
       }
       if (!this.#foregroundResyncIsCurrent(visibilityEpoch)) {
         return;
       }
+      const acknowledgeStartedAt = terminalTimingNow();
       await this.#ackCursor();
+      const acknowledgeMs = terminalTimingNow() - acknowledgeStartedAt;
       if (!this.#foregroundResyncIsCurrent(visibilityEpoch)) {
         return;
       }
       this.#foregroundSnapshotRequired = false;
       this.queueDrain();
+      return {
+        snapshot_request_ms: snapshotRequestMs,
+        snapshot_apply_ms: 0,
+        acknowledge_ms: acknowledgeMs,
+        total_ms: terminalTimingNow() - startedAt,
+      } satisfies ForegroundResumeTiming;
     });
   }
 
@@ -1076,28 +1152,69 @@ export class TerminalSessionClient {
 const terminalSessionClients = new Map<string, TerminalSessionClient>();
 let terminalForegroundResumeEpoch = 0;
 let terminalForegroundResumeQueue = Promise.resolve();
-const queuedTerminalForegroundResumes = new Set<TerminalSessionClient>();
+const queuedTerminalForegroundResumes = new Map<TerminalSessionClient, number>();
+const requeueAfterForegroundEpochChange = new Set<TerminalSessionClient>();
 
-function yieldTerminalForegroundResume() {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+function yieldTerminalForegroundResume(priority: number) {
+  if (priority > 1) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    };
+    if (idleWindow.requestIdleCallback) {
+      idleWindow.requestIdleCallback(resolve, { timeout: FOREGROUND_RESUME_IDLE_TIMEOUT_MS });
+    } else {
+      window.setTimeout(resolve, FOREGROUND_RESUME_YIELD_MS);
+    }
+  });
 }
 
 function enqueueTerminalForegroundResume(client: TerminalSessionClient) {
+  const resumeEpoch = terminalForegroundResumeEpoch;
   if (
     !terminalApplicationVisible ||
     client.foregroundResumePriority === 0 ||
-    queuedTerminalForegroundResumes.has(client)
+    (queuedTerminalForegroundResumes.has(client) &&
+      queuedTerminalForegroundResumes.get(client) === resumeEpoch)
   ) {
     return terminalForegroundResumeQueue;
   }
-  const resumeEpoch = terminalForegroundResumeEpoch;
-  queuedTerminalForegroundResumes.add(client);
+  if (queuedTerminalForegroundResumes.has(client)) {
+    // A visibility transition invalidated an older queue item. That item must
+    // finish before this client can be enqueued again, but the new epoch must
+    // not be lost while the old item is still in flight.
+    requeueAfterForegroundEpochChange.add(client);
+    return terminalForegroundResumeQueue;
+  }
+  requeueAfterForegroundEpochChange.delete(client);
+  queuedTerminalForegroundResumes.set(client, resumeEpoch);
+  const queuedAt = terminalTimingNow();
+  const priority = client.foregroundResumePriority;
   terminalForegroundResumeQueue = terminalForegroundResumeQueue
     .catch(() => undefined)
     .then(async () => {
       try {
+        if (
+          priority === 1 &&
+          terminalApplicationVisible &&
+          resumeEpoch === terminalForegroundResumeEpoch
+        ) {
+          await yieldTerminalForegroundResume(priority);
+        }
+        const resumeStartedAt = terminalTimingNow();
         if (terminalApplicationVisible && resumeEpoch === terminalForegroundResumeEpoch) {
-          await client.resumeAfterApplicationForeground();
+          const timing = await client.resumeAfterApplicationForeground();
+          if (timing) {
+            recordForegroundResumeTiming(
+              client.sessionId,
+              resumeStartedAt - queuedAt,
+              priority,
+              client.presentationCount,
+              timing,
+            );
+          }
         }
       } catch (error) {
         if (terminalApplicationVisible && resumeEpoch === terminalForegroundResumeEpoch) {
@@ -1105,9 +1222,19 @@ function enqueueTerminalForegroundResume(client: TerminalSessionClient) {
         }
       } finally {
         queuedTerminalForegroundResumes.delete(client);
-      }
-      if (terminalApplicationVisible && resumeEpoch === terminalForegroundResumeEpoch) {
-        await yieldTerminalForegroundResume();
+        const shouldRequeue =
+          requeueAfterForegroundEpochChange.has(client) ||
+          resumeEpoch !== terminalForegroundResumeEpoch;
+        if (
+          shouldRequeue &&
+          terminalApplicationVisible &&
+          client.foregroundResumeRequired
+        ) {
+          requeueAfterForegroundEpochChange.delete(client);
+          queueMicrotask(() => {
+            enqueueTerminalForegroundResume(client);
+          });
+        }
       }
     });
   return terminalForegroundResumeQueue;
@@ -1115,8 +1242,9 @@ function enqueueTerminalForegroundResume(client: TerminalSessionClient) {
 
 /**
  * Coordinates true desktop application visibility across every local terminal
- * broker client. Visible presentations resume one at a time so foregrounding
- * cannot fan out snapshot parsing and renderer writes in the same UI turn.
+ * broker client. The interactive owner resumes first; other visible
+ * presentations wait for an idle callback so foregrounding cannot fan out
+ * snapshot parsing and renderer writes in the same UI turn.
  */
 export function setTerminalApplicationVisibility(visible: boolean) {
   const changed = terminalApplicationVisible !== visible;
@@ -1156,6 +1284,7 @@ export async function resetTerminalSessionClientsForTesting() {
   terminalForegroundResumeEpoch += 1;
   terminalForegroundResumeQueue = Promise.resolve();
   queuedTerminalForegroundResumes.clear();
+  requeueAfterForegroundEpochChange.clear();
   await Promise.all(clients.map((client) => client.destroy()));
 }
 

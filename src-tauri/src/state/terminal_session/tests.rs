@@ -896,6 +896,24 @@ async fn zero_presentations_do_not_destroy_runtime_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unchanged_terminal_state_reuses_snapshot_until_output_changes_it() {
+    let timer = Arc::new(ManualTimer::default());
+    let (broker, generation) = start(timer).await;
+
+    let first = broker.snapshot("session-1").await.expect("first snapshot");
+    let second = broker.snapshot("session-1").await.expect("cached snapshot");
+    assert_eq!(first, second);
+
+    process_output(broker.clone(), generation, b"new output".to_vec()).expect("output");
+    let third = broker
+        .snapshot("session-1")
+        .await
+        .expect("updated snapshot");
+    assert_ne!(first.snapshot_id, third.snapshot_id);
+    assert!(third.visible_grid.contains("new output"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn canonical_scrollback_policy_ignores_fragmented_erase_scrollback() {
     let timer = Arc::new(ManualTimer::default());
     let broker = Arc::new(TerminalSessionBroker::with_timer(timer));
