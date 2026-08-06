@@ -379,6 +379,13 @@ Three consequences:
 
    - It reads `settings/state.json` rather than the database, because
      `resume_session` is not an `AgentRow` column.
+   - It calls `list --json`, **not** `list --all --json`. `--all` also returns
+     saved sessions read back from disk, and those rows still report
+     `lifecycle: "live"` with `attachedClients: 0` long after their worker
+     exited. An early revision used `--all` and would have marked every
+     finished Prime session as a running one, then left it inert on restore.
+     `is_hosted_by_daemon` guards the same mistake at the parsing layer:
+     only a session the supervisor actually hosts carries `activeSessionId`.
    - It returns early when no persisted agent uses Prime. Launching the CLI
      unconditionally would start Prime's daemon on every Wardian start, for
      users who have never used the provider.

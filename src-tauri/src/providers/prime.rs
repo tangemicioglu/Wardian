@@ -84,6 +84,12 @@ pub struct PrimeDaemonSession {
     /// [`AgentConfig::resume_session`] and therefore the join key between a
     /// daemon row and a Wardian agent.
     pub session_id: Option<String>,
+    /// The supervisor's id for a session it is actually hosting. Absent on a
+    /// saved session read back from disk, which is the only reliable way to
+    /// tell the two row shapes apart.
+    pub active_session_id: Option<String>,
+    /// Pid of the worker process, reported only for a live daemon session.
+    pub worker_pid: Option<u64>,
     /// `live` for a running root, `draft` for one that has not started work.
     pub lifecycle: Option<String>,
     /// `idle`, `working`, and similar.
@@ -115,6 +121,8 @@ impl PrimeDaemonSession {
         Some(Self {
             id,
             session_id: string_field("sessionId"),
+            active_session_id: string_field("activeSessionId"),
+            worker_pid: value.get("workerPid").and_then(serde_json::Value::as_u64),
             lifecycle: string_field("lifecycle"),
             activity: string_field("activity"),
             cwd: string_field("cwd"),
@@ -155,10 +163,23 @@ impl PrimeDaemonSession {
         self.rlm_depth == 0
     }
 
+    /// True when the supervisor is actually hosting this session, as opposed
+    /// to it being a saved session read back from disk.
+    ///
+    /// This distinction is not cosmetic. A saved row still reports
+    /// `lifecycle: "live"` and `attachedClients: 0` long after its worker
+    /// exited, so lifecycle alone would classify every finished session as a
+    /// running one. Only a hosted session carries `activeSessionId`, and a
+    /// hosted session with a worker process also reports `workerPid`.
+    pub fn is_hosted_by_daemon(&self) -> bool {
+        self.active_session_id.is_some()
+    }
+
     /// True when the worker is running with no client attached, which is the
     /// state Wardian shows as detached after an app restart.
     pub fn is_detached(&self) -> bool {
-        self.attached_clients == 0
+        self.is_hosted_by_daemon()
+            && self.attached_clients == 0
             && self
                 .lifecycle
                 .as_deref()
@@ -262,14 +283,15 @@ impl PrimeProvider {
         std::time::Duration::from_millis(2000),
     ];
 
-    /// Arguments for `prime-agent list --all --json`, the startup
-    /// reconciliation source for detached workers.
+    /// Arguments for `prime-agent list --json`, the startup reconciliation
+    /// source for detached workers.
+    ///
+    /// `--all` is deliberately omitted. It adds saved sessions read back from
+    /// disk, and those rows still carry `lifecycle: "live"` with
+    /// `attachedClients: 0` long after their worker exited. Including them
+    /// would make every finished session look like a running one.
     pub fn list_args() -> Vec<String> {
-        vec![
-            "list".to_string(),
-            "--all".to_string(),
-            "--json".to_string(),
-        ]
+        vec!["list".to_string(), "--json".to_string()]
     }
 
     /// Appends the model selector. Prime accepts `provider/id` directly, so a
@@ -844,8 +866,62 @@ mod tests {
     }
 
     #[test]
-    fn list_args_include_saved_agents_as_json() {
-        assert_eq!(PrimeProvider::list_args(), vec!["list", "--all", "--json"]);
+    fn list_args_ask_only_for_sessions_the_daemon_hosts() {
+        assert_eq!(PrimeProvider::list_args(), vec!["list", "--json"]);
+        assert!(!PrimeProvider::list_args().contains(&"--all".to_string()));
+    }
+
+    #[test]
+    fn a_saved_session_is_not_mistaken_for_a_running_one() {
+        // Captured verbatim from `prime-agent list --all --json` for a session
+        // whose worker had already exited. It still says lifecycle "live" with
+        // no attached clients, so lifecycle alone would call it detached and
+        // Wardian would show a dead agent as running.
+        let saved = r#"{"sessions":[{
+          "id": "019fd4c3-8276-7368-b8b6-a9392b53ea7d",
+          "lifecycle": "live",
+          "activity": "idle",
+          "isSessionActive": false,
+          "sessionId": "019fd4c3-8276-7368-b8b6-a9392b53ea7d",
+          "cwd": "C:\\Users\\t",
+          "isStreaming": false,
+          "attachedClients": 0,
+          "messageCount": 2,
+          "rlmDepth": 0
+        }]}"#;
+
+        let session = PrimeProvider::parse_list_output(saved).expect("parse").remove(0);
+
+        assert!(!session.is_hosted_by_daemon());
+        assert!(!session.is_detached());
+        assert!(PrimeProvider::detached_agent_sessions(
+            &[session],
+            [("agent-1", Some("019fd4c3-8276-7368-b8b6-a9392b53ea7d"))]
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_hosted_session_reports_its_worker() {
+        // Captured verbatim from `prime-agent list --json`, which returns only
+        // sessions the supervisor is hosting.
+        let hosted = r#"{"sessions":[{
+          "id": "b32e30bfde83",
+          "lifecycle": "live",
+          "runtimeKind": "top-level",
+          "activeSessionId": "b32e30bfde83",
+          "sessionId": "019fd4d1-0000-7000-8000-000000000000",
+          "attachedClients": 1,
+          "workerPid": 81900,
+          "rlmDepth": 0
+        }]}"#;
+
+        let session = PrimeProvider::parse_list_output(hosted).expect("parse").remove(0);
+
+        assert!(session.is_hosted_by_daemon());
+        assert_eq!(session.worker_pid, Some(81900));
+        // A client is attached, so it is being driven, not detached.
+        assert!(!session.is_detached());
     }
 
     #[test]
@@ -904,11 +980,13 @@ mod tests {
 
     #[test]
     fn parse_list_output_classifies_attachment_and_depth() {
+        // activeSessionId is present on every row the supervisor hosts; a row
+        // without it is a saved session and is covered separately.
         let output = r#"{"sessions":[
-          {"id":"root-attached","lifecycle":"live","attachedClients":1,"rlmDepth":0},
-          {"id":"root-detached","lifecycle":"live","attachedClients":0,"rlmDepth":0},
-          {"id":"draft","lifecycle":"draft","attachedClients":0,"rlmDepth":0},
-          {"id":"child","lifecycle":"live","attachedClients":0,"rlmDepth":2}
+          {"id":"root-attached","activeSessionId":"root-attached","lifecycle":"live","attachedClients":1,"rlmDepth":0},
+          {"id":"root-detached","activeSessionId":"root-detached","lifecycle":"live","attachedClients":0,"rlmDepth":0},
+          {"id":"draft","activeSessionId":"draft","lifecycle":"draft","attachedClients":0,"rlmDepth":0},
+          {"id":"child","activeSessionId":"child","lifecycle":"live","attachedClients":0,"rlmDepth":2}
         ]}"#;
 
         let sessions = PrimeProvider::parse_list_output(output).expect("parse");
@@ -928,10 +1006,10 @@ mod tests {
     fn reconciliation_adopts_only_live_unattended_roots() {
         let sessions = PrimeProvider::parse_list_output(
             r#"{"sessions":[
-              {"id":"a1","sessionId":"uuid-detached","lifecycle":"live","attachedClients":0,"rlmDepth":0},
-              {"id":"a2","sessionId":"uuid-attached","lifecycle":"live","attachedClients":1,"rlmDepth":0},
-              {"id":"a3","sessionId":"uuid-draft","lifecycle":"draft","attachedClients":0,"rlmDepth":0},
-              {"id":"a4","sessionId":"uuid-child","lifecycle":"live","attachedClients":0,"rlmDepth":1}
+              {"id":"a1","activeSessionId":"a1","sessionId":"uuid-detached","lifecycle":"live","attachedClients":0,"rlmDepth":0},
+              {"id":"a2","activeSessionId":"a2","sessionId":"uuid-attached","lifecycle":"live","attachedClients":1,"rlmDepth":0},
+              {"id":"a3","activeSessionId":"a3","sessionId":"uuid-draft","lifecycle":"draft","attachedClients":0,"rlmDepth":0},
+              {"id":"a4","activeSessionId":"a4","sessionId":"uuid-child","lifecycle":"live","attachedClients":0,"rlmDepth":1}
             ]}"#,
         )
         .expect("parse");
@@ -962,7 +1040,7 @@ mod tests {
     #[test]
     fn reconciliation_matches_agents_persisted_with_the_short_daemon_id() {
         let sessions = PrimeProvider::parse_list_output(
-            r#"{"sessions":[{"id":"99dd42ff3d92","sessionId":"uuid-1","lifecycle":"live","attachedClients":0,"rlmDepth":0}]}"#,
+            r#"{"sessions":[{"id":"99dd42ff3d92","activeSessionId":"99dd42ff3d92","sessionId":"uuid-1","lifecycle":"live","attachedClients":0,"rlmDepth":0}]}"#,
         )
         .expect("parse");
 
