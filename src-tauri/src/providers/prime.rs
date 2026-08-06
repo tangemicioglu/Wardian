@@ -219,6 +219,49 @@ impl PrimeProvider {
         ]
     }
 
+    /// True when a failed launch was rejected by Prime's session lease rather
+    /// than by anything about the request itself.
+    ///
+    /// Prime guards each session file with a lease keyed by the owning process.
+    /// A resume issued while the previous worker is still shutting down is
+    /// refused with `SessionAlreadyActiveError`, observed as
+    /// `Session is already active in <agent>: <path>` (or
+    /// `... in another process: <path>` when the owner is unnamed).
+    pub fn is_session_lease_conflict(error: &str) -> bool {
+        error.contains("Session is already active")
+            || error.contains("session_already_active")
+            || error.contains("SessionAlreadyActiveError")
+    }
+
+    /// The agent named as holding the lease, when the message names one.
+    ///
+    /// Note that this id is not necessarily stoppable: the lease outlives its
+    /// worker, so the supervisor can answer `Unknown active session` for an id
+    /// that a lease conflict just reported. Treat it as a diagnostic.
+    pub fn session_lease_conflict_owner(error: &str) -> Option<String> {
+        let owner = error
+            .split_once("Session is already active in ")?
+            .1
+            .split_once(':')?
+            .0
+            .trim();
+
+        (!owner.is_empty() && owner != "another process").then(|| owner.to_string())
+    }
+
+    /// Backoff schedule for retrying a launch refused by the session lease.
+    ///
+    /// Prime reclaims a lease as soon as it observes the owning process is
+    /// gone, comparing both liveness and process start id; there is no timed
+    /// grace period to wait out. The retry window is therefore only as long as
+    /// the previous worker takes to exit, so the schedule stays short and gives
+    /// up quickly rather than masking a genuinely still-running agent.
+    pub const SESSION_LEASE_RETRY_BACKOFF: [std::time::Duration; 3] = [
+        std::time::Duration::from_millis(250),
+        std::time::Duration::from_millis(750),
+        std::time::Duration::from_millis(2000),
+    ];
+
     /// Arguments for `prime-agent list --all --json`, the startup
     /// reconciliation source for detached workers.
     pub fn list_args() -> Vec<String> {
@@ -692,6 +735,48 @@ mod tests {
             PrimeProvider::stop_args("6e65660fc3ea"),
             vec!["stop", "6e65660fc3ea", "--json"]
         );
+    }
+
+    #[test]
+    fn session_lease_conflicts_are_recognized_and_attributed() {
+        // Both message forms come from SessionAlreadyActiveError in
+        // prime-agent 0.7.0's core/session-lease.js.
+        let named = "Session is already active in 3a87eadc7fe1: C:\\s\\019f.jsonl";
+        let unnamed = "Session is already active in another process: C:\\s\\019f.jsonl";
+
+        assert!(PrimeProvider::is_session_lease_conflict(named));
+        assert!(PrimeProvider::is_session_lease_conflict(unnamed));
+        assert_eq!(
+            PrimeProvider::session_lease_conflict_owner(named).as_deref(),
+            Some("3a87eadc7fe1")
+        );
+        // The unnamed form has no agent to report, only a path.
+        assert_eq!(PrimeProvider::session_lease_conflict_owner(unnamed), None);
+    }
+
+    #[test]
+    fn ordinary_failures_are_not_treated_as_lease_conflicts() {
+        // Retrying these would only delay a real error reaching the user.
+        assert!(!PrimeProvider::is_session_lease_conflict(
+            "Unknown active session: 3a87eadc7fe1"
+        ));
+        assert!(!PrimeProvider::is_session_lease_conflict(
+            "Headless provider prime exited with status 1"
+        ));
+        assert!(!PrimeProvider::is_session_lease_conflict(""));
+    }
+
+    #[test]
+    fn lease_retry_backoff_gives_up_quickly() {
+        let total: std::time::Duration = PrimeProvider::SESSION_LEASE_RETRY_BACKOFF.iter().sum();
+
+        // The wait exists to outlast a worker's exit, not to sit through a
+        // genuinely busy agent, so the whole schedule stays inside a few
+        // seconds and is strictly increasing.
+        assert!(total < std::time::Duration::from_secs(5));
+        assert!(PrimeProvider::SESSION_LEASE_RETRY_BACKOFF
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]));
     }
 
     #[test]

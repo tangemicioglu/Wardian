@@ -198,13 +198,34 @@ Error: Session is already active in 3a87eadc7fe1: …\019fd4aa-d94b-….jsonl
 
 At that moment `prime-agent stop 3a87eadc7fe1` reported
 `Unknown active session`, so the lease outlived the worker that owned it. The
-same resume succeeded once the daemon's cleanup grace period elapsed. Wardian's
-resume path must therefore treat `session_already_active` as retryable with
-backoff rather than a hard failure, and must not assume the agent id named in
-that error is still stoppable.
+same resume succeeded on a later attempt. Wardian's resume path must therefore
+treat `session_already_active` as retryable with backoff rather than a hard
+failure, and must not assume the agent id named in that error is still
+stoppable.
 
-Note also that the error message embeds the owning agent id, which is a
-practical fallback source for `daemon_agent_id`.
+`core/session-lease.js` shows what that retry is actually waiting for, and it
+is not a timer. `isLeaseOwnerAlive` compares the recorded pid's liveness and
+its process start id, and `reclaimStaleLease` takes the lease over as soon as
+that check fails. There is no timed grace period to sit out: the window is only
+as long as the previous worker takes to exit. An earlier revision of this spec
+attributed the recovery to a grace period, which would have argued for a much
+longer backoff than the evidence supports.
+
+`PrimeProvider::SESSION_LEASE_RETRY_BACKOFF` is therefore short and strictly
+increasing (250ms, 750ms, 2s), applied in
+`delivery/headless_process.rs::run_with_session_lease_retries`. Only Prime gets
+a schedule, only a recognized lease conflict is retried, and the retries share
+a single delivery-attempt row so one prompt still records one outcome. Giving
+up quickly is deliberate: a lease held by a worker that is genuinely still
+running is a real conflict the user should see, not something to hide behind a
+long wait.
+
+Both message forms must be recognized, since the owner is not always named:
+
+```text
+Session is already active in <agent>: <path>
+Session is already active in another process: <path>
+```
 
 ### Stop selectors and worker ownership *(verified)*
 
