@@ -169,13 +169,6 @@ fn provider_forbids_process_tree_kill(provider: &str) -> bool {
     provider.eq_ignore_ascii_case("prime")
 }
 
-/// Asks Prime Agent's supervisor to stop one root session tree.
-///
-/// Killing the PTY only detaches the client: the daemon worker keeps running
-/// and keeps spending tokens. This is dispatched without waiting because the
-/// request travels to the supervisor over its own socket and does not depend on
-/// the client Wardian is about to tear down. `prime-agent shutdown` is never
-/// used here, since it stops every agent on the machine.
 /// Asks the supervisor which worker owns a pinned session directory.
 ///
 /// Runs synchronously on the teardown path: one short listing is cheaper than
@@ -203,6 +196,48 @@ fn prime_stop_selector_from_daemon(
     crate::providers::PrimeProvider::stop_selector_for_session_dir(&sessions, session_dir)
 }
 
+/// How long teardown waits for `prime-agent stop` to reach the supervisor.
+///
+/// Generous enough for a cold Node start plus a named-pipe round trip, short
+/// enough that quitting with several Prime agents does not feel hung.
+const PRIME_WORKER_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Runs `prime-agent stop` and waits for it, because Wardian cannot outlive it.
+///
+/// This used to be dispatched fire-and-forget, on the reasoning that the
+/// request travels to the supervisor over its own socket and so does not depend
+/// on the client being torn down. That was wrong in the case that matters most.
+/// Wardian assigns its own process to a `kill_on_job_close` job object, so every
+/// child it spawns dies with it -- and on app quit the stop client was killed
+/// during Node's startup, before it had connected to anything. The worker then
+/// survived, still holding a model session.
+fn run_prime_worker_stop(command: &mut std::process::Command) -> Result<bool, String> {
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let deadline = std::time::Instant::now() + PRIME_WORKER_STOP_TIMEOUT;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status.success()),
+            Ok(None) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        if std::time::Instant::now() >= deadline {
+            // Leave it running rather than killing it: it may still land, and
+            // the job object will collect it if Wardian exits first.
+            return Err(format!(
+                "timed out after {}s",
+                PRIME_WORKER_STOP_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Asks Prime Agent's supervisor to stop one root session tree.
+///
+/// Killing the PTY only detaches the client: the daemon worker keeps running
+/// and keeps spending tokens. `prime-agent shutdown` is never used here, since
+/// it stops every agent on the machine.
 fn request_prime_worker_stop(agent: &ActiveAgent) {
     let Ok(config) = agent.config.lock() else {
         return;
@@ -259,13 +294,17 @@ fn request_prime_worker_stop(agent: &ActiveAgent) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
-    match command.spawn() {
-        Ok(_) => log_debug(&format!(
-            "[Wardian] Requested Prime worker stop for {session_id} (agent {})",
+    match run_prime_worker_stop(&mut command) {
+        Ok(true) => log_debug(&format!(
+            "[Wardian] Stopped Prime worker for {session_id} (agent {})",
+            target.trim()
+        )),
+        Ok(false) => log_debug(&format!(
+            "[Wardian] Prime refused the worker stop for {session_id} (agent {})",
             target.trim()
         )),
         Err(err) => log_debug(&format!(
-            "[Wardian] Failed to request Prime worker stop for {session_id}: {err}"
+            "[Wardian] Failed to stop the Prime worker for {session_id}: {err}"
         )),
     }
 }
@@ -1228,6 +1267,38 @@ pub(crate) fn display_log_path(path: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn prime_worker_stop_waits_for_the_client_to_finish() {
+        // The point of waiting: Wardian's own job object kills this child when
+        // the app exits, so a stop that has not completed has not happened.
+        let mut command = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        if cfg!(windows) {
+            command.args(["/C", "exit 0"]);
+        } else {
+            command.args(["-c", "exit 0"]);
+        }
+
+        assert_eq!(run_prime_worker_stop(&mut command), Ok(true));
+    }
+
+    #[test]
+    fn prime_worker_stop_reports_a_refusal_rather_than_claiming_success() {
+        let mut command = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        if cfg!(windows) {
+            command.args(["/C", "exit 3"]);
+        } else {
+            command.args(["-c", "exit 3"]);
+        }
+
+        assert_eq!(run_prime_worker_stop(&mut command), Ok(false));
+    }
+
+    #[test]
+    fn prime_worker_stop_reports_a_launch_failure() {
+        let mut command = std::process::Command::new("wardian-no-such-binary-for-tests");
+        assert!(run_prime_worker_stop(&mut command).is_err());
+    }
 
     #[test]
     fn only_prime_forbids_process_tree_kill() {

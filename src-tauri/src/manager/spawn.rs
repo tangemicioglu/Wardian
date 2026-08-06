@@ -145,6 +145,50 @@ impl AntigravityTurnCompletionGate {
     }
 }
 
+/// Turn boundaries for Prime Agent's interactive TUI, read off the screen.
+///
+/// Every other structured signal Prime offers arrives on a transport Wardian
+/// does not use interactively, so the TUI's own status line is the only
+/// evidence a turn started. Without it a delivered message is recorded as
+/// failed: `provider_accepted` waits on a `turn_started` watch event that never
+/// arrives, even though the model answered.
+#[derive(Default)]
+struct PrimeTurnGate {
+    working: bool,
+}
+
+/// What the screen says changed since the last observation.
+#[derive(Debug, PartialEq, Eq)]
+enum PrimeTurnTransition {
+    Started,
+    Completed,
+    None,
+}
+
+impl PrimeTurnGate {
+    fn observe_output(&mut self, provider_name: &str, output: &str) -> PrimeTurnTransition {
+        if provider_name != "prime" {
+            return PrimeTurnTransition::None;
+        }
+
+        // The spinner repaints constantly, so only edges are reported; the
+        // idle footer is checked first only when a turn is actually open.
+        if !self.working {
+            if crate::control::prime_output_is_working(output) {
+                self.working = true;
+                return PrimeTurnTransition::Started;
+            }
+            return PrimeTurnTransition::None;
+        }
+
+        if crate::control::prime_output_has_ready_prompt(output) {
+            self.working = false;
+            return PrimeTurnTransition::Completed;
+        }
+        PrimeTurnTransition::None
+    }
+}
+
 #[derive(Default)]
 struct AntigravityUserTurnReceiptTracker {
     initialized: bool,
@@ -761,6 +805,7 @@ pub async fn spawn_agent(
         let mut opencode_chunks_logged = 0usize;
         let mut codex_terminal_theme_responder = CodexTerminalThemeProbeResponder::default();
         let mut antigravity_turn_completion_gate = AntigravityTurnCompletionGate::default();
+        let mut prime_turn_gate = PrimeTurnGate::default();
         let mut pty_decoder = PtyUtf8Decoder::new();
         let output_ready_emit_gate =
             std::sync::Arc::new(std::sync::Mutex::new(OutputReadyEmitGate::default()));
@@ -864,6 +909,28 @@ pub async fn spawn_agent(
                             &init_timestamp_clone,
                             &current_status_clone,
                         );
+                    }
+
+                    match prime_turn_gate.observe_output(&provider_name_for_pty, &text) {
+                        // UserQuery is what publishes the `turn_started` watch
+                        // event that a delivery receipt waits on.
+                        PrimeTurnTransition::Started => apply_agent_event(
+                            &pty_app,
+                            &sid_for_pty,
+                            AgentEvent::UserQuery,
+                            &query_count_clone,
+                            &init_timestamp_clone,
+                            &current_status_clone,
+                        ),
+                        PrimeTurnTransition::Completed => apply_agent_event(
+                            &pty_app,
+                            &sid_for_pty,
+                            AgentEvent::TurnCompleted,
+                            &query_count_clone,
+                            &init_timestamp_clone,
+                            &current_status_clone,
+                        ),
+                        PrimeTurnTransition::None => {}
                     }
 
                     // Process stream events to capture Session ID / Status changes
@@ -1916,6 +1983,85 @@ mod tests {
         let mut gate = AntigravityTurnCompletionGate::default();
 
         assert!(!gate.observe_output("antigravity", "Idle", "\r\n>\r\n? for shortcuts\r\n",));
+    }
+
+    /// Prime's idle footer, captured from prime-agent 0.7.0 under Wardian.
+    const PRIME_IDLE: &str =
+        "← agents/resume  GPT-5.3 Codex Spark • high  ? for shortcuts                35 (0%)\r\n";
+    /// The same footer during a turn: identical but for the missing hint.
+    const PRIME_BUSY_FOOTER: &str =
+        "← agents/resume  GPT-5.3 Codex Spark • high                                 50 (0%)\r\n";
+
+    #[test]
+    fn prime_turn_gate_reports_one_start_and_one_completion() {
+        let mut gate = PrimeTurnGate::default();
+
+        assert_eq!(
+            gate.observe_output("prime", PRIME_IDLE),
+            PrimeTurnTransition::None,
+        );
+        assert_eq!(
+            gate.observe_output("prime", " ⠋ Waiting · 0s\r\n"),
+            PrimeTurnTransition::Started,
+        );
+        // The spinner repaints many times a second; only edges may be reported
+        // or every frame would count as a new turn.
+        for frame in [
+            " ⠙ Waiting · 1s\r\n",
+            " ⠏ Thinking · 2s\r\n",
+            " ⠴ Writing · 3s\r\n",
+        ] {
+            assert_eq!(
+                gate.observe_output("prime", frame),
+                PrimeTurnTransition::None
+            );
+        }
+        assert_eq!(
+            gate.observe_output("prime", &format!("PINNED_OK\r\n{PRIME_IDLE}")),
+            PrimeTurnTransition::Completed,
+        );
+        assert_eq!(
+            gate.observe_output("prime", PRIME_IDLE),
+            PrimeTurnTransition::None,
+        );
+    }
+
+    #[test]
+    fn prime_turn_gate_ignores_other_providers() {
+        let mut gate = PrimeTurnGate::default();
+
+        assert_eq!(
+            gate.observe_output("codex", " ⠋ Waiting · 0s\r\n"),
+            PrimeTurnTransition::None,
+        );
+    }
+
+    #[test]
+    fn prime_busy_footer_is_not_mistaken_for_the_idle_prompt() {
+        // The two footers differ only by the shortcuts hint, so a match on the
+        // model name or the arrow alone would end every turn immediately.
+        assert!(!crate::control::prime_output_has_ready_prompt(
+            PRIME_BUSY_FOOTER
+        ));
+        assert!(crate::control::prime_output_has_ready_prompt(PRIME_IDLE));
+    }
+
+    #[test]
+    fn prime_working_detection_requires_the_status_separator() {
+        assert!(crate::control::prime_output_is_working(
+            " ⠸ Waiting · 5s · ↑ 178 tokens\r\n"
+        ));
+        // Agent output that merely uses the word must not open a turn.
+        assert!(!crate::control::prime_output_is_working(
+            "I am thinking about the writing style here.\r\n"
+        ));
+    }
+
+    #[test]
+    fn prime_ready_prompt_needs_the_current_screen_state() {
+        // An idle footer scrolled above a running spinner is stale.
+        let stale = format!("{PRIME_IDLE} ⠴ Writing · 3s\r\n");
+        assert!(!crate::control::prime_output_has_ready_prompt(&stale));
     }
 
     #[test]

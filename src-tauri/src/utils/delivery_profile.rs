@@ -80,10 +80,15 @@ pub fn delivery_profile(provider: &str) -> DeliveryProfile {
             input_ready_markers: &[">"],
             busy_markers: &["Working"],
         },
-        // Prime Agent is driven over its RPC command channel rather than by
-        // emulated keystrokes, so this profile only exists so the interactive
-        // TUI path does not fall through to the unknown-provider default.
-        // Delivery receipts must not depend on these markers.
+        // Prime Agent will be driven over its RPC command channel rather than
+        // by emulated keystrokes, but until that transport lands it runs on the
+        // interactive TUI like every other provider, so this profile carries
+        // the real submit behaviour.
+        //
+        // The marker lists stay empty on purpose: Prime's turn boundaries are
+        // read as screen-state edges by `PrimeTurnGate` rather than as
+        // substring hits, because its busy and idle footers differ only by a
+        // shortcuts hint and a marker match would end every turn immediately.
         "prime" => DeliveryProfile {
             provider: normalized,
             submit_key: SubmitKey::CarriageReturn,

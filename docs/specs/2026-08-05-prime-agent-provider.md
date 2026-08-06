@@ -742,6 +742,48 @@ the config carried no id, logged that the worker "may outlive the client", and
 let it run. It now resolves the selector from the listing, and the native test
 asserts the worker is gone afterwards.
 
+### Teardown has to wait for the stop *(corrected)*
+
+The stop was dispatched fire-and-forget, on the stated reasoning that the
+request travels to the supervisor over its own socket and so does not depend on
+the client Wardian is about to tear down. That reasoning ignored Wardian's own
+process model: `init_app_process_supervisor` assigns the app to a
+`kill_on_job_close` job object, so every child it spawns dies with it. On app
+quit the stop client was killed during Node's startup, before it had connected
+to anything, and the worker survived holding a live model session -- the exact
+outcome the feature exists to prevent.
+
+Observed, not reasoned about: two real delivery runs each left a worker with
+zero attached clients, and issuing the identical `prime-agent stop` by hand
+afterwards succeeded immediately. Teardown now waits for the client to exit,
+bounded at five seconds, and logs whether the supervisor accepted.
+
+### Delivery receipts on the interactive transport *(corrected)*
+
+This spec said Prime's `DeliveryProfile` exists only so the TUI path does not
+fall through to the unknown-provider default, and that "delivery receipts must
+not depend on these markers" because the RPC transport would supply them. Until
+that transport lands, the consequence was that Prime could not report a
+delivery at all.
+
+The first real run through `provider-delivery-real-native` showed the message
+reaching Prime's TUI and the model answering with the expected marker, while
+Wardian recorded the delivery as failed. `provider_accepted` waits on a
+`turn_started` watch event, which comes from `AgentEvent::UserQuery`, which on
+the PTY path comes from `parse_output` -- and Prime's TUI emits no JSON, so it
+never fired.
+
+Prime's TUI does publish its state unambiguously: a status line reading
+`<spinner> Thinking · 2s` while a turn runs, and a footer carrying
+`? for shortcuts` only while input is accepted. `PrimeTurnGate` reads turn start
+and completion off those edges, the same shape the Antigravity gate already
+uses, and `wait_for_terminal_ready_for_control_send` gained a `prime` arm
+because Prime's agent status never leaves its spawn value on this transport.
+Prime is now part of the real-delivery matrix rather than excluded from it.
+
+These markers become redundant when the RPC transport lands, and should be
+removed with it.
+
 The same test also surfaced a defect with nothing to do with Prime's lifecycle:
 `AgentConfigCompat::legacy_provider_config` matched every key `provider_key`
 returns except `prime`, and fell through to `unreachable!()`. Deserializing any
