@@ -106,8 +106,8 @@ pub struct PrimeProviderConfig {
     pub autonomous_max_turns: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autonomous_max_tokens: Option<u64>,
-    /// Prime's own detached worker id, distinct from the session UUID.
-    /// Required to stop the agent; see Lifecycle below.
+    /// Prime's short daemon id for the worker, distinct from the session UUID.
+    /// Informational, not required to stop the agent; see Lifecycle below.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub daemon_agent_id: Option<String>,
 }
@@ -206,6 +206,32 @@ that error is still stoppable.
 Note also that the error message embeds the owning agent id, which is a
 practical fallback source for `daemon_agent_id`.
 
+### Stop selectors and worker ownership *(verified)*
+
+An earlier revision of this spec assumed `prime-agent stop` needed Prime's short
+daemon id, and therefore that Wardian had to capture `daemon_agent_id` before it
+could tear an agent down. Reading the supervisor shows otherwise.
+`matchWorkers` in `dist/modes/daemon/daemon-supervisor.js` accepts the daemon
+id, the session UUID, or the session name as an exact selector, falling back to
+a suffix match on either id. Wardian already persists the session UUID in
+`resume_session`, so teardown needs no additional lookup and
+`daemon_agent_id` is informational only.
+
+The same code establishes which workers a `stop` client can even see.
+`createDaemonClientConnection` is called with `clientOwned: parsed.noSession`
+for the interactive TUI and `clientOwned: true` for `--print` and `--mode rpc`.
+A `client_owned` worker records an `ownerClientId`, and
+`isWorkerAccessibleToClient` hides it from every other client; a `resident`
+worker has no owner and is visible to all. Two consequences follow:
+
+- Wardian's interactive PTY spawn produces a **resident** worker. That is the
+  one that outlives its client, and it is exactly the case `stop` handles.
+- `--print` and `--mode rpc` workers are **client-owned** and invisible to a
+  separate `stop` process, but they are also torn down with their client, so
+  they need no external stop. This is the mechanism behind the open
+  verification gap recorded at the end of this spec: those two modes cannot
+  exercise the `stop` path even in principle.
+
 ### Input delivery: RPC, not keystrokes
 
 `prime` must not be driven through `utils/terminal_input.rs` or a tuned
@@ -264,8 +290,8 @@ Three consequences:
    the client; the worker keeps running and keeps spending tokens. Wardian's
    stop path must invoke the CLI and only then tear down the PTY.
    `prime-agent shutdown` is global and must never be used for a single agent.
-   This requires persisting `daemon_agent_id`, which is why it appears in
-   `PrimeProviderConfig`.
+   The selector may be the persisted `resume_session` UUID; see *Stop selectors
+   and worker ownership* above.
 2. **A new status is required.** Prime agents can be *running but detached*.
    The existing status vocabulary (Idle, Processing, Action Required, Off,
    Error) has no cell for "alive, not attached to this app instance".
@@ -320,16 +346,18 @@ Wardian's response, implemented in `manager/mod.rs`:
    `utils::process::release_job_without_killing`, which clears
    `KILL_ON_JOB_CLOSE` before the handle drops, so the safety net cannot reap
    the shared daemon either.
-3. `request_prime_worker_stop` dispatches `prime-agent stop <agent> --json`
-   before teardown, targeting `daemon_agent_id` when known and the active
-   session id otherwise. It is fire-and-forget: the request reaches the
+3. `request_prime_worker_stop` dispatches `prime-agent stop <selector> --json`
+   before teardown, targeting `daemon_agent_id` when known and the persisted
+   session UUID otherwise -- both are valid selectors, so the fallback is not a
+   degraded path. It is fire-and-forget: the request reaches the
    supervisor over its own socket and does not depend on the client being torn
    down.
 
 Still unverified: `stop` succeeding against a live resident worker spawned by
-Wardian itself. RPC and print clients are client-owned and are removed on
-normal completion, so they cannot exercise that path. It belongs in the native
-E2E layer.
+Wardian itself. RPC and print clients are client-owned, so the supervisor hides
+their workers from any other client and removes them on normal completion --
+they cannot exercise that path even in principle. Producing a resident worker
+requires the interactive PTY spawn, which puts this in the native E2E layer.
 
 `activity`, `isStreaming`, and `attachedClients` map directly onto Wardian's
 status vocabulary plus the new detached state, and `sessionActions` exposes

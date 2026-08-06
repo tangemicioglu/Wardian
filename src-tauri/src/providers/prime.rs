@@ -80,6 +80,10 @@ pub fn session_dir_for_agent(wardian_session_id: &str) -> Option<std::path::Path
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrimeDaemonSession {
     pub id: String,
+    /// The session UUID, which is what Wardian persists in
+    /// [`AgentConfig::resume_session`] and therefore the join key between a
+    /// daemon row and a Wardian agent.
+    pub session_id: Option<String>,
     /// `live` for a running root, `draft` for one that has not started work.
     pub lifecycle: Option<String>,
     /// `idle`, `working`, and similar.
@@ -110,6 +114,7 @@ impl PrimeDaemonSession {
 
         Some(Self {
             id,
+            session_id: string_field("sessionId"),
             lifecycle: string_field("lifecycle"),
             activity: string_field("activity"),
             cwd: string_field("cwd"),
@@ -131,6 +136,18 @@ impl PrimeDaemonSession {
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0),
         })
+    }
+
+    /// True when this row is the daemon's view of a given Wardian agent, whose
+    /// provider identity is the session UUID rather than the short daemon id.
+    pub fn matches_session(&self, session_uuid: &str) -> bool {
+        let session_uuid = session_uuid.trim();
+        !session_uuid.is_empty()
+            && (self.id == session_uuid
+                || self
+                    .session_id
+                    .as_deref()
+                    .is_some_and(|value| value == session_uuid))
     }
 
     /// True when this is a root session tree rather than an RLM descendant.
@@ -181,16 +198,23 @@ impl PrimeProvider {
         None
     }
 
-    /// Arguments for `prime-agent stop <agent> --json`.
+    /// Arguments for `prime-agent stop <selector> --json`.
     ///
     /// Prime Agent's daemon keeps a root session tree alive after its client
     /// disconnects, so a PTY teardown alone orphans a token-spending worker.
     /// `prime-agent shutdown` is deliberately not used here: it stops every
     /// agent on the machine, including ones Wardian does not own.
-    pub fn stop_args(daemon_agent_id: &str) -> Vec<String> {
+    ///
+    /// The selector is resolved by the supervisor against the short daemon id,
+    /// the session UUID, and the session name, so Wardian's persisted
+    /// `resume_session` is a first-class target and no extra id lookup is
+    /// needed. Only workers with no owning client are visible to this command;
+    /// that is the interactive lifecycle Wardian spawns, while `--print` and
+    /// `--mode rpc` clients own their worker and take it down themselves.
+    pub fn stop_args(selector: &str) -> Vec<String> {
         vec![
             "stop".to_string(),
-            daemon_agent_id.to_string(),
+            selector.to_string(),
             "--json".to_string(),
         ]
     }
@@ -677,20 +701,25 @@ mod tests {
 
     #[test]
     fn parse_list_output_reads_reconciliation_fields() {
-        // Shape captured from `prime-agent 0.7.0 list --all --json`.
+        // Row captured verbatim from `prime-agent 0.7.0 list --all --json`,
+        // trimmed to the fields Wardian reads. Note that `id` is a short daemon
+        // id while `sessionId` is the UUID Wardian persists: they are different
+        // values for the same worker.
         let output = r#"{
           "sessions": [
             {
-              "id": "019fd48f-8b5b-76cd-9f8b-6e65660fc3ea",
+              "id": "99dd42ff3d92",
               "lifecycle": "live",
               "activity": "idle",
               "isSessionActive": false,
-              "sessionFile": "C:\\Users\\t\\.prime\\agent\\sessions\\019fd48f-8599.jsonl",
+              "rlmDepth": 0,
+              "activeSessionId": "99dd42ff3d92",
+              "sessionId": "019fd4c3-8276-7368-b8b6-a9392b53ea7d",
+              "sessionFile": "C:\\Users\\t\\.prime\\agent\\sessions\\019fd4c3-8276-7368-b8b6-a9392b53ea7d.jsonl",
               "cwd": "C:\\work",
               "isStreaming": false,
               "attachedClients": 0,
-              "messageCount": 4,
-              "rlmDepth": 0
+              "messageCount": 4
             }
           ]
         }"#;
@@ -699,12 +728,29 @@ mod tests {
 
         assert_eq!(sessions.len(), 1);
         let session = &sessions[0];
-        // stop takes this id, and it is not the session file name.
-        assert_eq!(session.id, "019fd48f-8b5b-76cd-9f8b-6e65660fc3ea");
-        assert!(session.session_file.as_deref().unwrap().contains("019fd48f-8599"));
+        assert_eq!(session.id, "99dd42ff3d92");
+        assert_eq!(
+            session.session_id.as_deref(),
+            Some("019fd4c3-8276-7368-b8b6-a9392b53ea7d")
+        );
         assert_eq!(session.message_count, 4);
         assert!(session.is_root());
         assert!(session.is_detached());
+    }
+
+    #[test]
+    fn daemon_rows_match_either_identifier_the_supervisor_accepts() {
+        let session = PrimeProvider::parse_list_output(
+            r#"{"sessions":[{"id":"99dd42ff3d92","sessionId":"019fd4c3-8276-7368-b8b6-a9392b53ea7d"}]}"#,
+        )
+        .expect("parse")
+        .remove(0);
+
+        // Wardian persists the UUID, so that is the join key that matters.
+        assert!(session.matches_session("019fd4c3-8276-7368-b8b6-a9392b53ea7d"));
+        assert!(session.matches_session("99dd42ff3d92"));
+        assert!(!session.matches_session("019fd4c3-8276-7368-b8b6-000000000000"));
+        assert!(!session.matches_session("   "));
     }
 
     #[test]

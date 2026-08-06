@@ -142,7 +142,10 @@ export interface PrimeProviderConfig {
     autonomous_gates?: string[];
     autonomous_max_turns?: number;
     autonomous_max_tokens?: number;
-    /** Prime's detached worker id, required by `prime-agent stop <agent>`. */
+    /**
+     * Prime's short daemon id for the worker, as shown by `prime-agent list`.
+     * Informational: `stop` also accepts the session UUID Wardian persists.
+     */
     daemon_agent_id?: string;
 }
 

@@ -195,8 +195,12 @@ pub struct PrimeProviderConfig {
     pub autonomous_max_turns: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autonomous_max_tokens: Option<u64>,
-    /// Prime's detached worker id, distinct from the session UUID. Required by
-    /// `prime-agent stop <agent>`; closing the PTY only detaches the client.
+    /// Prime's short daemon id for the worker, distinct from the session UUID
+    /// and shown by `prime-agent list`. It is not required for teardown: the
+    /// supervisor resolves a `stop` selector against the daemon id, the session
+    /// UUID, and the session name alike, and Wardian already persists the UUID
+    /// in `resume_session`. Recorded when observed so Wardian can name a worker
+    /// the way Prime's own tooling does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub daemon_agent_id: Option<String>,
 }
