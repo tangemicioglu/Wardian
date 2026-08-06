@@ -1,6 +1,4 @@
-use crate::providers::antigravity::{
-    changed_workspace_conversation, AntigravityProvider,
-};
+use crate::providers::antigravity::{changed_workspace_conversation, AntigravityProvider};
 use crate::providers::codex::CodexProvider;
 use crate::providers::opencode::OpenCodeProvider;
 use crate::providers::prime::PrimeProvider;
@@ -362,9 +360,8 @@ pub async fn run_headless_with_options(
             .resume_session
             .is_none_or(|value| value.trim().is_empty())
     {
-        AntigravityProvider::antigravity_home().and_then(|home| {
-            AntigravityProvider::conversation_for_workspace(&home, options.cwd)
-        })
+        AntigravityProvider::antigravity_home()
+            .and_then(|home| AntigravityProvider::conversation_for_workspace(&home, options.cwd))
     } else {
         None
     };
@@ -653,9 +650,8 @@ pub async fn run_headless_with_options(
             .filter(|value| !value.trim().is_empty())
             .map(str::to_string)
             .or_else(|| {
-                let after = AntigravityProvider::antigravity_home().and_then(|home| {
-                    AntigravityProvider::conversation_for_workspace(&home, cwd)
-                });
+                let after = AntigravityProvider::antigravity_home()
+                    .and_then(|home| AntigravityProvider::conversation_for_workspace(&home, cwd));
                 changed_workspace_conversation(
                     antigravity_workspace_before.as_deref(),
                     after.as_deref(),
@@ -943,11 +939,7 @@ pub async fn obtain_session_id(
     };
 
     if provider_name == "codex" {
-        append_codex_bootstrap_args(
-            &mut provider_args,
-            &provider_cwd,
-            config,
-        );
+        append_codex_bootstrap_args(&mut provider_args, &provider_cwd, config);
     } else if provider_name == "opencode" {
         provider_args.push("run".to_string());
         if let Some(config) = config {
@@ -1126,11 +1118,7 @@ pub async fn obtain_session_id(
                     provider: provider_name.to_string(),
                     ..Default::default()
                 });
-                super::apply_provider_identity(
-                    provider_name,
-                    &mut identity_config,
-                    candidate,
-                )?;
+                super::apply_provider_identity(provider_name, &mut identity_config, candidate)?;
             }
             if session_id_res.is_none() && !stderr_output.trim().is_empty() {
                 log_debug(&format!(
@@ -1620,10 +1608,10 @@ mod tests {
         let home = tempfile::tempdir().expect("Codex home");
         let cwd = Path::new("D:/Development/Wardian");
 
-        let session_id = materialize_codex_session_rollout(home.path(), cwd)
-            .expect("materialize Codex rollout");
-        let rollout_path = codex_session_file_path_in(home.path(), &session_id)
-            .expect("locate Codex rollout");
+        let session_id =
+            materialize_codex_session_rollout(home.path(), cwd).expect("materialize Codex rollout");
+        let rollout_path =
+            codex_session_file_path_in(home.path(), &session_id).expect("locate Codex rollout");
         let rollout: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(rollout_path).expect("read Codex rollout"),
         )
@@ -1699,8 +1687,9 @@ mod tests {
         );
 
         let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
-        assert!(args[..exec_index]
-            .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(
+            args[..exec_index].contains(&"--dangerously-bypass-approvals-and-sandbox".to_string())
+        );
         assert!(!args.contains(&"--sandbox".to_string()));
         assert!(!args.contains(&"--ask-for-approval".to_string()));
         assert_eq!(config.folder, cwd.to_string_lossy());
@@ -1902,11 +1891,7 @@ mod tests {
         };
         let mut args = Vec::new();
 
-        append_codex_bootstrap_args(
-            &mut args,
-            Path::new("/workspace"),
-            Some(&config),
-        );
+        append_codex_bootstrap_args(&mut args, Path::new("/workspace"), Some(&config));
 
         let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
         let policy_index = args

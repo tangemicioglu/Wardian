@@ -310,7 +310,14 @@ mod tests {
 
         assert_eq!(
             ids,
-            vec!["claude", "codex", "gemini", "antigravity", "opencode", "prime"]
+            vec![
+                "claude",
+                "codex",
+                "gemini",
+                "antigravity",
+                "opencode",
+                "prime"
+            ]
         );
     }
 

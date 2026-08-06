@@ -245,9 +245,7 @@ async fn discover_alias_catalog(
 
 /// Prime Agent's reasoning levels, shared by every model whose catalog row
 /// reports thinking support.
-const PRIME_THINKING_LEVELS: &[&str] = &[
-    "off", "minimal", "low", "medium", "high", "xhigh", "max",
-];
+const PRIME_THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 async fn discover_prime_catalog(provider: &str, version: Option<String>) -> ProviderModelCatalog {
     match provider_command_output(provider, &["model", "list"]).await {
@@ -306,7 +304,11 @@ fn parse_prime_catalog(output: &str) -> Vec<ProviderModelOption> {
             continue;
         }
 
-        let columns: Vec<&str> = trimmed.split("  ").map(str::trim).filter(|column| !column.is_empty()).collect();
+        let columns: Vec<&str> = trimmed
+            .split("  ")
+            .map(str::trim)
+            .filter(|column| !column.is_empty())
+            .collect();
         if columns.len() < 2 {
             continue;
         }

@@ -89,7 +89,9 @@ pub fn parse_skill_manifest(contents: &str) -> Option<(String, Option<String>)> 
         return None;
     }
 
-    let name = name.map(|name| name.trim().to_string()).filter(|name| !name.is_empty())?;
+    let name = name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())?;
 
     Some((
         name,
@@ -216,7 +218,10 @@ mod tests {
         // invent a skill out of prose.
         assert_eq!(parse_skill_manifest("---\nname: half\n\n# Body\n"), None);
         // Nameless: Prime keys on the name, so there is nothing to promote.
-        assert_eq!(parse_skill_manifest("---\ndescription: no name\n---\n"), None);
+        assert_eq!(
+            parse_skill_manifest("---\ndescription: no name\n---\n"),
+            None
+        );
         assert_eq!(parse_skill_manifest("---\nname:   \n---\n"), None);
         assert_eq!(parse_skill_manifest(""), None);
     }
@@ -325,7 +330,10 @@ mod tests {
         // alone rather than offered as an overwrite. Matching is
         // case-insensitive because the Library keys on directory names.
         assert_eq!(
-            promotable.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            promotable
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["novel"]
         );
     }
@@ -338,4 +346,3 @@ mod tests {
         );
     }
 }
-

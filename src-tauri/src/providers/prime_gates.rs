@@ -237,7 +237,8 @@ If it hangs, run `cargo clean`.
 
     #[test]
     fn a_bare_runner_is_not_a_check() {
-        let contents = "## Checklist\n\n- [ ] Know your `cargo` and `npm`.\n- [ ] Run `cargo test`.\n";
+        let contents =
+            "## Checklist\n\n- [ ] Know your `cargo` and `npm`.\n- [ ] Run `cargo test`.\n";
 
         assert_eq!(gates_from_agents_md(contents), vec!["cargo test"]);
     }
@@ -255,10 +256,7 @@ If it hangs, run `cargo clean`.
         assert_eq!(gates.len(), MAX_GATES);
         assert_eq!(gates[0], "cargo test");
         // Every gate costs a command at the end of each turn.
-        assert_eq!(
-            gates.iter().filter(|gate| *gate == "cargo test").count(),
-            1
-        );
+        assert_eq!(gates.iter().filter(|gate| *gate == "cargo test").count(), 1);
     }
 
     #[test]
@@ -292,4 +290,3 @@ If it hangs, run `cargo clean`.
         );
     }
 }
-

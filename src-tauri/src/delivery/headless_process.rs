@@ -118,18 +118,19 @@ async fn run_with_session_lease_retries(
     let mut backoff = session_lease_retry_backoff(&request.provider).iter();
 
     loop {
-        let outcome = crate::manager::run_headless_with_options(crate::manager::HeadlessRunOptions {
-            cwd: &request.cwd,
-            prompt: &request.prompt,
-            wardian_session_id: &request.session_id,
-            resume_session: request.resume_session.as_deref(),
-            output_format: "json",
-            provider_name: &request.provider,
-            config_override: request.config_override.as_ref(),
-            timeout: request.timeout,
-            lease_owner: request.lease_owner.clone(),
-        })
-        .await;
+        let outcome =
+            crate::manager::run_headless_with_options(crate::manager::HeadlessRunOptions {
+                cwd: &request.cwd,
+                prompt: &request.prompt,
+                wardian_session_id: &request.session_id,
+                resume_session: request.resume_session.as_deref(),
+                output_format: "json",
+                provider_name: &request.provider,
+                config_override: request.config_override.as_ref(),
+                timeout: request.timeout,
+                lease_owner: request.lease_owner.clone(),
+            })
+            .await;
 
         let Err(error) = outcome else {
             return outcome;
@@ -428,7 +429,14 @@ mod tests {
         assert!(!session_lease_retry_backoff("Prime").is_empty());
         // No other provider leases its session file, so a failure there is
         // final and must surface immediately.
-        for provider in ["claude", "codex", "gemini", "opencode", "antigravity", "mock"] {
+        for provider in [
+            "claude",
+            "codex",
+            "gemini",
+            "opencode",
+            "antigravity",
+            "mock",
+        ] {
             assert!(session_lease_retry_backoff(provider).is_empty());
         }
     }

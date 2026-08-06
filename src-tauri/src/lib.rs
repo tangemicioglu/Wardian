@@ -156,14 +156,12 @@ pub async fn reconcile_prime_detached_agents() -> std::result::Result<(), String
         .await
         .map_err(|error| format!("could not list Prime sessions: {error}"))?;
     if !output.status.success() {
-        return Err(format!(
-            "prime-agent list exited with {}",
-            output.status
-        ));
+        return Err(format!("prime-agent list exited with {}", output.status));
     }
 
-    let sessions =
-        crate::providers::PrimeProvider::parse_list_output(&String::from_utf8_lossy(&output.stdout))?;
+    let sessions = crate::providers::PrimeProvider::parse_list_output(&String::from_utf8_lossy(
+        &output.stdout,
+    ))?;
     let resume_sessions = prime_agents
         .iter()
         .map(|config| (config.session_id.as_str(), config.resume_session.as_deref()))

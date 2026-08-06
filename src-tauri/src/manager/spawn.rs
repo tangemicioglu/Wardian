@@ -1614,6 +1614,56 @@ pub async fn spawn_agent(
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         });
+    } else if config.provider == "prime" {
+        // Prime Agent's interactive TUI is the one transport that emits no
+        // session header, so identity has to be read off disk instead. Without
+        // it `--resume` has nothing to pass and detached-worker reconciliation
+        // has nothing to join a daemon row against, which silently strands the
+        // agent's worker on the next restart.
+        if let Some(session_dir) =
+            crate::providers::prime::session_dir_for_agent(&config.session_id)
+        {
+            let watcher_app = app.clone();
+            let watcher_session = config.session_id.clone();
+            let watcher_current_status = current_status.clone();
+            let watcher_config = config_lock.clone();
+
+            std::thread::spawn(move || loop {
+                let current = watcher_current_status
+                    .lock()
+                    .map(|status| status.clone())
+                    .unwrap_or_else(|error| error.into_inner().clone());
+                if current == "Off" {
+                    break;
+                }
+
+                let captured = {
+                    let mut cfg = watcher_config.lock().unwrap_or_else(|e| e.into_inner());
+                    if cfg
+                        .resume_session
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+                    {
+                        // Already bound, either by a resume or by an earlier
+                        // pass of this loop. Nothing left to watch for.
+                        break;
+                    }
+                    crate::providers::prime::session_id_in_dir(&session_dir).filter(|candidate| {
+                        apply_provider_identity("prime", &mut cfg, candidate).is_ok()
+                    })
+                };
+
+                if let Some(session_id) = captured {
+                    persist_runtime_agent_configs(&watcher_app);
+                    log_debug(&format!(
+                        "[Wardian] Bound Prime agent {watcher_session} to session {session_id}"
+                    ));
+                    break;
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            });
+        }
     }
 
     // ── OpenCode log-file watcher ─────────────────────────────────────────

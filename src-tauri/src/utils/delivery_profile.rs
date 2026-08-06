@@ -144,7 +144,14 @@ mod tests {
 
     #[test]
     fn every_user_provider_has_a_profile() {
-        for provider in ["codex", "claude", "gemini", "opencode", "antigravity", "prime"] {
+        for provider in [
+            "codex",
+            "claude",
+            "gemini",
+            "opencode",
+            "antigravity",
+            "prime",
+        ] {
             let profile = delivery_profile(provider);
             assert_eq!(profile.provider, provider);
         }

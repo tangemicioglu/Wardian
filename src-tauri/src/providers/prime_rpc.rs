@@ -207,10 +207,7 @@ pub fn extension_ui_response_command(id: &str, answer: &ExtensionUiAnswer) -> se
             object.insert("cancelled".to_string(), serde_json::Value::Bool(true));
         }
         ExtensionUiAnswer::Confirmed(confirmed) => {
-            object.insert(
-                "confirmed".to_string(),
-                serde_json::Value::Bool(*confirmed),
-            );
+            object.insert("confirmed".to_string(), serde_json::Value::Bool(*confirmed));
         }
         ExtensionUiAnswer::Value(value) => {
             object.insert(
@@ -282,15 +279,12 @@ pub fn parse_extension_ui_request(line: &str) -> Option<ExtensionUiRequest> {
                 options
                     .iter()
                     .filter_map(|option| {
-                        option
-                            .as_str()
-                            .map(str::to_string)
-                            .or_else(|| {
-                                option
-                                    .get("label")
-                                    .and_then(|label| label.as_str())
-                                    .map(str::to_string)
-                            })
+                        option.as_str().map(str::to_string).or_else(|| {
+                            option
+                                .get("label")
+                                .and_then(|label| label.as_str())
+                                .map(str::to_string)
+                        })
                     })
                     .collect()
             })
@@ -426,10 +420,10 @@ mod tests {
     fn framer_tolerates_carriage_returns_like_primes_own_reader() {
         let mut framer = JsonlFramer::new();
 
-        assert_eq!(framer.push("{\"a\":1}\r\n{\"b\":2}\n"), vec![
-            r#"{"a":1}"#,
-            r#"{"b":2}"#
-        ]);
+        assert_eq!(
+            framer.push("{\"a\":1}\r\n{\"b\":2}\n"),
+            vec![r#"{"a":1}"#, r#"{"b":2}"#]
+        );
     }
 
     #[test]
@@ -550,7 +544,11 @@ mod tests {
         ];
         for line in blocking {
             let request = parse_extension_ui_request(line).expect("request");
-            assert!(request.blocks_the_agent(), "{} should block", request.method);
+            assert!(
+                request.blocks_the_agent(),
+                "{} should block",
+                request.method
+            );
         }
 
         // Fire-and-forget in rpc-extension-ui-context.js: nothing is waiting

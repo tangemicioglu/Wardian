@@ -1194,7 +1194,15 @@ mod tests {
         assert!(provider_forbids_process_tree_kill("Prime"));
 
         // Every other provider dies with its PTY and must keep the tree kill.
-        for provider in ["claude", "codex", "gemini", "antigravity", "opencode", "mock", ""] {
+        for provider in [
+            "claude",
+            "codex",
+            "gemini",
+            "antigravity",
+            "opencode",
+            "mock",
+            "",
+        ] {
             assert!(
                 !provider_forbids_process_tree_kill(provider),
                 "{provider} must keep process-tree termination"

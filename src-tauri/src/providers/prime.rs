@@ -72,6 +72,47 @@ pub fn session_dir_for_agent(wardian_session_id: &str) -> Option<std::path::Path
         .map(|home| home.join("agents").join(trimmed).join("prime-sessions"))
 }
 
+/// Reads the Prime session id out of a pinned session directory.
+///
+/// Prime Agent's interactive TUI emits no structured events, so the session
+/// header that gives every other transport its identity never reaches Wardian.
+/// The pinned directory closes that gap: Prime Agent names each transcript
+/// after the session's own UUIDv7, and the directory belongs to exactly one
+/// Wardian agent, so the file name *is* the identity.
+///
+/// Newest rather than only: Prime Agent writes a fresh transcript whenever a
+/// session is branched or a launch is abandoned before its first reply, so a
+/// directory can accumulate several. Names that do not parse as a UUID are
+/// ignored, which keeps an unrelated file from being read as an identity.
+///
+/// Returns `None` until Prime Agent materializes the transcript, which it
+/// defers until the first assistant message. A session with no transcript has
+/// nothing to resume, so there is nothing to capture yet either.
+pub fn session_id_in_dir(session_dir: &std::path::Path) -> Option<String> {
+    let mut newest: Option<(std::time::SystemTime, String)> = None;
+
+    for entry in std::fs::read_dir(session_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(stem).is_err() {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        if newest.as_ref().is_none_or(|(latest, _)| modified > *latest) {
+            newest = Some((modified, stem.to_string()));
+        }
+    }
+
+    newest.map(|(_, session_id)| session_id)
+}
+
 /// One row of `prime-agent list --all --json`.
 ///
 /// This is Wardian's reconciliation view of a Prime session tree, not a Wardian
@@ -249,10 +290,13 @@ impl PrimeScheduledJob {
     pub fn belongs_to_session(&self, session_uuid: &str) -> bool {
         let session_uuid = session_uuid.trim();
         !session_uuid.is_empty()
-            && [self.session_id.as_deref(), self.active_session_id.as_deref()]
-                .into_iter()
-                .flatten()
-                .any(|candidate| candidate == session_uuid)
+            && [
+                self.session_id.as_deref(),
+                self.active_session_id.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|candidate| candidate == session_uuid)
     }
 }
 
@@ -448,7 +492,10 @@ impl PrimeProvider {
             .and_then(|value| value.as_array())
             .ok_or_else(|| "Prime Agent schedule listing had no `jobs` array".to_string())?;
 
-        Ok(jobs.iter().filter_map(PrimeScheduledJob::from_value).collect())
+        Ok(jobs
+            .iter()
+            .filter_map(PrimeScheduledJob::from_value)
+            .collect())
     }
 
     /// The gates for an autonomous run: the configured ones, or the project's
@@ -764,8 +811,8 @@ impl AgentProvider for PrimeProvider {
         Self::append_model_args(&mut args, config);
         Self::append_resource_args(&mut args, config);
 
-        if let Some(session_dir) =
-            session_dir_for_agent(&config.session_id).filter(|_| !config.session_id.trim().is_empty())
+        if let Some(session_dir) = session_dir_for_agent(&config.session_id)
+            .filter(|_| !config.session_id.trim().is_empty())
         {
             args.push("--session-dir".into());
             args.push(session_dir.to_string_lossy().to_string());
@@ -872,6 +919,55 @@ mod tests {
     }
 
     #[test]
+    fn session_id_comes_from_the_transcript_file_name() {
+        let dir = tempfile::tempdir().expect("session dir");
+        let session_id = "019fd4bc-e365-74c0-a386-5af7124f3beb";
+        std::fs::write(dir.path().join(format!("{session_id}.jsonl")), "{}\n")
+            .expect("write transcript");
+
+        assert_eq!(session_id_in_dir(dir.path()).as_deref(), Some(session_id),);
+    }
+
+    #[test]
+    fn session_id_ignores_files_that_are_not_prime_transcripts() {
+        let dir = tempfile::tempdir().expect("session dir");
+        std::fs::write(dir.path().join("notes.jsonl"), "{}\n").expect("write non-uuid");
+        std::fs::write(
+            dir.path().join("019fd4bc-e365-74c0-a386-5af7124f3beb.log"),
+            "",
+        )
+        .expect("write non-jsonl");
+
+        assert_eq!(session_id_in_dir(dir.path()), None);
+    }
+
+    #[test]
+    fn session_id_prefers_the_most_recently_written_transcript() {
+        let dir = tempfile::tempdir().expect("session dir");
+        let older = "019fd4bc-e365-74c0-a386-5af7124f3beb";
+        let newer = "019fd6b4-7150-77bd-8ea5-3f93134d1169";
+        std::fs::write(dir.path().join(format!("{older}.jsonl")), "{}\n").expect("write older");
+        std::fs::write(dir.path().join(format!("{newer}.jsonl")), "{}\n").expect("write newer");
+
+        // Creation order is not enough: the filesystem may report identical
+        // mtimes for files written in the same tick, so age one explicitly.
+        let aged = std::fs::File::options()
+            .write(true)
+            .open(dir.path().join(format!("{older}.jsonl")))
+            .expect("reopen older transcript");
+        aged.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600))
+            .expect("age the older transcript");
+
+        assert_eq!(session_id_in_dir(dir.path()).as_deref(), Some(newer));
+    }
+
+    #[test]
+    fn missing_session_directory_yields_no_identity() {
+        let dir = tempfile::tempdir().expect("session dir");
+        assert_eq!(session_id_in_dir(&dir.path().join("absent")), None);
+    }
+
+    #[test]
     fn instruction_filename_is_agents_md() {
         assert_eq!(make_provider().get_instruction_filename(), "AGENTS.md");
     }
@@ -890,12 +986,7 @@ mod tests {
 
         assert_eq!(
             args,
-            vec![
-                "--model",
-                "anthropic/claude-opus-5",
-                "--thinking",
-                "high"
-            ]
+            vec!["--model", "anthropic/claude-opus-5", "--thinking", "high"]
         );
     }
 
@@ -916,7 +1007,9 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|w| w == ["--extension", "./wardian-extension"]));
-        assert!(args.windows(2).any(|w| w == ["--skill", "C:/skills/review"]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--skill", "C:/skills/review"]));
     }
 
     #[test]
@@ -989,13 +1082,16 @@ mod tests {
         PrimeProvider::append_autonomous_args(&mut args, &config);
 
         assert!(args.contains(&"--autonomous".to_string()));
-        assert_eq!(
-            args.iter().filter(|a| *a == "--autonomous-gate").count(),
-            2
-        );
-        assert!(args.windows(2).any(|w| w == ["--autonomous-gate", "npm run lint"]));
-        assert!(args.windows(2).any(|w| w == ["--autonomous-max-turns", "12"]));
-        assert!(args.windows(2).any(|w| w == ["--autonomous-max-tokens", "80000"]));
+        assert_eq!(args.iter().filter(|a| *a == "--autonomous-gate").count(), 2);
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--autonomous-gate", "npm run lint"]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--autonomous-max-turns", "12"]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--autonomous-max-tokens", "80000"]));
     }
 
     #[test]
@@ -1095,7 +1191,9 @@ mod tests {
           "rlmDepth": 0
         }]}"#;
 
-        let session = PrimeProvider::parse_list_output(saved).expect("parse").remove(0);
+        let session = PrimeProvider::parse_list_output(saved)
+            .expect("parse")
+            .remove(0);
 
         assert!(!session.is_hosted_by_daemon());
         assert!(!session.is_detached());
@@ -1121,7 +1219,9 @@ mod tests {
           "rlmDepth": 0
         }]}"#;
 
-        let session = PrimeProvider::parse_list_output(hosted).expect("parse").remove(0);
+        let session = PrimeProvider::parse_list_output(hosted)
+            .expect("parse")
+            .remove(0);
 
         assert!(session.is_hosted_by_daemon());
         assert_eq!(session.worker_pid, Some(81900));
@@ -1195,7 +1295,13 @@ mod tests {
         ]}"#;
 
         let sessions = PrimeProvider::parse_list_output(output).expect("parse");
-        let by_id = |id: &str| sessions.iter().find(|s| s.id == id).expect("session").clone();
+        let by_id = |id: &str| {
+            sessions
+                .iter()
+                .find(|s| s.id == id)
+                .expect("session")
+                .clone()
+        };
 
         // A client is attached, so this is an ordinary running agent.
         assert!(!by_id("root-attached").is_detached());
@@ -1436,9 +1542,11 @@ mod tests {
         assert!(PrimeProvider::parse_list_output("not json").is_err());
         assert!(PrimeProvider::parse_list_output(r#"{"agents":[]}"#).is_err());
         // Rows without a usable id cannot be stopped, so they are dropped.
-        assert!(PrimeProvider::parse_list_output(r#"{"sessions":[{"id":"  "},{}]}"#)
-            .expect("parse")
-            .is_empty());
+        assert!(
+            PrimeProvider::parse_list_output(r#"{"sessions":[{"id":"  "},{}]}"#)
+                .expect("parse")
+                .is_empty()
+        );
     }
 
     // The event fixtures below are verbatim lines captured from
@@ -1460,7 +1568,9 @@ mod tests {
     #[test]
     fn parse_output_turn_start_is_user_query() {
         assert_eq!(
-            make_provider().parse_output(r#"{"type":"turn_start"}"#).unwrap(),
+            make_provider()
+                .parse_output(r#"{"type":"turn_start"}"#)
+                .unwrap(),
             AgentEvent::UserQuery
         );
     }
