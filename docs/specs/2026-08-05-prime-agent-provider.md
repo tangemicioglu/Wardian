@@ -296,17 +296,40 @@ exactly one background service). Wardian's `terminate_active_agent_process`
 force-kills the process tree and then drops a Job Object with
 `KILL_ON_JOB_CLOSE` (`manager/mod.rs:150`).
 
-Phase 3 must therefore establish empirically whether Prime's detached
-supervisor and workers are inside the killed job. Both outcomes need handling
-and they pull in opposite directions:
+**Measured result** *(verified)*: the supervisor is a live descendant of
+whichever client first started it, so the tree kill alone is sufficient to
+destroy it. Observed parent chain while the supervisor served three sessions:
 
-- if they **are** in the job, killing one Wardian agent tears down the shared
-  supervisor and disrupts every other Prime agent on the machine;
-- if they **are not**, the worker survives as an orphan and keeps spending
-  tokens, which is the case the `stop` path exists for.
+```text
+79092  node.exe  cli.js --mode daemon   <- supervisor, 3 sessions
+  71612  node.exe                       <- the prime-agent client that started it
+    67456  pwsh.exe                     <- a user terminal, not Wardian
+```
 
-Do not assume either. This is the single highest-risk unknown remaining, and it
-is why phase 3 is gated on measurement rather than on reading the daemon docs.
+The blast radius therefore includes sessions Wardian does not own. In the
+observed case the supervisor had been started from the user's own terminal; had
+Wardian started it instead, killing that one Wardian agent would have taken
+down the user's sessions.
+
+Wardian's response, implemented in `manager/mod.rs`:
+
+1. `provider_forbids_process_tree_kill("prime")` suppresses
+   `force_kill_process_tree` for Prime agents. The client is an ordinary PTY
+   child and dies on its own.
+2. The job object is released through
+   `utils::process::release_job_without_killing`, which clears
+   `KILL_ON_JOB_CLOSE` before the handle drops, so the safety net cannot reap
+   the shared daemon either.
+3. `request_prime_worker_stop` dispatches `prime-agent stop <agent> --json`
+   before teardown, targeting `daemon_agent_id` when known and the active
+   session id otherwise. It is fire-and-forget: the request reaches the
+   supervisor over its own socket and does not depend on the client being torn
+   down.
+
+Still unverified: `stop` succeeding against a live resident worker spawned by
+Wardian itself. RPC and print clients are client-owned and are removed on
+normal completion, so they cannot exercise that path. It belongs in the native
+E2E layer.
 
 `activity`, `isStreaming`, and `attachedClients` map directly onto Wardian's
 status vocabulary plus the new detached state, and `sessionActions` exposes

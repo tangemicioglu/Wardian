@@ -564,6 +564,30 @@ mod tests {
     }
 
     #[test]
+    fn prime_catalogue_keeps_provider_prefix_when_model_ids_contain_slashes() {
+        // Verbatim rows from `prime-agent 0.7.0 model list`. Prime Inference
+        // model ids embed their own vendor prefix, and Prime resolves
+        // `${provider}/${id}` as a single canonical reference, so the provider
+        // segment must still be prepended.
+        let output = concat!(
+            "provider         model                     context  max-out  thinking  images\n",
+            "openai-codex     gpt-5.3-codex-spark       128K     128K     yes       no    \n",
+            "prime-inference  anthropic/claude-opus-5   1M       128K     yes       yes   \n",
+        );
+
+        let models = parse_prime_catalog(output);
+
+        assert_eq!(models[0].id, "openai-codex/gpt-5.3-codex-spark");
+        assert_eq!(models[1].id, "prime-inference/anthropic/claude-opus-5");
+        assert_eq!(
+            models[1].display_name,
+            "anthropic/claude-opus-5 (prime-inference)"
+        );
+        // Trailing padding on the final column must not leak into parsing.
+        assert!(models[0].effort_options.contains(&"high".to_string()));
+    }
+
+    #[test]
     fn prime_catalogue_ignores_preamble_and_signed_out_output() {
         let with_warning = concat!(
             "Warning: errors loading models.json:\n",

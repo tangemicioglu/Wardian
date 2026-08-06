@@ -147,12 +147,104 @@ pub(crate) fn cleanup_stale_persisted_session_processes() {
     }
 }
 
+/// Providers whose agent process must not be terminated by killing its process
+/// tree.
+///
+/// Prime Agent runs one machine-wide supervisor daemon, and that supervisor is
+/// a live descendant of whichever client first started it. Measured parent
+/// chain on Windows:
+///
+/// ```text
+/// node.exe --mode daemon   <- supervisor, serving every Prime session
+///   \_ node.exe            <- the prime-agent client that happened to start it
+///        \_ pwsh.exe       <- that client's shell
+/// ```
+///
+/// If Wardian spawned the client that started the supervisor, `taskkill /T`
+/// would reach the supervisor and take down every other Prime Agent session on
+/// the machine, including ones the user launched from their own terminal.
+/// Prime's own `stop <agent>` is the correct teardown; the client is then a
+/// plain PTY child that dies on its own.
+fn provider_forbids_process_tree_kill(provider: &str) -> bool {
+    provider.eq_ignore_ascii_case("prime")
+}
+
+/// Asks Prime Agent's supervisor to stop one root session tree.
+///
+/// Killing the PTY only detaches the client: the daemon worker keeps running
+/// and keeps spending tokens. This is dispatched without waiting because the
+/// request travels to the supervisor over its own socket and does not depend on
+/// the client Wardian is about to tear down. `prime-agent shutdown` is never
+/// used here, since it stops every agent on the machine.
+fn request_prime_worker_stop(agent: &ActiveAgent) {
+    let Ok(config) = agent.config.lock() else {
+        return;
+    };
+
+    // Prime's own daemon id when Wardian has observed one, otherwise the active
+    // session id, which `stop` also accepts.
+    let target = config
+        .prime_config()
+        .daemon_agent_id
+        .filter(|id| !id.trim().is_empty())
+        .or_else(|| {
+            config
+                .resume_session
+                .clone()
+                .filter(|id| !id.trim().is_empty())
+        });
+    let session_id = config.session_id.clone();
+    drop(config);
+
+    let Some(target) = target else {
+        log_debug(&format!(
+            "[Wardian] Prime agent {session_id} has no known daemon id; its worker may outlive the client"
+        ));
+        return;
+    };
+
+    let Ok(provider) = crate::providers::ProviderFactory::resolve("prime") else {
+        return;
+    };
+    let (program, base_args) = provider.get_executable();
+
+    let mut command = crate::utils::process::new_silent_std_command(&program);
+    command
+        .args(base_args)
+        .args(crate::providers::PrimeProvider::stop_args(target.trim()))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    match command.spawn() {
+        Ok(_) => log_debug(&format!(
+            "[Wardian] Requested Prime worker stop for {session_id} (agent {})",
+            target.trim()
+        )),
+        Err(err) => log_debug(&format!(
+            "[Wardian] Failed to request Prime worker stop for {session_id}: {err}"
+        )),
+    }
+}
+
 pub fn terminate_active_agent_process(agent: &mut ActiveAgent) {
+    let provider = agent
+        .config
+        .lock()
+        .ok()
+        .map(|config| config.provider.clone())
+        .unwrap_or_default();
+    let tree_kill_forbidden = provider_forbids_process_tree_kill(&provider);
+
+    if provider.eq_ignore_ascii_case("prime") {
+        request_prime_worker_stop(agent);
+    }
+
     // IMPORTANT: Kill the process tree FIRST while the parent is still alive.
     // If we kill the PTY child (cmd.exe) first, its children (claude.exe, node.exe,
     // etc.) become orphaned and taskkill /T can no longer enumerate them via parent PID.
     #[cfg(windows)]
-    {
+    if !tree_kill_forbidden {
         if let Some(pid) = agent.process_id {
             if let Err(err) = force_kill_process_tree(pid) {
                 let sid = agent.config.lock().unwrap().session_id.clone();
@@ -187,10 +279,23 @@ pub fn terminate_active_agent_process(agent: &mut ActiveAgent) {
 
     // Drop the Job Object last as a final safety net — its KILL_ON_JOB_CLOSE flag
     // will terminate any remaining processes still assigned to the job.
+    //
+    // The same shared-supervisor hazard applies here: the job would otherwise
+    // reap a daemon that other agents depend on, so it is released without
+    // killing rather than closed.
     #[cfg(windows)]
     {
-        let _ = agent.job_object.take();
+        if tree_kill_forbidden {
+            if let Some(job) = agent.job_object.take() {
+                crate::utils::process::release_job_without_killing(job);
+            }
+        } else {
+            let _ = agent.job_object.take();
+        }
     }
+
+    #[cfg(not(windows))]
+    let _ = tree_kill_forbidden;
 
     agent.process_id = None;
 }
@@ -1068,6 +1173,22 @@ pub(crate) fn display_log_path(path: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn only_prime_forbids_process_tree_kill() {
+        // Prime's shared supervisor is a live descendant of the client that
+        // started it, so a tree kill reaches other agents' daemon.
+        assert!(provider_forbids_process_tree_kill("prime"));
+        assert!(provider_forbids_process_tree_kill("Prime"));
+
+        // Every other provider dies with its PTY and must keep the tree kill.
+        for provider in ["claude", "codex", "gemini", "antigravity", "opencode", "mock", ""] {
+            assert!(
+                !provider_forbids_process_tree_kill(provider),
+                "{provider} must keep process-tree termination"
+            );
+        }
+    }
 
     #[test]
     fn try_save_state_snapshot_reports_write_failures() {
