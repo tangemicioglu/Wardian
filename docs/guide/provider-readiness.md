@@ -64,14 +64,14 @@ Remove-Item Env:\WARDIAN_E2E_REAL_WORKSPACE
 Run the delivery matrix to prove that each provider can launch as an agent, receive a mailbox-delivered `wardian send`, and expose the reply through `wardian agent watch`:
 
 ```bash
-WARDIAN_E2E_REAL_DELIVERY=1 WARDIAN_E2E_DELIVERY_PROVIDERS=codex,claude,opencode,antigravity npm run test:e2e:native:fast -- e2e-native/tests/provider-delivery-real-native.test.mjs
+WARDIAN_E2E_REAL_DELIVERY=1 WARDIAN_E2E_DELIVERY_PROVIDERS=codex,claude,opencode,antigravity,prime npm run test:e2e:native:fast -- e2e-native/tests/provider-delivery-real-native.test.mjs
 ```
 
 PowerShell:
 
 ```powershell
 $env:WARDIAN_E2E_REAL_DELIVERY = "1"
-$env:WARDIAN_E2E_DELIVERY_PROVIDERS = "codex,claude,opencode,antigravity"
+$env:WARDIAN_E2E_DELIVERY_PROVIDERS = "codex,claude,opencode,antigravity,prime"
 npm run test:e2e:native:fast -- e2e-native/tests/provider-delivery-real-native.test.mjs
 Remove-Item Env:\WARDIAN_E2E_REAL_DELIVERY
 Remove-Item Env:\WARDIAN_E2E_DELIVERY_PROVIDERS
@@ -232,6 +232,57 @@ opencode
 ```
 
 In the OpenCode TUI, run `/connect` and configure the LLM provider you want OpenCode to use. On Windows, OpenCode's own documentation recommends WSL for the best terminal compatibility; npm, Chocolatey, Scoop, and binary installs are also available.
+
+## Prime Agent
+
+Install the CLI:
+
+```bash
+npm install -g prime-agent
+```
+
+Verify:
+
+```bash
+prime-agent --version
+prime-agent model list
+```
+
+Sign in to a model backend with `/login` inside the TUI, or set the relevant provider API key. Prime Agent is a meta-provider, so a model id has to name the backend too: use `openai-codex/gpt-5.3-codex-spark`, not a bare `gpt-5.3-codex-spark`, which resolves to a different backend.
+
+### Python Kernel
+
+A persistent IPython kernel is Prime Agent's only model-facing tool, so an install without a working kernel produces an agent that fails every tool call. Wardian therefore treats a missing kernel as a readiness blocker rather than letting the agent start and fail later.
+
+Prime Agent 0.7.0 cannot bootstrap that kernel on Windows. Its setup asks `uv` for an interpreter at `<venv>/bin/python`, the POSIX virtualenv layout, while `uv venv` on Windows creates `Scripts\python.exe`. The install fails with:
+
+```
+error: No virtual environment or system Python installation found for path `.prime\agent\kernel-venv\bin\python`
+```
+
+Point Prime Agent at an existing environment instead. It needs `ipykernel` and `prime-agent-runtime` installed:
+
+```bash
+uv venv <absolute-path-to-kernel-venv>
+uv pip install --python <absolute-path-to-kernel-venv>/bin/python ipykernel prime-agent-runtime
+export PRIME_AGENT_KERNEL_PYTHON=<absolute-path-to-kernel-venv>/bin/python
+```
+
+PowerShell (Windows):
+
+```powershell
+uv venv <absolute-path-to-kernel-venv>
+uv pip install --python <absolute-path-to-kernel-venv>\Scripts\python.exe ipykernel prime-agent-runtime
+$env:PRIME_AGENT_KERNEL_PYTHON = "<absolute-path-to-kernel-venv>\Scripts\python.exe"
+```
+
+Set the variable before Wardian starts so the app process inherits it. Wardian also looks for a managed environment at `<WARDIAN_HOME>/prime-kernel-venv` and uses it when the variable is unset, which keeps an isolated `WARDIAN_HOME` on its own kernel.
+
+`prime-agent doctor` is not a check for this. It inspects background services and reports success on an install whose kernel is entirely unusable.
+
+### Daemon Workers
+
+Prime Agent runs each root session in a daemon worker that survives its client, so closing an agent's terminal only detaches it. Wardian stops the worker it owns during teardown and reports agents whose worker outlived a previous run as **Detached**. It never runs `prime-agent shutdown`, which would stop every Prime session on the machine, including ones Wardian did not start.
 
 ## Troubleshooting
 
