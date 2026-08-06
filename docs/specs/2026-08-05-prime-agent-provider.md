@@ -1,11 +1,17 @@
 # Prime Agent Provider
 
-- **Status:** Proposed
+- **Status:** Accepted, partially implemented
 - **Date:** 2026-08-05
 - **Verified against:** prime-agent 0.7.0, Windows 11, Node 24.13.1, npm 11.10.1
 
-Findings marked *(verified)* were observed directly during the phase 0 spike on
-this platform. Everything else is from the upstream docs.
+Findings marked *(verified)* were observed directly against a running
+prime-agent on this platform: the phase 0 spike, live RPC round trips, and
+reads of the installed package's own source. Everything else is from the
+upstream docs. Several sections marked *(corrected)* record where the original
+design was wrong and what the evidence showed instead; they are kept rather
+than quietly rewritten because each one cost a real bug.
+
+See *What is not built* under Implementation phases for the current state.
 
 ## Problem
 
@@ -657,15 +663,38 @@ Each phase is independently landable and independently reviewable.
 |---|---|---|
 | 0 | Environment spike: install, capture the real event stream, establish kernel viability | **Done** — see verified findings above |
 | 1 | Provider contract via `--mode json`: `providers/prime.rs`, `PrimeProviderConfig`, factory, readiness, model catalog, headless args, chat transcript normalization, frontend provider option | **Done** — working provider, opaque root |
-| 2 | Chat delivery over `--mode rpc`; wire `steer`/`follow_up` to `useQueueStore` | Deletes keystroke tuning for this provider |
-| 3 | Lifecycle correctness: `stop <agent>` on kill, detached status, startup reconciliation | **Non-optional. Do not ship 1–2 without it.** |
-| 4 | Subagent projection via `observe` | Nested cards in Grid and Watchlist |
-| 5 | Autonomous gates from `AGENTS.md`; read-only schedule surfacing | Workflow integration |
-| 6 | Skills round trip via `topology_watch.rs` | Library promotion |
+| 2 | Chat delivery over `--mode rpc` | **Protocol done** — `providers/prime_rpc.rs`; transport swap outstanding |
+| 3 | Lifecycle correctness: `stop <agent>` on kill, detached status, startup reconciliation | **Done** — **Non-optional. Do not ship 1–2 without it.** |
+| 4 | Subagent projection | **Model done** — `group_session_trees`, `parse_observed_session`; UI outstanding |
+| 5 | Autonomous gates from `AGENTS.md`; read-only schedule surfacing | **Done** — `providers/prime_gates.rs`, `parse_schedule_list_output` |
+| 6 | Skills round trip | **Discovery done** — `providers/prime_skills.rs`; promotion action and watcher outstanding |
 
 Phase 3 is listed after 1 and 2 for reviewability, but no phase-1 or phase-2
 build may reach a release without it. An orphaned prime worker is a process
 that keeps spending tokens after the user believes they stopped it.
+
+### What is not built
+
+The phases above landed their provider-side logic. Three integration pieces
+remain, each deliberately deferred rather than half-built:
+
+1. **The RPC transport.** Prime still runs on its interactive TUI through the
+   PTY path, which works and has a registered `DeliveryProfile`. Swapping it
+   replaces the process model, the event pump, and the terminal surface for one
+   provider, and phase 4's live subagent streaming depends on it because
+   nothing can send `observe` until then.
+2. **The projection UI.** `PrimeSessionTree` and `PrimeScheduledJob` are shaped
+   for the Grid, Watchlist, and schedule surfaces but nothing renders them yet.
+3. **Skill promotion.** `promotable_skills` identifies candidates;
+   copying one into `library/skills` and hooking `topology_watch.rs`, which is
+   currently scoped to `topology.json` alone, is the remaining half.
+
+Also note a latent gap in the interactive path:
+`manager/session_identity.rs::apply_provider_identity` has no `prime` arm and
+its fallthrough returns an error, so a session header arriving on the PTY would
+push the agent to `Error`. It is unreachable today because the interactive
+spawn omits `--mode json` and the TUI emits no JSON, but the RPC transport
+routes identity through that function and needs an arm first.
 
 ## Affected files
 
