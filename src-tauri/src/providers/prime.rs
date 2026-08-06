@@ -72,6 +72,83 @@ pub fn session_dir_for_agent(wardian_session_id: &str) -> Option<std::path::Path
         .map(|home| home.join("agents").join(trimmed).join("prime-sessions"))
 }
 
+/// One row of `prime-agent list --all --json`.
+///
+/// This is Wardian's reconciliation view of a Prime session tree, not a Wardian
+/// agent: `id` is the daemon's active-session id, which is also what
+/// `prime-agent stop` accepts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrimeDaemonSession {
+    pub id: String,
+    /// `live` for a running root, `draft` for one that has not started work.
+    pub lifecycle: Option<String>,
+    /// `idle`, `working`, and similar.
+    pub activity: Option<String>,
+    pub cwd: Option<String>,
+    pub session_file: Option<String>,
+    pub attached_clients: u64,
+    pub message_count: u64,
+    pub is_streaming: bool,
+    /// `0` is a root session; deeper values are RLM descendants.
+    pub rlm_depth: u64,
+}
+
+impl PrimeDaemonSession {
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        let id = value.get("id")?.as_str()?.trim().to_string();
+        if id.is_empty() {
+            return None;
+        }
+
+        let string_field = |key: &str| {
+            value
+                .get(key)
+                .and_then(|field| field.as_str())
+                .map(str::to_string)
+                .filter(|field| !field.trim().is_empty())
+        };
+
+        Some(Self {
+            id,
+            lifecycle: string_field("lifecycle"),
+            activity: string_field("activity"),
+            cwd: string_field("cwd"),
+            session_file: string_field("sessionFile"),
+            attached_clients: value
+                .get("attachedClients")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            message_count: value
+                .get("messageCount")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            is_streaming: value
+                .get("isStreaming")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            rlm_depth: value
+                .get("rlmDepth")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+        })
+    }
+
+    /// True when this is a root session tree rather than an RLM descendant.
+    pub fn is_root(&self) -> bool {
+        self.rlm_depth == 0
+    }
+
+    /// True when the worker is running with no client attached, which is the
+    /// state Wardian shows as detached after an app restart.
+    pub fn is_detached(&self) -> bool {
+        self.attached_clients == 0
+            && self
+                .lifecycle
+                .as_deref()
+                .is_some_and(|lifecycle| lifecycle.eq_ignore_ascii_case("live"))
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrimeRunSummary {
     pub session_id: Option<String>,
@@ -190,6 +267,27 @@ impl PrimeProvider {
             args.push("--autonomous-max-tokens".into());
             args.push(max_tokens.to_string());
         }
+    }
+
+    /// Parses `prime-agent list --all --json` into the fields Wardian needs to
+    /// reconcile detached workers after a restart.
+    ///
+    /// Prime keeps root sessions alive in daemon workers after their client
+    /// disconnects, so this is the only way Wardian can rediscover agents it
+    /// started in a previous run.
+    pub fn parse_list_output(output: &str) -> Result<Vec<PrimeDaemonSession>, String> {
+        let parsed: serde_json::Value = serde_json::from_str(output.trim())
+            .map_err(|error| format!("Prime Agent returned unreadable session JSON: {error}"))?;
+
+        let sessions = parsed
+            .get("sessions")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| "Prime Agent session listing had no `sessions` array".to_string())?;
+
+        Ok(sessions
+            .iter()
+            .filter_map(PrimeDaemonSession::from_value)
+            .collect())
     }
 
     /// Extracts the session id and final assistant text from a completed
@@ -575,6 +673,70 @@ mod tests {
     #[test]
     fn list_args_include_saved_agents_as_json() {
         assert_eq!(PrimeProvider::list_args(), vec!["list", "--all", "--json"]);
+    }
+
+    #[test]
+    fn parse_list_output_reads_reconciliation_fields() {
+        // Shape captured from `prime-agent 0.7.0 list --all --json`.
+        let output = r#"{
+          "sessions": [
+            {
+              "id": "019fd48f-8b5b-76cd-9f8b-6e65660fc3ea",
+              "lifecycle": "live",
+              "activity": "idle",
+              "isSessionActive": false,
+              "sessionFile": "C:\\Users\\t\\.prime\\agent\\sessions\\019fd48f-8599.jsonl",
+              "cwd": "C:\\work",
+              "isStreaming": false,
+              "attachedClients": 0,
+              "messageCount": 4,
+              "rlmDepth": 0
+            }
+          ]
+        }"#;
+
+        let sessions = PrimeProvider::parse_list_output(output).expect("parse");
+
+        assert_eq!(sessions.len(), 1);
+        let session = &sessions[0];
+        // stop takes this id, and it is not the session file name.
+        assert_eq!(session.id, "019fd48f-8b5b-76cd-9f8b-6e65660fc3ea");
+        assert!(session.session_file.as_deref().unwrap().contains("019fd48f-8599"));
+        assert_eq!(session.message_count, 4);
+        assert!(session.is_root());
+        assert!(session.is_detached());
+    }
+
+    #[test]
+    fn parse_list_output_classifies_attachment_and_depth() {
+        let output = r#"{"sessions":[
+          {"id":"root-attached","lifecycle":"live","attachedClients":1,"rlmDepth":0},
+          {"id":"root-detached","lifecycle":"live","attachedClients":0,"rlmDepth":0},
+          {"id":"draft","lifecycle":"draft","attachedClients":0,"rlmDepth":0},
+          {"id":"child","lifecycle":"live","attachedClients":0,"rlmDepth":2}
+        ]}"#;
+
+        let sessions = PrimeProvider::parse_list_output(output).expect("parse");
+        let by_id = |id: &str| sessions.iter().find(|s| s.id == id).expect("session").clone();
+
+        // A client is attached, so this is an ordinary running agent.
+        assert!(!by_id("root-attached").is_detached());
+        // Live with no client is the state a Wardian restart must recover.
+        assert!(by_id("root-detached").is_detached());
+        // A draft has not started work and is not a detached worker.
+        assert!(!by_id("draft").is_detached());
+        // RLM descendants are projections of a root, never reconciled as agents.
+        assert!(!by_id("child").is_root());
+    }
+
+    #[test]
+    fn parse_list_output_rejects_unusable_payloads() {
+        assert!(PrimeProvider::parse_list_output("not json").is_err());
+        assert!(PrimeProvider::parse_list_output(r#"{"agents":[]}"#).is_err());
+        // Rows without a usable id cannot be stopped, so they are dropped.
+        assert!(PrimeProvider::parse_list_output(r#"{"sessions":[{"id":"  "},{}]}"#)
+            .expect("parse")
+            .is_empty());
     }
 
     // The event fixtures below are verbatim lines captured from
