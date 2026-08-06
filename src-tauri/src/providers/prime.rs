@@ -113,6 +113,25 @@ pub fn session_id_in_dir(session_dir: &std::path::Path) -> Option<String> {
     newest.map(|(_, session_id)| session_id)
 }
 
+/// Compares two paths for identity without requiring either to exist.
+///
+/// `canonicalize` is not usable here: the transcript a daemon row names may not
+/// have been written yet, and on Windows it would also return a verbatim prefix
+/// on only one side of the comparison.
+fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let normalize = |path: &std::path::Path| {
+        let text = path.to_string_lossy().replace('\\', "/");
+        let text = text.trim_end_matches('/').to_string();
+        if cfg!(windows) {
+            text.to_ascii_lowercase()
+        } else {
+            text
+        }
+    };
+
+    !left.as_os_str().is_empty() && normalize(left) == normalize(right)
+}
+
 /// One row of `prime-agent list --all --json`.
 ///
 /// This is Wardian's reconciliation view of a Prime session tree, not a Wardian
@@ -214,6 +233,24 @@ impl PrimeDaemonSession {
     /// hosted session with a worker process also reports `workerPid`.
     pub fn is_hosted_by_daemon(&self) -> bool {
         self.active_session_id.is_some()
+    }
+
+    /// True when this row's transcript lives in a directory Wardian pinned for
+    /// one of its agents, which identifies the row as that agent's session.
+    ///
+    /// This is the only join available the moment a worker starts. Prime
+    /// reserves the transcript path when it creates the session and reports it
+    /// here immediately, even though it defers writing the file until the first
+    /// assistant message -- so `sessionFile` identifies an agent that has never
+    /// said anything, which neither the session UUID nor the transcript on disk
+    /// can do yet.
+    pub fn belongs_to_session_dir(&self, session_dir: &std::path::Path) -> bool {
+        let Some(session_file) = self.session_file.as_deref() else {
+            return false;
+        };
+        std::path::Path::new(session_file)
+            .parent()
+            .is_some_and(|parent| same_path(parent, session_dir))
     }
 
     /// True when the worker is running with no client attached, which is the
@@ -582,6 +619,33 @@ impl PrimeProvider {
             .iter()
             .filter_map(PrimeDaemonSession::from_value)
             .collect())
+    }
+
+    /// Finds the `prime-agent stop` selector for the worker hosting an agent's
+    /// pinned session directory.
+    ///
+    /// This is the teardown fallback for an agent Wardian never bound an
+    /// identity to. Prime's interactive TUI publishes no session header, and
+    /// the transcript that would name the session is not written until the
+    /// first assistant message, so an agent killed before it ever replied has
+    /// no identity of its own -- yet its worker is running and will keep
+    /// running, and spending, after the client goes away.
+    ///
+    /// Only hosted roots are considered: a saved row names no live worker, and
+    /// stopping an RLM descendant would tear down a subagent of a tree Wardian
+    /// does not own.
+    pub fn stop_selector_for_session_dir(
+        sessions: &[PrimeDaemonSession],
+        session_dir: &std::path::Path,
+    ) -> Option<String> {
+        sessions
+            .iter()
+            .find(|session| {
+                session.is_hosted_by_daemon()
+                    && session.is_root()
+                    && session.belongs_to_session_dir(session_dir)
+            })
+            .map(|session| session.id.clone())
     }
 
     /// Selects the persisted agents whose Prime worker is still alive with no
@@ -1266,6 +1330,76 @@ mod tests {
         assert_eq!(session.message_count, 4);
         assert!(session.is_root());
         assert!(session.is_detached());
+    }
+
+    #[test]
+    fn stop_selector_comes_from_the_pinned_session_directory() {
+        // The three rows a teardown has to tell apart: the agent's own worker,
+        // an unrelated worker, and a subagent inside the same tree. Only the
+        // first may be stopped, and none of them has been given a Wardian
+        // identity yet -- which is the whole reason this join exists.
+        let output = r#"{"sessions":[
+          {"id":"unrelated","activeSessionId":"unrelated","rlmDepth":0,
+           "sessionFile":"C:\\Users\\t\\.prime\\agent\\sessions\\019fd4c3-8276-7368-b8b6-a9392b53ea7d.jsonl"},
+          {"id":"ours","activeSessionId":"ours","rlmDepth":0,
+           "sessionFile":"C:\\wardian\\agents\\agent-1\\prime-sessions\\019fd6b4-7150-77bd-8ea5-3f93134d1169.jsonl"},
+          {"id":"our-subagent","activeSessionId":"our-subagent","rlmDepth":1,
+           "sessionFile":"C:\\wardian\\agents\\agent-1\\prime-sessions\\019fd6b4-7150-77bd-8ea5-000000000000.jsonl"}
+        ]}"#;
+        let sessions = PrimeProvider::parse_list_output(output).expect("parse");
+        let ours = std::path::Path::new("C:\\wardian\\agents\\agent-1\\prime-sessions");
+
+        assert_eq!(
+            PrimeProvider::stop_selector_for_session_dir(&sessions, ours).as_deref(),
+            Some("ours"),
+        );
+        assert_eq!(
+            PrimeProvider::stop_selector_for_session_dir(
+                &sessions,
+                std::path::Path::new("C:\\wardian\\agents\\agent-2\\prime-sessions"),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn stop_selector_ignores_a_saved_row_with_no_live_worker() {
+        // No activeSessionId means the supervisor is not hosting it, so there
+        // is no worker to stop and the id would not resolve.
+        let output = r#"{"sessions":[
+          {"id":"saved","rlmDepth":0,
+           "sessionFile":"C:\\wardian\\agents\\agent-1\\prime-sessions\\019fd6b4-7150-77bd-8ea5-3f93134d1169.jsonl"}
+        ]}"#;
+        let sessions = PrimeProvider::parse_list_output(output).expect("parse");
+
+        assert_eq!(
+            PrimeProvider::stop_selector_for_session_dir(
+                &sessions,
+                std::path::Path::new("C:\\wardian\\agents\\agent-1\\prime-sessions"),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn session_dir_match_survives_separator_and_case_differences() {
+        // Wardian builds the pinned path with std::path while Prime echoes back
+        // whatever Node produced, so the two spellings rarely match byte for
+        // byte on Windows.
+        let session = PrimeProvider::parse_list_output(
+            r#"{"sessions":[{"id":"ours","activeSessionId":"ours","rlmDepth":0,
+             "sessionFile":"C:/Wardian/Agents/agent-1/prime-sessions/019fd6b4-7150-77bd-8ea5-3f93134d1169.jsonl"}]}"#,
+        )
+        .expect("parse")
+        .remove(0);
+
+        assert_eq!(
+            session.belongs_to_session_dir(std::path::Path::new(
+                "C:\\wardian\\agents\\agent-1\\prime-sessions"
+            )),
+            cfg!(windows),
+        );
+        assert!(!session.belongs_to_session_dir(std::path::Path::new("C:/Wardian/Agents/agent-1")));
     }
 
     #[test]

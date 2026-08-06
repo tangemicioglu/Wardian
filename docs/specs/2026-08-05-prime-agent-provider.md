@@ -702,12 +702,50 @@ remain, each deliberately deferred rather than half-built:
    copying one into `library/skills` and hooking `topology_watch.rs`, which is
    currently scoped to `topology.json` alone, is the remaining half.
 
-Also note a latent gap in the interactive path:
-`manager/session_identity.rs::apply_provider_identity` has no `prime` arm and
-its fallthrough returns an error, so a session header arriving on the PTY would
-push the agent to `Error`. It is unreachable today because the interactive
-spawn omits `--mode json` and the TUI emits no JSON, but the RPC transport
-routes identity through that function and needs an arm first.
+### Session identity, and what the native test found *(corrected)*
+
+An earlier revision of this section called the missing `prime` arm in
+`manager/session_identity.rs::apply_provider_identity` a latent gap, reachable
+only once the RPC transport lands. That was wrong twice over, and the native
+E2E is what proved it.
+
+It was reachable. `spawn_agent` applies provider identity for whatever provider
+the request names whenever a resume id is supplied, and so does the path that
+turns an agent back on. Both failed with "prime does not define an
+initialization identity contract".
+
+Underneath that sat a worse one. Prime's interactive TUI is its only transport
+that publishes no session header, so nothing ever produced an identity to
+apply. `--resume` is only passed when `resume_session` is set and detached
+reconciliation joins daemon rows on the same field, so both features were inert
+rather than broken-looking.
+
+Identity now has two sources, because one is exact and the other is early, and
+neither is both:
+
+- **The transcript.** Wardian pins `--session-dir` per agent and Prime names
+  each transcript after the session UUID, so the newest `<uuid>.jsonl` there is
+  the agent's session. Exact, but Prime defers writing that file until the
+  first assistant message.
+- **The daemon listing.** Prime *reserves* the transcript path when it creates
+  the session, so `list --json` reports `sessionFile` immediately, pointing
+  into the pinned directory. That identifies the worker of an agent that has
+  never said anything -- which is precisely the agent a teardown leaks.
+
+Teardown uses the second. `request_prime_worker_stop` previously gave up when
+the config carried no id, logged that the worker "may outlive the client", and
+let it run. It now resolves the selector from the listing, and the native test
+asserts the worker is gone afterwards.
+
+The same test also surfaced a defect with nothing to do with Prime's lifecycle:
+`AgentConfigCompat::legacy_provider_config` matched every key `provider_key`
+returns except `prime`, and fell through to `unreachable!()`. Deserializing any
+config with `provider: "prime"` panicked. Because that runs inside
+`Deserialize`, the Tauri command unwound before producing a response, so the
+caller's promise never settled -- the failure looked like a hang, not an error,
+and no Prime agent could be created at all. Both `unreachable!()` arms in that
+file now fail soft onto a default, and a test walks every provider through the
+flat JSON shape a caller actually sends.
 
 ## Affected files
 

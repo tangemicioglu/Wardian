@@ -248,7 +248,9 @@ impl ProviderConfig {
                     Self::Unknown(serde_json::json!({ "type": provider_type }))
                 }
             }
-            _ => unreachable!("provider_key only returns known provider keys or an empty marker"),
+            // Same fail-soft rationale as `legacy_provider_config`: this feeds
+            // deserialization, where a panic costs a hung IPC response.
+            _ => Self::Unknown(serde_json::json!({ "type": provider_type_name(provider) })),
         }
     }
 
@@ -557,6 +559,10 @@ impl AgentConfigCompat {
                 reasoning_effort: None,
             }),
             "antigravity" => ProviderConfig::Antigravity(AntigravityProviderConfig::default()),
+            // Prime Agent post-dates the legacy flat encoding, so there are no
+            // top-level mirror fields to read back; its options live only in
+            // provider_config. Same shape as Antigravity above.
+            "prime" => ProviderConfig::Prime(PrimeProviderConfig::default()),
             "opencode" => ProviderConfig::OpenCode(OpenCodeProviderConfig {
                 agent: self.opencode_agent.clone(),
                 port: self.opencode_port,
@@ -580,8 +586,11 @@ impl AgentConfigCompat {
                 mcp_config: self.mcp_config.clone(),
                 reasoning_effort: None,
             }),
-            "" => ProviderConfig::default_for_provider(&self.provider),
-            _ => unreachable!("provider_key only returns known provider keys or an empty marker"),
+            // Reached only if a provider gains a `provider_key` entry without a
+            // legacy arm here. This runs inside `Deserialize`, and a panic there
+            // leaves a Tauri command with no response at all, so it fails soft
+            // onto the provider's own default instead.
+            _ => ProviderConfig::default_for_provider(&self.provider),
         }
     }
 }
@@ -970,6 +979,39 @@ mod tests {
     use super::*;
     use crate::conversations::AgentConversationLoggingSetting;
     use crate::models::AgentSessionPersistenceOverride;
+
+    /// Every provider must survive the flat-JSON shape a Tauri caller sends.
+    ///
+    /// This runs inside `Deserialize`, so a miss is not a returned error: the
+    /// command unwinds without ever answering and the caller's promise hangs
+    /// forever. Prime shipped exactly that way, unreachable from the UI, with
+    /// the whole suite green -- nothing had deserialized a bare provider name.
+    #[test]
+    fn every_provider_deserializes_from_a_bare_provider_name() {
+        for provider in [
+            "claude",
+            "gemini",
+            "codex",
+            "antigravity",
+            "opencode",
+            "prime",
+            "mock",
+            "some-future-provider",
+            "",
+        ] {
+            let json = format!(r#"{{"provider":{}}}"#, serde_json::json!(provider));
+            let config: AgentConfig = serde_json::from_str(&json)
+                .unwrap_or_else(|error| panic!("{provider:?} failed to deserialize: {error}"));
+            assert_eq!(config.provider, provider);
+        }
+    }
+
+    #[test]
+    fn prime_config_survives_a_bare_provider_name() {
+        let config: AgentConfig = serde_json::from_str(r#"{"provider":"prime"}"#).unwrap();
+        assert!(matches!(config.provider_config, ProviderConfig::Prime(_)));
+        assert_eq!(config.prime_config(), PrimeProviderConfig::default());
+    }
 
     #[test]
     fn agent_config_serde_roundtrip() {

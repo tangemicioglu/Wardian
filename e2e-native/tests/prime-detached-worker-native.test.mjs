@@ -15,14 +15,12 @@
  * session it did not create, and identifies its own worker by the isolated
  * workspace it runs in.
  *
- * KNOWN ISSUE: as of prime-agent 0.7.0 on Windows 11 with Edge WebView2
- * 151.0.4129.59, the WebView tab crashes partway through the `spawn_agent`
- * invoke, roughly 50 seconds in and before the backend logs the command. The
- * assertions below have therefore never been reached. Whether this is harness
- * fragility under a long-running invoke or a real fault in spawning Prime
- * through the app is unresolved. What the failing runs do establish, because
- * it was checked after each one, is that no Prime worker leaked and both the
- * shared supervisor and the developer's own sessions survived every attempt.
+ * Writing it found two defects it now guards. Deserializing an AgentConfig
+ * with `provider: "prime"` panicked inside `Deserialize`, which left the
+ * command with no response at all and hung the caller instead of failing, so
+ * no Prime agent could be created from the UI. And teardown could only address
+ * a worker through an identity Prime does not publish until the agent's first
+ * reply, so killing a fresh agent leaked its worker.
  */
 import test from "node:test";
 import assert from "node:assert/strict";

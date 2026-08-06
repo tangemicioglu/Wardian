@@ -176,6 +176,33 @@ fn provider_forbids_process_tree_kill(provider: &str) -> bool {
 /// request travels to the supervisor over its own socket and does not depend on
 /// the client Wardian is about to tear down. `prime-agent shutdown` is never
 /// used here, since it stops every agent on the machine.
+/// Asks the supervisor which worker owns a pinned session directory.
+///
+/// Runs synchronously on the teardown path: one short listing is cheaper than
+/// leaving a worker running, and the answer is needed before the stop request
+/// can be addressed.
+fn prime_stop_selector_from_daemon(
+    program: &str,
+    base_args: &[String],
+    session_dir: &std::path::Path,
+) -> Option<String> {
+    let output = crate::utils::process::new_silent_std_command(program)
+        .args(base_args)
+        .args(crate::providers::PrimeProvider::list_args())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let sessions = crate::providers::PrimeProvider::parse_list_output(&String::from_utf8_lossy(
+        &output.stdout,
+    ))
+    .ok()?;
+    crate::providers::PrimeProvider::stop_selector_for_session_dir(&sessions, session_dir)
+}
+
 fn request_prime_worker_stop(agent: &ActiveAgent) {
     let Ok(config) = agent.config.lock() else {
         return;
@@ -196,17 +223,33 @@ fn request_prime_worker_stop(agent: &ActiveAgent) {
     let session_id = config.session_id.clone();
     drop(config);
 
+    let Ok(provider) = crate::providers::ProviderFactory::resolve("prime") else {
+        return;
+    };
+    let (program, base_args) = provider.get_executable();
+
+    // An agent torn down before its first reply has no identity of its own, but
+    // its worker is already registered under the session directory Wardian
+    // pinned for it. Ask the supervisor which one that is rather than leaking it.
+    let target = target.or_else(|| {
+        let session_dir = crate::providers::prime::session_dir_for_agent(&session_id)?;
+        let selector = prime_stop_selector_from_daemon(&program, &base_args, &session_dir)
+            .or_else(|| {
+                log_debug(&format!(
+                    "[Wardian] Prime agent {session_id} matched no daemon worker for {}",
+                    session_dir.display()
+                ));
+                None
+            })?;
+        Some(selector)
+    });
+
     let Some(target) = target else {
         log_debug(&format!(
             "[Wardian] Prime agent {session_id} has no known daemon id; its worker may outlive the client"
         ));
         return;
     };
-
-    let Ok(provider) = crate::providers::ProviderFactory::resolve("prime") else {
-        return;
-    };
-    let (program, base_args) = provider.get_executable();
 
     let mut command = crate::utils::process::new_silent_std_command(&program);
     command
