@@ -2,6 +2,10 @@
 
 - **Status:** Proposed
 - **Date:** 2026-08-05
+- **Verified against:** prime-agent 0.7.0, Windows 11, Node 24.13.1, npm 11.10.1
+
+Findings marked *(verified)* were observed directly during the phase 0 spike on
+this platform. Everything else is from the upstream docs.
 
 ## Problem
 
@@ -40,7 +44,8 @@ Relevant properties, from `packages/coding-agent/docs/` in the upstream repo:
 | Property | Detail |
 |---|---|
 | Meta-provider | Selects its own backend: anthropic, openai, google, bedrock, vertex, azure, mistral, cloudflare, copilot |
-| Modes | interactive TUI, `-p/--print`, `--mode json`, `--mode rpc` |
+| Modes | interactive TUI, `-p/--print`, `--mode json`, `--mode rpc`, plus `acp` and `daemon` *(verified)* |
+| Distribution | npm global tarball; the installer downloads a checksum-verified `.tgz` and runs `npm install -g` *(verified)* |
 | Sessions | Flat append-only JSONL under `~/.prime/agent/sessions/`, overridable with `--session-dir` |
 | Context files | Native `AGENTS.md`; also reads `CLAUDE.md`; global at `~/.prime/agent/AGENTS.md` |
 | Subagents | `await rlm(...)` inside the kernel; each child gets its own model, kernel, and session tree |
@@ -117,9 +122,18 @@ per-provider accessors.
 Prime's `--mode json` stream maps onto `AgentEvent` without marker scraping.
 This is the cleanest mapping of any provider Wardian supports:
 
+The first stream line is *(verified)*:
+
+```json
+{"type":"session","version":3,"id":"019fd48e-…","timestamp":"2026-08-06T00:51:47.789Z","cwd":"…","rlmDepth":0}
+```
+
+`rlmDepth` is the root-versus-subagent discriminator: `0` is a root session,
+deeper values are RLM descendants. Phase 4 depends on it.
+
 | Prime JSON line | `AgentEvent` |
 |---|---|
-| `{"type":"session","id":"<uuid>",…}` (first line) | `Init { session_id, timestamp }` |
+| `{"type":"session","id":"<uuid>","rlmDepth":0,…}` (first line) | `Init { session_id, timestamp }` |
 | `turn_start` | `UserQuery` |
 | `message_start`, `message_update`, `message_end` | `Generating` |
 | `tool_execution_start`, `tool_execution_update` | `Generating` |
@@ -135,6 +149,15 @@ prompts, and the nearest structured equivalent is an RPC extension UI request
 (`confirm` / `select` / `input`), only available in RPC mode. Under
 `--mode json`, `ActionRequired` is unreachable; `pty_status_event_policy_for_provider`
 therefore keeps `ProviderStatusEventPolicy::Normal` for `prime`.
+
+Two shape details confirmed in the spike that the mapping must tolerate:
+
+- `message_start` / `message_end` fire for `user` and `toolResult` roles as
+  well as `assistant`, so role must be inspected rather than assumed.
+- Every assistant message carries
+  `usage: { input, output, cacheRead, cacheWrite, totalTokens, cost }`.
+  Telemetry can read token and cost accounting straight off the stream instead
+  of estimating it, which no other provider allows.
 
 `Init` arrives on the first stream line, so `prime` needs no session-id
 bootstrap handshake. `provider_needs_bootstrap_session` and the
@@ -221,26 +244,84 @@ Three consequences:
 2. **A new status is required.** Prime agents can be *running but detached*.
    The existing status vocabulary (Idle, Processing, Action Required, Off,
    Error) has no cell for "alive, not attached to this app instance".
-3. **Startup reconciliation.** On app launch, `prime-agent list --all` must be
-   reconciled against Wardian's persisted agents. Without this, a Wardian
-   restart silently loses track of live agents. No other provider needs this;
-   the closest precedent is Antigravity conversation recovery.
+3. **Startup reconciliation.** On app launch, `prime-agent list --all --json`
+   must be reconciled against Wardian's persisted agents. Without this, a
+   Wardian restart silently loses track of live agents. No other provider needs
+   this; the closest precedent is Antigravity conversation recovery.
+
+`list --all --json` is a richer reconciliation source than anticipated
+*(verified)*:
+
+```json
+{"sessions":[{
+  "id":"019fd48f-8b5b-76cd-9f8b-6e65660fc3ea",
+  "lifecycle":"live", "activity":"idle",
+  "isSessionActive":false, "isStreaming":false, "isCompacting":false,
+  "sessionFile":"…\\sessions\\019fd48f-….jsonl", "cwd":"…",
+  "attachedClients":0, "messageCount":4, "unfinishedActionCount":0,
+  "sessionActions":{"queuedCount":0,"steering":[],"followUps":[]},
+  "created":"…","modified":"…","lastActivityAt":"…","rlmDepth":0
+}]}
+```
+
+`activity`, `isStreaming`, and `attachedClients` map directly onto Wardian's
+status vocabulary plus the new detached state, and `sessionActions` exposes
+queue depth that Wardian otherwise has to infer. `stop <agent> --json` is the
+matching mutation.
+
+Note that `prime-agent status` reports supervisor state and is separate from
+`list`: a completed one-shot JSON-mode client leaves no background service but
+can still leave a catalog entry *(verified)*. Reconciliation must key off
+`list`, not `status`.
+
+### Executable resolution
+
+The shell installer is a wrapper around `npm install -g` of a checksum-verified
+release tarball *(verified)*. On Windows this produces an ordinary npm shim set
+in the npm global prefix:
+
+```
+%APPDATA%\npm\prime-agent.cmd  →  node_modules\prime-agent\dist\bundle\cli.js
+```
+
+`get_executable()` therefore follows the existing Claude and Codex pattern and
+reuses `providers/npm.rs::node_launch_from_npm_cmd_shim`, which parses exactly
+this shim format. No bespoke installer-path probing is needed.
 
 ### Readiness
 
 `provider_readiness` currently resolves the executable and returns. That is
-insufficient for `prime`: a resolvable binary with a broken IPython kernel
-spawns an agent whose only tool fails.
+insufficient for `prime`, and the obvious probe is the wrong one:
+`prime-agent doctor` inspects **background services only** and reports
+"No background services found" on a healthy fresh install *(verified)*. It says
+nothing about the IPython kernel.
 
-Prime is installed by a shell installer rather than an npm shim, so
-`get_executable()` cannot reuse `providers/npm.rs`. It probes PATH first, then
-the installer's known location.
+The kernel is the real gate, because it is prime's only tool. A resolvable
+binary with a broken kernel produces an agent that answers every request with a
+runtime-setup failure.
 
-Readiness must additionally run `prime-agent doctor` (cached under the existing
-`CATALOG_CACHE_TTL` discipline) and surface its diagnosis in
-`ProviderReadiness.reason`, including the bash requirement on Windows.
-`prime-agent doctor --fix` is the documented repair path and should be named in
-the failure message.
+**On Windows, prime-agent 0.7.0's kernel auto-bootstrap is broken** *(verified)*.
+It invokes `uv pip install --python <kernel-venv>/bin/python`, the POSIX venv
+layout, while `uv venv` on Windows produces `Scripts\python.exe`. The install
+fails with exit code 2 and the tool is unusable. This is independent of network
+availability.
+
+The supported workaround is `PRIME_AGENT_KERNEL_PYTHON`, verified working
+end to end: with a correctly laid-out venv carrying `ipykernel`, the bundled
+`dist/prime-agent-runtime`, and the default package set, `ipython` executes and
+returns `{"status":"ok","stdout":…}`.
+
+Wardian therefore:
+
+1. Provisions a kernel venv under Wardian control on first use and exports
+   `PRIME_AGENT_KERNEL_PYTHON` into the spawn environment, rather than relying
+   on prime's auto-bootstrap.
+2. Probes readiness by executing a trivial `ipython` call, cached under the
+   existing `CATALOG_CACHE_TTL` discipline, and reports kernel failure in
+   `ProviderReadiness.reason` distinctly from a missing binary.
+
+Revisit item 1 when upstream fixes the venv layout; the env var remains the
+documented escape hatch either way.
 
 ### Scheduling
 
@@ -306,7 +387,7 @@ Each phase is independently landable and independently reviewable.
 
 | Phase | Scope | Gate |
 |---|---|---|
-| 0 | Environment spike: install prime-agent, verify `doctor`, kernel bootstrap, Git Bash resolution on Windows | Blocks all others |
+| 0 | Environment spike: install, capture the real event stream, establish kernel viability | **Done** — see verified findings above |
 | 1 | Provider contract via `--mode json`: `providers/prime.rs`, `PrimeProviderConfig`, factory, readiness, model catalog, headless args, chat transcript normalization, frontend provider option | Working provider, opaque root |
 | 2 | Chat delivery over `--mode rpc`; wire `steer`/`follow_up` to `useQueueStore` | Deletes keystroke tuning for this provider |
 | 3 | Lifecycle correctness: `stop <agent>` on kill, detached status, startup reconciliation | **Non-optional. Do not ship 1–2 without it.** |
@@ -368,7 +449,9 @@ that keeps spending tokens after the user believes they stopped it.
   including a new status and a startup reconciliation pass. Getting phase 3
   wrong orphans token-spending processes.
 - **Negative**: Adds a Python/IPython runtime dependency no other provider has,
-  and a bash dependency on Windows.
+  and a bash dependency on Windows. Worse, prime 0.7.0 cannot bootstrap that
+  kernel on Windows at all, so Wardian must provision and manage the venv
+  itself until upstream fixes the layout bug.
 - **Negative**: `ActionRequired` is unreachable under `--mode json`, so
   Wardian's amber status will not appear for this provider until RPC delivery
   lands, and only via extension UI requests thereafter.
