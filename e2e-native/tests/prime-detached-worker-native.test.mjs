@@ -14,6 +14,15 @@
  * own sessions. This test never calls `prime-agent shutdown`, never stops a
  * session it did not create, and identifies its own worker by the isolated
  * workspace it runs in.
+ *
+ * KNOWN ISSUE: as of prime-agent 0.7.0 on Windows 11 with Edge WebView2
+ * 151.0.4129.59, the WebView tab crashes partway through the `spawn_agent`
+ * invoke, roughly 50 seconds in and before the backend logs the command. The
+ * assertions below have therefore never been reached. Whether this is harness
+ * fragility under a long-running invoke or a real fault in spawning Prime
+ * through the app is unresolved. What the failing runs do establish, because
+ * it was checked after each one, is that no Prime worker leaked and both the
+ * shared supervisor and the developer's own sessions survived every attempt.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -33,6 +42,12 @@ import {
 const RUN_ID = `${process.pid}-${Date.now()}`;
 const SESSION_NAME = `E2E-PRIME-DETACH-${RUN_ID}`;
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
+/**
+ * Opt-in, following the WARDIAN_E2E_REAL_OPENCODE convention. This drives a
+ * real provider against a daemon shared with whatever else is running on the
+ * machine, so it does not belong in an unattended suite.
+ */
+const runRealPrime = process.env.WARDIAN_E2E_REAL_PRIME === "1";
 
 function primeCli(args, options = {}) {
   return spawnSync(process.platform === "win32" ? "prime-agent.cmd" : "prime-agent", args, {
@@ -114,6 +129,10 @@ function primeIsUsable() {
 }
 
 test("Wardian stops its own Prime worker and leaves the shared daemon running", async (t) => {
+  if (!runRealPrime) {
+    t.skip("Set WARDIAN_E2E_REAL_PRIME=1 to run real Prime Agent native E2E.");
+    return;
+  }
   if (!primeIsUsable()) {
     t.skip("prime-agent is not installed or its daemon is unreachable");
     return;
@@ -154,15 +173,21 @@ test("Wardian stops its own Prime worker and leaves the shared daemon running", 
   let spawned;
   try {
     await waitForAppShell(driver);
+    // Spawning Prime is slower than the default 30s async-script budget: the
+    // client has to reach the supervisor, which may have to launch a worker
+    // and boot an IPython kernel before the command returns.
+    await driver.manage().setTimeouts({ script: 180000 });
 
+    // SpawnAgentRequest is camelCase over IPC, unlike the snake_case
+    // AgentConfig it carries.
     spawned = await invokeTauri(driver, "spawn_agent", {
       req: {
-        session_name: SESSION_NAME,
-        agent_class: "",
+        sessionName: SESSION_NAME,
+        agentClass: "",
         folder: workspace,
-        resume_session: null,
-        is_off: false,
-        config_override: { provider: "prime" },
+        resumeSession: null,
+        isOff: false,
+        configOverride: { provider: "prime" },
       },
     });
     assert.ok(spawned?.session_id, "spawn_agent must return the created agent");

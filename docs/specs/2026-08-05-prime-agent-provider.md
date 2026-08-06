@@ -461,6 +461,19 @@ their workers from any other client and removes them on normal completion --
 they cannot exercise that path even in principle. Producing a resident worker
 requires the interactive PTY spawn, which puts this in the native E2E layer.
 
+`e2e-native/tests/prime-detached-worker-native.test.mjs` is that test, gated on
+`WARDIAN_E2E_REAL_PRIME=1` per the real-provider rule. It does not pass yet: on
+Windows 11 with Edge WebView2 151.0.4129.59 the WebView tab crashes about 50
+seconds into the `spawn_agent` invoke, before the backend logs the command, so
+the assertions have never been reached. Harness fragility and a real fault in
+spawning Prime through the app are both still live explanations.
+
+What those runs did establish, because the daemon was inspected after each one:
+no Prime worker leaked, and both the shared supervisor and the developer's own
+sessions survived every attempt including the forcibly interrupted ones. That
+is weaker than the assertion the test is meant to make, and it is not a
+substitute for it.
+
 `activity`, `isStreaming`, and `attachedClients` map directly onto Wardian's
 status vocabulary plus the new detached state, and `sessionActions` exposes
 queue depth that Wardian otherwise has to infer. `stop <agent> --json` is the
