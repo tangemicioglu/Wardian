@@ -624,6 +624,31 @@ Python-package skill into the habitat, `topology_watch.rs` observes the change,
 and Wardian offers to promote it into the shared Library. An agent authoring a
 first-class Wardian artifact is the ecological principle working end to end.
 
+`prime_skills` implements the discovery half. The conversion turns out to be a
+copy, not a translation: Prime follows the Agent Skills standard, so a skill is
+a directory holding a `SKILL.md` with `name` and `description` frontmatter --
+the same layout `library/skills/<name>/SKILL.md` already uses. `pyproject.toml`
+alongside it marks a Python-backed skill, which is extra capability rather than
+a different format.
+
+Four scoping decisions:
+
+- **Project scope only.** `project_skills_dir` resolves
+  `<workspace>/.prime/agent/skills`. Prime also reads a global directory and
+  npm-bundled skills, but promoting those would copy someone else's artifact
+  into the Library.
+- **One level deep.** A `SKILL.md` nested under a skill is that skill's
+  reference material, not a skill of its own.
+- **Frontmatter must open the file.** A `---` further down is a horizontal
+  rule, and an unterminated block is malformed; both yield nothing rather than
+  a skill invented from prose.
+- **Existing Library names are left alone.** The Library copy is what gets
+  deployed to agents, so offering to overwrite it from a workspace would
+  silently promote the project's version to authoritative.
+
+Verified against prime-agent 0.7.0's 13 bundled skills: all 13 parse, with
+`skill-creator` and `prime-intellect` correctly identified as markdown-only.
+
 ## Implementation phases
 
 Each phase is independently landable and independently reviewable.

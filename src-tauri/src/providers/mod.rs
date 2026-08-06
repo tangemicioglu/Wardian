@@ -11,6 +11,7 @@ pub mod opencode;
 pub mod prime;
 pub mod prime_gates;
 pub mod prime_rpc;
+pub mod prime_skills;
 pub mod readiness;
 pub mod transcript;
 pub use antigravity::AntigravityProvider;
