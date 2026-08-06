@@ -873,17 +873,29 @@ pub(crate) fn strip_standalone_flag(args: Vec<String>, flag: &str) -> Vec<String
     args.into_iter().filter(|arg| arg != flag).collect()
 }
 
+/// Every agent config persisted in `settings/state.json`.
+///
+/// The database tracks status and identity, but provider-owned fields such as
+/// `resume_session` live only here, so anything that needs them has to read
+/// this file.
+pub(crate) fn persisted_agent_configs() -> Vec<AgentConfig> {
+    let Some(wardian_home) = get_wardian_home() else {
+        return Vec::new();
+    };
+    let state_path = wardian_home.join("settings/state.json");
+    let Ok(contents) = std::fs::read_to_string(state_path) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<AgentConfig>>(&contents).unwrap_or_default()
+}
+
 pub(crate) fn persisted_agent_config(session_id: &str) -> Option<AgentConfig> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return None;
     }
 
-    let wardian_home = get_wardian_home()?;
-    let state_path = wardian_home.join("settings/state.json");
-    let contents = std::fs::read_to_string(state_path).ok()?;
-    let configs = serde_json::from_str::<Vec<AgentConfig>>(&contents).ok()?;
-    configs
+    persisted_agent_configs()
         .into_iter()
         .find(|config| config.session_id == session_id)
 }

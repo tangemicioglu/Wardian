@@ -316,10 +316,37 @@ Three consequences:
 2. **A new status is required.** Prime agents can be *running but detached*.
    The existing status vocabulary (Idle, Processing, Action Required, Off,
    Error) has no cell for "alive, not attached to this app instance".
+
+   Implemented as `Detached`, carried through `AgentDisplayStatus` with its own
+   `--color-wardian-detached` token. Two details are deliberate. It outranks
+   the persisted off flag in `deriveEffectiveStatus`, because an agent that is
+   genuinely burning tokens must not be displayed as off. And its indicator
+   glows without pulsing, unlike Headless: nothing in this window is streaming
+   from that worker, so an animated indicator would promise live output that
+   has no source.
 3. **Startup reconciliation.** On app launch, `prime-agent list --all --json`
    must be reconciled against Wardian's persisted agents. Without this, a
    Wardian restart silently loses track of live agents. No other provider needs
    this; the closest precedent is Antigravity conversation recovery.
+
+   Implemented as `reconcile_prime_detached_agents`, ordered immediately after
+   `reconcile_headless_agents` so it only ever upgrades the `Off` that pass
+   writes for an agent with no live process. The join key is the persisted
+   `resume_session` against each row's `sessionId`, which is why that field is
+   parsed; `matches_session` also accepts the short daemon id for agents bound
+   before `sessionId` was read. Three constraints shape the pass:
+
+   - It reads `settings/state.json` rather than the database, because
+     `resume_session` is not an `AgentRow` column.
+   - It returns early when no persisted agent uses Prime. Launching the CLI
+     unconditionally would start Prime's daemon on every Wardian start, for
+     users who have never used the provider.
+   - Only `rlmDepth == 0` rows are adopted. An RLM descendant is a projection
+     of a root tree, so adopting one would create a duplicate agent.
+
+   The restore loop then treats `Detached` like `Headless`: the agent is
+   restored inert, with no spawn. Spawning a client for a session a worker
+   already holds would either lose the lease race or start a second worker.
 
 `list --all --json` is a richer reconciliation source than anticipated
 *(verified)*:

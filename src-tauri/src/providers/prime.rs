@@ -357,6 +357,35 @@ impl PrimeProvider {
             .collect())
     }
 
+    /// Selects the persisted agents whose Prime worker is still alive with no
+    /// client attached, which is the state a Wardian restart has to recover.
+    ///
+    /// `agents` pairs each Wardian session id with its persisted provider
+    /// session, normally `AgentConfig::resume_session`. An agent with no
+    /// provider session was never bound to a worker and cannot be reconciled.
+    /// RLM descendants are skipped: they are projections of a root tree, not
+    /// agents Wardian owns, so adopting one would create a duplicate.
+    pub fn detached_agent_sessions<'a>(
+        sessions: &[PrimeDaemonSession],
+        agents: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+    ) -> Vec<(String, PrimeDaemonSession)> {
+        agents
+            .into_iter()
+            .filter_map(|(wardian_session_id, provider_session)| {
+                let provider_session = provider_session?.trim();
+                if provider_session.is_empty() {
+                    return None;
+                }
+                let matched = sessions.iter().find(|session| {
+                    session.is_root()
+                        && session.is_detached()
+                        && session.matches_session(provider_session)
+                })?;
+                Some((wardian_session_id.to_string(), matched.clone()))
+            })
+            .collect()
+    }
+
     /// Extracts the session id and final assistant text from a completed
     /// `--mode json` run.
     pub fn summarize_run_output(output: &str) -> PrimeRunSummary {
@@ -858,6 +887,54 @@ mod tests {
         assert!(!by_id("draft").is_detached());
         // RLM descendants are projections of a root, never reconciled as agents.
         assert!(!by_id("child").is_root());
+    }
+
+    #[test]
+    fn reconciliation_adopts_only_live_unattended_roots() {
+        let sessions = PrimeProvider::parse_list_output(
+            r#"{"sessions":[
+              {"id":"a1","sessionId":"uuid-detached","lifecycle":"live","attachedClients":0,"rlmDepth":0},
+              {"id":"a2","sessionId":"uuid-attached","lifecycle":"live","attachedClients":1,"rlmDepth":0},
+              {"id":"a3","sessionId":"uuid-draft","lifecycle":"draft","attachedClients":0,"rlmDepth":0},
+              {"id":"a4","sessionId":"uuid-child","lifecycle":"live","attachedClients":0,"rlmDepth":1}
+            ]}"#,
+        )
+        .expect("parse");
+
+        let adopted = PrimeProvider::detached_agent_sessions(
+            &sessions,
+            [
+                ("agent-detached", Some("uuid-detached")),
+                // Already attached, so the running app owns it.
+                ("agent-attached", Some("uuid-attached")),
+                // Never started work.
+                ("agent-draft", Some("uuid-draft")),
+                // An RLM descendant is a projection of a root, not an agent.
+                ("agent-child", Some("uuid-child")),
+                // Never bound to a worker.
+                ("agent-unbound", None),
+                ("agent-blank", Some("   ")),
+                // Bound to a worker that is gone.
+                ("agent-missing", Some("uuid-vanished")),
+            ],
+        );
+
+        assert_eq!(adopted.len(), 1);
+        assert_eq!(adopted[0].0, "agent-detached");
+        assert_eq!(adopted[0].1.id, "a1");
+    }
+
+    #[test]
+    fn reconciliation_matches_agents_persisted_with_the_short_daemon_id() {
+        let sessions = PrimeProvider::parse_list_output(
+            r#"{"sessions":[{"id":"99dd42ff3d92","sessionId":"uuid-1","lifecycle":"live","attachedClients":0,"rlmDepth":0}]}"#,
+        )
+        .expect("parse");
+
+        let adopted =
+            PrimeProvider::detached_agent_sessions(&sessions, [("agent-1", Some("99dd42ff3d92"))]);
+
+        assert_eq!(adopted.len(), 1);
     }
 
     #[test]
