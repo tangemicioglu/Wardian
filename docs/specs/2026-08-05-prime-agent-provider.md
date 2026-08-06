@@ -527,6 +527,13 @@ Wardian-managed workspace are visible rather than invisible. Provider-side cron
 that Wardian cannot see is a governance problem; provider-side cron that
 Wardian displays is a feature.
 
+`parse_schedule_list_output` reads `prime-agent schedule list --all --json`
+into `PrimeScheduledJob`, with `belongs_to_session` matching a job to a Wardian
+agent the same way session reconciliation does. `--all` is wanted here, unlike
+the session listing: a paused job is exactly what a user needs to see, whereas
+a saved session is noise. An empty listing is `{"jobs":[]}` and is not an
+error; a payload with no `jobs` array is.
+
 ### Autonomous gates
 
 Wardian already knows each project's verification commands from `AGENTS.md`.
@@ -540,6 +547,31 @@ A failed gate feeds bounded command output into the next continuation so the
 agent can repair it, and a passing gate permits completion even when a turn or
 token limit has been reached. This makes Wardian's verification-first principle
 provider-enforced for this provider rather than conventional.
+
+`prime_gates::gates_from_agents_md` does the extraction, and the hard part is
+that a checklist is prose with inline code in it. Most backticked spans are
+filenames, flags, or commit-message examples, so three filters apply:
+
+- **Section scope.** Only headings naming a pre-commit checklist or
+  verification are scanned. A deeper heading subdivides the section; a heading
+  at the same or shallower level ends it. Gating a turn on a setup or
+  troubleshooting command the checklist never asked for would be a surprise.
+- **Known runner.** A span must start with a recognized runner (`npm`,
+  `cargo`, `pytest`, …) and carry an argument. This is what separates
+  `npm run lint` from `AGENTS.md`, `--json`, and `feat(workflows): …`, and it
+  correctly drops `git status`, which is not a verification command.
+- **No shell operators.** Each gate is one argument, so a compound would be
+  mangled or would quietly run a second command.
+
+Output is capped at `MAX_GATES` because every gate runs at the end of every
+turn. Run against this repository's own `AGENTS.md`, the extractor yields
+exactly `npm run lint`, `npm run test`, `npm run build`, `cargo clippy`,
+`cargo test`, `cargo check`, and nothing else -- including nothing from the
+parenthetical `` (in `src-tauri`) `` sitting between two real commands.
+
+`resolved_autonomous_gates` prefers explicitly configured gates and falls back
+to the checklist only when none are set, so a user who chose their own gates
+keeps them.
 
 ### Subagent projection
 

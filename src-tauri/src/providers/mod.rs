@@ -9,6 +9,7 @@ pub mod models;
 pub mod npm;
 pub mod opencode;
 pub mod prime;
+pub mod prime_gates;
 pub mod prime_rpc;
 pub mod readiness;
 pub mod transcript;

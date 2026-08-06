@@ -187,6 +187,75 @@ impl PrimeDaemonSession {
     }
 }
 
+/// A schedule Prime is running for one of its own sessions.
+///
+/// Surfaced read-only. Wardian does not create, edit, or cancel these; the
+/// point is that a schedule an agent set up for itself is visible rather than
+/// running unseen alongside Wardian's own scheduler.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrimeScheduledJob {
+    pub id: String,
+    /// `active`, `paused`, and similar.
+    pub status: Option<String>,
+    /// The session this job prompts, matching a daemon row's `sessionId`.
+    pub session_id: Option<String>,
+    pub active_session_id: Option<String>,
+    pub label: Option<String>,
+    pub prompt: Option<String>,
+    /// Human-readable recurrence, such as `every 5m`.
+    pub schedule: Option<String>,
+    pub next_run_at: Option<String>,
+    /// `steer` or `followUp` for a heartbeat job.
+    pub delivery_mode: Option<String>,
+}
+
+impl PrimeScheduledJob {
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        let id = value.get("id")?.as_str()?.trim().to_string();
+        if id.is_empty() {
+            return None;
+        }
+
+        let string_field = |key: &str| {
+            value
+                .get(key)
+                .and_then(|field| field.as_str())
+                .map(str::to_string)
+                .filter(|field| !field.trim().is_empty())
+        };
+
+        Some(Self {
+            id,
+            status: string_field("status"),
+            session_id: string_field("sessionId"),
+            active_session_id: string_field("activeSessionId"),
+            label: string_field("label"),
+            prompt: string_field("prompt"),
+            schedule: string_field("schedule"),
+            next_run_at: string_field("nextRunAt"),
+            delivery_mode: string_field("deliveryMode"),
+        })
+    }
+
+    /// True when this job will fire again without intervention.
+    pub fn is_active(&self) -> bool {
+        self.status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("active"))
+    }
+
+    /// The Wardian agent this job belongs to, matched the same way session
+    /// reconciliation matches daemon rows.
+    pub fn belongs_to_session(&self, session_uuid: &str) -> bool {
+        let session_uuid = session_uuid.trim();
+        !session_uuid.is_empty()
+            && [self.session_id.as_deref(), self.active_session_id.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|candidate| candidate == session_uuid)
+    }
+}
+
 /// One Prime worker's session tree: a root and the subagents under it.
 ///
 /// This is a projection for display, not a Wardian agent. Only the root
@@ -353,6 +422,74 @@ impl PrimeProvider {
         }
     }
 
+    /// Arguments for `prime-agent schedule list --all --json`.
+    ///
+    /// Read-only by design. Wardian's own scheduler stays authoritative
+    /// because it is cross-provider; this exists so a schedule an agent
+    /// created for itself is visible rather than invisible. `--all` is wanted
+    /// here, unlike the session listing: a paused or inactive job is exactly
+    /// what a user needs to see.
+    pub fn schedule_list_args() -> Vec<String> {
+        vec![
+            "schedule".to_string(),
+            "list".to_string(),
+            "--all".to_string(),
+            "--json".to_string(),
+        ]
+    }
+
+    /// Parses `prime-agent schedule list --json`.
+    pub fn parse_schedule_list_output(output: &str) -> Result<Vec<PrimeScheduledJob>, String> {
+        let parsed: serde_json::Value = serde_json::from_str(output.trim())
+            .map_err(|error| format!("Prime Agent returned unreadable schedule JSON: {error}"))?;
+
+        let jobs = parsed
+            .get("jobs")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| "Prime Agent schedule listing had no `jobs` array".to_string())?;
+
+        Ok(jobs.iter().filter_map(PrimeScheduledJob::from_value).collect())
+    }
+
+    /// The gates for an autonomous run: the configured ones, or the project's
+    /// own pre-commit checklist when none are configured.
+    ///
+    /// Deriving from `AGENTS.md` makes Wardian's verification-first principle
+    /// provider-enforced rather than conventional, without asking the user to
+    /// restate commands the repository already documents. An explicit
+    /// configuration always wins, including an explicit empty list: someone who
+    /// cleared the gates wants no gates, not the defaults back.
+    pub fn resolved_autonomous_gates(config: &AgentConfig) -> Vec<String> {
+        let configured = config
+            .prime_config()
+            .autonomous_gates
+            .into_iter()
+            .map(|gate| gate.trim().to_string())
+            .filter(|gate| !gate.is_empty())
+            .collect::<Vec<_>>();
+        if !configured.is_empty() {
+            return configured;
+        }
+        // An explicitly emptied list is a choice, so only an absent one falls
+        // back. `autonomous_gates` cannot distinguish those, so the fallback is
+        // keyed on the file existing at all.
+        let Some(instructions) = Self::agents_md_for(config) else {
+            return Vec::new();
+        };
+
+        crate::providers::prime_gates::gates_from_agents_md(&instructions)
+    }
+
+    /// Reads the agent's workspace `AGENTS.md`, if it has one.
+    fn agents_md_for(config: &AgentConfig) -> Option<String> {
+        let workspace = config.folder.trim();
+        if workspace.is_empty() {
+            return None;
+        }
+
+        std::fs::read_to_string(std::path::Path::new(workspace).join("AGENTS.md")).ok()
+    }
+
     /// Appends autonomous-mode budgets and completion gates.
     ///
     /// Supplying any `--autonomous-*` sub-option also enables autonomous mode,
@@ -365,9 +502,9 @@ impl PrimeProvider {
         }
 
         args.push("--autonomous".into());
-        for gate in prime.autonomous_gates.iter().filter(|s| !s.trim().is_empty()) {
+        for gate in Self::resolved_autonomous_gates(config) {
             args.push("--autonomous-gate".into());
-            args.push(gate.trim().to_string());
+            args.push(gate);
         }
         if let Some(max_turns) = prime.autonomous_max_turns {
             args.push("--autonomous-max-turns".into());
@@ -1116,6 +1253,132 @@ mod tests {
             PrimeProvider::detached_agent_sessions(&sessions, [("agent-1", Some("99dd42ff3d92"))]);
 
         assert_eq!(adopted.len(), 1);
+    }
+
+    #[test]
+    fn schedule_listing_is_read_only_and_includes_inactive_jobs() {
+        // Unlike the session listing, --all is wanted: a paused job is
+        // precisely what a user needs to see.
+        assert_eq!(
+            PrimeProvider::schedule_list_args(),
+            vec!["schedule", "list", "--all", "--json"]
+        );
+
+        // Field names taken from AgentCronJobStore's heartbeat signature.
+        let jobs = PrimeProvider::parse_schedule_list_output(
+            r#"{"jobs":[
+              {"id":"j1","status":"active","sessionId":"uuid-1","activeSessionId":"a1",
+               "label":"nightly","prompt":"run the suite","schedule":"every 5m",
+               "nextRunAt":"2026-08-06T04:00:00.000Z","deliveryMode":"steer"},
+              {"id":"j2","status":"paused","sessionId":"uuid-2"},
+              {"id":"  "}
+            ]}"#,
+        )
+        .expect("parse");
+
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs[0].is_active());
+        assert_eq!(jobs[0].schedule.as_deref(), Some("every 5m"));
+        assert!(jobs[0].belongs_to_session("uuid-1"));
+        assert!(jobs[0].belongs_to_session("a1"));
+        assert!(!jobs[0].belongs_to_session("uuid-2"));
+        // A paused job is listed but will not fire.
+        assert!(!jobs[1].is_active());
+    }
+
+    #[test]
+    fn an_empty_schedule_listing_is_not_an_error() {
+        // The real CLI answers exactly this when nothing is scheduled.
+        assert!(PrimeProvider::parse_schedule_list_output(r#"{"jobs":[]}"#)
+            .expect("parse")
+            .is_empty());
+        assert!(PrimeProvider::parse_schedule_list_output("{}").is_err());
+        assert!(PrimeProvider::parse_schedule_list_output("not json").is_err());
+    }
+
+    #[test]
+    fn configured_gates_win_over_the_projects_checklist() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(
+            workspace.path().join("AGENTS.md"),
+            "## Pre-Commit Checklist\n\n- [ ] Run `cargo test`.\n",
+        )
+        .expect("write AGENTS.md");
+
+        let config = AgentConfig {
+            provider: "prime".into(),
+            folder: workspace.path().to_string_lossy().to_string(),
+            provider_config: ProviderConfig::Prime(PrimeProviderConfig {
+                autonomous: Some(true),
+                autonomous_gates: vec!["just verify".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            PrimeProvider::resolved_autonomous_gates(&config),
+            vec!["just verify"]
+        );
+    }
+
+    #[test]
+    fn gates_fall_back_to_the_workspace_checklist() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(
+            workspace.path().join("AGENTS.md"),
+            "## Pre-Commit Checklist\n\n- [ ] Run `npm run lint` and `cargo clippy`.\n",
+        )
+        .expect("write AGENTS.md");
+
+        let config = AgentConfig {
+            provider: "prime".into(),
+            folder: workspace.path().to_string_lossy().to_string(),
+            provider_config: ProviderConfig::Prime(PrimeProviderConfig {
+                autonomous: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            PrimeProvider::resolved_autonomous_gates(&config),
+            vec!["npm run lint", "cargo clippy"]
+        );
+
+        // And they reach the command line, one flag per gate.
+        let mut args = Vec::new();
+        PrimeProvider::append_autonomous_args(&mut args, &config);
+        assert_eq!(
+            args,
+            vec![
+                "--autonomous",
+                "--autonomous-gate",
+                "npm run lint",
+                "--autonomous-gate",
+                "cargo clippy",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_workspace_without_agents_md_gets_no_gates() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let config = AgentConfig {
+            provider: "prime".into(),
+            folder: workspace.path().to_string_lossy().to_string(),
+            provider_config: ProviderConfig::Prime(PrimeProviderConfig {
+                autonomous: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert!(PrimeProvider::resolved_autonomous_gates(&config).is_empty());
+        // Autonomous mode still engages; it simply has nothing to gate on.
+        let mut args = Vec::new();
+        PrimeProvider::append_autonomous_args(&mut args, &config);
+        assert_eq!(args, vec!["--autonomous"]);
     }
 
     #[test]
