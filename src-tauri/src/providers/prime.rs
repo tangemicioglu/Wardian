@@ -278,7 +278,13 @@ impl PrimeDaemonSession {
         let Some(session_file) = self.session_file.as_deref() else {
             return false;
         };
-        std::path::Path::new(session_file)
+        // Separators are normalized before the parent is taken, not just inside
+        // the comparison. `Path::parent` uses the running platform's separator,
+        // so a backslash path would collapse to an empty parent off Windows and
+        // silently match nothing -- while `same_path` would have compared it
+        // correctly.
+        let normalized = session_file.replace('\\', "/");
+        std::path::Path::new(&normalized)
             .parent()
             .is_some_and(|parent| same_path(parent, session_dir))
     }
@@ -1495,6 +1501,29 @@ mod tests {
         assert_eq!(session.message_count, 4);
         assert!(session.is_root());
         assert!(session.is_detached());
+    }
+
+    /// Prime reports transcript paths in the daemon host's separator style, so
+    /// a Windows-shaped row has to resolve the same way on any platform the
+    /// tests run on.
+    #[test]
+    fn a_windows_shaped_row_matches_its_directory_on_any_platform() {
+        let session = PrimeDaemonSession {
+            session_file: Some(
+                r"C:\wardian\agents\agent-1\prime-sessions\019fd6b4.jsonl".to_string(),
+            ),
+            ..Default::default()
+        };
+
+        assert!(session.belongs_to_session_dir(std::path::Path::new(
+            r"C:\wardian\agents\agent-1\prime-sessions"
+        )));
+        assert!(session.belongs_to_session_dir(std::path::Path::new(
+            "C:/wardian/agents/agent-1/prime-sessions"
+        )));
+        assert!(!session.belongs_to_session_dir(std::path::Path::new(
+            "C:/wardian/agents/agent-2/prime-sessions"
+        )));
     }
 
     #[test]
