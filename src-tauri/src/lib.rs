@@ -327,6 +327,12 @@ pub fn run() {
                 );
             }
 
+            // Prime Agent cannot build its own IPython kernel on Windows, and
+            // that kernel is the only tool it exposes to the model. Building it
+            // here means a user who picks Prime later finds it ready instead of
+            // being handed setup instructions. No-ops when it already exists.
+            crate::providers::prime_kernel::start_background_provisioning();
+
             let control_endpoint_claim = control::claim_control_endpoint().map_err(|error| {
                 std::io::Error::new(
                     error.kind(),

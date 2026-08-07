@@ -110,6 +110,14 @@ fn prime_kernel_blocker() -> Option<String> {
         return None;
     }
 
+    // Reading provisioning progress is a lock and a clone. Starting or waiting
+    // on the work would not be: this runs on every provider-list paint.
+    if let Some(progress) = prime_provisioning_progress(
+        &crate::providers::prime_kernel::provisioning_state(),
+    ) {
+        return Some(progress);
+    }
+
     // Prime Agent 0.7.0's own bootstrap is broken on Windows (it assumes the
     // POSIX `bin/python` virtualenv layout), so a missing Wardian-managed
     // environment is fatal there. On other platforms its bootstrap is expected
@@ -124,6 +132,27 @@ fn prime_kernel_blocker() -> Option<String> {
     #[cfg(not(target_os = "windows"))]
     {
         None
+    }
+}
+
+/// Turns provisioning progress into the blocker text, when it has something to
+/// say that the generic "set it up yourself" message does not.
+///
+/// `Done` returns `None` on purpose: the environment was published but this
+/// call already failed to find an interpreter, so the generic instructions are
+/// the honest answer rather than a claim that setup succeeded.
+fn prime_provisioning_progress(
+    state: &crate::providers::prime_kernel::ProvisioningState,
+) -> Option<String> {
+    use crate::providers::prime_kernel::ProvisioningState;
+
+    match state {
+        ProvisioningState::Running => Some(
+            "Wardian is setting up Prime Agent's Python kernel. This runs once and takes a minute; Prime Agent becomes available when it finishes."
+                .to_string(),
+        ),
+        ProvisioningState::Failed(reason) => Some(reason.clone()),
+        ProvisioningState::Idle | ProvisioningState::Done => None,
     }
 }
 
@@ -145,18 +174,37 @@ fn prime_kernel_blocker_reason(venv_dir: Option<&Path>) -> String {
     )
 }
 
+/// Readiness check for an actual launch, which may block where the render-path
+/// check may not.
+///
+/// A Prime launch started while the kernel is still being provisioned waits for
+/// it. Failing here instead would tell the user to set up something Wardian is
+/// already most of the way through building.
 pub fn ensure_provider_available_for_launch(provider_id: &str) -> Result<(), String> {
     let readiness = provider_readiness(provider_id);
     if readiness.available {
         return Ok(());
     }
 
-    Err(readiness.reason.unwrap_or_else(|| {
+    if provider_id.trim().eq_ignore_ascii_case("prime") {
+        crate::providers::prime_kernel::wait_for_in_flight_provisioning();
+        let readiness = provider_readiness(provider_id);
+        if readiness.available {
+            return Ok(());
+        }
+        return Err(unavailable_launch_error(readiness));
+    }
+
+    Err(unavailable_launch_error(readiness))
+}
+
+fn unavailable_launch_error(readiness: ProviderReadiness) -> String {
+    readiness.reason.unwrap_or_else(|| {
         format!(
             "{} is not available. See docs/guide/provider-readiness.md.",
             readiness.display_name
         )
-    }))
+    })
 }
 
 pub fn readiness_from_launch_parts(
@@ -230,6 +278,13 @@ fn resolve_executable(executable: &str, path_override: Option<&str>) -> Option<P
     }
 
     find_executable_on_path(executable, path_override)
+}
+
+/// Resolves a helper tool the same way provider executables are resolved, so a
+/// tool Wardian shells out to is found under the app's environment rather than
+/// the user's shell.
+pub fn find_executable_for_provisioning(name: &str) -> Option<PathBuf> {
+    find_executable_on_path(name, None)
 }
 
 fn find_executable_on_path(name: &str, path_override: Option<&str>) -> Option<PathBuf> {
@@ -422,6 +477,41 @@ mod tests {
 
         assert!(reason.contains("under the Wardian home"));
         assert!(reason.contains("PRIME_AGENT_KERNEL_PYTHON"));
+    }
+
+    /// The user should learn that setup is under way from the same place they
+    /// would otherwise be told to do it themselves.
+    #[test]
+    fn an_in_flight_provision_is_reported_instead_of_setup_instructions() {
+        use crate::providers::prime_kernel::ProvisioningState;
+
+        let progress =
+            prime_provisioning_progress(&ProvisioningState::Running).expect("progress text");
+
+        assert!(progress.contains("setting up"));
+        assert!(!progress.contains("Create a virtualenv"));
+    }
+
+    #[test]
+    fn a_failed_provision_reports_its_own_reason() {
+        use crate::providers::prime_kernel::ProvisioningState;
+
+        let reason = prime_provisioning_progress(&ProvisioningState::Failed(
+            "uv exploded".to_string(),
+        ));
+
+        assert_eq!(reason.as_deref(), Some("uv exploded"));
+    }
+
+    /// Reaching `Done` while the interpreter is still missing means something
+    /// removed it, so the honest answer is the ordinary setup instructions
+    /// rather than a claim that provisioning worked.
+    #[test]
+    fn a_finished_provision_with_no_kernel_falls_back_to_instructions() {
+        use crate::providers::prime_kernel::ProvisioningState;
+
+        assert_eq!(prime_provisioning_progress(&ProvisioningState::Done), None);
+        assert_eq!(prime_provisioning_progress(&ProvisioningState::Idle), None);
     }
 
     #[test]

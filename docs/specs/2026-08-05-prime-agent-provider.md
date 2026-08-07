@@ -557,11 +557,49 @@ Item 2's live `ipython` probe was also dropped. Readiness populates the provider
 list on every render, so it is a filesystem check; `providers/readiness.rs`
 records why.
 
-Provisioning remains unbuilt. It is two `uv` commands, but the runtime package
-is **not on PyPI** — it is a source directory inside the npm package, at
-`$(npm root -g)/prime-agent/dist/prime-agent-runtime` — and installing it takes
-long enough that it needs an explicit user action with progress, not a call
-from `provider_readiness`.
+#### Provisioning, and why it is not a button
+
+Provisioning is now built, in `providers/prime_kernel.rs`. Two decisions shaped
+it.
+
+**It runs at app startup, not at spawn and not from a settings button.** Spawn
+was the obvious hook — user-initiated, once, already slow — but it makes the
+first Prime launch sit for a minute with nothing to show, and the terminal pane
+cannot help: the PTY does not exist yet, and the session broker rejects output
+without a runtime generation. Startup has no such deadline. By the time anyone
+opens the provider list the kernel is usually there, and if it is not, the
+existing `ProviderReadiness.reason` carries "Wardian is setting up Prime Agent's
+Python kernel" through surfaces that already render it. No new UI, no frontend
+change. `ensure_provider_available_for_launch` waits on an in-flight run so a
+fast user is not told to set up something Wardian is already building.
+
+Readiness itself never starts or waits for the work. It runs on every
+provider-list paint, so it only reads the state.
+
+**Nothing half-built is ever discoverable.** `kernel_python` decides a kernel
+exists by looking for the interpreter file, so a venv created before its
+packages land would clear the readiness gate and then fail every tool call —
+the precise failure the gate exists to prevent. The provisioner builds into a
+`.staging` sibling, runs `import ipykernel, rlm` in the staged interpreter, and
+only then renames it into place. `uv` exiting zero is not accepted as proof;
+verified against a bare venv, which fails with `ModuleNotFoundError`. Losing the
+rename to a concurrent run counts as success. Staging is removed on every exit
+path.
+
+The runtime package is **not on PyPI** — it is a source directory inside the npm
+package, found by walking up from Prime's CLI entry point to the nearest
+ancestor named `prime-agent` and then to `dist/prime-agent-runtime`. Deriving it
+from the entry point rather than `npm root -g` guarantees it matches the install
+that will actually run.
+
+Measured on a warm `uv` cache: 4.2s, 81 MB, staging cleaned up, kernel
+discoverable afterwards. A cold cache is nearer a minute.
+
+**Not covered by an automated test at the native layer.** The native harness
+exports `PRIME_AGENT_KERNEL_PYTHON` before launching the app, which
+short-circuits the discovery path the provisioner populates. The gap is marked
+with a `test.skip` in `prime-detached-worker-native.test.mjs`. The staging,
+verification and publish steps are unit-tested.
 
 ### Scheduling
 

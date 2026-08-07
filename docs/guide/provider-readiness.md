@@ -260,7 +260,13 @@ Prime Agent 0.7.0 cannot bootstrap that kernel on Windows. Its setup asks `uv` f
 error: No virtual environment or system Python installation found for path `.prime\agent\kernel-venv\bin\python`
 ```
 
-Build the environment yourself instead. It needs `ipykernel` and `prime-agent-runtime`. The runtime is **not on PyPI** — it ships inside the npm package as a source directory, so install it by path:
+**Wardian builds the kernel for you.** On startup it checks for one, and if Prime Agent is installed without a usable kernel it builds a virtualenv at `<wardian-home>/prime-kernel-venv` in the background. This runs once, takes about a minute on a cold cache, and needs no action. While it runs, Prime Agent shows **needs setup** in the provider list with the reason "Wardian is setting up Prime Agent's Python kernel"; it becomes selectable when the build finishes. Starting a Prime agent during the build waits for it rather than failing.
+
+Provisioning requires [`uv`](https://docs.astral.sh/uv/) on `PATH` and network access. If either is missing, the provider list says so and you can build the environment by hand.
+
+#### Building it by hand
+
+It needs `ipykernel` and `prime-agent-runtime`. The runtime is **not on PyPI** — it ships inside the npm package as a source directory, so install it by path:
 
 ```bash
 uv venv <wardian-home>/prime-kernel-venv
@@ -286,7 +292,11 @@ Wardian discovers that environment on its own and passes it to every Prime launc
 
 `<wardian-home>` is the home the **running build** uses, which is not always `~/.wardian`: a debug build resolves it under the build's `target/debug/.wardian`. Wardian's readiness message names the exact directory it looked in, so read the path from there rather than assuming.
 
-To use an environment somewhere else, point at its interpreter instead. Set the variable before Wardian starts so the app process inherits it:
+A directory ending in `.staging` next to the venv is a provisioning run in progress or one that was interrupted. It is never used as a kernel and is safe to delete.
+
+#### Using an environment somewhere else
+
+Point at its interpreter instead. Set the variable before Wardian starts so the app process inherits it:
 
 ```bash
 export PRIME_AGENT_KERNEL_PYTHON=<absolute-path-to-kernel-venv>/bin/python

@@ -251,3 +251,16 @@ test("Wardian stops its own Prime worker and leaves the shared daemon running", 
     await close();
   }
 });
+
+// @native-only
+// Kernel provisioning writes a real virtualenv under the app's WARDIAN_HOME, so
+// only the native layer can prove it. Left unwritten deliberately: this harness
+// exports PRIME_AGENT_KERNEL_PYTHON before launching the app, which short-
+// circuits the discovery path the provisioner exists to populate. Proving it
+// needs a variant harness that withholds that variable and budgets for a real
+// package install.
+//
+// Covered meanwhile by unit tests over the staging/verify/publish steps in
+// `src-tauri/src/providers/prime_kernel.rs`, and by a manual run recorded in
+// docs/specs/2026-08-05-prime-agent-provider.md.
+test.skip("Wardian provisions Prime's IPython kernel into an isolated home", () => {});

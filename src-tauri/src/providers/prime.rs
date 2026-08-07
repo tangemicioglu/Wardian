@@ -24,9 +24,9 @@ const WARDIAN_KERNEL_VENV_DIR: &str = "prime-kernel-venv";
 
 /// Interpreter path inside a virtualenv, which differs by platform.
 #[cfg(target_os = "windows")]
-const VENV_PYTHON_RELATIVE: &str = "Scripts/python.exe";
+pub(crate) const VENV_PYTHON_RELATIVE: &str = "Scripts/python.exe";
 #[cfg(not(target_os = "windows"))]
-const VENV_PYTHON_RELATIVE: &str = "bin/python";
+pub(crate) const VENV_PYTHON_RELATIVE: &str = "bin/python";
 
 /// Resolves the Python interpreter Prime Agent should use for its IPython
 /// kernel, preferring an explicit environment override.
