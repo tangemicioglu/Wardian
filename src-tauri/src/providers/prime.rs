@@ -1012,6 +1012,75 @@ mod tests {
         assert_eq!(make_provider().name(), "Prime Agent");
     }
 
+    /// Lays out a virtualenv the way the platform does, so the test exercises
+    /// the same relative interpreter path production uses.
+    fn write_kernel_venv(dir: &std::path::Path) -> std::path::PathBuf {
+        let python = dir.join(VENV_PYTHON_RELATIVE);
+        std::fs::create_dir_all(python.parent().expect("venv bin dir")).expect("create venv dirs");
+        std::fs::write(&python, "").expect("write interpreter");
+        python
+    }
+
+    /// A kernel under the Wardian home is the documented way to run Prime
+    /// without an environment variable, so it has to resolve on its own.
+    #[test]
+    fn a_kernel_under_the_wardian_home_is_found_without_an_env_var() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        let expected = write_kernel_venv(&temp.path().join(WARDIAN_KERNEL_VENV_DIR));
+        unsafe {
+            std::env::set_var("WARDIAN_HOME", temp.path());
+            std::env::remove_var(KERNEL_PYTHON_ENV);
+        }
+
+        let resolved = kernel_python();
+
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+        assert_eq!(resolved, Some(expected));
+    }
+
+    /// A stale override must not mask a usable environment, otherwise editing
+    /// the variable to a typo makes Prime unavailable with no way to tell why.
+    #[test]
+    fn an_override_pointing_at_nothing_falls_through_to_the_wardian_home() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        let expected = write_kernel_venv(&temp.path().join(WARDIAN_KERNEL_VENV_DIR));
+        unsafe {
+            std::env::set_var("WARDIAN_HOME", temp.path());
+            std::env::set_var(KERNEL_PYTHON_ENV, temp.path().join("no-such-python"));
+        }
+
+        let resolved = kernel_python();
+
+        unsafe {
+            std::env::remove_var("WARDIAN_HOME");
+            std::env::remove_var(KERNEL_PYTHON_ENV);
+        }
+        assert_eq!(resolved, Some(expected));
+    }
+
+    #[test]
+    fn an_explicit_override_wins_over_the_wardian_home_kernel() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        write_kernel_venv(&temp.path().join(WARDIAN_KERNEL_VENV_DIR));
+        let override_python = temp.path().join("chosen-python");
+        std::fs::write(&override_python, "").expect("write override interpreter");
+        unsafe {
+            std::env::set_var("WARDIAN_HOME", temp.path());
+            std::env::set_var(KERNEL_PYTHON_ENV, &override_python);
+        }
+
+        let resolved = kernel_python();
+
+        unsafe {
+            std::env::remove_var("WARDIAN_HOME");
+            std::env::remove_var(KERNEL_PYTHON_ENV);
+        }
+        assert_eq!(resolved, Some(override_python));
+    }
+
     /// Writes a transcript the way prime-agent 0.7.0 does under
     /// `--session-dir`: the header's id and the file name are different UUIDs.
     fn write_transcript(dir: &std::path::Path, file_uuid: &str, header_id: &str) {

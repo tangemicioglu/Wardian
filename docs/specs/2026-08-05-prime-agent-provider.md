@@ -523,15 +523,45 @@ returns `{"status":"ok","stdout":…}`.
 
 Wardian therefore:
 
-1. Provisions a kernel venv under Wardian control on first use and exports
+1. Discovers a kernel venv at `<WARDIAN_HOME>/prime-kernel-venv` and exports
    `PRIME_AGENT_KERNEL_PYTHON` into the spawn environment, rather than relying
    on prime's auto-bootstrap.
-2. Probes readiness by executing a trivial `ipython` call, cached under the
-   existing `CATALOG_CACHE_TTL` discipline, and reports kernel failure in
+2. Treats a missing kernel as a readiness blocker, reported in
    `ProviderReadiness.reason` distinctly from a missing binary.
 
 Revisit item 1 when upstream fixes the venv layout; the env var remains the
 documented escape hatch either way.
+
+#### *(corrected)* Discovery is built, provisioning is not
+
+Item 1 originally said Wardian **provisions** the venv on first use. It does
+not, and there is no code that ever did. It discovers one and exports it; the
+user builds it. The readiness message says so and names the directory the
+running build reads, because a debug build's Wardian home is under `target/`
+rather than `~/.wardian` and a `<WARDIAN_HOME>` placeholder sent people to
+build an environment the app would never look at.
+
+Two defects made the gap worse than a missing convenience:
+
+- **The export was missing.** `apply_interactive_provider_runtime_env` and its
+  process-mode twin handled only Claude, so a discovered interpreter never
+  reached the child. `<WARDIAN_HOME>/prime-kernel-venv` cleared the readiness
+  gate and then failed every tool call. Only `PRIME_AGENT_KERNEL_PYTHON` worked,
+  and only because the child inherits the app's environment.
+- **The UI called an installed provider "not installed."** Every unavailable
+  provider got that suffix regardless of reason. Readiness now keeps the
+  resolved `executable` when a runtime dependency is the blocker, and the
+  frontend reads its presence as "needs setup" instead.
+
+Item 2's live `ipython` probe was also dropped. Readiness populates the provider
+list on every render, so it is a filesystem check; `providers/readiness.rs`
+records why.
+
+Provisioning remains unbuilt. It is two `uv` commands, but the runtime package
+is **not on PyPI** — it is a source directory inside the npm package, at
+`$(npm root -g)/prime-agent/dist/prime-agent-runtime` — and installing it takes
+long enough that it needs an explicit user action with progress, not a call
+from `provider_readiness`.
 
 ### Scheduling
 

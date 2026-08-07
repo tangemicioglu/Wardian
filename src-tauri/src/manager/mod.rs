@@ -1165,6 +1165,12 @@ pub(crate) fn apply_interactive_provider_runtime_env(
         }
     }
 
+    if provider_name == "prime" {
+        if let Some((key, value)) = prime_kernel_runtime_env() {
+            cmd.env(key, value);
+        }
+    }
+
     let _ = (provider_name, cmd);
 
     Ok(())
@@ -1187,9 +1193,30 @@ pub(crate) fn apply_process_provider_runtime_env(
         }
     }
 
+    if provider_name == "prime" {
+        if let Some((key, value)) = prime_kernel_runtime_env() {
+            cmd.env(key, value);
+        }
+    }
+
     let _ = (provider_name, cmd);
 
     Ok(())
+}
+
+/// Kernel interpreter Prime Agent should use, as a spawn environment entry.
+///
+/// Readiness resolves an interpreter Prime cannot find on its own, so a launch
+/// that does not pass it along would clear the gate and then fail every tool
+/// call. Returns `None` when no interpreter was resolved, in which case the
+/// child keeps whatever the app process inherited.
+pub(crate) fn prime_kernel_runtime_env() -> Option<(&'static str, String)> {
+    crate::providers::prime::kernel_python().map(|python| {
+        (
+            crate::providers::prime::KERNEL_PYTHON_ENV,
+            python.to_string_lossy().to_string(),
+        )
+    })
 }
 
 pub(crate) fn claude_terminal_runtime_env() -> [(&'static str, &'static str); 2] {
@@ -1529,6 +1556,54 @@ mod tests {
     }
 
     #[cfg(windows)]
+    #[test]
+    /// Readiness resolves an interpreter Prime cannot discover on its own, so a
+    /// launch that clears the gate without passing it along produces an agent
+    /// that fails every tool call.
+    #[test]
+    fn a_prime_launch_carries_the_resolved_kernel_interpreter() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let python = temp.path().join("python-for-prime");
+        std::fs::write(&python, "").expect("write interpreter");
+        std::env::set_var(crate::providers::prime::KERNEL_PYTHON_ENV, &python);
+
+        let mut interactive = CommandBuilder::new("prime-agent");
+        apply_interactive_provider_runtime_env("prime", &mut interactive).unwrap();
+        let carried = interactive
+            .iter_extra_env_as_str()
+            .find(|(key, _)| key.eq_ignore_ascii_case(crate::providers::prime::KERNEL_PYTHON_ENV))
+            .map(|(_, value)| value.to_string());
+
+        let mut process = tokio::process::Command::new("prime-agent");
+        apply_process_provider_runtime_env("prime", &mut process).unwrap();
+        let carried_by_process = process
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| {
+                key.to_string_lossy()
+                    .eq_ignore_ascii_case(crate::providers::prime::KERNEL_PYTHON_ENV)
+            })
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().to_string()));
+
+        std::env::remove_var(crate::providers::prime::KERNEL_PYTHON_ENV);
+        assert_eq!(carried.as_deref(), python.to_str());
+        assert_eq!(carried_by_process.as_deref(), python.to_str());
+    }
+
+    /// Only Prime needs the kernel interpreter, and leaking it into every
+    /// provider would point unrelated tooling at a Wardian-managed venv.
+    #[test]
+    fn other_providers_do_not_receive_the_prime_kernel_interpreter() {
+        let mut interactive = CommandBuilder::new("claude");
+        apply_interactive_provider_runtime_env("claude", &mut interactive).unwrap();
+
+        assert!(!interactive
+            .iter_extra_env_as_str()
+            .any(|(key, _)| key
+                .eq_ignore_ascii_case(crate::providers::prime::KERNEL_PYTHON_ENV)));
+    }
+
     #[test]
     fn provider_runtime_env_does_not_inject_shell_or_node_hooks() {
         let _guard = crate::utils::wardian_test_env_lock();

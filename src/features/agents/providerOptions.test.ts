@@ -44,6 +44,42 @@ describe('provider option helpers', () => {
     expect(missing?.reason).toBe('Prime Agent is installed but its Python kernel is not set up.');
   });
 
+  it('does not call an installed provider "not installed" when its runtime is the blocker', () => {
+    const blocked = buildProviderOptions([
+      {
+        provider: 'prime',
+        display_name: 'Prime Agent',
+        available: false,
+        executable: 'C:/npm/prime-agent',
+        reason: 'Prime Agent is installed but its Python kernel is not set up.',
+      },
+    ]).find((option) => option.value === 'prime');
+
+    expect(blocked?.label).toBe('Prime Agent - needs setup');
+    expect(blocked?.available).toBe(false);
+  });
+
+  it('explains a runtime blocker in the fallback note instead of blaming the install', () => {
+    const result = resolveEffectiveProvider(
+      [
+        readiness('claude', true),
+        {
+          provider: 'prime',
+          display_name: 'Prime Agent',
+          available: false,
+          executable: 'C:/npm/prime-agent',
+          reason: 'Prime Agent is installed but its Python kernel is not set up.',
+        },
+      ],
+      'prime',
+    );
+
+    expect(result.provider).toBe('claude');
+    expect(result.note).toBe(
+      'Default provider Prime Agent needs setup. Using Claude. Prime Agent is installed but its Python kernel is not set up.',
+    );
+  });
+
   it('does not expose maintenance status in user-facing provider labels', () => {
     expect(buildUngatedProviderOptions().find((option) => option.value === 'gemini')?.label).toBe('Gemini');
     expect(buildProviderOptions([readiness('gemini', false)]).find((option) => option.value === 'gemini')?.label).toBe(
@@ -104,7 +140,7 @@ describe('provider option helpers', () => {
 
     expect(result).toEqual({
       provider: 'claude',
-      note: 'Default provider Codex is not installed. Using Claude.',
+      note: 'Default provider Codex is not installed. Using Claude. codex missing',
     });
   });
 

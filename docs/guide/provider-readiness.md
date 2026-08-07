@@ -260,23 +260,43 @@ Prime Agent 0.7.0 cannot bootstrap that kernel on Windows. Its setup asks `uv` f
 error: No virtual environment or system Python installation found for path `.prime\agent\kernel-venv\bin\python`
 ```
 
-Point Prime Agent at an existing environment instead. It needs `ipykernel` and `prime-agent-runtime` installed:
+Build the environment yourself instead. It needs `ipykernel` and `prime-agent-runtime`. The runtime is **not on PyPI** — it ships inside the npm package as a source directory, so install it by path:
 
 ```bash
-uv venv <absolute-path-to-kernel-venv>
-uv pip install --python <absolute-path-to-kernel-venv>/bin/python ipykernel prime-agent-runtime
+uv venv <wardian-home>/prime-kernel-venv
+uv pip install --python <wardian-home>/prime-kernel-venv/bin/python \
+  ipykernel "$(npm root -g)/prime-agent/dist/prime-agent-runtime"
+```
+
+PowerShell (Windows):
+
+```powershell
+uv venv <wardian-home>\prime-kernel-venv
+uv pip install --python <wardian-home>\prime-kernel-venv\Scripts\python.exe `
+  ipykernel (Join-Path (npm root -g) "prime-agent\dist\prime-agent-runtime")
+```
+
+Confirm it worked:
+
+```bash
+<wardian-home>/prime-kernel-venv/bin/python -c "import ipykernel, rlm; print('kernel ok')"
+```
+
+Wardian discovers that environment on its own and passes it to every Prime launch, so no environment variable is needed. Because it lives under the Wardian home, an isolated `WARDIAN_HOME` keeps its own kernel.
+
+`<wardian-home>` is the home the **running build** uses, which is not always `~/.wardian`: a debug build resolves it under the build's `target/debug/.wardian`. Wardian's readiness message names the exact directory it looked in, so read the path from there rather than assuming.
+
+To use an environment somewhere else, point at its interpreter instead. Set the variable before Wardian starts so the app process inherits it:
+
+```bash
 export PRIME_AGENT_KERNEL_PYTHON=<absolute-path-to-kernel-venv>/bin/python
 ```
 
 PowerShell (Windows):
 
 ```powershell
-uv venv <absolute-path-to-kernel-venv>
-uv pip install --python <absolute-path-to-kernel-venv>\Scripts\python.exe ipykernel prime-agent-runtime
 $env:PRIME_AGENT_KERNEL_PYTHON = "<absolute-path-to-kernel-venv>\Scripts\python.exe"
 ```
-
-Set the variable before Wardian starts so the app process inherits it. Wardian also looks for a managed environment at `<WARDIAN_HOME>/prime-kernel-venv` and uses it when the variable is unset, which keeps an isolated `WARDIAN_HOME` on its own kernel.
 
 `prime-agent doctor` is not a check for this. It inspects background services and reports success on an install whose kernel is entirely unusable.
 

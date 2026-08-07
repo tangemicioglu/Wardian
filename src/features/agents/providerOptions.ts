@@ -10,6 +10,17 @@ export interface ProviderOption {
   reason: string | null;
 }
 
+/**
+ * Suffix explaining why a provider cannot be launched.
+ *
+ * A resolved executable means the CLI is installed and something else blocks
+ * it -- a missing runtime dependency, for instance -- so calling it "not
+ * installed" sends the user to reinstall software they already have.
+ */
+function unavailableSuffix(executable: string | null | undefined): string {
+  return executable ? "needs setup" : "not installed";
+}
+
 export function providerDisplayName(provider: UserFacingProviderName): string {
   switch (provider) {
     case "claude":
@@ -39,7 +50,7 @@ export function buildProviderOptions(readiness: ProviderReadiness[]): ProviderOp
     const label = providerDisplayName(provider);
     return {
       value: provider,
-      label: available ? label : `${label} - not installed`,
+      label: available ? label : `${label} - ${unavailableSuffix(entry?.executable)}`,
       available,
       reason: entry?.reason ?? null,
     };
@@ -72,9 +83,12 @@ export function resolveEffectiveProvider(
       return { provider: explicit.value, note: null };
     }
 
+    const entry = readiness.find((item) => item.provider === defaultProvider);
+    const problem = entry?.executable ? "needs setup" : "is not installed";
+    const detail = entry?.reason ? ` ${entry.reason}` : "";
     return {
       provider: firstAvailable,
-      note: `Default provider ${providerDisplayName(defaultProvider)} is not installed. Using ${providerDisplayName(firstAvailable)}.`,
+      note: `Default provider ${providerDisplayName(defaultProvider)} ${problem}. Using ${providerDisplayName(firstAvailable)}.${detail}`,
     };
   }
 
