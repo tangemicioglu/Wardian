@@ -449,14 +449,22 @@ mod tests {
         );
     }
 
+    /// Built from components rather than a literal: a backslash-separated path
+    /// is one opaque component on Unix, so a Windows literal would make this
+    /// test pass for the wrong reason on one platform and fail on the other.
     #[test]
     fn the_package_root_is_found_from_the_npm_cli_entry_point() {
-        let entry =
-            Path::new(r"C:\npm\node_modules\prime-agent\dist\bundle\cli.js");
+        let entry = ["npm", "node_modules", "prime-agent", "dist", "bundle", "cli.js"]
+            .iter()
+            .fold(PathBuf::new(), |path, segment| path.join(segment));
 
-        let runtime = runtime_dir_from_cli_entry(entry).expect("runtime dir");
+        let runtime = runtime_dir_from_cli_entry(&entry).expect("runtime dir");
 
-        assert!(runtime.ends_with(Path::new("prime-agent").join("dist").join("prime-agent-runtime")));
+        assert!(runtime.ends_with(
+            Path::new("prime-agent")
+                .join("dist")
+                .join("prime-agent-runtime")
+        ));
     }
 
     /// A CLI entry that is not inside a Prime install must not resolve to some
