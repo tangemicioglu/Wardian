@@ -236,6 +236,28 @@ export function workGroupTitleFromEntries(entries: PresentedWorkEntry[]): string
   return "Work log";
 }
 
+export function isApprovalEvent(event: AgentChatEvent): boolean {
+  return event.kind === "approval" || event.status === "action_required";
+}
+
+/**
+ * Identifies the one approval a response can still reach.
+ *
+ * Approval choices submit their value as an ordinary prompt, so the buttons on
+ * a historical approval are not merely inert — pressing one sends a bare "1"
+ * into whatever the agent is doing now. Only the newest approval can be live,
+ * and only while the agent is actually asking; every earlier one is a record of
+ * a question already settled.
+ */
+export function liveApprovalEventId(events: readonly AgentChatEvent[]): string | null {
+  if (!events.some((event) => event.status === "action_required")) return null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (isApprovalEvent(event)) return event.id;
+  }
+  return null;
+}
+
 export function isThinkingIndicator(event: AgentChatEvent): boolean {
   return event.kind === "status" && event.metadata?.chat_thinking_indicator === true;
 }

@@ -52,6 +52,8 @@ export interface ChatTranscriptRowProps {
   onApprovalSubmit: (response: string) => void;
   /** Omitted on surfaces with no file viewer, which renders paths inert. */
   onOpenFile?: (path: string) => void;
+  /** The one approval a response can still reach; null when none is pending. */
+  liveApprovalId?: string | null;
 }
 
 /** Dispatches a derived transcript row to its renderer. */
@@ -62,6 +64,7 @@ export function ChatTranscriptRow({
   linkHandling,
   onApprovalSubmit,
   onOpenFile,
+  liveApprovalId = null,
 }: ChatTranscriptRowProps) {
   if (row.kind === "turn_change_summary") return <TurnChangeCard onOpenFile={onOpenFile} row={row} />;
   if (row.kind === "work_group") return <WorkGroupRow agentIsWorking={agentIsWorking} row={row} />;
@@ -70,6 +73,7 @@ export function ChatTranscriptRow({
   ) : (
     <ActivityEvent
       agentIsWorking={agentIsWorking}
+      approvalIsLive={row.event.id === liveApprovalId}
       entry={row.entry}
       event={row.event}
       isSubmitting={isSubmitting}
@@ -113,12 +117,14 @@ export function ActivityEvent({
   event,
   entry,
   agentIsWorking,
+  approvalIsLive,
   isSubmitting,
   onApprovalSubmit,
 }: {
   event: AgentChatEvent;
   entry?: PresentedWorkEntry;
   agentIsWorking: boolean;
+  approvalIsLive: boolean;
   isSubmitting: boolean;
   onApprovalSubmit: (response: string) => void;
 }) {
@@ -132,6 +138,7 @@ export function ActivityEvent({
   if (event.kind === "terminal_output") return <TerminalFallback event={event} block={block} />;
   return (
     <ActivityRow
+      approvalIsLive={approvalIsLive}
       block={block}
       entry={entry}
       event={event}
@@ -177,12 +184,14 @@ export function ActivityRow({
   event,
   entry,
   block,
+  approvalIsLive,
   isSubmitting,
   onApprovalSubmit,
 }: {
   event: AgentChatEvent;
   entry?: PresentedWorkEntry;
   block: ActivityBlockModel;
+  approvalIsLive: boolean;
   isSubmitting: boolean;
   onApprovalSubmit: (response: string) => void;
 }) {
@@ -243,10 +252,19 @@ export function ActivityRow({
         </div>
       </div>
       {isApproval ? (
-        <div className="mt-2 rounded border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_45%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_92%)] px-2 py-1 text-[11px] leading-4 text-muted-neutral">
-          {approvalChoices.length > 0
-            ? "Action required. Choose a response or type below."
-            : "Action required. Respond below or switch to terminal mode."}
+        <div
+          className={`mt-2 rounded border px-2 py-1 text-[11px] leading-4 text-muted-neutral ${
+            approvalIsLive
+              ? "border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_45%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_92%)]"
+              : "border-wardian-light bg-[var(--color-wardian-card)]"
+          }`}
+          data-testid="chat-approval-notice"
+        >
+          {!approvalIsLive
+            ? "This request is no longer awaiting a response."
+            : approvalChoices.length > 0
+              ? "Action required. Choose a response or type below."
+              : "Action required. Respond below or switch to terminal mode."}
         </div>
       ) : null}
       {changedPaths.length > 0 ? <ChangedFiles paths={changedPaths} /> : null}
@@ -256,12 +274,24 @@ export function ActivityRow({
             <button
               type="button"
               key={`${choice.value}-${choice.label}`}
-              aria-label={`Send approval response ${choice.value}: ${choice.label}`}
-              className="inline-flex max-w-full items-center gap-1.5 rounded border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 py-1 text-left text-[11px] font-semibold leading-4 text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={isSubmitting}
+              aria-label={
+                approvalIsLive
+                  ? `Send approval response ${choice.value}: ${choice.label}`
+                  : `Past approval choice ${choice.value}: ${choice.label}`
+              }
+              className={`inline-flex max-w-full items-center gap-1.5 rounded border px-2 py-1 text-left text-[11px] font-semibold leading-4 transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                approvalIsLive
+                  ? "border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] text-primary hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)]"
+                  : "border-wardian-light bg-[var(--color-wardian-card)] text-muted-neutral"
+              }`}
+              disabled={isSubmitting || !approvalIsLive}
               onClick={() => onApprovalSubmit(choice.value)}
             >
-              <span className="shrink-0 font-mono text-[var(--color-wardian-warning)]">{choice.value}</span>
+              <span
+                className={`shrink-0 font-mono ${approvalIsLive ? "text-[var(--color-wardian-warning)]" : "text-muted-neutral"}`}
+              >
+                {choice.value}
+              </span>
               <span className="min-w-0 truncate">{choice.label}</span>
             </button>
           ))}

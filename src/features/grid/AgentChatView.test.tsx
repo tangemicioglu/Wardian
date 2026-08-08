@@ -388,6 +388,62 @@ describe("AgentChatView", () => {
     expect(screen.getByRole("button", { name: "Send approval response n: No" })).toBeInTheDocument();
   });
 
+  it("makes a settled approval inert so its choices cannot answer a later prompt", async () => {
+    // Approval choices submit their value as an ordinary prompt. An old
+    // approval left actionable would send a bare "y" into whatever the agent
+    // is doing now, so only the pending one stays live.
+    invokeMock.mockResolvedValue([
+      event({
+        id: "approval-answered",
+        kind: "approval",
+        title: "Approval required",
+        text: "Requesting permission for:\nrm -rf build",
+        status: "succeeded",
+        sequence: 1,
+      }),
+      event({ id: "assistant-1", kind: "message", role: "assistant", text: "Cleaned the build.", sequence: 2 }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    expect(await screen.findByTestId("chat-approval-notice")).toHaveTextContent(
+      "This request is no longer awaiting a response.",
+    );
+    const staleChoice = screen.getByRole("button", { name: "Past approval choice y: Yes" });
+    expect(staleChoice).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Send approval response y: Yes" })).toBeNull();
+  });
+
+  it("keeps only the newest approval live when several are in the transcript", async () => {
+    invokeMock.mockResolvedValue([
+      event({
+        id: "approval-old",
+        kind: "approval",
+        title: "First request",
+        text: "Requesting permission for:\nread config",
+        status: "succeeded",
+        sequence: 1,
+      }),
+      event({
+        id: "approval-current",
+        kind: "approval",
+        title: "Second request",
+        text: "Requesting permission for:\nwrite config",
+        status: "action_required",
+        sequence: 2,
+      }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    await screen.findByText("Second request");
+    const notices = screen.getAllByTestId("chat-approval-notice");
+    expect(notices[0]).toHaveTextContent("This request is no longer awaiting a response.");
+    expect(notices[1]).toHaveTextContent("Action required. Choose a response or type below.");
+    expect(screen.getByRole("button", { name: "Send approval response y: Yes" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Past approval choice y: Yes" })).toBeDisabled();
+  });
+
   it("submits numbered approval choices through the provider submit command", async () => {
     invokeMock.mockImplementation((command, args) => {
       if (command === "load_agent_chat_transcript") {

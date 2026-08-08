@@ -4,6 +4,7 @@ import type { AgentChatEvent } from "../../types";
 import { toActivityBlock } from "../grid/activityBlocks";
 import {
   isProcessingAgentStatus,
+  liveApprovalEventId,
   resolvedActivityTone,
   shouldShowChatEvent,
   sortTranscriptEvents,
@@ -67,6 +68,34 @@ describe("isProcessingAgentStatus", () => {
     expect(isProcessingAgentStatus(null)).toBe(false);
     expect(isProcessingAgentStatus(undefined)).toBe(false);
     expect(isProcessingAgentStatus("Action Required")).toBe(false);
+  });
+});
+
+describe("liveApprovalEventId", () => {
+  const approval = (id: string, sequence: number, status: AgentChatEvent["status"] = "action_required") =>
+    event({ id, kind: "approval", status, sequence });
+
+  it("returns the newest approval while one is pending", () => {
+    expect(
+      liveApprovalEventId([
+        approval("approval-1", 1, "succeeded"),
+        event({ id: "tool-1", sequence: 2 }),
+        approval("approval-2", 3),
+      ]),
+    ).toBe("approval-2");
+  });
+
+  it("returns nothing once no approval is awaiting a response", () => {
+    // Choices submit their value as an ordinary prompt, so leaving a settled
+    // approval actionable means a click sends a bare "1" into the next task.
+    expect(liveApprovalEventId([approval("approval-1", 1, "succeeded"), event({ id: "tool-1", sequence: 2 })])).toBeNull();
+    expect(liveApprovalEventId([])).toBeNull();
+  });
+
+  it("treats an action_required tool call as the pending approval", () => {
+    expect(liveApprovalEventId([event({ id: "tool-1", kind: "tool_call", status: "action_required", sequence: 1 })])).toBe(
+      "tool-1",
+    );
   });
 });
 

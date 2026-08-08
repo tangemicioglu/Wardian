@@ -15,7 +15,12 @@ import {
   type ChatAttachment,
 } from "../../utils/terminalInput";
 import { ChatTranscriptRow } from "../chat/ChatTranscriptRows";
-import { isProcessingAgentStatus, shouldShowChatEvent, sortTranscriptEvents } from "../chat/chatPresentation";
+import {
+  isProcessingAgentStatus,
+  liveApprovalEventId,
+  shouldShowChatEvent,
+  sortTranscriptEvents,
+} from "../chat/chatPresentation";
 import { chatTranscriptRowKey, withTurnChangeSummaries, type ChatTranscriptRowModel } from "../chat/chatTurns";
 import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
 import { fileResourceKey } from "../files/fileResourceKey";
@@ -188,6 +193,7 @@ export function AgentChatView({
   const visibleChatRows = useMemo(() => chatRows.slice(hiddenOlderRowCount), [chatRows, hiddenOlderRowCount]);
   const latestVisibleRowKey = visibleChatRows.length > 0 ? chatTranscriptRowKey(visibleChatRows[visibleChatRows.length - 1]) : "";
   const hasActionRequired = mergedEvents.some((event) => event.status === "action_required");
+  const liveApprovalId = useMemo(() => liveApprovalEventId(sortTranscriptEvents(mergedEvents)), [mergedEvents]);
   const disabledReason = inputDisabledReason(activeStatus, isSubmitting);
   const openChangedFile = useMemo(() => {
     const workspace = workspacePath?.trim();
@@ -345,6 +351,7 @@ export function AgentChatView({
                   isSubmitting={isSubmitting}
                   linkHandling={markdownLinkHandling}
                   onApprovalSubmit={handleApprovalSubmit}
+                  liveApprovalId={liveApprovalId}
                   onOpenFile={openChangedFile}
                   row={row}
                 />
