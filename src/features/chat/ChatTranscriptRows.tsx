@@ -46,11 +46,22 @@ const ROLE_CLASSES: Record<AgentChatRole, string> = {
   user: "border-[var(--color-wardian-accent)] bg-[color-mix(in_srgb,var(--color-wardian-accent),transparent_90%)]",
 };
 
+/**
+ * How much width a message may take.
+ *
+ * `bubble` right-aligns the user's own messages at 92% width, which reads as a
+ * conversation on a desktop pane wide enough to spare the margin. `full_width`
+ * is for the remote PWA, where the viewport is a phone and a 92% bubble spends
+ * scarce horizontal space on nothing.
+ */
+export type ChatMessageLayout = "bubble" | "full_width";
+
 export interface ChatTranscriptRowProps {
   row: ChatTranscriptRowModel;
   /** True while the agent is producing output; gates the in-flight tone. */
   agentIsWorking: boolean;
   isSubmitting: boolean;
+  layout?: ChatMessageLayout;
   linkHandling?: ChatMarkdownLinkHandling;
   onApprovalSubmit: (response: string) => void;
   /** Omitted on surfaces with no file viewer, which renders paths inert. */
@@ -64,6 +75,7 @@ export function ChatTranscriptRow({
   row,
   agentIsWorking,
   isSubmitting,
+  layout = "bubble",
   linkHandling,
   onApprovalSubmit,
   onOpenFile,
@@ -72,7 +84,7 @@ export function ChatTranscriptRow({
   if (row.kind === "turn_change_summary") return <TurnChangeCard onOpenFile={onOpenFile} row={row} />;
   if (row.kind === "work_group") return <WorkGroupRow agentIsWorking={agentIsWorking} row={row} />;
   return row.event.kind === "message" ? (
-    <MessageRow event={row.event} linkHandling={linkHandling} />
+    <MessageRow event={row.event} layout={layout} linkHandling={linkHandling} />
   ) : (
     <ActivityEvent
       agentIsWorking={agentIsWorking}
@@ -87,19 +99,27 @@ export function ChatTranscriptRow({
 
 export function MessageRow({
   event,
+  layout = "bubble",
   linkHandling,
 }: {
   event: AgentChatEvent;
+  layout?: ChatMessageLayout;
   linkHandling?: ChatMarkdownLinkHandling;
 }) {
   const role = event.role ?? "assistant";
   const text = event.text?.trimEnd() || event.title || "";
   const isUser = role === "user";
+  const fullWidth = layout === "full_width";
 
   return (
-    <article aria-label={`${role} message`} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <article
+      aria-label={`${role} message`}
+      className={fullWidth ? "w-full" : `flex ${isUser ? "justify-end" : "justify-start"}`}
+    >
       <div
-        className={`group/message relative max-w-[92%] rounded-[var(--density-card-radius)] border px-3 py-2.5 pr-9 shadow-[0_1px_0_rgba(0,0,0,0.03)] ${ROLE_CLASSES[role]}`}
+        className={`group/message relative ${
+          fullWidth ? "w-full" : "max-w-[92%]"
+        } rounded-[var(--density-card-radius)] border px-3 py-2.5 pr-9 shadow-[0_1px_0_rgba(0,0,0,0.03)] ${ROLE_CLASSES[role]}`}
       >
         {text ? (
           <div className="absolute right-1.5 top-1.5">
@@ -373,8 +393,21 @@ export function ToolBody({
       <div className="mt-2 rounded border border-wardian-light bg-[var(--color-wardian-sidebar-primary)]" data-testid="tool-diff-panel">
         <div className="flex flex-wrap items-center gap-2 border-b border-wardian-light px-2 py-1 text-[11px] leading-4 text-muted-neutral">
           <span>{stats.files.length > 0 ? `${stats.files.length} ${stats.files.length === 1 ? "file" : "files"}` : "Patch"}</span>
-          <span className="text-[var(--color-wardian-success)]">+{stats.added}</span>
-          <span className="text-[var(--color-wardian-error)]">-{stats.removed}</span>
+          {stats.counts_unknown && stats.added === 0 && stats.removed === 0 ? (
+            // Every named file is header-only, so the patch supplies no counts
+            // at all. "+0 -0" would be a claim about the file's size.
+            <span title="This patch reports no line counts.">Line counts not reported</span>
+          ) : (
+            <>
+              <span className="text-[var(--color-wardian-success)]">+{stats.added}</span>
+              <span className="text-[var(--color-wardian-error)]">-{stats.removed}</span>
+              {stats.counts_unknown ? (
+                <span title="Some files in this patch report no line counts, so these totals cover only the rest.">
+                  partial
+                </span>
+              ) : null}
+            </>
+          )}
           {stats.files.slice(0, 3).map((file) => (
             <span className="max-w-[180px] truncate font-mono text-primary" key={file} title={file}>
               {compactPath(file)}

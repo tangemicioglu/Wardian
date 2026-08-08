@@ -1534,10 +1534,12 @@ describe("RemoteMobileApp", () => {
 
     const userMessage = await screen.findByLabelText("user message");
     const agentMessage = await screen.findByLabelText("assistant message");
-    // Remote renders the same bubble as the desktop grid chat: the role is
-    // carried by alignment and accessible label rather than a printed caption.
-    expect(userMessage).toHaveClass("justify-end");
-    expect(agentMessage).toHaveClass("justify-start");
+    // Remote shares the desktop renderer but not its width: the viewport is a
+    // phone, where a right-aligned 92% bubble spends scarce horizontal space to
+    // say what the accessible label already says. Role stays carried by the
+    // label and the border colour rather than a printed caption.
+    expect(userMessage).toHaveClass("w-full");
+    expect(agentMessage).toHaveClass("w-full");
     expect(within(userMessage).queryByText("You")).toBeNull();
     expect(within(agentMessage).queryByText("Agent")).toBeNull();
     expect(within(agentMessage).getByText("bold").tagName).toBe("STRONG");

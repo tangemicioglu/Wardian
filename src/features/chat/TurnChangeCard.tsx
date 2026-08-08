@@ -40,11 +40,22 @@ function formatDiffCount(value: number): string {
   return `${thousands < 10 ? thousands.toFixed(1).replace(/\.0$/, "") : Math.round(thousands)}k`;
 }
 
-export function DiffStat({ added, removed, className = "" }: { added: number; removed: number; className?: string }) {
+export function DiffStat({
+  added,
+  removed,
+  className = "",
+  coverage,
+}: {
+  added: number;
+  removed: number;
+  className?: string;
+  /** Names what the pair covers when it is not the whole set of files. */
+  coverage?: string;
+}) {
   return (
     <span
       role="group"
-      aria-label={`${added} additions, ${removed} deletions`}
+      aria-label={`${added} additions, ${removed} deletions${coverage ? `, ${coverage}` : ""}`}
       className={`inline-flex items-center gap-1 align-middle font-mono tabular-nums ${className}`}
     >
       <span aria-hidden="true" className="text-[var(--color-wardian-success)]">
@@ -126,7 +137,16 @@ export function TurnChangeCard({
   const [expanded, setExpanded] = useState(() => shouldAutoExpandTurnChanges(files));
   const previewFiles = selectChangePreview(files);
   const scopes = summarizeChangeScopes(files);
-  const hasCounts = files.some((file) => !file.counts_unknown);
+  // The headline pair sums only files that reported counts, because a
+  // path-only record contributes a placeholder zero rather than a measurement.
+  // Presenting that sum as the turn's total would understate it, so when the
+  // set is mixed the card says how many files the pair actually covers.
+  const countedFiles = files.filter((file) => !file.counts_unknown);
+  const hasCounts = countedFiles.length > 0;
+  const countCoverage =
+    hasCounts && countedFiles.length < files.length
+      ? `across ${countedFiles.length} of ${files.length} files`
+      : null;
   // Without a user message to split on there is no turn, so the card must not
   // imply one; it names the span it actually covers.
   const fileLabel =
@@ -154,7 +174,22 @@ export function TurnChangeCard({
           <FileDiff aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-neutral" />
           <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[12px] font-semibold leading-5 text-primary">
             {fileLabel}
-            {hasCounts ? <DiffStat added={row.added} removed={row.removed} className="text-[11px]" /> : null}
+            {hasCounts ? (
+              <DiffStat
+                added={row.added}
+                removed={row.removed}
+                className="text-[11px]"
+                coverage={countCoverage ?? undefined}
+              />
+            ) : null}
+            {countCoverage ? (
+              <span
+                className="font-normal text-[10px] text-muted-neutral"
+                title={`${files.length - countedFiles.length} of these files reported no line counts.`}
+              >
+                in {countedFiles.length} of {files.length}
+              </span>
+            ) : null}
           </span>
           {!expanded && scopes.length > 0 ? (
             <span className="ml-1 min-w-0 truncate text-[11px] text-muted-neutral">

@@ -775,6 +775,45 @@ describe("AgentChatView", () => {
     expect(card).toHaveTextContent("Reported by the agent, not a working-tree diff.");
   });
 
+  it("says how many files the headline counts cover when the turn mixes evidence", async () => {
+    // A path-only record contributes a placeholder zero, so summing every file
+    // presented the exact edit's counts as though they covered the write too.
+    invokeMock.mockResolvedValue([
+      event({ id: "user-1", kind: "message", role: "user", text: "Rewrite the config.", sequence: 1 }),
+      event({
+        id: "edit-1",
+        kind: "tool_call",
+        title: "Edit",
+        status: "running",
+        sequence: 2,
+        metadata: {
+          tool_name: "Edit",
+          tool_input: { file_path: "src/a.ts", old_string: "one", new_string: "ONE" },
+        },
+      }),
+      event({
+        id: "write-1",
+        kind: "tool_call",
+        title: "Write",
+        status: "running",
+        sequence: 3,
+        metadata: {
+          tool_name: "Write",
+          tool_input: { file_path: "src/b.ts", content: "fresh contents" },
+        },
+      }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const card = await screen.findByTestId("turn-change-card");
+    expect(card).toHaveTextContent("2 changed files");
+    expect(
+      within(card).getByRole("group", { name: "1 additions, 1 deletions, across 1 of 2 files" }),
+    ).toBeInTheDocument();
+    expect(card).toHaveTextContent("in 1 of 2");
+  });
+
   it("collapses a wide turn change set to a scope preview", async () => {
     const edits = ["src/a.ts", "src/b.ts", "src/c.ts", "docs/d.md", "tests/e.test.ts", "scripts/f.mjs"].map(
       (path, index) =>

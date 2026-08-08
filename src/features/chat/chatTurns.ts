@@ -66,14 +66,22 @@ function isTurnBoundary(row: PresentedChatRow): boolean {
 }
 
 /**
- * The card reports where a file ended up, so a delete outranks everything that
- * happened to it before, and a patch-proven create outranks the weaker
- * "written" claim.
+ * The card reports where a file ended up, which makes this order-dependent
+ * rather than a ranking: `later` is the more recent operation and decides
+ * whether the path still exists.
+ *
+ * A file created earlier in the turn stays "created" through later edits,
+ * because "created then edited" is still a file this turn introduced. But a
+ * path that was deleted and then written again is not deleted — a fixed
+ * precedence would report the opposite of the provider's final operation.
  */
-function mergedKind(left: TurnChangeFile["kind"], right: TurnChangeFile["kind"]): TurnChangeFile["kind"] {
-  if (left === "deleted" || right === "deleted") return "deleted";
-  if (left === "created" || right === "created") return "created";
-  if (left === "written" || right === "written") return "written";
+function mergedKind(earlier: TurnChangeFile["kind"], later: TurnChangeFile["kind"]): TurnChangeFile["kind"] {
+  // The last operation settles whether the file exists and whether it is new.
+  if (later === "deleted" || later === "created") return later;
+  if (earlier === "created") return "created";
+  // The path came back after a delete, so report what brought it back.
+  if (earlier === "deleted") return later;
+  if (earlier === "written" || later === "written") return "written";
   return "edited";
 }
 

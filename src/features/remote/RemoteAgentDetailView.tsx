@@ -1075,6 +1075,7 @@ function ChatPane({
           key={chatTranscriptRowKey(row)}
           agentIsWorking={isProcessingAgentStatus(agent.status) || isSubmitting}
           isSubmitting={isSubmitting}
+          layout="full_width"
           liveApprovalId={liveApprovalId}
           onApprovalSubmit={onApprovalSubmit}
           row={row}

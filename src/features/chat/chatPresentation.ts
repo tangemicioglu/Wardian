@@ -223,21 +223,59 @@ export function parseTodoItems(content: string): Array<{ done: boolean; label: s
     .filter((item): item is { done: boolean; label: string } => Boolean(item?.label));
 }
 
-export function diffStats(content: string): { added: number; removed: number; files: string[] } {
-  const files = new Set<string>();
+export interface DiffStats {
+  added: number;
+  removed: number;
+  files: string[];
+  /**
+   * True when at least one named file supplied no `+`/`-` lines to count.
+   *
+   * A `*** Delete File:` header stands alone with no body, so a patch can name
+   * a file the totals say nothing about. Without this the header row reads
+   * "1 file +0 -0", telling the operator the removed file had no lines.
+   */
+  counts_unknown: boolean;
+}
+
+export function diffStats(content: string): DiffStats {
+  const files: string[] = [];
+  const seen = new Set<string>();
   let added = 0;
   let removed = 0;
+  let filesWithoutCounts = 0;
+  let inFile = false;
+  let fileHasCounts = false;
+
+  const closeFile = () => {
+    if (inFile && !fileHasCounts) filesWithoutCounts += 1;
+  };
 
   content.split(/\r\n|\r|\n/).forEach((line) => {
-    if (/^\+[^+]/.test(line)) added += 1;
-    if (/^-[^-]/.test(line)) removed += 1;
     const diffFile = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-    if (diffFile) files.add(diffFile[2]);
     const patchFile = /^(\*\*\* (?:Add|Update|Delete) File:\s+)(.+)$/.exec(line);
-    if (patchFile) files.add(patchFile[2].trim());
+    if (diffFile || patchFile) {
+      closeFile();
+      const path = (diffFile?.[2] ?? patchFile?.[2] ?? "").trim();
+      if (!seen.has(path)) {
+        seen.add(path);
+        files.push(path);
+      }
+      inFile = true;
+      fileHasCounts = false;
+      return;
+    }
+    if (/^\+[^+]/.test(line)) {
+      added += 1;
+      fileHasCounts = true;
+    }
+    if (/^-[^-]/.test(line)) {
+      removed += 1;
+      fileHasCounts = true;
+    }
   });
+  closeFile();
 
-  return { added, removed, files: [...files] };
+  return { added, removed, files, counts_unknown: filesWithoutCounts > 0 };
 }
 
 export function compactPath(path: string): string {

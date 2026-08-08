@@ -498,7 +498,7 @@ describe("empty diff panels", () => {
   it("does not frame a bare tool acknowledgement as a patch", () => {
     // An edit tool's result is normally plain text like "applied". Rendering a
     // diff panel headed "Patch +0 -0" invents a change summary for it.
-    expect(diffStats("applied")).toEqual({ added: 0, removed: 0, files: [] });
+    expect(diffStats("applied")).toEqual({ added: 0, removed: 0, files: [], counts_unknown: false });
     expect(diffStats("diff --git a/a.ts b/a.ts\n+x").files).toEqual(["a.ts"]);
   });
 });
@@ -565,5 +565,89 @@ describe("a delete erases counts it cannot vouch for", () => {
     expect(summary.files).toEqual([
       { path: "src/gone.ts", added: 0, removed: 2, kind: "deleted", counts_unknown: false },
     ]);
+  });
+});
+
+describe("a resurrected path reports its final state", () => {
+  it("reports a delete-then-write as written rather than deleted", () => {
+    // Fixed precedence made `deleted` outrank everything, so a patch that
+    // removed a file and then put it back still read "Deleted" — the opposite
+    // of the provider's last operation.
+    const patched = event({
+      provider: "codex",
+      title: "apply_patch",
+      metadata: {
+        tool_name: "apply_patch",
+        tool_input_text: [
+          "*** Begin Patch",
+          "*** Delete File: src/moved.ts",
+          "*** Add File: src/moved.ts",
+          "+rewritten",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+
+    const [summary] = turnChanges([userMessage("codex", "go"), patched]);
+    expect(summary.files).toEqual([
+      { path: "src/moved.ts", added: 1, removed: 0, kind: "created", counts_unknown: false },
+    ]);
+  });
+
+  it("keeps a file created earlier in the turn marked created after a later edit", () => {
+    const patched = event({
+      provider: "codex",
+      title: "apply_patch",
+      metadata: {
+        tool_name: "apply_patch",
+        tool_input_text: [
+          "*** Begin Patch",
+          "*** Add File: src/fresh.ts",
+          "+one",
+          "*** Update File: src/fresh.ts",
+          "+two",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+
+    const [summary] = turnChanges([userMessage("codex", "go"), patched]);
+    expect(summary.files[0].kind).toBe("created");
+    expect(summary.files[0].added).toBe(2);
+  });
+});
+
+describe("patch stats admit when a file reports no counts", () => {
+  it("marks a header-only delete as uncounted instead of returning zeroes", () => {
+    // "1 file +0 -0" told the operator the removed file had no lines.
+    const stats = diffStats(["*** Begin Patch", "*** Delete File: src/old.ts", "*** End Patch"].join("\n"));
+    expect(stats.files).toEqual(["src/old.ts"]);
+    expect(stats.added).toBe(0);
+    expect(stats.removed).toBe(0);
+    expect(stats.counts_unknown).toBe(true);
+  });
+
+  it("flags a patch whose counts cover only some of its files", () => {
+    const stats = diffStats(
+      [
+        "*** Begin Patch",
+        "*** Update File: src/kept.ts",
+        "+added",
+        "-removed",
+        "*** Delete File: src/gone.ts",
+        "*** End Patch",
+      ].join("\n"),
+    );
+    expect(stats.files).toEqual(["src/kept.ts", "src/gone.ts"]);
+    expect(stats.added).toBe(1);
+    expect(stats.removed).toBe(1);
+    expect(stats.counts_unknown).toBe(true);
+  });
+
+  it("reports counts as known when every file supplies them", () => {
+    const stats = diffStats(
+      ["diff --git a/src/one.ts b/src/one.ts", "--- a/src/one.ts", "+++ b/src/one.ts", "+added", "-removed"].join("\n"),
+    );
+    expect(stats.counts_unknown).toBe(false);
   });
 });

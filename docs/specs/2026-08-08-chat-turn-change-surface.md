@@ -67,9 +67,39 @@ now bounded by what the transcript actually proves:
   transcript whose provider emits no user message has no turn at all, and the
   card says it covers the whole transcript rather than implying one.
 
+A third pass (run `1786227698059-9124723b`) found the same shape in three more
+places:
+
+- **A mixed-evidence total covers only what it counted.** The headline pair sums
+  every file, and a path-only record contributes a placeholder zero. A turn with
+  one exact edit and one whole-file write therefore read `2 changed files +1 -1`,
+  presenting the edit's counts as the pair for both. The card now says how many
+  files the totals cover when the set is mixed.
+- **A header-only delete supplies no counts to the tool row either.** The turn
+  card already withheld them, but `diffStats` had no unknown state, so the
+  per-tool diff panel rendered `1 file +0 -0` for `*** Delete File:` — telling
+  the reader the removed file had no lines. It now reports counts as unreported,
+  or marks the totals partial when only some files in a patch supply them.
+- **File kind is chronological, not a ranking.** Fixed precedence made `deleted`
+  outrank every other kind, so a patch that removed a path and then wrote it back
+  still read "Deleted" — the opposite of the provider's final operation. The last
+  operation now settles whether the file exists, while a file created earlier in
+  the turn stays "created" through later edits.
+
 Joining a write to its result event would settle create-versus-overwrite —
 Claude's result text distinguishes them — but that join is the same unvalidated
 cross-source mapping deferred below, so the weaker claim stands for now.
+
+## Sharing the renderer without sharing the width
+
+Moving the transcript rows into `features/chat/ChatTranscriptRows.tsx` let the
+remote PWA render turn change cards, but it also handed the phone the desktop's
+message layout: a right-aligned bubble capped at 92% width. Remote had its own
+full-width renderer for a reason — on a phone viewport that margin is scarce
+space spent to repeat what the accessible label already says. `MessageRow` takes
+a `layout` prop for this, and remote passes `full_width`. The browser E2E
+assertion from PR #667 caught the regression; the unit test that should have was
+asserting the desktop bubble as correct for remote, and was wrong.
 
 Two behaviours remain provider-dependent by nature and are documented rather
 than papered over:
