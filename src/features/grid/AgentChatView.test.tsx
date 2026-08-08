@@ -667,6 +667,96 @@ describe("AgentChatView", () => {
     expect(screen.queryByText("Changed files")).toBeNull();
   });
 
+  it("summarizes what a turn changed after the turn's last row", async () => {
+    invokeMock.mockResolvedValue([
+      event({ id: "user-1", kind: "message", role: "user", text: "Tighten the limits.", sequence: 1 }),
+      event({
+        id: "edit-1",
+        kind: "tool_call",
+        title: "Edit",
+        status: "running",
+        sequence: 2,
+        metadata: {
+          tool_name: "Edit",
+          tool_input: { file_path: "src/a.ts", old_string: "one\ntwo", new_string: "ONE\nTWO" },
+        },
+      }),
+      event({
+        id: "edit-2",
+        kind: "tool_call",
+        title: "Edit",
+        status: "running",
+        sequence: 3,
+        metadata: {
+          tool_name: "Edit",
+          tool_input: { file_path: "docs/b.md", old_string: "old", new_string: "new" },
+        },
+      }),
+      event({ id: "assistant-1", kind: "message", role: "assistant", text: "Done.", sequence: 4 }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const card = await screen.findByTestId("turn-change-card");
+    expect(card).toHaveTextContent("2 changed files");
+    expect(within(card).getByRole("group", { name: "3 additions, 3 deletions" })).toBeInTheDocument();
+    // Small change sets open on their own rather than hiding behind a header.
+    expect(card).toHaveAttribute("data-expanded", "true");
+    expect(within(card).getByTestId("turn-change-files")).toHaveTextContent("a.ts");
+    expect(within(card).getByTestId("turn-change-files")).toHaveTextContent("b.md");
+    expect(card).toHaveTextContent("Reported by the agent, not a working-tree diff.");
+  });
+
+  it("collapses a wide turn change set to a scope preview", async () => {
+    const edits = ["src/a.ts", "src/b.ts", "src/c.ts", "docs/d.md", "tests/e.test.ts", "scripts/f.mjs"].map(
+      (path, index) =>
+        event({
+          id: `edit-${index}`,
+          kind: "tool_call",
+          title: "Edit",
+          status: "running",
+          sequence: index + 2,
+          metadata: {
+            tool_name: "Edit",
+            tool_input: { file_path: path, old_string: "old", new_string: "new" },
+          },
+        }),
+    );
+    invokeMock.mockResolvedValue([
+      event({ id: "user-1", kind: "message", role: "user", text: "Sweep the repo.", sequence: 1 }),
+      ...edits,
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const card = await screen.findByTestId("turn-change-card");
+    expect(card).toHaveTextContent("6 changed files");
+    expect(card).toHaveAttribute("data-expanded", "false");
+    // Files sort by path first, then the preview takes one per top-level scope,
+    // so it reads docs/scripts/src rather than three files from src.
+    const preview = within(card).getByTestId("turn-change-preview");
+    expect(preview).toHaveTextContent("d.md");
+    expect(preview).toHaveTextContent("f.mjs");
+    expect(preview).toHaveTextContent("a.ts");
+    expect(preview).not.toHaveTextContent("b.ts");
+    expect(preview).toHaveTextContent("+3 more");
+
+    await userEvent.click(within(card).getByRole("button", { name: /6 changed files/ }));
+    expect(within(card).getByTestId("turn-change-files")).toHaveTextContent("c.ts");
+  });
+
+  it("does not summarize a turn that only talked", async () => {
+    invokeMock.mockResolvedValue([
+      event({ id: "user-1", kind: "message", role: "user", text: "What does this do?", sequence: 1 }),
+      event({ id: "assistant-1", kind: "message", role: "assistant", text: "It sorts events.", sequence: 2 }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    await screen.findByText("It sorts events.");
+    expect(screen.queryByTestId("turn-change-card")).toBeNull();
+  });
+
   it("renders a Write call as a new file with no removed lines", async () => {
     invokeMock.mockResolvedValue([
       event({

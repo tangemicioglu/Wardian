@@ -16,8 +16,11 @@ import {
 } from "../../utils/terminalInput";
 import { ChatTranscriptRow } from "../chat/ChatTranscriptRows";
 import { isProcessingAgentStatus, shouldShowChatEvent, sortTranscriptEvents } from "../chat/chatPresentation";
+import { chatTranscriptRowKey, withTurnChangeSummaries, type ChatTranscriptRowModel } from "../chat/chatTurns";
+import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
+import { fileResourceKey } from "../files/fileResourceKey";
 import { type ChatMarkdownLinkHandling } from "./markdown/ChatMarkdown";
-import { derivePresentedChatRows, type PresentedChatRow } from "./workLogPresentation";
+import { derivePresentedChatRows } from "./workLogPresentation";
 
 interface AgentChatViewBaseProps {
   sessionId: string;
@@ -43,7 +46,6 @@ type AgentChatViewProps = AgentChatViewBaseProps & AgentChatDraftControlProps;
 type LoadState = "loading" | "ready" | "error";
 const CHAT_REFRESH_INTERVAL_MS = 3000;
 
-type ChatRow = PresentedChatRow;
 
 type AwaitingResponseMarker = { id: string; response_count_after: number };
 
@@ -78,6 +80,7 @@ export function AgentChatView({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [visibleRowLimit, setVisibleRowLimit] = useState(CHAT_INITIAL_ROW_LIMIT);
+  const workbenchNavigation = useAppShellWorkbenchNavigation();
   const externalEditor = useSettingsStore((state) => state.externalEditor);
   const externalEditorCustomExecutable = useSettingsStore((state) => state.externalEditorCustomExecutable);
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
@@ -177,12 +180,33 @@ export function AgentChatView({
       ),
     [agent?.provider, mergedEvents, provider, sessionId, showThinking],
   );
-  const chatRows = useMemo(() => derivePresentedChatRows(sortTranscriptEvents(displayEvents).filter(shouldShowChatEvent)), [displayEvents]);
+  const chatRows = useMemo<ChatTranscriptRowModel[]>(
+    () => withTurnChangeSummaries(derivePresentedChatRows(sortTranscriptEvents(displayEvents).filter(shouldShowChatEvent))),
+    [displayEvents],
+  );
   const hiddenOlderRowCount = Math.max(0, chatRows.length - visibleRowLimit);
   const visibleChatRows = useMemo(() => chatRows.slice(hiddenOlderRowCount), [chatRows, hiddenOlderRowCount]);
-  const latestVisibleRowKey = visibleChatRows.length > 0 ? chatRowKey(visibleChatRows[visibleChatRows.length - 1]) : "";
+  const latestVisibleRowKey = visibleChatRows.length > 0 ? chatTranscriptRowKey(visibleChatRows[visibleChatRows.length - 1]) : "";
   const hasActionRequired = mergedEvents.some((event) => event.status === "action_required");
   const disabledReason = inputDisabledReason(activeStatus, isSubmitting);
+  const openChangedFile = useMemo(() => {
+    const workspace = workspacePath?.trim();
+    if (!workbenchNavigation || !workspace) return undefined;
+    return (path: string) => {
+      const absolute = /^([A-Za-z]:[\\/]|\/|\\\\)/.test(path)
+        ? path
+        : `${workspace.replace(/[\\/]+$/g, "")}/${path.replace(/^[\\/]+/g, "")}`;
+      try {
+        const surfaceId = workbenchNavigation.open({
+          surface_type: "files",
+          resource_key: fileResourceKey(absolute),
+        });
+        workbenchNavigation.pin_transient(surfaceId);
+      } catch (reason) {
+        console.warn("Failed to open changed file from chat:", reason);
+      }
+    };
+  }, [workbenchNavigation, workspacePath]);
   const markdownLinkHandling = useMemo<ChatMarkdownLinkHandling>(() => ({
     getBasePath: () => workspacePath?.trim() || null,
     getExternalEditor: () => ({
@@ -315,12 +339,13 @@ export function AgentChatView({
               </li>
             ) : null}
             {visibleChatRows.map((row) => (
-              <li key={chatRowKey(row)}>
+              <li key={chatTranscriptRowKey(row)}>
                 <ChatTranscriptRow
                   agentIsWorking={showThinking}
                   isSubmitting={isSubmitting}
                   linkHandling={markdownLinkHandling}
                   onApprovalSubmit={handleApprovalSubmit}
+                  onOpenFile={openChangedFile}
                   row={row}
                 />
               </li>
@@ -345,10 +370,6 @@ export function AgentChatView({
       />
     </section>
   );
-}
-
-function chatRowKey(row: ChatRow): string {
-  return row.kind === "event" ? row.event.id : row.id;
 }
 
 function isNearTranscriptBottom(scrollRegion: HTMLElement): boolean {

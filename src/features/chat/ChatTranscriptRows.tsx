@@ -33,6 +33,8 @@ import {
   type ToolPresentation,
 } from "./chatPresentation";
 import { structuredEditDiffText, structuredEditFromEvent, type StructuredEdit } from "./structuredEdit";
+import type { ChatTranscriptRowModel } from "./chatTurns";
+import { TurnChangeCard } from "./TurnChangeCard";
 
 const ROLE_CLASSES: Record<AgentChatRole, string> = {
   assistant: "border-wardian-light bg-[var(--color-wardian-card)]",
@@ -42,12 +44,14 @@ const ROLE_CLASSES: Record<AgentChatRole, string> = {
 };
 
 export interface ChatTranscriptRowProps {
-  row: PresentedChatRow;
+  row: ChatTranscriptRowModel;
   /** True while the agent is producing output; gates the in-flight tone. */
   agentIsWorking: boolean;
   isSubmitting: boolean;
   linkHandling?: ChatMarkdownLinkHandling;
   onApprovalSubmit: (response: string) => void;
+  /** Omitted on surfaces with no file viewer, which renders paths inert. */
+  onOpenFile?: (path: string) => void;
 }
 
 /** Dispatches a derived transcript row to its renderer. */
@@ -57,7 +61,9 @@ export function ChatTranscriptRow({
   isSubmitting,
   linkHandling,
   onApprovalSubmit,
+  onOpenFile,
 }: ChatTranscriptRowProps) {
+  if (row.kind === "turn_change_summary") return <TurnChangeCard onOpenFile={onOpenFile} row={row} />;
   if (row.kind === "work_group") return <WorkGroupRow agentIsWorking={agentIsWorking} row={row} />;
   return row.event.kind === "message" ? (
     <MessageRow event={row.event} linkHandling={linkHandling} />

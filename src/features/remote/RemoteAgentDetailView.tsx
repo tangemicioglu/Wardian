@@ -12,6 +12,7 @@ import type {
 import { formatAgentStatusLabel } from "../../utils/statusUtils";
 import { ChatTranscriptRow } from "../chat/ChatTranscriptRows";
 import { isProcessingAgentStatus, shouldShowChatEvent, sortTranscriptEvents } from "../chat/chatPresentation";
+import { chatTranscriptRowKey, withTurnChangeSummaries } from "../chat/chatTurns";
 import { derivePresentedChatRows } from "../grid/workLogPresentation";
 import { RemoteAgentActions } from "./RemoteAgentActions";
 import { remoteStatusClassFor } from "./remoteAgentStatus";
@@ -1030,7 +1031,7 @@ function ChatPane({
   onLoadOlder: () => void;
 }) {
   const rows = useMemo(
-    () => derivePresentedChatRows(sortTranscriptEvents(visibleEvents).filter(shouldShowChatEvent)),
+    () => withTurnChangeSummaries(derivePresentedChatRows(sortTranscriptEvents(visibleEvents).filter(shouldShowChatEvent))),
     [visibleEvents],
   );
   return (
@@ -1059,7 +1060,7 @@ function ChatPane({
       ) : null}
       {rows.map((row) => (
         <ChatTranscriptRow
-          key={row.kind === "work_group" ? row.id : row.event.id}
+          key={chatTranscriptRowKey(row)}
           agentIsWorking={isProcessingAgentStatus(agent.status) || isSubmitting}
           isSubmitting={isSubmitting}
           onApprovalSubmit={onApprovalSubmit}
