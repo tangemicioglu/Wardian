@@ -93,7 +93,11 @@ describe("withTurnChangeSummaries", () => {
     expect(rows[0].files[0]).toMatchObject({ path: "src/a.ts", added: 2, removed: 2 });
   });
 
-  it("marks a file the turn created", () => {
+  it("marks a whole-file write as written rather than created", () => {
+    // A write tool overwrites an existing file as readily as it makes a new
+    // one, and its input says nothing about which happened. Reporting
+    // "created, +2 -0" would assert both that the file is new and that nothing
+    // was replaced — neither of which the transcript proves.
     const rows = summaries([
       userMessage("user-1", 1),
       event({
@@ -103,6 +107,22 @@ describe("withTurnChangeSummaries", () => {
         status: "running",
         sequence: 2,
         metadata: { tool_name: "Write", tool_input: { file_path: "docs/new.md", content: "a\nb" } },
+      }),
+    ]);
+
+    expect(rows[0].files[0]).toMatchObject({ path: "docs/new.md", kind: "written", counts_unknown: true });
+  });
+
+  it("marks a file created only when a patch proves it is new", () => {
+    const rows = summaries([
+      userMessage("user-1", 1),
+      event({
+        id: "patch-1",
+        kind: "tool_result",
+        title: "apply_patch",
+        language: "diff",
+        text: "diff --git a/docs/new.md b/docs/new.md\n--- /dev/null\n+++ b/docs/new.md\n+a\n+b",
+        sequence: 2,
       }),
     ]);
 

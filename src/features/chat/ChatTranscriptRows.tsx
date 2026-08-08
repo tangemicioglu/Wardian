@@ -392,9 +392,15 @@ export function StructuredEditPanel({ edit }: { edit: StructuredEdit }) {
   return (
     <div className="mt-2 rounded border border-wardian-light bg-[var(--color-wardian-sidebar-primary)]" data-testid="tool-structured-edit">
       <div className="flex flex-wrap items-center gap-2 border-b border-wardian-light px-2 py-1 text-[11px] leading-4 text-muted-neutral">
-        <span>{edit.kind === "create" ? "New file" : "Before/after"}</span>
+        <span>{edit.kind === "write" ? "New contents" : "Before/after"}</span>
         <span className="text-[var(--color-wardian-success)]">+{edit.added}</span>
-        <span className="text-[var(--color-wardian-error)]">-{edit.removed}</span>
+        {/* A whole-file write states what the file now holds, never what it
+            replaced, so claiming "-0" would assert the file was empty. */}
+        {edit.kind === "write" ? (
+          <span className="text-muted-neutral">replaced contents</span>
+        ) : (
+          <span className="text-[var(--color-wardian-error)]">-{edit.removed}</span>
+        )}
         {edit.file_path ? (
           <span className="max-w-[220px] truncate font-mono text-primary" title={edit.file_path}>
             {compactPath(edit.file_path)}

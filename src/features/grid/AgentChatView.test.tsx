@@ -825,7 +825,7 @@ describe("AgentChatView", () => {
     expect(screen.queryByTestId("turn-change-card")).toBeNull();
   });
 
-  it("renders a Write call as a new file with no removed lines", async () => {
+  it("renders a Write call as new contents without claiming the file is new", async () => {
     invokeMock.mockResolvedValue([
       event({
         id: "write-tool",
@@ -843,9 +843,12 @@ describe("AgentChatView", () => {
     render(<AgentChatView sessionId="agent-1" />);
 
     const panel = await screen.findByTestId("tool-structured-edit");
-    expect(panel).toHaveTextContent("New file");
+    expect(panel).toHaveTextContent("New contents");
     expect(panel).toHaveTextContent("+3");
-    expect(panel).toHaveTextContent("-0");
+    // The write states what the file now holds, never what it replaced, so a
+    // "-0" here would assert the file had been empty.
+    expect(panel).not.toHaveTextContent("-0");
+    expect(panel).toHaveTextContent("replaced contents");
   });
 
   it("computes diff stats from full content while rendering a collapsed preview", async () => {

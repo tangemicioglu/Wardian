@@ -1036,8 +1036,14 @@ function ChatPane({
   onLoadOlder: () => void;
 }) {
   const rows = useMemo(
-    () => withTurnChangeSummaries(derivePresentedChatRows(sortTranscriptEvents(visibleEvents).filter(shouldShowChatEvent))),
-    [visibleEvents],
+    () =>
+      withTurnChangeSummaries(derivePresentedChatRows(sortTranscriptEvents(visibleEvents).filter(shouldShowChatEvent)), {
+        // Remote pages from the newest end, so while older events remain
+        // unloaded the leading rows are the tail of a turn whose earlier edits
+        // are off-page. Summarizing them would understate that turn.
+        has_older_events: hasOlder,
+      }),
+    [hasOlder, visibleEvents],
   );
   const liveApprovalId = useMemo(() => liveApprovalEventId(sortTranscriptEvents(visibleEvents)), [visibleEvents]);
   return (

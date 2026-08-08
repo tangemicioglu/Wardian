@@ -28,8 +28,11 @@ export interface TurnChangeFile {
   path: string;
   added: number;
   removed: number;
-  /** `created` only when a provider supplied whole-file content. */
-  kind: "edited" | "created" | "deleted";
+  /**
+   * `written` means the whole file was replaced and the prior state is
+   * unknown; `created` is used only where a patch proves the file is new.
+   */
+  kind: "edited" | "created" | "deleted" | "written";
   /** True when line counts are unknown because only a path was reported. */
   counts_unknown: boolean;
 }
@@ -40,6 +43,12 @@ export interface TurnChangeSummaryRow {
   files: TurnChangeFile[];
   added: number;
   removed: number;
+  /**
+   * `turn` when the summary covers one user request. `whole_history` when the
+   * transcript has no user message to split on, so the span is everything
+   * loaded rather than a turn.
+   */
+  scope: "turn" | "whole_history";
 }
 
 export type ChatTranscriptRowModel = PresentedChatRow | TurnChangeSummaryRow;
@@ -68,11 +77,14 @@ function mergeFile(files: Map<string, TurnChangeFile>, candidate: TurnChangeFile
   // created in this turn stays created even if it is edited again after.
   existing.counts_unknown = existing.counts_unknown && candidate.counts_unknown;
   // The card reports where the file ended up, so a delete outranks everything
-  // that happened to the file before it.
+  // that happened to the file before it, and a proven create outranks the
+  // weaker "written" claim.
   if (candidate.kind === "deleted" || existing.kind === "deleted") {
     existing.kind = "deleted";
-  } else if (candidate.kind === "created") {
+  } else if (candidate.kind === "created" || existing.kind === "created") {
     existing.kind = "created";
+  } else if (candidate.kind === "written") {
+    existing.kind = "written";
   }
 }
 
@@ -106,6 +118,17 @@ function patchChanges(patch: string): TurnChangeFile[] {
       return;
     }
     if (!current) return;
+    // A unified diff states creation and deletion through its /dev/null side,
+    // which is the only place a plain `diff --git` patch says so. Without this
+    // a newly added file reads as an ordinary edit.
+    if (line.startsWith("--- /dev/null")) {
+      current.kind = "created";
+      return;
+    }
+    if (line.startsWith("+++ /dev/null")) {
+      current.kind = "deleted";
+      return;
+    }
     // `+++`/`---` are file headers rather than content in unified diffs.
     if (/^\+[^+]/.test(line)) current.added += 1;
     if (/^-[^-]/.test(line)) current.removed += 1;
@@ -122,13 +145,17 @@ function changesFromEvent(event: AgentChatEvent): TurnChangeFile[] {
 
   const edit = structuredEditFromEvent(event);
   if (edit?.file_path) {
+    // A whole-file write gives the new content but no sight of what it
+    // replaced, so its removal count is unknown rather than zero. Reporting
+    // "+N -0" would assert the file had been empty.
+    const isWrite = edit.kind === "write";
     return [
       {
         path: edit.file_path,
-        added: edit.added,
-        removed: edit.removed,
-        kind: edit.kind === "create" ? "created" : "edited",
-        counts_unknown: false,
+        added: isWrite ? 0 : edit.added,
+        removed: isWrite ? 0 : edit.removed,
+        kind: isWrite ? "written" : "edited",
+        counts_unknown: isWrite,
       },
     ];
   }
@@ -204,17 +231,45 @@ function isDiffEvent(event: AgentChatEvent): boolean {
   return event.language === "diff" || /^diff --git |^\*\*\* (?:Add|Update|Delete) File:/m.test(event.text ?? "");
 }
 
+export interface TurnChangeOptions {
+  /**
+   * True when events older than `rows` exist but are not loaded — the remote
+   * chat pages the transcript from the newest end.
+   *
+   * The rows before the first user message are then only the tail of a turn
+   * whose earlier edits are off-page, so summarizing them would present a
+   * partial turn as a whole one. The summary is withheld until the boundary
+   * that opens the turn is actually loaded.
+   */
+  has_older_events?: boolean;
+}
+
 /**
  * Inserts a `turn_change_summary` row after every turn that touched files.
  * Turns that only talked produce no row.
+ *
+ * A turn is the span between user messages. Rows before the first user message
+ * are a complete turn only when nothing older exists: on a paged view they are
+ * a fragment, and a transcript whose provider emits no user message at all is
+ * one unbounded span rather than a turn. Both cases are reported as
+ * `whole_history` so the card can say what it is summarizing.
  */
-export function withTurnChangeSummaries(rows: PresentedChatRow[]): ChatTranscriptRowModel[] {
+export function withTurnChangeSummaries(
+  rows: PresentedChatRow[],
+  options: TurnChangeOptions = {},
+): ChatTranscriptRowModel[] {
   const result: ChatTranscriptRowModel[] = [];
   let pending: PresentedChatRow[] = [];
   let turnOrdinal = 0;
+  const sawBoundary = rows.some(isTurnBoundary);
 
   const flush = () => {
     if (pending.length === 0) return;
+    // The leading span is not a turn when its opening boundary is off-page.
+    if (turnOrdinal === 0 && options.has_older_events) {
+      pending = [];
+      return;
+    }
     const files = collectTurnChanges(pending.flatMap(actionsOfRow));
     if (files.length > 0) {
       result.push({
@@ -223,6 +278,7 @@ export function withTurnChangeSummaries(rows: PresentedChatRow[]): ChatTranscrip
         files,
         added: files.reduce((total, file) => total + file.added, 0),
         removed: files.reduce((total, file) => total + file.removed, 0),
+        scope: sawBoundary ? "turn" : "whole_history",
       });
     }
     pending = [];

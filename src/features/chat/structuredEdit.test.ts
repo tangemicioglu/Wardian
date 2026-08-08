@@ -75,7 +75,7 @@ describe("structuredEditFromEvent", () => {
     expect(structuredEditDiffText(edit!)).toBe("-alpha\n+ALPHA\n\n-beta\n+BETA");
   });
 
-  it("treats a Write call as a creation with no removed lines", () => {
+  it("treats a Write call as whole-file content, not a proven creation", () => {
     const edit = structuredEditFromEvent(
       event({
         metadata: {
@@ -85,10 +85,40 @@ describe("structuredEditFromEvent", () => {
       }),
     );
 
-    expect(edit?.kind).toBe("create");
+    // "write" rather than "create": the same tool overwrites an existing file,
+    // and the input carries no evidence of which case this is.
+    expect(edit?.kind).toBe("write");
     expect(edit?.removed).toBe(0);
     expect(edit?.added).toBe(3);
     expect(structuredEditDiffText(edit!)).toBe("+# Title\n+\n+Body");
+  });
+
+  it("counts a newline-terminated line once", () => {
+    // "old\n" is one line, not a line plus an empty one. Splitting on "\n"
+    // without dropping the terminal sentinel inflated every count by one for
+    // the ordinary case of newline-terminated content.
+    const edit = structuredEditFromEvent(
+      event({
+        metadata: {
+          tool_name: "Edit",
+          tool_input: { file_path: "src/app.ts", old_string: "old\n", new_string: "new\n" },
+        },
+      }),
+    );
+
+    expect(edit?.added).toBe(1);
+    expect(edit?.removed).toBe(1);
+  });
+
+  it("keeps interior blank lines while dropping the trailing sentinel", () => {
+    const edit = structuredEditFromEvent(
+      event({
+        metadata: { tool_name: "Write", tool_input: { file_path: "a.md", content: "one\n\nthree\n" } },
+      }),
+    );
+
+    expect(edit?.added).toBe(3);
+    expect(structuredEditDiffText(edit!)).toBe("+one\n+\n+three");
   });
 
   it("ignores whole-file content from tools that do not write files", () => {

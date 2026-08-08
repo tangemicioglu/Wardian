@@ -196,34 +196,116 @@ describe("file changes are recovered from every provider that reports them", () 
   });
 });
 
-describe("whole-file creates across providers", () => {
+describe("whole-file writes across providers", () => {
   it.each([
     ["claude", "Write", { file_path: "new.ts", content: "line one\nline two" }],
     ["opencode", "write", { filePath: "new.ts", content: "line one\nline two" }],
-  ])("marks a %s %s as a created file", (provider, toolName, input) => {
-    // The create is recognized by tool name, so a provider that omits
-    // metadata.tool_name must still resolve it from the title.
-    const created = event({
+  ])("recovers a %s %s as whole-file content", (provider, toolName, input) => {
+    // Recognized by tool name, so a provider that omits metadata.tool_name
+    // must still resolve it from the title.
+    const written = event({
       provider,
       title: toolName,
       metadata: { raw_type: toolName, tool_input: input },
     });
 
-    const edit = structuredEditFromEvent(created);
-    expect(edit?.kind).toBe("create");
+    const edit = structuredEditFromEvent(written);
+    expect(edit?.kind).toBe("write");
     expect(edit?.added).toBe(2);
     expect(edit?.file_path).toBe("new.ts");
   });
 
-  it("resolves a create when the provider omits metadata.tool_name", () => {
+  it("resolves a write when the provider omits metadata.tool_name", () => {
     // Claude's normalizer historically labelled the tool only in the event
-    // title, which silently disabled create detection.
+    // title, which silently disabled detection altogether.
     const titleOnly = event({
       provider: "claude",
       title: "Write",
       metadata: { raw_type: "Write", tool_input: { file_path: "new.ts", content: "only line" } },
     });
-    expect(structuredEditFromEvent(titleOnly)?.kind).toBe("create");
+    expect(structuredEditFromEvent(titleOnly)?.kind).toBe("write");
+  });
+
+  it("never claims a write created the file or removed nothing", () => {
+    // The overwrite case is indistinguishable from the create case here, so
+    // the card reports the file as written with counts it cannot prove.
+    const [summary] = turnChanges([
+      userMessage("claude", "go"),
+      event({
+        provider: "claude",
+        title: "Write",
+        metadata: { tool_name: "Write", tool_input: { file_path: "existing.ts", content: "replacement" } },
+      }),
+    ]);
+
+    expect(summary.files).toEqual([
+      { path: "existing.ts", added: 0, removed: 0, kind: "written", counts_unknown: true },
+    ]);
+  });
+});
+
+describe("git patch dialect", () => {
+  it("reads creation and deletion from the /dev/null side", () => {
+    // A plain `diff --git` patch states creation and deletion only through
+    // these headers; without them a new file read as an ordinary edit.
+    const patch = event({
+      provider: "codex",
+      title: "apply_patch",
+      language: "diff",
+      text: [
+        "diff --git a/src/added.ts b/src/added.ts",
+        "--- /dev/null",
+        "+++ b/src/added.ts",
+        "+fresh",
+        "diff --git a/src/gone.ts b/src/gone.ts",
+        "--- a/src/gone.ts",
+        "+++ /dev/null",
+        "-old",
+      ].join("\n"),
+    });
+
+    const [summary] = turnChanges([userMessage("codex", "go"), patch]);
+    expect(summary.files.map((file) => [file.path, file.kind])).toEqual([
+      ["src/added.ts", "created"],
+      ["src/gone.ts", "deleted"],
+    ]);
+  });
+});
+
+describe("turn boundaries that are not loaded", () => {
+  it("withholds the leading summary while older events remain unloaded", () => {
+    // The remote chat pages from the newest end, so rows before the first user
+    // message are the tail of a turn whose earlier edits are off-page.
+    const rows = [
+      event({ provider: "claude", title: "Write", metadata: { tool_name: "Write", files_written: ["a.ts"] } }),
+      userMessage("claude", "next ask"),
+      event({ provider: "claude", title: "Write", metadata: { tool_name: "Write", files_written: ["b.ts"] } }),
+    ];
+    const presented = derivePresentedChatRows(sortTranscriptEvents(rows).filter(shouldShowChatEvent));
+
+    const paged = withTurnChangeSummaries(presented, { has_older_events: true }).filter(
+      (row): row is TurnChangeSummaryRow => row.kind === "turn_change_summary",
+    );
+    expect(paged.map((row) => row.files.map((file) => file.path))).toEqual([["b.ts"]]);
+
+    const whole = withTurnChangeSummaries(presented).filter(
+      (row): row is TurnChangeSummaryRow => row.kind === "turn_change_summary",
+    );
+    expect(whole.map((row) => row.files.map((file) => file.path))).toEqual([["a.ts"], ["b.ts"]]);
+  });
+
+  it("marks a transcript with no user message as covering the whole history", () => {
+    // Nothing to split on means there is no turn, so the card must not imply
+    // one. It names the span it actually covers instead.
+    const [summary] = turnChanges([
+      event({ provider: "opencode", title: "write", metadata: { tool_name: "write", files_written: ["a.ts"] } }),
+    ]);
+    expect(summary.scope).toBe("whole_history");
+  });
+
+  it("marks a properly bounded turn as a turn", () => {
+    const [summary] = turnChanges([userMessage("claude", "go"), editEvents.claude()]);
+    expect(summary.scope).toBe("turn");
   });
 });
 

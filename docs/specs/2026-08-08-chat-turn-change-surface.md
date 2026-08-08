@@ -44,6 +44,33 @@ Three defects surfaced from that check and are fixed:
   Claude, Gemini, and OpenCode never set. Claude's `Write` therefore produced
   no panel despite carrying the complete file.
 
+## What the card refuses to claim
+
+An autoreview pass (blueprint `autoreview`, run `1786211261881-f424f51e`) found
+four places where the surface asserted more than its evidence supported. Each is
+now bounded by what the transcript actually proves:
+
+- **A whole-file write is not a creation.** A write tool overwrites an existing
+  file as readily as it makes a new one, and the tool input says nothing about
+  which happened. Writes render as "Written" with unknown counts; `created` is
+  reserved for a patch that shows the file appearing. Reporting `+N -0` would
+  have asserted the file had previously been empty.
+- **A newline terminates its line.** Splitting content on `\n` without dropping
+  the terminal sentinel inflated every count by one for newline-terminated
+  content, which is the ordinary case.
+- **Git patches state creation and deletion through `/dev/null`.** The parser
+  read only the `*** Add File:` dialect, so a standard `diff --git` creation
+  rendered as an ordinary edit.
+- **A paged transcript has no first turn.** Remote pages from the newest end, so
+  rows before the first user message are the tail of a turn whose earlier edits
+  are off-page. That summary is withheld until the opening boundary loads. A
+  transcript whose provider emits no user message has no turn at all, and the
+  card says it covers the whole transcript rather than implying one.
+
+Joining a write to its result event would settle create-versus-overwrite —
+Claude's result text distinguishes them — but that join is the same unvalidated
+cross-source mapping deferred below, so the weaker claim stands for now.
+
 Two behaviours remain provider-dependent by nature and are documented rather
 than papered over:
 

@@ -28,8 +28,15 @@ export interface StructuredEditHunk {
 
 export interface StructuredEdit {
   file_path: string | null;
-  /** `create` when the provider supplied whole content rather than a swap. */
-  kind: "edit" | "create";
+  /**
+   * `write` when the provider supplied whole content rather than a swap.
+   *
+   * Deliberately not called `create`: a write tool overwrites an existing file
+   * just as readily as it makes a new one, and the tool input carries no
+   * evidence of which happened. Only the result event says, and that is not
+   * joined here.
+   */
+  kind: "edit" | "write";
   hunks: StructuredEditHunk[];
   added: number;
   removed: number;
@@ -38,7 +45,12 @@ export interface StructuredEdit {
 
 function toLines(value: string): string[] {
   if (value === "") return [];
-  return value.replace(/\r\n|\r/g, "\n").split("\n");
+  const lines = value.replace(/\r\n|\r/g, "\n").split("\n");
+  // A newline terminates its line rather than starting an empty one, so
+  // "old\n" is one line. Only the final element is dropped: interior blanks
+  // are real lines and must keep their place in the panel.
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -113,7 +125,7 @@ export function structuredEditFromEvent(event: AgentChatEvent): StructuredEdit |
     const content = asString(input.content) ?? asString(input.contents) ?? asString(input.CodeContent);
     const writesWholeFile = /^(write|create_file|createfile|write_file|write_to_file)$/i.test(toolIdentity(event));
     if (content === null || !writesWholeFile) return null;
-    kind = "create";
+    kind = "write";
     hunks.push({ removed: [], added: toLines(content) });
   }
 

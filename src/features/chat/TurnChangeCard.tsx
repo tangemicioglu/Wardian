@@ -12,6 +12,27 @@ import {
   summarizeChangeScopes,
 } from "./turnChangePresentation";
 
+/**
+ * How each change kind is named to the reader.
+ *
+ * "Written" is distinct from "Created" on purpose: a write tool overwrites an
+ * existing file as readily as it makes a new one, and the tool input does not
+ * say which. Only a patch that shows the file appearing earns "Created".
+ */
+const FILE_KIND_LABELS: Record<TurnChangeFile["kind"], string> = {
+  created: "Created",
+  deleted: "Deleted",
+  edited: "Edited",
+  written: "Written",
+};
+
+const FILE_KIND_DOTS: Record<TurnChangeFile["kind"], string> = {
+  created: "bg-[var(--color-wardian-success)]",
+  deleted: "bg-[var(--color-wardian-error)]",
+  edited: "bg-[var(--color-wardian-warning)]",
+  written: "bg-[var(--color-wardian-warning)]",
+};
+
 /** Formats large counts compactly so the stat pair keeps a stable width. */
 function formatDiffCount(value: number): string {
   if (value < 1000) return String(value);
@@ -45,18 +66,14 @@ function ChangeFileRow({
 }) {
   const name = changedFileName(file.path);
   const directory = changedFileDirectory(file.path);
-  const label = file.kind === "created" ? "Created" : file.kind === "deleted" ? "Deleted" : "Edited";
+  const label = FILE_KIND_LABELS[file.kind];
   const content = (
     <>
       <span
         aria-label={`${label}, ${file.counts_unknown ? "line counts not reported" : "line counts reported"}`}
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          file.kind === "created"
-            ? "bg-[var(--color-wardian-success)]"
-            : file.kind === "deleted"
-              ? "bg-[var(--color-wardian-error)]"
-              : "bg-[var(--color-wardian-warning)]"
-        } ${file.counts_unknown ? "opacity-50" : ""}`}
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${FILE_KIND_DOTS[file.kind]} ${
+          file.counts_unknown ? "opacity-50" : ""
+        }`}
       />
       <span className="min-w-0 flex-1 truncate text-left text-[11px] leading-5">
         <span className="font-medium text-primary">{name}</span>
@@ -110,7 +127,12 @@ export function TurnChangeCard({
   const previewFiles = selectChangePreview(files);
   const scopes = summarizeChangeScopes(files);
   const hasCounts = files.some((file) => !file.counts_unknown);
-  const fileLabel = `${files.length} changed ${files.length === 1 ? "file" : "files"}`;
+  // Without a user message to split on there is no turn, so the card must not
+  // imply one; it names the span it actually covers.
+  const fileLabel =
+    row.scope === "whole_history"
+      ? `${files.length} changed ${files.length === 1 ? "file" : "files"} in this transcript`
+      : `${files.length} changed ${files.length === 1 ? "file" : "files"}`;
 
   return (
     <article
