@@ -1483,7 +1483,7 @@ describe("RemoteMobileApp", () => {
     });
   });
 
-  it("renders full-width remote chat messages with sentence-case labels, desktop markdown, and copy behavior", async () => {
+  it("renders remote chat messages with the shared desktop bubble, markdown, and copy behavior", async () => {
     mockRemoteAgentDetailFetch("codex", {
       chatEvents: [
         {
@@ -1534,12 +1534,12 @@ describe("RemoteMobileApp", () => {
 
     const userMessage = await screen.findByLabelText("user message");
     const agentMessage = await screen.findByLabelText("assistant message");
-    expect(userMessage).toHaveClass("w-full");
-    expect(agentMessage).toHaveClass("w-full");
-    expect(userMessage).not.toHaveClass("max-w-[86%]");
-    expect(agentMessage).not.toHaveClass("max-w-[86%]");
-    expect(within(userMessage).getByText("You")).not.toHaveClass("uppercase");
-    expect(within(agentMessage).getByText("Agent")).not.toHaveClass("uppercase");
+    // Remote renders the same bubble as the desktop grid chat: the role is
+    // carried by alignment and accessible label rather than a printed caption.
+    expect(userMessage).toHaveClass("justify-end");
+    expect(agentMessage).toHaveClass("justify-start");
+    expect(within(userMessage).queryByText("You")).toBeNull();
+    expect(within(agentMessage).queryByText("Agent")).toBeNull();
     expect(within(agentMessage).getByText("bold").tagName).toBe("STRONG");
     expect(within(agentMessage).getByText("npm test").tagName).toBe("CODE");
 
@@ -1578,7 +1578,7 @@ describe("RemoteMobileApp", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Open Coder details/i }));
     await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
 
-    expect(await screen.findByTestId("remote-activity-row-approval")).toHaveTextContent(
+    expect(await screen.findByTestId("chat-activity-row-approval")).toHaveTextContent(
       "Action required. Choose a response or type below.",
     );
     await userEvent.click(await screen.findByRole("button", { name: "Send approval response 1: Yes, and always allow" }));
@@ -1645,7 +1645,7 @@ describe("RemoteMobileApp", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
 
     expect(screen.queryByText("Status: action required")).not.toBeInTheDocument();
-    expect(await screen.findByTestId("remote-activity-row-approval")).toHaveTextContent(
+    expect(await screen.findByTestId("chat-activity-row-approval")).toHaveTextContent(
       "Action required. Choose a response or type below.",
     );
     expect(screen.getByRole("button", { name: "Send approval response 1: Yes" })).toBeVisible();
@@ -1928,14 +1928,14 @@ describe("RemoteMobileApp", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Open Coder details/i }));
     await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
 
-    const row = await screen.findByTestId("remote-activity-row-terminal-fallback");
+    const row = await screen.findByTestId("terminal-fallback-row");
     expect(row).toHaveTextContent("terminal line 1");
     expect(row).not.toHaveTextContent("terminal line 45");
 
-    await userEvent.click(within(row).getByRole("button", { name: "Copy activity output" }));
+    await userEvent.click(within(row).getByRole("button", { name: "Copy terminal output" }));
     await waitFor(() => expect(clipboardWriteTextMock).toHaveBeenCalledWith(terminalOutput));
 
-    await userEvent.click(within(row).getByRole("button", { name: "Show output" }));
+    await userEvent.click(within(row).getByRole("button", { name: "Show terminal" }));
     expect(row).toHaveTextContent("terminal line 45");
   });
 
@@ -1969,7 +1969,7 @@ describe("RemoteMobileApp", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Open Coder details/i }));
     await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
 
-    const row = await screen.findByTestId("remote-activity-row-terminal-fallback");
+    const row = await screen.findByTestId("terminal-fallback-row");
     expect(row).toHaveTextContent("Codex started");
     expect(row).toHaveTextContent("Startup screen - 4 lines");
     expect(row).not.toHaveTextContent("OpenAI Codex");
@@ -2183,11 +2183,11 @@ describe("RemoteMobileApp", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Open Coder details/i }));
     await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
 
-    expect(await screen.findByTestId("remote-tool-diff-panel")).toHaveTextContent("1 file");
-    expect(screen.getByTestId("remote-tool-diff-panel")).toHaveTextContent("+1");
-    expect(screen.getByTestId("remote-tool-diff-panel")).toHaveTextContent("-1");
-    expect(screen.getByTestId("remote-tool-todo-list")).toHaveTextContent("Inspect transcript");
-    expect(screen.getByTestId("remote-tool-todo-list")).toHaveTextContent("Add mobile parity");
+    expect(await screen.findByTestId("tool-diff-panel")).toHaveTextContent("1 file");
+    expect(screen.getByTestId("tool-diff-panel")).toHaveTextContent("+1");
+    expect(screen.getByTestId("tool-diff-panel")).toHaveTextContent("-1");
+    expect(screen.getByTestId("tool-todo-list")).toHaveTextContent("Inspect transcript");
+    expect(screen.getByTestId("tool-todo-list")).toHaveTextContent("Add mobile parity");
   });
 
   it("surfaces changed files inside remote grouped work logs", async () => {
