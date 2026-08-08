@@ -2,8 +2,38 @@
 
 Filename: `2026-08-08-chat-turn-change-surface.md`
 
-- **Status:** Proposed
+- **Status:** Implemented (partial — see Delivery status)
 - **Date:** 2026-08-08
+
+## Delivery status
+
+Shipped on `feat/chat-turn-change-surface`:
+
+| Area | Outcome |
+|---|---|
+| Shared presentation layer | `features/chat/` now owns transcript classification and rows; desktop and remote both consume it. 1190 lines of duplication removed. |
+| Structured edits | `structuredEdit.ts` recovers `Edit`/`MultiEdit`/`Write` changes from `metadata.tool_input` into a Before/after panel. |
+| Turn segmentation | `chatTurns.ts` splits on user messages and emits a `turn_change_summary` row per turn that touched files. |
+| Turn change card | `TurnChangeCard.tsx` with scope-aware preview, `DiffStat`, auto-expand, and workbench navigation on desktop. |
+| Correctness | Heading/summary de-duplication; in-flight tone demoted once the agent stops; only the pending approval stays actionable. |
+| Work log | Groups at 3, previews 2, and reports elapsed time when the provider timestamped the events. |
+
+**Deferred, with reasons:**
+
+- **Git-verified turn changes.** The card is fed by transcript evidence, not
+  `load_change_review`. Joining a chat turn to a backend turn record index
+  cannot be validated offline, and a wrong mapping would attribute one turn's
+  changes to another — a failure mode worse than the gap it closes. The card
+  states its provenance rather than implying a working-tree diff.
+- **Cross-turn folding.** `work_group` already owns a collapse affordance. A
+  second fold spanning whole turns has to interleave with the view's
+  `visibleRowLimit` pagination and `stickToLatest` scroll anchoring, neither of
+  which can be exercised without a real app run. Work-log compression addresses
+  the same noise inside the existing structure.
+- **Scroll anchoring modes.** Unchanged; belongs with turn folding.
+- **PR screenshots.** Browser E2E cannot seed a chat transcript — it arrives
+  over `load_agent_chat_transcript` IPC — so evidence for these rows needs the
+  native harness.
 
 ## Context and Problem Statement
 
