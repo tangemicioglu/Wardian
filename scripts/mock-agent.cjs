@@ -78,6 +78,20 @@ function waitForStdin() {
   });
 }
 
+let callSequence = 0;
+const lastCallIdByTool = new Map();
+
+function nextCallId(toolName) {
+  callSequence += 1;
+  const id = `mock-call-${callSequence}`;
+  lastCallIdByTool.set(toolName, id);
+  return id;
+}
+
+function currentCallId(toolName) {
+  return lastCallIdByTool.get(toolName) || `mock-call-${callSequence}`;
+}
+
 // Event helpers matching Gemini JSON format
 const events = {
   init: (sid) => ({
@@ -85,7 +99,9 @@ const events = {
     session_id: sid || sessionId,
     timestamp: new Date().toISOString(),
   }),
-  user: () => ({ type: "user", content: "mock user query" }),
+  // Distinct text matters when a scenario emits more than one: the chat
+  // transcript collapses provider messages that share their text.
+  user: (content) => ({ type: "user", content: content || "mock user query" }),
   generating: () => ({
     type: "message",
     role: "assistant",
@@ -104,14 +120,20 @@ const events = {
   // transcript can exercise structured edits and per-turn change summaries
   // without a provider subscription. `input` mirrors Claude's shape because
   // that is the one the normalizer preserves verbatim.
+  //
+  // `call_id` is not decoration: real providers correlate a call with its
+  // result through one, and the transcript both pairs and de-duplicates on it.
+  // Without it two calls to the same tool collapse into a single row.
   toolCall: (name, input, command) => ({
     type: "tool_call",
+    call_id: nextCallId(name),
     tool_name: name,
     input,
     ...(command ? { command } : {}),
   }),
   toolResult: (name, content, status) => ({
     type: "tool_result",
+    call_id: currentCallId(name),
     tool_name: name,
     content,
     status: status || "success",
@@ -141,7 +163,7 @@ async function runBasic() {
 async function runFileChanges() {
   emit(events.init());
   await sleep(delay);
-  emit(events.user());
+  emit(events.user("Lower the work-log grouping threshold and record a spec."));
   await sleep(delay);
   emit(events.modelResponse("Reading the transcript presentation module first."));
   await sleep(delay);
@@ -178,6 +200,26 @@ async function runFileChanges() {
   await sleep(delay);
 
   emit(events.modelResponse("Lowered the grouping threshold and recorded the spec."));
+  await sleep(delay);
+  emit(events.turnCompleted());
+  await sleep(delay);
+
+  // A second, smaller turn. Three or more adjacent tool calls collapse into a
+  // work-log group whose entries are one-liners, so a lone edit is the only
+  // way the structured edit panel is reachable. Both shapes matter.
+  emit(events.user("Now widen the change kinds."));
+  await sleep(delay);
+  emit(
+    events.toolCall("Edit", {
+      file_path: "src/features/chat/chatTurns.ts",
+      old_string: "kind: \"edited\" | \"created\";",
+      new_string: "kind: \"edited\" | \"created\" | \"deleted\" | \"written\";",
+    }),
+  );
+  await sleep(delay);
+  emit(events.toolResult("Edit", "applied"));
+  await sleep(delay);
+  emit(events.modelResponse("Widened the change kinds."));
   await sleep(delay);
   emit(events.turnCompleted());
 }

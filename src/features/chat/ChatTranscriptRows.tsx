@@ -363,6 +363,12 @@ export function ToolBody({
 
   if (presentation.kind === "diff") {
     const stats = diffStats((output || safeContent).trimEnd());
+    // An edit tool's *result* is usually a plain acknowledgement carrying no
+    // patch at all. Framing that as a diff panel headed "Patch +0 -0" invents
+    // a change summary for text that has none.
+    if (stats.added === 0 && stats.removed === 0 && stats.files.length === 0) {
+      return <CodePanel content={safeContent} language={block.language} />;
+    }
     return (
       <div className="mt-2 rounded border border-wardian-light bg-[var(--color-wardian-sidebar-primary)]" data-testid="tool-diff-panel">
         <div className="flex flex-wrap items-center gap-2 border-b border-wardian-light px-2 py-1 text-[11px] leading-4 text-muted-neutral">

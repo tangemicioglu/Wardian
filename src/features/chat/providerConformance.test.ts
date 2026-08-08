@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentChatEvent } from "../../types";
 import { derivePresentedChatRows } from "../grid/workLogPresentation";
-import { liveApprovalEventId, shouldShowChatEvent, sortTranscriptEvents, toolPatchText } from "./chatPresentation";
+import { diffStats, liveApprovalEventId, shouldShowChatEvent, sortTranscriptEvents, toolPatchText } from "./chatPresentation";
 import { withTurnChangeSummaries, type TurnChangeSummaryRow } from "./chatTurns";
 import { structuredEditFromEvent } from "./structuredEdit";
 
@@ -491,5 +491,14 @@ describe("row visibility across providers", () => {
     // The identity fallback used for create detection must not leak into
     // visibility, or every provider keepalive earns a row.
     expect(shouldShowChatEvent(event({ status: "running", metadata: { raw_type: "function_call" } }))).toBe(false);
+  });
+});
+
+describe("empty diff panels", () => {
+  it("does not frame a bare tool acknowledgement as a patch", () => {
+    // An edit tool's result is normally plain text like "applied". Rendering a
+    // diff panel headed "Patch +0 -0" invents a change summary for it.
+    expect(diffStats("applied")).toEqual({ added: 0, removed: 0, files: [] });
+    expect(diffStats("diff --git a/a.ts b/a.ts\n+x").files).toEqual(["a.ts"]);
   });
 });
