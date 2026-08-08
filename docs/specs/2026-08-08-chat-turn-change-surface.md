@@ -95,9 +95,14 @@ than papered over:
   which can be exercised without a real app run. Work-log compression addresses
   the same noise inside the existing structure.
 - **Scroll anchoring modes.** Unchanged; belongs with turn folding.
-- **PR screenshots.** Browser E2E cannot seed a chat transcript — it arrives
-  over `load_agent_chat_transcript` IPC — so evidence for these rows needs the
-  native harness.
+
+**Closed since:** PR evidence. `e2e-native/tests/chat-turn-change-native.test.mjs`
+drives the real app and captures the rows, using a new `file_changes` mock
+scenario. Making the mock a faithful stand-in required it to emit a `call_id`
+(the transcript pairs and de-duplicates on it, so two calls to the same tool
+collapsed into one row) and to vary its user text (messages sharing their text
+are collapsed, so two turns became one). The mock also gained a provider log of
+its own, since normalized tool events are only ever read back from one.
 
 ## Context and Problem Statement
 
