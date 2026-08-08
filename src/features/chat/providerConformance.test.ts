@@ -311,6 +311,88 @@ describe("patch text detection", () => {
   });
 });
 
+describe("a change is counted once however many times a provider states it", () => {
+  it("does not double count a patch echoed back in the tool result", () => {
+    // Codex restates the patch on success. The call and its result are one
+    // action, so the turn card must not add them together.
+    const patch = "*** Begin Patch\n*** Update File: src/app.ts\n-old\n+new\n*** End Patch";
+    const call = event({
+      provider: "codex",
+      kind: "tool_call",
+      title: "apply_patch",
+      status: "running",
+      turn_id: "call-1",
+      metadata: { tool_name: "apply_patch", tool_input_text: patch },
+    });
+    const result = event({
+      provider: "codex",
+      kind: "tool_result",
+      title: "apply_patch",
+      status: "succeeded",
+      turn_id: "call-1",
+      language: "diff",
+      text: patch,
+      metadata: { raw_type: "custom_tool_call_output" },
+    });
+
+    const [summary] = turnChanges([userMessage("codex", "go"), call, result]);
+    expect(summary.files).toEqual([
+      { path: "src/app.ts", added: 1, removed: 1, kind: "edited", counts_unknown: false },
+    ]);
+  });
+
+  it("still counts two separate edits to the same file", () => {
+    // The guard is per action, not per path: a turn that really edits a file
+    // twice must still total both.
+    const edit = () => editEvents.claude();
+    const [summary] = turnChanges([userMessage("claude", "go"), edit(), edit()]);
+    expect(summary.files).toEqual([
+      { path: "src/app.ts", added: 2, removed: 2, kind: "edited", counts_unknown: false },
+    ]);
+  });
+});
+
+describe("deleted files", () => {
+  it("reports a delete as deleted with no invented line counts", () => {
+    // A delete header stands alone, so the patch never says how big the file
+    // was. Showing "+0 -0" would read as an empty change rather than a removal.
+    const deletion = event({
+      provider: "codex",
+      title: "apply_patch",
+      metadata: {
+        tool_name: "apply_patch",
+        tool_input_text: "*** Begin Patch\n*** Delete File: src/old.ts\n*** End Patch",
+      },
+    });
+
+    const [summary] = turnChanges([userMessage("codex", "go"), deletion]);
+    expect(summary.files).toEqual([
+      { path: "src/old.ts", added: 0, removed: 0, kind: "deleted", counts_unknown: true },
+    ]);
+  });
+
+  it("lets a delete outrank an earlier edit to the same file", () => {
+    const patched = event({
+      provider: "codex",
+      title: "apply_patch",
+      metadata: {
+        tool_name: "apply_patch",
+        tool_input_text: [
+          "*** Begin Patch",
+          "*** Add File: src/scratch.ts",
+          "+temporary",
+          "*** Delete File: src/scratch.ts",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+
+    const [summary] = turnChanges([userMessage("codex", "go"), patched]);
+    expect(summary.files).toHaveLength(1);
+    expect(summary.files[0].kind).toBe("deleted");
+  });
+});
+
 describe("row visibility across providers", () => {
   it("keeps every provider's identifiable tool call", () => {
     const rows = [

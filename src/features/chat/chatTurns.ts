@@ -29,7 +29,7 @@ export interface TurnChangeFile {
   added: number;
   removed: number;
   /** `created` only when a provider supplied whole-file content. */
-  kind: "edited" | "created";
+  kind: "edited" | "created" | "deleted";
   /** True when line counts are unknown because only a path was reported. */
   counts_unknown: boolean;
 }
@@ -44,9 +44,12 @@ export interface TurnChangeSummaryRow {
 
 export type ChatTranscriptRowModel = PresentedChatRow | TurnChangeSummaryRow;
 
-function eventsOfRow(row: PresentedChatRow): AgentChatEvent[] {
-  if (row.kind === "event") return [row.event];
-  return row.entries.flatMap((entry) => [entry.primary_event, ...entry.merged_result_events]);
+/** One tool action: the call plus whatever results were merged into it. */
+type ChatAction = AgentChatEvent[];
+
+function actionsOfRow(row: PresentedChatRow): ChatAction[] {
+  if (row.kind === "event") return [[row.event]];
+  return row.entries.map((entry) => [entry.primary_event, ...entry.merged_result_events]);
 }
 
 function isTurnBoundary(row: PresentedChatRow): boolean {
@@ -64,7 +67,13 @@ function mergeFile(files: Map<string, TurnChangeFile>, candidate: TurnChangeFile
   // A later precise record supersedes an earlier path-only one, but a file
   // created in this turn stays created even if it is edited again after.
   existing.counts_unknown = existing.counts_unknown && candidate.counts_unknown;
-  if (candidate.kind === "created") existing.kind = "created";
+  // The card reports where the file ended up, so a delete outranks everything
+  // that happened to the file before it.
+  if (candidate.kind === "deleted" || existing.kind === "deleted") {
+    existing.kind = "deleted";
+  } else if (candidate.kind === "created") {
+    existing.kind = "created";
+  }
 }
 
 /**
@@ -83,12 +92,15 @@ function patchChanges(patch: string): TurnChangeFile[] {
     const gitHeader = /^diff --git a\/(?:.+?) b\/(.+)$/.exec(line);
     const patchHeader = /^\*\*\* (Add|Update|Delete) File:\s+(.+)$/.exec(line);
     if (gitHeader || patchHeader) {
+      const operation = patchHeader?.[1];
       current = {
         path: (gitHeader?.[1] ?? patchHeader?.[2] ?? "").trim(),
         added: 0,
         removed: 0,
-        kind: patchHeader?.[1] === "Add" ? "created" : "edited",
-        counts_unknown: false,
+        kind: operation === "Add" ? "created" : operation === "Delete" ? "deleted" : "edited",
+        // A delete header stands alone with no body, so the patch never says
+        // how many lines went with the file.
+        counts_unknown: operation === "Delete",
       };
       files.push(current);
       return;
@@ -102,35 +114,70 @@ function patchChanges(patch: string): TurnChangeFile[] {
   return files.filter((file) => file.path.length > 0);
 }
 
-function collectTurnChanges(events: AgentChatEvent[]): TurnChangeFile[] {
-  const files = new Map<string, TurnChangeFile>();
+/** Everything one event proves about the files a turn touched. */
+function changesFromEvent(event: AgentChatEvent): TurnChangeFile[] {
+  const patch = toolPatchText(event) ?? (isDiffEvent(event) ? (event.text ?? "") : "");
+  const patched = patch ? patchChanges(patch) : [];
+  if (patched.length > 0) return patched;
 
-  events.forEach((event) => {
-    const patch = toolPatchText(event) ?? (isDiffEvent(event) ? (event.text ?? "") : "");
-    const patched = patch ? patchChanges(patch) : [];
-    if (patched.length > 0) {
-      patched.forEach((file) => mergeFile(files, file));
-      return;
-    }
-
-    const edit = structuredEditFromEvent(event);
-    if (edit?.file_path) {
-      mergeFile(files, {
+  const edit = structuredEditFromEvent(event);
+  if (edit?.file_path) {
+    return [
+      {
         path: edit.file_path,
         added: edit.added,
         removed: edit.removed,
         kind: edit.kind === "create" ? "created" : "edited",
         counts_unknown: false,
-      });
+      },
+    ];
+  }
+
+  // Providers that report only a path still prove the file was touched; the
+  // card shows them without counts rather than inventing zeros.
+  return writtenPaths(event).map((path) => ({
+    path,
+    added: 0,
+    removed: 0,
+    kind: "edited" as const,
+    counts_unknown: true,
+  }));
+}
+
+function changeSignature(file: TurnChangeFile): string {
+  return `${file.path}|${file.kind}|${file.added}|${file.removed}`;
+}
+
+/**
+ * Totals the turn from its actions rather than its raw events.
+ *
+ * Two things would otherwise count one edit twice. An action's own results are
+ * merged into it, so only the first event that proves anything contributes.
+ * And a provider may restate the change in a separate result event — Codex
+ * echoes its patch back on success — which is skipped when a preceding call
+ * already claimed exactly that change.
+ *
+ * Deliberately not keyed on `turn_id`: OpenCode reports the session id there
+ * for every event, so treating it as a call identifier would collapse a whole
+ * turn's edits into one.
+ */
+function collectTurnChanges(actions: ChatAction[]): TurnChangeFile[] {
+  const files = new Map<string, TurnChangeFile>();
+  const claimedByCalls = new Set<string>();
+
+  actions.forEach((action) => {
+    for (const event of action) {
+      const changes = changesFromEvent(event);
+      if (changes.length === 0) continue;
+
+      const signatures = changes.map(changeSignature);
+      const restatesACall = event.kind === "tool_result" && signatures.every((signature) => claimedByCalls.has(signature));
+      if (!restatesACall) {
+        changes.forEach((file) => mergeFile(files, file));
+        if (event.kind === "tool_call") signatures.forEach((signature) => claimedByCalls.add(signature));
+      }
       return;
     }
-
-    // Providers that report only a path still prove the file was touched; the
-    // card shows them without counts rather than inventing zeros.
-    const written = writtenPaths(event);
-    written.forEach((path) => {
-      mergeFile(files, { path, added: 0, removed: 0, kind: "edited", counts_unknown: true });
-    });
   });
 
   return [...files.values()];
@@ -168,7 +215,7 @@ export function withTurnChangeSummaries(rows: PresentedChatRow[]): ChatTranscrip
 
   const flush = () => {
     if (pending.length === 0) return;
-    const files = collectTurnChanges(pending.flatMap(eventsOfRow));
+    const files = collectTurnChanges(pending.flatMap(actionsOfRow));
     if (files.length > 0) {
       result.push({
         kind: "turn_change_summary",

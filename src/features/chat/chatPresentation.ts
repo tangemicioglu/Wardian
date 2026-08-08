@@ -183,6 +183,10 @@ export function toolPatchText(event: AgentChatEvent): string | null {
  * Blocks that already contain the patch are returned untouched.
  */
 export function withPatchContent(event: AgentChatEvent, block: ActivityBlockModel): ActivityBlockModel {
+  // Only fills a gap. A provider that supplied its own text — Codex puts a
+  // tool's justification there — keeps it; substituting would trade the
+  // agent's stated reason for a patch the diff panel can already summarize.
+  if (event.text?.trim()) return block;
   const patch = toolPatchText(event);
   if (!patch || block.content.includes(patch.slice(0, 80))) return block;
   return {

@@ -45,13 +45,17 @@ function ChangeFileRow({
 }) {
   const name = changedFileName(file.path);
   const directory = changedFileDirectory(file.path);
-  const label = file.kind === "created" ? "Created" : "Edited";
+  const label = file.kind === "created" ? "Created" : file.kind === "deleted" ? "Deleted" : "Edited";
   const content = (
     <>
       <span
         aria-label={`${label}, ${file.counts_unknown ? "line counts not reported" : "line counts reported"}`}
         className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          file.kind === "created" ? "bg-[var(--color-wardian-success)]" : "bg-[var(--color-wardian-warning)]"
+          file.kind === "created"
+            ? "bg-[var(--color-wardian-success)]"
+            : file.kind === "deleted"
+              ? "bg-[var(--color-wardian-error)]"
+              : "bg-[var(--color-wardian-warning)]"
         } ${file.counts_unknown ? "opacity-50" : ""}`}
       />
       <span className="min-w-0 flex-1 truncate text-left text-[11px] leading-5">
