@@ -35,6 +35,10 @@ because the automation switch belongs to the test environment, not the
 shipping application. The policy value is scoped to the Wardian executable
 rather than every WebView2 application on the worker.
 
+Native driver setup resolves the installed `msedgewebview2.exe` version and
+downloads that exact Edge WebDriver release. This avoids relying on a stale
+EdgeUpdate registry value when the runner has multiple WebView2 versions.
+
 Upstream context:
 [WebView2Feedback #5640](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5640).
 
