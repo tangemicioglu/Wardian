@@ -344,8 +344,8 @@ rows include the parsed `blueprint_id`, display `name`, `entry_ref`, and absolut
 `workflow_path`; the id comes from blueprint frontmatter rather than the
 filename. Use `workflow list --pretty` for one human-readable row per entry.
 Malformed blueprints remain in the listing with an `error` field. Use
-`workflow runs`, `workflow run-show <blueprint-id> <run-id>`, and `workflow replay
-<blueprint-id> <run-id>` to inspect durable run artifacts under
+`workflow runs`, `workflow run-show <blueprint-id> <run-id>`, and
+`workflow replay <blueprint-id> <run-id>` to inspect durable run artifacts under
 `<wardian-home>/logs/workflows`.
 
 Author and deploy Library assets from an agent terminal:
