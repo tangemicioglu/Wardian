@@ -1118,6 +1118,44 @@ fn normalize_mock(
             msg_type,
             parsed,
         )),
+        // The mock provider is the only offline way to exercise the chat
+        // transcript's tool surface, so its tool calls carry real structured
+        // input rather than a summary string.
+        "tool_call" => {
+            let tool_name = str_field(parsed, "tool_name").unwrap_or("tool_call");
+            let mut tool = tool_call_event(
+                session_id,
+                provider,
+                sequence,
+                msg_type.to_string(),
+                turn_id_from(parsed),
+                str_field(parsed, "command").map(str::to_string),
+                None,
+                tool_name,
+                AgentChatStatus::Running,
+            );
+            attach_tool_input_metadata(&mut tool, tool_name, parsed.get("input"));
+            Some(tool)
+        }
+        "tool_result" => Some(event(
+            session_id,
+            provider,
+            sequence,
+            AgentChatEventKind::ToolResult,
+            EventFields {
+                role: Some(AgentChatRole::Tool),
+                text: text_from_value(parsed),
+                title: str_field(parsed, "tool_name").map(str::to_string),
+                status: Some(
+                    status_from_str(str_field(parsed, "status"))
+                        .unwrap_or(AgentChatStatus::Succeeded),
+                ),
+                turn_id: turn_id_from(parsed),
+                source: Some(msg_type.to_string()),
+                metadata: json!({"raw_type": msg_type}),
+                ..Default::default()
+            },
+        )),
         "action_required" => Some(event(
             session_id,
             provider,
@@ -1962,6 +2000,35 @@ mod tests {
         );
         assert_eq!(codex.metadata["tool_name"], "shell_command");
         assert_eq!(codex.metadata["tool_input"]["command"], "npm test");
+    }
+
+    #[test]
+    fn mock_tool_calls_carry_structured_input_for_offline_chat_coverage() {
+        // Without this the chat transcript's file-change surface was reachable
+        // only through a real provider subscription.
+        let edit = one(
+            "mock",
+            r#"{"type":"tool_call","tool_name":"Edit","input":{"file_path":"src/app.ts","old_string":"a","new_string":"b"}}"#,
+        );
+        assert_eq!(edit.kind, AgentChatEventKind::ToolCall);
+        assert_eq!(edit.title.as_deref(), Some("Edit"));
+        assert_eq!(edit.metadata["tool_name"], "Edit");
+        assert_eq!(edit.metadata["tool_input"]["old_string"], "a");
+        assert_eq!(edit.metadata["files_written"][0], "src/app.ts");
+
+        let shell = one(
+            "mock",
+            r#"{"type":"tool_call","tool_name":"Bash","input":{},"command":"npm run test"}"#,
+        );
+        assert_eq!(shell.command.as_deref(), Some("npm run test"));
+
+        let result = one(
+            "mock",
+            r#"{"type":"tool_result","tool_name":"Edit","content":"applied","status":"success"}"#,
+        );
+        assert_eq!(result.kind, AgentChatEventKind::ToolResult);
+        assert_eq!(result.text.as_deref(), Some("applied"));
+        assert_eq!(result.status, Some(AgentChatStatus::Succeeded));
     }
 
     #[test]

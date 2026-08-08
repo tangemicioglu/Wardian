@@ -11,6 +11,7 @@
  *
  * Supported scenarios:
  *   basic         — init → user → generating → model_response → turn_completed
+ *   file_changes  — init → user → read/edit/write/shell tool calls → model_response → turn_completed
  *   resume        — init(session_id) → generating → model_response → turn_completed
  *   action_needed — init → user → action_required (waits for stdin) → turn_completed
  *   delayed_ready — init → user → generating → MOCK_INPUT_READY → model_response → turn_completed
@@ -83,6 +84,22 @@ const events = {
     type: "action_required",
     message: message || "Approve file write to output.txt?",
   }),
+  // Tool calls carry their arguments the way real providers do, so the chat
+  // transcript can exercise structured edits and per-turn change summaries
+  // without a provider subscription. `input` mirrors Claude's shape because
+  // that is the one the normalizer preserves verbatim.
+  toolCall: (name, input, command) => ({
+    type: "tool_call",
+    tool_name: name,
+    input,
+    ...(command ? { command } : {}),
+  }),
+  toolResult: (name, content, status) => ({
+    type: "tool_result",
+    tool_name: name,
+    content,
+    status: status || "success",
+  }),
 };
 
 async function runBasic() {
@@ -93,6 +110,58 @@ async function runBasic() {
   emit(events.generating());
   await sleep(delay * 2);
   emit(events.modelResponse());
+  await sleep(delay);
+  emit(events.turnCompleted());
+}
+
+/**
+ * A turn that edits, creates, and inspects files.
+ *
+ * Exists so the chat transcript's file-change surface is reachable offline:
+ * every other scenario emits messages and status only, which left structured
+ * edits, work-log grouping, and the per-turn change card testable solely
+ * against a real provider.
+ */
+async function runFileChanges() {
+  emit(events.init());
+  await sleep(delay);
+  emit(events.user());
+  await sleep(delay);
+  emit(events.modelResponse("Reading the transcript presentation module first."));
+  await sleep(delay);
+
+  emit(events.toolCall("Read", { file_path: "src/features/chat/chatPresentation.ts" }));
+  await sleep(delay);
+  emit(events.toolResult("Read", "read 337 lines"));
+  await sleep(delay);
+
+  emit(
+    events.toolCall("Edit", {
+      file_path: "src/features/chat/chatPresentation.ts",
+      old_string: "const WORK_GROUP_MIN_ENTRIES = 4;",
+      new_string: "const WORK_GROUP_MIN_ENTRIES = 3;",
+    }),
+  );
+  await sleep(delay);
+  emit(events.toolResult("Edit", "applied"));
+  await sleep(delay);
+
+  emit(
+    events.toolCall("Write", {
+      file_path: "docs/specs/mock-change-surface.md",
+      content: "# Mock spec\n\nWritten by the mock provider.\n",
+    }),
+  );
+  await sleep(delay);
+  emit(events.toolResult("Write", "written"));
+  await sleep(delay);
+
+  emit(events.toolCall("Bash", {}, "npm run test -- --run"));
+  await sleep(delay);
+  emit(events.toolResult("Bash", "2830 passed"));
+  await sleep(delay);
+
+  emit(events.modelResponse("Lowered the grouping threshold and recorded the spec."));
   await sleep(delay);
   emit(events.turnCompleted());
 }
@@ -311,6 +380,7 @@ async function main() {
 
   const scenarios = {
     basic: runBasic,
+    file_changes: runFileChanges,
     resume: runResume,
     action_needed: runActionNeeded,
     delayed_ready: runDelayedReady,
