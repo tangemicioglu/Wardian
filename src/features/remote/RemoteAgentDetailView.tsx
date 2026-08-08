@@ -11,7 +11,7 @@ import type {
 } from "../../types";
 import { formatAgentStatusLabel } from "../../utils/statusUtils";
 import { ChatTranscriptRow } from "../chat/ChatTranscriptRows";
-import { shouldShowChatEvent, sortTranscriptEvents } from "../chat/chatPresentation";
+import { isProcessingAgentStatus, shouldShowChatEvent, sortTranscriptEvents } from "../chat/chatPresentation";
 import { derivePresentedChatRows } from "../grid/workLogPresentation";
 import { RemoteAgentActions } from "./RemoteAgentActions";
 import { remoteStatusClassFor } from "./remoteAgentStatus";
@@ -1060,6 +1060,7 @@ function ChatPane({
       {rows.map((row) => (
         <ChatTranscriptRow
           key={row.kind === "work_group" ? row.id : row.event.id}
+          agentIsWorking={isProcessingAgentStatus(agent.status) || isSubmitting}
           isSubmitting={isSubmitting}
           onApprovalSubmit={onApprovalSubmit}
           row={row}

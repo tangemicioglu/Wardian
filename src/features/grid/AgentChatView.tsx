@@ -15,7 +15,7 @@ import {
   type ChatAttachment,
 } from "../../utils/terminalInput";
 import { ChatTranscriptRow } from "../chat/ChatTranscriptRows";
-import { shouldShowChatEvent, sortTranscriptEvents } from "../chat/chatPresentation";
+import { isProcessingAgentStatus, shouldShowChatEvent, sortTranscriptEvents } from "../chat/chatPresentation";
 import { type ChatMarkdownLinkHandling } from "./markdown/ChatMarkdown";
 import { derivePresentedChatRows, type PresentedChatRow } from "./workLogPresentation";
 
@@ -317,6 +317,7 @@ export function AgentChatView({
             {visibleChatRows.map((row) => (
               <li key={chatRowKey(row)}>
                 <ChatTranscriptRow
+                  agentIsWorking={showThinking}
                   isSubmitting={isSubmitting}
                   linkHandling={markdownLinkHandling}
                   onApprovalSubmit={handleApprovalSubmit}
@@ -779,11 +780,6 @@ function inputDisabledReason(status: string | null, isSubmitting: boolean): stri
   if (normalized.includes("paused")) return "Agent is paused";
   if (normalized.includes("error")) return "Agent is in an error state";
   return null;
-}
-
-function isProcessingAgentStatus(status: string | null): boolean {
-  const normalized = (status ?? "").toLowerCase();
-  return normalized.includes("processing") || normalized.includes("running");
 }
 
 function errorMessage(reason: unknown): string {

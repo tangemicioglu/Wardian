@@ -24,6 +24,7 @@ import {
   outputWithoutCommandPrefix,
   parseTodoItems,
   previewContent,
+  resolvedActivityTone,
   toneDotClass,
   toolIconClass,
   toolPresentation,
@@ -41,18 +42,27 @@ const ROLE_CLASSES: Record<AgentChatRole, string> = {
 
 export interface ChatTranscriptRowProps {
   row: PresentedChatRow;
+  /** True while the agent is producing output; gates the in-flight tone. */
+  agentIsWorking: boolean;
   isSubmitting: boolean;
   linkHandling?: ChatMarkdownLinkHandling;
   onApprovalSubmit: (response: string) => void;
 }
 
 /** Dispatches a derived transcript row to its renderer. */
-export function ChatTranscriptRow({ row, isSubmitting, linkHandling, onApprovalSubmit }: ChatTranscriptRowProps) {
-  if (row.kind === "work_group") return <WorkGroupRow row={row} />;
+export function ChatTranscriptRow({
+  row,
+  agentIsWorking,
+  isSubmitting,
+  linkHandling,
+  onApprovalSubmit,
+}: ChatTranscriptRowProps) {
+  if (row.kind === "work_group") return <WorkGroupRow agentIsWorking={agentIsWorking} row={row} />;
   return row.event.kind === "message" ? (
     <MessageRow event={row.event} linkHandling={linkHandling} />
   ) : (
     <ActivityEvent
+      agentIsWorking={agentIsWorking}
       entry={row.entry}
       event={row.event}
       isSubmitting={isSubmitting}
@@ -95,15 +105,21 @@ export function MessageRow({
 export function ActivityEvent({
   event,
   entry,
+  agentIsWorking,
   isSubmitting,
   onApprovalSubmit,
 }: {
   event: AgentChatEvent;
   entry?: PresentedWorkEntry;
+  agentIsWorking: boolean;
   isSubmitting: boolean;
   onApprovalSubmit: (response: string) => void;
 }) {
-  const block = entry?.block ?? toActivityBlock(event);
+  const baseBlock = entry?.block ?? toActivityBlock(event);
+  const block: ActivityBlockModel = {
+    ...baseBlock,
+    tone: resolvedActivityTone(baseBlock.tone, agentIsWorking),
+  };
   if (isThinkingIndicator(event)) return <ThinkingRow />;
   if (event.kind === "status") return <StatusRow event={event} block={block} />;
   if (event.kind === "terminal_output") return <TerminalFallback event={event} block={block} />;
@@ -353,7 +369,13 @@ export function TerminalFallback({ event, block }: { event: AgentChatEvent; bloc
   );
 }
 
-export function WorkGroupRow({ row }: { row: Extract<PresentedChatRow, { kind: "work_group" }> }) {
+export function WorkGroupRow({
+  row,
+  agentIsWorking,
+}: {
+  row: Extract<PresentedChatRow, { kind: "work_group" }>;
+  agentIsWorking: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const visibleEntries = expanded ? row.entries : row.entries.slice(-6);
   const hiddenCount = row.entries.length - visibleEntries.length;
@@ -391,17 +413,18 @@ export function WorkGroupRow({ row }: { row: Extract<PresentedChatRow, { kind: "
 
       <div className="mt-2 space-y-1">
         {visibleEntries.map((entry) => (
-          <WorkEntry entry={entry} key={entry.id} />
+          <WorkEntry agentIsWorking={agentIsWorking} entry={entry} key={entry.id} />
         ))}
       </div>
     </article>
   );
 }
 
-export function WorkEntry({ entry }: { entry: PresentedWorkEntry }) {
+export function WorkEntry({ entry, agentIsWorking }: { entry: PresentedWorkEntry; agentIsWorking: boolean }) {
+  const tone = resolvedActivityTone(entry.block.tone, agentIsWorking);
   return (
     <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 rounded border border-transparent py-1 text-[12px] leading-4">
-      <span className={`mt-1 h-1.5 w-1.5 rounded-full ${toneDotClass(entry.block.tone)}`} aria-hidden="true" />
+      <span className={`mt-1 h-1.5 w-1.5 rounded-full ${toneDotClass(tone)}`} aria-hidden="true" />
       <div className="min-w-0">
         <div className="truncate font-medium text-primary">{entry.title}</div>
         {entry.summary ? (

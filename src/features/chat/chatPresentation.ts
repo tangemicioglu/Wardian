@@ -34,6 +34,27 @@ export const TONE_CLASSES: Record<ActivityTone, string> = {
   warning: "border-[var(--color-wardian-warning)]",
 };
 
+/**
+ * Resolves the tone a row should actually paint.
+ *
+ * `activityTone` reads "processing" straight off the event's own status, which
+ * is only ever a snapshot of the moment the provider wrote it. A tool call the
+ * provider never resolved — because the turn was cancelled, the process died,
+ * or the transcript was truncated — keeps that status forever, so the row goes
+ * on claiming work is in flight long after the agent went idle. Demote it to
+ * neutral once the agent is no longer working: unresolved is an honest reading
+ * of the evidence, in-flight is not.
+ */
+export function resolvedActivityTone(tone: ActivityTone, agentIsWorking: boolean): ActivityTone {
+  if (tone === "processing" && !agentIsWorking) return "neutral";
+  return tone;
+}
+
+export function isProcessingAgentStatus(status: string | null | undefined): boolean {
+  const normalized = (status ?? "").toLowerCase();
+  return normalized.includes("processing") || normalized.includes("running");
+}
+
 export function toneDotClass(tone: ActivityTone): string {
   if (tone === "error") return "bg-[var(--color-wardian-error)]";
   if (tone === "warning") return "bg-[var(--color-wardian-warning)]";
