@@ -8,6 +8,8 @@
  *   WARDIAN_MOCK_SCENARIO  — scenario name (default: "basic")
  *   WARDIAN_MOCK_DELAY_MS  — delay between events in ms (default: 100)
  *   WARDIAN_MOCK_SESSION_ID — session ID for init event (default: "mock-session-001")
+ *   WARDIAN_MOCK_LOG       — optional path to mirror the event stream to, so the
+ *                            chat transcript can read it back like a real provider log
  *
  * Supported scenarios:
  *   basic         — init → user → generating → model_response → turn_completed
@@ -29,8 +31,11 @@
 
 "use strict";
 
+const fs = require("node:fs");
 const readline = require("node:readline");
 const { spawnSync } = require("node:child_process");
+
+const transcriptLog = process.env.WARDIAN_MOCK_LOG || "";
 
 const scenario = process.env.WARDIAN_MOCK_SCENARIO || "basic";
 const delay = parseInt(process.env.WARDIAN_MOCK_DELAY_MS || "100", 10);
@@ -40,7 +45,18 @@ const sessionId = process.env.WARDIAN_MOCK_SESSION_ID || "mock-session-001";
 const isPrint = process.argv.includes("--print");
 
 function emit(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
+  const line = JSON.stringify(obj) + "\n";
+  process.stdout.write(line);
+  // Real providers are observed through a log they own, and the chat
+  // transcript reads normalized events back from that log rather than from the
+  // terminal. Mirroring here gives the mock provider the same surface.
+  if (transcriptLog) {
+    try {
+      fs.appendFileSync(transcriptLog, line);
+    } catch {
+      // The log is test scaffolding; losing it must never stop the run.
+    }
+  }
 }
 
 function sleep(ms) {
