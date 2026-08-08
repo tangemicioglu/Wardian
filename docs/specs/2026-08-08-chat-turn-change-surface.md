@@ -17,6 +17,43 @@ Shipped on `feat/chat-turn-change-surface`:
 | Turn change card | `TurnChangeCard.tsx` with scope-aware preview, `DiffStat`, auto-expand, and workbench navigation on desktop. |
 | Correctness | Heading/summary de-duplication; in-flight tone demoted once the agent stops; only the pending approval stays actionable. |
 | Work log | Groups at 3, previews 2, and reports elapsed time when the provider timestamped the events. |
+| Provider conformance | Every feature above checked against each provider's real event shape; `providerConformance.test.ts` pins the result. |
+
+## Provider coverage
+
+The features above were designed against Claude-shaped events, where the
+change lives in `metadata.tool_input`. No other provider emits that shape, so
+each was checked against what `providers/chat_transcript.rs` actually produces.
+
+| Provider | Where a change is reported | Turn card outcome |
+|---|---|---|
+| Claude | `metadata.tool_input` (`old_string`/`new_string`, `content`) | Exact counts |
+| OpenCode | `part.input` (`filePath`/`oldString`/`newString`) | Exact counts |
+| Codex | `metadata.tool_input_text` — an `apply_patch` payload | Exact counts, per file |
+| Antigravity | `files_written` only; args name the file, never the content | Path with unknown counts |
+| Gemini | Nothing; `tool_use` carries a name and no arguments | No row |
+
+Three defects surfaced from that check and are fixed:
+
+- OpenCode's normalizer discarded a tool call's `input` outright, so its edits
+  could not be recovered at any layer above.
+- Codex's `apply_patch` is that provider's entire edit path and carries no
+  event text. The patch sat unread in `tool_input_text` while the row rendered
+  the bare word "Running".
+- Whole-file creates were detected only through `metadata.tool_name`, which
+  Claude, Gemini, and OpenCode never set. Claude's `Write` therefore produced
+  no panel despite carrying the complete file.
+
+Two behaviours remain provider-dependent by nature and are documented rather
+than papered over:
+
+- **Gemini reports no file writes at all.** The conformance suite asserts the
+  absence, so a normalizer change that starts supplying paths fails a test and
+  gets noticed instead of silently half-working.
+- **Work-group duration is effectively Antigravity-only.** `created_at` is set
+  by `status_event` and Antigravity's tool results; `message_event` and
+  `tool_call_event` never set it. The label already returns null rather than
+  estimating, so every other provider simply omits it.
 
 **Deferred, with reasons:**
 
