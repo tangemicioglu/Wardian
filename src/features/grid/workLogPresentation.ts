@@ -1,7 +1,15 @@
 import type { AgentChatEvent } from "../../types";
 import { toActivityBlock, type ActivityBlockModel } from "./activityBlocks";
 
-const WORK_GROUP_MIN_ENTRIES = 4;
+/**
+ * Consecutive work events collapse into one group at this count.
+ *
+ * Lowered from 4 now that a turn change card states what the turn touched: the
+ * work log no longer has to be scanned to answer "what changed", so grouping
+ * earlier costs the reader nothing and keeps a run of tool calls from pushing
+ * the answer off screen in a grid cell.
+ */
+const WORK_GROUP_MIN_ENTRIES = 3;
 const NON_MEANINGFUL_TEXT = /^(succeeded|success|ok|done|exit code:\s*0)$/i;
 const NON_MEANINGFUL_RESULT_LINE = /^(succeeded|success|ok|done|exit code:\s*0|wall time:\s*\d+(?:\.\d+)?\s*(?:ms|s|seconds?)|output:)$/i;
 

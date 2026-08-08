@@ -2120,7 +2120,9 @@ describe("RemoteMobileApp", () => {
     const group = await screen.findByText("Work log");
     const article = group.closest("article") as HTMLElement;
 
-    expect(article).toHaveTextContent("4 events");
+    expect(article).toHaveTextContent("4 events - showing latest 2");
+    await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
+
     expect(article).toHaveTextContent("Get-ChildItem src/features/grid");
     expect(article).toHaveTextContent("cargo test -p Wardian commands::terminal::tests");
     expect(article).toHaveTextContent("npm run test -- src/features/grid/AgentChatView.test.tsx");

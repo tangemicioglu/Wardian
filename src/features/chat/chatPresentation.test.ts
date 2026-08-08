@@ -8,6 +8,7 @@ import {
   resolvedActivityTone,
   shouldShowChatEvent,
   sortTranscriptEvents,
+  workGroupDurationLabel,
 } from "./chatPresentation";
 
 const event = (overrides: Partial<AgentChatEvent>): AgentChatEvent => ({
@@ -112,6 +113,49 @@ describe("shouldShowChatEvent", () => {
     expect(shouldShowChatEvent(event({ kind: "status", metadata: { chat_thinking_indicator: true } }))).toBe(true);
     expect(shouldShowChatEvent(event({ kind: "status", status: "succeeded" }))).toBe(false);
     expect(shouldShowChatEvent(event({ kind: "status", status: "failed" }))).toBe(true);
+  });
+});
+
+describe("workGroupDurationLabel", () => {
+  const entry = (id: string, createdAt: string | null) => {
+    const primary = event({ id, created_at: createdAt });
+    return {
+      id,
+      primary_event: primary,
+      block: toActivityBlock(primary),
+      merged_result_events: [],
+      diagnostic_events: [],
+      title: id,
+      summary: "",
+      details: [],
+      content: "",
+      changed_paths: [],
+    };
+  };
+
+  it("measures elapsed time across the group", () => {
+    expect(
+      workGroupDurationLabel([
+        entry("a", "2026-08-08T10:00:00.000Z"),
+        entry("b", "2026-08-08T10:02:14.000Z"),
+      ]),
+    ).toBe("2m 14s");
+  });
+
+  it("uses seconds alone under a minute", () => {
+    expect(
+      workGroupDurationLabel([entry("a", "2026-08-08T10:00:00.000Z"), entry("b", "2026-08-08T10:00:09.000Z")]),
+    ).toBe("9s");
+  });
+
+  it("reports nothing rather than estimating when timestamps are missing", () => {
+    // Several providers leave created_at null; a duration guessed from event
+    // count would be a number the transcript cannot support.
+    expect(workGroupDurationLabel([entry("a", null), entry("b", null)])).toBeNull();
+    expect(workGroupDurationLabel([entry("a", "2026-08-08T10:00:00.000Z")])).toBeNull();
+    expect(
+      workGroupDurationLabel([entry("a", "2026-08-08T10:00:00.000Z"), entry("b", "2026-08-08T10:00:00.400Z")]),
+    ).toBeNull();
   });
 });
 

@@ -28,7 +28,9 @@ import {
   toneDotClass,
   toolIconClass,
   toolPresentation,
+  workGroupDurationLabel,
   workGroupTitleFromEntries,
+  WORK_GROUP_PREVIEW_ENTRIES,
   TONE_CLASSES,
   type ToolPresentation,
 } from "./chatPresentation";
@@ -453,9 +455,10 @@ export function WorkGroupRow({
   agentIsWorking: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const visibleEntries = expanded ? row.entries : row.entries.slice(-6);
+  const visibleEntries = expanded ? row.entries : row.entries.slice(-WORK_GROUP_PREVIEW_ENTRIES);
   const hiddenCount = row.entries.length - visibleEntries.length;
   const title = workGroupTitleFromEntries(row.entries);
+  const duration = workGroupDurationLabel(row.entries);
   const copyValue = formatPresentedWorkGroupForCopy(row);
 
   return (
@@ -467,6 +470,7 @@ export function WorkGroupRow({
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] font-semibold leading-5 text-primary">{title}</div>
           <div className="text-[11px] leading-4 text-muted-neutral">
+            {duration ? `Worked for ${duration} - ` : ""}
             {row.entries.length} {row.entries.length === 1 ? "event" : "events"}
             {hiddenCount > 0 ? ` - showing latest ${visibleEntries.length}` : ""}
           </div>

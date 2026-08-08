@@ -543,8 +543,14 @@ describe("AgentChatView", () => {
 
     render(<AgentChatView sessionId="agent-1" />);
 
-    expect(await screen.findByText("Work log")).toBeInTheDocument();
-    expect(screen.getByText("4 events")).toBeInTheDocument();
+    const group = await screen.findByText("Work log");
+    const article = group.closest("article") as HTMLElement;
+    // The collapsed group keeps the current step plus one line of context; the
+    // rest stays behind an explicit toggle rather than being dropped.
+    expect(article).toHaveTextContent("4 events - showing latest 2");
+    await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
+    expect(article).toHaveTextContent("4 events");
+    expect(within(article).getByText("Read file")).toBeInTheDocument();
   });
 
   it("surfaces concrete shell commands inside grouped work logs", async () => {
@@ -591,6 +597,7 @@ describe("AgentChatView", () => {
 
     const group = await screen.findByText("Work log");
     const article = group.closest("article") as HTMLElement;
+    await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
 
     expect(within(article).getByText("Get-ChildItem src/features/grid")).toBeInTheDocument();
     expect(within(article).getByText("cargo test -p Wardian commands::terminal::tests")).toBeInTheDocument();
@@ -613,7 +620,9 @@ describe("AgentChatView", () => {
     const group = await screen.findByText("Work log");
     const article = group.closest("article") as HTMLElement;
 
-    expect(within(article).getByText("4 events")).toBeInTheDocument();
+    expect(article).toHaveTextContent("4 events - showing latest 2");
+    await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
+
     expect(within(article).getByText("git status --short --branch")).toBeInTheDocument();
     expect(within(article).getByText("git log -1 --oneline --decorate")).toBeInTheDocument();
     expect(within(article).getByText("npm run docs:build")).toBeInTheDocument();

@@ -228,6 +228,36 @@ export function formatTimestamp(value: string): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/**
+ * How many work entries a collapsed group shows.
+ *
+ * The group's remaining job is "what is happening now", plus a count and a way
+ * to open the rest; the turn change card answers "what changed". Two keeps the
+ * current step with one line of context, which is what fits a grid cell without
+ * the log becoming the whole panel.
+ */
+export const WORK_GROUP_PREVIEW_ENTRIES = 2;
+
+/**
+ * Elapsed time across a work group, or null when the provider timestamped too
+ * few of the events to measure it. Never estimated from event count.
+ */
+export function workGroupDurationLabel(entries: readonly PresentedWorkEntry[]): string | null {
+  const times = entries
+    .flatMap((entry) => [entry.primary_event, ...entry.merged_result_events])
+    .map((event) => Date.parse(event.created_at ?? ""))
+    .filter((value) => Number.isFinite(value));
+  if (times.length < 2) return null;
+
+  const elapsedMs = Math.max(...times) - Math.min(...times);
+  if (elapsedMs < 1000) return null;
+
+  const totalSeconds = Math.round(elapsedMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
 export function workGroupTitleFromEntries(entries: PresentedWorkEntry[]): string {
   if (entries.some((entry) => entry.primary_event.kind === "error" || entry.primary_event.status === "failed")) {
     return "Work log with error";
