@@ -10,6 +10,15 @@ const mocks = vi.hoisted(() => {
     handlers: new Map<string, (payload: unknown) => void>(),
     animatedReset: vi.fn(),
     isAnimated: vi.fn(() => false),
+    cameraAnimate: vi.fn(),
+    cameraGetState: vi.fn(() => ({ x: 0, y: 0, angle: 0, ratio: 1 })),
+    cameraGetBoundedRatio: vi.fn((ratio: number) => ratio),
+    getViewportZoomedState: vi.fn((point: { x: number; y: number }, ratio: number) => ({
+      x: point.x,
+      y: point.y,
+      angle: 0,
+      ratio,
+    })),
     kill: vi.fn(),
     refresh: vi.fn(),
     setGraph: vi.fn(),
@@ -45,6 +54,9 @@ vi.mock("sigma", () => ({
         disable: vi.fn(),
         enable: vi.fn(),
         isAnimated: mocks.isAnimated,
+        animate: mocks.cameraAnimate,
+        getState: mocks.cameraGetState,
+        getBoundedRatio: mocks.cameraGetBoundedRatio,
       }),
       getMouseCaptor: () => ({
         on: (event: string, handler: (payload: unknown) => void) => mocks.handlers.set(event, handler),
@@ -60,6 +72,7 @@ vi.mock("sigma", () => ({
       refresh: mocks.refresh,
       setGraph: mocks.setGraph,
       setSetting: mocks.setSetting,
+      getViewportZoomedState: mocks.getViewportZoomedState,
       getNodeDisplayData: (node: string) => ({ x: 10, y: 10, size: 6, node }),
       framedGraphToViewport: (coords: { x: number; y: number }) => coords,
     };
@@ -115,6 +128,10 @@ describe("GraphCanvas", () => {
     mocks.animatedReset.mockClear();
     mocks.isAnimated.mockReset();
     mocks.isAnimated.mockReturnValue(false);
+    mocks.cameraAnimate.mockClear();
+    mocks.cameraGetState.mockClear();
+    mocks.cameraGetBoundedRatio.mockClear();
+    mocks.getViewportZoomedState.mockClear();
     mocks.kill.mockClear();
     mocks.refresh.mockClear();
     mocks.setGraph.mockClear();
@@ -286,6 +303,36 @@ describe("GraphCanvas", () => {
     expect(onOpenAgent).toHaveBeenCalledWith("a");
     expect(preventDefault).toHaveBeenCalled();
     expect(onContextMenu).toHaveBeenCalledWith("a", 10, 20);
+  });
+
+  it("zooms continuously from the wheel delta and keeps the cursor anchored", () => {
+    render(
+      <GraphCanvas
+        projection={projection}
+        onSelectAgent={vi.fn()}
+        onOpenAgent={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const event = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 120,
+      clientY: 80,
+      deltaY: -60,
+    });
+    screen.getByTestId("graph-canvas").dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(mocks.getViewportZoomedState).toHaveBeenCalledWith(
+      { x: 120, y: 80 },
+      expect.closeTo(1 / Math.sqrt(1.05), 8),
+    );
+    expect(mocks.cameraAnimate).toHaveBeenCalledWith(
+      expect.objectContaining({ ratio: expect.closeTo(1 / Math.sqrt(1.05), 8) }),
+      { duration: 1, easing: "linear" },
+    );
   });
 
   it("shows node and edge tooltips on hover", () => {

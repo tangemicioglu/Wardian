@@ -160,7 +160,7 @@ async function installCustomCloneIpcMock(page: Page, options: { includeRecentSor
             refresh_error: null,
             models: [{
               id: "sonnet",
-              display_name: "Latest Sonnet",
+              display_name: "Sonnet",
               effort_options: ["low", "medium", "high"],
               default_effort: null,
               is_default: true,

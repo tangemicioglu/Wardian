@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import type { AgentConfig, ProviderModelCatalog } from "../../types";
 
 const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -93,69 +93,64 @@ export function ProviderModelSelector({
   };
 
   return (
-    <div className={`rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] ${compact ? "px-2 py-1.5" : "p-3"}`}>
-      <div className={compact && showEffort ? "flex gap-2" : "grid gap-2"}>
-        <div className={compact && showEffort ? "min-w-0 flex-1" : "min-w-0"}>
-          <div className="mb-1 flex items-center justify-between gap-2">
-            <label className="block text-[10px] font-bold text-muted-neutral" htmlFor={modelId}>Model</label>
-            <button
-              aria-label="Refresh models"
-              className="rounded p-0.5 text-muted-neutral transition-colors hover:text-primary disabled:opacity-50"
-              disabled={loading || !provider}
-              onClick={() => void loadCatalog(true)}
-              title="Refresh models from the provider"
-              type="button"
-            >
-              <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
-            </button>
-          </div>
-          <select
-            aria-label="Model"
-            className="w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={loading || models.length === 0}
-            id={modelId}
-            onChange={(event) => chooseModel(event.target.value)}
-            value={modelValue}
-          >
-            <option value="">Provider default</option>
-            {modelIsCurrentButUndiscovered ? (
-              <option value={selection.model}>{selection.model} (saved)</option>
-            ) : null}
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>{model.display_name}</option>
-            ))}
-          </select>
-        </div>
-        {showEffort ? (
-          <div className={compact ? "w-24 shrink-0" : "min-w-0"}>
-            <label className="mb-1 block text-[10px] font-bold text-muted-neutral" htmlFor={effortId}>Effort</label>
+    <div className={compact ? "flex min-w-0 items-center gap-1.5" : "rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] p-3"}>
+      <div className={compact ? "flex min-w-0 items-center gap-1.5" : "grid gap-2"}>
+        <div className={compact && showEffort ? "min-w-0" : "min-w-0"}>
+          <label className={compact ? "sr-only" : "mb-1 block text-[10px] font-bold text-muted-neutral"} htmlFor={modelId}>Model</label>
+          <div className={compact ? "relative" : undefined}>
             <select
-              aria-label="Effort"
-              className="w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)]"
-              id={effortId}
-              onChange={(event) => onSelectionChange({
-                model: selection.model,
-                reasoning_effort: event.target.value || undefined,
-              })}
-              value={selection.reasoning_effort ?? ""}
+              aria-label="Model"
+              className={compact
+                ? "max-w-[15rem] appearance-none rounded border border-transparent bg-transparent px-1 py-1 pr-5 text-[11px] font-medium text-primary outline-none transition-colors hover:border-wardian-light focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-60"
+                : "w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-60"}
+              disabled={loading || models.length === 0}
+              id={modelId}
+              onChange={(event) => chooseModel(event.target.value)}
+              value={modelValue}
             >
-              <option value="">Provider default</option>
-              {effortOptions.map((effort) => (
-                <option key={effort} value={effort}>{effort}</option>
+              <option value="">{compact ? "Default" : "Provider default"}</option>
+              {modelIsCurrentButUndiscovered ? (
+                <option value={selection.model}>{selection.model} (saved)</option>
+              ) : null}
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>{model.display_name}</option>
               ))}
             </select>
+            {compact ? <ChevronDown className="pointer-events-none absolute right-1 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-neutral" aria-hidden="true" /> : null}
+          </div>
+        </div>
+        {showEffort ? (
+          <div className={compact ? "w-20 shrink-0" : "min-w-0"}>
+            <label className={compact ? "sr-only" : "mb-1 block text-[10px] font-bold text-muted-neutral"} htmlFor={effortId}>Effort</label>
+            <div className={compact ? "relative" : undefined}>
+              <select
+                aria-label="Effort"
+                className={compact
+                  ? "w-full appearance-none rounded border border-transparent bg-transparent px-1 py-1 pr-4 text-[11px] font-medium text-muted-neutral outline-none transition-colors hover:border-wardian-light focus:border-[var(--color-wardian-accent)]"
+                  : "w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)]"}
+                id={effortId}
+                onChange={(event) => onSelectionChange({
+                  model: selection.model,
+                  reasoning_effort: event.target.value || undefined,
+                })}
+                value={selection.reasoning_effort ?? ""}
+              >
+                <option value="">{compact ? "Default" : "Provider default"}</option>
+                {effortOptions.map((effort) => (
+                  <option key={effort} value={effort}>{effort}</option>
+                ))}
+              </select>
+              {compact ? <ChevronDown className="pointer-events-none absolute right-0.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-neutral" aria-hidden="true" /> : null}
+            </div>
           </div>
         ) : null}
       </div>
       {error ? (
-        <p className="mt-1.5 text-[10px] leading-4 text-wardian-warning" role="status">
-          {error}
-        </p>
-      ) : null}
-      {!error && catalog?.source === "provider_aliases" ? (
-        <p className="mt-1.5 text-[10px] leading-4 text-muted-neutral">
-          Provider aliases follow the installed CLI’s current model mapping.
-        </p>
+        compact ? (
+          <span className="max-w-[14rem] truncate text-[10px] text-wardian-warning" role="status" title={error}>{error}</span>
+        ) : (
+          <p className="mt-1.5 text-[10px] leading-4 text-wardian-warning" role="status">{error}</p>
+        )
       ) : null}
     </div>
   );

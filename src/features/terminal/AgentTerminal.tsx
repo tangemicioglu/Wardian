@@ -2224,6 +2224,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   onTerminalFocus,
   onPresentationStateChange,
   autoActivateWhenUnowned = false,
+  autoFocus = false,
 }: {
   sessionId: string;
   presentationId: string;
@@ -2242,6 +2243,8 @@ export const AgentTerminal = memo(function AgentTerminal({
    * lease-passive so opening a second view cannot steal a live terminal.
    */
   autoActivateWhenUnowned?: boolean;
+  /** Focuses and activates this visible presentation once after it becomes ready. */
+  autoFocus?: boolean;
   onPresentationStateChange?: (
     brokerState: TerminalBrokerState,
     presentationState: TerminalPresentationState | null,
@@ -2271,6 +2274,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   const rendererRestoreRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoreEvictedRendererRef = useRef<() => Promise<void>>(async () => undefined);
   const rendererReadyRef = useRef(false);
+  const autoFocusAttemptedRef = useRef(false);
   const revealGenerationRef = useRef(0);
   const physicalIntersectionRef = useRef(typeof IntersectionObserver === "undefined");
   const rendererLifecycleActiveRef = useRef(
@@ -2661,6 +2665,26 @@ export const AgentTerminal = memo(function AgentTerminal({
     touchSessionWebglIfActive(terminalKey);
     onTerminalFocus?.();
   }, [terminalKey, onTerminalFocus]);
+
+  useEffect(() => {
+    if (!autoFocus) {
+      autoFocusAttemptedRef.current = false;
+      return;
+    }
+    if (
+      autoFocusAttemptedRef.current
+      || visibility !== "visible"
+      || renderState !== "mounted"
+      || !rendererReady
+      || !xtermRef.current
+    ) {
+      return;
+    }
+
+    autoFocusAttemptedRef.current = true;
+    requestActivation();
+    focusTerminal();
+  }, [autoFocus, focusTerminal, rendererReady, renderState, requestActivation, visibility]);
 
   const handleWheel = useCallback((event: {
     deltaMode: number;

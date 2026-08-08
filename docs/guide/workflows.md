@@ -8,7 +8,7 @@ Use it when a repeated multi-step agent process needs a saved visual flow instea
 
 Before creating a workflow from scratch, see [Workflow Samples](../workflows/samples.md)
 for editable, generic examples of a code-change review, scheduled brief,
-research brief, and incident triage flow.
+research brief, incident triage, and conversation pattern review flow.
 
 ![Wardian Workflow view showing the workflow sidebar, builder canvas, connected nodes, and run controls](../assets/screenshots/workflows/builder-canvas.png)
 

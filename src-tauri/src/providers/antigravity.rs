@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use wardian_core::models::chat::AgentChatRole;
 use wardian_core::models::provider::{AgentEvent, AgentProvider};
 use wardian_core::models::AgentConfig;
@@ -172,6 +172,25 @@ impl AntigravityProvider {
         }
 
         Ok(messages)
+    }
+
+    /// Returns the newest durable user-message step in an Antigravity
+    /// conversation. The step index is the provider-owned receipt cursor used
+    /// by the live watcher to acknowledge a submitted turn.
+    pub fn latest_user_message_step_index(path: &Path) -> Result<Option<u64>, String> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| format!("failed to open Antigravity conversation database: {error}"))?;
+        let mut statement = connection
+            .prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1")
+            .map_err(|error| format!("failed to read Antigravity user-message steps: {error}"))?;
+        statement
+            .query_row([], |row| row.get::<_, i64>(0))
+            .optional()
+            .map(|step_index| step_index.map(|index| index.max(0) as u64))
+            .map_err(|error| format!("failed to query Antigravity user-message steps: {error}"))
     }
 
     pub fn summarize_conversation(
@@ -800,5 +819,42 @@ SET dp0=%~dp0
             &[conversation_id.to_string()],
         )
         .is_none());
+    }
+
+    #[test]
+    fn latest_user_message_step_index_reads_only_user_message_steps() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database = temp.path().join("conversation.db");
+        let connection = Connection::open(&database).expect("open database");
+        connection
+            .execute_batch(
+                "CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB);",
+            )
+            .expect("create steps");
+        connection
+            .execute(
+                "INSERT INTO steps (idx, step_type, step_payload) VALUES (?1, ?2, ?3)",
+                params![4_i64, 14_i64, Vec::<u8>::new()],
+            )
+            .expect("insert first user message");
+        connection
+            .execute(
+                "INSERT INTO steps (idx, step_type, step_payload) VALUES (?1, ?2, ?3)",
+                params![9_i64, 15_i64, Vec::<u8>::new()],
+            )
+            .expect("insert assistant response");
+        connection
+            .execute(
+                "INSERT INTO steps (idx, step_type, step_payload) VALUES (?1, ?2, ?3)",
+                params![12_i64, 14_i64, Vec::<u8>::new()],
+            )
+            .expect("insert second user message");
+        drop(connection);
+
+        assert_eq!(
+            AntigravityProvider::latest_user_message_step_index(&database)
+                .expect("read latest user message"),
+            Some(12)
+        );
     }
 }

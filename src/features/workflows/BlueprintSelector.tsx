@@ -23,7 +23,7 @@ export function BlueprintSelector({ selectedPath, onOpen, onNew }: BlueprintSele
   }, []);
 
   return (
-    <div className="blueprint-selector flex items-center gap-2" data-testid="blueprint-selector">
+    <div className="blueprint-selector flex items-center gap-2" data-testid="blueprint-selector" data-tour-target="workflow-blueprint-selector">
       <select
         className="rounded border border-wardian-border bg-[var(--color-wardian-bg)] px-2 py-1 text-xs text-wardian-text"
         value={selectedPath ?? ''}

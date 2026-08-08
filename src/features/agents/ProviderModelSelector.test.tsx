@@ -56,7 +56,7 @@ describe("ProviderModelSelector", () => {
     });
   });
 
-  it("refreshes the provider catalogue on demand", async () => {
+  it("does not expose a manual catalogue refresh control", async () => {
     invokeMock.mockResolvedValue({
       provider: "opencode",
       version: "1.18.3",
@@ -64,8 +64,6 @@ describe("ProviderModelSelector", () => {
       refresh_error: null,
       models: [],
     });
-    const user = userEvent.setup();
-
     render(
       <ProviderModelSelector
         idPrefix="refresh"
@@ -79,12 +77,7 @@ describe("ProviderModelSelector", () => {
       provider: "opencode",
       forceRefresh: false,
     }));
-    await user.click(screen.getByRole("button", { name: "Refresh models" }));
-
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("list_provider_model_catalog", {
-      provider: "opencode",
-      forceRefresh: true,
-    }));
+    expect(screen.queryByRole("button", { name: "Refresh models" })).not.toBeInTheDocument();
   });
 
   it("refreshes an open selector every five minutes", async () => {

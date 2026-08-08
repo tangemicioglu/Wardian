@@ -1,6 +1,6 @@
 # Workflow Samples
 
-Wardian ships four editable workflow templates under
+Wardian ships five editable workflow templates under
 `<WARDIAN_HOME>/library/workflows/samples/`. They are copied only when missing,
 so an edit to a sample remains yours. Samples never run or create schedules on
 their own.
@@ -11,6 +11,7 @@ their own.
 | `scheduled-brief.md` | A recurring status, task, or project brief. | Collect, synthesize, notify; attach a schedule separately. |
 | `research-brief.md` | A recommendation that needs evidence and a review boundary. | Research, synthesis, approval, delivery. |
 | `incident-triage.md` | A human-supervised operational response. | Read-only triage, approval, scoped remediation, notification. |
+| `conversation-pattern-review.md` | An Evolver's recurring review of durable conversation archives. | Bounded archive review, recommendations, operator notification. |
 
 Start by copying or editing the closest sample, then choose the actual agents,
 workspace, inputs, commands, destinations, and approval boundary for the work.

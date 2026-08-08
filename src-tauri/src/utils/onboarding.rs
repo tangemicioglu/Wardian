@@ -11,6 +11,17 @@ pub struct OnboardingHintsState {
     pub dismissed_hint_ids: Vec<String>,
     #[serde(default = "default_contextual_tips_enabled")]
     pub contextual_tips_enabled: bool,
+    #[serde(default = "default_guided_tour_state")]
+    pub guided_tour_state: GuidedTourState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GuidedTourState {
+    Unseen,
+    InProgress,
+    Skipped,
+    Completed,
 }
 
 impl Default for OnboardingHintsState {
@@ -18,12 +29,28 @@ impl Default for OnboardingHintsState {
         Self {
             dismissed_hint_ids: Vec::new(),
             contextual_tips_enabled: true,
+            guided_tour_state: GuidedTourState::Unseen,
         }
     }
 }
 
 fn default_contextual_tips_enabled() -> bool {
     true
+}
+
+fn default_guided_tour_state() -> GuidedTourState {
+    GuidedTourState::Unseen
+}
+
+fn default_onboarding_state_for_runtime() -> OnboardingHintsState {
+    let mut state = OnboardingHintsState::default();
+    // Native E2E launches a throwaway desktop app with an empty Wardian home.
+    // That app is a test harness, not a first-time user, and an onboarding
+    // overlay would intercept the workbench interactions being exercised.
+    if std::env::var_os("WARDIAN_E2E_NATIVE_HOME").is_some() {
+        state.guided_tour_state = GuidedTourState::Skipped;
+    }
+    state
 }
 
 pub fn load_onboarding_hints() -> Result<OnboardingHintsState, String> {
@@ -43,6 +70,13 @@ pub fn set_contextual_tips_enabled(enabled: bool) -> Result<OnboardingHintsState
     save_onboarding_hints_to_path(&path, &state)
 }
 
+pub fn set_guided_tour_state(state: GuidedTourState) -> Result<OnboardingHintsState, String> {
+    let path = onboarding_hints_path()?;
+    let mut hints = load_onboarding_hints_from_path(&path).unwrap_or_default();
+    hints.guided_tour_state = state;
+    save_onboarding_hints_to_path(&path, &hints)
+}
+
 pub fn reset_onboarding_hints() -> Result<OnboardingHintsState, String> {
     let path = onboarding_hints_path()?;
     let mut state = load_onboarding_hints_from_path(&path).unwrap_or_default();
@@ -57,12 +91,17 @@ fn onboarding_hints_path() -> Result<PathBuf, String> {
 
 fn load_onboarding_hints_from_path(path: &Path) -> Result<OnboardingHintsState, String> {
     if !path.exists() {
-        return Ok(OnboardingHintsState::default());
+        return Ok(default_onboarding_state_for_runtime());
     }
 
     let content = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let state = serde_json::from_str::<OnboardingHintsState>(&content)
+    let mut state = serde_json::from_str::<OnboardingHintsState>(&content)
         .map_err(|error| error.to_string())?;
+    // Existing users may already have this file because they dismissed a
+    // contextual hint. Do not present a new first-launch choice to them.
+    if !content.contains("\"guided_tour_state\"") {
+        state.guided_tour_state = GuidedTourState::Skipped;
+    }
     Ok(normalize_onboarding_state(state))
 }
 
@@ -165,6 +204,7 @@ mod tests {
                     "another-hint:v1".to_string(),
                 ],
                 contextual_tips_enabled: false,
+                guided_tour_state: GuidedTourState::Unseen,
             },
         )
         .expect("save hints");
@@ -192,6 +232,42 @@ mod tests {
 
         assert_eq!(loaded.dismissed_hint_ids, vec!["hint:v1"]);
         assert!(loaded.contextual_tips_enabled);
+        assert_eq!(loaded.guided_tour_state, GuidedTourState::Skipped);
+    }
+
+    #[test]
+    fn guided_tour_choice_persists_under_wardian_home() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().expect("temp dir");
+        unsafe { std::env::set_var("WARDIAN_HOME", home.path()) };
+
+        let saved = set_guided_tour_state(GuidedTourState::InProgress).expect("save tour choice");
+        assert_eq!(saved.guided_tour_state, GuidedTourState::InProgress);
+
+        let loaded = load_onboarding_hints().expect("load tour choice");
+        assert_eq!(loaded.guided_tour_state, GuidedTourState::InProgress);
+    }
+
+    #[test]
+    fn native_e2e_home_does_not_trigger_first_launch_tour() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().expect("temp dir");
+        let previous_marker = std::env::var_os("WARDIAN_E2E_NATIVE_HOME");
+        unsafe {
+            std::env::set_var("WARDIAN_HOME", home.path());
+            std::env::set_var("WARDIAN_E2E_NATIVE_HOME", home.path());
+        }
+
+        let loaded = load_onboarding_hints().expect("load native e2e home");
+
+        assert_eq!(loaded.guided_tour_state, GuidedTourState::Skipped);
+        unsafe {
+            if let Some(marker) = previous_marker {
+                std::env::set_var("WARDIAN_E2E_NATIVE_HOME", marker);
+            } else {
+                std::env::remove_var("WARDIAN_E2E_NATIVE_HOME");
+            }
+        }
     }
 
     #[test]

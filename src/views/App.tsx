@@ -25,6 +25,7 @@ import type { Watchlist, WatchlistPrefs, AgentInteractions, AgentTeam, Watchlist
 import { DEFAULT_WATCHLIST_PREFS } from "../layout/watchlist/types";
 
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { OnboardingTour, OnboardingWelcome } from "../components/OnboardingTour";
 import { useConfirm } from "../components/ConfirmDialog";
 import { SidebarIconRail, SidebarTab } from "../layout/SidebarIconRail";
 import { SidebarContentPane } from "../layout/SidebarContentPane";
@@ -40,6 +41,7 @@ import { completionPreviewFromTranscript } from "../features/queue/completionPre
 import { useLibraryStore } from "../store/useLibraryStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useLayoutStore } from "../store/useLayoutStore";
+import { useOnboardingStore } from "../store/useOnboardingStore";
 import { submitInputToAgent, submitInputToAgents } from "../utils/terminalInput";
 import { CustomCloneModal } from "../features/agents/CustomCloneModal";
 import { WorkbenchConflictDialog } from "../features/workbench/WorkbenchConflictDialog";
@@ -456,6 +458,12 @@ function AppBody() {
     setSettingsOpen,
     toggleSettings,
   } = useSettingsStore();
+  const onboardingHintsLoaded = useOnboardingStore((state) => state.hintsLoaded);
+  const guidedTourState = useOnboardingStore((state) => state.guidedTourState);
+  const loadOnboardingHints = useOnboardingStore((state) => state.loadOnboardingHints);
+  const setGuidedTourState = useOnboardingStore((state) => state.setGuidedTourState);
+  const [guidedTourMode, setGuidedTourMode] = useState<"setup" | "review">("setup");
+  const [tourEvolverSessionId, setTourEvolverSessionId] = useState<string | null>(null);
   const appUpdate = useAppUpdate();
   const [updateNoticeDismissed, setUpdateNoticeDismissed] = useState(false);
   const resolvedTitlebarTelemetryVisible = app_settings_loaded && titlebarTelemetryVisible;
@@ -547,6 +555,12 @@ function AppBody() {
       void loadAppSettings();
     }
   }, [app_settings_loaded, loadAppSettings]);
+
+  useEffect(() => {
+    if (!onboardingHintsLoaded) {
+      void loadOnboardingHints();
+    }
+  }, [loadOnboardingHints, onboardingHintsLoaded]);
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -1058,6 +1072,47 @@ function AppBody() {
     });
   }, [workbenchNavigation]);
 
+  const beginGuidedTour = useCallback((mode: "setup" | "review") => {
+    setTourEvolverSessionId(null);
+    setGuidedTourMode(mode);
+    setSettingsOpen(false);
+    void setGuidedTourState("in_progress");
+  }, [setGuidedTourState, setSettingsOpen]);
+
+  const leaveGuidedTour = useCallback(() => {
+    setTourEvolverSessionId(null);
+    void setGuidedTourState("skipped");
+  }, [setGuidedTourState]);
+
+  const completeGuidedTour = useCallback(() => {
+    setTourEvolverSessionId(null);
+    void setGuidedTourState("completed");
+  }, [setGuidedTourState]);
+
+  const prepareTourAgentCreation = useCallback(() => {
+    setActiveTab("agent-config");
+    setLeftCollapsed(false);
+  }, [setLeftCollapsed]);
+
+  const prepareTourEvolver = useCallback((agent: AgentConfig) => {
+    setTourEvolverSessionId(agent.session_id);
+    openAgent(agent.session_id);
+  }, [openAgent]);
+
+  const prepareTourGraph = useCallback(() => {
+    openAuxiliarySurface({ surface_type: "graph" });
+  }, [openAuxiliarySurface]);
+
+  const prepareTourWorkflow = useCallback(() => {
+    openWorkflowsView();
+  }, [openWorkflowsView]);
+
+  useEffect(() => {
+    const startTour = () => beginGuidedTour("review");
+    window.addEventListener("wardian:start-guided-tour", startTour);
+    return () => window.removeEventListener("wardian:start-guided-tour", startTour);
+  }, [beginGuidedTour]);
+
   const scheduleAgentOverviewScroll = useCallback((sessionId: string) => {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -1237,6 +1292,7 @@ function AppBody() {
           theme={theme}
           visibility={lifecycle?.visible === false ? "hidden" : "visible"}
           render_state={lifecycle?.visible === false ? "suspended" : "mounted"}
+          auto_focus_terminal={resourceKey === tourEvolverSessionId}
           on_title_change={handleTitleChange}
           on_refresh_agents={() => { void fetchAgents(); }}
           rebind_candidates={agents}
@@ -1651,6 +1707,21 @@ function AppBody() {
             {settingsOpen && (
             <SettingsModal appUpdate={appUpdate} isOpen={true} onClose={() => setSettingsOpen(false)} />
             )}
+            {onboardingHintsLoaded && guidedTourState === "unseen" ? (
+              <OnboardingWelcome onStart={() => beginGuidedTour("setup")} onSkip={leaveGuidedTour} />
+            ) : null}
+            {onboardingHintsLoaded && guidedTourState === "in_progress" ? (
+              <OnboardingTour
+                agents={agents}
+                reviewMode={guidedTourMode === "review"}
+                onClose={leaveGuidedTour}
+                onComplete={completeGuidedTour}
+                onPrepareAgentCreation={prepareTourAgentCreation}
+                onPrepareEvolver={prepareTourEvolver}
+                onPrepareGraph={prepareTourGraph}
+                onPrepareWorkflow={prepareTourWorkflow}
+              />
+            ) : null}
           </>}
 
           roster={<AgentWatchlist

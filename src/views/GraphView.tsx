@@ -356,7 +356,7 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
       </div>
 
       <div className={`graph-body ${inspectorOpen ? "graph-body--inspector-open" : "graph-body--inspector-hidden"}`}>
-        <div className="graph-canvas-shell">
+        <div className="graph-canvas-shell" data-tour-target="graph-canvas">
           <div className="graph-onboarding-hint">
             <OnboardingHint
               id="graph-topology-actions:v1"
@@ -413,6 +413,12 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
               <h2>{inspectedAgent.label}</h2>
               <p>{inspectedAgent.agent.agent_class} / {formatProviderName(inspectedAgent.agent.provider)}</p>
               <p>{formatAgentStatusLabel(inspectedAgentStatus ?? undefined)}</p>
+              {inspectedAgent.agent.description?.trim() ? (
+                <div className="graph-inspector-description">
+                  <div className="label-small">Description</div>
+                  <p>{inspectedAgent.agent.description.trim()}</p>
+                </div>
+              ) : null}
               <p className="graph-inspector-path">{inspectedAgent.agent.folder || "No workspace"}</p>
               <dl className="graph-telemetry">
                 <div>

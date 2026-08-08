@@ -239,23 +239,43 @@ fn mark_run_status(schedule_id: &str, status: String, error: Option<String>) {
 fn persist_runtime(
     processed: &[wardian_core::models::WorkflowSchedule],
     removed: &std::collections::HashSet<String>,
-) {
+) -> bool {
     let mut fresh = load_schedules();
+    let original_len = fresh.len();
     fresh.retain(|schedule| !removed.contains(&schedule.id));
+    let mut changed = fresh.len() != original_len;
+
     for fresh_schedule in fresh.iter_mut() {
         if let Some(processed_schedule) = processed
             .iter()
             .find(|schedule| schedule.id == fresh_schedule.id)
         {
-            fresh_schedule.next_run_epoch_ms = processed_schedule.next_run_epoch_ms;
-            fresh_schedule.paused_remaining_ms = processed_schedule.paused_remaining_ms;
-            fresh_schedule.schedule.occurrence_count = processed_schedule.schedule.occurrence_count;
-            fresh_schedule.last_run_status = processed_schedule.last_run_status.clone();
-            fresh_schedule.last_run_error = processed_schedule.last_run_error.clone();
-            fresh_schedule.last_run_epoch_ms = processed_schedule.last_run_epoch_ms;
+            let runtime_changed = fresh_schedule.next_run_epoch_ms
+                != processed_schedule.next_run_epoch_ms
+                || fresh_schedule.paused_remaining_ms != processed_schedule.paused_remaining_ms
+                || fresh_schedule.schedule.occurrence_count
+                    != processed_schedule.schedule.occurrence_count
+                || fresh_schedule.last_run_status != processed_schedule.last_run_status
+                || fresh_schedule.last_run_error != processed_schedule.last_run_error
+                || fresh_schedule.last_run_epoch_ms != processed_schedule.last_run_epoch_ms;
+
+            if runtime_changed {
+                fresh_schedule.next_run_epoch_ms = processed_schedule.next_run_epoch_ms;
+                fresh_schedule.paused_remaining_ms = processed_schedule.paused_remaining_ms;
+                fresh_schedule.schedule.occurrence_count =
+                    processed_schedule.schedule.occurrence_count;
+                fresh_schedule.last_run_status = processed_schedule.last_run_status.clone();
+                fresh_schedule.last_run_error = processed_schedule.last_run_error.clone();
+                fresh_schedule.last_run_epoch_ms = processed_schedule.last_run_epoch_ms;
+                changed = true;
+            }
         }
     }
-    let _ = save_schedules(&fresh);
+
+    if changed {
+        let _ = save_schedules(&fresh);
+    }
+    changed
 }
 
 pub async fn start_scheduler(app: AppHandle) {
@@ -508,6 +528,28 @@ edges:
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let mut schedules = vec![schedule(true, now.saturating_sub(1_000))];
         assert!(wardian_core::schedule::plan_tick(&mut schedules, now).is_empty());
+    }
+
+    #[test]
+    fn idle_scheduler_tick_does_not_rewrite_schedules() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set(home.path(), &mock_script_path());
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let schedules = vec![schedule(false, now + 60_000)];
+        wardian_core::schedule::save_schedules(&schedules).unwrap();
+
+        let path = home.path().join("library").join("schedules.json");
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let processed = wardian_core::schedule::load_schedules();
+
+        assert!(!persist_runtime(
+            &processed,
+            &std::collections::HashSet::new()
+        ));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            before
+        );
     }
 
     #[test]
