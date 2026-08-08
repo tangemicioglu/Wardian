@@ -2,7 +2,12 @@ import { FileText, GitCompare, ListChecks, Search, ShieldAlert, Terminal, Wrench
 import type { LucideIcon } from "lucide-react";
 
 import type { AgentChatEvent } from "../../types";
-import { isGenericActivityTitle, type ActivityBlockModel, type ActivityTone } from "../grid/activityBlocks";
+import {
+  isGenericActivityTitle,
+  shouldCollapseActivity,
+  type ActivityBlockModel,
+  type ActivityTone,
+} from "../grid/activityBlocks";
 import { shouldShowStatusEvent, type PresentedWorkEntry } from "../grid/workLogPresentation";
 
 /**
@@ -151,6 +156,42 @@ export function toolNameFromEvent(event: AgentChatEvent): string | null {
     stringMetadata(event.metadata, "name") ||
     stringMetadata(event.metadata, "tool")
   );
+}
+
+/**
+ * Patch text a provider supplied as tool input rather than as event text.
+ *
+ * Codex's `apply_patch` is the whole edit path for that provider, and the
+ * normalizer keeps its argument verbatim under `metadata.tool_input_text`
+ * because the payload is a raw string, not an object. The event itself carries
+ * no text and no command, so without this the row renders as the bare word
+ * "Running" while the entire patch sits unread in metadata.
+ *
+ * Only text that actually looks like a patch is returned; other tools put
+ * ordinary arguments in the same field.
+ */
+export function toolPatchText(event: AgentChatEvent): string | null {
+  const input = stringMetadata(event.metadata, "tool_input_text");
+  if (!input) return null;
+  return /^\*\*\* Begin Patch|^diff --git |^@@ |^\*\*\* (?:Add|Update|Delete) File:/m.test(input) ? input : null;
+}
+
+/**
+ * Substitutes provider-supplied patch text as the block's content when the
+ * event itself carried none, so the patch flows through the existing collapse,
+ * copy, and diff-panel machinery instead of being special-cased at render time.
+ * Blocks that already contain the patch are returned untouched.
+ */
+export function withPatchContent(event: AgentChatEvent, block: ActivityBlockModel): ActivityBlockModel {
+  const patch = toolPatchText(event);
+  if (!patch || block.content.includes(patch.slice(0, 80))) return block;
+  return {
+    ...block,
+    content: patch,
+    language: "diff",
+    lineCount: patch.split(/\r\n|\r|\n/).length,
+    defaultCollapsed: shouldCollapseActivity(patch),
+  };
 }
 
 export function stringMetadata(metadata: Record<string, unknown>, key: string): string | null {

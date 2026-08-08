@@ -1,5 +1,6 @@
 import type { AgentChatEvent } from "../../types";
 import { changedPathsFromEvents, type PresentedChatRow } from "../grid/workLogPresentation";
+import { toolPatchText } from "./chatPresentation";
 import { structuredEditFromEvent } from "./structuredEdit";
 
 /**
@@ -66,10 +67,52 @@ function mergeFile(files: Map<string, TurnChangeFile>, candidate: TurnChangeFile
   if (candidate.kind === "created") existing.kind = "created";
 }
 
+/**
+ * Splits patch text into per-file counts.
+ *
+ * `diffStats` totals a whole patch, which is enough for a single tool row but
+ * not for a card that lists files individually. Both patch dialects in use are
+ * handled: git's `diff --git` headers and the `*** Update File:` headers Codex
+ * emits from `apply_patch`.
+ */
+function patchChanges(patch: string): TurnChangeFile[] {
+  const files: TurnChangeFile[] = [];
+  let current: TurnChangeFile | null = null;
+
+  patch.split(/\r\n|\r|\n/).forEach((line) => {
+    const gitHeader = /^diff --git a\/(?:.+?) b\/(.+)$/.exec(line);
+    const patchHeader = /^\*\*\* (Add|Update|Delete) File:\s+(.+)$/.exec(line);
+    if (gitHeader || patchHeader) {
+      current = {
+        path: (gitHeader?.[1] ?? patchHeader?.[2] ?? "").trim(),
+        added: 0,
+        removed: 0,
+        kind: patchHeader?.[1] === "Add" ? "created" : "edited",
+        counts_unknown: false,
+      };
+      files.push(current);
+      return;
+    }
+    if (!current) return;
+    // `+++`/`---` are file headers rather than content in unified diffs.
+    if (/^\+[^+]/.test(line)) current.added += 1;
+    if (/^-[^-]/.test(line)) current.removed += 1;
+  });
+
+  return files.filter((file) => file.path.length > 0);
+}
+
 function collectTurnChanges(events: AgentChatEvent[]): TurnChangeFile[] {
   const files = new Map<string, TurnChangeFile>();
 
   events.forEach((event) => {
+    const patch = toolPatchText(event) ?? (isDiffEvent(event) ? (event.text ?? "") : "");
+    const patched = patch ? patchChanges(patch) : [];
+    if (patched.length > 0) {
+      patched.forEach((file) => mergeFile(files, file));
+      return;
+    }
+
     const edit = structuredEditFromEvent(event);
     if (edit?.file_path) {
       mergeFile(files, {
@@ -104,10 +147,14 @@ function writtenPaths(event: AgentChatEvent): string[] {
     const paths = declared.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
     if (paths.length > 0) return paths;
   }
-  if (event.language === "diff" || /^diff --git /m.test(event.text ?? "")) {
+  if (isDiffEvent(event)) {
     return changedPathsFromEvents([event]);
   }
   return [];
+}
+
+function isDiffEvent(event: AgentChatEvent): boolean {
+  return event.language === "diff" || /^diff --git |^\*\*\* (?:Add|Update|Delete) File:/m.test(event.text ?? "");
 }
 
 /**

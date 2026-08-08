@@ -691,9 +691,12 @@ describe("AgentChatView", () => {
 
     render(<AgentChatView sessionId="agent-1" />);
 
-    expect(await screen.findByTestId("tool-diff-panel")).toHaveTextContent("1 file");
-    expect(screen.getByText("+1")).toBeInTheDocument();
-    expect(screen.getByText("-1")).toBeInTheDocument();
+    const diffPanel = await screen.findByTestId("tool-diff-panel");
+    expect(diffPanel).toHaveTextContent("1 file");
+    // Scoped to the panel: the turn change card reports the same counts for the
+    // same patch, so an unscoped query now matches both.
+    expect(within(diffPanel).getByText("+1")).toBeInTheDocument();
+    expect(within(diffPanel).getByText("-1")).toBeInTheDocument();
     expect(screen.getByTestId("tool-todo-list")).toHaveTextContent("Inspect transcript");
     expect(screen.getByTestId("tool-todo-list")).toHaveTextContent("Add lazy rows");
   });
@@ -871,9 +874,15 @@ describe("AgentChatView", () => {
 
     const panel = await screen.findByTestId("tool-diff-panel");
     expect(panel).toHaveTextContent("2 files");
-    expect(screen.getByText("+2")).toBeInTheDocument();
-    expect(screen.getByText("-2")).toBeInTheDocument();
+    expect(within(panel).getByText("+2")).toBeInTheDocument();
+    expect(within(panel).getByText("-2")).toBeInTheDocument();
     expect(within(panel).queryByText("two added")).not.toBeInTheDocument();
+
+    // The turn card splits the same patch per file rather than totalling it.
+    const changeCard = screen.getByTestId("turn-change-card");
+    expect(changeCard).toHaveTextContent("2 changed files");
+    expect(within(changeCard).getByText("one.ts")).toBeInTheDocument();
+    expect(within(changeCard).getByText("two.ts")).toBeInTheDocument();
   });
 
   it("lazy-loads older transcript rows on demand", async () => {

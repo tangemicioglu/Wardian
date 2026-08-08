@@ -28,6 +28,7 @@ import {
   toneDotClass,
   toolIconClass,
   toolPresentation,
+  withPatchContent,
   workGroupDurationLabel,
   workGroupTitleFromEntries,
   WORK_GROUP_PREVIEW_ENTRIES,
@@ -185,7 +186,7 @@ export function StatusRow({ event, block }: { event: AgentChatEvent; block: Acti
 export function ActivityRow({
   event,
   entry,
-  block,
+  block: rawBlock,
   approvalIsLive,
   isSubmitting,
   onApprovalSubmit,
@@ -197,6 +198,7 @@ export function ActivityRow({
   isSubmitting: boolean;
   onApprovalSubmit: (response: string) => void;
 }) {
+  const block = withPatchContent(event, rawBlock);
   const [expanded, setExpanded] = useState(!block.defaultCollapsed);
   const visibleContent = expanded ? block.content : previewContent(block.content);
   const isApproval = block.kind === "approval" || block.tone === "warning";

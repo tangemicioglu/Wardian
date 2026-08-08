@@ -1,5 +1,5 @@
 import type { AgentChatEvent } from "../../types";
-import { toolNameFromEvent } from "./chatPresentation";
+import { stringMetadata, toolNameFromEvent } from "./chatPresentation";
 
 /**
  * Structured file edits recovered from provider tool input.
@@ -61,10 +61,27 @@ function editPath(event: AgentChatEvent, input: Record<string, unknown>): string
   return (
     asString(input.file_path) ??
     asString(input.filePath) ??
+    asString(input.AbsolutePath) ??
+    asString(input.TargetFile) ??
     asString(input.path) ??
     asString(event.metadata.file_path) ??
     event.path
   );
+}
+
+/**
+ * The tool's own name, however the provider chose to report it.
+ *
+ * `toolNameFromEvent` reads `metadata.tool_name`, which only some providers
+ * populate; the rest put the name in the event title or `raw_type`. Falling
+ * back matters because a whole-file write is recognized by name alone — without
+ * it, Claude's `Write` produced no panel at all despite carrying the full file.
+ * This is deliberately not folded into `toolNameFromEvent`: that function also
+ * decides whether a row has enough identity to be worth showing, and accepting
+ * `raw_type` there would keep provider keepalives on screen.
+ */
+function toolIdentity(event: AgentChatEvent): string {
+  return toolNameFromEvent(event) ?? event.title?.trim() ?? stringMetadata(event.metadata, "raw_type") ?? "";
 }
 
 /**
@@ -93,8 +110,8 @@ export function structuredEditFromEvent(event: AgentChatEvent): StructuredEdit |
 
   if (hunks.length === 0) {
     // `Write` supplies whole-file content with no prior state to diff against.
-    const content = asString(input.content) ?? asString(input.contents);
-    const writesWholeFile = /^(write|create_file|createfile|write_file)$/i.test(toolNameFromEvent(event) ?? "");
+    const content = asString(input.content) ?? asString(input.contents) ?? asString(input.CodeContent);
+    const writesWholeFile = /^(write|create_file|createfile|write_file|write_to_file)$/i.test(toolIdentity(event));
     if (content === null || !writesWholeFile) return null;
     kind = "create";
     hunks.push({ removed: [], added: toLines(content) });
