@@ -32,6 +32,7 @@ import {
   TONE_CLASSES,
   type ToolPresentation,
 } from "./chatPresentation";
+import { structuredEditDiffText, structuredEditFromEvent, type StructuredEdit } from "./structuredEdit";
 
 const ROLE_CLASSES: Record<AgentChatRole, string> = {
   assistant: "border-wardian-light bg-[var(--color-wardian-card)]",
@@ -187,8 +188,15 @@ export function ActivityRow({
   const details = entry?.details ?? presentation.details;
   const Icon = presentation.icon;
   const output = outputWithoutCommandPrefix(block.content, event.command);
-  const changedPaths = entry?.changed_paths ?? changedPathsFromEvents([event]);
-  const copyValue = entry && entry.merged_result_events.length > 0 ? formatPresentedEntryForCopy(entry) : block.content;
+  const structuredEdit = structuredEditFromEvent(event);
+  // The panel names the file and counts the lines, so the path chips below it
+  // would only repeat what the reader is already looking at.
+  const changedPaths = structuredEdit ? [] : entry?.changed_paths ?? changedPathsFromEvents([event]);
+  const copyValue = structuredEdit
+    ? structuredEditDiffText(structuredEdit)
+    : entry && entry.merged_result_events.length > 0
+      ? formatPresentedEntryForCopy(entry)
+      : block.content;
 
   return (
     <article
@@ -258,6 +266,7 @@ export function ActivityRow({
         content={event.command ? outputWithoutCommandPrefix(visibleContent, event.command) : visibleContent}
         output={output}
         presentation={presentation}
+        structuredEdit={structuredEdit}
       />
     </article>
   );
@@ -268,13 +277,21 @@ export function ToolBody({
   content,
   output,
   presentation,
+  structuredEdit,
 }: {
   block: ActivityBlockModel;
   content: string;
   output: string;
   presentation: ToolPresentation;
+  structuredEdit?: StructuredEdit | null;
 }) {
   const safeContent = content.trimEnd() || "No activity content";
+
+  // Structured input beats text sniffing: providers that emit no patch text at
+  // all still describe the change here, and it is exact rather than inferred.
+  if (structuredEdit) {
+    return <StructuredEditPanel edit={structuredEdit} />;
+  }
 
   if (presentation.kind === "todo") {
     const items = parseTodoItems(output || safeContent);
@@ -324,6 +341,29 @@ export function ToolBody({
   }
 
   return <CodePanel content={safeContent} language={block.language} />;
+}
+
+/**
+ * Renders a change recovered from provider tool input. Deliberately labelled
+ * "Before/after" rather than shown as a positioned diff: these tools carry no
+ * line numbers, so the panel states exactly what the provider supplied.
+ */
+export function StructuredEditPanel({ edit }: { edit: StructuredEdit }) {
+  return (
+    <div className="mt-2 rounded border border-wardian-light bg-[var(--color-wardian-sidebar-primary)]" data-testid="tool-structured-edit">
+      <div className="flex flex-wrap items-center gap-2 border-b border-wardian-light px-2 py-1 text-[11px] leading-4 text-muted-neutral">
+        <span>{edit.kind === "create" ? "New file" : "Before/after"}</span>
+        <span className="text-[var(--color-wardian-success)]">+{edit.added}</span>
+        <span className="text-[var(--color-wardian-error)]">-{edit.removed}</span>
+        {edit.file_path ? (
+          <span className="max-w-[220px] truncate font-mono text-primary" title={edit.file_path}>
+            {compactPath(edit.file_path)}
+          </span>
+        ) : null}
+      </div>
+      <CodePanel content={structuredEditDiffText(edit)} language="diff" />
+    </div>
+  );
 }
 
 export function TerminalFallback({ event, block }: { event: AgentChatEvent; block: ActivityBlockModel }) {

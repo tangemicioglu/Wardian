@@ -633,6 +633,63 @@ describe("AgentChatView", () => {
     expect(screen.getByTestId("tool-todo-list")).toHaveTextContent("Add lazy rows");
   });
 
+  it("renders a Claude edit from its structured tool input rather than a path chip", async () => {
+    // The provider emits no patch text for Edit; the change lives entirely in
+    // metadata.tool_input, which the transcript used to discard.
+    invokeMock.mockResolvedValue([
+      event({
+        id: "edit-tool",
+        kind: "tool_call",
+        title: "Edit",
+        status: "running",
+        sequence: 1,
+        metadata: {
+          tool_name: "Edit",
+          file_path: "src/features/grid/workLogPresentation.ts",
+          tool_input: {
+            file_path: "src/features/grid/workLogPresentation.ts",
+            old_string: "const WORK_GROUP_MIN_ENTRIES = 4;",
+            new_string: "const WORK_GROUP_MIN_ENTRIES = 2;",
+          },
+        },
+      }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const panel = await screen.findByTestId("tool-structured-edit");
+    expect(panel).toHaveTextContent("Before/after");
+    expect(panel).toHaveTextContent("+1");
+    expect(panel).toHaveTextContent("-1");
+    expect(panel).toHaveTextContent("const WORK_GROUP_MIN_ENTRIES = 4;");
+    expect(panel).toHaveTextContent("const WORK_GROUP_MIN_ENTRIES = 2;");
+    // The panel already names the file, so the redundant chip row is gone.
+    expect(screen.queryByText("Changed files")).toBeNull();
+  });
+
+  it("renders a Write call as a new file with no removed lines", async () => {
+    invokeMock.mockResolvedValue([
+      event({
+        id: "write-tool",
+        kind: "tool_call",
+        title: "Write",
+        status: "running",
+        sequence: 1,
+        metadata: {
+          tool_name: "Write",
+          tool_input: { file_path: "docs/specs/new-spec.md", content: "# Spec\n\nBody" },
+        },
+      }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const panel = await screen.findByTestId("tool-structured-edit");
+    expect(panel).toHaveTextContent("New file");
+    expect(panel).toHaveTextContent("+3");
+    expect(panel).toHaveTextContent("-0");
+  });
+
   it("computes diff stats from full content while rendering a collapsed preview", async () => {
     const longDiff = [
       "diff --git a/src/one.ts b/src/one.ts",
