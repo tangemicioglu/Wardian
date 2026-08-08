@@ -502,3 +502,68 @@ describe("empty diff panels", () => {
     expect(diffStats("diff --git a/a.ts b/a.ts\n+x").files).toEqual(["a.ts"]);
   });
 });
+
+describe("spans that no user message opened", () => {
+  it("does not call a pre-user span a turn just because a later turn exists", () => {
+    // A provider that begins logging mid-conversation produces edits before
+    // the first user message. Those are the tail of a request whose opening is
+    // not in the log, so the card must not present them as one complete turn.
+    const rows = [
+      event({ provider: "claude", title: "Write", metadata: { tool_name: "Write", files_written: ["early.ts"] } }),
+      userMessage("claude", "now do the next thing"),
+      event({ provider: "claude", title: "Write", metadata: { tool_name: "Write", files_written: ["later.ts"] } }),
+    ];
+
+    const summaries = turnChanges(rows);
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0].files.map((file) => file.path)).toEqual(["early.ts"]);
+    expect(summaries[0].scope).toBe("whole_history");
+    expect(summaries[1].files.map((file) => file.path)).toEqual(["later.ts"]);
+    expect(summaries[1].scope).toBe("turn");
+  });
+});
+
+describe("a delete erases counts it cannot vouch for", () => {
+  it("does not carry an earlier add's counts into a delete of the same file", () => {
+    // `*** Delete File:` supplies no line count, and the additions describe a
+    // file that no longer exists. "Deleted +1 -0" would assert both that a
+    // line was added and that none was removed.
+    const patched = event({
+      provider: "codex",
+      title: "apply_patch",
+      metadata: {
+        tool_name: "apply_patch",
+        tool_input_text: [
+          "*** Begin Patch",
+          "*** Add File: src/scratch.ts",
+          "+temporary",
+          "*** Delete File: src/scratch.ts",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    });
+
+    const [summary] = turnChanges([userMessage("codex", "go"), patched]);
+    expect(summary.files).toEqual([
+      { path: "src/scratch.ts", added: 0, removed: 0, kind: "deleted", counts_unknown: true },
+    ]);
+    expect(summary.added).toBe(0);
+    expect(summary.removed).toBe(0);
+  });
+
+  it("keeps counts a git delete actually evidenced", () => {
+    // A unified diff deleting a file lists every removed line, so those counts
+    // are real and must survive.
+    const patched = event({
+      provider: "codex",
+      title: "apply_patch",
+      language: "diff",
+      text: ["diff --git a/src/gone.ts b/src/gone.ts", "--- a/src/gone.ts", "+++ /dev/null", "-one", "-two"].join("\n"),
+    });
+
+    const [summary] = turnChanges([userMessage("codex", "go"), patched]);
+    expect(summary.files).toEqual([
+      { path: "src/gone.ts", added: 0, removed: 2, kind: "deleted", counts_unknown: false },
+    ]);
+  });
+});

@@ -65,26 +65,46 @@ function isTurnBoundary(row: PresentedChatRow): boolean {
   return row.kind === "event" && row.event.kind === "message" && row.event.role === "user";
 }
 
+/**
+ * The card reports where a file ended up, so a delete outranks everything that
+ * happened to it before, and a patch-proven create outranks the weaker
+ * "written" claim.
+ */
+function mergedKind(left: TurnChangeFile["kind"], right: TurnChangeFile["kind"]): TurnChangeFile["kind"] {
+  if (left === "deleted" || right === "deleted") return "deleted";
+  if (left === "created" || right === "created") return "created";
+  if (left === "written" || right === "written") return "written";
+  return "edited";
+}
+
 function mergeFile(files: Map<string, TurnChangeFile>, candidate: TurnChangeFile) {
   const existing = files.get(candidate.path);
   if (!existing) {
     files.set(candidate.path, { ...candidate });
     return;
   }
+
+  // Captured before the merge mutates them: a delete that reported no counts
+  // of its own makes the running totals unknowable.
+  const deletedWithoutCounts = [existing, candidate].some(
+    (record) => record.kind === "deleted" && record.counts_unknown,
+  );
+
   existing.added += candidate.added;
   existing.removed += candidate.removed;
   // A later precise record supersedes an earlier path-only one, but a file
   // created in this turn stays created even if it is edited again after.
   existing.counts_unknown = existing.counts_unknown && candidate.counts_unknown;
-  // The card reports where the file ended up, so a delete outranks everything
-  // that happened to the file before it, and a proven create outranks the
-  // weaker "written" claim.
-  if (candidate.kind === "deleted" || existing.kind === "deleted") {
-    existing.kind = "deleted";
-  } else if (candidate.kind === "created" || existing.kind === "created") {
-    existing.kind = "created";
-  } else if (candidate.kind === "written") {
-    existing.kind = "written";
+  existing.kind = mergedKind(existing.kind, candidate.kind);
+
+  // A `*** Delete File:` header carries no line count, and anything counted
+  // before it describes a file that is now gone. Keeping those totals would
+  // render "Deleted +1 -0" — asserting both that a line was added and that
+  // none was removed, neither of which the patch says.
+  if (existing.kind === "deleted" && deletedWithoutCounts) {
+    existing.added = 0;
+    existing.removed = 0;
+    existing.counts_unknown = true;
   }
 }
 
@@ -261,7 +281,6 @@ export function withTurnChangeSummaries(
   const result: ChatTranscriptRowModel[] = [];
   let pending: PresentedChatRow[] = [];
   let turnOrdinal = 0;
-  const sawBoundary = rows.some(isTurnBoundary);
 
   const flush = () => {
     if (pending.length === 0) return;
@@ -278,7 +297,11 @@ export function withTurnChangeSummaries(
         files,
         added: files.reduce((total, file) => total + file.added, 0),
         removed: files.reduce((total, file) => total + file.removed, 0),
-        scope: sawBoundary ? "turn" : "whole_history",
+        // Only a span a user message opened is a turn. The leading span never
+        // is — whether because the provider logs no user messages at all or
+        // because it began logging mid-conversation — so it is reported for
+        // what it covers rather than being dressed up as one request.
+        scope: turnOrdinal === 0 ? "whole_history" : "turn",
       });
     }
     pending = [];
