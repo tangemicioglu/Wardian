@@ -7,6 +7,7 @@ import { UserTerminalPanel } from "./UserTerminalPanel";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
+import { mockOpenFileResource } from "../../test/fileResourceMock";
 
 vi.mock("../../layout/AppShell", () => ({
   useAppShellWorkbenchNavigation: vi.fn(),
@@ -96,7 +97,9 @@ describe("UserTerminalPanel", () => {
       externalEditorCustomExecutable: "",
       fileOpenActions: { text: "wardian", image: "wardian", pdf: "wardian" },
     });
-    mockInvoke.mockImplementation((command) => {
+    mockInvoke.mockImplementation((command, args) => {
+      const fileResource = mockOpenFileResource(command, args);
+      if (fileResource) return Promise.resolve(fileResource);
       if (command === "ensure_user_terminal" || command === "restart_user_terminal") {
         return Promise.resolve("test-user-terminal-session");
       }

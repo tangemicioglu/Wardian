@@ -18,6 +18,7 @@ import { resetTerminalSessionClientsForTesting } from "./terminalSessionClient";
 import { terminalRendererBudget } from "./terminalRendererBudget";
 import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
+import { mockOpenFileResource } from "../../test/fileResourceMock";
 
 vi.mock("../../layout/AppShell", () => ({
   useAppShellWorkbenchNavigation: vi.fn(),
@@ -174,7 +175,9 @@ describe("AgentTerminal scrollback", () => {
 
 
     let readCount = 0;
-    mockInvoke.mockImplementation(async (cmd: string) => {
+    mockInvoke.mockImplementation(async (cmd: string, args?: unknown) => {
+      const fileResource = mockOpenFileResource(cmd, args);
+      if (fileResource) return fileResource;
       switch (cmd) {
         case "read_agent_pty":
           return readCount++ === 0 ? "hello from codex\n" : null;

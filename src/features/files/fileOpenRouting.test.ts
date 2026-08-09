@@ -2,9 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { DEFAULT_FILE_OPEN_ACTIONS } from "../../types/settings";
+import type { FileResourceSnapshotV1 } from "../../types";
+import { mockOpenFileResource } from "../../test/fileResourceMock";
 import {
-  fileOpenDestinationForPath,
-  fileOpenKindForPath,
+  fileOpenDestinationForKind,
+  fileOpenKindForRendererKind,
   openFileWithSettings,
 } from "./fileOpenRouting";
 
@@ -21,26 +23,52 @@ function navigation() {
   } as unknown as WorkbenchNavigationService;
 }
 
+function verifiedSnapshot(path: string, renderer_kind: FileResourceSnapshotV1["descriptor"]["renderer_kind"]): FileResourceSnapshotV1 {
+  return {
+    resource_id: `file:${path}`,
+    subscription_id: "subscription-1",
+    revision: 1,
+    descriptor: {
+      schema: 1,
+      canonical_path: path,
+      display_name: path.split(/[\\/]/).pop() ?? path,
+      extension: null,
+      mime_type: renderer_kind === "image" ? "image/png" : renderer_kind === "pdf" ? "application/pdf" : "text/plain",
+      encoding: renderer_kind === "unsupported" || renderer_kind === "image" || renderer_kind === "pdf" ? null : "UTF-8",
+      renderer_kind,
+      size_bytes: 1,
+      line_count: renderer_kind === "text" || renderer_kind === "markdown" ? 1 : null,
+      content_hash: "sha256:test",
+      modified_at_ms: 1,
+      capabilities: { preview: true, changes: false, draft: false, stream: false },
+      unavailable_reason: null,
+    },
+  };
+}
+
 describe("file open routing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockInvoke.mockResolvedValue(undefined);
+    mockInvoke.mockImplementation((command, args) => {
+      const fileResource = mockOpenFileResource(command, args);
+      if (fileResource) return Promise.resolve(fileResource);
+      return Promise.resolve(undefined);
+    });
   });
 
   it("classifies supported files by broad renderer family", () => {
-    expect(fileOpenKindForPath("C:/repo/App.tsx")).toBe("text");
-    expect(fileOpenKindForPath("C:/repo/README.markdown")).toBe("text");
-    expect(fileOpenKindForPath("C:/repo/diagram.png")).toBe("image");
-    expect(fileOpenKindForPath("C:/repo/report.pdf")).toBe("pdf");
-    expect(fileOpenKindForPath("C:/repo/bitmap.bmp")).toBeNull();
-    expect(fileOpenKindForPath("C:/repo/photo.tiff")).toBeNull();
-    expect(fileOpenKindForPath("C:/repo/report.docx")).toBeNull();
+    expect(fileOpenKindForRendererKind("text")).toBe("text");
+    expect(fileOpenKindForRendererKind("markdown")).toBe("text");
+    expect(fileOpenKindForRendererKind("image")).toBe("image");
+    expect(fileOpenKindForRendererKind("pdf")).toBe("pdf");
+    expect(fileOpenKindForRendererKind("unsupported")).toBeNull();
+    expect(fileOpenDestinationForKind("text", { text: "wardian" })).toBe("wardian");
+    expect(fileOpenDestinationForKind(null, { text: "wardian" })).toBe("system");
   });
 
-  it("routes Markdown files through the text-family preference", async () => {
+  it("routes Markdown files through the verified text-family preference", async () => {
     const nav = navigation();
 
-    expect(fileOpenDestinationForPath("C:/repo/README.markdown", { text: "wardian" })).toBe("wardian");
     await openFileWithSettings("C:/repo/README.markdown", {
       navigation: nav,
       file_open_actions: { text: "wardian" },
@@ -51,7 +79,6 @@ describe("file open routing", () => {
       resource_key: "file:C:/repo/README.markdown",
     }));
 
-    expect(fileOpenDestinationForPath("C:/repo/README.markdown", { text: "external" })).toBe("external");
     await openFileWithSettings("C:/repo/README.markdown", {
       file_open_actions: { text: "external" },
       external_editor: "vscode",
@@ -64,6 +91,44 @@ describe("file open routing", () => {
         external_editor_custom_executable: null,
       },
     });
+  });
+
+  it.each([
+    ["asset.bin", "image" as const, "wardian" as const],
+    ["document.data", "pdf" as const, "external" as const],
+    ["source.png", "text" as const, "wardian" as const],
+  ])("uses the verified renderer family for %s", async (name, renderer_kind, action) => {
+    mockInvoke.mockImplementation((command) => {
+      if (command === "open_file_resource") {
+        return Promise.resolve(verifiedSnapshot(`C:/repo/${name}`, renderer_kind));
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const nav = navigation();
+    const result = await openFileWithSettings(`C:/repo/${name}`, {
+      navigation: nav,
+      file_open_actions: {
+        text: "external",
+        image: "external",
+        pdf: "external",
+        [renderer_kind === "text" ? "text" : renderer_kind]: action,
+      },
+      external_editor: "vscode",
+    });
+
+    if (action === "wardian") {
+      expect(result).toBe("wardian");
+      expect(nav.open).toHaveBeenCalled();
+      expect(mockInvoke).toHaveBeenCalledWith("close_file_resource", {
+        request: { subscription_id: "subscription-1" },
+      });
+    } else {
+      expect(result).toBe("external");
+      expect(mockInvoke).toHaveBeenCalledWith("open_in_external_editor", expect.objectContaining({
+        path: `C:/repo/${name}`,
+      }));
+    }
   });
 
   it("opens Wardian-preferred supported links as permanent Files surfaces", async () => {
@@ -80,7 +145,14 @@ describe("file open routing", () => {
       resource_key: "file:C:/repo/App.tsx",
     }));
     expect(nav.pin_transient).toHaveBeenCalledWith("surface-1");
-    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenCalledWith("open_file_resource", {
+      request: {
+        path: "C:/repo/App.tsx",
+        agent_id: null,
+        user_file_capability_id: null,
+      },
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith("open_in_external_editor", expect.anything());
   });
 
   it("uses the configured external editor when a supported type is external-preferred", async () => {
@@ -100,8 +172,6 @@ describe("file open routing", () => {
   });
 
   it("always sends unsupported content to the system preferred viewer", async () => {
-    expect(fileOpenDestinationForPath("C:/repo/report.docx", { text: "wardian" })).toBe("system");
-
     await openFileWithSettings("C:/repo/report.docx", {
       file_open_actions: { text: "wardian" },
       external_editor: "custom",
@@ -110,6 +180,28 @@ describe("file open routing", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith("open_in_external_editor", {
       path: "C:/repo/report.docx",
+      editor: {
+        external_editor: "system",
+        external_editor_custom_executable: null,
+      },
+    });
+  });
+
+  it("uses the system fallback when the content descriptor cannot be verified", async () => {
+    mockInvoke.mockImplementation((command) => (
+      command === "open_file_resource"
+        ? Promise.reject(new Error("descriptor unavailable"))
+        : Promise.resolve(undefined)
+    ));
+
+    const result = await openFileWithSettings("C:/repo/looks-like-image.png", {
+      file_open_actions: { image: "wardian" },
+      external_editor: "vscode",
+    });
+
+    expect(result).toBe("system");
+    expect(mockInvoke).toHaveBeenCalledWith("open_in_external_editor", {
+      path: "C:/repo/looks-like-image.png",
       editor: {
         external_editor: "system",
         external_editor_custom_executable: null,

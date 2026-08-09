@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { DEFAULT_FILE_OPEN_ACTIONS, type ExternalEditorSetting, type FileOpenActions, type FileOpenKind } from "../../types/settings";
+import type { FileContentDescriptorV1, FileRendererKind, OpenFileResourceRequestV1 } from "../../types";
 import { openPermanentFileSurface } from "./fileSurfaceNavigation";
+import { fileResourceClient } from "./fileResourceClient";
 
 export type FileOpenDestination = "wardian" | "external" | "system";
 
@@ -10,40 +12,83 @@ export type FileOpenRoutingOptions = {
   file_open_actions?: Partial<FileOpenActions> | null;
   external_editor?: ExternalEditorSetting;
   external_editor_custom_executable?: string | null;
+  resource_request?: OpenFileResourceRequestV1 | null;
+  verified_renderer_kind?: FileRendererKind;
 };
 
-const TEXT_EXTENSIONS = new Set([
-  "bat", "c", "cc", "cjs", "cmd", "conf", "cpp", "cs", "css", "csv", "diff", "env", "go", "h", "hpp",
-  "htm", "html", "ini", "java", "js", "json", "jsx", "lock", "log", "md", "mdx", "mjs", "patch", "ps1",
-  "py", "rs", "scss", "sh", "sql", "svelte", "svg", "toml", "ts", "tsx", "txt", "vue", "xml", "yaml", "yml", "markdown",
-]);
-const IMAGE_EXTENSIONS = new Set(["gif", "jpg", "jpeg", "png", "webp"]);
-
-function fileNameFromPath(path: string) {
-  const withoutLocation = path.replace(/:\d+(?::\d+)?$/, "");
-  return withoutLocation.split(/[\\/]/).filter(Boolean).pop()?.toLowerCase() ?? "";
-}
-
-/** Classifies only the broad families Wardian can currently render. */
-export function fileOpenKindForPath(path: string): FileOpenKind | null {
-  const fileName = fileNameFromPath(path);
-  if (fileName === "dockerfile" || fileName === "makefile" || fileName.startsWith(".env")) {
-    return "text";
+/** Maps the backend's verified renderer family to the settings family. */
+export function fileOpenKindForRendererKind(
+  rendererKind: FileRendererKind | null | undefined,
+): FileOpenKind | null {
+  switch (rendererKind) {
+    case "text":
+    case "markdown":
+      return "text";
+    case "image":
+      return "image";
+    case "pdf":
+      return "pdf";
+    default:
+      return null;
   }
-  const extension = fileName.includes(".") ? fileName.split(".").pop() ?? "" : "";
-  if (extension === "pdf") return "pdf";
-  if (IMAGE_EXTENSIONS.has(extension)) return "image";
-  if (TEXT_EXTENSIONS.has(extension)) return "text";
-  return null;
 }
 
-export function fileOpenDestinationForPath(
-  path: string,
+export function fileOpenKindForDescriptor(
+  descriptor: Pick<FileContentDescriptorV1, "renderer_kind">,
+): FileOpenKind | null {
+  return fileOpenKindForRendererKind(descriptor.renderer_kind);
+}
+
+export function fileOpenDestinationForKind(
+  kind: FileOpenKind | null,
   actions: Partial<FileOpenActions> | null | undefined = DEFAULT_FILE_OPEN_ACTIONS,
 ): FileOpenDestination {
-  const kind = fileOpenKindForPath(path);
   if (!kind) return "system";
   return actions?.[kind] === "wardian" ? "wardian" : "external";
+}
+
+async function verifiedFileOpenKind(
+  path: string,
+  resourceRequest?: OpenFileResourceRequestV1 | null,
+): Promise<FileOpenKind | null> {
+  const request: OpenFileResourceRequestV1 = {
+    ...(resourceRequest ?? {
+      agent_id: null,
+      user_file_capability_id: null,
+    }),
+    path,
+  };
+  try {
+    const snapshot = await fileResourceClient.open(request);
+    if (!snapshot?.descriptor) {
+      if (resourceRequest) throw new Error("The Files backend returned no file descriptor.");
+      return null;
+    }
+    try {
+      return fileOpenKindForDescriptor(snapshot.descriptor);
+    } finally {
+      await fileResourceClient.close(snapshot.subscription_id).catch(() => undefined);
+    }
+  } catch (error) {
+    // An unverified resource must use the system fallback, never a filename
+    // hint that could select the wrong family preference. Explicit
+    // authorization failures still propagate so they cannot become launches.
+    if (resourceRequest) throw error;
+    return null;
+  }
+}
+
+export async function fileOpenDestinationForResource(
+  path: string,
+  options: Pick<
+    FileOpenRoutingOptions,
+    "file_open_actions" | "resource_request" | "verified_renderer_kind"
+  > = {},
+): Promise<FileOpenDestination> {
+  const kind = options.verified_renderer_kind === undefined
+    ? await verifiedFileOpenKind(path, options.resource_request)
+    : fileOpenKindForRendererKind(options.verified_renderer_kind);
+  return fileOpenDestinationForKind(kind, options.file_open_actions);
 }
 
 export async function openFileInExternalApp(
@@ -64,7 +109,7 @@ export async function openFileInExternalApp(
 
 /** Opens a link according to the file-type preference, with safe fallbacks. */
 export async function openFileWithSettings(path: string, options: FileOpenRoutingOptions) {
-  const destination = fileOpenDestinationForPath(path, options.file_open_actions);
+  const destination = await fileOpenDestinationForResource(path, options);
   if (destination === "wardian" && options.navigation) {
     openPermanentFileSurface(options.navigation, path);
     return destination;

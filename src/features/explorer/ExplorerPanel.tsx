@@ -12,7 +12,7 @@ import type { ExternalEditorSetting } from '../../types/settings';
 import { normalizeExplorerPathForCompare } from './pathUtils';
 import { createFileSurfaceState, fileResourceKey } from '../files/fileResourceKey';
 import { openPermanentFileSurface } from '../files/fileSurfaceNavigation';
-import { fileOpenDestinationForPath, openFileInExternalApp } from '../files/fileOpenRouting';
+import { fileOpenDestinationForResource, openFileInExternalApp } from '../files/fileOpenRouting';
 import type { WorkbenchNavigationService } from '../workbench/navigationService';
 import { useAppShellWorkbenchNavigation } from '../../layout/AppShell';
 import { formatExplorerPathForDisplay } from '../../utils/displayPath';
@@ -235,16 +235,15 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
       await openSystemPath(node.path);
       return;
     }
-    const destination = fileOpenDestinationForPath(node.path, {
-      text: 'external',
-      image: 'external',
-      pdf: 'external',
+    const destination = await fileOpenDestinationForResource(node.path, {
+      file_open_actions: {
+        text: 'external',
+        image: 'external',
+        pdf: 'external',
+      },
     });
-    if (destination === 'system') {
-      await openSystemPath(node.path);
-      return;
-    }
-    await openExternalPath(node.path);
+    if (destination === 'system') await openSystemPath(node.path);
+    else await openExternalPath(node.path);
   };
 
   const handleOpenExternalEditor = async () => {
@@ -328,11 +327,13 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
 
   const openFileBySettings = async (path: string, isDir: boolean, openInSide = false) => {
     if (isDir) return;
-    const destination = fileOpenDestinationForPath(path, fileOpenActions);
+    const destination = await fileOpenDestinationForResource(path, {
+      file_open_actions: fileOpenActions,
+    });
     if (destination === 'external') {
-      await openExternalEditor(fileNode(path));
+      await openExternalPath(path);
     } else if (destination === 'system') {
-      await openExternalEditor(fileNode(path), true);
+      await openSystemPath(path);
     } else {
       if (openInSide) openToSide(path);
       else openPermanent(path);
@@ -347,17 +348,6 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
   const handleOpenToSide = () => {
     if (activeNode) void openFileBySettings(activeNode.path, activeNode.is_dir, true);
     setMenuPos(null);
-  };
-
-  const fileNode = (path: string): FileNode => {
-    const normalizedPath = path.replace(/\\/g, '/');
-    const name = normalizedPath.split('/').filter(Boolean).pop() ?? path;
-    return {
-      path,
-      name,
-      is_dir: false,
-      extension: name.includes('.') ? name.split('.').pop() ?? null : null,
-    };
   };
 
   const handleFileSelect = async (path: string, isDir: boolean, openInNewTab = false) => {

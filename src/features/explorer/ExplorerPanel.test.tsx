@@ -9,6 +9,7 @@ import type { AgentConfig } from '../../types';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { ConfirmProvider } from '../../components/ConfirmDialog';
 import type { WorkbenchNavigationService } from '../workbench/navigationService';
+import { mockOpenFileResource } from '../../test/fileResourceMock';
 
 const mockListen = vi.mocked(listen);
 
@@ -104,6 +105,14 @@ function makeNavigation() {
     pin_transient: vi.fn(),
     open_to_side: vi.fn(() => 'files-side-surface'),
   } as unknown as WorkbenchNavigationService;
+}
+
+function mockExplorerInvoke(handler: (command: string, args?: unknown) => unknown) {
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    const fileResource = mockOpenFileResource(command, args);
+    if (fileResource) return fileResource;
+    return handler(command, args);
+  });
 }
 
 describe('ExplorerPanel', () => {
@@ -238,7 +247,7 @@ describe('ExplorerPanel', () => {
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -269,7 +278,7 @@ describe('ExplorerPanel', () => {
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -298,7 +307,7 @@ describe('ExplorerPanel', () => {
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       if (command === 'open_in_external_editor') throw new Error('program not found');
@@ -318,7 +327,7 @@ describe('ExplorerPanel', () => {
 
   it('shows a visible error when the system viewer cannot open unsupported content', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       if (command === 'open_in_external_editor') throw new Error('no associated app');
@@ -341,7 +350,7 @@ describe('ExplorerPanel', () => {
   });
 
   it('surfaces missing Workbench navigation locally and recovers on the next action', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -369,7 +378,7 @@ describe('ExplorerPanel', () => {
   });
 
   it('contains rejected navigation actions and allows a later action to succeed', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -403,7 +412,7 @@ describe('ExplorerPanel', () => {
   });
 
   it('contains synchronous navigation failures without mutating tabs', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -429,7 +438,7 @@ describe('ExplorerPanel', () => {
       fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
     let attempts = 0;
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       if (command === 'open_in_external_editor' && attempts++ === 0) {
@@ -453,7 +462,7 @@ describe('ExplorerPanel', () => {
       externalEditor: 'system',
       externalEditorCustomExecutable: '',
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -487,7 +496,7 @@ describe('ExplorerPanel', () => {
   });
 
   it('pins a matching transient or opens a permanent Files surface on Ctrl/Cmd-click and double click', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -498,20 +507,24 @@ describe('ExplorerPanel', () => {
     const file = await screen.findByTestId('mock-file-row');
     fireEvent.click(file, { ctrlKey: true });
 
-    expect(navigation.open).toHaveBeenCalledOnce();
-    expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
-      surface_type: 'files',
-      resource_key: 'file:C:/Users/test/repo/notes.md',
-      state: expect.objectContaining({ transient_preview: false }),
-    }));
-    expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
+    await waitFor(() => {
+      expect(navigation.open).toHaveBeenCalledOnce();
+      expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
+        surface_type: 'files',
+        resource_key: 'file:C:/Users/test/repo/notes.md',
+        state: expect.objectContaining({ transient_preview: false }),
+      }));
+      expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
+    });
     expect(navigation.open_transient).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalledWith('read_file_preview', expect.anything());
 
     vi.clearAllMocks();
     fireEvent.doubleClick(file);
-    expect(navigation.open).toHaveBeenCalledOnce();
-    expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
+    await waitFor(() => {
+      expect(navigation.open).toHaveBeenCalledOnce();
+      expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
+    });
   });
 
   it('routes Ctrl/Cmd-click through the selected external family preference', async () => {
@@ -520,7 +533,7 @@ describe('ExplorerPanel', () => {
       externalEditorCustomExecutable: '',
       fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -543,7 +556,7 @@ describe('ExplorerPanel', () => {
   });
 
   it('uses permanent Open and standard horizontal Open to Side context actions', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -575,7 +588,7 @@ describe('ExplorerPanel', () => {
       externalEditorCustomExecutable: '',
       fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -598,7 +611,7 @@ describe('ExplorerPanel', () => {
   });
 
   it('routes unsupported context-menu Open to the system viewer', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -626,7 +639,7 @@ describe('ExplorerPanel', () => {
       externalEditorCustomExecutable: '',
       fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -658,7 +671,7 @@ describe('ExplorerPanel', () => {
   });
 
   it('routes unsupported Ctrl-click and Open to Side to the system viewer', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -690,7 +703,7 @@ describe('ExplorerPanel', () => {
   });
 
   it('reports when Open to Side is rejected because the current pane is too small', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -714,7 +727,7 @@ describe('ExplorerPanel', () => {
       externalEditorCustomExecutable: '',
       fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -745,7 +758,7 @@ describe('ExplorerPanel', () => {
       externalEditorCustomExecutable: '',
       fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;

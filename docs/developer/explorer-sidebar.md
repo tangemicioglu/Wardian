@@ -50,7 +50,9 @@ The file system operations strictly enforce security and platform agnosticism:
   directly. Files Markdown links canonicalize their targets through this
   command before the shared opening router launches an external or system
   destination; inherited agent roots and exact user-file capabilities remain
-  enforced when the source resource provides them.
+  enforced when the source resource provides them. The shared router uses the
+  returned verified renderer family, so signatures take precedence over a
+  misleading filename extension before a family preference is applied.
 - `reveal_in_explorer`: OS-specific `std::process::Command` routing to invoke `explorer`, `open`, or `xdg-open`.
 - `open_in_external_editor`: Opens folders and editor-friendly files with the Settings-selected external app mode (`system`, `vscode`, or `custom`) by spawning the platform command in Rust. The shared file-opening router explicitly passes `system` for unknown or unsupported content, so VS Code/custom editors are not used as document viewers.
 - `delete_file`: Recursively deletes a directory or permanently removes a file string.

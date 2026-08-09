@@ -88,7 +88,11 @@ import { createFilesCloseAdapter } from "../features/files/filesCloseAdapter";
 import { fileResourceClient } from "../features/files/fileResourceClient";
 import { fileResourceKey } from "../features/files/fileResourceKey";
 import { openPermanentFileSurface } from "../features/files/fileSurfaceNavigation";
-import { fileOpenDestinationForPath, openFileWithSettings } from "../features/files/fileOpenRouting";
+import {
+  fileOpenDestinationForKind,
+  fileOpenKindForDescriptor,
+  openFileWithSettings,
+} from "../features/files/fileOpenRouting";
 import { useArtifactEvents } from "../features/files/useArtifactEvents";
 import {
   filesSurfaceMigrationCommands,
@@ -134,7 +138,11 @@ async function canonicalizeFileOpenPath(
     path,
   });
   try {
-    return snapshot.descriptor.canonical_path;
+    return {
+      path: snapshot.descriptor.canonical_path,
+      kind: fileOpenKindForDescriptor(snapshot.descriptor),
+      renderer_kind: snapshot.descriptor.renderer_kind,
+    };
   } finally {
     await fileResourceClient.close(snapshot.subscription_id).catch(() => undefined);
   }
@@ -1364,24 +1372,25 @@ function AppBody() {
             });
           }}
           on_open_file={async (path, openInNewTab = false, sourceRequest) => {
-            const authorizedPath = await canonicalizeFileOpenPath(path, sourceRequest);
-            const destination = fileOpenDestinationForPath(authorizedPath, fileOpenActions);
+            const authorizedFile = await canonicalizeFileOpenPath(path, sourceRequest);
+            const destination = fileOpenDestinationForKind(authorizedFile.kind, fileOpenActions);
             if (destination !== "wardian") {
-              await openFileWithSettings(authorizedPath, {
+              await openFileWithSettings(authorizedFile.path, {
                 navigation: workbenchNavigation,
                 file_open_actions: fileOpenActions,
                 external_editor: externalEditor,
                 external_editor_custom_executable: externalEditorCustomExecutable,
+                verified_renderer_kind: authorizedFile.renderer_kind,
               });
               return;
             }
             if (openInNewTab) {
-              openPermanentFileSurface(workbenchNavigation, authorizedPath);
+              openPermanentFileSurface(workbenchNavigation, authorizedFile.path);
               return;
             }
             await workbenchNavigation.rebind_resource(surface.surface_id, {
               surface_type: "files",
-              resource_key: fileResourceKey(authorizedPath),
+              resource_key: fileResourceKey(authorizedFile.path),
               state: filesState,
             });
           }}

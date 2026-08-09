@@ -6,6 +6,7 @@ import type { AgentConfig, AgentTelemetry, GitStatusResult } from "../../types";
 import { useSelectedAgentGitStatus, type SelectedAgentGitStatus } from "./useSelectedAgentGitStatus";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
+import { mockOpenFileResource } from "../../test/fileResourceMock";
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -1325,7 +1326,9 @@ describe("GitPanel", () => {
       externalEditorCustomExecutable: "",
       fileOpenActions: { text: "external", image: "external", pdf: "external" },
     });
-    mockInvoke.mockImplementation(async (command) => {
+    mockInvoke.mockImplementation(async (command, args) => {
+      const fileResource = mockOpenFileResource(command, args);
+      if (fileResource) return fileResource;
       if (command === "git_log") return [];
       if (command === "list_agent_worktrees") return [];
       if (command === "open_in_external_editor") return null;
@@ -1392,7 +1395,9 @@ describe("GitPanel", () => {
       externalEditorCustomExecutable: "",
       fileOpenActions: { text: "wardian", image: "external", pdf: "external" },
     });
-    mockInvoke.mockImplementation(async (command) => {
+    mockInvoke.mockImplementation(async (command, args) => {
+      const fileResource = mockOpenFileResource(command, args);
+      if (fileResource) return fileResource;
       if (command === "git_log") return [];
       if (command === "list_agent_worktrees") return [];
       return null;

@@ -15,7 +15,12 @@ them.
 ## Decision
 
 Use one frontend routing helper for all file-link and Explorer entry points.
-The helper classifies files into the broad families Wardian can render today:
+Before choosing a destination, the helper asks the Files resource backend for
+the verified renderer descriptor. Signature-confirmed images and PDFs take
+precedence over filename hints; validated text uses the backend's Markdown and
+text classification. If the resource cannot be verified, the router retains a
+system fallback for unsupported or unclassified content. The resulting family
+contract is:
 
 - **Text and code**: text, source, configuration, and Markdown files.
 - **Images**: common raster image files.
@@ -65,7 +70,8 @@ resource open stops the external or system launch.
 ## Verification
 
 - Unit coverage checks family classification, Workbench opening, configured
-  external launching, unsupported system fallback, and failed-launch recovery.
+  external launching, verified content classification, unsupported system
+  fallback, and failed-launch recovery.
 - Settings coverage checks legacy migration, sparse persistence, and a
   targeted family preference.
 - Terminal-link coverage checks common rendered and unsupported extensions are
