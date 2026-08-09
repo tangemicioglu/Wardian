@@ -25,6 +25,7 @@ This file is an agent-readable index for the public Wardian documentation. Use t
 - https://docs.wardian.org/guide/inbox - Review completed work, important updates, approval requests, and action-needed items.
 - https://docs.wardian.org/guide/source-control - Stage, diff, commit, sync, and manage agent worktrees.
 - https://docs.wardian.org/guide/explorer - Browse an agent workspace or Wardian home from the app.
+- https://docs.wardian.org/guide/browser - Run a real page inside the Workbench, drive it yourself or through `wardian browser`, and understand session lifetime and the one-driver rule.
 - https://docs.wardian.org/guide/remote-control - Pair and use the Wardian remote PWA over HTTPS.
 
 ## Reuse and Agent Direction

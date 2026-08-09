@@ -2,7 +2,8 @@
 
 The browser surface renders a real Chromium page inside the workbench and lets
 agents drive it through `wardian browser`. Design rationale is in
-[the spec](../specs/2026-08-09-agent-browser-surface.md); this page is the
+[the spec](https://github.com/wardian-app/Wardian/blob/main/docs/specs/2026-08-09-agent-browser-surface.md);
+this page is the
 working reference.
 
 ## Shape
