@@ -268,6 +268,10 @@ pub fn run() {
                     app.handle().clone(),
                     state.terminal_sessions.clone(),
                 );
+                crate::commands::browser::start_browser_session_event_bridge(
+                    app.handle().clone(),
+                    state.browser_sessions.clone(),
+                );
             }
 
             let control_endpoint_claim = control::claim_control_endpoint().map_err(|error| {
@@ -544,6 +548,20 @@ pub fn run() {
             commands::artifacts::ack_artifact_presentation,
             commands::artifacts::get_artifact_resource,
             commands::artifacts::mark_artifact_attention_read,
+            commands::browser::browser_engine_status,
+            commands::browser::open_browser_session,
+            commands::browser::list_browser_sessions,
+            commands::browser::pending_browser_surface_opens,
+            commands::browser::ack_browser_surface_open,
+            commands::browser::get_browser_session,
+            commands::browser::close_browser_session,
+            commands::browser::navigate_browser_session,
+            commands::browser::attach_browser_screencast,
+            commands::browser::detach_browser_screencast,
+            commands::browser::send_browser_pointer,
+            commands::browser::send_browser_wheel,
+            commands::browser::send_browser_key,
+            commands::browser::set_browser_viewport,
             commands::workbench::get_workbench_boot_config,
             commands::workbench::load_workbench_state,
             commands::workbench::save_workbench_state,
@@ -795,7 +813,12 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
             let state = app_handle.state::<AppState>();
-            tauri::async_runtime::block_on(state.file_resources.close_all());
+            tauri::async_runtime::block_on(async {
+                state.file_resources.close_all().await;
+                // Headless browsers are child processes; leaving them running
+                // after the app quits would strand them with no owner.
+                state.browser_sessions.shutdown_all().await;
+            });
         }
     });
 }

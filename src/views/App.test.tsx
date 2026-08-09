@@ -614,6 +614,56 @@ describe("Workbench persistence boot integration", () => {
       .toBeNull();
   });
 
+  it("holds a CLI browser open until the durable workbench document has loaded", async () => {
+    setupDefaultMocks([], defaultClasses);
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    let completeLoad: (() => void) | null = null;
+    const loadGate = new Promise<void>((resolve) => { completeLoad = resolve; });
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "load_workbench_state") {
+        return loadGate.then(() => ({
+          source: "primary",
+          document: makeSingleGroupDocument([]),
+          notice: null,
+          durable_revision: 0,
+          durable_token: "browser-gate-durable-zero",
+        }));
+      }
+      if (command === "pending_browser_surface_opens") {
+        return Promise.resolve([{
+          browser_id: "b-startup",
+          short_ref: "browser:1",
+          url: "https://example.com/",
+          title: "Example",
+          load_state: "complete",
+          viewport: { width: 1000, height: 500 },
+          engine: "edge",
+          console_error_count: 0,
+        }]);
+      }
+      return defaultInvoke?.(command, args) ?? Promise.resolve(null);
+    });
+
+    render(<App />);
+
+    // Surfacing into the provisional document would acknowledge the open and
+    // then lose it, because loading replaces the working document outright.
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("load_workbench_state", undefined));
+    expect(mockInvoke).not.toHaveBeenCalledWith("pending_browser_surface_opens");
+
+    await act(async () => {
+      completeLoad?.();
+      await loadGate;
+    });
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("pending_browser_surface_opens"),
+    );
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("ack_browser_surface_open", { browserId: "b-startup" }),
+    );
+  });
+
   it("pins an existing transient Files preview when Ctrl/Cmd-clicking a Markdown link", async () => {
     setupDefaultMocks([], defaultClasses);
     const defaultInvoke = mockInvoke.getMockImplementation();

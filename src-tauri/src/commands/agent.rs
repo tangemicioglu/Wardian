@@ -2728,6 +2728,13 @@ pub async fn kill_agent(
         .terminal_sessions
         .forget_deferred_geometry(&session_id)
         .await;
+    // A browser this agent opened has no other owner, so it goes with the
+    // agent rather than lingering as an orphaned headless process.
+    for browser_id in state.browser_sessions.close_for_agent(&session_id).await {
+        manager::log_debug(&format!(
+            "[WARDIAN] closed browser session {browser_id} owned by {session_id}"
+        ));
+    }
 
     #[allow(unused_mut)]
     if let Some(mut agent) = agent {

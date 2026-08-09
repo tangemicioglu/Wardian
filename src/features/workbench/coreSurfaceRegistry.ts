@@ -1,5 +1,6 @@
 import type {
   AgentsOverviewSurfaceState,
+  BrowserSurfaceState,
   FileResourceKey,
   FilesSurfaceStateV2,
   OpenSurfaceRequest,
@@ -39,6 +40,17 @@ import {
   type DirtySurfacePrompt,
 } from "./surfaces/dirtySurfaceGuards";
 
+/**
+ * A runtime resource created so a surface could be opened.
+ *
+ * `release` exists because provisioning and opening are two steps: if the
+ * second fails, the first has already started something that now has no owner.
+ */
+export type SurfaceResourceProvision = {
+  resource_key: string;
+  release: () => void;
+};
+
 export type CoreSurfaceGroup = "Core views" | "Sessions" | "Reserved";
 
 export type CoreSurfaceContribution = {
@@ -48,6 +60,12 @@ export type CoreSurfaceContribution = {
   group: CoreSurfaceGroup;
   reserved?: boolean;
   requires_resource?: boolean;
+  /**
+   * The surface needs a runtime resource that does not exist yet, so opening it
+   * from the launcher must create one first. Distinct from `requires_resource`,
+   * which means the caller has to supply one and the entry is otherwise inert.
+   */
+  provisions_resource?: boolean;
 };
 
 export const CORE_SURFACE_CONTRIBUTIONS: readonly CoreSurfaceContribution[] = Object.freeze([
@@ -59,8 +77,8 @@ export const CORE_SURFACE_CONTRIBUTIONS: readonly CoreSurfaceContribution[] = Ob
   { surface_type: "library", title: "Library", description: "Browse reusable assets.", group: "Core views" },
   { surface_type: "workflows", title: "Workflows", description: "Build and monitor workflows.", group: "Core views" },
   { surface_type: "agent-session", title: "Agent Session", description: "Open a specific agent session.", group: "Sessions", requires_resource: true },
+  { surface_type: "browser", title: "Browser", description: "Open a page an agent can drive.", group: "Sessions", provisions_resource: true },
   { surface_type: "files", title: "Files", description: "Inspect files and agent artifacts.", group: "Reserved", reserved: true, requires_resource: true },
-  { surface_type: "browser", title: "Browser", description: "Reserved for a future browser contribution.", group: "Reserved", reserved: true },
 ]);
 
 type DefinitionOptions = {
@@ -209,6 +227,69 @@ function restoreAgentsOverviewState(value: unknown, version: number) {
   };
 }
 
+/**
+ * Shortens a URL to what fits in a tab title.
+ *
+ * The host carries the identity an operator scans for; the path is noise at
+ * tab width, except that a bare host with a path is worth marking as such.
+ */
+export function browserSurfaceLabel(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return "Browser";
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.host || parsed.protocol.replace(":", "");
+    return parsed.pathname && parsed.pathname !== "/" ? `${host}${parsed.pathname}` : host;
+  } catch {
+    return trimmed;
+  }
+}
+
+const DEFAULT_BROWSER_SURFACE_STATE: BrowserSurfaceState = {
+  url: "",
+  viewport: null,
+};
+
+/**
+ * Validates persisted browser surface state.
+ *
+ * Only the page identity is persisted: the live session lives in the runtime
+ * and is addressed by `resource_key`, so a restore after the browser is gone
+ * reopens this URL rather than resurrecting a session id that means nothing.
+ */
+export function restoreBrowserSurfaceState(value: unknown, version: number) {
+  if (version !== 1) {
+    return { ok: false as const, error: `unsupported browser state version ${version}` };
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false as const, error: "browser state must be an object" };
+  }
+  const state = value as Record<string, unknown>;
+  if (typeof state.url !== "string") {
+    return { ok: false as const, error: "browser state requires a url string" };
+  }
+  const viewport = state.viewport;
+  if (viewport !== null && viewport !== undefined) {
+    if (
+      typeof viewport !== "object"
+      || Array.isArray(viewport)
+      || !Number.isInteger((viewport as Record<string, unknown>).width)
+      || !Number.isInteger((viewport as Record<string, unknown>).height)
+      || (viewport as { width: number }).width <= 0
+      || (viewport as { height: number }).height <= 0
+    ) {
+      return { ok: false as const, error: "browser viewport must be positive integers" };
+    }
+  }
+  return {
+    ok: true as const,
+    state: {
+      url: state.url,
+      viewport: (viewport ?? null) as BrowserSurfaceState["viewport"],
+    },
+  };
+}
+
 function restoreEmptySurfaceState(type: string, value: unknown, version: number) {
   if (version !== 1) return { ok: false as const, error: `unsupported ${type} state version ${version}` };
   if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length > 0) {
@@ -275,6 +356,28 @@ function coreSurfaceDefinitions(): readonly SurfaceDefinition[] {
         if (!resourceKey) throw new Error("Agent Session requires a resource_key");
         return resourceKey;
       },
+    }),
+    surfaceDefinition({
+      type: "browser",
+      title: "Browser",
+      // Suspending stops the screencast while the page keeps running, which is
+      // the whole point of the runtime living in the backend.
+      render_policy: "suspend_when_hidden",
+      open_policy: "focus_resource",
+      runtime_policy: "runtime_backed",
+      default_state: (): BrowserSurfaceState => ({ ...DEFAULT_BROWSER_SURFACE_STATE }),
+      resource_key: (request) => {
+        const resourceKey = request.resource_key?.trim();
+        if (!resourceKey) throw new Error("Browser requires a resource_key");
+        return resourceKey;
+      },
+      presentation_title: (surface) => {
+        const state = surface.state as Partial<BrowserSurfaceState> | undefined;
+        const url = typeof state?.url === "string" ? state.url.trim() : "";
+        if (!url) return "Browser";
+        return `Browser: ${browserSurfaceLabel(url)}`;
+      },
+      restore_state: restoreBrowserSurfaceState,
     }),
     surfaceDefinition({
       type: "files",

@@ -24,6 +24,73 @@ function createNavigationFixture(
   return { navigation, registry, store };
 }
 
+describe("OpenSurfaceDialog provisioning", () => {
+  it("opens a provisioning surface with the resource it just created", async () => {
+    const fixture = createNavigationFixture();
+    const release = vi.fn();
+    const provision = vi.fn().mockResolvedValue({ resource_key: "browser-7", release });
+    render(
+      <OpenSurfaceDialog
+        open
+        group_id="group-1"
+        navigation={fixture.navigation}
+        registry={fixture.registry}
+        provision_resource={provision}
+        on_close={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("option", { name: "Browser" }));
+    await vi.waitFor(() => {
+      expect(Object.values(fixture.store.getState().document.surfaces)[0]).toMatchObject({
+        surface_type: "browser",
+        resource_key: "browser-7",
+      });
+    });
+    expect(provision).toHaveBeenCalledWith("browser");
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it("releases the resource when the open it was created for fails", async () => {
+    const fixture = createNavigationFixture();
+    const release = vi.fn();
+    const provision = vi.fn().mockResolvedValue({ resource_key: "browser-8", release });
+    // A rejected store mutation must not leave a live runtime with no surface.
+    vi.spyOn(fixture.navigation, "open").mockImplementation(() => {
+      throw new Error("workbench command rejected");
+    });
+    render(
+      <OpenSurfaceDialog
+        open
+        group_id="group-1"
+        navigation={fixture.navigation}
+        registry={fixture.registry}
+        provision_resource={provision}
+        on_close={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("option", { name: "Browser" }));
+    await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+    expect(Object.keys(fixture.store.getState().document.surfaces)).toHaveLength(0);
+  });
+
+  it("does not open a provisioning surface when no provisioner is supplied", () => {
+    const fixture = createNavigationFixture();
+    render(
+      <OpenSurfaceDialog
+        open
+        group_id="group-1"
+        navigation={fixture.navigation}
+        registry={fixture.registry}
+        on_close={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("option", { name: "Browser" }));
+    expect(Object.keys(fixture.store.getState().document.surfaces)).toHaveLength(0);
+  });
+});
+
 describe("OpenSurfaceDialog", () => {
   it("lists only actionable surfaces instead of rendering unavailable controls", () => {
     const fixture = createNavigationFixture();
@@ -47,14 +114,15 @@ describe("OpenSurfaceDialog", () => {
       "garden",
       "library",
       "workflows",
+      // Browser provisions its own session, so it is offered without the
+      // caller having to supply a resource key first.
+      "browser",
     ]) {
       expect(document.querySelector(`[role="option"][data-surface-type="${surfaceType}"]`)).not.toBeNull();
     }
     expect(document.querySelector('[role="option"][data-surface-type="agent-session"]'))
       .toBeNull();
     expect(document.querySelector('[role="option"][data-surface-type="files"]'))
-      .toBeNull();
-    expect(document.querySelector('[role="option"][data-surface-type="browser"]'))
       .toBeNull();
   });
 

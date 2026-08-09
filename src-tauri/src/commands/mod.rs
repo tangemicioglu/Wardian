@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod artifacts;
+pub mod browser;
 pub mod chat;
 pub mod class;
 pub mod change_review;
@@ -24,6 +25,7 @@ pub mod workflow;
 
 pub use agent::*;
 pub use artifacts::*;
+pub use browser::*;
 pub use chat::*;
 pub use class::*;
 pub use change_review::*;

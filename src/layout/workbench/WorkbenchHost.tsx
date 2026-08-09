@@ -16,6 +16,10 @@ import {
   createCoreWorkbenchSurfaceRegistry,
 } from "../../features/workbench/OpenSurfaceDialog";
 import {
+  CORE_SURFACE_CONTRIBUTIONS,
+  type SurfaceResourceProvision,
+} from "../../features/workbench/coreSurfaceRegistry";
+import {
   createWorkbenchNavigationService,
   type WorkbenchIdKind,
   type WorkbenchNavigationService,
@@ -52,6 +56,10 @@ export type WorkbenchHostProps = {
   create_id?: (kind: WorkbenchIdKind) => string;
   new_tab_action?: WorkbenchNewTabAction;
   root_ref?: RefObject<HTMLDivElement | null>;
+  /** Creates the runtime resource a provisioning contribution needs. */
+  provision_surface_resource?: (
+    surface_type: string,
+  ) => Promise<SurfaceResourceProvision | null>;
 };
 
 type WorkbenchDropPosition = "top" | "bottom" | "left" | "right" | "center";
@@ -122,6 +130,7 @@ export function WorkbenchHost({
   create_id,
   new_tab_action = "home",
   root_ref: suppliedRootRef,
+  provision_surface_resource,
 }: WorkbenchHostProps) {
   const ownedRootRef = useRef<HTMLDivElement>(null);
   const rootRef = suppliedRootRef ?? ownedRootRef;
@@ -242,6 +251,35 @@ export function WorkbenchHost({
     };
   }, [commitMruSwitcher, dismissMruSwitcher]);
 
+  /**
+   * Opens a surface, first creating its runtime resource when the contribution
+   * declares that it provisions one.
+   */
+  const openProvisioned = useCallback(async (
+    surfaceType: string,
+    open: (request: { surface_type: string; resource_key?: string }) => void,
+  ): Promise<void> => {
+    const contribution = CORE_SURFACE_CONTRIBUTIONS.find(
+      (choice) => choice.surface_type === surfaceType,
+    );
+    if (contribution?.provisions_resource !== true) {
+      open({ surface_type: surfaceType });
+      return;
+    }
+    if (!provision_surface_resource) return;
+    const provisioned = await provision_surface_resource(surfaceType);
+    if (!provisioned) return;
+    try {
+      open({ surface_type: surfaceType, resource_key: provisioned.resource_key });
+    } catch (error) {
+      // A rejected store mutation must not leave the runtime running with no
+      // surface presenting it. Reported rather than rethrown: the caller does
+      // not await this, so a rethrow would only be an unhandled rejection.
+      provisioned.release();
+      console.error(`[Wardian] could not open a ${surfaceType} surface`, error);
+    }
+  }, [provision_surface_resource]);
+
   const openNewTabLauncher = useCallback((groupId: string) => {
     if (new_tab_action === "home") {
       navigation.open({ surface_type: "new-tab", group_id: groupId });
@@ -346,7 +384,9 @@ export function WorkbenchHost({
           openPaletteForPlaceholder(targetGroupId, surface.surface_id);
         }}
         on_select_surface={(surfaceType) => {
-          navigation.open_from_placeholder(surface.surface_id, { surface_type: surfaceType });
+          void openProvisioned(surfaceType, (request) => {
+            navigation.open_from_placeholder(surface.surface_id, request);
+          });
         }}
         on_reopen_closed={() => {
           navigation.reopen_closed_from_placeholder(surface.surface_id);
@@ -400,7 +440,9 @@ export function WorkbenchHost({
             recently_closed={state.document.recently_closed}
             on_open_surface={openPaletteForGroup}
             on_select_surface={(surfaceType, targetGroupId) => {
-              navigation.open({ surface_type: surfaceType, group_id: targetGroupId });
+              void openProvisioned(surfaceType, (request) => {
+                navigation.open({ ...request, group_id: targetGroupId });
+              });
             }}
             on_reopen_closed={() => { void commands.execute("workbench.reopen_closed_surface"); }}
           />
@@ -451,6 +493,7 @@ export function WorkbenchHost({
         on_close={closeLauncher}
         return_focus={launcherReturnFocusRef.current}
         placeholder_surface_id={launcherPlaceholderId ?? undefined}
+        {...(provision_surface_resource ? { provision_resource: provision_surface_resource } : {})}
       />
       <WorkbenchCommandPalette
         open={commandPaletteOpen}

@@ -2,6 +2,7 @@ pub mod active_agent;
 pub mod agent_watch;
 pub mod app_state;
 pub mod artifact_runtime;
+pub mod browser_session;
 pub mod change_snapshot_runtime;
 pub mod conversation_archive;
 pub mod file_resources;
@@ -15,6 +16,7 @@ pub use active_agent::ActiveAgent;
 pub use agent_watch::AgentWatchState;
 pub use app_state::{AppState, ExplorerWatchRegistration, LibraryWatchRegistration};
 pub use artifact_runtime::ArtifactRuntime;
+pub use browser_session::{BrowserError, BrowserSessionBroker, BrowserSessionEvent};
 pub use change_snapshot_runtime::{ChangeSnapshotRuntime, SnapshotDispatch};
 pub use conversation_archive::ConversationArchiveState;
 pub use file_resources::{

@@ -30,6 +30,76 @@ describe("core workbench surface registry", () => {
     useFilesPresentationStore.getState().reset();
   });
 
+  it("registers Browser as a runtime-backed session surface that provisions itself", () => {
+    const registry = createCoreWorkbenchSurfaceRegistry();
+    expect(registry.require("browser")).toMatchObject({
+      render_policy: "suspend_when_hidden",
+      open_policy: "focus_resource",
+      runtime_policy: "runtime_backed",
+      state_schema_version: 1,
+    });
+    expect(CORE_SURFACE_CONTRIBUTIONS).toContainEqual({
+      surface_type: "browser",
+      title: "Browser",
+      description: "Open a page an agent can drive.",
+      group: "Sessions",
+      provisions_resource: true,
+    });
+  });
+
+  it("requires a browser surface to name the session it presents", () => {
+    const registry = createCoreWorkbenchSurfaceRegistry();
+    expect(() => registry.resource_key({ surface_type: "browser" })).toThrow(
+      /requires a resource_key/,
+    );
+    expect(registry.resource_key({ surface_type: "browser", resource_key: " b-1 " })).toBe("b-1");
+  });
+
+  it("titles a browser surface by host so a tab stays scannable", () => {
+    const registry = createCoreWorkbenchSurfaceRegistry();
+    const untitled = makeSurface("surface-untitled", {
+      surface_type: "browser",
+      resource_key: "b-1",
+      state: { url: "", viewport: null },
+    });
+    expect(registry.presentation(untitled).title).toBe("Browser");
+    const titled = makeSurface("surface-titled", {
+      surface_type: "browser",
+      resource_key: "b-1",
+      state: { url: "https://example.com/docs/intro?x=1", viewport: null },
+    });
+    expect(registry.presentation(titled).title).toBe("Browser: example.com/docs/intro");
+    const rootPath = makeSurface("surface-rootPath", {
+      surface_type: "browser",
+      resource_key: "b-1",
+      state: { url: "https://example.com/", viewport: null },
+    });
+    expect(registry.presentation(rootPath).title).toBe("Browser: example.com");
+  });
+
+  it("rejects browser state that could not have come from a real session", () => {
+    const registry = createCoreWorkbenchSurfaceRegistry();
+    const browser = registry.require("browser");
+    expect(browser.restore_state({ url: "https://example.com/", viewport: null }, 1)).toMatchObject({
+      ok: true,
+    });
+    expect(
+      browser.restore_state({ url: "https://example.com/", viewport: { width: 800, height: 600 } }, 1),
+    ).toMatchObject({ ok: true });
+    for (const invalid of [
+      {},
+      { url: 7 },
+      { url: "x", viewport: { width: 0, height: 600 } },
+      { url: "x", viewport: { width: 800 } },
+      { url: "x", viewport: { width: 800.5, height: 600 } },
+    ]) {
+      expect(browser.restore_state(invalid, 1), JSON.stringify(invalid)).toMatchObject({
+        ok: false,
+      });
+    }
+    expect(browser.restore_state({ url: "x", viewport: null }, 2)).toMatchObject({ ok: false });
+  });
+
   it("registers a strict reserved Files resource surface", () => {
     const registry = createCoreWorkbenchSurfaceRegistry();
     const files = registry.require("files");
