@@ -55,6 +55,7 @@ describe("SettingsModal", () => {
       externalEditor: "system",
       externalEditorCustomExecutable: "",
       explorerFileClickAction: "preview",
+      fileOpenActions: { text: "wardian", image: "wardian", pdf: "wardian" },
       workbenchNewTabAction: "home",
       shell_id: "auto",
       custom_executable: "",
@@ -418,6 +419,9 @@ describe("SettingsModal", () => {
     fireEvent.change(screen.getByLabelText("File click action"), {
       target: { value: "external" },
     });
+    fireEvent.change(screen.getByLabelText("Text and code files open location"), {
+      target: { value: "wardian" },
+    });
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("save_app_settings", {
@@ -427,6 +431,7 @@ describe("SettingsModal", () => {
             external_editor: "custom",
             external_editor_custom_executable: "C:/Tools/editor.exe",
             explorer_file_click_action: "external",
+            file_open_actions: { text: "wardian", image: "external", pdf: "external" },
           }),
         }),
       });

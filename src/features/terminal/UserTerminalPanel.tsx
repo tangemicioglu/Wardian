@@ -8,6 +8,8 @@ import "@xterm/xterm/css/xterm.css";
 import { FolderOpen, RefreshCcw, X } from "lucide-react";
 import { effectiveTerminalFontFamily, useSettingsStore } from "../../store/useSettingsStore";
 import { DocsLink } from "../../components/DocsLink";
+import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
+import { openFileWithSettings } from "../files/fileOpenRouting";
 import { installConservativeTerminalShortcuts } from "./terminalShortcuts";
 import { installTerminalLinkProvider } from "./terminalLinks";
 
@@ -50,6 +52,7 @@ export function UserTerminalPanel({
   const [exited, setExited] = useState(false);
   const terminalFontSize = useSettingsStore((state) => state.terminalFontSize);
   const terminalFontFamily = useSettingsStore((state) => state.terminalFontFamily);
+  const workbenchNavigation = useAppShellWorkbenchNavigation();
   const [effectiveTheme, setEffectiveTheme] = useState<"dark" | "light">(() => currentTheme(theme));
 
   useEffect(() => {
@@ -159,6 +162,12 @@ export function UserTerminalPanel({
           external_editor_custom_executable: externalEditorCustomExecutable.trim() || null,
         };
       },
+      openFile: (path, editor) => openFileWithSettings(path, {
+        navigation: workbenchNavigation,
+        file_open_actions: useSettingsStore.getState().fileOpenActions,
+        external_editor: editor.external_editor,
+        external_editor_custom_executable: editor.external_editor_custom_executable,
+      }).then(() => undefined),
       onOpenError: setStatusMessage,
     });
     const fitAddon = new FitAddon();
@@ -248,7 +257,7 @@ export function UserTerminalPanel({
       termRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [drainPty, fitAndResize, termTheme, terminalFontFamily, terminalFontSize, terminalSize]);
+  }, [drainPty, fitAndResize, termTheme, terminalFontFamily, terminalFontSize, terminalSize, workbenchNavigation]);
 
   useEffect(() => {
     const term = termRef.current;

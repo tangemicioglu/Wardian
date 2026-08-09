@@ -111,6 +111,7 @@ async function bootFilesWorkbench(
     external_editor: "system",
     external_editor_custom_executable: null,
     explorer_file_click_action: "preview",
+    file_open_actions: { text: "wardian", image: "wardian", pdf: "wardian" },
     workbench_new_tab_action: "home",
   };
   const ipc = await installWorkbenchIpcMock(page, {

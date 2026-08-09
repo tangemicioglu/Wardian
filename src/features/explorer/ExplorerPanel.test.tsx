@@ -77,6 +77,7 @@ describe('ExplorerPanel', () => {
       externalEditor: 'system',
       externalEditorCustomExecutable: '',
       explorerFileClickAction: 'preview',
+      fileOpenActions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
     });
   });
 
@@ -333,6 +334,7 @@ describe('ExplorerPanel', () => {
       explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
     let attempts = 0;
     vi.mocked(invoke).mockImplementation(async (command) => {
@@ -424,6 +426,7 @@ describe('ExplorerPanel', () => {
       explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
@@ -497,6 +500,7 @@ describe('ExplorerPanel', () => {
       explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
@@ -528,6 +532,7 @@ describe('ExplorerPanel', () => {
       explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';

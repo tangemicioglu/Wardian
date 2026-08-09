@@ -4,7 +4,13 @@ Wardian terminals should behave like familiar embedded PTYs: URLs and file paths
 
 The implementation should use xterm's link provider API so hover, underline, pointer cursor, and click activation are owned by the terminal renderer. Link detection lives in a shared frontend terminal module. Agent terminals and the user terminal install the same provider when their xterm instance is created.
 
-URLs open as URLs through the existing Tauri opener plugin. This includes plain URLs detected from terminal text and OSC 8 hyperlinks emitted by provider TUIs. File paths open through Wardian's existing `open_in_external_editor` command with the current Settings-backed Explorer external editor configuration (`external_editor` and `external_editor_custom_executable`). Terminal file clicks do not use `explorer_file_click_action`; that setting controls Explorer row click behavior, while terminal file links map to Explorer's explicit **Open in External App** action.
+URLs open as URLs through the existing Tauri opener plugin. This includes plain
+URLs detected from terminal text and OSC 8 hyperlinks emitted by provider TUIs.
+File paths use the shared family-based opening router and the current
+`file_open_actions` preferences. Supported text/code, image, and PDF paths can
+open in Wardian or the configured external app; unknown and unsupported paths
+force the system-preferred viewer. The legacy `explorer_file_click_action`
+setting is used only when migrating older settings documents.
 
 Local file links should follow VS Code's fail-closed model: parsing produces candidates, but the xterm provider only exposes file links after the resolved target exists on disk. Strong file-shaped text can still be parsed synchronously for tests and range calculation, but provider output must validate it with the backend before underlining it. Slash-delimited prose and command names such as `stage/reason/risk` or `/model` should not become file links unless they resolve to a real file or directory.
 

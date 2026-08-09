@@ -11,6 +11,7 @@ import { useSettingsStore } from '../../store/useSettingsStore';
 import { normalizeExplorerPathForCompare } from './pathUtils';
 import { createFileSurfaceState, fileResourceKey } from '../files/fileResourceKey';
 import { openPermanentFileSurface } from '../files/fileSurfaceNavigation';
+import { fileOpenDestinationForPath, openFileInExternalApp } from '../files/fileOpenRouting';
 import type { WorkbenchNavigationService } from '../workbench/navigationService';
 import { useAppShellWorkbenchNavigation } from '../../layout/AppShell';
 import { formatExplorerPathForDisplay } from '../../utils/displayPath';
@@ -44,7 +45,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
   const workbenchNavigation = navigation === undefined ? appShellNavigation : navigation;
   const externalEditor = useSettingsStore((state) => state.externalEditor);
   const externalEditorCustomExecutable = useSettingsStore((state) => state.externalEditorCustomExecutable);
-  const explorerFileClickAction = useSettingsStore((state) => state.explorerFileClickAction);
+  const fileOpenActions = useSettingsStore((state) => state.fileOpenActions);
   const [rootPath, setRootPath] = useState<string | null>(null);
   const [gitStatusMap, setGitStatusMap] = useState<Record<string, string>>({});
   const changedDirectories = useMemo(() => {
@@ -198,12 +199,9 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
 
   const openExternalPath = async (path: string) => {
     try {
-      await invoke('open_in_external_editor', {
-        path,
-        editor: {
-          external_editor: externalEditor,
-          external_editor_custom_executable: externalEditorCustomExecutable.trim() || null,
-        },
+      await openFileInExternalApp(path, {
+        external_editor: externalEditor,
+        external_editor_custom_executable: externalEditorCustomExecutable,
       });
       setExternalOpenError(null);
     } catch (err) {
@@ -214,7 +212,14 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
     }
   };
 
-  const openExternalEditor = async (node: FileNode) => {
+  const openExternalEditor = async (node: FileNode, systemDefault = false) => {
+    if (systemDefault) {
+      await openFileInExternalApp(node.path, {
+        external_editor: 'system',
+        external_editor_custom_executable: null,
+      });
+      return;
+    }
     await openExternalPath(node.path);
   };
 
@@ -321,19 +326,27 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
 
     if (openInNewTab) {
       openPermanent(path);
-    } else if (explorerFileClickAction === 'external') {
-      await openExternalEditor(fileNode(path));
     } else {
-      runNavigationAction('File preview', (currentNavigation) => (
-        currentNavigation.open_transient(fileSurfaceRequest(path, true))
-      ));
+      const destination = fileOpenDestinationForPath(path, fileOpenActions);
+      if (destination === 'external') {
+        await openExternalEditor(fileNode(path));
+      } else if (destination === 'system') {
+        await openExternalEditor(fileNode(path), true);
+      } else {
+        runNavigationAction('File preview', (currentNavigation) => (
+          currentNavigation.open_transient(fileSurfaceRequest(path, true))
+        ));
+      }
     }
   };
 
   const handleFileOpen = async (path: string, isDir: boolean) => {
     if (isDir) return;
-    if (explorerFileClickAction === 'external') {
+    const destination = fileOpenDestinationForPath(path, fileOpenActions);
+    if (destination === 'external') {
       await openExternalEditor(fileNode(path));
+    } else if (destination === 'system') {
+      await openExternalEditor(fileNode(path), true);
     } else {
       openPermanent(path);
     }

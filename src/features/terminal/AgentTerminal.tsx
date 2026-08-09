@@ -19,9 +19,12 @@ import { installConservativeTerminalShortcuts } from "./terminalShortcuts";
 import {
   getTerminalLinksForBufferLine,
   installTerminalLinkProvider,
+  type ExternalEditorLaunchSettings,
   type TerminalLinkProviderOptions,
   type TerminalProviderLinkSnapshot,
 } from "./terminalLinks";
+import { openFileWithSettings } from "../files/fileOpenRouting";
+import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
 import { effectiveTerminalFontFamily, useSettingsStore } from "../../store/useSettingsStore";
 import { useQueueStore } from "../../store/useQueueStore";
 import type {
@@ -72,6 +75,7 @@ type TerminalLinkContextRef = {
   current: {
     basePath?: string | null;
     onOpenError?: (message: string) => void;
+    openFile?: (path: string, editor: ExternalEditorLaunchSettings) => Promise<void>;
   };
 };
 
@@ -1999,6 +2003,12 @@ function createRenderer(terminalKey: string, entry: TerminalSessionEntry) {
     onOpenError: (message) => {
       entry.terminalLinkContextRef.current.onOpenError?.(message);
     },
+    openFile: (path, editor) => entry.terminalLinkContextRef.current.openFile?.(path, editor)
+      ?? openFileWithSettings(path, {
+        file_open_actions: useSettingsStore.getState().fileOpenActions,
+        external_editor: editor.external_editor,
+        external_editor_custom_executable: editor.external_editor_custom_executable,
+      }).then(() => undefined),
   };
   installTerminalLinkProvider(term, terminalLinkOptions);
 
@@ -2290,6 +2300,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   const [rendererMountRevision, setRendererMountRevision] = useState(0);
   const terminalFontSize = useSettingsStore((state) => state.terminalFontSize);
   const terminalFontFamily = useSettingsStore((state) => state.terminalFontFamily);
+  const workbenchNavigation = useAppShellWorkbenchNavigation();
 
   const [effectiveTheme, setEffectiveTheme] = useState<"dark" | "light">(() => {
     if (theme === "system") {
@@ -2786,6 +2797,12 @@ export const AgentTerminal = memo(function AgentTerminal({
         session.terminalLinkContextRef.current = {
           basePath: workspacePath,
           onOpenError: setLinkOpenError,
+          openFile: (path, editor) => openFileWithSettings(path, {
+            navigation: workbenchNavigation,
+            file_open_actions: useSettingsStore.getState().fileOpenActions,
+            external_editor: editor.external_editor,
+            external_editor_custom_executable: editor.external_editor_custom_executable,
+          }).then(() => undefined),
         };
         const sessionTermTheme = terminalThemeForProvider(effectiveTheme, session.provider ?? provider);
         session.currentTheme = sessionTermTheme;
@@ -3132,6 +3149,7 @@ export const AgentTerminal = memo(function AgentTerminal({
       }
       if (entry?.terminalLinkContextRef.current.onOpenError === setLinkOpenError) {
         entry.terminalLinkContextRef.current.onOpenError = undefined;
+        entry.terminalLinkContextRef.current.openFile = undefined;
       }
       if (entry?.onRendererEvicted) {
         entry.onRendererEvicted = undefined;
@@ -3153,6 +3171,7 @@ export const AgentTerminal = memo(function AgentTerminal({
     rendererMountRevision,
     sessionId,
     terminalKey,
+    workbenchNavigation,
     workspacePath,
   ]);
 

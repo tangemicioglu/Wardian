@@ -10,11 +10,14 @@ The Explorer Sidebar is a dedicated panel found in the Wardian sidebar (`Sidebar
 ### 1. `ExplorerPanel.tsx`
 This is the main container component for the file explorer tab.
 - **Root Resolution**: It queries the backend command `get_explorer_root(sessionId)` to identify which path to render.
-- **File Click Action**: It receives file selections from `FileTree` and routes
-  them through the Settings-backed `explorerFileClickAction` preference.
-  Internal preview mode sends a resource-keyed `files` request through the
-  AppShell-owned `WorkbenchNavigationService`; external mode reuses
-  `open_in_external_editor`.
+- **File Opening**: It receives file selections from `FileTree` and routes
+  supported text/code, image, and PDF files through the shared
+  `fileOpenDestinationForPath` helper and the Settings-backed
+  `file_open_actions` preferences. Internal opening sends a resource-keyed
+  `files` request through the AppShell-owned
+  `WorkbenchNavigationService`; external opening reuses
+  `open_in_external_editor`. Unknown and unsupported files force the system
+  destination.
 - **Filesystem Watch Refresh**: While mounted, the panel subscribes to `explorer-changed`, starts `explorer_watch` for the current root after the listener is ready, and calls `explorer_unwatch` on cleanup. Matching events increment a refresh token and carry changed paths down to `FileTree`.
 - **Root Actions**: The Explorer title header can reveal the current Explorer root through `reveal_in_explorer` or open the entire root through the Settings-backed `open_in_external_editor` path.
 - **Context Menu Context**: Provides right-click operations tailored to
@@ -45,7 +48,7 @@ The file system operations strictly enforce security and platform agnosticism:
   `src-tauri/src/commands/files.rs`; Explorer does not read preview bytes
   directly.
 - `reveal_in_explorer`: OS-specific `std::process::Command` routing to invoke `explorer`, `open`, or `xdg-open`.
-- `open_in_external_editor`: Opens folders and editor-friendly files with the Settings-selected external app mode (`system`, `vscode`, or `custom`) by spawning the platform command in Rust. Known binary, media, archive, executable, and document files fall back to the system default handler so VS Code/custom editors are not used for non-editor file types.
+- `open_in_external_editor`: Opens folders and editor-friendly files with the Settings-selected external app mode (`system`, `vscode`, or `custom`) by spawning the platform command in Rust. The shared file-opening router explicitly passes `system` for unknown or unsupported content, so VS Code/custom editors are not used as document viewers.
 - `delete_file`: Recursively deletes a directory or permanently removes a file string.
 - `explorer_watch` / `explorer_unwatch`: Manage debounced recursive filesystem watchers for active explorer roots. Watchers are reference-counted by root and exclude high-churn folders such as `.git`, `node_modules`, `target`, `.venv`, `dist`, `build`, `.next`, `.turbo`, `.cache`, and `.wardian/tmp`.
 

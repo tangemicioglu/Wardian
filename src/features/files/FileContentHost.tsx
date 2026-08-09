@@ -85,6 +85,7 @@ type PresentationLayerProps = {
   on_reset: () => void;
   on_open_file: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
   on_open_with: (path: string) => Promise<void> | void;
+  on_open_system?: (path: string) => Promise<void> | void;
   on_reveal: (path: string) => Promise<void> | void;
 };
 
@@ -105,6 +106,7 @@ function PresentationLayer({
   on_reset,
   on_open_file,
   on_open_with,
+  on_open_system,
   on_reveal,
 }: PresentationLayerProps) {
   const Renderer = useMemo(() => definition.create_renderer(), [definition, reset_token]);
@@ -136,6 +138,7 @@ function PresentationLayer({
             resource_request={resource_request}
             on_open_file={on_open_file}
             on_open_with={on_open_with}
+            on_open_system={on_open_system}
             on_reveal={on_reveal}
           />
         </Suspense>
@@ -157,6 +160,7 @@ export type FileContentHostProps = {
   resource_request?: OpenFileResourceRequestV1;
   on_open_file: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
   on_open_with: (path: string) => Promise<void> | void;
+  on_open_system?: (path: string) => Promise<void> | void;
   on_reveal: (path: string) => Promise<void> | void;
 };
 
@@ -174,6 +178,7 @@ export function FileContentHost({
   resource_request,
   on_open_file,
   on_open_with,
+  on_open_system,
   on_reveal,
 }: FileContentHostProps) {
   const [resetTokens, setResetTokens] = useState<Record<FileContentPresentation, number>>({
@@ -215,6 +220,7 @@ export function FileContentHost({
           on_reset={() => reset("rendered")}
           on_open_file={on_open_file}
           on_open_with={on_open_with}
+          on_open_system={on_open_system}
           on_reveal={on_reveal}
         />
       ) : null}
@@ -236,6 +242,7 @@ export function FileContentHost({
           on_reset={() => reset("editor")}
           on_open_file={on_open_file}
           on_open_with={on_open_with}
+          on_open_system={on_open_system}
           on_reveal={on_reveal}
         />
       ) : null}

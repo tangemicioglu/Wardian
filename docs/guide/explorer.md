@@ -19,7 +19,9 @@ Use it when you need to inspect generated files, logs, prompt assets, or the sel
 1. Select an agent in the right roster, or clear selection for global Wardian home browsing.
 2. Open the **Explorer** tab in the left sidebar.
 3. Expand folders to inspect files.
-4. Click a file to open a transient Files preview, or change the click behavior in [Settings](./settings.md).
+4. Click a file to use the matching broad file-family preference in
+   [Settings](./settings.md). Wardian-supported files open in a transient Files
+   preview by default; unsupported files use the system-preferred viewer.
 5. Use the Explorer title actions to reveal the current root in your system file manager or open the entire root in your configured external app.
 6. Use preview, open externally, reveal, copy path, or delete from the file context menu.
 7. Move to [Source Control](./source-control.md) when the selected root is a Git workspace and you need to review changes.
@@ -43,20 +45,23 @@ This allows you to manually browse common data, shared lineages, and global conf
 
 ## 🖱️ File Interactions
 
-Clicking a folder expands or collapses it. Clicking a file uses the configured
-**File click action** from Settings:
+Clicking a folder expands or collapses it. Clicking a supported file uses its
+configured broad file-family preference from Settings:
 
-- **Preview in Wardian** opens a read-only Files tab. This is the default.
-  A single click creates or replaces the current pane's transient preview.
-  Double-clicking or pressing `Enter` makes that file a permanent tab.
-- **Open in external app** opens editor-friendly files through the configured
-  Explorer external editor preference. Binary, media, archive, executable, and
-  document files use the operating system's default handler.
+- **Open in Wardian** opens a read-only Files tab. A single click creates or
+  replaces the current pane's transient preview. Double-clicking or pressing
+  `Enter` makes that file a permanent tab.
+- **Open in external app** uses the configured External editor preference.
+
+Unknown or unsupported files, such as office documents, always open in the
+operating system's preferred application. They do not use a configured VS Code
+or custom editor as a fallback.
 
 The Explorer also supports standard right-click actions for rapid file
 management:
 
-- **Open**: Opens a permanent Files tab, or pins the matching transient preview.
+- **Open**: Opens a permanent Files tab, or pins the matching transient preview;
+  unsupported files use the system-preferred application.
 - **Open to Side**: Opens a permanent Files tab in an adjacent pane when the
   Workbench can admit the split.
 - **Open in External App**: Opens the selected folder, or an editor-friendly file, using the configured Explorer editor preference. Binary, media, archive, executable, and document files use the operating system's default handler. You can switch editor-friendly paths to VS Code or a custom executable in [Settings](./settings.md).
@@ -112,9 +117,10 @@ When the selected root is a Git repository, the Explorer uses status colors and 
 - Explorer context follows selection. If the tree is not showing the workspace you expect, check the selected agent in the roster.
 - Current in-app previews support validated UTF-8 text and Markdown, images,
   and PDFs. Complete text models are limited to 16 MiB and 200,000 lines;
-  images to 64 MiB and 64 million decoded pixels; PDFs to 256 MiB. Oversized or
-  unsupported content shows metadata and **Open With** instead of allocating an
-  unsafe renderer. PDF search is bounded to 128 pages or two seconds per query;
+  images to 64 MiB and 64 million decoded pixels; PDFs to 256 MiB. Oversized
+  content stays in the metadata fallback with **Open With**; unsupported
+  content requests the system-preferred viewer and returns to metadata with
+  **Open With** if that launch fails. PDF search is bounded to 128 pages or two seconds per query;
   partial results show how much of the document was searched.
 - Active HTML and SVG are deliberately unavailable in this foundation. They
   will not render live until the capability-free, networkless artifact host and

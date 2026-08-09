@@ -23,7 +23,7 @@ import {
 } from "../chat/chatPresentation";
 import { chatTranscriptRowKey, withTurnChangeSummaries, type ChatTranscriptRowModel } from "../chat/chatTurns";
 import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
-import { fileResourceKey } from "../files/fileResourceKey";
+import { openFileWithSettings } from "../files/fileOpenRouting";
 import { type ChatMarkdownLinkHandling } from "./markdown/ChatMarkdown";
 import { derivePresentedChatRows } from "./workLogPresentation";
 
@@ -88,6 +88,7 @@ export function AgentChatView({
   const workbenchNavigation = useAppShellWorkbenchNavigation();
   const externalEditor = useSettingsStore((state) => state.externalEditor);
   const externalEditorCustomExecutable = useSettingsStore((state) => state.externalEditorCustomExecutable);
+  const fileOpenActions = useSettingsStore((state) => state.fileOpenActions);
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const transcriptRequestRef = useRef(0);
   const stickToLatestRef = useRef(true);
@@ -198,29 +199,38 @@ export function AgentChatView({
   const openChangedFile = useMemo(() => {
     const workspace = workspacePath?.trim();
     if (!workbenchNavigation || !workspace) return undefined;
-    return (path: string) => {
+    return async (path: string) => {
       const absolute = /^([A-Za-z]:[\\/]|\/|\\\\)/.test(path)
         ? path
         : `${workspace.replace(/[\\/]+$/g, "")}/${path.replace(/^[\\/]+/g, "")}`;
       try {
-        const surfaceId = workbenchNavigation.open({
-          surface_type: "files",
-          resource_key: fileResourceKey(absolute),
+        await openFileWithSettings(absolute, {
+          navigation: workbenchNavigation,
+          file_open_actions: fileOpenActions,
+          external_editor: externalEditor,
+          external_editor_custom_executable: externalEditorCustomExecutable,
         });
-        workbenchNavigation.pin_transient(surfaceId);
       } catch (reason) {
         console.warn("Failed to open changed file from chat:", reason);
       }
     };
-  }, [workbenchNavigation, workspacePath]);
+  }, [externalEditor, externalEditorCustomExecutable, fileOpenActions, workbenchNavigation, workspacePath]);
   const markdownLinkHandling = useMemo<ChatMarkdownLinkHandling>(() => ({
     getBasePath: () => workspacePath?.trim() || null,
     getExternalEditor: () => ({
       external_editor: externalEditor,
       external_editor_custom_executable: externalEditorCustomExecutable.trim() || null,
     }),
+    openFile: async (path, editor) => {
+      await openFileWithSettings(path, {
+        navigation: workbenchNavigation,
+        file_open_actions: fileOpenActions,
+        external_editor: editor.external_editor,
+        external_editor_custom_executable: editor.external_editor_custom_executable,
+      });
+    },
     onOpenError: (message) => console.warn(message),
-  }), [externalEditor, externalEditorCustomExecutable, workspacePath]);
+  }), [externalEditor, externalEditorCustomExecutable, fileOpenActions, workbenchNavigation, workspacePath]);
 
   useEffect(() => {
     stickToLatestRef.current = true;

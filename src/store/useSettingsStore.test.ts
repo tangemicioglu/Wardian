@@ -25,6 +25,7 @@ function resetAppPreferences() {
     externalEditor: 'system',
     externalEditorCustomExecutable: '',
     explorerFileClickAction: 'preview',
+    fileOpenActions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
     workbenchNewTabAction: 'home',
     app_settings_overrides: {},
     app_settings_loaded: false,
@@ -291,6 +292,7 @@ describe('app settings persistence', () => {
     expect(useSettingsStore.getState().titlebarTelemetryVisible).toBe(false);
     expect(useSettingsStore.getState().externalEditor).toBe('vscode');
     expect(useSettingsStore.getState().explorerFileClickAction).toBe('external');
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({ text: 'external', image: 'external', pdf: 'external' });
     expect(useSettingsStore.getState().app_settings_loaded).toBe(true);
   });
 
@@ -358,6 +360,19 @@ describe('app settings persistence', () => {
 
     expect(useSettingsStore.getState().explorerFileClickAction).toBe('preview');
     expect(useSettingsStore.getState().app_settings_overrides).not.toHaveProperty('explorer_file_click_action');
+  });
+
+  it('persists a targeted file-family opening preference', () => {
+    useSettingsStore.getState().setFileOpenAction('image', 'external');
+
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'wardian',
+      image: 'external',
+      pdf: 'wardian',
+    });
+    expect(useSettingsStore.getState().app_settings_overrides).toEqual(expect.objectContaining({
+      file_open_actions: { text: 'wardian', image: 'external', pdf: 'wardian' },
+    }));
   });
 
   it('keeps migrated local preferences when no backend app settings file exists yet', async () => {
