@@ -346,12 +346,12 @@ impl Default for AppState {
             remote_runtime: Mutex::new(crate::remote::models::RemoteRuntimeState::default()),
             terminal_theme: RwLock::new("dark".to_string()),
             terminal_sessions: Arc::new(TerminalSessionBroker::default()),
-            // Profiles live under Wardian home so an isolated WARDIAN_HOME
-            // test run cannot collide with production browser state.
+            // Profiles and downloads live under Wardian home so an isolated
+            // WARDIAN_HOME test run cannot collide with production browser state.
             browser_sessions: Arc::new(BrowserSessionBroker::new(
                 crate::utils::fs::get_wardian_home()
-                    .map(|home| home.join("browser").join("profiles"))
-                    .unwrap_or_else(|| std::env::temp_dir().join("wardian-browser-profiles")),
+                    .map(|home| home.join("browser"))
+                    .unwrap_or_else(|| std::env::temp_dir().join("wardian-browser")),
             )),
         }
     }

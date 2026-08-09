@@ -27,6 +27,7 @@ closing a tab, unmounting the renderer — never disturbs the runtime.
 | `src-tauri/src/state/browser_session/engine.rs` | Find a Chromium, launch it headless with an isolated profile, read its debug endpoint. |
 | `src-tauri/src/state/browser_session/cdp.rs` | DevTools Protocol client: correlation, target sessions, event stream. |
 | `src-tauri/src/state/browser_session/snapshot.rs` | The injected DOM walker, the ref ledger, and staleness rules. |
+| `src-tauri/src/state/browser_session/network.rs` | The request ledger: folding `Network.*` events into bounded records. |
 | `src-tauri/src/state/browser_session/actor.rs` | Session lifecycle, page operations, screencast, input. |
 | `src-tauri/src/commands/browser.rs` | Tauri commands and the shared operations the control plane calls. |
 | `crates/wardian-core/src/browser.rs` | Wire types shared by the app, the control plane, and the CLI. |
@@ -92,6 +93,97 @@ cannot know whether a `Page.frameNavigated` was among the discarded messages,
 so it invalidates every outstanding ref and re-reads the page's URL and title.
 A spurious `snapshot_stale` costs one re-snapshot; a missed navigation would
 let a ref act on a different document.
+
+## Introspection
+
+### The network ledger
+
+`Network.enable` goes on at attach, beside `Page`, `Runtime`, and `Log`. Lazy
+enabling on the first `network` call was the tempting alternative: an agent asks
+about the network *after* something went wrong, and a ledger that starts
+recording at the moment of the question is empty exactly when it matters.
+
+Always-on costs event volume on a channel that also carries screencast frames,
+and a lag there is not a dropped frame — the pump cannot know whether a
+`Page.frameNavigated` was among the discarded messages, so it invalidates every
+outstanding ref. Two things keep that in hand: the CDP event channel is 2048
+rather than 512, and the pump's `Network.*` arm performs no protocol calls, so
+it cannot stall the loop the way the title read after `Page.loadEventFired`
+does.
+
+**The ledger is not cleared by navigation, and that is deliberate.** Console
+entries belong to the page that produced them. Network records belong to the
+investigation — and the document request that starts a navigation is emitted
+*before* the `Page.frameNavigated` that would clear it, so clearing on
+navigation would reliably delete the single most interesting record in the
+ledger. `network --clear` is explicit instead.
+
+A redirect reuses one request id and reports the hop it just finished as
+`redirectResponse`. Each hop therefore becomes its own record, and every later
+update resolves to the *newest* record for that id, so a chain does not collapse
+into whichever status happened to land last.
+
+Headers are stored with the request; bodies never are. `network <id> --body`
+reads one back through `Network.getResponseBody` at call time, capped and cut on
+a character boundary. A body outlives its request only while Chromium's own
+buffer holds it, so a failed read is an ordinary outcome reported as
+`body_error` rather than an empty body.
+
+The ledger trails the page: it is written from the event pump, while a `wait` on
+page text returns the moment the DOM changes. Engine-backed tests settle on the
+ledger itself rather than on the page, because a test that settles on the page
+passes against a ledger that never fills in.
+
+### Cookies and storage
+
+Cookies go through `Network.getCookies` (page-scoped) or `Storage.getCookies`
+(`--all`), with `setCookie`, `deleteCookies`, and `clearBrowserCookies` behind
+the mutations. A set or delete with neither `--url` nor `--domain` falls back to
+the page's own address, because the protocol silently drops a cookie that has
+nowhere to live; on `about:blank` there is no address to fall back to and the
+call is refused with the fix named.
+
+Storage goes through `Runtime.evaluate` rather than the `DOMStorage` domain: the
+page's own origin comes for free, `localStorage` and `sessionStorage` are
+identical to address, and no `storageId` plumbing is needed. The one expected
+failure is an origin with no web storage at all — `about:blank`, a sandboxed
+frame, a `data:` URL — where the DOM throws `SecurityError`. That is translated
+into a named refusal pointing at the fix. Both ceilings are applied in the
+backend, not in the page: a value that would blow an agent's context should not
+be serialized across the protocol first.
+
+### Downloads
+
+Downloads are written to `<WARDIAN_HOME>/browser/downloads/<browser_id>/`, a
+**sibling** of the profile directory rather than a child. The profile is deleted
+on close, and taking the agent's export with it would defeat the point of
+downloading. Growth is bounded at the other end: the broker prunes download
+directories older than seven days when it starts, and leaves alone any whose
+age it cannot read.
+
+`Browser.setDownloadBehavior` runs in `allowAndName`, which writes each file
+under its download GUID — deterministic before the suggested name is known,
+which is what makes the file findable at all, and useless to a caller
+afterwards. The rename to the suggested filename happens in `downloads()`, not
+in the event pump: the pump must stay free of filesystem work, and doing it on
+read also cannot race the browser's own finalization of the file. Only the file
+*name* of the suggestion is used, so a page suggesting `../../.bashrc` cannot
+escape the directory. A rename that fails reports the GUID path rather than
+failing the download.
+
+Because these are browser-scoped events carrying no target session, the pump's
+session filter admits **all** session-less events: one connection serves exactly
+one browser, so an unaddressed event on it is this session's by construction.
+Events carrying some *other* target's session id stay filtered out.
+
+### No redaction
+
+`network <id>` prints `Authorization` and `Cookie` headers; `cookies` prints
+values. Redacting would defeat the commands — "was the token sent?" is the
+question — and redacting in one place while printing in the other would be worse
+than doing neither. What makes it defensible is the isolated profile: these are
+credentials the session itself acquired, never the human's. Both guides say
+plainly that the output does not belong in a shared artifact.
 
 ## Error codes
 
@@ -181,9 +273,9 @@ provisioning follows with its `release`.
 
 | Layer | What it covers | How to run |
 | --- | --- | --- |
-| Rust unit | URL normalization, wait predicates, ref staleness, snapshot parsing, CLI arg parsing, error codes | `cargo test --lib browser_session` |
-| Engine-backed | Real Edge: navigate, snapshot, fill, click, stale refusal, screenshot, viewport, short refs | `cargo test --lib browser_session::tests -- --ignored --test-threads=1` |
-| Frontend | Coordinate mapping, input forwarding, read-only mode, screencast attach/detach, reopen path | `npx vitest run src/features/browser` |
+| Rust unit | URL normalization, wait predicates, ref staleness, snapshot parsing, network event folding, filters, storage and download bounds, CLI arg parsing, error codes | `cargo test --lib browser_session` |
+| Engine-backed | Real Edge: navigate, snapshot, fill, click, stale refusal, screenshot, viewport, short refs, the network ledger, cookies, storage, a real download | `cargo test --lib browser_session::tests -- --ignored --test-threads=1` |
+| Frontend | Coordinate mapping, input forwarding, read-only mode, screencast attach/detach, reopen path, footer counts | `npx vitest run src/features/browser` |
 
 The engine-backed tests are `#[ignore]`d so a machine without a Chromium still
 runs a green suite. They serve a fixture over an ephemeral loopback port rather
@@ -268,7 +360,12 @@ than reaching the network.
 
 ## Not built yet
 
-Phase 3 (cookies, storage, network, downloads as first-class commands) and
-phase 4 (session restore across app restarts, remote/PWA mirroring, a default
-URL from detected listening ports). `console` and `eval` shipped early because
-they cost almost nothing on top of the existing protocol client.
+Phase 4: session restore across app restarts, remote/PWA mirroring, and a
+default URL from the workspace's detected listening ports.
+
+Request interception (`network route`, `--abort`, response mocking) and HAR
+recording are out of scope by decision rather than by backlog.
+[agent-browser](https://github.com/vercel-labs/agent-browser) ships both and
+they are genuinely useful, but they change what the page does rather than
+observe it. An agent that can silently mock a response can make a test pass that
+should not, which is a different risk class and deserves its own decision.

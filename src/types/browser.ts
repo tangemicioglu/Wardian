@@ -31,6 +31,8 @@ export type BrowserSessionSummary = {
   owner_agent_id?: string;
   workspace?: string;
   console_error_count: number;
+  /** Recorded requests that failed outright or answered 4xx/5xx. */
+  network_failure_count: number;
 };
 
 /**

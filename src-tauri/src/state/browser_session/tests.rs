@@ -18,6 +18,9 @@ use super::actor::{
     Viewport, WaitCondition,
 };
 use super::engine::discover_engine;
+use wardian_core::browser::{
+    CookieAction, NetworkFilter, StatusFilter, StorageAction, StorageArea, MAX_STORAGE_VALUE_CHARS,
+};
 
 const FIXTURE: &str = r#"<!doctype html>
 <html>
@@ -61,6 +64,94 @@ const IFRAME_INNER: &str = r##"<!doctype html>
   </body>
 </html>"##;
 
+/// Fires one request that succeeds and one that 404s, then says it is done.
+///
+/// Both outcomes come from one page load so a single navigation exercises the
+/// whole ledger: a document, a successful fetch, and a failure.
+const NETWORK_PAGE: &str = r##"<!doctype html>
+<html>
+  <head><title>Network</title></head>
+  <body>
+    <p id="status">pending</p>
+    <script>
+      (async () => {
+        await fetch('/api/ok').then((response) => response.text());
+        await fetch('/api/missing');
+        document.getElementById('status').textContent = 'settled';
+      })();
+    </script>
+  </body>
+</html>"##;
+
+/// A page whose only job is to start a download with a known filename.
+const DOWNLOAD_PAGE: &str = r##"<!doctype html>
+<html>
+  <head><title>Download</title></head>
+  <body><a id="grab" href="/report.csv" download>Download the report</a></body>
+</html>"##;
+
+/// One canned HTTP response.
+struct FixtureResponse {
+    status: &'static str,
+    content_type: &'static str,
+    extra_headers: String,
+    body: String,
+}
+
+/// Routes one request line to its response.
+///
+/// Split out from the listener so a route can be read at a glance and the
+/// listener stays a plain read/write loop.
+fn fixture_response(request: &str) -> FixtureResponse {
+    let html = |body: &str| FixtureResponse {
+        status: "200 OK",
+        content_type: "text/html; charset=utf-8",
+        extra_headers: String::new(),
+        body: body.to_string(),
+    };
+    if request.starts_with("GET /second") {
+        return html(SECOND_PAGE);
+    }
+    if request.starts_with("GET /iframe-host") {
+        return html(IFRAME_HOST);
+    }
+    if request.starts_with("GET /inner") {
+        return html(IFRAME_INNER);
+    }
+    if request.starts_with("GET /network") {
+        return html(NETWORK_PAGE);
+    }
+    if request.starts_with("GET /download-page") {
+        return html(DOWNLOAD_PAGE);
+    }
+    if request.starts_with("GET /api/ok") {
+        return FixtureResponse {
+            status: "200 OK",
+            content_type: "application/json",
+            extra_headers: "X-Wardian-Fixture: yes\r\n".to_string(),
+            body: r#"{"ok":true}"#.to_string(),
+        };
+    }
+    if request.starts_with("GET /api/missing") {
+        return FixtureResponse {
+            status: "404 Not Found",
+            content_type: "application/json",
+            extra_headers: String::new(),
+            body: r#"{"error":"nope"}"#.to_string(),
+        };
+    }
+    if request.starts_with("GET /report.csv") {
+        return FixtureResponse {
+            status: "200 OK",
+            content_type: "text/csv",
+            extra_headers: "Content-Disposition: attachment; filename=\"report.csv\"\r\n"
+                .to_string(),
+            body: "quarter,revenue\nQ1,10\n".to_string(),
+        };
+    }
+    html(&fixture_with_long_label())
+}
+
 /// Serves the fixture pages on an ephemeral loopback port.
 ///
 /// A hand-rolled responder keeps the test free of a web-framework dependency
@@ -79,19 +170,14 @@ async fn serve_fixture() -> (String, tokio::task::JoinHandle<()>) {
                     return;
                 };
                 let request = String::from_utf8_lossy(&buffer[..read]).to_string();
-                let long_label = fixture_with_long_label();
-                let body: &str = if request.starts_with("GET /second") {
-                    SECOND_PAGE
-                } else if request.starts_with("GET /iframe-host") {
-                    IFRAME_HOST
-                } else if request.starts_with("GET /inner") {
-                    IFRAME_INNER
-                } else {
-                    &long_label
-                };
+                let reply = fixture_response(&request);
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
+                    "HTTP/1.1 {}\r\nContent-Type: {}\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    reply.status,
+                    reply.content_type,
+                    reply.extra_headers,
+                    reply.body.len(),
+                    reply.body
                 );
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.flush().await;
@@ -379,8 +465,9 @@ async fn a_first_load_that_fails_still_leaves_a_usable_session() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn closing_a_session_removes_its_profile_directory() {
-    let profile_root = std::env::temp_dir().join(format!("wardian-profile-{}", uuid::Uuid::new_v4()));
-    let broker = BrowserSessionBroker::new(profile_root.clone());
+    let browser_root = std::env::temp_dir().join(format!("wardian-profile-{}", uuid::Uuid::new_v4()));
+    let profile_root = browser_root.join("profiles");
+    let broker = BrowserSessionBroker::new(browser_root.clone());
     let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
     let profile = profile_root.join(session.browser_id());
     assert!(profile.is_dir(), "the session should own a profile directory");
@@ -391,7 +478,7 @@ async fn closing_a_session_removes_its_profile_directory() {
         "a closed session must not leave its profile behind at {}",
         profile.display()
     );
-    let _ = std::fs::remove_dir_all(&profile_root);
+    let _ = std::fs::remove_dir_all(&browser_root);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -932,3 +1019,659 @@ async fn closing_an_agents_sessions_leaves_other_sessions_running() {
     broker.shutdown_all().await;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3: introspection
+// ---------------------------------------------------------------------------
+
+/// Blocks until the ledger satisfies `predicate`, or fails saying what it held.
+///
+/// The ledger is fed by the event pump, so it is eventually consistent with the
+/// page: a `wait` on page text returns the moment the DOM changes, while the
+/// `Network.responseReceived` that gives a record its status may still be in
+/// the queue behind it. Settling on the ledger rather than on the page is what
+/// keeps these tests from passing against a ledger that never fills in.
+async fn await_ledger(
+    session: &Arc<super::actor::BrowserSession>,
+    what: &str,
+    predicate: impl Fn(&[wardian_core::browser::NetworkEntry]) -> bool,
+) -> Vec<wardian_core::browser::NetworkEntry> {
+    for _ in 0..150 {
+        let entries = session.network(&NetworkFilter::default()).await;
+        if predicate(&entries) {
+            return entries;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let entries = session.network(&NetworkFilter::default()).await;
+    panic!("timed out waiting for {what}; the ledger held {entries:#?}");
+}
+
+/// Opens the network fixture and blocks until both of its fetches are recorded.
+async fn network_session(
+    broker: &BrowserSessionBroker,
+    base_url: &str,
+) -> Arc<super::actor::BrowserSession> {
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(format!("{base_url}network")),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::Text("settled".to_string()), 15_000)
+        .await
+        .expect("both fetches settle");
+    await_ledger(&session, "both fetches to reach the ledger", |entries| {
+        entries
+            .iter()
+            .any(|entry| entry.url.ends_with("/api/ok") && entry.status.is_some())
+            && entries
+                .iter()
+                .any(|entry| entry.url.ends_with("/api/missing") && entry.status.is_some())
+            && entries
+                .iter()
+                .any(|entry| entry.url.ends_with("/network") && entry.status.is_some())
+    })
+    .await;
+    session
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn the_ledger_records_the_document_and_everything_the_page_fetched() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = network_session(&broker, &base_url).await;
+
+    let entries = session.network(&NetworkFilter::default()).await;
+    let document = entries
+        .iter()
+        .find(|entry| entry.url.ends_with("/network"))
+        .expect("the document request is recorded");
+    assert_eq!(document.status, Some(200));
+    assert_eq!(document.resource_type, "document");
+
+    let ok = entries
+        .iter()
+        .find(|entry| entry.url.ends_with("/api/ok"))
+        .expect("the successful fetch is recorded");
+    assert_eq!(ok.status, Some(200));
+    assert_eq!(ok.mime_type.as_deref(), Some("application/json"));
+
+    let missing = entries
+        .iter()
+        .find(|entry| entry.url.ends_with("/api/missing"))
+        .expect("the 404 is recorded");
+    assert_eq!(missing.status, Some(404));
+
+    assert_eq!(
+        session.summary().await.network_failure_count,
+        1,
+        "only the 404 counts as a failure"
+    );
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_failed_request_announces_itself_to_the_surface() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let mut events = broker.subscribe();
+    let session = network_session(&broker, &base_url).await;
+
+    // A failure arrives with no navigation and no load event behind it, so the
+    // ledger has to announce the change itself or the surface keeps showing a
+    // count from before the request was even made.
+    let announced = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            match events.recv().await {
+                Ok(super::actor::BrowserSessionEvent::State { summary, .. })
+                    if summary.browser_id == session.browser_id()
+                        && summary.network_failure_count > 0 =>
+                {
+                    return summary;
+                }
+                Ok(_) => continue,
+                Err(error) => panic!("the event stream ended: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("a state event carrying the new failure count");
+    assert_eq!(announced.network_failure_count, 1);
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_filter_narrows_the_ledger_to_what_was_asked_for() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = network_session(&broker, &base_url).await;
+
+    let failed = session
+        .network(&NetworkFilter {
+            failed_only: true,
+            ..NetworkFilter::default()
+        })
+        .await;
+    assert_eq!(failed.len(), 1);
+    assert!(failed[0].url.ends_with("/api/missing"));
+
+    let by_status = session
+        .network(&NetworkFilter {
+            status: StatusFilter::parse("2xx"),
+            ..NetworkFilter::default()
+        })
+        .await;
+    assert!(by_status.iter().all(|entry| entry.status == Some(200)));
+    assert!(!by_status.is_empty());
+
+    let by_text = session
+        .network(&NetworkFilter {
+            text: Some("/API/".to_string()),
+            ..NetworkFilter::default()
+        })
+        .await;
+    assert_eq!(by_text.len(), 2, "matching a URL ignores case");
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_request_detail_carries_its_headers_and_can_read_its_body_back() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = network_session(&broker, &base_url).await;
+
+    let request_id = session
+        .network(&NetworkFilter {
+            text: Some("/api/ok".to_string()),
+            ..NetworkFilter::default()
+        })
+        .await
+        .first()
+        .expect("the fetch is recorded")
+        .request_id
+        .clone();
+
+    let detail = session
+        .network_detail(&request_id, true)
+        .await
+        .expect("detail");
+    assert_eq!(detail.entry.status, Some(200));
+    assert_eq!(
+        detail.response_headers.get("x-wardian-fixture").map(String::as_str),
+        Some("yes"),
+        "header names are lowercased so a caller need not guess the casing"
+    );
+    assert!(!detail.request_headers.is_empty());
+    let body = detail.body.expect("body");
+    assert!(body.text.contains("\"ok\":true"));
+    assert!(!body.truncated);
+    assert!(detail.body_error.is_none());
+
+    // Without `--body` nothing is read back at all.
+    let headers_only = session
+        .network_detail(&request_id, false)
+        .await
+        .expect("detail");
+    assert!(headers_only.body.is_none());
+    assert!(headers_only.body_error.is_none());
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn an_unrecorded_request_id_is_refused_rather_than_answered_with_nothing() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = network_session(&broker, &base_url).await;
+
+    let error = session
+        .network_detail("not-a-request", true)
+        .await
+        .expect_err("refused");
+    assert_eq!(error.code(), "browser_invalid_request");
+    assert!(error.to_string().contains("not-a-request"));
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn the_ledger_survives_the_navigation_that_clears_the_console() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = network_session(&broker, &base_url).await;
+    let before = session.network(&NetworkFilter::default()).await.len();
+    assert!(before > 0);
+
+    session
+        .navigate(&format!("{base_url}second"))
+        .await
+        .expect("navigate");
+    session
+        .wait(&WaitCondition::Text("arrived".to_string()), 15_000)
+        .await
+        .expect("second page");
+
+    let after = await_ledger(&session, "the navigation to be recorded", |entries| {
+        entries.iter().any(|entry| entry.url.ends_with("/second"))
+    })
+    .await;
+    assert!(
+        after.len() > before,
+        "the earlier requests stay and the navigation adds its own"
+    );
+    assert!(
+        after.iter().any(|entry| entry.url.ends_with("/api/missing")),
+        "a navigation must not discard the record an agent is investigating"
+    );
+    assert!(after.iter().any(|entry| entry.url.ends_with("/second")));
+
+    session.clear_network().await;
+    assert!(session.network(&NetworkFilter::default()).await.is_empty());
+    assert_eq!(session.summary().await.network_failure_count, 0);
+    // Clearing the ledger is not a page operation.
+    assert_eq!(
+        session.get(PageField::Title, None).await.expect("title"),
+        "Second"
+    );
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn cookies_round_trip_through_the_sessions_own_profile() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(base_url.clone()),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+
+    assert!(
+        session
+            .cookies(&CookieAction::List { all: false })
+            .await
+            .expect("list")
+            .is_empty(),
+        "a fresh profile inherits nothing from the human's browser"
+    );
+
+    session
+        .cookies(&CookieAction::Set {
+            name: "sid".to_string(),
+            value: "abc".to_string(),
+            url: None,
+            domain: None,
+            path: None,
+            secure: false,
+            http_only: true,
+            same_site: Some("lax".to_string()),
+            expires: None,
+        })
+        .await
+        .expect("set");
+
+    let cookies = session
+        .cookies(&CookieAction::List { all: false })
+        .await
+        .expect("list");
+    let sid = cookies
+        .iter()
+        .find(|cookie| cookie.name == "sid")
+        .expect("the cookie the page can see");
+    assert_eq!(sid.value, "abc");
+    assert!(sid.http_only);
+    assert_eq!(sid.same_site.as_deref(), Some("Lax"));
+    assert_eq!(sid.expires, None, "no expiry means a session cookie");
+
+    session
+        .cookies(&CookieAction::Delete {
+            name: "sid".to_string(),
+            url: None,
+            domain: None,
+            path: None,
+        })
+        .await
+        .expect("delete");
+    assert!(session
+        .cookies(&CookieAction::List { all: false })
+        .await
+        .expect("list")
+        .iter()
+        .all(|cookie| cookie.name != "sid"));
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_cookie_needs_somewhere_to_live_and_says_so_on_a_blank_page() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+
+    let error = session
+        .cookies(&CookieAction::Set {
+            name: "sid".to_string(),
+            value: "abc".to_string(),
+            url: None,
+            domain: None,
+            path: None,
+            secure: false,
+            http_only: false,
+            same_site: None,
+            expires: None,
+        })
+        .await
+        .expect_err("refused");
+    assert_eq!(error.code(), "browser_invalid_request");
+    assert!(error.to_string().contains("--url or --domain"));
+
+    broker.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn an_unusable_same_site_is_refused_before_it_reaches_the_browser() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(base_url),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+
+    let error = session
+        .cookies(&CookieAction::Set {
+            name: "sid".to_string(),
+            value: "abc".to_string(),
+            url: None,
+            domain: None,
+            path: None,
+            secure: false,
+            http_only: false,
+            same_site: Some("sometimes".to_string()),
+            expires: None,
+        })
+        .await
+        .expect_err("refused");
+    assert!(error.to_string().contains("strict, lax, or none"));
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn the_two_storage_areas_round_trip_and_stay_separate() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(base_url),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+
+    session
+        .storage_mutate(
+            StorageArea::Local,
+            &StorageAction::Set {
+                key: "theme".to_string(),
+                value: "dark".to_string(),
+            },
+        )
+        .await
+        .expect("set local");
+    session
+        .storage_mutate(
+            StorageArea::Session,
+            &StorageAction::Set {
+                key: "token".to_string(),
+                value: "abc".to_string(),
+            },
+        )
+        .await
+        .expect("set session");
+
+    assert_eq!(
+        session
+            .storage_get(StorageArea::Local, "theme")
+            .await
+            .expect("get"),
+        Some("dark".to_string())
+    );
+    assert_eq!(
+        session
+            .storage_get(StorageArea::Local, "token")
+            .await
+            .expect("get"),
+        None,
+        "the two areas do not see each other"
+    );
+
+    let local = session.storage(StorageArea::Local).await.expect("list");
+    assert_eq!(local.entries.len(), 1);
+    assert_eq!(local.entries[0].key, "theme");
+    assert!(local.origin.starts_with("http://127.0.0.1"));
+    assert!(!local.truncated);
+
+    session
+        .storage_mutate(
+            StorageArea::Local,
+            &StorageAction::Remove {
+                key: "theme".to_string(),
+            },
+        )
+        .await
+        .expect("remove");
+    assert!(session
+        .storage(StorageArea::Local)
+        .await
+        .expect("list")
+        .entries
+        .is_empty());
+
+    session
+        .storage_mutate(StorageArea::Session, &StorageAction::Clear)
+        .await
+        .expect("clear");
+    assert!(session
+        .storage(StorageArea::Session)
+        .await
+        .expect("list")
+        .entries
+        .is_empty());
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn storage_on_an_opaque_origin_names_the_fix() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+
+    let error = session
+        .storage(StorageArea::Local)
+        .await
+        .expect_err("refused");
+    assert_eq!(error.code(), "browser_invalid_request");
+    assert!(
+        error.to_string().contains("http or https"),
+        "got {error}"
+    );
+
+    broker.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn an_oversized_storage_value_comes_back_cut_and_flagged() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(base_url),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+
+    session
+        .storage_mutate(
+            StorageArea::Local,
+            &StorageAction::Set {
+                key: "blob".to_string(),
+                value: "v".repeat(MAX_STORAGE_VALUE_CHARS + 500),
+            },
+        )
+        .await
+        .expect("set");
+
+    let listing = session.storage(StorageArea::Local).await.expect("list");
+    assert!(listing.entries[0].truncated);
+    assert_eq!(
+        listing.entries[0].value.chars().count(),
+        MAX_STORAGE_VALUE_CHARS
+    );
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_download_lands_under_its_suggested_name_and_outlives_the_session() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(format!("{base_url}download-page")),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::Selector("#grab".to_string()), 15_000)
+        .await
+        .expect("page");
+
+    let snapshot = session.snapshot(true).await.expect("snapshot");
+    let link = snapshot
+        .elements
+        .iter()
+        .find(|element| element.name.contains("Download"))
+        .expect("the download link");
+    session
+        .act(&link.element_ref, &ElementAction::Click)
+        .await
+        .expect("click");
+
+    // The browser writes the file asynchronously, so this settles on the
+    // recorded state rather than assuming the click was enough.
+    let mut settled = None;
+    for _ in 0..100 {
+        let downloads = session.downloads().await;
+        if let Some(record) = downloads
+            .iter()
+            .find(|record| record.state == "completed" && record.path.is_some())
+        {
+            settled = Some(record.clone());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let record = settled.expect("the download completes");
+    assert_eq!(record.suggested_filename, "report.csv");
+    let path = PathBuf::from(record.path.expect("a resolved path"));
+    assert_eq!(
+        path.file_name().map(|name| name.to_string_lossy().to_string()),
+        Some("report.csv".to_string()),
+        "a GUID is no use to a caller"
+    );
+    assert!(path.exists());
+    assert!(std::fs::read_to_string(&path)
+        .expect("read")
+        .contains("quarter,revenue"));
+
+    let profile_dir = path
+        .parent()
+        .and_then(|dir| dir.parent())
+        .expect("the downloads root");
+    assert!(
+        !profile_dir.ends_with("profiles"),
+        "downloads must not live inside a profile, which close deletes"
+    );
+
+    broker.close(session.browser_id()).await.expect("close");
+    assert!(
+        path.exists(),
+        "closing the session takes the profile, never the downloaded file"
+    );
+
+    broker.shutdown_all().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn the_console_can_be_filtered_and_emptied() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+
+    session
+        .eval("console.error('boom'); console.log('chatter'); true")
+        .await
+        .expect("eval");
+    // Console entries arrive on the event pump, so this settles on the count.
+    let mut entries = Vec::new();
+    for _ in 0..100 {
+        entries = session.console(None, false).await;
+        if entries.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(entries.len() >= 2, "got {entries:?}");
+
+    let errors = session.console(Some("error"), false).await;
+    assert!(errors.iter().all(|entry| entry.level == "error"));
+    assert!(errors.iter().any(|entry| entry.text.contains("boom")));
+    assert_eq!(
+        session.summary().await.console_error_count,
+        1,
+        "a filtered read does not consume"
+    );
+
+    let drained = session.console(None, true).await;
+    assert!(!drained.is_empty());
+    assert!(session.console(None, false).await.is_empty());
+    assert_eq!(session.summary().await.console_error_count, 0);
+
+    broker.shutdown_all().await;
+}

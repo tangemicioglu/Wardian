@@ -66,7 +66,45 @@ mean the same thing for you: re-snapshot.
 | `browser <target> screenshot <path> [--full-page]` | Write a PNG. |
 | `browser <target> viewport <width> <height>\|reset` | Resize the rendered page. |
 | `browser <target> eval <expression>` | Evaluate an expression and print its JSON value. |
-| `browser <target> console` | Console messages since the last navigation. |
+| `browser <target> console [--level error\|warning\|info] [--clear]` | Console messages since the last navigation. |
+| `browser <target> network [--filter] [--method] [--status] [--type] [--failed] [--limit] [--clear]` | Requests the page made. |
+| `browser <target> network <request-id> [--body]` | One request in full, headers both ways. |
+| `browser <target> cookies [--all]` | Cookies in this session's profile. |
+| `browser <target> cookies set\|delete <name> [...]`, `cookies clear` | Change them. |
+| `browser <target> storage local\|session [key]` | Read web storage at the page's origin. |
+| `browser <target> storage local\|session set\|remove\|clear [...]` | Change it. |
+| `browser <target> downloads [--clear]` | Files this session downloaded, with resolved paths. |
+
+## Seeing what the page did
+
+The DOM tells you what a page *shows*. When a submit silently 500s, the DOM,
+the snapshot, and the screenshot all look exactly like success — the evidence
+is in the request. Reach for `network` before you reach for `eval`.
+
+```bash
+wardian browser browser:1 network --failed          # what went wrong
+wardian browser browser:1 network --filter /api/ --limit 20
+wardian browser browser:1 network 12345.7 --body    # one request in full
+```
+
+The ledger records every request from the moment the session opened and is
+**not** cleared by navigation, so the document request for a page load is in
+there too. `--clear` is the only thing that empties it. Records are capped at
+500; `--limit` keeps the most recent.
+
+The ledger is filled by protocol events, so it trails the page by a moment.
+After an action, `wait` for the outcome before reading it — the same habit that
+keeps snapshots honest.
+
+`downloads` resolves each completed file to a real path under its suggested
+name, and those files outlive the session: closing a session removes its
+profile, never its downloads.
+
+**This output carries secrets.** `network <id>` prints `Authorization` and
+`Cookie` headers and `cookies` prints cookie values, because a redacted answer
+would not answer the question being asked. They are this session's own
+credentials, never the human's — the profile is isolated — but do not paste
+that output into a PR, an artifact, or anywhere else it outlives the task.
 
 ## Habits that keep this reliable
 

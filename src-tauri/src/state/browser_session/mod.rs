@@ -6,6 +6,7 @@
 mod actor;
 mod cdp;
 mod engine;
+mod network;
 mod snapshot;
 
 #[cfg(test)]

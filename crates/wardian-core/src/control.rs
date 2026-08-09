@@ -252,6 +252,34 @@ pub enum ControlRequest {
     },
     BrowserConsole {
         target: String,
+        /// Keep only entries at this level. `error`, `warning`, or `info`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<String>,
+        /// Empty the buffer after reading it.
+        #[serde(default)]
+        clear: bool,
+    },
+    /// Read, inspect, or empty the session's network ledger.
+    BrowserNetwork {
+        target: String,
+        action: crate::browser::NetworkAction,
+    },
+    /// Read or mutate the cookies held by the session's isolated profile.
+    BrowserCookies {
+        target: String,
+        action: crate::browser::CookieAction,
+    },
+    /// Read or mutate one web-storage area at the page's own origin.
+    BrowserStorage {
+        target: String,
+        area: crate::browser::StorageArea,
+        action: crate::browser::StorageAction,
+    },
+    BrowserDownloads {
+        target: String,
+        /// Forget the recorded downloads. The files themselves stay on disk.
+        #[serde(default)]
+        clear: bool,
     },
 }
 

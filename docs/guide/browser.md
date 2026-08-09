@@ -63,6 +63,48 @@ wardian browser --json browser:1 snapshot
 A session opened with `wardian browser open` appears as a tab in the app
 automatically. Add `--detached` when an agent wants a browser without one.
 
+## See What the Page Did
+
+Rendering tells you what a page shows. When a form submit quietly fails, the
+page looks the same either way and the evidence is in the request.
+
+```bash
+wardian browser browser:1 network --failed
+wardian browser browser:1 network --filter /api/ --limit 20
+wardian browser browser:1 network 12345.7 --body
+wardian browser browser:1 console --level error
+```
+
+The request list records everything since the session opened and is not cleared
+by navigation, so the page load itself is in there too. `--clear` empties it.
+
+Cookies and web storage belong to this session's isolated profile, so reading
+and changing them never touches your own browser:
+
+```bash
+wardian browser browser:1 cookies
+wardian browser browser:1 cookies set sid abc --http-only
+wardian browser browser:1 storage local
+wardian browser browser:1 storage local set theme dark
+```
+
+Downloaded files land in a directory of their own and stay there after the
+session closes:
+
+```bash
+wardian browser browser:1 downloads
+```
+
+The footer of a Browser tab shows a failed-request count beside the console
+error count, so a page that is quietly erroring says so without anyone asking.
+
+::: warning
+`network <id>` prints `Authorization` and `Cookie` headers, and `cookies` prints
+cookie values — that is the point of the commands. These are the session's own
+credentials rather than yours, but the output is still secret material. Keep it
+out of pull requests, artifacts, and anywhere else it outlives the task.
+:::
+
 ## Session Lifetime
 
 A browser session belongs to the app, not to the tab presenting it. Closing the

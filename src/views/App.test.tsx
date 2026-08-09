@@ -639,6 +639,7 @@ describe("Workbench persistence boot integration", () => {
           viewport: { width: 1000, height: 500 },
           engine: "edge",
           console_error_count: 0,
+          network_failure_count: 0,
         }]);
       }
       return defaultInvoke?.(command, args) ?? Promise.resolve(null);

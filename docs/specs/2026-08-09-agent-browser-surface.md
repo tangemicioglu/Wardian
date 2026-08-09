@@ -2,7 +2,7 @@
 
 Filename: `2026-08-09-agent-browser-surface.md`
 
-- **Status:** Implemented (phases 1 and 2; phases 3 and 4 outstanding). Review loop converged at round nine.
+- **Status:** Implemented (phases 1, 2, and 3; phase 4 outstanding). Phases 1 and 2 landed in #869 after a review loop that converged at round nine; phase 3 landed in #872.
 - **Date:** 2026-08-09
 
 ## Delivery status
@@ -18,12 +18,13 @@ Filename: `2026-08-09-agent-browser-surface.md`
 | Surface | `features/browser/BrowserSurface.tsx` renders the screencast, forwards pointer/wheel/keyboard, and stops streaming when hidden. Registered as a `Sessions` contribution that provisions its own session. |
 | Lifecycle | Sessions close on explicit close, on the owning agent's `kill_agent`, and on app exit. Closing a tab only detaches. A failed launch leaves no profile behind; a crashed browser publishes a closed event. |
 | Drive lease | Attaching mints an opaque token; the first attachment drives and later ones mirror read-only. Every surface-originated mutation, navigation and viewport included, carries the token, and an omitted one is refused rather than waved through. |
+| Introspection | `network.rs` folds `Network.*` events into a bounded ledger that navigation does not clear; cookies, `localStorage`/`sessionStorage`, and downloads are first-class commands. Downloads live beside the profile rather than inside it, so closing a session never takes the file. |
 
-Verification: 56 Rust unit tests, 24 `#[ignore]`d engine-backed integration
-tests against real Edge, 13 CLI unit tests, 8 core wire-type tests, 44 frontend
+Verification: 77 Rust unit tests, 37 `#[ignore]`d engine-backed integration
+tests against real Edge, 33 CLI unit tests, 29 core wire-type tests, 44 frontend
 tests, and a native E2E that provisions a session from the launcher, renders a
-screencast frame, then drives the page through the CLI. Phases 3 and 4 below
-are not built.
+screencast frame, then drives the page through the CLI. Phase 4 below is not
+built.
 
 ## Review round
 
@@ -379,7 +380,7 @@ new `crates/wardian-cli/src/browser.rs` shaped like `graph.rs`.
 | `browser <target> click\|fill\|press\|scroll\|hover\|select <ref> [value] [--snapshot-after]` | `BrowserAct` |
 | `browser <target> screenshot <path> [--full-page]` | `BrowserScreenshot` |
 | `browser <target> viewport <w> <h> \| reset` | `BrowserViewport` |
-| `browser <target> console\|network\|cookies\|storage\|downloads` | phase 3 |
+| `browser <target> console\|network\|cookies\|storage\|downloads` | `BrowserConsole`, `BrowserNetwork`, `BrowserCookies`, `BrowserStorage`, `BrowserDownloads` |
 
 `<target>` accepts `browser:N` or a UUID, matching cmux's short-ref convention.
 `wardian browser open` with no `--agent` attributes the session to
@@ -404,6 +405,123 @@ important correctness property in the feature.
 - **One driver at a time.** An agent action takes a short drive lease; the
   surface shows an "Agent driving" badge and suppresses human input for its
   duration, so a human and an agent cannot race the same page.
+
+### Phase 3: introspection
+
+Phases 1 and 2 let an agent drive a page. They do not let it see what the page
+*did*. A form submit that silently 500s produces the same DOM, the same
+snapshot, and the same screencast as one that succeeded; the only evidence is a
+request nobody can read. Phase 3 is about that evidence.
+
+`console` and `eval` shipped with phase 1 because they cost almost nothing on
+top of the existing protocol client. What follows is the rest.
+
+**Network is a ledger, not a stream.** `Network.enable` goes on at attach,
+beside `Page`, `Runtime`, and `Log`, and every request lands in a bounded
+per-session ring. Enabling it lazily on the first `network` call was the
+tempting alternative and it is the wrong one: an agent asks about the network
+*after* something went wrong, and a ledger that starts recording at the moment
+of the question is empty exactly when it matters.
+
+The cost of always-on is event volume on a channel that also carries screencast
+frames, where a lag does not merely drop frames — the pump cannot know whether
+a `Page.frameNavigated` was among the discarded messages, so it invalidates
+every outstanding ref. A page load emitting several hundred network events
+makes that far more likely than phase 1 ever did. Two things keep it honest:
+the CDP event channel grows to 2048, and the network arms of the pump perform
+no protocol calls, so they cannot stall the loop the way the title read after
+`Page.loadEventFired` can.
+
+The ring is *not* cleared on navigation, which is the opposite of what console
+does. Console errors belong to the page that produced them. Network records
+belong to the agent's investigation, and the document request that starts a
+navigation is emitted *before* the `Page.frameNavigated` that would clear it —
+so clearing on navigation would reliably delete the single most interesting
+record in the ledger. `network --clear` is explicit instead.
+
+**Response bodies are fetched, never stored.** Headers are recorded with the
+request; bodies are read live through `Network.getResponseBody` only when
+`--body` asks, and only up to a cap. A body outlives its request only while
+Chromium's own buffer holds it, so `--body` can legitimately fail on an old
+record; it says so rather than reporting an empty body.
+
+**No redaction.** `network <id>` prints `Authorization` and `Cookie` headers,
+and `cookies` prints cookie values. Redacting them would defeat the commands —
+"was the token sent?" is the question being asked — and redacting in one place
+while printing in the other would be worse than doing neither. What makes this
+defensible is the isolated profile: these are credentials the session itself
+acquired, never the human's. The guides say plainly that this output carries
+secrets and does not belong in a shared artifact.
+
+**Storage goes through the page, not `DOMStorage`.** `Runtime.evaluate` gets
+the page's own origin for free, treats `localStorage` and `sessionStorage`
+identically, and needs no `storageId` plumbing. The one thing it must handle is
+an origin that has no web storage at all — `about:blank`, a sandboxed frame —
+where the DOM throws `SecurityError`. That becomes a named refusal pointing at
+the fix, not a protocol error.
+
+**Downloads outlive their session.** A download's whole purpose is the file
+afterwards, so downloads are written to
+`<WARDIAN_HOME>/browser/downloads/<browser_id>/`, a sibling of the profile
+directory rather than a child of it — the profile is deleted on close, and
+taking the agent's export with it would be indefensible. Growth is bounded at
+the other end: the broker prunes download directories older than seven days
+when it starts.
+
+`Browser.setDownloadBehavior` runs in `allowAndName` mode, which writes each
+file under its download GUID. That is deterministic but useless to an agent, so
+a completed download is renamed to its suggested filename, deduplicated with a
+numeric suffix. A rename that fails is reported at the GUID path rather than
+failing the download.
+
+These events are browser-scoped and carry no target session, so the pump's
+session filter has to admit them. It admits *all* session-less events, because
+one connection serves exactly one browser: an event with no session id on this
+connection is unambiguously this session's. Events carrying some *other*
+target's session id — a popup, an extension worker — stay filtered out.
+
+**Command surface.** The grammar stays `wardian browser <target> <verb>`, and
+the verbs follow [agent-browser](https://github.com/vercel-labs/agent-browser)
+where a shape already exists there.
+
+| Command | Notes |
+|---|---|
+| `network [--filter <text>] [--method M] [--status 2xx\|404] [--type xhr,fetch] [--limit N] [--failed]` | Most recent last. |
+| `network <request-id> [--body]` | Headers both ways; body on demand. |
+| `network --clear` | Empties the ledger. |
+| `cookies [--all]` | Page-scoped by default; `--all` covers the browser context. |
+| `cookies set <name> <value> [--url\|--domain\|--path\|--secure\|--http-only\|--same-site\|--expires]` | URL defaults to the current page. |
+| `cookies delete <name> [--url\|--domain\|--path]` | |
+| `cookies clear` | |
+| `storage local\|session [key]` | No key lists the whole store. |
+| `storage local\|session set <key> <value>` | |
+| `storage local\|session remove <key>` | |
+| `storage local\|session clear` | |
+| `downloads [--clear]` | Lists state, size, and resolved path. |
+| `console [--level error\|warning\|info] [--clear]` | |
+
+**Bounds.** Every ledger is capped, because an agent's context is the scarce
+resource and a chatty page is not an unusual one.
+
+| Bound | Value | Why |
+|---|---|---|
+| `NETWORK_BUFFER` | 500 records | A page load is a few hundred requests; one full load always fits. |
+| `MAX_NETWORK_URL_CHARS` | 1024 | `data:` URIs are otherwise unbounded. |
+| `MAX_NETWORK_HEADERS` | 32 per direction | |
+| `MAX_NETWORK_HEADER_CHARS` | 512 | |
+| `MAX_RESPONSE_BODY_BYTES` | 64 KiB | |
+| `MAX_STORAGE_BYTES` | 64 KiB total | |
+| `MAX_STORAGE_VALUE_CHARS` | 2048 | |
+| `DOWNLOAD_RETENTION_DAYS` | 7 | |
+
+Truncation is always reported, never silent.
+
+**Out of scope, deliberately.** Request interception (`network route`,
+`--abort`, response mocking) and HAR recording. agent-browser ships both and
+they are genuinely useful, but they change what the page does rather than
+observe it. That is a different risk class — an agent that can silently mock a
+response can make a test pass that should not — and it deserves its own
+decision rather than arriving inside an introspection phase.
 
 ## Phasing
 
