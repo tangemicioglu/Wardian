@@ -12,7 +12,7 @@ This is the main container component for the file explorer tab.
 - **Root Resolution**: It queries the backend command `get_explorer_root(sessionId)` to identify which path to render.
 - **File Opening**: It receives file selections from `FileTree` and routes
   supported text/code, image, and PDF files through the shared
-  `fileOpenDestinationForPath` helper and the Settings-backed
+  `fileOpenDestinationForResource` helper and the Settings-backed
   `file_open_actions` preferences. Internal opening sends a resource-keyed
   `files` request through the AppShell-owned
   `WorkbenchNavigationService`; external opening reuses
@@ -34,7 +34,7 @@ A recursive, lazy-loading component responsible for accurately representing nest
 - **Path Identity**: Explorer path comparisons use `normalizeExplorerPathForCompare` so Windows-specific watcher paths such as `\\?\<absolute-windows-path>` match ordinary display paths from directory reads without rewriting POSIX path spelling, case, or significant whitespace.
 - **Open Coordination**: One root-owned interaction controller delays a file
   selection until it can route the path through the shared
-  `fileOpenDestinationForPath` helper. Wardian-preferred supported files use
+  `fileOpenDestinationForResource` helper. Wardian-preferred supported files use
   `openPermanentFileSurface` for a permanent Files surface; external-preferred
   supported files use `open_in_external_editor`; unknown and unsupported files
   always use the system destination. Double-click and `Enter` follow the same
