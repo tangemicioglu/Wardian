@@ -14,7 +14,8 @@ mod tests;
 pub use actor::{
     normalize_url, BrowserError, BrowserSession, BrowserSessionBroker, BrowserSessionEvent,
     BrowserSessionSummary, ConsoleEntry, ElementAction, LoadState, OpenBrowserRequest, PageField,
-    PointerEvent, Viewport, WaitCondition, DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH,
+    PointerEvent, ScreencastAttachment, Viewport, WaitCondition, DEFAULT_VIEWPORT_HEIGHT,
+    DEFAULT_VIEWPORT_WIDTH,
 };
 pub use cdp::{CdpError, CdpEvent};
 pub use engine::{discover_engine, EngineBinary, EngineError, EngineKind, ENGINE_BINARY_ENV};

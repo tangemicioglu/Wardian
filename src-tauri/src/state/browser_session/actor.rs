@@ -25,7 +25,7 @@ use tokio::time::{sleep, Instant};
 use uuid::Uuid;
 
 use super::cdp::{required_str, CdpConnection, CdpError, CdpEvent, DISCONNECTED_METHOD};
-use super::engine::{discover_engine, launch_engine, EngineBinary, EngineError, EngineKind};
+use super::engine::{discover_engine, launch_engine, EngineError, EngineKind};
 use super::snapshot::{
     action_expression, parse_snapshot, snapshot_expression, PageSnapshot, RefError,
     SnapshotLedger,
@@ -209,6 +209,14 @@ impl WaitCondition {
     }
 }
 
+/// What `attach_screencast` hands back to a presentation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ScreencastAttachment {
+    /// Credential for every later mutation and for detaching this attachment.
+    pub token: String,
+    pub can_drive: bool,
+}
+
 /// One pointer event forwarded from a surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointerEvent<'a> {
@@ -275,10 +283,21 @@ struct SessionState {
     ledger: SnapshotLedger,
     console: VecDeque<ConsoleEntry>,
     console_error_count: usize,
-    /// Presentations currently streaming, in attach order.
-    screencast_viewers: Vec<String>,
-    /// The presentation allowed to drive the page. First attach wins.
-    owner_presentation_id: Option<String>,
+    /// Attachments currently streaming, in attach order.
+    screencast_viewers: Vec<Attachment>,
+    /// The attachment allowed to drive the page. First attach wins.
+    owner_token: Option<String>,
+}
+
+/// One presentation's streaming attachment.
+///
+/// The token, not the presentation id, is the credential: ids are derived from
+/// surface and session ids and are therefore guessable by any caller, and one
+/// presentation can attach several times across effect re-runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Attachment {
+    presentation_id: String,
+    token: String,
 }
 
 /// One live browser, its protocol session, and everything derived from it.
@@ -651,46 +670,72 @@ impl BrowserSession {
         self.state.read().await.console.iter().cloned().collect()
     }
 
-    /// Starts streaming frames while at least one surface is watching.
+    /// Starts streaming frames and issues this attachment's lease token.
     ///
-    /// The first presentation to attach becomes the driver; later ones mirror
-    /// it read-only, matching how a terminal session treats its presentations.
-    pub async fn attach_screencast(&self, presentation_id: &str) -> Result<(), BrowserError> {
+    /// The first attachment becomes the driver; later ones mirror it read-only,
+    /// matching how a terminal session treats its presentations. Every attach
+    /// mints a fresh token, so a stale cleanup can only ever detach its own
+    /// attachment and never a newer one for the same presentation.
+    pub async fn attach_screencast(
+        &self,
+        presentation_id: &str,
+    ) -> Result<ScreencastAttachment, BrowserError> {
+        let token = Uuid::new_v4().to_string();
         let should_start = {
             let mut state = self.state.write().await;
-            if !state.screencast_viewers.iter().any(|id| id == presentation_id) {
-                state.screencast_viewers.push(presentation_id.to_string());
-            }
-            if state.owner_presentation_id.is_none() {
-                state.owner_presentation_id = Some(presentation_id.to_string());
+            state.screencast_viewers.push(Attachment {
+                presentation_id: presentation_id.to_string(),
+                token: token.clone(),
+            });
+            if state.owner_token.is_none() {
+                state.owner_token = Some(token.clone());
             }
             state.screencast_viewers.len() == 1
         };
         if should_start {
-            self.connection
+            // Roll the attachment back if the stream never started, or a later
+            // attach would see a non-empty viewer list, skip the start, and
+            // mirror an owner that is producing no frames.
+            if let Err(error) = self
+                .connection
                 .call_session(
                     &self.cdp_session_id,
                     "Page.startScreencast",
                     json!({ "format": "jpeg", "quality": 70, "everyNthFrame": 1 }),
                 )
-                .await?;
+                .await
+            {
+                self.release_attachment(&token).await;
+                return Err(error.into());
+            }
         }
-        Ok(())
+        Ok(ScreencastAttachment {
+            can_drive: self.token_may_drive(&token).await,
+            token,
+        })
     }
 
-    /// Stops streaming once the last surface detaches. The page keeps running.
+    /// Drops one attachment and hands the lease on if it held it.
+    async fn release_attachment(&self, token: &str) -> bool {
+        let mut state = self.state.write().await;
+        state
+            .screencast_viewers
+            .retain(|attachment| attachment.token != token);
+        if state.owner_token.as_deref() == Some(token) {
+            state.owner_token = state
+                .screencast_viewers
+                .first()
+                .map(|attachment| attachment.token.clone());
+        }
+        state.screencast_viewers.is_empty()
+    }
+
+    /// Stops streaming once the last attachment leaves. The page keeps running.
     ///
-    /// When the driver leaves, the lease passes to the longest-attached
-    /// remaining presentation rather than leaving the page undrivable.
-    pub async fn detach_screencast(&self, presentation_id: &str) -> Result<(), BrowserError> {
-        let should_stop = {
-            let mut state = self.state.write().await;
-            state.screencast_viewers.retain(|id| id != presentation_id);
-            if state.owner_presentation_id.as_deref() == Some(presentation_id) {
-                state.owner_presentation_id = state.screencast_viewers.first().cloned();
-            }
-            state.screencast_viewers.is_empty()
-        };
+    /// Keyed on the attachment token rather than the presentation id, so a
+    /// cleanup racing a re-attach cannot tear down the newer attachment.
+    pub async fn detach_screencast(&self, token: &str) -> Result<(), BrowserError> {
+        let should_stop = self.release_attachment(token).await;
         if should_stop {
             self.connection
                 .call_session(&self.cdp_session_id, "Page.stopScreencast", json!({}))
@@ -699,24 +744,29 @@ impl BrowserSession {
         Ok(())
     }
 
-    /// Whether a presentation currently holds the drive lease.
-    ///
-    /// An unattached caller — the CLI, or a surface that has not started
-    /// streaming — is not a competing driver and is allowed through.
-    pub async fn presentation_may_drive(&self, presentation_id: Option<&str>) -> bool {
-        let Some(presentation_id) = presentation_id else {
-            return true;
-        };
-        let state = self.state.read().await;
-        match state.owner_presentation_id.as_deref() {
-            None => true,
-            Some(owner) => owner == presentation_id,
-        }
+    /// Whether an attachment token currently holds the drive lease.
+    pub async fn token_may_drive(&self, token: &str) -> bool {
+        self.state.read().await.owner_token.as_deref() == Some(token)
     }
 
-    /// Refuses a mutation from a presentation that does not hold the lease.
-    async fn require_drive(&self, presentation_id: Option<&str>) -> Result<(), BrowserError> {
-        if self.presentation_may_drive(presentation_id).await {
+    /// How many presentations are streaming, for diagnostics and tests.
+    pub async fn attachment_count(&self) -> usize {
+        self.state.read().await.screencast_viewers.len()
+    }
+
+    /// Refuses a mutation that does not carry the drive lease.
+    ///
+    /// `None` is the control-plane path: `wardian browser` reaches these
+    /// operations through the control server, never through a surface, and is
+    /// not a competing presentation. Every surface-originated mutation must
+    /// supply its token, so an omitted one is refused rather than waved
+    /// through — that is what makes the lease an enforcement boundary and not
+    /// a frontend convention.
+    pub(crate) async fn require_drive(&self, token: Option<&str>) -> Result<(), BrowserError> {
+        let Some(token) = token else {
+            return Ok(());
+        };
+        if self.token_may_drive(token).await {
             return Ok(());
         }
         Err(BrowserError::ReadOnlyPresentation)
@@ -725,10 +775,10 @@ impl BrowserSession {
     /// Forwards a pointer event from a surface into the page.
     pub async fn dispatch_mouse(
         &self,
-        presentation_id: Option<&str>,
+        lease_token: Option<&str>,
         event: &PointerEvent<'_>,
     ) -> Result<(), BrowserError> {
-        self.require_drive(presentation_id).await?;
+        self.require_drive(lease_token).await?;
         if !matches!(
             event.event_type,
             "mousePressed" | "mouseReleased" | "mouseMoved" | "mouseWheel"
@@ -760,14 +810,14 @@ impl BrowserSession {
     /// Forwards a wheel event from a surface into the page.
     pub async fn dispatch_wheel(
         &self,
-        presentation_id: Option<&str>,
+        lease_token: Option<&str>,
         x: f64,
         y: f64,
         delta_x: f64,
         delta_y: f64,
         modifiers: u32,
     ) -> Result<(), BrowserError> {
-        self.require_drive(presentation_id).await?;
+        self.require_drive(lease_token).await?;
         self.connection
             .call_session(
                 &self.cdp_session_id,
@@ -788,14 +838,14 @@ impl BrowserSession {
     /// Forwards a key event from a surface into the page.
     pub async fn dispatch_key(
         &self,
-        presentation_id: Option<&str>,
+        lease_token: Option<&str>,
         event_type: &str,
         key: &str,
         code: &str,
         text: Option<&str>,
         modifiers: u32,
     ) -> Result<(), BrowserError> {
-        self.require_drive(presentation_id).await?;
+        self.require_drive(lease_token).await?;
         if !matches!(event_type, "keyDown" | "keyUp" | "rawKeyDown" | "char") {
             return Err(BrowserError::Invalid {
                 detail: format!("{event_type} is not a key event this surface forwards"),
@@ -845,6 +895,8 @@ impl BrowserSession {
             .call_session(&self.cdp_session_id, "Page.close", json!({}))
             .await;
         if let Some(mut child) = self.child.lock().await.take() {
+            // `kill` also reaps. The profile stays locked on Windows until the
+            // process is fully gone, so this must complete before the removal.
             let _ = child.kill().await;
         }
         // Best effort: a profile left behind is noise, not a failure.
@@ -941,20 +993,52 @@ impl BrowserSessionBroker {
         let viewport = request.viewport.unwrap_or_default();
         let profile_dir = self.profile_root.join(&browser_id);
 
-        // Every step from here to a registered session can fail with a profile
-        // already on disk and, past `launch_engine`, a live child. The child
-        // dies with its dropped handle (`kill_on_drop`), but the profile
-        // directory would be left behind on every failed open.
-        let started = self
-            .start_session(&binary, &browser_id, &profile_dir, viewport, &request)
-            .await;
-        let session = match started {
-            Ok(session) => session,
+        let mut launched = match launch_engine(&binary, &profile_dir, viewport.width, viewport.height)
+            .await
+        {
+            Ok(launched) => launched,
             Err(error) => {
+                // Nothing started, but the profile directory was created.
+                let _ = std::fs::remove_dir_all(&profile_dir);
+                return Err(BrowserError::Engine(error));
+            }
+        };
+
+        // The browser is running from here on. `kill_on_drop` would terminate
+        // it but never reap it, and on Windows a dying Chromium still holds
+        // its profile lock — so the child is killed and awaited explicitly
+        // before the directory is removed.
+        let attached = attach_page(&launched.websocket_url).await;
+        let (connection, cdp_session_id) = match attached {
+            Ok(attached) => attached,
+            Err(error) => {
+                let _ = launched.child.kill().await;
                 let _ = std::fs::remove_dir_all(&profile_dir);
                 return Err(error);
             }
         };
+
+        let session = Arc::new(BrowserSession {
+            browser_id: browser_id.clone(),
+            short_ref: self.next_short_ref.fetch_add(1, Ordering::Relaxed),
+            owner_agent_id: request.owner_agent_id.clone(),
+            workspace: request.workspace.clone(),
+            engine: launched.kind,
+            connection,
+            cdp_session_id,
+            profile_dir: profile_dir.clone(),
+            child: Mutex::new(Some(launched.child)),
+            state: RwLock::new(SessionState {
+                viewport,
+                ..SessionState::default()
+            }),
+        });
+        // The session owns the child now, so its own teardown does the
+        // killing, reaping, and profile removal.
+        if let Err(error) = session.set_viewport(Some(viewport)).await {
+            session.shutdown().await;
+            return Err(error);
+        }
 
         self.spawn_event_pump(Arc::clone(&session));
         self.sessions
@@ -975,63 +1059,6 @@ impl BrowserSessionBroker {
             browser_id,
             summary: session.summary().await,
         });
-        Ok(session)
-    }
-
-    /// Launches a browser, attaches to a fresh page, and builds the session.
-    ///
-    /// Split out so `open` has one place to clean up after any failure in the
-    /// sequence rather than a cleanup arm per step.
-    async fn start_session(
-        &self,
-        binary: &EngineBinary,
-        browser_id: &str,
-        profile_dir: &std::path::Path,
-        viewport: Viewport,
-        request: &OpenBrowserRequest,
-    ) -> Result<Arc<BrowserSession>, BrowserError> {
-        let launched = launch_engine(binary, profile_dir, viewport.width, viewport.height)
-            .await
-            .map_err(BrowserError::Engine)?;
-        let connection = CdpConnection::connect(&launched.websocket_url).await?;
-
-        // Size is deliberately omitted: the protocol only accepts it alongside
-        // `newWindow`, and the viewport is established by the metrics override
-        // below, which is what the screencast actually follows.
-        let created = connection
-            .call("Target.createTarget", json!({ "url": "about:blank" }))
-            .await?;
-        let target_id = required_str("Target.createTarget", &created, "targetId")?;
-        let attached = connection
-            .call(
-                "Target.attachToTarget",
-                json!({ "targetId": target_id, "flatten": true }),
-            )
-            .await?;
-        let cdp_session_id = required_str("Target.attachToTarget", &attached, "sessionId")?;
-
-        for method in ["Page.enable", "Runtime.enable", "Log.enable"] {
-            connection
-                .call_session(&cdp_session_id, method, json!({}))
-                .await?;
-        }
-
-        let session = Arc::new(BrowserSession {
-            browser_id: browser_id.to_string(),
-            short_ref: self.next_short_ref.fetch_add(1, Ordering::Relaxed),
-            owner_agent_id: request.owner_agent_id.clone(),
-            workspace: request.workspace.clone(),
-            engine: launched.kind,
-            connection,
-            cdp_session_id,
-            profile_dir: profile_dir.to_path_buf(),
-            child: Mutex::new(Some(launched.child)),
-            state: RwLock::new(SessionState {
-                viewport,
-                ..SessionState::default()
-            }),
-        });
-        session.set_viewport(Some(viewport)).await?;
         Ok(session)
     }
 
@@ -1183,6 +1210,39 @@ impl BrowserSessionBroker {
             session.shutdown().await;
         }
     }
+}
+
+/// Connects to a launched browser and attaches to a fresh page.
+///
+/// Free of the broker so `open` keeps ownership of the child across the whole
+/// fallible region and can reap it before touching the profile directory.
+async fn attach_page(
+    websocket_url: &str,
+) -> Result<(Arc<CdpConnection>, String), BrowserError> {
+    let connection = CdpConnection::connect(websocket_url).await?;
+
+    // Size is deliberately omitted: the protocol only accepts it alongside
+    // `newWindow`, and the viewport is established by
+    // `Emulation.setDeviceMetricsOverride`, which is what the screencast
+    // actually follows.
+    let created = connection
+        .call("Target.createTarget", json!({ "url": "about:blank" }))
+        .await?;
+    let target_id = required_str("Target.createTarget", &created, "targetId")?;
+    let attached = connection
+        .call(
+            "Target.attachToTarget",
+            json!({ "targetId": target_id, "flatten": true }),
+        )
+        .await?;
+    let cdp_session_id = required_str("Target.attachToTarget", &attached, "sessionId")?;
+
+    for method in ["Page.enable", "Runtime.enable", "Log.enable"] {
+        connection
+            .call_session(&cdp_session_id, method, json!({}))
+            .await?;
+    }
+    Ok((connection, cdp_session_id))
 }
 
 /// Applies one protocol event to session state and republishes what surfaces need.

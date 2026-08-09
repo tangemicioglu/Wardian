@@ -33,8 +33,15 @@ export type BrowserSessionSummary = {
   console_error_count: number;
 };
 
-/** Whether an attached presentation drives the page or only mirrors it. */
-export type BrowserPresentationRole = {
+/**
+ * What attaching a screencast hands back.
+ *
+ * The token is the credential for every later mutation. A presentation id
+ * would not do: it is derived from surface and session ids, so any caller
+ * could guess it.
+ */
+export type BrowserScreencastAttachment = {
+  token: string;
   can_drive: boolean;
 };
 

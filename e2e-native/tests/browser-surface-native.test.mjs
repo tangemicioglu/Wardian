@@ -11,6 +11,7 @@ import {
   createNativeHarness,
   ensureNativeAppBuilt,
   invokeTauri,
+  invokeTauriResult,
   prepareIsolatedHome,
   startNativeSession,
   waitForAppShell,
@@ -178,11 +179,11 @@ test("browser surface drives a real page and refuses stale refs", async (t) => {
   const browserId = await surface.getAttribute("data-resource-key");
   assert.ok(browserId, "the surface must carry the session it presents");
 
-  const navigated = await requireInvoke(driver, "navigate_browser_session", {
-    browserId,
-    action: `${baseUrl}`,
-  });
-  assert.equal(navigated.browser_id, browserId);
+  // Navigate through the CLI rather than the Tauri command: surface-originated
+  // mutations require the drive lease the surface itself holds, and the
+  // control-plane path is the one an agent actually uses.
+  const cliPath = buildCli(harness);
+  await runCliOk(cliPath, harness, ["browser", browserId, "navigate", baseUrl]);
 
   // A frame proves the screencast path end to end: CDP event, backend
   // broadcast, Tauri event, and the surface's own render.
@@ -202,8 +203,29 @@ test("browser surface drives a real page and refuses stale refs", async (t) => {
   const shortRef = await driver.findElement(By.css('[data-testid="browser-surface-short-ref"]'));
   assert.match(await shortRef.getText(), /^browser:\d+$/);
 
+  // The surface holds the lease, so its controls are live rather than inert.
+  const reload = await driver.findElement(By.css('[aria-label="Reload"]'));
+  assert.equal(
+    await reload.getAttribute("disabled"),
+    null,
+    "the only attached surface must hold the drive lease",
+  );
+
+  // A mutation without the lease token is refused by the backend, not merely
+  // hidden by the frontend.
+  const forged = await invokeTauriResult(driver, "navigate_browser_session", {
+    browserId,
+    action: "about:blank",
+    leaseToken: "not-a-real-lease",
+  });
+  assert.equal(forged.ok, false, "a forged lease token must not navigate the page");
+  assert.match(
+    String(forged.error?.message ?? forged.error),
+    /read-only|drive lease/i,
+    `expected a lease refusal, got: ${JSON.stringify(forged.error)}`,
+  );
+
   // The agent path: the same CLI a human uses, against the app's own runtime.
-  const cliPath = buildCli(harness);
   const listed = await runCliOk(cliPath, harness, ["browser", "list"]);
   assert.match(listed, /browser:\d+/, `browser list did not show the session:
 ${listed}`);

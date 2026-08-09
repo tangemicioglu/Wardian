@@ -195,7 +195,16 @@ pub fn clamp_field(value: &str) -> String {
 /// Both must agree exactly: the guard compares what an element looks like now
 /// against what the snapshot recorded, so any drift between the two
 /// definitions would produce spurious refusals.
-const IDENTITY_JS: &str = r#"  const accessibleName = (element) => {
+const IDENTITY_JS_TEMPLATE: &str = r#"  const MAX_FIELD = __MAX_FIELD__;
+  // Mirrors `clamp_field` exactly. `Array.from` counts code points, matching
+  // Rust's `chars()`; plain indexing would diverge on astral characters.
+  const clampField = (value) => {
+    const normalized = String(value || '').split(/\s+/).join(' ').trim();
+    const points = Array.from(normalized);
+    if (points.length <= MAX_FIELD) return normalized;
+    return points.slice(0, MAX_FIELD - 1).join('') + '…';
+  };
+  const accessibleName = (element) => {
     const aria = element.getAttribute('aria-label');
     if (aria) return aria;
     const labelledBy = element.getAttribute('aria-labelledby');
@@ -240,6 +249,11 @@ const IDENTITY_JS: &str = r#"  const accessibleName = (element) => {
     return tag;
   };
 "#;
+
+/// The shared identity helpers with the field cap substituted in.
+fn identity_js() -> String {
+    IDENTITY_JS_TEMPLATE.replace("__MAX_FIELD__", &MAX_SNAPSHOT_FIELD_CHARS.to_string())
+}
 
 /// Builds the expression injected to snapshot the page.
 ///
@@ -330,7 +344,7 @@ pub fn snapshot_expression(generation: u64, interactive_only: bool) -> String {
         max_elements = MAX_SNAPSHOT_ELEMENTS,
         interactive_only = interactive_only,
         generation = generation,
-        identity_js = IDENTITY_JS,
+        identity_js = identity_js(),
     )
 }
 
@@ -357,13 +371,13 @@ pub fn action_expression(
   if (matches.length === 0) return 'detached';
   if (matches.length > 1) return 'ambiguous';
   const node = matches[0];
-  if (roleOf(node) !== {expected_role} || accessibleName(node).split(/\s+/).join(' ').trim() !== {expected_name}) {{
+  if (clampField(roleOf(node)) !== {expected_role} || clampField(accessibleName(node)) !== {expected_name}) {{
     return 'changed';
   }}
   {body}
   return 'ok';
 }})()"#,
-        identity_js = IDENTITY_JS,
+        identity_js = identity_js(),
         selector = selector,
         expected_role = serde_json::json!(expected.role),
         expected_name = serde_json::json!(expected.name),
@@ -526,6 +540,26 @@ mod tests {
     }
 
     #[test]
+    fn the_guard_clamps_identity_the_same_way_the_ledger_recorded_it() {
+        // The ledger stores clamped fields. A guard that compared the raw name
+        // would refuse every element whose name exceeds the cap.
+        let script = identity_js();
+        assert!(script.contains(&format!("const MAX_FIELD = {MAX_SNAPSHOT_FIELD_CHARS};")));
+        assert!(script.contains("const clampField"));
+        let guard = action_expression(
+            "e1",
+            1,
+            &RefIdentity {
+                role: "link".to_string(),
+                name: "x".to_string(),
+            },
+            "node.click();",
+        );
+        assert!(guard.contains("clampField(accessibleName(node))"));
+        assert!(guard.contains("clampField(roleOf(node))"));
+    }
+
+    #[test]
     fn the_action_guard_and_the_walker_derive_identity_the_same_way() {
         // Drift between the two would produce spurious `ref_changed` refusals.
         let walker = snapshot_expression(1, true);
@@ -538,8 +572,8 @@ mod tests {
             },
             "node.click();",
         );
-        assert!(walker.contains(IDENTITY_JS));
-        assert!(guard.contains(IDENTITY_JS));
+        assert!(walker.contains(&identity_js()));
+        assert!(guard.contains(&identity_js()));
     }
 
     #[test]

@@ -124,14 +124,29 @@ effect was already torn down detaches immediately, or the stream would outlive
 the surface that asked for it. `Ctrl`/`Cmd` chords are left to the workbench so
 a focused page cannot swallow tab switching or the palette.
 
-**One driver at a time.** Attaching a screencast registers a presentation; the
-first to attach holds the drive lease and later ones mirror it read-only, the
-same arrangement the terminal broker uses. The backend rejects input from a
-non-holder with `browser_read_only_presentation`, and the surface disables its
-chrome bar and viewport rather than showing controls that silently do nothing.
-The lease passes to the longest-attached remaining presentation when the driver
-detaches. The CLI carries no presentation id and is never treated as a
-competing driver.
+**One driver at a time.** `attach_browser_screencast` mints an opaque lease
+token and returns it with `can_drive`. The first attachment holds the lease and
+later ones mirror it read-only, the same arrangement the terminal broker uses.
+
+The token, not the presentation id, is the credential. A presentation id is
+derived from the surface and session ids, so any caller could guess one; and a
+single presentation attaches several times across effect re-runs. Every
+surface-originated mutation — pointer, wheel, key, **navigation, and viewport**
+— carries the token and is refused with `browser_read_only_presentation`
+without it. Omitting the token is a refusal, not a bypass; that is what makes
+this an enforcement boundary rather than a frontend convention. The surface
+also disables its chrome bar and viewport, because a control that looks live
+and silently does nothing is worse than one that is visibly inert.
+
+Detach is keyed on the token, so a cleanup racing a re-attach releases only its
+own attachment and never the newer one. The lease passes to the
+longest-attached survivor when the holder leaves. `Page.startScreencast`
+failing rolls the attachment back, or a later attach would see a non-empty
+viewer list, skip the start, and mirror an owner producing no frames.
+
+The control-plane path passes `None`: `wardian browser` reaches these
+operations through the control server, never through a surface, and is not a
+competing presentation.
 
 ## Lifecycle
 
@@ -158,10 +173,11 @@ than reaching the network.
 
 ## Lifecycle failure modes
 
-- **Failed launch.** Everything from `launch_engine` to a registered session
-  runs in one fallible step with a single cleanup arm, so no failure leaves a
-  profile directory behind. The child dies with its dropped handle
-  (`kill_on_drop`).
+- **Failed launch.** `open` keeps ownership of the child across the whole
+  fallible region so it can `kill().await` — which also reaps — *before*
+  removing the profile. `kill_on_drop` alone would terminate without reaping,
+  and on Windows a dying Chromium still holds its profile lock, so the removal
+  would silently fail and the directory would accumulate.
 - **Failed first load.** Treated as a page outcome, not a failed open: the
   session is registered and its browser is running, so returning an error would
   strand a live browser with no handle. The caller sees `load_state: failed`.

@@ -246,7 +246,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
         }
 
         ControlRequest::BrowserNavigate { target, action } => ok_json(
-            &crate::commands::browser::navigate_session(app, &target, &action)
+            &crate::commands::browser::navigate_session(app, &target, &action, None)
                 .await
                 .map_err(browser_control_error)?,
         ),
@@ -333,7 +333,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             height,
             reset,
         } => ok_json(
-            &crate::commands::browser::set_session_viewport(app, &target, width, height, reset)
+            &crate::commands::browser::set_session_viewport(app, &target, width, height, reset, None)
                 .await
                 .map_err(browser_control_error)?,
         ),

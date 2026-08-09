@@ -4,7 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   BrowserEngineStatus,
   BrowserNavigateAction,
-  BrowserPresentationRole,
+  BrowserScreencastAttachment,
   BrowserSessionEvent,
   BrowserSessionSummary,
 } from "../../types";
@@ -132,8 +132,13 @@ export function closeBrowserSession(browserId: string): Promise<void> {
 export function navigateBrowserSession(
   browserId: string,
   action: BrowserNavigateAction,
+  leaseToken: string,
 ): Promise<BrowserSessionSummary> {
-  return invoke<BrowserSessionSummary>("navigate_browser_session", { browserId, action });
+  return invoke<BrowserSessionSummary>("navigate_browser_session", {
+    browserId,
+    action,
+    leaseToken,
+  });
 }
 
 /**
@@ -145,31 +150,38 @@ export function navigateBrowserSession(
 export function attachBrowserScreencast(
   browserId: string,
   presentationId: string,
-): Promise<BrowserPresentationRole> {
-  return invoke<BrowserPresentationRole>("attach_browser_screencast", {
+): Promise<BrowserScreencastAttachment> {
+  return invoke<BrowserScreencastAttachment>("attach_browser_screencast", {
     browserId,
     presentationId,
   });
 }
 
+/** Detaches by token, so a stale cleanup cannot tear down a newer attach. */
 export function detachBrowserScreencast(
   browserId: string,
-  presentationId: string,
+  leaseToken: string,
 ): Promise<void> {
-  return invoke<void>("detach_browser_screencast", { browserId, presentationId });
+  return invoke<void>("detach_browser_screencast", { browserId, leaseToken });
 }
 
 export function setBrowserViewport(
   browserId: string,
   width: number,
   height: number,
+  leaseToken: string,
 ): Promise<BrowserSessionSummary> {
-  return invoke<BrowserSessionSummary>("set_browser_viewport", { browserId, width, height });
+  return invoke<BrowserSessionSummary>("set_browser_viewport", {
+    browserId,
+    width,
+    height,
+    leaseToken,
+  });
 }
 
 export function sendBrowserPointer(request: {
   browser_id: string;
-  presentation_id: string;
+  lease_token: string;
   event_type: "mousePressed" | "mouseReleased" | "mouseMoved";
   x: number;
   y: number;
@@ -182,7 +194,7 @@ export function sendBrowserPointer(request: {
 
 export function sendBrowserWheel(request: {
   browser_id: string;
-  presentation_id: string;
+  lease_token: string;
   x: number;
   y: number;
   delta_x: number;
@@ -194,7 +206,7 @@ export function sendBrowserWheel(request: {
 
 export function sendBrowserKey(request: {
   browser_id: string;
-  presentation_id: string;
+  lease_token: string;
   event_type: "keyDown" | "keyUp" | "char";
   key: string;
   code?: string;

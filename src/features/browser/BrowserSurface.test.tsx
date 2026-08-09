@@ -49,7 +49,16 @@ function summary(overrides: Partial<BrowserSessionSummary> = {}): BrowserSession
   };
 }
 
-async function renderSurface(props: Partial<Parameters<typeof BrowserSurface>[0]> = {}) {
+/**
+ * Renders and waits for the attach to settle.
+ *
+ * A surface cannot drive before its lease is granted, so a test that fired
+ * input immediately would be asserting against the unattached state.
+ */
+async function renderSurface(
+  props: Partial<Parameters<typeof BrowserSurface>[0]> = {},
+  options: { expectAttach?: boolean } = {},
+) {
   const rendered = render(
     <BrowserSurface
       surface_id="surface-1"
@@ -59,6 +68,11 @@ async function renderSurface(props: Partial<Parameters<typeof BrowserSurface>[0]
     />,
   );
   await waitFor(() => expect(mocks.subscribeBrowserSession).toHaveBeenCalled());
+  if (options.expectAttach !== false) {
+    await waitFor(() => expect(mocks.attachBrowserScreencast).toHaveBeenCalled());
+    // Flush the attach promise so the lease lands before the test acts.
+    await act(async () => { await Promise.resolve(); });
+  }
   return rendered;
 }
 
@@ -83,7 +97,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   emit = null;
   mocks.getBrowserSession.mockResolvedValue(summary());
-  mocks.attachBrowserScreencast.mockResolvedValue({ can_drive: true });
+  mocks.attachBrowserScreencast.mockResolvedValue({ token: "lease-1", can_drive: true });
   mocks.detachBrowserScreencast.mockResolvedValue(undefined);
   mocks.navigateBrowserSession.mockResolvedValue(summary());
   mocks.sendBrowserPointer.mockResolvedValue(undefined);
@@ -151,7 +165,7 @@ describe("BrowserSurface", () => {
       />,
     );
     await waitFor(() =>
-      expect(mocks.detachBrowserScreencast).toHaveBeenCalledWith("b-1", expect.any(String)),
+      expect(mocks.detachBrowserScreencast).toHaveBeenCalledWith("b-1", "lease-1"),
     );
   });
 
@@ -164,20 +178,28 @@ describe("BrowserSurface", () => {
     fireEvent.change(address, { target: { value: "localhost:5173" } });
     fireEvent.submit(address.closest("form")!);
     await waitFor(() =>
-      expect(mocks.navigateBrowserSession).toHaveBeenCalledWith("b-1", "localhost:5173"),
+      expect(mocks.navigateBrowserSession).toHaveBeenCalledWith(
+        "b-1",
+        "localhost:5173",
+        "lease-1",
+      ),
     );
   });
 
   it("reloads when idle and stops when loading", async () => {
     await renderSurface();
     fireEvent.click(screen.getByLabelText("Reload"));
-    await waitFor(() => expect(mocks.navigateBrowserSession).toHaveBeenCalledWith("b-1", "reload"));
+    await waitFor(() =>
+      expect(mocks.navigateBrowserSession).toHaveBeenCalledWith("b-1", "reload", "lease-1"),
+    );
 
     act(() => {
       emit?.({ kind: "state", browser_id: "b-1", summary: summary({ load_state: "loading" }) });
     });
     fireEvent.click(screen.getByLabelText("Stop loading"));
-    await waitFor(() => expect(mocks.navigateBrowserSession).toHaveBeenCalledWith("b-1", "stop"));
+    await waitFor(() =>
+      expect(mocks.navigateBrowserSession).toHaveBeenCalledWith("b-1", "stop", "lease-1"),
+    );
   });
 
   it("surfaces a navigation failure rather than swallowing it", async () => {
@@ -205,7 +227,7 @@ describe("BrowserSurface", () => {
     expect(mocks.sendBrowserPointer).toHaveBeenCalledWith(
       expect.objectContaining({
         browser_id: "b-1",
-        presentation_id: "surface-1:browser:b-1",
+        lease_token: "lease-1",
         event_type: "mousePressed",
         x: 500,
         y: 250,
@@ -292,7 +314,7 @@ describe("BrowserSurface", () => {
   });
 
   it("mirrors read-only when another presentation holds the drive lease", async () => {
-    mocks.attachBrowserScreencast.mockResolvedValue({ can_drive: false });
+    mocks.attachBrowserScreencast.mockResolvedValue({ token: "lease-2", can_drive: false });
     await renderSurface();
     await waitFor(() =>
       expect(screen.getByTestId("browser-surface-read-only")).toBeInTheDocument(),
@@ -317,7 +339,7 @@ describe("BrowserSurface", () => {
   });
 
   it("detaches a screencast whose attach resolved after the surface was hidden", async () => {
-    let resolveAttach: ((role: { can_drive: boolean }) => void) | null = null;
+    let resolveAttach: ((attachment: { token: string; can_drive: boolean }) => void) | null = null;
     mocks.attachBrowserScreencast.mockImplementation(
       () => new Promise((resolve) => { resolveAttach = resolve; }),
     );
@@ -337,15 +359,28 @@ describe("BrowserSurface", () => {
     // The in-flight attach lands after cleanup already ran; without the
     // cancellation check the stream would run forever for a hidden surface.
     await act(async () => {
-      resolveAttach?.({ can_drive: true });
+      resolveAttach?.({ token: "late-lease", can_drive: true });
       await Promise.resolve();
     });
     await waitFor(() => expect(mocks.detachBrowserScreencast).toHaveBeenCalledTimes(1));
+    // Released by its own token, so a newer attach for this surface survives.
+    expect(mocks.detachBrowserScreencast).toHaveBeenCalledWith("b-1", "late-lease");
+  });
+
+  it("cannot drive until an attachment has actually granted a lease", async () => {
+    mocks.attachBrowserScreencast.mockImplementation(() => new Promise(() => {}));
+    await renderSurface();
+    await waitFor(() => expect(mocks.attachBrowserScreencast).toHaveBeenCalled());
+    // No lease has been granted, so every control is inert rather than
+    // sending a mutation the backend would refuse.
+    expect(screen.getByLabelText("Reload")).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Reload"));
+    expect(mocks.navigateBrowserSession).not.toHaveBeenCalled();
   });
 
   it("shows the unavailable state when the session never resolves", async () => {
     mocks.getBrowserSession.mockResolvedValue(null);
-    await renderSurface();
+    await renderSurface({}, { expectAttach: false });
     await waitFor(() =>
       expect(screen.getByText("Browser session unavailable")).toBeInTheDocument(),
     );

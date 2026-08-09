@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::state::browser_session::{
     discover_engine, BrowserError, BrowserSession, BrowserSessionBroker, ElementAction, LoadState,
-    OpenBrowserRequest, PageField, PointerEvent, Viewport, WaitCondition,
+    OpenBrowserRequest, PageField, PointerEvent, ScreencastAttachment, Viewport, WaitCondition,
 };
 use crate::state::AppState;
 use wardian_core::browser::{
@@ -26,12 +26,6 @@ pub const BROWSER_SURFACE_OPEN_EVENT: &str = "browser-surface-open";
 pub const BROWSER_SESSION_EVENT: &str = "browser-session-event";
 /// Default `wait` budget when a caller does not supply one.
 pub const DEFAULT_WAIT_TIMEOUT_MS: u64 = 15_000;
-
-/// Whether an attached presentation may drive the page or only mirror it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub struct BrowserPresentationRole {
-    pub can_drive: bool,
-}
 
 /// Whether this host can back a browser surface at all.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -205,12 +199,17 @@ pub async fn close_session(app: &AppHandle, target: &str) -> Result<String, Brow
 }
 
 /// Applies `back`, `forward`, `reload`, `stop`, or a URL.
+///
+/// `lease_token` is `None` on the control-plane path and `Some` for anything a
+/// surface initiates, so a mirroring pane cannot navigate the shared page.
 pub async fn navigate_session(
     app: &AppHandle,
     target: &str,
     action: &str,
+    lease_token: Option<&str>,
 ) -> Result<BrowserSessionSummary, BrowserError> {
     let session = resolve(app, target).await?;
+    session.require_drive(lease_token).await?;
     match action {
         "back" => session.traverse_history(-1).await?,
         "forward" => session.traverse_history(1).await?,
@@ -312,8 +311,10 @@ pub async fn set_session_viewport(
     width: Option<u32>,
     height: Option<u32>,
     reset: bool,
+    lease_token: Option<&str>,
 ) -> Result<BrowserSessionSummary, BrowserError> {
     let session = resolve(app, target).await?;
+    session.require_drive(lease_token).await?;
     let viewport = if reset {
         None
     } else {
@@ -352,9 +353,9 @@ pub async fn console_for_session(
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserPointerRequest {
     pub browser_id: String,
-    /// The surface sending this. Only the drive-lease holder is obeyed.
-    #[serde(default)]
-    pub presentation_id: Option<String>,
+    /// Lease token from `attach_browser_screencast`. Required: an absent one
+    /// would otherwise be the control-plane path and bypass the lease.
+    pub lease_token: String,
     pub event_type: String,
     pub x: f64,
     pub y: f64,
@@ -369,8 +370,7 @@ pub struct BrowserPointerRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserWheelRequest {
     pub browser_id: String,
-    #[serde(default)]
-    pub presentation_id: Option<String>,
+    pub lease_token: String,
     pub x: f64,
     pub y: f64,
     pub delta_x: f64,
@@ -382,8 +382,7 @@ pub struct BrowserWheelRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserKeyRequest {
     pub browser_id: String,
-    #[serde(default)]
-    pub presentation_id: Option<String>,
+    pub lease_token: String,
     pub event_type: String,
     pub key: String,
     #[serde(default)]
@@ -453,9 +452,10 @@ pub async fn close_browser_session(
 pub async fn navigate_browser_session(
     browser_id: String,
     action: String,
+    lease_token: String,
     app: AppHandle,
 ) -> Result<BrowserSessionSummary, String> {
-    navigate_session(&app, &browser_id, &action)
+    navigate_session(&app, &browser_id, &action, Some(&lease_token))
         .await
         .map_err(command_error)
 }
@@ -465,25 +465,21 @@ pub async fn attach_browser_screencast(
     browser_id: String,
     presentation_id: String,
     state: State<'_, AppState>,
-) -> Result<BrowserPresentationRole, String> {
-    let session = state
+) -> Result<ScreencastAttachment, String> {
+    state
         .browser_sessions
         .resolve(&browser_id)
         .await
-        .map_err(command_error)?;
-    session
+        .map_err(command_error)?
         .attach_screencast(&presentation_id)
         .await
-        .map_err(command_error)?;
-    Ok(BrowserPresentationRole {
-        can_drive: session.presentation_may_drive(Some(&presentation_id)).await,
-    })
+        .map_err(command_error)
 }
 
 #[tauri::command]
 pub async fn detach_browser_screencast(
     browser_id: String,
-    presentation_id: String,
+    lease_token: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state
@@ -491,7 +487,7 @@ pub async fn detach_browser_screencast(
         .resolve(&browser_id)
         .await
         .map_err(command_error)?
-        .detach_screencast(&presentation_id)
+        .detach_screencast(&lease_token)
         .await
         .map_err(command_error)
 }
@@ -507,7 +503,7 @@ pub async fn send_browser_pointer(
         .await
         .map_err(command_error)?
         .dispatch_mouse(
-            request.presentation_id.as_deref(),
+            Some(request.lease_token.as_str()),
             &PointerEvent {
                 event_type: &request.event_type,
                 x: request.x,
@@ -532,7 +528,7 @@ pub async fn send_browser_wheel(
         .await
         .map_err(command_error)?
         .dispatch_wheel(
-            request.presentation_id.as_deref(),
+            Some(request.lease_token.as_str()),
             request.x,
             request.y,
             request.delta_x,
@@ -555,7 +551,7 @@ pub async fn send_browser_key(
         .map_err(command_error)?;
     session
         .dispatch_key(
-            request.presentation_id.as_deref(),
+            Some(request.lease_token.as_str()),
             &request.event_type,
             &request.key,
             request.code.as_deref().unwrap_or(""),
@@ -571,11 +567,19 @@ pub async fn set_browser_viewport(
     browser_id: String,
     width: u32,
     height: u32,
+    lease_token: String,
     app: AppHandle,
 ) -> Result<BrowserSessionSummary, String> {
-    set_session_viewport(&app, &browser_id, Some(width), Some(height), false)
-        .await
-        .map_err(command_error)
+    set_session_viewport(
+        &app,
+        &browser_id,
+        Some(width),
+        Some(height),
+        false,
+        Some(&lease_token),
+    )
+    .await
+    .map_err(command_error)
 }
 
 #[cfg(test)]

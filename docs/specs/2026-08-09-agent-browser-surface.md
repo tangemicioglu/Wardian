@@ -17,10 +17,10 @@ Filename: `2026-08-09-agent-browser-surface.md`
 | CLI | `wardian browser open\|list\|<target> …` with `--json` and `--snapshot-after`. Ownership defaults to `WARDIAN_SESSION_ID`. |
 | Surface | `features/browser/BrowserSurface.tsx` renders the screencast, forwards pointer/wheel/keyboard, and stops streaming when hidden. Registered as a `Sessions` contribution that provisions its own session. |
 | Lifecycle | Sessions close on explicit close, on the owning agent's `kill_agent`, and on app exit. Closing a tab only detaches. A failed launch leaves no profile behind; a crashed browser publishes a closed event. |
-| Drive lease | The first presentation to attach drives; later ones mirror read-only, matching the terminal broker. The backend refuses input from a non-holder. |
+| Drive lease | Attaching mints an opaque token; the first attachment drives and later ones mirror read-only. Every surface-originated mutation, navigation and viewport included, carries the token, and an omitted one is refused rather than waved through. |
 
-Verification: 47 Rust unit tests, 15 `#[ignore]`d engine-backed integration
-tests against real Edge, 13 CLI unit tests, 8 core wire-type tests, 33 frontend
+Verification: 48 Rust unit tests, 18 `#[ignore]`d engine-backed integration
+tests against real Edge, 13 CLI unit tests, 8 core wire-type tests, 34 frontend
 tests, and a native E2E that provisions a session from the launcher, renders a
 screencast frame, then drives the page through the CLI. Phases 3 and 4 below
 are not built.
@@ -43,6 +43,22 @@ with an engine-backed regression test.
 The sixth item, a residual note that the review did not independently verify
 Chromium's loopback bind for `--remote-debugging-port=0`, is unresolved by
 inspection and left as a stated assumption.
+
+A second round (run `1786272581592-5f36bd03`) found four more, all real, in the
+fixes themselves. Each is fixed with an engine-backed regression test.
+
+| Finding | Outcome |
+|---|---|
+| The lease was frontend-only: `navigate` and `viewport` had no check at all, and an omitted presentation id was authorized as the control-plane path | Attaching mints an opaque token. Every surface mutation carries it; omitting it is a refusal. Navigation and viewport are gated too. |
+| A failed `Page.startScreencast` left a ghost owner, so later attachments skipped the start and mirrored an invisible driver | The attachment is rolled back when the stream fails to start. |
+| A late attach cleanup could detach a newer attach for the same presentation | Attachments are keyed on their own token, so a stale cleanup releases only itself. |
+| A failed open could leave a locked profile directory, because `kill_on_drop` terminates without reaping and Windows holds the lock during termination | `open` owns the child across the fallible region and reaps it before removing the profile. |
+
+Reviewing the fixes also surfaced one defect the round did not name: the ledger
+records clamped fields while the new identity guard compared the raw name, so
+any element with a name over the 160-character cap would have refused itself as
+`ref_changed`. The guard now clamps identically, proven by an engine-backed
+test against a deliberately over-long label.
 
 ### What differs from the plan below
 

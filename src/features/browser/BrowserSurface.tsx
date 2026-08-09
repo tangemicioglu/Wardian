@@ -93,8 +93,8 @@ export function BrowserSurface({
   const [addressDraft, setAddressDraft] = useState(persisted_url);
   const [addressFocused, setAddressFocused] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  /** Null until the backend has said whether this presentation drives. */
-  const [canDrive, setCanDrive] = useState<boolean | null>(null);
+  /** The lease this presentation currently holds, if it is attached. */
+  const [lease, setLease] = useState<{ token: string; can_drive: boolean } | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
 
@@ -164,26 +164,28 @@ export function BrowserSurface({
     // against an id that may never resolve.
     if (!resolved || missing || visibility === "hidden") return undefined;
     let cancelled = false;
-    let attached = false;
+    let token: string | null = null;
     void attachBrowserScreencast(resource_key, presentationId)
-      .then((role) => {
-        attached = true;
+      .then((attachment) => {
+        token = attachment.token;
         // Cleanup may already have run while the attach was in flight. Without
         // this the stream would keep producing frames for a hidden or
-        // unmounted surface, since cleanup saw `attached === false`.
+        // unmounted surface. Detaching by token means a late cleanup releases
+        // only its own attachment, never a newer one for this same surface.
         if (cancelled) {
-          void detachBrowserScreencast(resource_key, presentationId).catch(() => {});
+          void detachBrowserScreencast(resource_key, attachment.token).catch(() => {});
           return;
         }
-        setCanDrive(role.can_drive);
+        setLease(attachment);
       })
       .catch(() => {
         /* A closed session reports itself through the `closed` event. */
       });
     return () => {
       cancelled = true;
-      if (attached) {
-        void detachBrowserScreencast(resource_key, presentationId).catch(() => {});
+      setLease(null);
+      if (token) {
+        void detachBrowserScreencast(resource_key, token).catch(() => {});
       }
     };
   }, [missing, presentationId, resolved, resource_key, visibility]);
@@ -197,20 +199,21 @@ export function BrowserSurface({
 
   // A mirroring presentation is read-only even when the caller did not ask
   // for it: the backend refuses its input either way, and a control that looks
-  // live but does nothing is worse than one that is visibly disabled.
-  const isReadOnly = read_only || canDrive === false;
+  // live but does nothing is worse than one that is visibly disabled. An
+  // unattached surface has no lease and so cannot drive at all.
+  const isReadOnly = read_only || lease === null || !lease.can_drive;
 
   const runNavigation = useCallback(
     (action: string) => {
       // The chrome bar drives the same shared page as the viewport, so a
       // read-only presentation must not be able to navigate it either.
-      if (isReadOnly || missing) return;
+      if (isReadOnly || missing || !lease) return;
       setActionError(null);
-      void navigateBrowserSession(resource_key, action).catch((error: unknown) => {
+      void navigateBrowserSession(resource_key, action, lease.token).catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
       });
     },
-    [isReadOnly, missing, presentationId, resource_key],
+    [isReadOnly, lease, missing, resource_key],
   );
 
   const toPageCoordinates = useCallback(
@@ -224,13 +227,13 @@ export function BrowserSurface({
 
   const handlePointer = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>, eventType: "mousePressed" | "mouseReleased" | "mouseMoved") => {
-      if (isReadOnly || missing) return;
+      if (isReadOnly || missing || !lease) return;
       const point = toPageCoordinates(event.clientX, event.clientY);
       if (!point) return;
       if (eventType === "mousePressed") viewportRef.current?.focus();
       void sendBrowserPointer({
         browser_id: resource_key,
-        presentation_id: presentationId,
+        lease_token: lease.token,
         event_type: eventType,
         x: point.x,
         y: point.y,
@@ -239,17 +242,17 @@ export function BrowserSurface({
         modifiers: cdpModifiers(event),
       }).catch(() => {});
     },
-    [isReadOnly, missing, presentationId, resource_key, toPageCoordinates],
+    [isReadOnly, lease, missing, resource_key, toPageCoordinates],
   );
 
   const handleWheel = useCallback(
     (event: ReactWheelEvent<HTMLDivElement>) => {
-      if (isReadOnly || missing) return;
+      if (isReadOnly || missing || !lease) return;
       const point = toPageCoordinates(event.clientX, event.clientY);
       if (!point) return;
       void sendBrowserWheel({
         browser_id: resource_key,
-        presentation_id: presentationId,
+        lease_token: lease.token,
         x: point.x,
         y: point.y,
         delta_x: event.deltaX,
@@ -257,12 +260,12 @@ export function BrowserSurface({
         modifiers: cdpModifiers(event),
       }).catch(() => {});
     },
-    [isReadOnly, missing, presentationId, resource_key, toPageCoordinates],
+    [isReadOnly, lease, missing, resource_key, toPageCoordinates],
   );
 
   const handleKey = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>, eventType: "keyDown" | "keyUp") => {
-      if (isReadOnly || missing) return;
+      if (isReadOnly || missing || !lease) return;
       // Leave the workbench's own chords alone so a focused page cannot
       // swallow tab switching or the command palette.
       if (event.ctrlKey || event.metaKey) return;
@@ -270,7 +273,7 @@ export function BrowserSurface({
       const text = eventType === "keyDown" && isTextKey(event.key) ? event.key : undefined;
       void sendBrowserKey({
         browser_id: resource_key,
-        presentation_id: presentationId,
+        lease_token: lease.token,
         event_type: eventType,
         key: event.key,
         code: event.code,
@@ -278,7 +281,7 @@ export function BrowserSurface({
         modifiers: cdpModifiers(event),
       }).catch(() => {});
     },
-    [isReadOnly, missing, presentationId, resource_key],
+    [isReadOnly, lease, missing, resource_key],
   );
 
   if (missing) {

@@ -14,8 +14,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use super::actor::{
-    BrowserSessionBroker, ElementAction, LoadState, OpenBrowserRequest, PageField, Viewport,
-    WaitCondition,
+    BrowserSessionBroker, ElementAction, LoadState, OpenBrowserRequest, PageField, PointerEvent,
+    Viewport, WaitCondition,
 };
 use super::engine::discover_engine;
 
@@ -28,8 +28,14 @@ const FIXTURE: &str = r#"<!doctype html>
     <button id="go" onclick="document.getElementById('result').textContent = 'clicked ' + document.getElementById('search').value">Go</button>
     <p id="result"></p>
     <a href="/second">Second page</a>
+    <button id="verbose">VERBOSE_LABEL</button>
   </body>
 </html>"#;
+
+/// A label longer than the field cap, so the clamp path is exercised.
+fn fixture_with_long_label() -> String {
+    FIXTURE.replace("VERBOSE_LABEL", &"Download the quarterly report ".repeat(12))
+}
 
 const SECOND_PAGE: &str = r#"<!doctype html>
 <html><head><title>Second</title></head><body><p id="marker">arrived</p></body></html>"#;
@@ -52,10 +58,11 @@ async fn serve_fixture() -> (String, tokio::task::JoinHandle<()>) {
                     return;
                 };
                 let request = String::from_utf8_lossy(&buffer[..read]).to_string();
-                let body = if request.starts_with("GET /second") {
+                let long_label = fixture_with_long_label();
+                let body: &str = if request.starts_with("GET /second") {
                     SECOND_PAGE
                 } else {
-                    FIXTURE
+                    &long_label
                 };
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -397,41 +404,106 @@ async fn a_browser_that_exits_reports_the_session_closed() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a Chromium-based browser on the host"]
-async fn only_the_first_attached_presentation_may_drive_the_page() {
+async fn only_the_first_attachment_may_drive_the_page() {
     let broker = broker();
     let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
 
-    session.attach_screencast("pane-a").await.expect("first");
-    session.attach_screencast("pane-b").await.expect("second");
-    assert!(session.presentation_may_drive(Some("pane-a")).await);
-    assert!(
-        !session.presentation_may_drive(Some("pane-b")).await,
-        "a mirroring pane must not drive the shared page"
-    );
-    // The CLI has no presentation and is not a competing driver.
-    assert!(session.presentation_may_drive(None).await);
+    let driver = session.attach_screencast("pane-a").await.expect("first");
+    let mirror = session.attach_screencast("pane-b").await.expect("second");
+    assert!(driver.can_drive);
+    assert!(!mirror.can_drive, "a mirroring pane must not drive the shared page");
+    assert_ne!(driver.token, mirror.token, "each attachment needs its own credential");
 
+    let event = PointerEvent {
+        event_type: "mousePressed",
+        x: 1.0,
+        y: 1.0,
+        button: "left",
+        click_count: 1,
+        modifiers: 0,
+    };
+    session
+        .dispatch_mouse(Some(&driver.token), &event)
+        .await
+        .expect("the lease holder drives");
     let refused = session
-        .dispatch_mouse(
-            Some("pane-b"),
-            &super::actor::PointerEvent {
-                event_type: "mousePressed",
-                x: 1.0,
-                y: 1.0,
-                button: "left",
-                click_count: 1,
-                modifiers: 0,
-            },
-        )
+        .dispatch_mouse(Some(&mirror.token), &event)
         .await
         .expect_err("a mirror must not dispatch input");
     assert_eq!(refused.code(), "browser_read_only_presentation");
 
-    // When the driver leaves, the lease passes rather than stranding the page.
-    session.detach_screencast("pane-a").await.expect("detach");
-    assert!(session.presentation_may_drive(Some("pane-b")).await);
+    // A guessed or invented token is not a bypass.
+    let forged = session
+        .dispatch_mouse(Some("pane-a"), &event)
+        .await
+        .expect_err("a presentation id is not a credential");
+    assert_eq!(forged.code(), "browser_read_only_presentation");
 
-    session.detach_screencast("pane-b").await.expect("detach");
+    // The control plane carries no token and is not a competing presentation.
+    session
+        .dispatch_mouse(None, &event)
+        .await
+        .expect("the CLI path is not gated by the surface lease");
+
+    // When the driver leaves, the lease passes rather than stranding the page.
+    session.detach_screencast(&driver.token).await.expect("detach");
+    assert!(session.token_may_drive(&mirror.token).await);
+
+    session.detach_screencast(&mirror.token).await.expect("detach");
+    assert_eq!(session.attachment_count().await, 0);
+    broker.close(session.browser_id()).await.expect("close");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn navigation_and_viewport_also_require_the_lease() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let driver = session.attach_screencast("pane-a").await.expect("first");
+    let mirror = session.attach_screencast("pane-b").await.expect("second");
+
+    // These are page mutations too; guarding only pointer input would leave
+    // the chrome bar as an unguarded path to the same shared page.
+    assert_eq!(
+        session
+            .require_drive(Some(&mirror.token))
+            .await
+            .expect_err("a mirror must not mutate")
+            .code(),
+        "browser_read_only_presentation"
+    );
+    session
+        .require_drive(Some(&driver.token))
+        .await
+        .expect("the holder may mutate");
+
+    broker.close(session.browser_id()).await.expect("close");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn re_attaching_the_same_presentation_does_not_release_the_newer_attachment() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+
+    // A hidden/shown race produces two attachments for one presentation. The
+    // stale cleanup must release only its own.
+    let first = session.attach_screencast("pane-a").await.expect("first");
+    let second = session.attach_screencast("pane-a").await.expect("second");
+    assert_eq!(session.attachment_count().await, 2);
+
+    session.detach_screencast(&first.token).await.expect("stale detach");
+    assert_eq!(
+        session.attachment_count().await,
+        1,
+        "the newer attachment must survive a stale cleanup"
+    );
+    assert!(
+        session.token_may_drive(&second.token).await,
+        "the lease must pass to the surviving attachment"
+    );
+
+    session.detach_screencast(&second.token).await.expect("detach");
     broker.close(session.browser_id()).await.expect("close");
 }
 
@@ -524,6 +596,46 @@ async fn a_ref_whose_element_was_repurposed_is_refused() {
         .await
         .expect_err("a repurposed element must not be clicked as the original");
     assert_eq!(error.code(), "ref_changed", "got {error}");
+
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn an_element_with_a_clamped_name_is_still_actionable() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(base_url),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+
+    let snapshot = session.snapshot(true).await.expect("snapshot");
+    let verbose = snapshot
+        .elements
+        .iter()
+        .find(|element| element.name.starts_with("Download the quarterly report"))
+        .expect("the long-labelled button should be in the snapshot");
+    assert!(
+        verbose.name.ends_with('…'),
+        "the fixture must actually exceed the field cap: {:?}",
+        verbose.name
+    );
+
+    // The ledger holds the clamped name. A guard that compared the raw one
+    // would refuse this element as `ref_changed` even though nothing changed.
+    session
+        .act(&verbose.element_ref, &ElementAction::Click)
+        .await
+        .expect("a clamped name must not refuse its own element");
 
     broker.close(session.browser_id()).await.expect("close");
     server.abort();
