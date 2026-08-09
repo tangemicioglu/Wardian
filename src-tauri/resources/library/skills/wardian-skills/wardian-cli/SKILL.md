@@ -30,6 +30,7 @@ Do not infer agent state from UI, terminal titles, or files such as
 | Control a live task, wait, watch output, or delegate work | `wardian agent wait`, `wardian agent watch` | [orchestration](references/orchestration.md) |
 | Inspect or change communication boundaries | `wardian graph` | [topology](references/topology.md) |
 | Send work, request an accountable reply, respond, or inspect conversations | `wardian send`, `wardian ask`, `wardian reply`, `wardian conversation` | [messaging](references/messaging.md) |
+| See a rendered page, or verify a frontend change in a real browser | `wardian browser` | [browser](references/browser.md) |
 | Manage reusable assets or present durable work for review | `wardian library`, `wardian artifact` | [assets](references/assets.md) |
 | Validate, run, or inspect workflow automation | `wardian workflow` | [workflows](references/workflows.md) |
 | Organize durable teams and monitoring watchlists | `wardian team`, `wardian watchlist` | [teams and watchlists](references/coordination-groups.md) |

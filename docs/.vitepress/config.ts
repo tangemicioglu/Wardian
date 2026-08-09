@@ -39,6 +39,7 @@ const guideSidebar = [
     text: "Inspect and Ship Changes",
     items: [
       { text: "Explorer", link: "/guide/explorer" },
+      { text: "Browser", link: "/guide/browser" },
       { text: "Source Control", link: "/guide/source-control" },
     ],
   },

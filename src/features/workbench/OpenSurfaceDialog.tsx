@@ -13,6 +13,7 @@ import {
   CORE_SURFACE_CONTRIBUTIONS,
   type CoreSurfaceContribution,
   type CoreSurfaceGroup,
+  type SurfaceResourceProvision,
 } from "./coreSurfaceRegistry";
 
 export { createCoreWorkbenchSurfaceRegistry } from "./coreSurfaceRegistry";
@@ -28,6 +29,15 @@ export type OpenSurfaceDialogProps = {
   on_close: () => void;
   return_focus?: HTMLElement | null;
   placeholder_surface_id?: string;
+  /**
+   * Creates the runtime resource a `provisions_resource` contribution needs.
+   *
+   * Returning null aborts the open, so a failed provision leaves no surface
+   * pointing at a resource that was never created. `release` is called when
+   * the open itself fails, so a rejected navigation cannot strand the runtime
+   * that was created for it.
+   */
+  provision_resource?: (surface_type: string) => Promise<SurfaceResourceProvision | null>;
 };
 
 const CONTRIBUTION_GROUPS: readonly CoreSurfaceGroup[] = ["Core views", "Sessions", "Reserved"];
@@ -58,6 +68,7 @@ export function OpenSurfaceDialog({
   on_close,
   return_focus,
   placeholder_surface_id,
+  provision_resource,
 }: OpenSurfaceDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -109,25 +120,72 @@ export function OpenSurfaceDialog({
     ) ?? [],
   );
 
-  const requestFor = (surfaceType: string): OpenSurfaceRequest => ({
+  const requestFor = (surfaceType: string, provisioned?: string): OpenSurfaceRequest => ({
     surface_type: surfaceType,
     group_id,
-    ...(resource_key === undefined ? {} : { resource_key }),
+    ...(provisioned !== undefined
+      ? { resource_key: provisioned }
+      : resource_key === undefined
+        ? {}
+        : { resource_key }),
   });
 
-  const openChoice = (contribution: CoreSurfaceContribution): void => {
-    if (choiceDisabled(contribution, registry, resource_key)) return;
-    const request = requestFor(contribution.surface_type);
+  const openRequest = (request: OpenSurfaceRequest): void => {
     if (placeholder_surface_id) {
       navigation.open_from_placeholder(placeholder_surface_id, request);
     } else {
       navigation.open(request);
     }
+  };
+
+  /**
+   * Creates a provisioning contribution's runtime resource, then opens it.
+   *
+   * The dialog closes first because creating a browser runtime is slow enough
+   * that leaving the launcher up would read as a hang.
+   */
+  const openProvisioned = (
+    contribution: CoreSurfaceContribution,
+    open: (request: OpenSurfaceRequest) => void,
+  ): void => {
+    if (!provision_resource) return;
+    requestClose();
+    void provision_resource(contribution.surface_type).then((provisioned) => {
+      if (!provisioned) return;
+      try {
+        open(requestFor(contribution.surface_type, provisioned.resource_key));
+      } catch (error) {
+        // The store can reject the mutation — a read-only workbench, or a
+        // concurrent transaction. Releasing keeps a live runtime from
+        // outliving the surface it was created for. Reported rather than
+        // rethrown: nothing awaits this, so a rethrow would only surface as an
+        // unhandled rejection.
+        provisioned.release();
+        console.error(`[Wardian] could not open a ${contribution.surface_type} surface`, error);
+      }
+    });
+  };
+
+  const openChoice = (contribution: CoreSurfaceContribution): void => {
+    if (choiceDisabled(contribution, registry, resource_key)) return;
+    if (contribution.provisions_resource === true) {
+      openProvisioned(contribution, openRequest);
+      return;
+    }
+    // Opens that need no resource stay synchronous, so a click and the surface
+    // it produces land in the same turn.
+    openRequest(requestFor(contribution.surface_type));
     requestClose();
   };
 
   const openChoiceToSide = (contribution: CoreSurfaceContribution): void => {
     if (choiceDisabled(contribution, registry, resource_key)) return;
+    if (contribution.provisions_resource === true) {
+      openProvisioned(contribution, (request) => {
+        navigation.open_to_side(request);
+      });
+      return;
+    }
     if (navigation.open_to_side(requestFor(contribution.surface_type)) !== null) {
       requestClose();
     }

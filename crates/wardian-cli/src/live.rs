@@ -4,6 +4,10 @@ use std::{
 };
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use wardian_core::browser::{
+    BrowserActionResult, BrowserGetResult, BrowserScreenshotResult, BrowserSessionSummary,
+    ConsoleEntry, PageSnapshot,
+};
 use wardian_core::control::{
     AgentDoctorResponse, AgentListResponse, AgentResponse, AgentUpdateResponse, AgentWatchResponse,
     AgentWorktreeListResponse, AgentWorktreeMutationResponse, AgentWorktreeSummary, ApprovalAction,
@@ -112,6 +116,12 @@ enum ControlOperation {
         requested: Duration,
         target: String,
         until: String,
+    },
+    /// Any `wardian browser` call. The budget is the call's own, because a
+    /// `wait` is bounded by its `--timeout-ms` while an `open` is bounded by
+    /// how long a browser takes to start.
+    Browser {
+        requested: Duration,
     },
 }
 
@@ -1009,11 +1019,208 @@ fn operation_timeout(operation: &ControlOperation) -> Duration {
         ControlOperation::Ask { requested, .. } => watch_timeout_for(*requested),
         ControlOperation::AgentWatch { requested, .. } => watch_timeout_for(*requested),
         ControlOperation::NotifyWait { requested } => watch_timeout_for(*requested),
+        ControlOperation::Browser { requested } => watch_timeout_for(*requested),
     }
 }
 
 fn watch_timeout_for(requested: Duration) -> Duration {
     requested + Duration::from_secs(5)
+}
+
+// ---------------------------------------------------------------------------
+// wardian browser
+// ---------------------------------------------------------------------------
+
+/// Budget for a browser call that does not block on a page condition.
+const BROWSER_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Sends one browser control request and decodes its response.
+fn browser_request<T: serde::de::DeserializeOwned>(
+    request: ControlRequest,
+    requested: Duration,
+) -> io::Result<T> {
+    let runtime = build_runtime()?;
+    let value = timeout_block(
+        &runtime,
+        ControlOperation::Browser { requested },
+        send_request(request),
+    )?;
+    serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))
+}
+
+/// The agent this terminal belongs to, used to scope `browser open` by default.
+pub fn current_session_id() -> Option<String> {
+    std::env::var("WARDIAN_SESSION_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn browser_open(
+    url: Option<String>,
+    agent: Option<String>,
+    workspace: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    detached: bool,
+) -> io::Result<BrowserSessionSummary> {
+    browser_request(
+        ControlRequest::BrowserOpen {
+            url,
+            agent,
+            workspace,
+            width,
+            height,
+            detached,
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_list() -> io::Result<Vec<BrowserSessionSummary>> {
+    browser_request(ControlRequest::BrowserList, BROWSER_TIMEOUT)
+}
+
+pub fn browser_close(target: &str) -> io::Result<serde_json::Value> {
+    browser_request(
+        ControlRequest::BrowserClose {
+            target: target.to_string(),
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_navigate(target: &str, action: &str) -> io::Result<BrowserSessionSummary> {
+    browser_request(
+        ControlRequest::BrowserNavigate {
+            target: target.to_string(),
+            action: action.to_string(),
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_get(
+    target: &str,
+    field: &str,
+    selector: Option<String>,
+) -> io::Result<BrowserGetResult> {
+    browser_request(
+        ControlRequest::BrowserGet {
+            target: target.to_string(),
+            field: field.to_string(),
+            selector,
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn browser_wait(
+    target: &str,
+    load_state: Option<String>,
+    selector: Option<String>,
+    text: Option<String>,
+    url_contains: Option<String>,
+    function: Option<String>,
+    timeout_ms: Option<u64>,
+) -> io::Result<BrowserSessionSummary> {
+    // The client budget must outlast the server's own wait, or the CLI would
+    // report a transport timeout instead of the page condition that failed.
+    let requested = Duration::from_millis(timeout_ms.unwrap_or(15_000));
+    browser_request(
+        ControlRequest::BrowserWait {
+            target: target.to_string(),
+            load_state,
+            selector,
+            text,
+            url_contains,
+            function,
+            timeout_ms,
+        },
+        requested,
+    )
+}
+
+pub fn browser_snapshot(target: &str, interactive: bool) -> io::Result<PageSnapshot> {
+    browser_request(
+        ControlRequest::BrowserSnapshot {
+            target: target.to_string(),
+            interactive,
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_act(
+    target: &str,
+    element_ref: &str,
+    action: &str,
+    value: Option<String>,
+    snapshot_after: bool,
+) -> io::Result<BrowserActionResult> {
+    browser_request(
+        ControlRequest::BrowserAct {
+            target: target.to_string(),
+            element_ref: element_ref.to_string(),
+            action: action.to_string(),
+            value,
+            snapshot_after,
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_screenshot(
+    target: &str,
+    path: &str,
+    full_page: bool,
+) -> io::Result<BrowserScreenshotResult> {
+    browser_request(
+        ControlRequest::BrowserScreenshot {
+            target: target.to_string(),
+            path: path.to_string(),
+            full_page,
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_viewport(
+    target: &str,
+    width: Option<u32>,
+    height: Option<u32>,
+    reset: bool,
+) -> io::Result<BrowserSessionSummary> {
+    browser_request(
+        ControlRequest::BrowserViewport {
+            target: target.to_string(),
+            width,
+            height,
+            reset,
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_eval(target: &str, expression: &str) -> io::Result<serde_json::Value> {
+    browser_request(
+        ControlRequest::BrowserEval {
+            target: target.to_string(),
+            expression: expression.to_string(),
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_console(target: &str) -> io::Result<Vec<ConsoleEntry>> {
+    browser_request(
+        ControlRequest::BrowserConsole {
+            target: target.to_string(),
+        },
+        BROWSER_TIMEOUT,
+    )
 }
 
 fn current_message_origin() -> Option<MessageOrigin> {

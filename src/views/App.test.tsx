@@ -618,6 +618,155 @@ describe("Workbench persistence boot integration", () => {
       .toBeNull();
   });
 
+  it("holds a CLI browser open until the durable workbench document has loaded", async () => {
+    setupDefaultMocks([], defaultClasses);
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    let completeLoad: (() => void) | null = null;
+    const loadGate = new Promise<void>((resolve) => { completeLoad = resolve; });
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "load_workbench_state") {
+        return loadGate.then(() => ({
+          source: "primary",
+          document: makeSingleGroupDocument([]),
+          notice: null,
+          durable_revision: 0,
+          durable_token: "browser-gate-durable-zero",
+        }));
+      }
+      if (command === "pending_browser_surface_opens") {
+        return Promise.resolve([{
+          browser_id: "b-startup",
+          short_ref: "browser:1",
+          url: "https://example.com/",
+          title: "Example",
+          load_state: "complete",
+          viewport: { width: 1000, height: 500 },
+          engine: "edge",
+          console_error_count: 0,
+        }]);
+      }
+      return defaultInvoke?.(command, args) ?? Promise.resolve(null);
+    });
+
+    render(<App />);
+
+    // Surfacing into the provisional document would acknowledge the open and
+    // then lose it, because loading replaces the working document outright.
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("load_workbench_state", undefined));
+    expect(mockInvoke).not.toHaveBeenCalledWith("pending_browser_surface_opens");
+
+    await act(async () => {
+      completeLoad?.();
+      await loadGate;
+    });
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("pending_browser_surface_opens"),
+    );
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("ack_browser_surface_open", { browserId: "b-startup" }),
+    );
+  });
+
+  it("pins an existing transient Files preview when Ctrl/Cmd-clicking a Markdown link", async () => {
+    setupDefaultMocks([], defaultClasses);
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    // Keep this fixture on the current schema so the assertion covers link-driven
+    // tab opening, not the independent legacy presentation migration lifecycle.
+    const fileState = (transientPreview: boolean) => ({
+      resource_kind: "file" as const,
+      transient_preview: transientPreview,
+      presentation: "rendered" as const,
+      comparison_open: false,
+      comparison_layout_preference: "auto" as const,
+      comparison_baseline: null,
+      review_drawer_open: false,
+      selected_version_id: null,
+      optional_checkpoint_id: null,
+    });
+    const sourcePath = "C:/work/docs/readme.md";
+    const targetPath = "C:/work/linked.md";
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "load_workbench_state") {
+        return Promise.resolve({
+          source: "primary",
+          document: makeSingleGroupDocument([
+            makeSurface("linked-preview", {
+              surface_type: "files",
+              resource_key: `file:${targetPath}`,
+              state_schema_version: 2,
+              state: fileState(true),
+            }),
+            makeSurface("markdown-source", {
+              surface_type: "files",
+              resource_key: `file:${sourcePath}`,
+              state_schema_version: 2,
+              state: fileState(false),
+            }),
+          ]),
+          notice: null,
+          durable_revision: 0,
+          durable_token: "files-link-durable-zero",
+        });
+      }
+      if (command === "open_file_resource") {
+        const path = (args as { request?: { path?: string } } | undefined)?.request?.path ?? sourcePath;
+        const markdown = path === sourcePath;
+        return Promise.resolve({
+          resource_id: `file:${path}`,
+          subscription_id: `subscription:${path}`,
+          revision: 1,
+          descriptor: {
+            schema: 1,
+            canonical_path: path,
+            display_name: path.split("/").pop(),
+            extension: markdown ? "md" : "txt",
+            mime_type: markdown ? "text/markdown" : "text/plain",
+            encoding: "utf-8",
+            renderer_kind: markdown ? "markdown" : "text",
+            size_bytes: 32,
+            line_count: 1,
+            content_hash: `sha256:${path}`,
+            modified_at_ms: 1,
+            capabilities: { preview: true, changes: false, draft: false, stream: false },
+            unavailable_reason: null,
+          },
+        });
+      }
+      if (command === "read_file_resource_text") {
+        const resourceId = (
+          args as { request?: { resource_id?: string } } | undefined
+        )?.request?.resource_id ?? `file:${sourcePath}`;
+        return Promise.resolve({
+          schema: 1,
+          resource_id: resourceId,
+          revision: 1,
+          text: resourceId === `file:${sourcePath}`
+            ? "[Open linked preview](../linked.md)"
+            : "linked file",
+        });
+      }
+      if (command === "list_file_recoveries") return Promise.resolve([]);
+      return defaultInvoke?.(command, args) ?? Promise.resolve(null);
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole(
+      "link",
+      { name: "Open linked preview" },
+      { timeout: 10_000 },
+    ), { ctrlKey: true });
+    await waitFor(() => {
+      const saves = mockInvoke.mock.calls.filter(([command]) => command === "save_workbench_state");
+      const latest = saves[saves.length - 1]?.[1] as {
+        document?: ReturnType<typeof makeSingleGroupDocument>;
+      } | undefined;
+      expect(latest?.document?.surfaces["linked-preview"]?.state)
+        .toMatchObject({ transient_preview: false });
+    }, { timeout: 5_000 });
+  }, 20_000);
+
   it("routes Files Markdown links through the selected family preference", async () => {
     setupDefaultMocks([], defaultClasses);
     const defaultInvoke = mockInvoke.getMockImplementation();

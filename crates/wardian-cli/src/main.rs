@@ -1,5 +1,6 @@
 mod args;
 mod artifact;
+mod browser;
 mod disk;
 mod errors;
 mod graph;
@@ -53,6 +54,7 @@ fn run() -> i32 {
     let result = match cli.command {
         Command::Agent(args) => handle_agent(args),
         Command::Artifact(args) => artifact::handle_artifact(args),
+        Command::Browser(args) => browser::handle_browser(args),
         Command::Conversation(args) => handle_conversation(args),
         Command::Library(args) => library::handle_library(args),
         Command::Workflow(args) => handle_workflow(args),
@@ -1473,7 +1475,7 @@ fn parse_watch_include(include: Option<&str>, raw: bool) -> Vec<String> {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn control_error(e: std::io::Error) -> CliError {
+pub(crate) fn control_error(e: std::io::Error) -> CliError {
     if let Some(wait_timeout) = e
         .get_ref()
         .and_then(|inner| inner.downcast_ref::<live::WaitTimeoutError>())
@@ -1531,6 +1533,29 @@ fn control_error(e: std::io::Error) -> CliError {
             "artifact_not_found" => backend_error(ExitCode::NotFound, "artifact_not_found"),
             "review_not_found" => backend_error(ExitCode::NotFound, "review_not_found"),
             "ui_delivery_failed" => backend_error(ExitCode::Generic, "ui_delivery_failed"),
+            // Browser codes are preserved rather than flattened to "generic".
+            // `snapshot_stale` in particular is the signal that tells an agent
+            // to re-snapshot instead of retrying the same ref.
+            "browser_not_found" => backend_error(ExitCode::NotFound, "browser_not_found"),
+            "browser_ambiguous" => backend_error(ExitCode::Ambiguous, "browser_ambiguous"),
+            "browser_engine_unavailable" => {
+                backend_error(ExitCode::Generic, "browser_engine_unavailable")
+            }
+            "browser_protocol_error" => backend_error(ExitCode::Generic, "browser_protocol_error"),
+            "browser_wait_timeout" => backend_error(ExitCode::Generic, "browser_wait_timeout"),
+            "browser_invalid_request" => {
+                backend_error(ExitCode::Generic, "browser_invalid_request")
+            }
+            "browser_io_error" => backend_error(ExitCode::Generic, "browser_io_error"),
+            "snapshot_stale" => backend_error(ExitCode::Generic, "snapshot_stale"),
+            "snapshot_missing" => backend_error(ExitCode::Generic, "snapshot_missing"),
+            "ref_malformed" => backend_error(ExitCode::Generic, "ref_malformed"),
+            "ref_detached" => backend_error(ExitCode::Generic, "ref_detached"),
+            "ref_changed" => backend_error(ExitCode::Generic, "ref_changed"),
+            "ref_ambiguous" => backend_error(ExitCode::Ambiguous, "ref_ambiguous"),
+            "browser_read_only_presentation" => {
+                backend_error(ExitCode::Generic, "browser_read_only_presentation")
+            }
             _ => endpoint_error.details().cloned().map_or_else(
                 || CliError::generic(endpoint_error.to_string()),
                 |details| {

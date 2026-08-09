@@ -219,6 +219,137 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             ok_json(&response)
         }
 
+        ControlRequest::BrowserOpen {
+            url,
+            agent,
+            workspace,
+            width,
+            height,
+            detached,
+        } => ok_json(
+            &crate::commands::browser::open_session(
+                app, url, agent, workspace, width, height, detached,
+            )
+            .await
+            .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserList => {
+            ok_json(&crate::commands::browser::list_sessions(app).await)
+        }
+
+        ControlRequest::BrowserClose { target } => {
+            let browser_id = crate::commands::browser::close_session(app, &target)
+                .await
+                .map_err(browser_control_error)?;
+            ok_json(&serde_json::json!({ "browser_id": browser_id }))
+        }
+
+        ControlRequest::BrowserNavigate { target, action } => ok_json(
+            &crate::commands::browser::navigate_session(app, &target, &action, None)
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserGet {
+            target,
+            field,
+            selector,
+        } => ok_json(
+            &crate::commands::browser::get_field(app, &target, &field, selector.as_deref())
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserWait {
+            target,
+            load_state,
+            selector,
+            text,
+            url_contains,
+            function,
+            timeout_ms,
+        } => {
+            let condition = crate::commands::browser::wait_condition_from_parts(
+                load_state.as_deref(),
+                selector.as_deref(),
+                text.as_deref(),
+                url_contains.as_deref(),
+                function.as_deref(),
+            )
+            .map_err(browser_control_error)?;
+            ok_json(
+                &crate::commands::browser::wait_for(app, &target, &condition, timeout_ms)
+                    .await
+                    .map_err(browser_control_error)?,
+            )
+        }
+
+        ControlRequest::BrowserSnapshot {
+            target,
+            interactive,
+        } => ok_json(
+            &crate::commands::browser::snapshot_session(app, &target, interactive)
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserAct {
+            target,
+            element_ref,
+            action,
+            value,
+            snapshot_after,
+        } => {
+            let parsed =
+                crate::commands::browser::element_action_from_parts(&action, value.as_deref())
+                    .map_err(browser_control_error)?;
+            ok_json(
+                &crate::commands::browser::act_on_session(
+                    app,
+                    &target,
+                    &element_ref,
+                    &parsed,
+                    snapshot_after,
+                )
+                .await
+                .map_err(browser_control_error)?,
+            )
+        }
+
+        ControlRequest::BrowserScreenshot {
+            target,
+            path,
+            full_page,
+        } => ok_json(
+            &crate::commands::browser::screenshot_session(app, &target, &path, full_page)
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserViewport {
+            target,
+            width,
+            height,
+            reset,
+        } => ok_json(
+            &crate::commands::browser::set_session_viewport(app, &target, width, height, reset, None)
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserEval { target, expression } => ok_json(
+            &crate::commands::browser::eval_in_session(app, &target, &expression)
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserConsole { target } => ok_json(
+            &crate::commands::browser::console_for_session(app, &target)
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
         ControlRequest::AgentKill { target } => {
             let uuid = resolve_target_uuid(app, &target)
                 .await
@@ -4656,6 +4787,14 @@ fn notification_control_error(error: &'static str) -> ControlError {
 
 fn ok_json<T: serde::Serialize>(value: &T) -> Result<String, ControlError> {
     serde_json::to_string(value).map_err(ControlError::request_failed)
+}
+
+/// Carries a browser failure's own code onto the wire.
+///
+/// `snapshot_stale` in particular has to survive the trip intact: it is the
+/// signal that tells an agent to re-snapshot rather than retry.
+fn browser_control_error(error: crate::state::browser_session::BrowserError) -> ControlError {
+    ControlError::coded(error.code(), error.to_string())
 }
 
 fn artifact_store() -> Result<wardian_core::artifacts::ArtifactStore, ControlError> {

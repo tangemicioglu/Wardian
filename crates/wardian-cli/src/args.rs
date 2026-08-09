@@ -11,6 +11,7 @@ pub struct Cli {
 pub enum Command {
     Agent(AgentArgs),
     Artifact(ArtifactArgs),
+    Browser(BrowserArgs),
     Conversation(ConversationArgs),
     Library(LibraryArgs),
     Workflow(WorkflowArgs),
@@ -21,6 +22,145 @@ pub enum Command {
     Notify(NotifyArgs),
     Ask(AskArgs),
     Reply(ReplyArgs),
+}
+
+// ---------------------------------------------------------------------------
+// wardian browser
+// ---------------------------------------------------------------------------
+
+/// Drive a browser surface. Sessions are addressed as `browser:N` or by id.
+#[derive(Debug, Args)]
+pub struct BrowserArgs {
+    #[command(subcommand)]
+    pub command: BrowserCommand,
+
+    /// Emit machine-readable JSON instead of the human listing.
+    #[arg(long, global = true)]
+    pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BrowserCommand {
+    /// Open a browser session, and a surface for it unless detached.
+    Open {
+        /// Address to load. A bare host is treated as http.
+        url: Option<String>,
+        /// Owning agent. Defaults to this terminal's WARDIAN_SESSION_ID.
+        #[arg(long)]
+        agent: Option<String>,
+        /// Attribute the session to a workspace path.
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long, requires = "height")]
+        width: Option<u32>,
+        #[arg(long, requires = "width")]
+        height: Option<u32>,
+        /// Start the runtime without opening a workbench surface.
+        #[arg(long)]
+        detached: bool,
+    },
+    /// List open browser sessions.
+    List,
+    /// Everything that acts on one existing session.
+    #[command(external_subcommand)]
+    Target(Vec<String>),
+}
+
+/// Re-parses the tail of `wardian browser <target> ...` into a target verb.
+///
+/// The target comes first so `browser browser:7 click e2` reads the way an
+/// operator thinks about it, which clap cannot express as a normal subcommand.
+#[derive(Debug, Parser)]
+#[command(name = "wardian browser <target>", no_binary_name = true)]
+pub struct BrowserTargetArgs {
+    #[command(subcommand)]
+    pub command: BrowserTargetCommand,
+
+    #[arg(long, global = true)]
+    pub json: bool,
+}
+
+/// Verbs that operate on an already-open session.
+#[derive(Debug, Subcommand)]
+pub enum BrowserTargetCommand {
+    /// Close the session and stop its browser.
+    Close,
+    /// Navigate to a URL, or `back`, `forward`, `reload`, `stop`.
+    Navigate { action: String },
+    /// Read `url`, `title`, `text`, or `html`, optionally under a selector.
+    Get {
+        field: String,
+        selector: Option<String>,
+    },
+    /// Block until a page condition holds.
+    Wait {
+        #[arg(long = "load-state")]
+        load_state: Option<String>,
+        #[arg(long)]
+        selector: Option<String>,
+        #[arg(long)]
+        text: Option<String>,
+        #[arg(long = "url-contains")]
+        url_contains: Option<String>,
+        #[arg(long)]
+        function: Option<String>,
+        #[arg(long = "timeout-ms")]
+        timeout_ms: Option<u64>,
+    },
+    /// Capture element refs. Refs go stale on navigation; re-snapshot then.
+    Snapshot {
+        /// Only interactive elements, which is what actions can target.
+        #[arg(long)]
+        interactive: bool,
+    },
+    Click {
+        element_ref: String,
+        #[arg(long = "snapshot-after")]
+        snapshot_after: bool,
+    },
+    Fill {
+        element_ref: String,
+        value: String,
+        #[arg(long = "snapshot-after")]
+        snapshot_after: bool,
+    },
+    Press {
+        element_ref: String,
+        key: String,
+        #[arg(long = "snapshot-after")]
+        snapshot_after: bool,
+    },
+    Select {
+        element_ref: String,
+        value: String,
+        #[arg(long = "snapshot-after")]
+        snapshot_after: bool,
+    },
+    Hover {
+        element_ref: String,
+        #[arg(long = "snapshot-after")]
+        snapshot_after: bool,
+    },
+    Scroll {
+        element_ref: String,
+        #[arg(long = "snapshot-after")]
+        snapshot_after: bool,
+    },
+    /// Write a PNG of the page to a path.
+    Screenshot {
+        path: String,
+        #[arg(long = "full-page")]
+        full_page: bool,
+    },
+    /// Resize the rendered viewport, or `reset` it.
+    Viewport {
+        width: Option<String>,
+        height: Option<u32>,
+    },
+    /// Evaluate an expression in the page and print its JSON value.
+    Eval { expression: String },
+    /// Print the console messages captured since the last navigation.
+    Console,
 }
 
 // ---------------------------------------------------------------------------
