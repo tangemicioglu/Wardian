@@ -2,7 +2,7 @@
 
 Filename: `2026-08-09-agent-browser-surface.md`
 
-- **Status:** Implemented (phases 1 and 2; phases 3 and 4 outstanding)
+- **Status:** Implemented (phases 1 and 2; phases 3 and 4 outstanding). Review loop converged at round nine.
 - **Date:** 2026-08-09
 
 ## Delivery status
@@ -19,8 +19,8 @@ Filename: `2026-08-09-agent-browser-surface.md`
 | Lifecycle | Sessions close on explicit close, on the owning agent's `kill_agent`, and on app exit. Closing a tab only detaches. A failed launch leaves no profile behind; a crashed browser publishes a closed event. |
 | Drive lease | Attaching mints an opaque token; the first attachment drives and later ones mirror read-only. Every surface-originated mutation, navigation and viewport included, carries the token, and an omitted one is refused rather than waved through. |
 
-Verification: 48 Rust unit tests, 20 `#[ignore]`d engine-backed integration
-tests against real Edge, 13 CLI unit tests, 8 core wire-type tests, 38 frontend
+Verification: 56 Rust unit tests, 24 `#[ignore]`d engine-backed integration
+tests against real Edge, 13 CLI unit tests, 8 core wire-type tests, 44 frontend
 tests, and a native E2E that provisions a session from the launcher, renders a
 screencast frame, then drives the page through the CLI. Phases 3 and 4 below
 are not built.
@@ -129,6 +129,21 @@ acknowledgement protocol's interaction with app startup.
 | Finding | Outcome |
 |---|---|
 | The frontend subscribed before the durable workbench document had loaded, so a CLI open arriving during boot was applied to the provisional document, acknowledged, and then erased by `adopt_durable_state` — live browser, no surface, nothing left to replay | The subscription waits for `workbenchPersistence.status === "ready"`, the same gate `useArtifactEvents` already used. Waiting is free because the backend holds every open until it is acknowledged. |
+
+A ninth round (run `1786301270826-79349592`) returned no findings and a verdict
+of approve, which ends the loop. It confirmed that the readiness gate runs
+after `adopt_durable_state`, that the subscription listens before it reads, and
+that acknowledgement follows the workbench mutation rather than preceding it.
+
+Two review-process notes worth keeping. Three consecutive rounds found the same
+shape of defect — a window in which the backend believed a frontend listener
+existed while none did — each one narrower than the last. That pattern is the
+signal to replace a design rather than repair it, which is what round seven
+did. And twice a first-draft regression test passed against the very defect it
+was written for: once from an assertion that ran before the event pump had
+processed anything, once from an arity mismatch that made the assertion vacuous.
+Both were caught by reverting the fix and requiring the test to fail. That step
+is not optional here.
 
 ### What differs from the plan below
 
