@@ -296,6 +296,28 @@ describe('app settings persistence', () => {
     expect(useSettingsStore.getState().app_settings_loaded).toBe(true);
   });
 
+  it('migrates a version-2 local preference without family actions', async () => {
+    localStorage.setItem('wardian-settings', JSON.stringify({
+      state: {
+        explorerFileClickAction: 'external',
+        externalEditor: 'vscode',
+      },
+      version: 2,
+    }));
+
+    await useSettingsStore.persist.rehydrate();
+
+    expect(useSettingsStore.getState().explorerFileClickAction).toBe('external');
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'external',
+      image: 'external',
+      pdf: 'external',
+    });
+    expect(JSON.parse(localStorage.getItem('wardian-settings') ?? '{}')).toEqual(
+      expect.objectContaining({ version: 3 }),
+    );
+  });
+
   it('saves app preferences through the backend app settings file', async () => {
     mockedInvoke.mockResolvedValueOnce({
       theme: 'light',

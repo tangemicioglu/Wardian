@@ -890,7 +890,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'wardian-settings',
-      version: 2,
+      version: 3,
       migrate: (persistedState) => {
         const state = persistedState as Partial<PersistedSettingsState> & { grid_card_display_mode?: GridCardDisplayMode };
         return {
