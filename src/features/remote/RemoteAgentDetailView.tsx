@@ -230,9 +230,10 @@ function installTerminalScrollBridge(
       );
     } else {
       const rowHeight = terminalRowPixelHeight(terminal, measureHost);
-      // xterm scrollLines follows wheel direction: negative moves toward
-      // retained history. An upward finger drag has a positive finger delta.
-      touchRemainder = scrollByRows(touchRemainder - fingerDeltaY / rowHeight);
+      // Touch gestures move the terminal viewport with the finger: upward
+      // travel advances toward newer output, while downward travel reveals
+      // retained history. xterm scrollLines uses that same wheel direction.
+      touchRemainder = scrollByRows(touchRemainder + fingerDeltaY / rowHeight);
     }
     lastTouchPoint = nextTouchPoint;
     event.preventDefault();

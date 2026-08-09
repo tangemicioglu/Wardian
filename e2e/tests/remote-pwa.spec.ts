@@ -383,10 +383,10 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   if (!scrollSurfaceBox) throw new Error("remote terminal scroll surface is not visible");
   const cdp = await page.context().newCDPSession(page);
   const touchX = scrollSurfaceBox.x + scrollSurfaceBox.width / 2;
-  const touchY = scrollSurfaceBox.y + scrollSurfaceBox.height * 0.7;
+  const touchY = scrollSurfaceBox.y + scrollSurfaceBox.height * 0.3;
   const touchPoint = (y: number) => ({ id: 1, x: touchX, y, radiusX: 1, radiusY: 1, force: 1 });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [touchPoint(touchY)] });
-  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [touchPoint(touchY - 180)] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [touchPoint(touchY + 180)] });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await expect.poll(async () => terminalScrollThumb.evaluate(
     (element) => Number.parseFloat((element as HTMLElement).style.top),
