@@ -163,9 +163,24 @@ The workbench already anticipated this. `coreSurfaceRegistry.ts:63` registers a
 for a future browser contribution." `OpenSurfaceDialog.tsx:40` greys it out.
 This spec fills that reservation.
 
-The reference implementation is [cmux](https://github.com/manaflow-ai/cmux),
-which ships a browser pane as a peer of its terminal panes and lets agents
-drive it through the same CLI a human uses.
+There are two reference implementations, and the distinction matters.
+
+[cmux](https://github.com/manaflow-ai/cmux) ships a browser pane as a peer of
+its terminal panes and lets agents drive it through the same CLI a human uses.
+Its README states that "the in-app browser has a scriptable API ported from
+[agent-browser](https://github.com/vercel-labs/agent-browser)", so cmux is the
+downstream port and
+[`vercel-labs/agent-browser`](https://github.com/vercel-labs/agent-browser) is
+the design ancestor.
+
+cmux contributes the *surface model*: a browser as a first-class pane in a
+terminal-centric workbench, addressed and driven like any other. agent-browser
+contributes the *engine and command model*: a Rust CLI over a Rust daemon
+speaking CDP directly, with snapshot refs (`@e1`, `@e2`) instead of selectors.
+Wardian takes the surface model from cmux and lands much closer to
+agent-browser on the engine — which was arrived at from the constraints below
+before the lineage was traced, and is documented here so the attribution is
+right rather than to claim independent invention.
 
 ## What cmux actually does
 
@@ -173,7 +188,9 @@ Read from cmux's README and
 [`skills/cmux-browser/SKILL.md`](https://github.com/manaflow-ai/cmux/blob/main/skills/cmux-browser/SKILL.md).
 These are cmux's published docs, not its source; the design decisions below are
 what the documented interface implies, and each is worth adopting on its own
-merits rather than because cmux does it.
+merits rather than because cmux does it. Note that the agent-facing control
+ships as a *skill*, the same packaging Wardian uses for
+`resources/library/skills/wardian-skills/wardian-cli/`.
 
 | cmux behavior | Evidence | Wardian equivalent today |
 |---|---|---|
@@ -198,9 +215,13 @@ Six decisions transfer:
    `not_supported` rather than emulating badly. That honesty is the feature.
 6. **Panes are peers.** The browser is not a modal or an aside.
 
-The one decision *not* to transfer is the engine. cmux is a native macOS app
-and WKWebView is the right call there. Wardian is Tauri on Windows-first, and
-that changes the answer.
+The one decision *not* to transfer from cmux is the engine — and that is a
+divergence from the port, not from the lineage. cmux is a native Swift and
+AppKit macOS app, so WKWebView is the right call there; the `not_supported`
+returns above are the price of that platform choice, since the API it ported
+was written against CDP. agent-browser itself drives Chromium over CDP from a
+Rust daemon, which is where Wardian ends up. Wardian is Tauri on Windows-first,
+so the constraints push the same way.
 
 ## Engine decision
 
@@ -239,7 +260,8 @@ for agent session lifecycles"). Concretely:
   `suspend_when_hidden`, and remote/PWA mirroring all work unchanged.
 - CDP gives the full capability set — snapshot, cookies, storage, console,
   network, downloads, screenshots. Every capability cmux has to return
-  `not_supported` for, Wardian gets from the protocol.
+  `not_supported` for, Wardian gets from the protocol, because those were
+  CDP-only capabilities the WKWebView port had to drop.
 - `tokio-tungstenite 0.29` is already resolved in `Cargo.lock` via axum's `ws`
   feature, so a CDP client adds no new transitive dependency tree.
 - No X-Frame-Options problem, because it is a real browser.
@@ -400,6 +422,15 @@ Each phase is a shippable PR.
    mirroring, and a default URL derived from the workspace's detected listening
    ports.
 
+Phases 3 and 4 should start by reading
+[agent-browser](https://github.com/vercel-labs/agent-browser) rather than from
+a blank page. It already ships `network route`, `cookies`, `storage`,
+`state save|load`, `profiles`, `auth`, and `tab|window|frame` — most of the two
+backlogs — and it solved them in Rust against the same protocol Wardian now
+speaks, so its command shapes and failure modes transfer directly. Phases 1 and
+2 were designed from the constraints rather than from that source; there is no
+reason to repeat that for the rest.
+
 ## Risks
 
 - **No Chromium present.** The surface must fail with a named, actionable error
@@ -434,8 +465,10 @@ Per the layer boundary table in `AGENTS.md`:
   An agent can assert what a page does rather than that a build succeeded.
 - **Positive**: fills an already-reserved surface slot using the existing
   registry, broker, and control-plane machinery rather than new infrastructure.
-- **Positive**: CDP gives Wardian the introspection cmux's WKWebView engine
-  reports as `not_supported`.
+- **Positive**: CDP gives Wardian the introspection cmux's WKWebView port
+  reports as `not_supported`, and puts Wardian on the same engine as
+  agent-browser, whose already-solved surface is the natural reference for
+  phases 3 and 4 rather than a from-scratch design.
 - **Positive**: one CLI for humans and agents, matching how `wardian agent` and
   `wardian workflow` already work.
 - **Negative**: an external Chromium is now a runtime dependency of one
