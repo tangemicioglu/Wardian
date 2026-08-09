@@ -87,10 +87,8 @@ import { BrowserSurface } from "../features/browser/BrowserSurface";
 import {
   closeBrowserSession,
   openBrowserSession,
-  registerBrowserSurfaceListener,
-  releaseBrowserSurfaceListener,
   reopenBrowserSurfaceSession,
-  subscribeBrowserSurfaceOpen,
+  subscribeToBrowserSurfaceOpens,
 } from "../features/browser/browserSessionClient";
 import { FileEditorControllerRegistry } from "../features/files/fileEditorController";
 import { createFilesCloseAdapter } from "../features/files/filesCloseAdapter";
@@ -1297,48 +1295,15 @@ function AppBody() {
   );
 
   // A CLI `wardian browser open` asks the app to surface the session it made.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let epoch: number | null = null;
-    let cancelled = false;
-    const surfaceSession = (summary: { browser_id: string; url: string }) => {
-      // `focus_resource` makes this idempotent: a session that both the event
-      // and the drain report is focused rather than opened twice.
-      workbenchNavigation.open({
-        surface_type: "browser",
-        resource_key: summary.browser_id,
-        state: { url: summary.url, viewport: null },
-      });
-    };
-    void subscribeBrowserSurfaceOpen(surfaceSession).then((dispose) => {
-      if (cancelled) {
-        dispose();
-        return;
-      }
-      unlisten = dispose;
-      // Registering after subscribing reconciles opens that reached no
-      // listener — the control endpoint serves before this effect runs, and
-      // the backend queues again for the whole window between this listener
-      // retiring and its replacement registering.
-      void registerBrowserSurfaceListener()
-        .then((listener) => {
-          if (cancelled) {
-            void releaseBrowserSurfaceListener(listener.listener_epoch).catch(() => {});
-            return;
-          }
-          epoch = listener.listener_epoch;
-          for (const summary of listener.pending) surfaceSession(summary);
-        })
-        .catch(() => {});
+  useEffect(() => subscribeToBrowserSurfaceOpens((summary) => {
+    // `focus_resource` makes this idempotent: a session that both the event
+    // and the drain report is focused rather than opened twice.
+    workbenchNavigation.open({
+      surface_type: "browser",
+      resource_key: summary.browser_id,
+      state: { url: summary.url, viewport: null },
     });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-      if (epoch !== null) {
-        void releaseBrowserSurfaceListener(epoch).catch(() => {});
-      }
-    };
-  }, [workbenchNavigation]);
+  }), [workbenchNavigation]);
 
   const renderWorkbenchSurface: WorkbenchSurfaceRenderer = (surface, lifecycle) => {
     const resolvedSurface = workbenchRegistry.resolve_surface(surface);

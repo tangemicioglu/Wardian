@@ -244,6 +244,13 @@ than reaching the network.
   use cannot grow the list, and a burst arriving with nothing subscribed is
   bounded by `MAX_PENDING_SURFACE_OPENS`.
 
+  Retirement is ordered the only way that loses nothing: release first, remove
+  the event listener after it is acknowledged. Unlistening first leaves a
+  window where the backend still believes a listener exists — so it emits
+  rather than queues — while nothing is left to receive the event. For the same
+  reason a drain that resolves after disposal is still surfaced: those opens
+  are already out of the backend queue, and nothing would replay them.
+
 - **A session that closes while the surface is mounting.** `getBrowserSession`
   and `subscribeBrowserSession` are both in flight at mount, so a closure in
   between emits its one `closed` event to nobody. The surface re-checks the

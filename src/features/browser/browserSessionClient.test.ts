@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { BrowserSessionSummary } from "../../types";
 import {
   CDP_MODIFIER_ALT,
   CDP_MODIFIER_CTRL,
@@ -11,6 +13,7 @@ import {
   isTextKey,
   pageCoordinates,
   reopenBrowserSurfaceSession,
+  subscribeToBrowserSurfaceOpens,
 } from "./browserSessionClient";
 
 const noModifiers = { altKey: false, ctrlKey: false, metaKey: false, shiftKey: false };
@@ -150,5 +153,114 @@ describe("reopenBrowserSurfaceSession", () => {
     expect(invoked).not.toHaveBeenCalledWith("close_browser_session", expect.anything());
     expect(reported).toHaveBeenCalled();
     reported.mockRestore();
+  });
+});
+
+/** A promise whose settlement the test drives, to pin an async interleaving. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => { resolve = settle; });
+  return { promise, resolve };
+}
+
+describe("subscribeToBrowserSurfaceOpens", () => {
+  let calls: string[] = [];
+  let deliver: ((summary: BrowserSessionSummary) => void) | null = null;
+
+  function sessionSummary(browserId: string): BrowserSessionSummary {
+    return {
+      browser_id: browserId,
+      short_ref: "browser:1",
+      url: "https://example.com/",
+      title: "Example",
+      load_state: "complete",
+      viewport: { width: 1000, height: 500 },
+      engine: "edge",
+      console_error_count: 0,
+    };
+  }
+
+  beforeEach(() => {
+    calls = [];
+    deliver = null;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      calls.push("listen");
+      deliver = (summary) => handler({ payload: summary } as never);
+      return () => {
+        calls.push("unlisten");
+        deliver = null;
+      };
+    });
+    invoked.mockReset();
+    invoked.mockImplementation(async (command: string) => {
+      calls.push(command);
+      if (command === "register_browser_surface_listener") {
+        return { listener_epoch: 7, pending: [] };
+      }
+      return undefined;
+    });
+  });
+
+  it("releases the registration before removing the event listener", async () => {
+    const dispose = subscribeToBrowserSurfaceOpens(() => {});
+    await vi.waitFor(() => expect(calls).toContain("register_browser_surface_listener"));
+
+    dispose();
+    await vi.waitFor(() => expect(calls).toContain("unlisten"));
+
+    // Unlistening first leaves a window where the backend still believes a
+    // listener exists, so it emits an open that nothing can receive and does
+    // not queue it either.
+    expect(calls.indexOf("release_browser_surface_listener"))
+      .toBeLessThan(calls.indexOf("unlisten"));
+  });
+
+  it("still receives an open emitted while the release is in flight", async () => {
+    const opened: string[] = [];
+    const release = deferred<void>();
+    invoked.mockImplementation(async (command: string) => {
+      calls.push(command);
+      if (command === "register_browser_surface_listener") {
+        return { listener_epoch: 7, pending: [] };
+      }
+      if (command === "release_browser_surface_listener") {
+        await release.promise;
+      }
+      return undefined;
+    });
+
+    const dispose = subscribeToBrowserSurfaceOpens((summary) => opened.push(summary.browser_id));
+    await vi.waitFor(() => expect(calls).toContain("register_browser_surface_listener"));
+
+    dispose();
+    await vi.waitFor(() => expect(calls).toContain("release_browser_surface_listener"));
+    deliver?.(sessionSummary("b-mid-release"));
+    release.resolve();
+
+    expect(opened).toEqual(["b-mid-release"]);
+  });
+
+  it("surfaces a drain that landed after disposal rather than discarding it", async () => {
+    const opened: string[] = [];
+    const registration = deferred<{ listener_epoch: number; pending: BrowserSessionSummary[] }>();
+    invoked.mockImplementation(async (command: string) => {
+      calls.push(command);
+      if (command === "register_browser_surface_listener") {
+        return await registration.promise;
+      }
+      return undefined;
+    });
+
+    const dispose = subscribeToBrowserSurfaceOpens((summary) => opened.push(summary.browser_id));
+    await vi.waitFor(() => expect(calls).toContain("register_browser_surface_listener"));
+    dispose();
+    // The drain already removed these from the backend queue, so dropping them
+    // here would lose them with nothing left to replay them.
+    registration.resolve({ listener_epoch: 7, pending: [sessionSummary("b-queued")] });
+
+    await vi.waitFor(() => expect(opened).toEqual(["b-queued"]));
+    await vi.waitFor(() => expect(calls).toContain("release_browser_surface_listener"));
+    expect(calls.indexOf("release_browser_surface_listener"))
+      .toBeLessThan(calls.indexOf("unlisten"));
   });
 });

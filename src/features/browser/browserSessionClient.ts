@@ -169,6 +169,45 @@ export function releaseBrowserSurfaceListener(listenerEpoch: number): Promise<vo
   return invoke<void>("release_browser_surface_listener", { listenerEpoch });
 }
 
+/**
+ * Subscribes to CLI surface opens for as long as the caller holds the handle.
+ *
+ * Retirement is ordered: the registration is released *before* the event
+ * listener is removed. The other order leaves a window where the backend still
+ * believes a listener exists — so it emits instead of queueing — while nothing
+ * is left to receive the event, which is the handoff loss the queue exists to
+ * prevent. The same ordering covers disposal during a registration still in
+ * flight, because the listener stays installed until that resolves.
+ */
+export function subscribeToBrowserSurfaceOpens(
+  onOpen: (summary: BrowserSessionSummary) => void,
+): () => void {
+  const ready = subscribeBrowserSurfaceOpen(onOpen).then(async (dispose) => {
+    let epoch: number | null = null;
+    try {
+      const listener = await registerBrowserSurfaceListener();
+      epoch = listener.listener_epoch;
+      // Surfaced even when disposal has already begun. The drain removed them
+      // from the backend queue, so discarding them here would lose them for
+      // good, and opening a surface is idempotent by resource key.
+      for (const summary of listener.pending) onOpen(summary);
+    } catch {
+      /* Registration failed; the live event stays the only delivery path. */
+    }
+    return { dispose, epoch };
+  });
+  return () => {
+    void ready
+      .then(async ({ dispose, epoch }) => {
+        if (epoch !== null) {
+          await releaseBrowserSurfaceListener(epoch).catch(() => {});
+        }
+        dispose();
+      })
+      .catch(() => {});
+  };
+}
+
 export function getBrowserSession(browserId: string): Promise<BrowserSessionSummary | null> {
   return invoke<BrowserSessionSummary | null>("get_browser_session", { browserId });
 }

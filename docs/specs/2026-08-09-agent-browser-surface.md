@@ -96,6 +96,18 @@ recurred from an earlier round.
 | The pending-open queue was disabled permanently by the first drain, so any later gap with no listener — a webview reload, an effect re-subscription — silently dropped a CLI open | Registration returns an epoch and the cleanup releases it, so queueing tracks whether a listener exists right now. A release for a superseded epoch is ignored, since React can mount the replacement before the outgoing cleanup lands. |
 | A session closing between the surface's initial lookup and its listener being installed missed the only `closed` event, leaving a resolved pane with no frame, no lease, and no Reopen | The surface re-checks the session once the listener is installed. |
 
+A sixth round (run `1786297668296-80776254`) found one, in the retirement half
+of the fifth round's fix.
+
+| Finding | Outcome |
+|---|---|
+| Cleanup removed the event listener before the release reached the broker, so an open landing in that window was emitted to nobody and queued by nobody — and a disposal during an in-flight registration had the same gap | Retirement releases first and unlistens only after the release is acknowledged, so the listener always outlives the registration. The lifecycle moved into `subscribeToBrowserSurfaceOpens` to make the ordering testable. |
+
+Reviewing the fix surfaced one the round did not name: the cancelled branch
+drained the backend queue and then discarded what it got, losing opens nothing
+would replay. A drain that resolves after disposal is now surfaced anyway,
+which is safe because opening a surface is idempotent by resource key.
+
 ### What differs from the plan below
 
 - **WebView2's `msedgewebview2.exe` is not in the discovery order.** It is not supported as a standalone browser, and every Windows 11 host that can run Wardian already has Edge proper.
