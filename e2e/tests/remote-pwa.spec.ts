@@ -33,6 +33,7 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   let statusStream: WebSocketRoute | null = null;
   let terminalStream: WebSocketRoute | null = null;
   const terminalInputs: string[] = [];
+  const terminalControlRequests: unknown[] = [];
   const recoveryScrollback = Array.from(
     { length: 160 },
     (_, index) => `recovery scrollback line ${String(index + 1).padStart(3, "0")}`,
@@ -178,6 +179,7 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
     ws.onMessage((message) => {
       const payload = JSON.parse(String(message));
       if (payload.type === "input") terminalInputs.push(String(payload.data ?? ""));
+      if (payload.type === "begin_activation") terminalControlRequests.push(payload);
       if (!seeded) {
         expect(payload).toMatchObject({
           protocol_version: 2,
@@ -355,7 +357,8 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await expect(page.locator('[data-testid="remote-agent-detail"]')).toBeVisible();
   await expect(page.getByRole("button", { name: "Terminal", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("recovered current viewport")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Take terminal control" })).toHaveCount(0);
+  await expect(page.locator('[data-testid="remote-terminal-presentation-mode"]')).toHaveText("Mirror");
+  await expect(page.getByRole("button", { name: "Take terminal control" })).toBeVisible();
   await captureFeatureScreenshot("lifecycle-actions.png", page.locator('[data-testid="remote-agent-detail"]'));
   await captureFeatureScreenshot("terminal-detail.png", page.locator('[data-testid="remote-agent-detail"]'));
   const terminalScrollThumb = page.locator(
@@ -379,7 +382,11 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await expect.poll(async () => terminalScrollThumb.evaluate(
     (element) => Number.parseFloat((element as HTMLElement).style.top),
   )).toBeLessThan(scrollTopBefore);
+  expect(terminalControlRequests).toEqual([]);
   await captureFeatureScreenshot("terminal-recovery-scrollback.png", page.locator('[data-testid="remote-agent-detail"]'));
+
+  await page.getByRole("button", { name: "Take terminal control" }).click();
+  await expect.poll(() => terminalControlRequests.length).toBe(1);
 
   await expect.poll(() => terminalStream !== null).toBe(true);
   terminalStream?.send(JSON.stringify({
