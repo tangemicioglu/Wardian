@@ -163,9 +163,9 @@ const rowDefinitions: SettingsRowDefinition[] = [
   {
     id: "explorer-file-click-action",
     category: "Explorer",
-    label: "Default file click action",
-    detail: "Fallback for folders and older clients; use the type-specific preferences below for files.",
-    keywords: ["explorer", "files", "click", "preview", "external", "open"],
+    label: "Legacy file click fallback",
+    detail: "Compatibility fallback for older settings documents and clients; family preferences below control current file opens.",
+    keywords: ["explorer", "files", "click", "legacy", "compatibility", "preview", "external", "open"],
   },
   {
     id: "file-open-text",
@@ -983,7 +983,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
         return (
           <SettingRow key={row.id} label={row.label} detail={row.detail}>
             <select
-              aria-label="File click action"
+              aria-label="Legacy file click fallback"
               value={explorerFileClickAction}
               onChange={(event) => void handleExplorerFileClickActionChange(event.target.value as ExplorerFileClickAction)}
               className={optionClass}

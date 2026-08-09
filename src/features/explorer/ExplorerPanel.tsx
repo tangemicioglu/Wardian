@@ -8,6 +8,7 @@ import { FileTree, FileNode } from './FileTree';
 import { useConfirm } from '../../components/ConfirmDialog';
 import { AgentConfig, GitStatusResult } from '../../types';
 import { useSettingsStore } from '../../store/useSettingsStore';
+import type { ExternalEditorSetting } from '../../types/settings';
 import { normalizeExplorerPathForCompare } from './pathUtils';
 import { createFileSurfaceState, fileResourceKey } from '../files/fileResourceKey';
 import { openPermanentFileSurface } from '../files/fileSurfaceNavigation';
@@ -197,27 +198,41 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
     setMenuPos(null);
   };
 
-  const openExternalPath = async (path: string) => {
+  const openPath = async (
+    path: string,
+    editor: { external_editor: ExternalEditorSetting; external_editor_custom_executable: string | null },
+    failureMessage: string,
+  ) => {
     try {
-      await openFileInExternalApp(path, {
-        external_editor: externalEditor,
-        external_editor_custom_executable: externalEditorCustomExecutable,
-      });
+      await openFileInExternalApp(path, editor);
       setExternalOpenError(null);
     } catch (err) {
-      console.error("External editor open failed:", err);
-      setExternalOpenError(
-        `External app open failed for ${externalEditorLabel(externalEditor)}: ${String(err)}`,
-      );
+      console.error(`${failureMessage}:`, err);
+      setExternalOpenError(`${failureMessage}: ${String(err)}`);
     }
   };
 
+  const openExternalPath = async (path: string) => openPath(
+    path,
+    {
+      external_editor: externalEditor,
+      external_editor_custom_executable: externalEditorCustomExecutable,
+    },
+    `External app open failed for ${externalEditorLabel(externalEditor)}`,
+  );
+
+  const openSystemPath = async (path: string) => openPath(
+    path,
+    {
+      external_editor: 'system',
+      external_editor_custom_executable: null,
+    },
+    'System viewer open failed',
+  );
+
   const openExternalEditor = async (node: FileNode, systemDefault = false) => {
     if (systemDefault) {
-      await openFileInExternalApp(node.path, {
-        external_editor: 'system',
-        external_editor_custom_executable: null,
-      });
+      await openSystemPath(node.path);
       return;
     }
     await openExternalPath(node.path);

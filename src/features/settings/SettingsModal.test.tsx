@@ -416,7 +416,7 @@ describe("SettingsModal", () => {
     fireEvent.change(screen.getByLabelText("Custom editor executable"), {
       target: { value: "C:/Tools/editor.exe" },
     });
-    fireEvent.change(screen.getByLabelText("File click action"), {
+    fireEvent.change(screen.getByLabelText("Legacy file click fallback"), {
       target: { value: "external" },
     });
     fireEvent.change(screen.getByLabelText("Text and code files open location"), {

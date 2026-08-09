@@ -56,6 +56,13 @@ vi.mock('./FileTree', () => ({
       >
         src
       </button>
+      <button
+        type="button"
+        data-testid="mock-unsupported-file-row"
+        onClick={() => onSelect?.('C:\\Users\\test\\repo\\report.docx', false)}
+      >
+        report.docx
+      </button>
     </div>
   ),
 }));
@@ -246,6 +253,30 @@ describe('ExplorerPanel', () => {
 
     expect(await screen.findByText(/External app open failed for VS Code/i)).toBeInTheDocument();
     expect(screen.getByText(/program not found/i)).toBeInTheDocument();
+    consoleError.mockRestore();
+  });
+
+  it('shows a visible error when the system viewer cannot open unsupported content', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      if (command === 'open_in_external_editor') throw new Error('no associated app');
+      return null;
+    });
+    const unhandled = vi.fn();
+    window.addEventListener('unhandledrejection', unhandled);
+
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} />);
+
+    await userEvent.click(await screen.findByTestId('mock-unsupported-file-row'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'System viewer open failed: Error: no associated app',
+    );
+    expect(unhandled).not.toHaveBeenCalled();
+
+    window.removeEventListener('unhandledrejection', unhandled);
     consoleError.mockRestore();
   });
 

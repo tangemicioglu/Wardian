@@ -47,7 +47,9 @@ describe("UnsupportedRenderer", () => {
 
     expect(screen.getByRole("heading", { name: "Opening in system viewer" })).toBeInTheDocument();
     await waitFor(() => expect(on_open_system).toHaveBeenCalledWith("C:/repo/report.docx"));
-    expect(screen.queryByText("Preview unavailable")).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Opened in system viewer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open With" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Opening in system viewer" })).not.toBeInTheDocument();
   });
 
   it("keeps the recovery actions when launching the system viewer fails", async () => {

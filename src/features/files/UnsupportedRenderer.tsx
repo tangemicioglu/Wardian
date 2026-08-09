@@ -10,6 +10,13 @@ export default function UnsupportedRenderer({
 }: FileRendererProps) {
   const { descriptor } = snapshot;
   const [openError, setOpenError] = useState<string | null>(null);
+  const shouldAutoOpen = Boolean(
+    on_open_system
+    && lifecycle.visible
+    && descriptor.unavailable_reason === "unsupported_content",
+  );
+  const [opening, setOpening] = useState(shouldAutoOpen);
+  const [openedInSystem, setOpenedInSystem] = useState(false);
   const attemptedOpenRef = useRef<string | null>(null);
   const liveDocument = descriptor.mime_type === "text/html"
     || descriptor.mime_type === "image/svg+xml";
@@ -25,12 +32,20 @@ export default function UnsupportedRenderer({
     const attemptKey = `${snapshot.resource_id}:${snapshot.revision}`;
     if (attemptedOpenRef.current === attemptKey) return;
     attemptedOpenRef.current = attemptKey;
-    void Promise.resolve(on_open_system(descriptor.canonical_path)).catch((error) => {
-      setOpenError(error instanceof Error ? error.message : String(error));
-    });
+    setOpening(true);
+    void Promise.resolve(on_open_system(descriptor.canonical_path)).then(
+      () => {
+        setOpening(false);
+        setOpenedInSystem(true);
+      },
+      (error) => {
+        setOpening(false);
+        setOpenError(error instanceof Error ? error.message : String(error));
+      },
+    );
   }, [descriptor.canonical_path, descriptor.unavailable_reason, lifecycle.visible, on_open_system, snapshot.resource_id, snapshot.revision]);
 
-  if (on_open_system && descriptor.unavailable_reason === "unsupported_content" && !openError) {
+  if (shouldAutoOpen && opening && !openError) {
     return (
       <section className="files-resource-state" role="status" aria-label="Opening in system viewer">
         <h2>Opening in system viewer</h2>
@@ -41,8 +56,14 @@ export default function UnsupportedRenderer({
 
   return (
     <section className="files-resource-state" role={openError ? "alert" : "status"} aria-label="Preview unavailable">
-      <h2>Preview unavailable</h2>
-      <p>{openError ? `System viewer could not open this file: ${openError}` : reason}</p>
+      <h2>{openedInSystem && !openError ? "Opened in system viewer" : "Preview unavailable"}</h2>
+      <p>
+        {openError
+          ? `System viewer could not open this file: ${openError}`
+          : openedInSystem
+            ? `${descriptor.display_name} was handed off to the system viewer.`
+            : reason}
+      </p>
       <dl className="files-resource-metadata">
         <div><dt>Type</dt><dd>{descriptor.mime_type}</dd></div>
         <div><dt>Size</dt><dd>{descriptor.size_bytes.toLocaleString()} bytes</dd></div>
