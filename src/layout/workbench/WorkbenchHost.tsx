@@ -15,7 +15,10 @@ import {
   OpenSurfaceDialog,
   createCoreWorkbenchSurfaceRegistry,
 } from "../../features/workbench/OpenSurfaceDialog";
-import { CORE_SURFACE_CONTRIBUTIONS } from "../../features/workbench/coreSurfaceRegistry";
+import {
+  CORE_SURFACE_CONTRIBUTIONS,
+  type SurfaceResourceProvision,
+} from "../../features/workbench/coreSurfaceRegistry";
 import {
   createWorkbenchNavigationService,
   type WorkbenchIdKind,
@@ -54,7 +57,9 @@ export type WorkbenchHostProps = {
   new_tab_action?: WorkbenchNewTabAction;
   root_ref?: RefObject<HTMLDivElement | null>;
   /** Creates the runtime resource a provisioning contribution needs. */
-  provision_surface_resource?: (surface_type: string) => Promise<string | null>;
+  provision_surface_resource?: (
+    surface_type: string,
+  ) => Promise<SurfaceResourceProvision | null>;
 };
 
 type WorkbenchDropPosition = "top" | "bottom" | "left" | "right" | "center";
@@ -262,9 +267,17 @@ export function WorkbenchHost({
       return;
     }
     if (!provision_surface_resource) return;
-    const resourceKey = await provision_surface_resource(surfaceType);
-    if (!resourceKey) return;
-    open({ surface_type: surfaceType, resource_key: resourceKey });
+    const provisioned = await provision_surface_resource(surfaceType);
+    if (!provisioned) return;
+    try {
+      open({ surface_type: surfaceType, resource_key: provisioned.resource_key });
+    } catch (error) {
+      // A rejected store mutation must not leave the runtime running with no
+      // surface presenting it. Reported rather than rethrown: the caller does
+      // not await this, so a rethrow would only be an unhandled rejection.
+      provisioned.release();
+      console.error(`[Wardian] could not open a ${surfaceType} surface`, error);
+    }
   }, [provision_surface_resource]);
 
   const openNewTabLauncher = useCallback((groupId: string) => {

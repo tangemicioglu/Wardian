@@ -5,7 +5,7 @@
 //! two background tasks; every caller talks to it through [`CdpConnection`].
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -135,6 +135,9 @@ type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, (i64, Str
 #[derive(Debug)]
 pub struct CdpConnection {
     next_id: AtomicU64,
+    /// Set when the socket closes, so later calls fail immediately instead of
+    /// each waiting out the full call timeout against a dead browser.
+    closed: AtomicBool,
     outbound: mpsc::UnboundedSender<Message>,
     pending: PendingMap,
     events: broadcast::Sender<CdpEvent>,
@@ -153,10 +156,14 @@ impl CdpConnection {
 
         let connection = Arc::new(Self {
             next_id: AtomicU64::new(1),
+            closed: AtomicBool::new(false),
             outbound,
             pending: Arc::clone(&pending),
             events: events.clone(),
         });
+        // The reader owns a handle so it can mark the connection closed; the
+        // task ends when the socket does, so this cycle always resolves.
+        let connection_closed = Arc::clone(&connection);
 
         tokio::spawn(async move {
             while let Some(message) = outbound_rx.recv().await {
@@ -192,6 +199,7 @@ impl CdpConnection {
             }
             // Fail every in-flight call rather than leaving callers to time out
             // one by one after the socket is already gone.
+            connection_closed.closed.store(true, Ordering::Release);
             for (_, sender) in pending.lock().await.drain() {
                 let _ = sender.send(Err((-1, "connection closed".to_string())));
             }
@@ -225,12 +233,20 @@ impl CdpConnection {
         self.dispatch(method, params, Some(session_id)).await
     }
 
+    /// True once the websocket has closed.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     async fn dispatch(
         &self,
         method: &str,
         params: Value,
         session_id: Option<&str>,
     ) -> Result<Value, CdpError> {
+        if self.is_closed() {
+            return Err(CdpError::Disconnected);
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut envelope = json!({ "id": id, "method": method, "params": params });
         if let Some(session_id) = session_id {

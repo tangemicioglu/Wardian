@@ -13,6 +13,7 @@ import {
   CORE_SURFACE_CONTRIBUTIONS,
   type CoreSurfaceContribution,
   type CoreSurfaceGroup,
+  type SurfaceResourceProvision,
 } from "./coreSurfaceRegistry";
 
 export { createCoreWorkbenchSurfaceRegistry } from "./coreSurfaceRegistry";
@@ -30,10 +31,13 @@ export type OpenSurfaceDialogProps = {
   placeholder_surface_id?: string;
   /**
    * Creates the runtime resource a `provisions_resource` contribution needs.
+   *
    * Returning null aborts the open, so a failed provision leaves no surface
-   * pointing at a resource that was never created.
+   * pointing at a resource that was never created. `release` is called when
+   * the open itself fails, so a rejected navigation cannot strand the runtime
+   * that was created for it.
    */
-  provision_resource?: (surface_type: string) => Promise<string | null>;
+  provision_resource?: (surface_type: string) => Promise<SurfaceResourceProvision | null>;
 };
 
 const CONTRIBUTION_GROUPS: readonly CoreSurfaceGroup[] = ["Core views", "Sessions", "Reserved"];
@@ -148,7 +152,17 @@ export function OpenSurfaceDialog({
     requestClose();
     void provision_resource(contribution.surface_type).then((provisioned) => {
       if (!provisioned) return;
-      open(requestFor(contribution.surface_type, provisioned));
+      try {
+        open(requestFor(contribution.surface_type, provisioned.resource_key));
+      } catch (error) {
+        // The store can reject the mutation — a read-only workbench, or a
+        // concurrent transaction. Releasing keeps a live runtime from
+        // outliving the surface it was created for. Reported rather than
+        // rethrown: nothing awaits this, so a rethrow would only surface as an
+        // unhandled rejection.
+        provisioned.release();
+        console.error(`[Wardian] could not open a ${contribution.surface_type} surface`, error);
+      }
     });
   };
 

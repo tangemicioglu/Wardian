@@ -399,7 +399,99 @@ async fn a_browser_that_exits_reports_the_session_closed() {
     assert_eq!(closed.0, browser_id);
     assert!(closed.1.contains("exited"), "reason was {:?}", closed.1);
 
+    // Announcing is not enough: a dead session left in the map would keep
+    // appearing in `browser list` and would resolve for later commands.
+    assert!(
+        broker.list().await.is_empty(),
+        "a crashed session must not remain listed"
+    );
+    assert_eq!(
+        broker.resolve(&browser_id).await.expect_err("gone").code(),
+        "browser_not_found"
+    );
+
     broker.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn concurrent_attaches_serialize_into_one_stream() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(base_url),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+
+    // Split panes and visibility flips produce overlapping attaches. Without
+    // serialization one can observe the other's half-built state.
+    let attaches = (0..4).map(|index| {
+        let session = Arc::clone(&session);
+        async move { session.attach_screencast(&format!("pane-{index}")).await }
+    });
+    let results = futures_util::future::join_all(attaches).await;
+    let attachments: Vec<_> = results
+        .into_iter()
+        .map(|result| result.expect("every attach should succeed"))
+        .collect();
+
+    assert_eq!(session.attachment_count().await, 4);
+    assert_eq!(
+        attachments.iter().filter(|attachment| attachment.can_drive).count(),
+        1,
+        "exactly one attachment may hold the lease"
+    );
+
+    // A frame proves the stream actually started rather than being skipped by
+    // an attach that observed a non-empty viewer list.
+    let mut events = broker.subscribe();
+    let framed = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if let Ok(super::actor::BrowserSessionEvent::Frame { .. }) = events.recv().await {
+                return true;
+            }
+        }
+    })
+    .await;
+    assert!(framed.is_ok(), "no frame arrived after concurrent attaches");
+
+    for attachment in &attachments {
+        session.detach_screencast(&attachment.token).await.expect("detach");
+    }
+    assert_eq!(session.attachment_count().await, 0);
+
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_surface_open_queued_before_the_frontend_listens_is_drained_once() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let summary = session.summary().await;
+    broker.queue_surface_open(summary.clone()).await;
+
+    let drained = broker.take_pending_surface_opens().await;
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].browser_id, summary.browser_id);
+    assert!(
+        broker.take_pending_surface_opens().await.is_empty(),
+        "draining must not replay the same request"
+    );
+
+    // A queued request for a session that has since closed must not resurrect
+    // a surface for a browser that no longer exists.
+    broker.queue_surface_open(summary.clone()).await;
+    broker.close(&summary.browser_id).await.expect("close");
+    assert!(broker.take_pending_surface_opens().await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

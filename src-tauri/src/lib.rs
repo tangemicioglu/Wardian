@@ -551,6 +551,7 @@ pub fn run() {
             commands::browser::browser_engine_status,
             commands::browser::open_browser_session,
             commands::browser::list_browser_sessions,
+            commands::browser::take_pending_browser_surface_opens,
             commands::browser::get_browser_session,
             commands::browser::close_browser_session,
             commands::browser::navigate_browser_session,

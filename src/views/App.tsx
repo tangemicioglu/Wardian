@@ -85,8 +85,10 @@ import { useDirtySurfacePrompt } from "../features/workbench/surfaces/DirtySurfa
 import { FilesSurface } from "../features/files/FilesSurface";
 import { BrowserSurface } from "../features/browser/BrowserSurface";
 import {
+  closeBrowserSession,
   openBrowserSession,
   subscribeBrowserSurfaceOpen,
+  takePendingBrowserSurfaceOpens,
 } from "../features/browser/browserSessionClient";
 import { FileEditorControllerRegistry } from "../features/files/fileEditorController";
 import { createFilesCloseAdapter } from "../features/files/filesCloseAdapter";
@@ -99,6 +101,7 @@ import {
   isFilesSurfaceStateV1,
 } from "../features/files/filesSurfaceState";
 import type { BrowserSurfaceState, FilesSurfaceStateV2 } from "../types";
+import type { SurfaceResourceProvision } from "../features/workbench/coreSurfaceRegistry";
 
 declare global {
   interface Window {
@@ -1256,11 +1259,16 @@ function AppBody() {
    * no surface behind pointing at a session that was never created.
    */
   const provisionWorkbenchSurfaceResource = useCallback(
-    async (surfaceType: string): Promise<string | null> => {
+    async (surfaceType: string): Promise<SurfaceResourceProvision | null> => {
       if (surfaceType !== "browser") return null;
       try {
         const session = await openBrowserSession({});
-        return session.browser_id;
+        return {
+          resource_key: session.browser_id,
+          release: () => {
+            void closeBrowserSession(session.browser_id).catch(() => {});
+          },
+        };
       } catch (error) {
         console.error("[Wardian] could not open a browser session", error);
         return null;
@@ -1274,7 +1282,10 @@ function AppBody() {
     async (surfaceId: string, url: string): Promise<void> => {
       try {
         const session = await openBrowserSession(url ? { url } : {});
-        await workbenchNavigation.canonicalize_resource(surfaceId, {
+        // `rebind_resource`, not `canonicalize_resource`: the latter converges
+        // identity while deliberately keeping the persisted state, which is
+        // wrong when the old session is gone and a new one has replaced it.
+        await workbenchNavigation.rebind_resource(surfaceId, {
           surface_type: "browser",
           resource_key: session.browser_id,
           state: { url: session.url || url, viewport: null },
@@ -1290,18 +1301,30 @@ function AppBody() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
-    void subscribeBrowserSurfaceOpen((summary) => {
+    const surfaceSession = (summary: { browser_id: string; url: string }) => {
+      // `focus_resource` makes this idempotent: a session that both the event
+      // and the drain report is focused rather than opened twice.
       workbenchNavigation.open({
         surface_type: "browser",
         resource_key: summary.browser_id,
         state: { url: summary.url, viewport: null },
       });
-    }).then((dispose) => {
+    };
+    void subscribeBrowserSurfaceOpen(surfaceSession).then((dispose) => {
       if (cancelled) {
         dispose();
         return;
       }
       unlisten = dispose;
+      // The control endpoint serves before this listener exists, so an open
+      // that won that race would otherwise leave a live session with no
+      // surface. Draining after subscribing reconciles it.
+      void takePendingBrowserSurfaceOpens()
+        .then((pending) => {
+          if (cancelled) return;
+          for (const summary of pending) surfaceSession(summary);
+        })
+        .catch(() => {});
     });
     return () => {
       cancelled = true;

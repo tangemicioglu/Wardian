@@ -19,8 +19,8 @@ Filename: `2026-08-09-agent-browser-surface.md`
 | Lifecycle | Sessions close on explicit close, on the owning agent's `kill_agent`, and on app exit. Closing a tab only detaches. A failed launch leaves no profile behind; a crashed browser publishes a closed event. |
 | Drive lease | Attaching mints an opaque token; the first attachment drives and later ones mirror read-only. Every surface-originated mutation, navigation and viewport included, carries the token, and an omitted one is refused rather than waved through. |
 
-Verification: 48 Rust unit tests, 18 `#[ignore]`d engine-backed integration
-tests against real Edge, 13 CLI unit tests, 8 core wire-type tests, 34 frontend
+Verification: 48 Rust unit tests, 20 `#[ignore]`d engine-backed integration
+tests against real Edge, 13 CLI unit tests, 8 core wire-type tests, 38 frontend
 tests, and a native E2E that provisions a session from the launcher, renders a
 screencast frame, then drives the page through the CLI. Phases 3 and 4 below
 are not built.
@@ -53,6 +53,21 @@ fixes themselves. Each is fixed with an engine-backed regression test.
 | A failed `Page.startScreencast` left a ghost owner, so later attachments skipped the start and mirrored an invisible driver | The attachment is rolled back when the stream fails to start. |
 | A late attach cleanup could detach a newer attach for the same presentation | Attachments are keyed on their own token, so a stale cleanup releases only itself. |
 | A failed open could leave a locked profile directory, because `kill_on_drop` terminates without reaping and Windows holds the lock during termination | `open` owns the child across the fallible region and reaps it before removing the profile. |
+
+A third round (run `1786275258071-92d03395`) found four more, again all in the
+previous round's work.
+
+| Finding | Outcome |
+|---|---|
+| Screencast start/stop was not serialized, so a concurrent attach could skip a start that then rolled back, and a detach's stop could land after a concurrent start | Attach and detach hold a per-session transition lock across their CDP call. |
+| A crashed browser stayed registered, so `browser list` kept showing it and later commands resolved a dead connection | The pump reaps the session out of the broker before announcing, and only the remover announces. |
+| Provisioning could orphan a live Chromium when the store rejected the open it was created for | Provisioning returns a `release`, called when the open fails. |
+| A CLI open that beat the frontend listener lost its only surface notification | Non-detached opens are queued as well as emitted, and drained after the listener is installed. |
+
+Fixing the reap exposed a further defect: teardown called `Page.close` on a
+dead connection and blocked for the full 30-second call ceiling. The connection
+now latches closed and fails later calls immediately, which also halved the
+engine-backed suite's runtime.
 
 Reviewing the fixes also surfaced one defect the round did not name: the ledger
 records clamped fields while the new identity guard compared the raw name, so

@@ -118,6 +118,11 @@ Because the image is letterboxed to fit its pane, `pageCoordinates` maps a
 client offset back into page space; a click in the letterbox is dropped rather
 than clamped to an edge.
 
+Provisioning is transactional. Opening Browser from the launcher creates a
+session before the surface exists, so if the store rejects the mutation — a
+read-only workbench, a concurrent transaction — the provisioner's `release`
+closes the session it just created rather than leaving an unowned Chromium.
+
 The surface's `render_policy` is `suspend_when_hidden`, so a hidden tab stops
 the screencast while the page keeps running. An attach that resolves after the
 effect was already torn down detaches immediately, or the stream would outlive
@@ -140,9 +145,13 @@ and silently does nothing is worse than one that is visibly inert.
 
 Detach is keyed on the token, so a cleanup racing a re-attach releases only its
 own attachment and never the newer one. The lease passes to the
-longest-attached survivor when the holder leaves. `Page.startScreencast`
-failing rolls the attachment back, or a later attach would see a non-empty
-viewer list, skip the start, and mirror an owner producing no frames.
+longest-attached survivor when the holder leaves.
+
+Attach and detach hold a per-session transition lock across their CDP
+start/stop. The viewer list and the stream have to move together: without it a
+second attach can observe a non-empty list and skip a start that then fails and
+rolls back, and a detach's `stopScreencast` can land after a concurrent
+attach's `startScreencast`, leaving a live attachment with no frames.
 
 The control-plane path passes `None`: `wardian browser` reaches these
 operations through the control server, never through a surface, and is not a
@@ -186,6 +195,22 @@ than reaching the network.
   channel ending — the sender lives in the connection they hold alive — so
   without that signal a crashed browser would leave the pump waiting forever
   and the surface would never show its reopen path.
+
+  The pump then *reaps* the session: it removes it from the broker before
+  announcing, so `browser list` stops showing it and later commands report
+  `browser_not_found` instead of resolving a dead connection. Only the remover
+  announces, so an explicit `close` racing a crash still emits one event.
+
+  The connection also latches closed, and calls made afterwards fail
+  immediately rather than each waiting out the 30-second call ceiling. Without
+  that latch, teardown alone would block for half a minute.
+
+- **CLI open during startup.** The control endpoint serves before the webview
+  mounts, so a `wardian browser open` can win that race and its one-shot event
+  reaches nobody. Non-detached opens are queued as well as emitted, and the
+  frontend drains the queue right after subscribing. The surface is
+  `focus_resource`, so a session reported by both paths is focused rather than
+  opened twice, and a queued session that has since closed is dropped.
 
 ## Not built yet
 

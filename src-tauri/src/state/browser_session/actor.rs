@@ -313,6 +313,13 @@ pub struct BrowserSession {
     profile_dir: PathBuf,
     child: Mutex<Option<Child>>,
     state: RwLock<SessionState>,
+    /// Serializes attach/detach with their CDP start/stop.
+    ///
+    /// The viewer list and the stream have to move together. Without this,
+    /// a second attach can observe a non-empty list and skip a start that
+    /// then fails and rolls back, and a detach's `stopScreencast` can land
+    /// after a concurrent attach's `startScreencast`.
+    screencast_transition: Mutex<()>,
 }
 
 impl BrowserSession {
@@ -680,6 +687,7 @@ impl BrowserSession {
         &self,
         presentation_id: &str,
     ) -> Result<ScreencastAttachment, BrowserError> {
+        let _transition = self.screencast_transition.lock().await;
         let token = Uuid::new_v4().to_string();
         let should_start = {
             let mut state = self.state.write().await;
@@ -695,7 +703,9 @@ impl BrowserSession {
         if should_start {
             // Roll the attachment back if the stream never started, or a later
             // attach would see a non-empty viewer list, skip the start, and
-            // mirror an owner that is producing no frames.
+            // mirror an owner that is producing no frames. Holding the
+            // transition lock is what makes the rollback complete: no other
+            // attach can observe the half-built state.
             if let Err(error) = self
                 .connection
                 .call_session(
@@ -735,6 +745,7 @@ impl BrowserSession {
     /// Keyed on the attachment token rather than the presentation id, so a
     /// cleanup racing a re-attach cannot tear down the newer attachment.
     pub async fn detach_screencast(&self, token: &str) -> Result<(), BrowserError> {
+        let _transition = self.screencast_transition.lock().await;
         let should_stop = self.release_attachment(token).await;
         if should_stop {
             self.connection
@@ -890,10 +901,14 @@ impl BrowserSession {
     }
 
     async fn shutdown(&self) {
-        let _ = self
-            .connection
-            .call_session(&self.cdp_session_id, "Page.close", json!({}))
-            .await;
+        // Skipped once the socket is gone: the page died with the browser, and
+        // the call would only wait out its timeout.
+        if !self.connection.is_closed() {
+            let _ = self
+                .connection
+                .call_session(&self.cdp_session_id, "Page.close", json!({}))
+                .await;
+        }
         if let Some(mut child) = self.child.lock().await.take() {
             // `kill` also reaps. The profile stays locked on Windows until the
             // process is fully gone, so this must complete before the removal.
@@ -950,10 +965,14 @@ pub struct OpenBrowserRequest {
 /// Owns every live browser session in the app.
 #[derive(Debug)]
 pub struct BrowserSessionBroker {
-    sessions: RwLock<HashMap<String, Arc<BrowserSession>>>,
+    /// Shared so a session's event pump can reap itself when its browser dies.
+    sessions: Arc<RwLock<HashMap<String, Arc<BrowserSession>>>>,
     next_short_ref: AtomicU32,
     events: broadcast::Sender<BrowserSessionEvent>,
     profile_root: PathBuf,
+    /// Sessions that asked for a surface but may have been opened before the
+    /// frontend was listening. Drained once the surface listener is installed.
+    pending_surface_opens: Mutex<Vec<BrowserSessionSummary>>,
 }
 
 impl Default for BrowserSessionBroker {
@@ -966,11 +985,35 @@ impl BrowserSessionBroker {
     pub fn new(profile_root: PathBuf) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
-            sessions: RwLock::new(HashMap::new()),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
             next_short_ref: AtomicU32::new(1),
             events,
             profile_root,
+            pending_surface_opens: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Records a session that still needs a workbench surface.
+    ///
+    /// The control endpoint is serving before the webview finishes mounting,
+    /// so a `wardian browser open` can win that race and its one-shot event
+    /// would reach nobody. Queuing it lets the frontend reconcile on mount.
+    pub async fn queue_surface_open(&self, summary: BrowserSessionSummary) {
+        self.pending_surface_opens.lock().await.push(summary);
+    }
+
+    /// Hands over every queued request and clears the queue.
+    ///
+    /// Sessions that have since closed are dropped, so a restart cannot
+    /// resurrect a surface for a browser that no longer exists.
+    pub async fn take_pending_surface_opens(&self) -> Vec<BrowserSessionSummary> {
+        let queued: Vec<BrowserSessionSummary> =
+            self.pending_surface_opens.lock().await.drain(..).collect();
+        let sessions = self.sessions.read().await;
+        queued
+            .into_iter()
+            .filter(|summary| sessions.contains_key(&summary.browser_id))
+            .collect()
     }
 
     /// Subscribes to every session's events, for forwarding to the frontend.
@@ -1032,6 +1075,7 @@ impl BrowserSessionBroker {
                 viewport,
                 ..SessionState::default()
             }),
+            screencast_transition: Mutex::new(()),
         });
         // The session owns the child now, so its own teardown does the
         // killing, reaping, and profile removal.
@@ -1066,8 +1110,8 @@ impl BrowserSessionBroker {
     fn spawn_event_pump(&self, session: Arc<BrowserSession>) {
         let mut receiver = session.connection.subscribe();
         let events = self.events.clone();
+        let sessions = Arc::clone(&self.sessions);
         let cdp_session_id = session.cdp_session_id.clone();
-        let browser_id = session.browser_id.clone();
         tokio::spawn(async move {
             loop {
                 let event = match receiver.recv().await {
@@ -1084,20 +1128,14 @@ impl BrowserSessionBroker {
                         continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
-                        let _ = events.send(BrowserSessionEvent::Closed {
-                            browser_id: browser_id.clone(),
-                            reason: "the browser process exited".to_string(),
-                        });
+                        reap_dead_session(&sessions, &session, &events).await;
                         return;
                     }
                 };
                 // Checked before the session filter: the disconnect signal is
                 // connection-scoped and carries no target session.
                 if event.method == DISCONNECTED_METHOD {
-                    let _ = events.send(BrowserSessionEvent::Closed {
-                        browser_id: browser_id.clone(),
-                        reason: "the browser process exited".to_string(),
-                    });
+                    reap_dead_session(&sessions, &session, &events).await;
                     return;
                 }
                 if event.session_id.as_deref() != Some(cdp_session_id.as_str()) {
@@ -1210,6 +1248,32 @@ impl BrowserSessionBroker {
             session.shutdown().await;
         }
     }
+}
+
+/// Removes a session whose browser is gone and announces it exactly once.
+///
+/// Without this the broker would keep listing a dead session, and every later
+/// command would resolve it and fail against a closed connection instead of
+/// reporting `browser_not_found`.
+async fn reap_dead_session(
+    sessions: &Arc<RwLock<HashMap<String, Arc<BrowserSession>>>>,
+    session: &Arc<BrowserSession>,
+    events: &broadcast::Sender<BrowserSessionEvent>,
+) {
+    let browser_id = session.browser_id.clone();
+    // An explicit `close` may have removed it first; only the remover
+    // announces, so a closed session never reports itself twice.
+    let removed = sessions.write().await.remove(&browser_id).is_some();
+    if !removed {
+        return;
+    }
+    // Announce before cleaning up. Surfaces should learn immediately rather
+    // than waiting behind teardown of a browser that is already gone.
+    let _ = events.send(BrowserSessionEvent::Closed {
+        browser_id,
+        reason: "the browser process exited".to_string(),
+    });
+    session.shutdown().await;
 }
 
 /// Connects to a launched browser and attaches to a fresh page.

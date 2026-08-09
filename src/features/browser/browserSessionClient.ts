@@ -121,6 +121,11 @@ export function listBrowserSessions(): Promise<BrowserSessionSummary[]> {
   return invoke<BrowserSessionSummary[]>("list_browser_sessions");
 }
 
+/** Surface opens the backend queued while the frontend was still mounting. */
+export function takePendingBrowserSurfaceOpens(): Promise<BrowserSessionSummary[]> {
+  return invoke<BrowserSessionSummary[]>("take_pending_browser_surface_opens");
+}
+
 export function getBrowserSession(browserId: string): Promise<BrowserSessionSummary | null> {
   return invoke<BrowserSessionSummary | null>("get_browser_session", { browserId });
 }

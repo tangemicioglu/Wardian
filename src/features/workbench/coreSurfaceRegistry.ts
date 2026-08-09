@@ -40,6 +40,17 @@ import {
   type DirtySurfacePrompt,
 } from "./surfaces/dirtySurfaceGuards";
 
+/**
+ * A runtime resource created so a surface could be opened.
+ *
+ * `release` exists because provisioning and opening are two steps: if the
+ * second fails, the first has already started something that now has no owner.
+ */
+export type SurfaceResourceProvision = {
+  resource_key: string;
+  release: () => void;
+};
+
 export type CoreSurfaceGroup = "Core views" | "Sessions" | "Reserved";
 
 export type CoreSurfaceContribution = {

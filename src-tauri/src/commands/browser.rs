@@ -185,6 +185,10 @@ pub async fn open_session(
         .await?;
     let summary = session.summary().await;
     if !detached {
+        // Queue first, then emit. A listener that is already installed opens
+        // the surface immediately and the drained duplicate focuses it rather
+        // than opening a second one, because the surface is `focus_resource`.
+        broker(app).queue_surface_open(summary.clone()).await;
         let _ = app.emit(BROWSER_SURFACE_OPEN_EVENT, &summary);
     }
     Ok(summary)
@@ -414,6 +418,14 @@ pub async fn open_browser_session(
     open_session(&app, url, None, None, width, height, true)
         .await
         .map_err(command_error)
+}
+
+/// Hands the frontend any surface opens it may have missed while mounting.
+#[tauri::command]
+pub async fn take_pending_browser_surface_opens(
+    state: State<'_, AppState>,
+) -> Result<Vec<BrowserSessionSummary>, String> {
+    Ok(state.browser_sessions.take_pending_surface_opens().await)
 }
 
 #[tauri::command]
