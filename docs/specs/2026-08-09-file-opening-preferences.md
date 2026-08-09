@@ -51,7 +51,7 @@ automatically.
 | Chat Markdown file link | Family preference | System-preferred viewer |
 | Agent terminal file link | Family preference | System-preferred viewer |
 | User terminal file link | Family preference | System-preferred viewer |
-| Files Markdown link | Existing authorized Files navigation | Existing Files navigation |
+| Files Markdown link | Family preference | System-preferred viewer |
 
 The final native launch remains behind `open_in_external_editor`; selecting
 the system destination passes `system` explicitly so configured VS Code or

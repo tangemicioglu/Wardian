@@ -96,9 +96,12 @@ PDF document viewport to use the browser's native arrow and page scrolling.
 
 The **File actions** menu supports pointer use as well as `Arrow Up`,
 `Arrow Down`, `Home`, and `End`. `Escape` closes the menu and returns focus to
-its trigger. Markdown links to authorized local files stay inside Wardian's
-Files routing, including UNC `file://server/share/...` links; the backend still
-performs the final root/capability check before opening the target.
+its trigger. Markdown links to authorized local files use the same family
+preference as other file links, including UNC `file://server/share/...` links.
+Wardian keeps the target inside the Files surface when that family is
+Wardian-preferred and uses the configured external or system viewer otherwise;
+the backend still performs the final root/capability check before opening the
+target.
 
 Agent terminals and the bottom user terminal also make recognized file paths and
 URLs clickable, including links that wrap across terminal rows. File paths use

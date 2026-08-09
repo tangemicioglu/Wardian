@@ -88,6 +88,7 @@ import { createFilesCloseAdapter } from "../features/files/filesCloseAdapter";
 import { fileResourceClient } from "../features/files/fileResourceClient";
 import { fileResourceKey } from "../features/files/fileResourceKey";
 import { openPermanentFileSurface } from "../features/files/fileSurfaceNavigation";
+import { fileOpenDestinationForPath, openFileWithSettings } from "../features/files/fileOpenRouting";
 import { useArtifactEvents } from "../features/files/useArtifactEvents";
 import {
   filesSurfaceMigrationCommands,
@@ -452,6 +453,9 @@ function AppBody() {
     autoPatchGemini,
     titlebarTelemetryVisible,
     workbenchNewTabAction,
+    fileOpenActions,
+    externalEditor,
+    externalEditorCustomExecutable,
     app_settings_loaded,
     loadAppSettings,
     settingsOpen,
@@ -1341,6 +1345,16 @@ function AppBody() {
             });
           }}
           on_open_file={async (path, openInNewTab = false) => {
+            const destination = fileOpenDestinationForPath(path, fileOpenActions);
+            if (destination !== "wardian") {
+              await openFileWithSettings(path, {
+                navigation: workbenchNavigation,
+                file_open_actions: fileOpenActions,
+                external_editor: externalEditor,
+                external_editor_custom_executable: externalEditorCustomExecutable,
+              });
+              return;
+            }
             if (openInNewTab) {
               openPermanentFileSurface(workbenchNavigation, path);
               return;

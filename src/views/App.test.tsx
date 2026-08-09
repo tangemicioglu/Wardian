@@ -513,6 +513,10 @@ beforeEach(() => {
     autoPatchGemini: false,
     terminalFontSize: 14,
     terminalFontFamily: "",
+    titlebarTelemetryVisible: true,
+    externalEditor: "system",
+    externalEditorCustomExecutable: "",
+    fileOpenActions: { text: "wardian", image: "wardian", pdf: "wardian" },
     workbenchNewTabAction: "home",
     app_settings_loaded: false,
   });
@@ -614,7 +618,7 @@ describe("Workbench persistence boot integration", () => {
       .toBeNull();
   });
 
-  it("pins an existing transient Files preview when Ctrl/Cmd-clicking a Markdown link", async () => {
+  it("routes Files Markdown links through the selected family preference", async () => {
     setupDefaultMocks([], defaultClasses);
     const defaultInvoke = mockInvoke.getMockImplementation();
     // Keep this fixture on the current schema so the assertion covers link-driven
@@ -698,18 +702,25 @@ describe("Workbench persistence boot integration", () => {
 
     render(<App />);
 
+    useSettingsStore.setState({
+      fileOpenActions: { text: "external", image: "wardian", pdf: "wardian" },
+      externalEditor: "vscode",
+      externalEditorCustomExecutable: "",
+    });
+
     fireEvent.click(await screen.findByRole(
       "link",
       { name: "Open linked preview" },
       { timeout: 10_000 },
-    ), { ctrlKey: true });
+    ));
     await waitFor(() => {
-      const saves = mockInvoke.mock.calls.filter(([command]) => command === "save_workbench_state");
-      const latest = saves[saves.length - 1]?.[1] as {
-        document?: ReturnType<typeof makeSingleGroupDocument>;
-      } | undefined;
-      expect(latest?.document?.surfaces["linked-preview"]?.state)
-        .toMatchObject({ transient_preview: false });
+      expect(mockInvoke).toHaveBeenCalledWith("open_in_external_editor", {
+        path: targetPath,
+        editor: {
+          external_editor: "vscode",
+          external_editor_custom_executable: null,
+        },
+      });
     }, { timeout: 5_000 });
   }, 20_000);
 
