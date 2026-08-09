@@ -686,6 +686,75 @@ describe("TerminalSessionClient", () => {
     ]));
   });
 
+  it("publishes activation ownership only after applying the acknowledgement snapshot", async () => {
+    const acknowledgementSnapshotGate = deferred<void>();
+    const publishedOwners: Array<string | null> = [];
+    const decidedOwners: Array<string | null> = [];
+    let acknowledgementSnapshotStarted = false;
+    tauri.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      const request = (args as { request?: { presentation_id?: string } } | undefined)?.request;
+      if (command === "register_terminal_presentation") {
+        return registeredResult(request?.presentation_id ?? "missing");
+      }
+      if (command === "subscribe_terminal_events") {
+        return { broker_state: brokerState(), initial_snapshot: snapshot() };
+      }
+      if (command === "begin_terminal_activation") {
+        return {
+          decision: { status: "accepted", reason: null, runtime_generation: 1, lease_epoch: 1, owner_presentation_id: null },
+          activation_id: "activation-1",
+          snapshot: snapshot(1, 1),
+          sequence_barrier: 1,
+        };
+      }
+      if (command === "ack_terminal_activation") {
+        return {
+          decision: { status: "accepted", reason: null, runtime_generation: 1, lease_epoch: 1, owner_presentation_id: "pane-a" },
+          broker_state: { ...brokerState(), lease_epoch: 1, owner_presentation_id: "pane-a" },
+          snapshot: snapshot(1, 2),
+        };
+      }
+      if (command === "read_terminal_events") {
+        return eventsBatch([], 0, 0);
+      }
+      if (command === "ack_terminal_events") {
+        return { runtime_generation: 1, acknowledged_sequence: 0 };
+      }
+      if (command === "unsubscribe_terminal_events") {
+        return undefined;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const client = terminalSessionClientFor("agent-1");
+    await client.registerPresentation(registration("pane-a"), {
+      applySnapshot: (value) => {
+        if (value.sequence_barrier === 2) {
+          acknowledgementSnapshotStarted = true;
+          return acknowledgementSnapshotGate.promise;
+        }
+        return undefined;
+      },
+      applyEvents: () => undefined,
+      onBrokerState: (state) => publishedOwners.push(state.owner_presentation_id),
+      onLeaseDecision: (decision) => decidedOwners.push(decision.owner_presentation_id),
+    });
+
+    const activation = client.activate("pane-a");
+    await vi.waitFor(() => expect(acknowledgementSnapshotStarted).toBe(true));
+
+    expect(client.brokerState?.owner_presentation_id).toBeNull();
+    expect(publishedOwners).not.toContain("pane-a");
+    expect(decidedOwners).not.toContain("pane-a");
+
+    acknowledgementSnapshotGate.resolve();
+    await activation;
+
+    expect(client.brokerState?.owner_presentation_id).toBe("pane-a");
+    expect(publishedOwners).toContain("pane-a");
+    expect(decidedOwners).toContain("pane-a");
+  });
+
   it("orders generation replacement snapshots after an in-flight old-generation apply", async () => {
     const applyGate = deferred<void>();
     const order: string[] = [];
