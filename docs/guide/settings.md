@@ -168,7 +168,9 @@ These controls are intentionally grouped by file family rather than exposing
 one setting for every extension. Files that Wardian does not recognize or
 cannot render, including office documents, use the system-preferred viewer.
 The older **Default file click action** setting remains as a compatibility
-fallback for older settings documents and clients.
+fallback for older settings documents and clients. It does not overwrite
+explicit family preferences; saving a family preference makes those values
+authoritative for the current and future sessions.
 
 Folders always expand or collapse when clicked.
 

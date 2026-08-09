@@ -333,9 +333,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
       } else if (destination === 'system') {
         await openExternalEditor(fileNode(path), true);
       } else {
-        runNavigationAction('File preview', (currentNavigation) => (
-          currentNavigation.open_transient(fileSurfaceRequest(path, true))
-        ));
+        openPermanent(path);
       }
     }
   };

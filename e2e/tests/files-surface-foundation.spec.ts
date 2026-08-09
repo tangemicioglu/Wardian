@@ -289,7 +289,7 @@ async function closeTabFromContextMenu(page: Page, tab: Locator) {
   await page.getByRole("menuitem", { name: "Close tab" }).click();
 }
 
-test("routes Explorer files through transient, Ctrl-clicked permanent, and side Workbench presentations", async ({
+test("routes Explorer files through permanent, Ctrl-clicked permanent, and side Workbench presentations", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -298,33 +298,36 @@ test("routes Explorer files through transient, Ctrl-clicked permanent, and side 
   const betaRow = page.getByRole("treeitem", { name: "beta.md" });
 
   await alphaRow.click();
-  const alphaTransient = filesTab(page, ALPHA_PATH);
-  await expect(alphaTransient).toBeVisible();
-  const transientSurfaceId = await alphaTransient.getAttribute("data-surface-id");
-  expect(transientSurfaceId).toBeTruthy();
-  await expect(page.getByRole("heading", { name: "Alpha document" })).toBeVisible();
-
-  await betaRow.click();
-  const betaTransient = filesTab(page, BETA_PATH);
-  await expect(betaTransient).toBeVisible();
-  await expect(alphaTransient).toHaveCount(0);
-  await expect(betaTransient).toHaveAttribute("data-surface-id", transientSurfaceId!);
-  await expect(page.getByRole("heading", { name: "Beta document" })).toBeVisible();
-  await expect.poll(async () => (await ipc.calls("close_file_resource")).length).toBeGreaterThan(0);
-
-  await ipc.updateFile(BETA_PATH, "# Beta updated\n\nStable revision event.");
-  await expect(page.getByRole("heading", { name: "Beta updated" })).toBeVisible();
-
-  await alphaRow.click({ modifiers: ["Control"] });
   const alphaPermanent = filesTab(page, ALPHA_PATH);
-  await expect(alphaPermanent).toHaveCount(1);
-  await expect(betaTransient).toHaveCount(1);
+  await expect(alphaPermanent).toBeVisible();
   const alphaPermanentId = await alphaPermanent.getAttribute("data-surface-id");
   expect(alphaPermanentId).toBeTruthy();
   await expect.poll(async () => {
     const document = await persistedDocument(ipc);
     return document.surfaces[alphaPermanentId!]?.state;
   }).toMatchObject({ transient_preview: false });
+  await expect(page.getByRole("heading", { name: "Alpha document" })).toBeVisible();
+
+  await betaRow.click();
+  const betaPermanent = filesTab(page, BETA_PATH);
+  await expect(betaPermanent).toBeVisible();
+  await expect(alphaPermanent).toHaveCount(1);
+  await expect(betaPermanent).toHaveCount(1);
+  const betaPermanentId = await betaPermanent.getAttribute("data-surface-id");
+  expect(betaPermanentId).toBeTruthy();
+  expect(betaPermanentId).not.toBe(alphaPermanentId);
+  await expect.poll(async () => {
+    const document = await persistedDocument(ipc);
+    return document.surfaces[betaPermanentId!]?.state;
+  }).toMatchObject({ transient_preview: false });
+  await expect(page.getByRole("heading", { name: "Beta document" })).toBeVisible();
+
+  await ipc.updateFile(BETA_PATH, "# Beta updated\n\nStable revision event.");
+  await expect(page.getByRole("heading", { name: "Beta updated" })).toBeVisible();
+
+  await alphaRow.click({ modifiers: ["Control"] });
+  await expect(alphaPermanent).toHaveCount(1);
+  await expect(betaPermanent).toHaveCount(1);
 
   await expect(page.getByRole("tab").and(page.locator('[data-surface-type="files"]'))).toHaveCount(2);
   await expect(page.getByRole("heading", { name: "Alpha document" })).toBeVisible();
@@ -332,7 +335,7 @@ test("routes Explorer files through transient, Ctrl-clicked permanent, and side 
   await betaRow.click({ button: "right" });
   await page.getByRole("button", { name: "Open to Side", exact: true }).click();
   await expect(page.getByTestId("workbench-group")).toHaveCount(2);
-  await expect(betaTransient).toHaveCount(2);
+  await expect(betaPermanent).toHaveCount(2);
   await expect(page.getByRole("heading", { name: "Beta updated" })).toBeVisible();
 
   expect(await ipc.calls("read_file_preview")).toEqual([]);

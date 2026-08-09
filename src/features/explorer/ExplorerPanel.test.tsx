@@ -263,7 +263,7 @@ describe('ExplorerPanel', () => {
 
     await userEvent.click(await screen.findByTestId('mock-file-row'));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/File preview failed/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/File open failed/i);
     expect(screen.getByRole('alert')).toHaveTextContent(/Workbench navigation is unavailable/i);
     expect(unhandled).not.toHaveBeenCalled();
 
@@ -271,8 +271,8 @@ describe('ExplorerPanel', () => {
     rerender(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
     await userEvent.click(await screen.findByTestId('mock-file-row'));
 
-    await waitFor(() => expect(navigation.open_transient).toHaveBeenCalledOnce());
-    expect(screen.queryByText(/File preview failed/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(navigation.open).toHaveBeenCalledOnce());
+    expect(screen.queryByText(/File open failed/i)).not.toBeInTheDocument();
     expect(unhandled).not.toHaveBeenCalled();
     window.removeEventListener('unhandledrejection', unhandled);
   });
@@ -285,8 +285,10 @@ describe('ExplorerPanel', () => {
     });
     const tabs: string[] = [];
     const navigation = makeNavigation();
-    vi.mocked(navigation.open_transient)
-      .mockImplementationOnce(() => Promise.reject(new Error('navigation offline')) as never)
+    vi.mocked(navigation.open)
+      .mockImplementationOnce(() => {
+        throw new Error('navigation offline');
+      })
       .mockImplementation(() => {
         tabs.push('notes');
         return 'files-surface';
@@ -356,7 +358,7 @@ describe('ExplorerPanel', () => {
     expect(attempts).toBe(2);
   });
 
-  it('routes an internal single click to one transient Files surface without reading preview bytes', async () => {
+  it('routes an internal single click to a permanent Files surface without reading preview bytes', async () => {
     useSettingsStore.setState({
       explorerFileClickAction: 'preview',
       externalEditor: 'system',
@@ -374,12 +376,12 @@ describe('ExplorerPanel', () => {
     await userEvent.click(await screen.findByTestId('mock-file-row'));
 
     await waitFor(() => {
-      expect(navigation.open_transient).toHaveBeenCalledWith({
+      expect(navigation.open).toHaveBeenCalledWith({
         surface_type: 'files',
         resource_key: 'file:C:/Users/test/repo/notes.md',
         state: {
           resource_kind: 'file',
-          transient_preview: true,
+          transient_preview: false,
           presentation: 'rendered',
           comparison_open: false,
           comparison_layout_preference: 'auto',
@@ -390,6 +392,8 @@ describe('ExplorerPanel', () => {
         },
       });
     });
+    expect(navigation.open_transient).not.toHaveBeenCalled();
+    expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
     expect(invoke).not.toHaveBeenCalledWith('read_file_preview', expect.anything());
   });
 

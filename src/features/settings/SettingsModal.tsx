@@ -178,14 +178,14 @@ const rowDefinitions: SettingsRowDefinition[] = [
     id: "file-open-image",
     category: "Explorer",
     label: "Image files",
-    detail: "Choose whether image links open in Wardian or the system's preferred viewer.",
+    detail: "Choose whether image links open in Wardian or the configured external app.",
     keywords: ["explorer", "files", "image", "png", "jpg", "viewer", "wardian"],
   },
   {
     id: "file-open-pdf",
     category: "Explorer",
     label: "PDF files",
-    detail: "Choose whether PDF links open in Wardian or the system's preferred viewer.",
+    detail: "Choose whether PDF links open in Wardian or the configured external app.",
     keywords: ["explorer", "files", "pdf", "document", "viewer", "wardian"],
   },
   {

@@ -362,6 +362,91 @@ describe('app settings persistence', () => {
     expect(useSettingsStore.getState().app_settings_overrides).not.toHaveProperty('explorer_file_click_action');
   });
 
+  it('keeps family preferences independent of the legacy fallback selector', () => {
+    useSettingsStore.getState().setFileOpenAction('image', 'external');
+    useSettingsStore.getState().setFileOpenAction('pdf', 'external');
+
+    useSettingsStore.getState().setExplorerFileClickAction('external');
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'wardian',
+      image: 'external',
+      pdf: 'external',
+    });
+
+    useSettingsStore.getState().setExplorerFileClickAction('preview');
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'wardian',
+      image: 'external',
+      pdf: 'external',
+    });
+  });
+
+  it('persists family preferences as authoritative after migrating a legacy external setting', async () => {
+    mockedInvoke.mockResolvedValueOnce({
+      schema_version: 2,
+      persisted: true,
+      settings: { explorer_file_click_action: 'external' },
+      overrides: { explorer_file_click_action: 'external' },
+    });
+
+    await useSettingsStore.getState().loadAppSettings();
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'external',
+      image: 'external',
+      pdf: 'external',
+    });
+
+    useSettingsStore.getState().setFileOpenAction('text', 'wardian');
+    useSettingsStore.getState().setFileOpenAction('image', 'wardian');
+    useSettingsStore.getState().setFileOpenAction('pdf', 'wardian');
+
+    mockedInvoke.mockResolvedValueOnce({
+      schema_version: 2,
+      persisted: true,
+      settings: {
+        explorer_file_click_action: 'external',
+        file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
+      },
+      overrides: {
+        file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
+      },
+    });
+
+    await useSettingsStore.getState().saveAppSettings();
+
+    expect(mockedInvoke).toHaveBeenLastCalledWith('save_app_settings', {
+      settings: expect.objectContaining({
+        overrides: {
+          file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
+        },
+      }),
+    });
+
+    resetAppPreferences();
+    mockedInvoke.mockResolvedValueOnce({
+      schema_version: 2,
+      persisted: true,
+      settings: {
+        explorer_file_click_action: 'external',
+        file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
+      },
+      overrides: {
+        file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
+      },
+    });
+
+    await useSettingsStore.getState().loadAppSettings();
+
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'wardian',
+      image: 'wardian',
+      pdf: 'wardian',
+    });
+    expect(useSettingsStore.getState().app_settings_overrides).not.toHaveProperty(
+      'explorer_file_click_action',
+    );
+  });
+
   it('persists a targeted file-family opening preference', () => {
     useSettingsStore.getState().setFileOpenAction('image', 'external');
 

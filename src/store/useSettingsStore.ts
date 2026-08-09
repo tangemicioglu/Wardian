@@ -611,18 +611,12 @@ export const useSettingsStore = create<SettingsState>()(
       }),
       setExplorerFileClickAction: (explorerFileClickAction) => set((state) => {
         const normalized = normalizeExplorerFileClickAction(explorerFileClickAction);
-        const {
-          explorer_file_click_action: _removed,
-          file_open_actions: _fileOpenActions,
-          ...rest
-        } = state.app_settings_overrides;
-        const fileOpenActions = normalizeFileOpenActions(undefined, normalized);
+        const { explorer_file_click_action: _removed, ...rest } = state.app_settings_overrides;
         return {
           explorerFileClickAction: normalized,
-          fileOpenActions,
           app_settings_overrides: normalized === DEFAULT_APP_SETTINGS.explorer_file_click_action
-            ? { ...rest, ...(fileOpenActionsEqual(fileOpenActions, DEFAULT_APP_SETTINGS.file_open_actions) ? {} : { file_open_actions: fileOpenActions }) }
-            : { ...state.app_settings_overrides, explorer_file_click_action: normalized, file_open_actions: fileOpenActions },
+            ? rest
+            : { ...state.app_settings_overrides, explorer_file_click_action: normalized },
         };
       }),
       setFileOpenAction: (kind, action) => set((state) => {
@@ -631,10 +625,11 @@ export const useSettingsStore = create<SettingsState>()(
           ...normalizeFileOpenActions(state.fileOpenActions, state.explorerFileClickAction),
           [kind]: normalized,
         };
+        const { explorer_file_click_action: _legacyFallback, ...rest } = state.app_settings_overrides;
         return {
           fileOpenActions,
           app_settings_overrides: {
-            ...state.app_settings_overrides,
+            ...rest,
             file_open_actions: fileOpenActions,
           },
         };

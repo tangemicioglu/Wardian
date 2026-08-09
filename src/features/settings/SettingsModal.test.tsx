@@ -430,8 +430,7 @@ describe("SettingsModal", () => {
           overrides: expect.objectContaining({
             external_editor: "custom",
             external_editor_custom_executable: "C:/Tools/editor.exe",
-            explorer_file_click_action: "external",
-            file_open_actions: { text: "wardian", image: "external", pdf: "external" },
+            file_open_actions: { text: "wardian", image: "wardian", pdf: "wardian" },
           }),
         }),
       });

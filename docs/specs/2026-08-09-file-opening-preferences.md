@@ -31,7 +31,9 @@ editor as a document viewer.
 The existing `explorer_file_click_action` setting remains as a compatibility
 fallback for older settings documents and clients. A legacy external value
 migrates to all three family preferences; new family-specific values take
-precedence afterward.
+precedence afterward. Changing the compatibility fallback does not overwrite
+explicit family preferences, and saving any family preference clears the
+legacy external override so it cannot regain precedence after reload.
 
 ## Unsupported Files Surface Behavior
 
