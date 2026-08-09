@@ -123,6 +123,13 @@ records; `pending_browser_surface_opens` reads without consuming; and
 `ack_browser_surface_open` is the only thing that removes an entry. Repeat
 delivery is the accepted cost, and `focus_resource` already made it harmless.
 
+An eighth round (run `1786300135026-80c61a66`) found one, in the new
+acknowledgement protocol's interaction with app startup.
+
+| Finding | Outcome |
+|---|---|
+| The frontend subscribed before the durable workbench document had loaded, so a CLI open arriving during boot was applied to the provisional document, acknowledged, and then erased by `adopt_durable_state` — live browser, no surface, nothing left to replay | The subscription waits for `workbenchPersistence.status === "ready"`, the same gate `useArtifactEvents` already used. Waiting is free because the backend holds every open until it is acknowledged. |
+
 ### What differs from the plan below
 
 - **WebView2's `msedgewebview2.exe` is not in the discovery order.** It is not supported as a standalone browser, and every Windows 11 host that can run Wardian already has Edge proper.

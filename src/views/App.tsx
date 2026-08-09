@@ -1295,15 +1295,25 @@ function AppBody() {
   );
 
   // A CLI `wardian browser open` asks the app to surface the session it made.
-  useEffect(() => subscribeToBrowserSurfaceOpens((summary) => {
-    // `focus_resource` makes this idempotent: a session that both the event
-    // and the drain report is focused rather than opened twice.
-    workbenchNavigation.open({
-      surface_type: "browser",
-      resource_key: summary.browser_id,
-      state: { url: summary.url, viewport: null },
+  //
+  // Held until the durable document has loaded. Opening into the provisional
+  // one would acknowledge the request and then lose it: `adopt_durable_state`
+  // replaces the working document outright, so the surface would vanish with
+  // nothing left to replay it. Waiting costs nothing, because the backend
+  // holds every open until it is acknowledged.
+  const workbenchReady = workbenchPersistence.status === "ready";
+  useEffect(() => {
+    if (!workbenchReady) return undefined;
+    return subscribeToBrowserSurfaceOpens((summary) => {
+      // `focus_resource` makes this idempotent: a session that both the event
+      // and the read report is focused rather than opened twice.
+      workbenchNavigation.open({
+        surface_type: "browser",
+        resource_key: summary.browser_id,
+        state: { url: summary.url, viewport: null },
+      });
     });
-  }), [workbenchNavigation]);
+  }, [workbenchNavigation, workbenchReady]);
 
   const renderWorkbenchSurface: WorkbenchSurfaceRenderer = (surface, lifecycle) => {
     const resolvedSurface = workbenchRegistry.resolve_surface(surface);

@@ -243,6 +243,12 @@ than reaching the network.
   believed a listener existed while none did, and the open in that window
   reached neither the listener nor the queue.
 
+  The frontend does not subscribe until the durable workbench document has
+  loaded. Opening into the provisional document would acknowledge the request
+  and then lose it, because loading replaces the working document outright.
+  Waiting costs nothing precisely because the record survives until it is
+  acknowledged.
+
   Repeat delivery is the accepted cost. The surface is `focus_resource`, so a
   session reported by both the event and the read is focused rather than opened
   twice, and re-reading an unacknowledged open at the next mount is the
