@@ -53,24 +53,27 @@ configured broad file-family preference from Settings:
 - **Open in external app** uses the configured External editor preference.
 
 Unknown or unsupported files, such as office documents, always open in the
-operating system's preferred application. They do not use a configured VS Code
-or custom editor as a fallback.
+operating system's preferred application. Configured VS Code and custom editor
+settings do not apply to them.
 
 The Explorer also supports standard right-click actions for rapid file
 management:
 
-- **Open**: Opens a permanent Files tab; unsupported files use the
-  system-preferred application.
-- **Open to Side**: Opens a permanent Files tab in an adjacent pane when the
-  Workbench can admit the split.
+- **Open**: Uses the file family's Settings preference: Wardian-preferred files
+  open in a permanent Files tab, external-preferred files use the configured
+  editor, and unsupported files use the system-preferred application.
+- **Open to Side**: Uses the same family preference. Wardian-preferred files
+  open in a permanent Files tab in an adjacent pane when the Workbench can
+  admit the split; external and unsupported files use their configured or
+  system-preferred application instead.
 - **Open in External App**: Opens the selected folder, or an editor-friendly file, using the configured Explorer editor preference. Binary, media, archive, executable, and document files use the operating system's default handler. You can switch editor-friendly paths to VS Code or a custom executable in [Settings](./settings.md).
 - **Reveal in System Explorer**: Opens your OS file manager (Windows Explorer or macOS Finder) directly to the selected file or folder.
 - **Copy Path**: Copies the absolute path of the file to your clipboard.
 - **Delete**: Permanently removes the file or directory from your disk (requires confirmation).
 
 The example below shows Explorer-driven Markdown files in permanent Files tabs
-across two panes. The second pane has already reloaded its stable backend
-revision.
+across two panes when Markdown is Wardian-preferred. The second pane has
+already reloaded its stable backend revision.
 
 ![Explorer opening Markdown files in permanent Workbench tabs across two panes](../assets/screenshots/explorer/files-tabs.png)
 
@@ -105,7 +108,8 @@ target.
 
 Agent terminals and the bottom user terminal also make recognized file paths and
 URLs clickable, including links that wrap across terminal rows. File paths use
-the same type-sensitive behavior as **Open in External App**; URLs open as URLs.
+the same type-sensitive family preference as Explorer **Open**; URLs open as
+URLs.
 Wardian validates terminal file links before showing them, so slash-looking
 command names or prose fragments are ignored unless they resolve to a real file
 or folder.
