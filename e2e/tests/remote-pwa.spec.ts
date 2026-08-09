@@ -93,7 +93,13 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
           read: false,
           agent_session_id: "agent-1",
           notification_title: "Agent task completed",
-          summary: "Finished remote e2e update.",
+          summary: [
+            "Finished remote e2e update.",
+            "",
+            "This longer update verifies that the mobile inbox starts with the same compact preview as desktop.",
+            "The complete message should remain available without making every card maximal by default.",
+            "The inbox should also provide a direct path back to the agent that produced this update.",
+          ].join("\n"),
         }],
       }),
     });
@@ -445,5 +451,13 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await page.getByRole("button", { name: "Inbox" }).click();
   await expect(page.getByText("Important update")).toBeVisible();
   await expect(page.getByText("Finished remote e2e update.")).toBeVisible();
+  const inboxSummary = page.getByTestId("remote-queue-item-summary-desktop-inbox-1");
+  const summaryToggle = page.getByRole("button", { name: "Show full summary" });
+  await expect(summaryToggle).toHaveAttribute("aria-expanded", "false");
+  await summaryToggle.click();
+  await expect(page.getByRole("button", { name: "Collapse summary" })).toHaveAttribute("aria-expanded", "true");
+  await expect(inboxSummary).toHaveClass(/max-h-80/);
   await captureFeatureScreenshot("inbox-summary.png", page.locator("main"));
+  await page.getByRole("button", { name: "Open agent terminal" }).click();
+  await expect(page.locator('[data-testid="remote-agent-detail"]')).toBeVisible();
 });
