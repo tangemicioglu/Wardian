@@ -166,7 +166,11 @@ Closing a tab only detaches the presentation.
 Surface state persists `{ url, viewport }`, not the session id — the id lives
 in `resource_key` and means nothing after a restart. A restored surface whose
 session is gone shows "Browser session unavailable" with a Reopen action that
-mints a new session at the persisted URL and rebinds the surface.
+mints a new session at the persisted URL and rebinds the surface. `rebind_resource`
+may legitimately answer something other than `allow` — a concurrent workbench
+transaction, a read-only document — so reopen closes the session it just created
+on both a rejected decision and an exception, the same rule launcher
+provisioning follows with its `release`.
 
 ## Testing
 
@@ -198,12 +202,28 @@ than reaching the network.
 
   The pump then *reaps* the session: it removes it from the broker before
   announcing, so `browser list` stops showing it and later commands report
-  `browser_not_found` instead of resolving a dead connection. Only the remover
-  announces, so an explicit `close` racing a crash still emits one event.
+  `browser_not_found` instead of resolving a dead connection.
+
+  Two orderings make that reap reliable. `open` registers the session *before*
+  spawning its pump — the other way round, a browser dying in between is reaped
+  before it exists, the reap finds nothing, and `open` then inserts a dead
+  session with no pump left to remove it. And the pump re-checks
+  `connection.is_closed()` once before its first `recv`, because a disconnect
+  between `subscribe` and that `recv` published to nobody.
+
+  Every teardown path — the reaper, `close`, `close_for_agent` — goes through
+  one atomic `take_session`. Whoever gets the session back owns announcing and
+  shutting down, so a crash racing an explicit close produces exactly one closed
+  event rather than two contradictory ones.
 
   The connection also latches closed, and calls made afterwards fail
   immediately rather than each waiting out the 30-second call ceiling. Without
-  that latch, teardown alone would block for half a minute.
+  that latch, teardown alone would block for half a minute. The latch check
+  lives inside the same `pending` mutex the reader drains under: checking it
+  outside leaves a window where a disconnect drains the map and the call then
+  registers a sender nobody will ever answer, which — with the screencast
+  transition lock held across the call — would stall every later attach and
+  detach for the full ceiling.
 
 - **CLI open during startup.** The control endpoint serves before the webview
   mounts, so a `wardian browser open` can win that race and its one-shot event
@@ -211,6 +231,11 @@ than reaching the network.
   frontend drains the queue right after subscribing. The surface is
   `focus_resource`, so a session reported by both paths is focused rather than
   opened twice, and a queued session that has since closed is dropped.
+
+  The queue covers that startup gap only. Draining marks the listener ready and
+  nothing is queued afterwards, so ordinary agent use cannot grow it; a burst
+  arriving before the frontend ever subscribes is bounded by
+  `MAX_PENDING_SURFACE_OPENS`.
 
 ## Not built yet
 

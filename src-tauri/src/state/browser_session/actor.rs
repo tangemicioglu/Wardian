@@ -970,10 +970,23 @@ pub struct BrowserSessionBroker {
     next_short_ref: AtomicU32,
     events: broadcast::Sender<BrowserSessionEvent>,
     profile_root: PathBuf,
-    /// Sessions that asked for a surface but may have been opened before the
-    /// frontend was listening. Drained once the surface listener is installed.
-    pending_surface_opens: Mutex<Vec<BrowserSessionSummary>>,
+    /// Sessions that asked for a surface before the frontend was listening.
+    pending_surface_opens: Mutex<PendingSurfaceOpens>,
 }
+
+/// The startup gap between the control endpoint serving and the frontend
+/// subscribing, and what fell into it.
+#[derive(Debug, Default)]
+struct PendingSurfaceOpens {
+    /// Set by the first drain. Afterwards the event is delivery enough, so
+    /// nothing is queued and the queue cannot grow with normal use.
+    listener_ready: bool,
+    queued: Vec<BrowserSessionSummary>,
+}
+
+/// Ceiling on the startup queue, in case a burst arrives before the frontend
+/// ever subscribes.
+const MAX_PENDING_SURFACE_OPENS: usize = 32;
 
 impl Default for BrowserSessionBroker {
     fn default() -> Self {
@@ -989,26 +1002,38 @@ impl BrowserSessionBroker {
             next_short_ref: AtomicU32::new(1),
             events,
             profile_root,
-            pending_surface_opens: Mutex::new(Vec::new()),
+            pending_surface_opens: Mutex::new(PendingSurfaceOpens::default()),
         }
     }
 
     /// Records a session that still needs a workbench surface.
     ///
-    /// The control endpoint is serving before the webview finishes mounting,
-    /// so a `wardian browser open` can win that race and its one-shot event
-    /// would reach nobody. Queuing it lets the frontend reconcile on mount.
+    /// The control endpoint serves before the webview finishes mounting, so a
+    /// `wardian browser open` can win that race and its one-shot event would
+    /// reach nobody. Only opens before the first drain are queued: once the
+    /// listener exists the event is delivery enough, so ordinary agent use
+    /// cannot grow this without bound.
     pub async fn queue_surface_open(&self, summary: BrowserSessionSummary) {
-        self.pending_surface_opens.lock().await.push(summary);
+        let mut pending = self.pending_surface_opens.lock().await;
+        if pending.listener_ready {
+            return;
+        }
+        if pending.queued.len() >= MAX_PENDING_SURFACE_OPENS {
+            pending.queued.remove(0);
+        }
+        pending.queued.push(summary);
     }
 
-    /// Hands over every queued request and clears the queue.
+    /// Hands over every queued request and marks the listener ready.
     ///
-    /// Sessions that have since closed are dropped, so a restart cannot
+    /// Sessions that have since closed are dropped, so draining cannot
     /// resurrect a surface for a browser that no longer exists.
     pub async fn take_pending_surface_opens(&self) -> Vec<BrowserSessionSummary> {
-        let queued: Vec<BrowserSessionSummary> =
-            self.pending_surface_opens.lock().await.drain(..).collect();
+        let queued = {
+            let mut pending = self.pending_surface_opens.lock().await;
+            pending.listener_ready = true;
+            std::mem::take(&mut pending.queued)
+        };
         let sessions = self.sessions.read().await;
         queued
             .into_iter()
@@ -1084,11 +1109,15 @@ impl BrowserSessionBroker {
             return Err(error);
         }
 
-        self.spawn_event_pump(Arc::clone(&session));
+        // Registered before the pump starts. The other order lets a browser
+        // that dies in between be reaped before it is registered — the reap
+        // finds nothing, returns, and `open` then inserts a session that is
+        // already dead with no pump left to remove it.
         self.sessions
             .write()
             .await
             .insert(browser_id.clone(), Arc::clone(&session));
+        self.spawn_event_pump(Arc::clone(&session));
 
         if let Some(url) = target_url {
             // A failed first load is a page outcome, not a failed open. The
@@ -1113,6 +1142,14 @@ impl BrowserSessionBroker {
         let sessions = Arc::clone(&self.sessions);
         let cdp_session_id = session.cdp_session_id.clone();
         tokio::spawn(async move {
+            // The connection can close between `subscribe` and the first
+            // `recv`, in which case the disconnect event was published to
+            // nobody. Checking once here means that window cannot strand the
+            // session.
+            if session.connection.is_closed() {
+                reap_dead_session(&sessions, &session, &events).await;
+                return;
+            }
             loop {
                 let event = match receiver.recv().await {
                     Ok(event) => event,
@@ -1207,12 +1244,16 @@ impl BrowserSessionBroker {
     pub async fn close(&self, target: &str) -> Result<String, BrowserError> {
         let session = self.resolve(target).await?;
         let browser_id = session.browser_id.clone();
-        self.sessions.write().await.remove(&browser_id);
-        session.shutdown().await;
-        let _ = self.events.send(BrowserSessionEvent::Closed {
-            browser_id: browser_id.clone(),
-            reason: "closed".to_string(),
-        });
+        // A crash can win the race to remove this session. Only whoever
+        // actually took it out of the map announces and tears down, so a
+        // listener never sees two contradictory closures for one session.
+        if take_session(&self.sessions, &browser_id).await.is_some() {
+            session.shutdown().await;
+            let _ = self.events.send(BrowserSessionEvent::Closed {
+                browser_id: browser_id.clone(),
+                reason: "closed".to_string(),
+            });
+        }
         Ok(browser_id)
     }
 
@@ -1229,7 +1270,9 @@ impl BrowserSessionBroker {
         let mut closed = Vec::with_capacity(owned.len());
         for session in owned {
             let browser_id = session.browser_id.clone();
-            self.sessions.write().await.remove(&browser_id);
+            if take_session(&self.sessions, &browser_id).await.is_none() {
+                continue;
+            }
             session.shutdown().await;
             let _ = self.events.send(BrowserSessionEvent::Closed {
                 browser_id: browser_id.clone(),
@@ -1250,6 +1293,18 @@ impl BrowserSessionBroker {
     }
 }
 
+/// Atomically removes a session from the broker.
+///
+/// The single point every teardown path goes through: whoever gets the session
+/// back owns announcing and shutting it down, so a crash racing an explicit
+/// close produces exactly one closed event.
+async fn take_session(
+    sessions: &Arc<RwLock<HashMap<String, Arc<BrowserSession>>>>,
+    browser_id: &str,
+) -> Option<Arc<BrowserSession>> {
+    sessions.write().await.remove(browser_id)
+}
+
 /// Removes a session whose browser is gone and announces it exactly once.
 ///
 /// Without this the broker would keep listing a dead session, and every later
@@ -1261,10 +1316,7 @@ async fn reap_dead_session(
     events: &broadcast::Sender<BrowserSessionEvent>,
 ) {
     let browser_id = session.browser_id.clone();
-    // An explicit `close` may have removed it first; only the remover
-    // announces, so a closed session never reports itself twice.
-    let removed = sessions.write().await.remove(&browser_id).is_some();
-    if !removed {
+    if take_session(sessions, &browser_id).await.is_none() {
         return;
     }
     // Announce before cleaning up. Surfaces should learn immediately rather

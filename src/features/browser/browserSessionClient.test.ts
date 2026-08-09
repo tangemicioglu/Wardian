@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CDP_MODIFIER_ALT,
@@ -9,9 +10,11 @@ import {
   cdpMouseButton,
   isTextKey,
   pageCoordinates,
+  reopenBrowserSurfaceSession,
 } from "./browserSessionClient";
 
 const noModifiers = { altKey: false, ctrlKey: false, metaKey: false, shiftKey: false };
+const invoked = vi.mocked(invoke);
 
 describe("cdpModifiers", () => {
   it("packs each modifier into its own bit", () => {
@@ -93,5 +96,59 @@ describe("pageCoordinates", () => {
     expect(
       pageCoordinates(0, 0, { left: 0, top: 0, width: 100, height: 100 }, { width: 0, height: 0 }),
     ).toBeNull();
+  });
+});
+
+describe("reopenBrowserSurfaceSession", () => {
+  beforeEach(() => {
+    invoked.mockReset();
+    invoked.mockImplementation(async (command: string) => {
+      if (command === "open_browser_session") {
+        return { browser_id: "b-replacement", url: "https://example.com/" };
+      }
+      return undefined;
+    });
+  });
+
+  it("leaves the session it created running once the surface takes it", async () => {
+    await reopenBrowserSurfaceSession("https://example.com/", async () => "allow");
+
+    expect(invoked).toHaveBeenCalledWith("open_browser_session", expect.anything());
+    expect(invoked).not.toHaveBeenCalledWith("close_browser_session", expect.anything());
+  });
+
+  it("closes the replacement when the rebind declines", async () => {
+    // A coordinated workbench transaction can answer `cancel`. Nothing else
+    // holds the runtime, so leaving it up would orphan a live Chromium.
+    await reopenBrowserSurfaceSession("https://example.com/", async () => "cancel");
+
+    expect(invoked).toHaveBeenCalledWith("close_browser_session", {
+      browserId: "b-replacement",
+    });
+  });
+
+  it("closes the replacement when the rebind throws", async () => {
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await reopenBrowserSurfaceSession("https://example.com/", async () => {
+      throw new Error("workbench command rejected");
+    });
+
+    expect(invoked).toHaveBeenCalledWith("close_browser_session", {
+      browserId: "b-replacement",
+    });
+    expect(reported).toHaveBeenCalled();
+    reported.mockRestore();
+  });
+
+  it("reports a failed open without trying to close a session it never made", async () => {
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    invoked.mockRejectedValueOnce(new Error("no browser engine"));
+
+    await reopenBrowserSurfaceSession("https://example.com/", async () => "allow");
+
+    expect(invoked).not.toHaveBeenCalledWith("close_browser_session", expect.anything());
+    expect(reported).toHaveBeenCalled();
+    reported.mockRestore();
   });
 });

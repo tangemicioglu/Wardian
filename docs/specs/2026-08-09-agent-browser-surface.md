@@ -75,6 +75,18 @@ any element with a name over the 160-character cap would have refused itself as
 `ref_changed`. The guard now clamps identically, proven by an engine-backed
 test against a deliberately over-long label.
 
+A fourth round (run `1786276499101-b4fa266d`) found five, all in the third
+round's lifecycle work. Every one is a race the engine-backed suite could not
+force on its own.
+
+| Finding | Outcome |
+|---|---|
+| A browser that died between `spawn_event_pump` and the broker insert was reaped before it was registered, so the reap found nothing and `open` then inserted a dead session with no pump left to remove it | The session is registered before its pump starts, and the pump re-checks `is_closed()` once before its first `recv` so the subscribe-to-recv window cannot strand it either. |
+| `CdpConnection::dispatch` checked the closed latch before inserting its pending sender, so a disconnect landing in between left a call waiting out the full 30-second ceiling — and with the transition lock held, blocking every later attach/detach | The closed check moved inside the `pending` lock the reader drains under, so a disconnect either drains the sender or is visible to the check. |
+| `close` and `close_for_agent` announced unconditionally, so a crash winning the race to remove the entry produced two contradictory closed events and a double teardown | Every teardown path goes through one atomic `take_session`; only whoever gets the session back announces and shuts down. |
+| `reopenBrowserSurface` orphaned its replacement Chromium when `rebind_resource` returned a non-`allow` decision or threw — the same leak class round three closed for launcher provisioning, on the open-then-commit path | The reopen closes the session it just created on both a rejected decision and an exception. |
+| The pending-surface-open queue had no listener-ready state, so every normal CLI open stayed queued for the app's lifetime and a remount replayed stale work | Opens are queued only before the first drain; the drain marks the listener ready, and a `MAX_PENDING_SURFACE_OPENS` ceiling bounds a pre-readiness burst. |
+
 ### What differs from the plan below
 
 - **WebView2's `msedgewebview2.exe` is not in the discovery order.** It is not supported as a standalone browser, and every Windows 11 host that can run Wardian already has Edge proper.

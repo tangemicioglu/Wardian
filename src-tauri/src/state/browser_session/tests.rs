@@ -487,11 +487,53 @@ async fn a_surface_open_queued_before_the_frontend_listens_is_drained_once() {
         "draining must not replay the same request"
     );
 
-    // A queued request for a session that has since closed must not resurrect
-    // a surface for a browser that no longer exists.
+    // Once the listener exists the event is delivery enough. Continuing to
+    // queue would grow the list for the app's lifetime under normal use.
+    broker.queue_surface_open(summary.clone()).await;
+    assert!(
+        broker.take_pending_surface_opens().await.is_empty(),
+        "opens after the listener is ready must not be queued"
+    );
+
+    broker.close(&summary.browser_id).await.expect("close");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_queued_open_for_a_closed_session_is_dropped() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let summary = session.summary().await;
     broker.queue_surface_open(summary.clone()).await;
     broker.close(&summary.browser_id).await.expect("close");
+
+    // Draining must not resurrect a surface for a browser that is gone.
     assert!(broker.take_pending_surface_opens().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn closing_a_session_twice_announces_exactly_once() {
+    let broker = broker();
+    let mut events = broker.subscribe();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let browser_id = session.browser_id().to_string();
+
+    broker.close(&browser_id).await.expect("first close");
+    // A crash racing an explicit close takes the same path; only whoever
+    // removed the session from the broker may announce it.
+    assert_eq!(
+        broker.close(&browser_id).await.expect_err("already gone").code(),
+        "browser_not_found"
+    );
+
+    let mut closures = 0;
+    while let Ok(event) = events.try_recv() {
+        if matches!(event, super::actor::BrowserSessionEvent::Closed { .. }) {
+            closures += 1;
+        }
+    }
+    assert_eq!(closures, 1, "a session must report its closure exactly once");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -244,16 +244,24 @@ impl CdpConnection {
         params: Value,
         session_id: Option<&str>,
     ) -> Result<Value, CdpError> {
-        if self.is_closed() {
-            return Err(CdpError::Disconnected);
-        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut envelope = json!({ "id": id, "method": method, "params": params });
         if let Some(session_id) = session_id {
             envelope["sessionId"] = json!(session_id);
         }
         let (sender, receiver) = oneshot::channel();
-        self.pending.lock().await.insert(id, sender);
+        {
+            // Registered under the same lock the reader drains under, and
+            // re-checked there. The reader sets `closed` before taking this
+            // lock, so a disconnect either drains this sender or is visible
+            // here — an insert can never land after the drain and then wait
+            // out the full call timeout with nobody left to answer it.
+            let mut pending = self.pending.lock().await;
+            if self.is_closed() {
+                return Err(CdpError::Disconnected);
+            }
+            pending.insert(id, sender);
+        }
         if self
             .outbound
             .send(Message::Text(envelope.to_string().into()))

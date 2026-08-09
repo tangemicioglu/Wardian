@@ -87,6 +87,7 @@ import { BrowserSurface } from "../features/browser/BrowserSurface";
 import {
   closeBrowserSession,
   openBrowserSession,
+  reopenBrowserSurfaceSession,
   subscribeBrowserSurfaceOpen,
   takePendingBrowserSurfaceOpens,
 } from "../features/browser/browserSessionClient";
@@ -1280,19 +1281,16 @@ function AppBody() {
   /** Replaces a dead browser surface's session with a fresh one at the same URL. */
   const reopenBrowserSurface = useCallback(
     async (surfaceId: string, url: string): Promise<void> => {
-      try {
-        const session = await openBrowserSession(url ? { url } : {});
-        // `rebind_resource`, not `canonicalize_resource`: the latter converges
-        // identity while deliberately keeping the persisted state, which is
-        // wrong when the old session is gone and a new one has replaced it.
-        await workbenchNavigation.rebind_resource(surfaceId, {
+      // `rebind_resource`, not `canonicalize_resource`: the latter converges
+      // identity while deliberately keeping the persisted state, which is
+      // wrong when the old session is gone and a new one has replaced it.
+      await reopenBrowserSurfaceSession(url, (session) => (
+        workbenchNavigation.rebind_resource(surfaceId, {
           surface_type: "browser",
           resource_key: session.browser_id,
           state: { url: session.url || url, viewport: null },
-        });
-      } catch (error) {
-        console.error("[Wardian] could not reopen the browser session", error);
-      }
+        })
+      ));
     },
     [workbenchNavigation],
   );

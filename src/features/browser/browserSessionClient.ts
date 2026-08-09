@@ -117,6 +117,33 @@ export function openBrowserSession(options: {
   });
 }
 
+/**
+ * Mints a replacement session for a surface whose browser is gone.
+ *
+ * Open-then-commit: the runtime has to exist before the surface can point at
+ * it, and `rebind` may legitimately decline — a coordinated workbench
+ * transaction, a read-only document. Anything short of `allow`, exception
+ * included, closes the session that was just created, because nothing else
+ * holds a handle to it and a live Chromium plus its profile would outlive the
+ * surface it was made for.
+ */
+export async function reopenBrowserSurfaceSession(
+  url: string,
+  rebind: (summary: BrowserSessionSummary) => Promise<string>,
+): Promise<void> {
+  let session: BrowserSessionSummary | null = null;
+  try {
+    session = await openBrowserSession(url ? { url } : {});
+    const decision = await rebind(session);
+    if (decision !== "allow") {
+      void closeBrowserSession(session.browser_id).catch(() => {});
+    }
+  } catch (error) {
+    if (session) void closeBrowserSession(session.browser_id).catch(() => {});
+    console.error("[Wardian] could not reopen the browser session", error);
+  }
+}
+
 export function listBrowserSessions(): Promise<BrowserSessionSummary[]> {
   return invoke<BrowserSessionSummary[]>("list_browser_sessions");
 }
