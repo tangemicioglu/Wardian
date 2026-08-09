@@ -388,6 +388,62 @@ describe("AgentChatView", () => {
     expect(screen.getByRole("button", { name: "Send approval response n: No" })).toBeInTheDocument();
   });
 
+  it("makes a settled approval inert so its choices cannot answer a later prompt", async () => {
+    // Approval choices submit their value as an ordinary prompt. An old
+    // approval left actionable would send a bare "y" into whatever the agent
+    // is doing now, so only the pending one stays live.
+    invokeMock.mockResolvedValue([
+      event({
+        id: "approval-answered",
+        kind: "approval",
+        title: "Approval required",
+        text: "Requesting permission for:\nrm -rf build",
+        status: "succeeded",
+        sequence: 1,
+      }),
+      event({ id: "assistant-1", kind: "message", role: "assistant", text: "Cleaned the build.", sequence: 2 }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    expect(await screen.findByTestId("chat-approval-notice")).toHaveTextContent(
+      "This request is no longer awaiting a response.",
+    );
+    const staleChoice = screen.getByRole("button", { name: "Past approval choice y: Yes" });
+    expect(staleChoice).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Send approval response y: Yes" })).toBeNull();
+  });
+
+  it("keeps only the newest approval live when several are in the transcript", async () => {
+    invokeMock.mockResolvedValue([
+      event({
+        id: "approval-old",
+        kind: "approval",
+        title: "First request",
+        text: "Requesting permission for:\nread config",
+        status: "succeeded",
+        sequence: 1,
+      }),
+      event({
+        id: "approval-current",
+        kind: "approval",
+        title: "Second request",
+        text: "Requesting permission for:\nwrite config",
+        status: "action_required",
+        sequence: 2,
+      }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    await screen.findByText("Second request");
+    const notices = screen.getAllByTestId("chat-approval-notice");
+    expect(notices[0]).toHaveTextContent("This request is no longer awaiting a response.");
+    expect(notices[1]).toHaveTextContent("Action required. Choose a response or type below.");
+    expect(screen.getByRole("button", { name: "Send approval response y: Yes" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Past approval choice y: Yes" })).toBeDisabled();
+  });
+
   it("submits numbered approval choices through the provider submit command", async () => {
     invokeMock.mockImplementation((command, args) => {
       if (command === "load_agent_chat_transcript") {
@@ -487,8 +543,14 @@ describe("AgentChatView", () => {
 
     render(<AgentChatView sessionId="agent-1" />);
 
-    expect(await screen.findByText("Work log")).toBeInTheDocument();
-    expect(screen.getByText("4 events")).toBeInTheDocument();
+    const group = await screen.findByText("Work log");
+    const article = group.closest("article") as HTMLElement;
+    // The collapsed group keeps the current step plus one line of context; the
+    // rest stays behind an explicit toggle rather than being dropped.
+    expect(article).toHaveTextContent("4 events - showing latest 2");
+    await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
+    expect(article).toHaveTextContent("4 events");
+    expect(within(article).getByText("Read file")).toBeInTheDocument();
   });
 
   it("surfaces concrete shell commands inside grouped work logs", async () => {
@@ -535,6 +597,7 @@ describe("AgentChatView", () => {
 
     const group = await screen.findByText("Work log");
     const article = group.closest("article") as HTMLElement;
+    await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
 
     expect(within(article).getByText("Get-ChildItem src/features/grid")).toBeInTheDocument();
     expect(within(article).getByText("cargo test -p Wardian commands::terminal::tests")).toBeInTheDocument();
@@ -557,7 +620,9 @@ describe("AgentChatView", () => {
     const group = await screen.findByText("Work log");
     const article = group.closest("article") as HTMLElement;
 
-    expect(within(article).getByText("4 events")).toBeInTheDocument();
+    expect(article).toHaveTextContent("4 events - showing latest 2");
+    await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
+
     expect(within(article).getByText("git status --short --branch")).toBeInTheDocument();
     expect(within(article).getByText("git log -1 --oneline --decorate")).toBeInTheDocument();
     expect(within(article).getByText("npm run docs:build")).toBeInTheDocument();
@@ -626,11 +691,203 @@ describe("AgentChatView", () => {
 
     render(<AgentChatView sessionId="agent-1" />);
 
-    expect(await screen.findByTestId("tool-diff-panel")).toHaveTextContent("1 file");
-    expect(screen.getByText("+1")).toBeInTheDocument();
-    expect(screen.getByText("-1")).toBeInTheDocument();
+    const diffPanel = await screen.findByTestId("tool-diff-panel");
+    expect(diffPanel).toHaveTextContent("1 file");
+    // Scoped to the panel: the turn change card reports the same counts for the
+    // same patch, so an unscoped query now matches both.
+    expect(within(diffPanel).getByText("+1")).toBeInTheDocument();
+    expect(within(diffPanel).getByText("-1")).toBeInTheDocument();
     expect(screen.getByTestId("tool-todo-list")).toHaveTextContent("Inspect transcript");
     expect(screen.getByTestId("tool-todo-list")).toHaveTextContent("Add lazy rows");
+  });
+
+  it("renders a Claude edit from its structured tool input rather than a path chip", async () => {
+    // The provider emits no patch text for Edit; the change lives entirely in
+    // metadata.tool_input, which the transcript used to discard.
+    invokeMock.mockResolvedValue([
+      event({
+        id: "edit-tool",
+        kind: "tool_call",
+        title: "Edit",
+        status: "running",
+        sequence: 1,
+        metadata: {
+          tool_name: "Edit",
+          file_path: "src/features/grid/workLogPresentation.ts",
+          tool_input: {
+            file_path: "src/features/grid/workLogPresentation.ts",
+            old_string: "const WORK_GROUP_MIN_ENTRIES = 4;",
+            new_string: "const WORK_GROUP_MIN_ENTRIES = 2;",
+          },
+        },
+      }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const panel = await screen.findByTestId("tool-structured-edit");
+    expect(panel).toHaveTextContent("Before/after");
+    expect(panel).toHaveTextContent("+1");
+    expect(panel).toHaveTextContent("-1");
+    expect(panel).toHaveTextContent("const WORK_GROUP_MIN_ENTRIES = 4;");
+    expect(panel).toHaveTextContent("const WORK_GROUP_MIN_ENTRIES = 2;");
+    // The panel already names the file, so the redundant chip row is gone.
+    expect(screen.queryByText("Changed files")).toBeNull();
+  });
+
+  it("summarizes what a turn changed after the turn's last row", async () => {
+    invokeMock.mockResolvedValue([
+      event({ id: "user-1", kind: "message", role: "user", text: "Tighten the limits.", sequence: 1 }),
+      event({
+        id: "edit-1",
+        kind: "tool_call",
+        title: "Edit",
+        status: "running",
+        sequence: 2,
+        metadata: {
+          tool_name: "Edit",
+          tool_input: { file_path: "src/a.ts", old_string: "one\ntwo", new_string: "ONE\nTWO" },
+        },
+      }),
+      event({
+        id: "edit-2",
+        kind: "tool_call",
+        title: "Edit",
+        status: "running",
+        sequence: 3,
+        metadata: {
+          tool_name: "Edit",
+          tool_input: { file_path: "docs/b.md", old_string: "old", new_string: "new" },
+        },
+      }),
+      event({ id: "assistant-1", kind: "message", role: "assistant", text: "Done.", sequence: 4 }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const card = await screen.findByTestId("turn-change-card");
+    expect(card).toHaveTextContent("2 changed files");
+    expect(within(card).getByRole("group", { name: "3 additions, 3 deletions" })).toBeInTheDocument();
+    // Small change sets open on their own rather than hiding behind a header.
+    expect(card).toHaveAttribute("data-expanded", "true");
+    expect(within(card).getByTestId("turn-change-files")).toHaveTextContent("a.ts");
+    expect(within(card).getByTestId("turn-change-files")).toHaveTextContent("b.md");
+    expect(card).toHaveTextContent("Reported by the agent, not a working-tree diff.");
+  });
+
+  it("says how many files the headline counts cover when the turn mixes evidence", async () => {
+    // A path-only record contributes a placeholder zero, so summing every file
+    // presented the exact edit's counts as though they covered the write too.
+    invokeMock.mockResolvedValue([
+      event({ id: "user-1", kind: "message", role: "user", text: "Rewrite the config.", sequence: 1 }),
+      event({
+        id: "edit-1",
+        kind: "tool_call",
+        title: "Edit",
+        status: "running",
+        sequence: 2,
+        metadata: {
+          tool_name: "Edit",
+          tool_input: { file_path: "src/a.ts", old_string: "one", new_string: "ONE" },
+        },
+      }),
+      event({
+        id: "write-1",
+        kind: "tool_call",
+        title: "Write",
+        status: "running",
+        sequence: 3,
+        metadata: {
+          tool_name: "Write",
+          tool_input: { file_path: "src/b.ts", content: "fresh contents" },
+        },
+      }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const card = await screen.findByTestId("turn-change-card");
+    expect(card).toHaveTextContent("2 changed files");
+    expect(
+      within(card).getByRole("group", { name: "1 additions, 1 deletions, across 1 of 2 files" }),
+    ).toBeInTheDocument();
+    expect(card).toHaveTextContent("in 1 of 2");
+  });
+
+  it("collapses a wide turn change set to a scope preview", async () => {
+    const edits = ["src/a.ts", "src/b.ts", "src/c.ts", "docs/d.md", "tests/e.test.ts", "scripts/f.mjs"].map(
+      (path, index) =>
+        event({
+          id: `edit-${index}`,
+          kind: "tool_call",
+          title: "Edit",
+          status: "running",
+          sequence: index + 2,
+          metadata: {
+            tool_name: "Edit",
+            tool_input: { file_path: path, old_string: "old", new_string: "new" },
+          },
+        }),
+    );
+    invokeMock.mockResolvedValue([
+      event({ id: "user-1", kind: "message", role: "user", text: "Sweep the repo.", sequence: 1 }),
+      ...edits,
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const card = await screen.findByTestId("turn-change-card");
+    expect(card).toHaveTextContent("6 changed files");
+    expect(card).toHaveAttribute("data-expanded", "false");
+    // Files sort by path first, then the preview takes one per top-level scope,
+    // so it reads docs/scripts/src rather than three files from src.
+    const preview = within(card).getByTestId("turn-change-preview");
+    expect(preview).toHaveTextContent("d.md");
+    expect(preview).toHaveTextContent("f.mjs");
+    expect(preview).toHaveTextContent("a.ts");
+    expect(preview).not.toHaveTextContent("b.ts");
+    expect(preview).toHaveTextContent("+3 more");
+
+    await userEvent.click(within(card).getByRole("button", { name: /6 changed files/ }));
+    expect(within(card).getByTestId("turn-change-files")).toHaveTextContent("c.ts");
+  });
+
+  it("does not summarize a turn that only talked", async () => {
+    invokeMock.mockResolvedValue([
+      event({ id: "user-1", kind: "message", role: "user", text: "What does this do?", sequence: 1 }),
+      event({ id: "assistant-1", kind: "message", role: "assistant", text: "It sorts events.", sequence: 2 }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    await screen.findByText("It sorts events.");
+    expect(screen.queryByTestId("turn-change-card")).toBeNull();
+  });
+
+  it("renders a Write call as new contents without claiming the file is new", async () => {
+    invokeMock.mockResolvedValue([
+      event({
+        id: "write-tool",
+        kind: "tool_call",
+        title: "Write",
+        status: "running",
+        sequence: 1,
+        metadata: {
+          tool_name: "Write",
+          tool_input: { file_path: "docs/specs/new-spec.md", content: "# Spec\n\nBody" },
+        },
+      }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const panel = await screen.findByTestId("tool-structured-edit");
+    expect(panel).toHaveTextContent("New contents");
+    expect(panel).toHaveTextContent("+3");
+    // The write states what the file now holds, never what it replaced, so a
+    // "-0" here would assert the file had been empty.
+    expect(panel).not.toHaveTextContent("-0");
+    expect(panel).toHaveTextContent("replaced contents");
   });
 
   it("computes diff stats from full content while rendering a collapsed preview", async () => {
@@ -659,9 +916,15 @@ describe("AgentChatView", () => {
 
     const panel = await screen.findByTestId("tool-diff-panel");
     expect(panel).toHaveTextContent("2 files");
-    expect(screen.getByText("+2")).toBeInTheDocument();
-    expect(screen.getByText("-2")).toBeInTheDocument();
+    expect(within(panel).getByText("+2")).toBeInTheDocument();
+    expect(within(panel).getByText("-2")).toBeInTheDocument();
     expect(within(panel).queryByText("two added")).not.toBeInTheDocument();
+
+    // The turn card splits the same patch per file rather than totalling it.
+    const changeCard = screen.getByTestId("turn-change-card");
+    expect(changeCard).toHaveTextContent("2 changed files");
+    expect(within(changeCard).getByText("one.ts")).toBeInTheDocument();
+    expect(within(changeCard).getByText("two.ts")).toBeInTheDocument();
   });
 
   it("lazy-loads older transcript rows on demand", async () => {

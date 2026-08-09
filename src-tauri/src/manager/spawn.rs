@@ -33,6 +33,20 @@ const OUTPUT_READY_EMIT_MIN_INTERVAL: std::time::Duration = std::time::Duration:
 /// whether that conversation is new enough to persist as the resume identity.
 /// A pre-existing workspace mapping is valid chat/telemetry evidence, but is
 /// not promoted to a resume identity until the provider replaces it.
+/// Where the mock provider mirrors its event stream.
+///
+/// Real providers are observed through a log they own, and the chat transcript
+/// reads normalized events back from that log alone. The mock provider writes
+/// only to the PTY, so without a log of its own its tool calls could never
+/// reach the transcript and the chat surface stayed untestable offline.
+fn mock_transcript_log_path(session_id: &str) -> Option<std::path::PathBuf> {
+    // Reuses the conversations directory's own safety check on the id rather
+    // than joining an unvalidated path component under the Wardian home.
+    wardian_core::paths::agent_conversations_dir(session_id)
+        .and_then(|dir| dir.parent().map(|agent_dir| agent_dir.to_path_buf()))
+        .map(|dir| dir.join("mock-transcript.jsonl"))
+}
+
 fn antigravity_watcher_conversation(
     existing: Option<String>,
     workspace_before: Option<&str>,
@@ -613,6 +627,16 @@ pub async fn spawn_agent(
                 cmd.env(key, value);
             }
         }
+
+        // Mirrors the event stream to a provider log so the chat transcript can
+        // read it back, matching how every real provider is observed.
+        if let Some(path) = mock_transcript_log_path(&config.session_id) {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::remove_file(&path);
+            cmd.env("WARDIAN_MOCK_LOG", &path);
+        }
     }
     #[cfg(target_os = "macos")]
     cmd.env("PATH", macos_extended_path());
@@ -745,6 +769,17 @@ pub async fn spawn_agent(
     let last_output_at = std::sync::Arc::new(std::sync::Mutex::new(None));
     let last_output_at_clone = last_output_at.clone();
     let log_path = std::sync::Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+    // The mock provider writes its event stream to a file it owns, so its log
+    // path is known up front and needs no discovery watcher. Without this the
+    // chat transcript sees nothing for a mock agent: normalized tool events
+    // are only ever read back from a provider log.
+    if config.provider == "mock" {
+        if let Some(path) = mock_transcript_log_path(&config.session_id) {
+            if let Ok(mut lock) = log_path.lock() {
+                *lock = Some(path);
+            }
+        }
+    }
     // PTY reader thread: uses provider.parse_output() for event classification
     let pty_app = app.clone();
     let pty_provider = provider.clone();

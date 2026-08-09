@@ -1,7 +1,15 @@
 import type { AgentChatEvent } from "../../types";
 import { toActivityBlock, type ActivityBlockModel } from "./activityBlocks";
 
-const WORK_GROUP_MIN_ENTRIES = 4;
+/**
+ * Consecutive work events collapse into one group at this count.
+ *
+ * Lowered from 4 now that a turn change card states what the turn touched: the
+ * work log no longer has to be scanned to answer "what changed", so grouping
+ * earlier costs the reader nothing and keeps a run of tool calls from pushing
+ * the answer off screen in a grid cell.
+ */
+const WORK_GROUP_MIN_ENTRIES = 3;
 const NON_MEANINGFUL_TEXT = /^(succeeded|success|ok|done|exit code:\s*0)$/i;
 const NON_MEANINGFUL_RESULT_LINE = /^(succeeded|success|ok|done|exit code:\s*0|wall time:\s*\d+(?:\.\d+)?\s*(?:ms|s|seconds?)|output:)$/i;
 
@@ -171,18 +179,41 @@ export function formatPresentedEntryForCopy(entry: PresentedWorkEntry): string {
 
 function createWorkEntry(event: AgentChatEvent): PresentedWorkEntry {
   const block = toActivityBlock(event);
+  const title = presentedTitle(event, block);
   return {
     id: event.id,
     primary_event: event,
     block,
     merged_result_events: [],
     diagnostic_events: [],
-    title: presentedTitle(event, block),
-    summary: workEntrySummary(event, block),
+    title,
+    summary: summaryDistinctFromTitle(workEntrySummary(event, block), title),
     details: detailsFromEvents(event, [], block),
     content: block.content,
     changed_paths: changedPathsFromEvents([event]),
   };
+}
+
+/**
+ * Strips the completion word providers append when a tool finishes, so
+ * "Read file" and "Read file completed" compare as the same label.
+ */
+export function normalizeCompactToolLabel(value: string): string {
+  return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
+}
+
+/**
+ * A generic provider title makes `activityTitle` fall back to the command, and
+ * `workEntrySummary` falls back to the same command independently. Rendering
+ * both prints it twice, so the summary is dropped when it adds nothing. The
+ * title is truncated the same way the summary is before comparing, otherwise a
+ * long command would compare unequal against its own truncation.
+ */
+function summaryDistinctFromTitle(summary: string, title: string): string {
+  if (!summary) return "";
+  const normalizedSummary = normalizeCompactToolLabel(summary).toLowerCase();
+  const normalizedTitle = normalizeCompactToolLabel(truncate(title)).toLowerCase();
+  return normalizedSummary === normalizedTitle ? "" : summary;
 }
 
 function presentedTitle(event: AgentChatEvent, block: ActivityBlockModel): string {

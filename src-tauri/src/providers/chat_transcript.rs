@@ -269,7 +269,7 @@ fn normalize_codex_payload(
             if let Some(input_text) = raw_input_text {
                 metadata["tool_input_text"] = json!(input_text);
             }
-            Some(event(
+            let mut tool_event = event(
                 session_id,
                 provider,
                 sequence,
@@ -289,7 +289,9 @@ fn normalize_codex_payload(
                     metadata,
                     ..Default::default()
                 },
-            ))
+            );
+            attach_tool_input_metadata(&mut tool_event, tool_name, arguments.as_ref());
+            Some(tool_event)
         }
         "function_call_output" | "custom_tool_call_output" => {
             let raw_text = text_from_value(payload);
@@ -478,6 +480,7 @@ fn normalize_claude_assistant(
             tool_name,
             AgentChatStatus::Running,
         );
+        event.metadata["tool_name"] = json!(tool_name);
         if let Some(input) = tool_use.get("input") {
             event.metadata["tool_input"] = input.clone();
             if let Some(file_path) = str_field(input, "file_path") {
@@ -613,17 +616,26 @@ fn normalize_gemini(
                 msg_type,
             )
         }
-        "tool_use" => Some(tool_call_event(
-            session_id,
-            provider,
-            sequence,
-            "gemini_log".to_string(),
-            turn_id_from(parsed),
-            str_field(parsed, "command").map(str::to_string),
-            text_from_value(parsed),
-            str_field(parsed, "tool_name").unwrap_or("tool_use"),
-            AgentChatStatus::ActionRequired,
-        )),
+        "tool_use" => {
+            let tool_name = str_field(parsed, "tool_name").unwrap_or("tool_use");
+            let mut tool = tool_call_event(
+                session_id,
+                provider,
+                sequence,
+                "gemini_log".to_string(),
+                turn_id_from(parsed),
+                str_field(parsed, "command").map(str::to_string),
+                text_from_value(parsed),
+                tool_name,
+                AgentChatStatus::ActionRequired,
+            );
+            attach_tool_input_metadata(
+                &mut tool,
+                tool_name,
+                parsed.get("args").or_else(|| parsed.get("input")),
+            );
+            Some(tool)
+        }
         "tool_result" => Some(event(
             session_id,
             provider,
@@ -763,6 +775,7 @@ fn antigravity_tool_metadata(
 ) -> Value {
     let mut metadata = serde_json::Map::new();
     metadata.insert("raw_type".to_string(), Value::String(tool_name.to_string()));
+    metadata.insert("tool_name".to_string(), Value::String(tool_name.to_string()));
     if let Some(args) = args {
         metadata.insert("tool_input".to_string(), args.clone());
     }
@@ -918,7 +931,10 @@ fn normalize_opencode(
         }
         "tool_use" => {
             let part = parsed.get("part").unwrap_or(parsed);
-            Some(tool_call_event(
+            let tool_name = str_field(part, "name")
+                .or_else(|| str_field(parsed, "tool"))
+                .unwrap_or("tool_use");
+            let mut event = tool_call_event(
                 session_id,
                 provider,
                 sequence,
@@ -929,11 +945,11 @@ fn normalize_opencode(
                         .and_then(|input| str_field(input, "command").map(str::to_string))
                 }),
                 text_from_value(part),
-                str_field(part, "name")
-                    .or_else(|| str_field(parsed, "tool"))
-                    .unwrap_or("tool_use"),
+                tool_name,
                 AgentChatStatus::Running,
-            ))
+            );
+            attach_tool_input_metadata(&mut event, tool_name, part.get("input"));
+            Some(event)
         }
         "tool_result" => {
             let part = parsed.get("part").unwrap_or(parsed);
@@ -983,6 +999,69 @@ fn normalize_opencode(
         )),
         _ => None,
     }
+}
+
+/// Preserves a tool call's structured input on the normalized event.
+///
+/// Several providers describe a file edit only in the tool's input object and
+/// emit no patch text at all, so discarding the input discards the change
+/// itself. Path keys are scanned rather than assumed because providers disagree
+/// on casing; the same list backs turn attribution in
+/// `state/conversation_archive/turns.rs`.
+fn attach_tool_input_metadata(event: &mut AgentChatEvent, tool_name: &str, input: Option<&Value>) {
+    event.metadata["tool_name"] = json!(tool_name);
+
+    let Some(input) = input.filter(|value| value.is_object()) else {
+        return;
+    };
+    event.metadata["tool_input"] = input.clone();
+
+    let Some(path) = tool_input_file_path(input) else {
+        return;
+    };
+    event.metadata["file_path"] = json!(path);
+    if generic_tool_reads_file(tool_name) {
+        event.metadata["files_read"] = json!([path]);
+    } else if generic_tool_writes_file(tool_name) {
+        event.metadata["files_written"] = json!([path]);
+    }
+}
+
+fn tool_input_file_path(input: &Value) -> Option<String> {
+    [
+        "file_path",
+        "filePath",
+        "AbsolutePath",
+        "TargetFile",
+        "FilePath",
+        "path",
+        "uri",
+        "fileUri",
+    ]
+    .iter()
+    .find_map(|key| input.get(key).and_then(tool_arg_string))
+}
+
+fn generic_tool_reads_file(tool_name: &str) -> bool {
+    matches!(
+        tool_name.to_ascii_lowercase().as_str(),
+        "read" | "read_file" | "readfile" | "view" | "view_file"
+    )
+}
+
+fn generic_tool_writes_file(tool_name: &str) -> bool {
+    matches!(
+        tool_name.to_ascii_lowercase().as_str(),
+        "edit"
+            | "write"
+            | "multiedit"
+            | "multi_edit"
+            | "notebookedit"
+            | "patch"
+            | "apply_patch"
+            | "create_file"
+            | "write_file"
+    )
 }
 
 fn normalize_mock(
@@ -1038,6 +1117,44 @@ fn normalize_mock(
             status_from_str(str_field(parsed, "status")).unwrap_or(AgentChatStatus::Succeeded),
             msg_type,
             parsed,
+        )),
+        // The mock provider is the only offline way to exercise the chat
+        // transcript's tool surface, so its tool calls carry real structured
+        // input rather than a summary string.
+        "tool_call" => {
+            let tool_name = str_field(parsed, "tool_name").unwrap_or("tool_call");
+            let mut tool = tool_call_event(
+                session_id,
+                provider,
+                sequence,
+                msg_type.to_string(),
+                turn_id_from(parsed),
+                str_field(parsed, "command").map(str::to_string),
+                None,
+                tool_name,
+                AgentChatStatus::Running,
+            );
+            attach_tool_input_metadata(&mut tool, tool_name, parsed.get("input"));
+            Some(tool)
+        }
+        "tool_result" => Some(event(
+            session_id,
+            provider,
+            sequence,
+            AgentChatEventKind::ToolResult,
+            EventFields {
+                role: Some(AgentChatRole::Tool),
+                text: text_from_value(parsed),
+                title: str_field(parsed, "tool_name").map(str::to_string),
+                status: Some(
+                    status_from_str(str_field(parsed, "status"))
+                        .unwrap_or(AgentChatStatus::Succeeded),
+                ),
+                turn_id: turn_id_from(parsed),
+                source: Some(msg_type.to_string()),
+                metadata: json!({"raw_type": msg_type}),
+                ..Default::default()
+            },
         )),
         "action_required" => Some(event(
             session_id,
@@ -1833,6 +1950,85 @@ mod tests {
         );
         assert_eq!(finish.kind, AgentChatEventKind::Status);
         assert_eq!(finish.status, Some(AgentChatStatus::Succeeded));
+    }
+
+    #[test]
+    fn opencode_tool_calls_preserve_structured_input_and_written_paths() {
+        // OpenCode describes an edit only in the tool's input object. Dropping
+        // it left the chat transcript unable to say which files a turn changed.
+        let edit = one(
+            "opencode",
+            r#"{"type":"tool_use","sessionID":"ses_test","part":{"name":"edit","input":{"filePath":"src/app.ts","oldString":"const a = 1;","newString":"const a = 2;"}}}"#,
+        );
+
+        assert_eq!(edit.kind, AgentChatEventKind::ToolCall);
+        assert_eq!(edit.metadata["tool_name"], "edit");
+        assert_eq!(edit.metadata["tool_input"]["oldString"], "const a = 1;");
+        assert_eq!(edit.metadata["file_path"], "src/app.ts");
+        assert_eq!(edit.metadata["files_written"][0], "src/app.ts");
+
+        let read = one(
+            "opencode",
+            r#"{"type":"tool_use","sessionID":"ses_test","part":{"name":"read","input":{"filePath":"src/app.ts"}}}"#,
+        );
+        assert_eq!(read.metadata["files_read"][0], "src/app.ts");
+        assert!(read.metadata.get("files_written").is_none());
+    }
+
+    #[test]
+    fn tool_calls_report_their_name_in_metadata_for_every_provider() {
+        // Presentation resolves a tool by `metadata.tool_name`; providers that
+        // reported the name only in the title silently lost that classification.
+        let claude = one(
+            "claude",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Write","input":{"file_path":"a.ts","content":"x"}}],"stop_reason":"tool_use"}}"#,
+        );
+        assert_eq!(claude.metadata["tool_name"], "Write");
+
+        let gemini = one("gemini", r#"{"type":"tool_use","tool_name":"read_file"}"#);
+        assert_eq!(gemini.metadata["tool_name"], "read_file");
+
+        let antigravity = one(
+            "antigravity",
+            r#"{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"RUN_COMMAND","args":{"command":"npm test"}}]}"#,
+        );
+        assert_eq!(antigravity.metadata["tool_name"], "RUN_COMMAND");
+
+        let codex = one(
+            "codex",
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"shell_command","input":{"command":"npm test"}}}"#,
+        );
+        assert_eq!(codex.metadata["tool_name"], "shell_command");
+        assert_eq!(codex.metadata["tool_input"]["command"], "npm test");
+    }
+
+    #[test]
+    fn mock_tool_calls_carry_structured_input_for_offline_chat_coverage() {
+        // Without this the chat transcript's file-change surface was reachable
+        // only through a real provider subscription.
+        let edit = one(
+            "mock",
+            r#"{"type":"tool_call","tool_name":"Edit","input":{"file_path":"src/app.ts","old_string":"a","new_string":"b"}}"#,
+        );
+        assert_eq!(edit.kind, AgentChatEventKind::ToolCall);
+        assert_eq!(edit.title.as_deref(), Some("Edit"));
+        assert_eq!(edit.metadata["tool_name"], "Edit");
+        assert_eq!(edit.metadata["tool_input"]["old_string"], "a");
+        assert_eq!(edit.metadata["files_written"][0], "src/app.ts");
+
+        let shell = one(
+            "mock",
+            r#"{"type":"tool_call","tool_name":"Bash","input":{},"command":"npm run test"}"#,
+        );
+        assert_eq!(shell.command.as_deref(), Some("npm run test"));
+
+        let result = one(
+            "mock",
+            r#"{"type":"tool_result","tool_name":"Edit","content":"applied","status":"success"}"#,
+        );
+        assert_eq!(result.kind, AgentChatEventKind::ToolResult);
+        assert_eq!(result.text.as_deref(), Some("applied"));
+        assert_eq!(result.status, Some(AgentChatStatus::Succeeded));
     }
 
     #[test]

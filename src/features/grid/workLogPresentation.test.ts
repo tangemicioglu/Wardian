@@ -24,6 +24,62 @@ const event = (overrides: Partial<AgentChatEvent>): AgentChatEvent => ({
 });
 
 describe("workLogPresentation", () => {
+  it("drops the work entry summary when it only repeats the title", () => {
+    // A tool call whose provider title is generic falls back to the command for
+    // its title, and the summary independently falls back to the same command.
+    // Rendering both prints the command twice, once bold and once mono.
+    const rows = derivePresentedChatRows([
+      event({
+        id: "call-1",
+        kind: "tool_call",
+        title: "tool_call",
+        command: "npm run build",
+        status: "running",
+        sequence: 1,
+      }),
+    ]);
+
+    if (rows[0].kind !== "event") throw new Error("expected event row");
+    const entry = rows[0].entry;
+    if (!entry) throw new Error("expected presented work entry");
+    expect(entry.title).toBe("npm run build");
+    expect(entry.summary).toBe("");
+  });
+
+  it("ignores a trailing completion word when comparing summary against title", () => {
+    const rows = derivePresentedChatRows([
+      event({
+        id: "call-1",
+        kind: "tool_call",
+        title: "Read file completed",
+        text: "Read file",
+        status: "succeeded",
+        sequence: 1,
+      }),
+    ]);
+
+    if (rows[0].kind !== "event") throw new Error("expected event row");
+    expect(rows[0].entry?.summary).toBe("");
+  });
+
+  it("keeps a summary that carries information the title does not", () => {
+    const rows = derivePresentedChatRows([
+      event({
+        id: "call-1",
+        kind: "tool_call",
+        title: "shell_command",
+        command: "cargo test --workspace",
+        status: "running",
+        metadata: { tool_name: "shell_command" },
+        sequence: 1,
+      }),
+    ]);
+
+    if (rows[0].kind !== "event") throw new Error("expected event row");
+    expect(rows[0].entry?.title).toBe("shell_command");
+    expect(rows[0].entry?.summary).toBe("cargo test --workspace");
+  });
+
   it("merges adjacent empty successful tool results into the command entry", () => {
     const rows = derivePresentedChatRows([
       event({

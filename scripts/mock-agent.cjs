@@ -8,9 +8,12 @@
  *   WARDIAN_MOCK_SCENARIO  — scenario name (default: "basic")
  *   WARDIAN_MOCK_DELAY_MS  — delay between events in ms (default: 100)
  *   WARDIAN_MOCK_SESSION_ID — session ID for init event (default: "mock-session-001")
+ *   WARDIAN_MOCK_LOG       — optional path to mirror the event stream to, so the
+ *                            chat transcript can read it back like a real provider log
  *
  * Supported scenarios:
  *   basic         — init → user → generating → model_response → turn_completed
+ *   file_changes  — init → user → read/edit/write/shell tool calls → model_response → turn_completed
  *   resume        — init(session_id) → generating → model_response → turn_completed
  *   action_needed — init → user → action_required (waits for stdin) → turn_completed
  *   delayed_ready — init → user → generating → MOCK_INPUT_READY → model_response → turn_completed
@@ -28,8 +31,11 @@
 
 "use strict";
 
+const fs = require("node:fs");
 const readline = require("node:readline");
 const { spawnSync } = require("node:child_process");
+
+const transcriptLog = process.env.WARDIAN_MOCK_LOG || "";
 
 const scenario = process.env.WARDIAN_MOCK_SCENARIO || "basic";
 const delay = parseInt(process.env.WARDIAN_MOCK_DELAY_MS || "100", 10);
@@ -39,7 +45,18 @@ const sessionId = process.env.WARDIAN_MOCK_SESSION_ID || "mock-session-001";
 const isPrint = process.argv.includes("--print");
 
 function emit(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
+  const line = JSON.stringify(obj) + "\n";
+  process.stdout.write(line);
+  // Real providers are observed through a log they own, and the chat
+  // transcript reads normalized events back from that log rather than from the
+  // terminal. Mirroring here gives the mock provider the same surface.
+  if (transcriptLog) {
+    try {
+      fs.appendFileSync(transcriptLog, line);
+    } catch {
+      // The log is test scaffolding; losing it must never stop the run.
+    }
+  }
 }
 
 function sleep(ms) {
@@ -61,6 +78,20 @@ function waitForStdin() {
   });
 }
 
+let callSequence = 0;
+const lastCallIdByTool = new Map();
+
+function nextCallId(toolName) {
+  callSequence += 1;
+  const id = `mock-call-${callSequence}`;
+  lastCallIdByTool.set(toolName, id);
+  return id;
+}
+
+function currentCallId(toolName) {
+  return lastCallIdByTool.get(toolName) || `mock-call-${callSequence}`;
+}
+
 // Event helpers matching Gemini JSON format
 const events = {
   init: (sid) => ({
@@ -68,7 +99,9 @@ const events = {
     session_id: sid || sessionId,
     timestamp: new Date().toISOString(),
   }),
-  user: () => ({ type: "user", content: "mock user query" }),
+  // Distinct text matters when a scenario emits more than one: the chat
+  // transcript collapses provider messages that share their text.
+  user: (content) => ({ type: "user", content: content || "mock user query" }),
   generating: () => ({
     type: "message",
     role: "assistant",
@@ -83,6 +116,28 @@ const events = {
     type: "action_required",
     message: message || "Approve file write to output.txt?",
   }),
+  // Tool calls carry their arguments the way real providers do, so the chat
+  // transcript can exercise structured edits and per-turn change summaries
+  // without a provider subscription. `input` mirrors Claude's shape because
+  // that is the one the normalizer preserves verbatim.
+  //
+  // `call_id` is not decoration: real providers correlate a call with its
+  // result through one, and the transcript both pairs and de-duplicates on it.
+  // Without it two calls to the same tool collapse into a single row.
+  toolCall: (name, input, command) => ({
+    type: "tool_call",
+    call_id: nextCallId(name),
+    tool_name: name,
+    input,
+    ...(command ? { command } : {}),
+  }),
+  toolResult: (name, content, status) => ({
+    type: "tool_result",
+    call_id: currentCallId(name),
+    tool_name: name,
+    content,
+    status: status || "success",
+  }),
 };
 
 async function runBasic() {
@@ -93,6 +148,78 @@ async function runBasic() {
   emit(events.generating());
   await sleep(delay * 2);
   emit(events.modelResponse());
+  await sleep(delay);
+  emit(events.turnCompleted());
+}
+
+/**
+ * A turn that edits, creates, and inspects files.
+ *
+ * Exists so the chat transcript's file-change surface is reachable offline:
+ * every other scenario emits messages and status only, which left structured
+ * edits, work-log grouping, and the per-turn change card testable solely
+ * against a real provider.
+ */
+async function runFileChanges() {
+  emit(events.init());
+  await sleep(delay);
+  emit(events.user("Lower the work-log grouping threshold and record a spec."));
+  await sleep(delay);
+  emit(events.modelResponse("Reading the transcript presentation module first."));
+  await sleep(delay);
+
+  emit(events.toolCall("Read", { file_path: "src/features/chat/chatPresentation.ts" }));
+  await sleep(delay);
+  emit(events.toolResult("Read", "read 337 lines"));
+  await sleep(delay);
+
+  emit(
+    events.toolCall("Edit", {
+      file_path: "src/features/chat/chatPresentation.ts",
+      old_string: "const WORK_GROUP_MIN_ENTRIES = 4;",
+      new_string: "const WORK_GROUP_MIN_ENTRIES = 3;",
+    }),
+  );
+  await sleep(delay);
+  emit(events.toolResult("Edit", "applied"));
+  await sleep(delay);
+
+  emit(
+    events.toolCall("Write", {
+      file_path: "docs/specs/mock-change-surface.md",
+      content: "# Mock spec\n\nWritten by the mock provider.\n",
+    }),
+  );
+  await sleep(delay);
+  emit(events.toolResult("Write", "written"));
+  await sleep(delay);
+
+  emit(events.toolCall("Bash", {}, "npm run test -- --run"));
+  await sleep(delay);
+  emit(events.toolResult("Bash", "2830 passed"));
+  await sleep(delay);
+
+  emit(events.modelResponse("Lowered the grouping threshold and recorded the spec."));
+  await sleep(delay);
+  emit(events.turnCompleted());
+  await sleep(delay);
+
+  // A second, smaller turn. Three or more adjacent tool calls collapse into a
+  // work-log group whose entries are one-liners, so a lone edit is the only
+  // way the structured edit panel is reachable. Both shapes matter.
+  emit(events.user("Now widen the change kinds."));
+  await sleep(delay);
+  emit(
+    events.toolCall("Edit", {
+      file_path: "src/features/chat/chatTurns.ts",
+      old_string: "kind: \"edited\" | \"created\";",
+      new_string: "kind: \"edited\" | \"created\" | \"deleted\" | \"written\";",
+    }),
+  );
+  await sleep(delay);
+  emit(events.toolResult("Edit", "applied"));
+  await sleep(delay);
+  emit(events.modelResponse("Widened the change kinds."));
   await sleep(delay);
   emit(events.turnCompleted());
 }
@@ -311,6 +438,7 @@ async function main() {
 
   const scenarios = {
     basic: runBasic,
+    file_changes: runFileChanges,
     resume: runResume,
     action_needed: runActionNeeded,
     delayed_ready: runDelayedReady,
