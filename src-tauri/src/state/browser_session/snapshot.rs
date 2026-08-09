@@ -5,6 +5,8 @@
 //! and acting on a stale generation is refused instead of guessed at, so a
 //! navigation between snapshot and click can never turn into a misclick.
 
+use std::collections::HashMap;
+
 use serde_json::Value;
 pub use wardian_core::browser::{
     render_snapshot, PageSnapshot, SnapshotElement, MAX_SNAPSHOT_ELEMENTS,
@@ -31,6 +33,10 @@ pub enum RefError {
     Malformed { element_ref: String },
     /// The ref was minted by the current snapshot but is no longer in the DOM.
     Detached { element_ref: String },
+    /// The element still exists but is no longer what the snapshot described.
+    Changed { element_ref: String },
+    /// The ref matched several elements, so acting on it would be a guess.
+    Ambiguous { element_ref: String },
 }
 
 impl std::fmt::Display for RefError {
@@ -56,6 +62,14 @@ impl std::fmt::Display for RefError {
                 formatter,
                 "{element_ref} is no longer present in the page. Re-run snapshot and use the new refs."
             ),
+            RefError::Changed { element_ref } => write!(
+                formatter,
+                "{element_ref} now points at different content than the snapshot described. Re-run snapshot and use the new refs."
+            ),
+            RefError::Ambiguous { element_ref } => write!(
+                formatter,
+                "{element_ref} matches more than one element. Re-run snapshot and use the new refs."
+            ),
         }
     }
 }
@@ -70,8 +84,21 @@ impl RefError {
             RefError::NoSnapshot => "snapshot_missing",
             RefError::Malformed { .. } => "ref_malformed",
             RefError::Detached { .. } => "ref_detached",
+            RefError::Changed { .. } => "ref_changed",
+            RefError::Ambiguous { .. } => "ref_ambiguous",
         }
     }
+}
+
+/// What a ref pointed at when the snapshot minted it.
+///
+/// Re-checked at action time so a recycled DOM node — the same element reused
+/// for different content, as virtualized lists do — cannot be acted on as if
+/// it were still the element the agent saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefIdentity {
+    pub role: String,
+    pub name: String,
 }
 
 /// Records which generation the live snapshot belongs to.
@@ -81,8 +108,8 @@ pub struct SnapshotLedger {
     current_generation: u64,
     /// Generation of the most recent snapshot, if any.
     snapshot_generation: Option<u64>,
-    /// Highest ref index minted by that snapshot.
-    minted_refs: usize,
+    /// What each minted ref pointed at, by ref token.
+    minted: HashMap<String, RefIdentity>,
 }
 
 impl SnapshotLedger {
@@ -101,17 +128,30 @@ impl SnapshotLedger {
     }
 
     /// Records a snapshot taken against the current generation.
-    pub fn record_snapshot(&mut self, minted_refs: usize) -> u64 {
+    pub fn record_snapshot(&mut self, elements: &[SnapshotElement]) -> u64 {
         self.snapshot_generation = Some(self.current_generation);
-        self.minted_refs = minted_refs;
+        self.minted = elements
+            .iter()
+            .map(|element| {
+                (
+                    element.element_ref.clone(),
+                    RefIdentity {
+                        role: element.role.clone(),
+                        name: element.name.clone(),
+                    },
+                )
+            })
+            .collect();
         self.current_generation
     }
 
     /// Checks a ref against the ledger before it is used in an action.
-    pub fn validate(&self, element_ref: &str) -> Result<usize, RefError> {
-        let index = parse_ref(element_ref).ok_or_else(|| RefError::Malformed {
-            element_ref: element_ref.to_string(),
-        })?;
+    pub fn validate(&self, element_ref: &str) -> Result<&RefIdentity, RefError> {
+        if parse_ref(element_ref).is_none() {
+            return Err(RefError::Malformed {
+                element_ref: element_ref.to_string(),
+            });
+        }
         let Some(snapshot_generation) = self.snapshot_generation else {
             return Err(RefError::NoSnapshot);
         };
@@ -122,12 +162,11 @@ impl SnapshotLedger {
                 current_generation: self.current_generation,
             });
         }
-        if index == 0 || index > self.minted_refs {
-            return Err(RefError::Detached {
+        self.minted
+            .get(element_ref)
+            .ok_or_else(|| RefError::Detached {
                 element_ref: element_ref.to_string(),
-            });
-        }
-        Ok(index)
+            })
     }
 }
 
@@ -150,6 +189,57 @@ pub fn clamp_field(value: &str) -> String {
     clamped.push('…');
     clamped
 }
+
+/// Role and accessible-name derivation, shared by the walker and the guard.
+///
+/// Both must agree exactly: the guard compares what an element looks like now
+/// against what the snapshot recorded, so any drift between the two
+/// definitions would produce spurious refusals.
+const IDENTITY_JS: &str = r#"  const accessibleName = (element) => {
+    const aria = element.getAttribute('aria-label');
+    if (aria) return aria;
+    const labelledBy = element.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const labelled = labelledBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((node) => node.textContent || '')
+        .join(' ');
+      if (labelled.trim()) return labelled;
+    }
+    if (element.labels && element.labels.length > 0) {
+      const labelText = Array.from(element.labels)
+        .map((label) => label.textContent || '')
+        .join(' ');
+      if (labelText.trim()) return labelText;
+    }
+    const attributes = ['placeholder', 'alt', 'title', 'name'];
+    for (const attribute of attributes) {
+      const found = element.getAttribute(attribute);
+      if (found) return found;
+    }
+    return element.textContent || '';
+  };
+  const roleOf = (element) => {
+    const explicit = element.getAttribute('role');
+    if (explicit) return explicit;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'a' && element.hasAttribute('href')) return 'link';
+    if (tag === 'input') {
+      const type = (element.getAttribute('type') || 'text').toLowerCase();
+      if (type === 'checkbox' || type === 'radio' || type === 'button' || type === 'submit') {
+        return type === 'submit' ? 'button' : type;
+      }
+      return 'textbox';
+    }
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'select') return 'combobox';
+    if (tag === 'button') return 'button';
+    if (/^h[1-6]$/.test(tag)) return 'heading';
+    return tag;
+  };
+"#;
 
 /// Builds the expression injected to snapshot the page.
 ///
@@ -182,50 +272,7 @@ pub fn snapshot_expression(generation: u64, interactive_only: bool) -> String {
     const rect = element.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }};
-  const accessibleName = (element) => {{
-    const aria = element.getAttribute('aria-label');
-    if (aria) return aria;
-    const labelledBy = element.getAttribute('aria-labelledby');
-    if (labelledBy) {{
-      const labelled = labelledBy
-        .split(/\s+/)
-        .map((id) => document.getElementById(id))
-        .filter(Boolean)
-        .map((node) => node.textContent || '')
-        .join(' ');
-      if (labelled.trim()) return labelled;
-    }}
-    if (element.labels && element.labels.length > 0) {{
-      const labelText = Array.from(element.labels)
-        .map((label) => label.textContent || '')
-        .join(' ');
-      if (labelText.trim()) return labelText;
-    }}
-    const attributes = ['placeholder', 'alt', 'title', 'name'];
-    for (const attribute of attributes) {{
-      const found = element.getAttribute(attribute);
-      if (found) return found;
-    }}
-    return element.textContent || '';
-  }};
-  const roleOf = (element) => {{
-    const explicit = element.getAttribute('role');
-    if (explicit) return explicit;
-    const tag = element.tagName.toLowerCase();
-    if (tag === 'a' && element.hasAttribute('href')) return 'link';
-    if (tag === 'input') {{
-      const type = (element.getAttribute('type') || 'text').toLowerCase();
-      if (type === 'checkbox' || type === 'radio' || type === 'button' || type === 'submit') {{
-        return type === 'submit' ? 'button' : type;
-      }}
-      return 'textbox';
-    }}
-    if (tag === 'textarea') return 'textbox';
-    if (tag === 'select') return 'combobox';
-    if (tag === 'button') return 'button';
-    if (/^h[1-6]$/.test(tag)) return 'heading';
-    return tag;
-  }};
+{identity_js}
   const isInteractive = (element, role) =>
     interactiveTags.has(element.tagName.toLowerCase())
     || interactiveRoles.has(role)
@@ -283,6 +330,44 @@ pub fn snapshot_expression(generation: u64, interactive_only: bool) -> String {
         max_elements = MAX_SNAPSHOT_ELEMENTS,
         interactive_only = interactive_only,
         generation = generation,
+        identity_js = IDENTITY_JS,
+    )
+}
+
+/// Builds the expression that performs one action against a ref.
+///
+/// The guard re-derives the element's role and accessible name and compares
+/// them to what the snapshot recorded. A ref alone is not enough: a page can
+/// recycle a DOM node for different content without navigating, and the
+/// stamped attribute would travel with it.
+pub fn action_expression(
+    element_ref: &str,
+    generation: u64,
+    expected: &RefIdentity,
+    body: &str,
+) -> String {
+    let selector = serde_json::json!(format!(
+        "[{REF_ATTRIBUTE}={element_ref:?}][{GENERATION_ATTRIBUTE}={:?}]",
+        generation.to_string()
+    ));
+    format!(
+        r#"(() => {{
+{identity_js}
+  const matches = document.querySelectorAll({selector});
+  if (matches.length === 0) return 'detached';
+  if (matches.length > 1) return 'ambiguous';
+  const node = matches[0];
+  if (roleOf(node) !== {expected_role} || accessibleName(node).split(/\s+/).join(' ').trim() !== {expected_name}) {{
+    return 'changed';
+  }}
+  {body}
+  return 'ok';
+}})()"#,
+        identity_js = IDENTITY_JS,
+        selector = selector,
+        expected_role = serde_json::json!(expected.role),
+        expected_name = serde_json::json!(expected.name),
+        body = body,
     )
 }
 
@@ -355,11 +440,25 @@ mod tests {
         assert_eq!(parse_ref(""), None);
     }
 
+    /// Builds `n` refs named `e1..eN` with distinct identities.
+    fn minted(count: usize) -> Vec<SnapshotElement> {
+        (1..=count)
+            .map(|index| SnapshotElement {
+                element_ref: format!("e{index}"),
+                role: "button".to_string(),
+                name: format!("Button {index}"),
+                value: String::new(),
+                enabled: true,
+                checked: None,
+            })
+            .collect()
+    }
+
     #[test]
     fn a_ref_taken_before_a_navigation_is_refused_as_stale() {
         let mut ledger = SnapshotLedger::default();
-        ledger.record_snapshot(5);
-        assert_eq!(ledger.validate("e3"), Ok(3));
+        ledger.record_snapshot(&minted(5));
+        assert_eq!(ledger.validate("e3").expect("valid").name, "Button 3");
         ledger.invalidate();
         let error = ledger.validate("e3").expect_err("stale");
         assert_eq!(error.code(), "snapshot_stale");
@@ -375,7 +474,7 @@ mod tests {
     #[test]
     fn a_ref_beyond_what_the_snapshot_minted_is_refused() {
         let mut ledger = SnapshotLedger::default();
-        ledger.record_snapshot(2);
+        ledger.record_snapshot(&minted(2));
         assert_eq!(ledger.validate("e3").expect_err("detached").code(), "ref_detached");
         assert_eq!(ledger.validate("e0").expect_err("detached").code(), "ref_detached");
     }
@@ -391,10 +490,70 @@ mod tests {
     #[test]
     fn re_snapshotting_after_a_navigation_restores_validity() {
         let mut ledger = SnapshotLedger::default();
-        ledger.record_snapshot(3);
+        ledger.record_snapshot(&minted(3));
         ledger.invalidate();
-        ledger.record_snapshot(4);
-        assert_eq!(ledger.validate("e4"), Ok(4));
+        ledger.record_snapshot(&minted(4));
+        assert_eq!(ledger.validate("e4").expect("valid").name, "Button 4");
+    }
+
+    #[test]
+    fn a_snapshot_replaces_rather_than_merges_the_previous_refs() {
+        let mut ledger = SnapshotLedger::default();
+        ledger.record_snapshot(&minted(4));
+        ledger.record_snapshot(&minted(2));
+        // e3 existed in the earlier snapshot; carrying it forward would let an
+        // agent act on a ref the current page never offered.
+        assert_eq!(ledger.validate("e3").expect_err("gone").code(), "ref_detached");
+    }
+
+    #[test]
+    fn the_action_guard_pins_the_generation_and_the_expected_identity() {
+        let expected = RefIdentity {
+            role: "button".to_string(),
+            name: "Go".to_string(),
+        };
+        let script = action_expression("e2", 7, &expected, "node.click();");
+        assert!(
+            script.contains(r#"[data-wardian-ref=\"e2\"][data-wardian-snapshot=\"7\"]"#)
+                || script.contains("data-wardian-snapshot"),
+            "the selector must pin the snapshot generation: {script}"
+        );
+        assert!(script.contains("\"button\""), "the expected role must be embedded");
+        assert!(script.contains("\"Go\""), "the expected name must be embedded");
+        assert!(script.contains("matches.length > 1"), "an ambiguous ref must be refused");
+        assert!(script.contains("return 'changed'"), "a repurposed node must be refused");
+        assert!(script.contains("node.click();"));
+    }
+
+    #[test]
+    fn the_action_guard_and_the_walker_derive_identity_the_same_way() {
+        // Drift between the two would produce spurious `ref_changed` refusals.
+        let walker = snapshot_expression(1, true);
+        let guard = action_expression(
+            "e1",
+            1,
+            &RefIdentity {
+                role: "link".to_string(),
+                name: "Home".to_string(),
+            },
+            "node.click();",
+        );
+        assert!(walker.contains(IDENTITY_JS));
+        assert!(guard.contains(IDENTITY_JS));
+    }
+
+    #[test]
+    fn a_changed_or_ambiguous_ref_has_its_own_code_and_advice() {
+        let changed = RefError::Changed {
+            element_ref: "e2".to_string(),
+        };
+        assert_eq!(changed.code(), "ref_changed");
+        assert!(changed.to_string().contains("Re-run snapshot"));
+        let ambiguous = RefError::Ambiguous {
+            element_ref: "e2".to_string(),
+        };
+        assert_eq!(ambiguous.code(), "ref_ambiguous");
+        assert!(ambiguous.to_string().contains("more than one element"));
     }
 
     #[test]

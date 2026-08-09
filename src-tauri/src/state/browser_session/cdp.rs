@@ -22,6 +22,13 @@ pub const CDP_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// sized to absorb a screencast burst without dropping navigation events.
 const EVENT_CHANNEL_CAPACITY: usize = 512;
 
+/// Synthetic event published when the websocket closes.
+///
+/// A subscriber cannot detect closure by the channel ending: the sender lives
+/// in the connection, which subscribers hold alive. Without an explicit signal
+/// a crashed browser would leave every reader waiting forever.
+pub const DISCONNECTED_METHOD: &str = "Wardian.disconnected";
+
 /// A protocol event addressed to a specific target session, or to the browser.
 #[derive(Debug, Clone)]
 pub struct CdpEvent {
@@ -188,6 +195,11 @@ impl CdpConnection {
             for (_, sender) in pending.lock().await.drain() {
                 let _ = sender.send(Err((-1, "connection closed".to_string())));
             }
+            let _ = events.send(CdpEvent {
+                session_id: None,
+                method: DISCONNECTED_METHOD.to_string(),
+                params: json!({}),
+            });
         });
 
         Ok(connection)

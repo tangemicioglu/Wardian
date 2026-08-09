@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::state::browser_session::{
     discover_engine, BrowserError, BrowserSession, BrowserSessionBroker, ElementAction, LoadState,
-    OpenBrowserRequest, PageField, Viewport, WaitCondition,
+    OpenBrowserRequest, PageField, PointerEvent, Viewport, WaitCondition,
 };
 use crate::state::AppState;
 use wardian_core::browser::{
@@ -26,6 +26,12 @@ pub const BROWSER_SURFACE_OPEN_EVENT: &str = "browser-surface-open";
 pub const BROWSER_SESSION_EVENT: &str = "browser-session-event";
 /// Default `wait` budget when a caller does not supply one.
 pub const DEFAULT_WAIT_TIMEOUT_MS: u64 = 15_000;
+
+/// Whether an attached presentation may drive the page or only mirror it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct BrowserPresentationRole {
+    pub can_drive: bool,
+}
 
 /// Whether this host can back a browser surface at all.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -346,6 +352,9 @@ pub async fn console_for_session(
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserPointerRequest {
     pub browser_id: String,
+    /// The surface sending this. Only the drive-lease holder is obeyed.
+    #[serde(default)]
+    pub presentation_id: Option<String>,
     pub event_type: String,
     pub x: f64,
     pub y: f64,
@@ -360,6 +369,8 @@ pub struct BrowserPointerRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserWheelRequest {
     pub browser_id: String,
+    #[serde(default)]
+    pub presentation_id: Option<String>,
     pub x: f64,
     pub y: f64,
     pub delta_x: f64,
@@ -371,6 +382,8 @@ pub struct BrowserWheelRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserKeyRequest {
     pub browser_id: String,
+    #[serde(default)]
+    pub presentation_id: Option<String>,
     pub event_type: String,
     pub key: String,
     #[serde(default)]
@@ -450,21 +463,27 @@ pub async fn navigate_browser_session(
 #[tauri::command]
 pub async fn attach_browser_screencast(
     browser_id: String,
+    presentation_id: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
-    state
+) -> Result<BrowserPresentationRole, String> {
+    let session = state
         .browser_sessions
         .resolve(&browser_id)
         .await
-        .map_err(command_error)?
-        .attach_screencast()
+        .map_err(command_error)?;
+    session
+        .attach_screencast(&presentation_id)
         .await
-        .map_err(command_error)
+        .map_err(command_error)?;
+    Ok(BrowserPresentationRole {
+        can_drive: session.presentation_may_drive(Some(&presentation_id)).await,
+    })
 }
 
 #[tauri::command]
 pub async fn detach_browser_screencast(
     browser_id: String,
+    presentation_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state
@@ -472,7 +491,7 @@ pub async fn detach_browser_screencast(
         .resolve(&browser_id)
         .await
         .map_err(command_error)?
-        .detach_screencast()
+        .detach_screencast(&presentation_id)
         .await
         .map_err(command_error)
 }
@@ -488,12 +507,15 @@ pub async fn send_browser_pointer(
         .await
         .map_err(command_error)?
         .dispatch_mouse(
-            &request.event_type,
-            request.x,
-            request.y,
-            request.button.as_deref().unwrap_or("left"),
-            request.click_count.unwrap_or(1),
-            request.modifiers.unwrap_or(0),
+            request.presentation_id.as_deref(),
+            &PointerEvent {
+                event_type: &request.event_type,
+                x: request.x,
+                y: request.y,
+                button: request.button.as_deref().unwrap_or("left"),
+                click_count: request.click_count.unwrap_or(1),
+                modifiers: request.modifiers.unwrap_or(0),
+            },
         )
         .await
         .map_err(command_error)
@@ -510,6 +532,7 @@ pub async fn send_browser_wheel(
         .await
         .map_err(command_error)?
         .dispatch_wheel(
+            request.presentation_id.as_deref(),
             request.x,
             request.y,
             request.delta_x,
@@ -532,6 +555,7 @@ pub async fn send_browser_key(
         .map_err(command_error)?;
     session
         .dispatch_key(
+            request.presentation_id.as_deref(),
             &request.event_type,
             &request.key,
             request.code.as_deref().unwrap_or(""),

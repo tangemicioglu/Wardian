@@ -12,13 +12,37 @@ Filename: `2026-08-09-agent-browser-surface.md`
 | Engine | `state/browser_session/engine.rs` discovers Edge → Chrome → Brave → Chromium, or `WARDIAN_BROWSER_BINARY`, and launches it headless with an isolated profile on an ephemeral loopback debug port. |
 | Protocol | `cdp.rs` is a ~250-line CDP client: request/response correlation, flattened target sessions, an event broadcast, and a 30s per-call ceiling. `tokio-tungstenite` was already in `Cargo.lock` via axum, so no new dependency tree. |
 | Session runtime | `actor.rs` owns the broker and per-session state: navigation, history, `get`, `wait`, snapshot, actions, screenshots, viewport, `eval`, console capture, screencast, and input forwarding. |
-| Refs | `snapshot.rs` mints `e1..eN`, stamps them on the DOM, and refuses a stale generation with `snapshot_stale` rather than clicking whatever now occupies the position. |
+| Refs | `snapshot.rs` mints `e1..eN`, stamps them on the DOM, and gates every action on three checks — generation, uniqueness, and element identity — each of which refuses rather than guesses. |
 | Control plane | 12 `ControlRequest` variants; browser error codes are carried to the CLI intact rather than flattened to `generic`. |
 | CLI | `wardian browser open\|list\|<target> …` with `--json` and `--snapshot-after`. Ownership defaults to `WARDIAN_SESSION_ID`. |
 | Surface | `features/browser/BrowserSurface.tsx` renders the screencast, forwards pointer/wheel/keyboard, and stops streaming when hidden. Registered as a `Sessions` contribution that provisions its own session. |
-| Lifecycle | Sessions close on explicit close, on the owning agent's `kill_agent`, and on app exit. Closing a tab only detaches. |
+| Lifecycle | Sessions close on explicit close, on the owning agent's `kill_agent`, and on app exit. Closing a tab only detaches. A failed launch leaves no profile behind; a crashed browser publishes a closed event. |
+| Drive lease | The first presentation to attach drives; later ones mirror read-only, matching the terminal broker. The backend refuses input from a non-holder. |
 
-Verification: 46 Rust unit tests, 8 `#[ignore]`d engine-backed integration tests against real Edge, 13 CLI unit tests, 8 core wire-type tests, and 31 frontend tests. Phases 3 and 4 below are not built.
+Verification: 47 Rust unit tests, 15 `#[ignore]`d engine-backed integration
+tests against real Edge, 13 CLI unit tests, 8 core wire-type tests, 33 frontend
+tests, and a native E2E that provisions a session from the launcher, renders a
+screencast frame, then drives the page through the CLI. Phases 3 and 4 below
+are not built.
+
+## Review round
+
+An autoreview pass (blueprint `autoreview`, run `1786270694884-d61f0e31`)
+returned six findings against the first commit. Five were real; each is fixed
+with an engine-backed regression test.
+
+| Finding | Outcome |
+|---|---|
+| A recycled DOM node could be acted on through a ref that had not gone stale | Actions now pin the snapshot generation in the selector, require exactly one match, and re-derive the element's role and name to compare against what the snapshot recorded. New codes `ref_changed` and `ref_ambiguous`. |
+| A dropped `Page.frameNavigated` on the lossy event channel would leave stale refs valid | `RecvError::Lagged` now invalidates every ref and resynchronizes, because the pump cannot know what was discarded. |
+| A failed first navigation returned an error while leaving a live browser registered | Treated as a page outcome: the session stays usable and reports `load_state: failed`. A failed launch now also removes its profile directory. |
+| Mirrored presentations could drive the shared page, and the chrome bar bypassed `read_only` entirely | A drive lease assigned on screencast attach, enforced in the backend and reflected as disabled controls in the surface. |
+| A screencast attach resolving after teardown left the stream running | The effect tracks cancellation and detaches a late attach. |
+| Same-document navigation (`pushState`, hash) left the URL and refs on the previous route | `Page.navigatedWithinDocument` now updates the URL and invalidates refs. |
+
+The sixth item, a residual note that the review did not independently verify
+Chromium's loopback bind for `--remote-debugging-port=0`, is unresolved by
+inspection and left as a stated assumption.
 
 ### What differs from the plan below
 

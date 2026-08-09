@@ -33,6 +33,11 @@ export type BrowserSessionSummary = {
   console_error_count: number;
 };
 
+/** Whether an attached presentation drives the page or only mirrors it. */
+export type BrowserPresentationRole = {
+  can_drive: boolean;
+};
+
 export type BrowserEngineStatus = {
   available: boolean;
   engine?: string;

@@ -40,8 +40,15 @@ When you see `snapshot_stale`, re-snapshot and use the new refs. Do not retry
 the same ref. `--snapshot-after` folds the re-snapshot into the action that
 caused the navigation, which is usually what you want after a click.
 
+A ref is checked three ways before it is acted on: the snapshot generation,
+that it resolves to exactly one element, and that the element is still what the
+snapshot described. Any of them failing is a refusal, never a best guess.
+
 Other ref failures: `snapshot_missing` (no snapshot taken yet),
-`ref_detached` (the element left the DOM), `ref_malformed` (not an `eN` token).
+`ref_detached` (the element left the DOM), `ref_changed` (the element was
+recycled for different content, as virtualized lists do), `ref_ambiguous` (the
+ref matched several elements), `ref_malformed` (not an `eN` token). All of them
+mean the same thing for you: re-snapshot.
 
 ## Commands
 

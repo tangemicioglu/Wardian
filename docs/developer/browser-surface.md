@@ -48,20 +48,45 @@ a message naming the override, and `open` fails with
 
 ## Snapshots and refs
 
-`snapshot` injects a walker that stamps `data-wardian-ref="eN"` on each element
-it reports, capped at 400 elements and 160 characters per field. The session's
-`SnapshotLedger` records which generation minted the refs. A main-frame
-`Page.frameNavigated` bumps the generation; an iframe navigating does not,
-because it must not throw away refs the agent just took.
+`snapshot` injects a walker that stamps `data-wardian-ref="eN"` and
+`data-wardian-snapshot="<generation>"` on each element it reports, capped at
+400 elements and 160 characters per field. The ledger records both the
+generation and what each ref pointed at.
 
-Acting on a ref from an older generation returns `snapshot_stale`. The ledger
-deliberately retains the previous snapshot generation across an invalidation so
-the error is the actionable "stale, re-snapshot" rather than the misleading
-"no snapshot has been taken".
+Three checks stand between a ref and a click, and all three are refusals rather
+than best guesses:
+
+1. **Generation.** A main-frame `Page.frameNavigated` or a
+   `Page.navigatedWithinDocument` bumps the generation, so refs do not survive
+   a route change even when no frame commits. An iframe navigating does not
+   bump it, because it must not throw away refs the agent just took. Acting on
+   an older generation returns `snapshot_stale`.
+2. **Uniqueness.** The action selector pins both the ref and the generation and
+   requires exactly one match; several matches return `ref_ambiguous`.
+3. **Identity.** The guard re-derives the element's role and accessible name
+   and compares them to what the snapshot recorded. A page can recycle a DOM
+   node for different content without navigating — a virtualized list does this
+   constantly — and the stamped attribute travels with the node. A repurposed
+   element returns `ref_changed`.
+
+The role and name derivation is a single shared JS constant (`IDENTITY_JS`)
+used by both the walker and the guard. Any drift between the two would produce
+spurious `ref_changed` refusals, so they must not be duplicated.
+
+The ledger deliberately retains the previous snapshot generation across an
+invalidation so the error is the actionable "stale, re-snapshot" rather than
+the misleading "no snapshot has been taken".
 
 A snapshot taken while the page navigates is discarded rather than published:
 recording it against a generation that has already moved would hand back refs
 that are stale the moment they are returned.
+
+**Dropped events fail closed.** The session's event pump reads a bounded
+broadcast channel shared with screencast frames. On `RecvError::Lagged` it
+cannot know whether a `Page.frameNavigated` was among the discarded messages,
+so it invalidates every outstanding ref and re-reads the page's URL and title.
+A spurious `snapshot_stale` costs one re-snapshot; a missed navigation would
+let a ref act on a different document.
 
 ## Error codes
 
@@ -80,7 +105,10 @@ flattened to `generic`.
 | `snapshot_stale` | The ref predates the current page. Re-snapshot. |
 | `snapshot_missing` | No snapshot has been taken yet. |
 | `ref_detached` | The element left the DOM. |
+| `ref_changed` | The element was recycled for different content. |
+| `ref_ambiguous` | The ref matched more than one element. |
 | `ref_malformed` | Not an `eN` token. |
+| `browser_read_only_presentation` | A mirroring surface tried to drive the page. |
 
 ## The surface
 
@@ -91,8 +119,19 @@ client offset back into page space; a click in the letterbox is dropped rather
 than clamped to an edge.
 
 The surface's `render_policy` is `suspend_when_hidden`, so a hidden tab stops
-the screencast while the page keeps running. `Ctrl`/`Cmd` chords are left to
-the workbench so a focused page cannot swallow tab switching or the palette.
+the screencast while the page keeps running. An attach that resolves after the
+effect was already torn down detaches immediately, or the stream would outlive
+the surface that asked for it. `Ctrl`/`Cmd` chords are left to the workbench so
+a focused page cannot swallow tab switching or the palette.
+
+**One driver at a time.** Attaching a screencast registers a presentation; the
+first to attach holds the drive lease and later ones mirror it read-only, the
+same arrangement the terminal broker uses. The backend rejects input from a
+non-holder with `browser_read_only_presentation`, and the surface disables its
+chrome bar and viewport rather than showing controls that silently do nothing.
+The lease passes to the longest-attached remaining presentation when the driver
+detaches. The CLI carries no presentation id and is never treated as a
+competing driver.
 
 ## Lifecycle
 
@@ -116,6 +155,21 @@ mints a new session at the persisted URL and rebinds the surface.
 The engine-backed tests are `#[ignore]`d so a machine without a Chromium still
 runs a green suite. They serve a fixture over an ephemeral loopback port rather
 than reaching the network.
+
+## Lifecycle failure modes
+
+- **Failed launch.** Everything from `launch_engine` to a registered session
+  runs in one fallible step with a single cleanup arm, so no failure leaves a
+  profile directory behind. The child dies with its dropped handle
+  (`kill_on_drop`).
+- **Failed first load.** Treated as a page outcome, not a failed open: the
+  session is registered and its browser is running, so returning an error would
+  strand a live browser with no handle. The caller sees `load_state: failed`.
+- **Crashed browser.** The websocket closing publishes a synthetic
+  `Wardian.disconnected` event. Subscribers cannot detect closure by the
+  channel ending — the sender lives in the connection they hold alive — so
+  without that signal a crashed browser would leave the pump waiting forever
+  and the surface would never show its reopen path.
 
 ## Not built yet
 

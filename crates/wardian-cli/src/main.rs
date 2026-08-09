@@ -1551,6 +1551,11 @@ pub(crate) fn control_error(e: std::io::Error) -> CliError {
             "snapshot_missing" => backend_error(ExitCode::Generic, "snapshot_missing"),
             "ref_malformed" => backend_error(ExitCode::Generic, "ref_malformed"),
             "ref_detached" => backend_error(ExitCode::Generic, "ref_detached"),
+            "ref_changed" => backend_error(ExitCode::Generic, "ref_changed"),
+            "ref_ambiguous" => backend_error(ExitCode::Ambiguous, "ref_ambiguous"),
+            "browser_read_only_presentation" => {
+                backend_error(ExitCode::Generic, "browser_read_only_presentation")
+            }
             _ => endpoint_error.details().cloned().map_or_else(
                 || CliError::generic(endpoint_error.to_string()),
                 |details| {

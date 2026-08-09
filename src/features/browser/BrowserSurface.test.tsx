@@ -83,7 +83,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   emit = null;
   mocks.getBrowserSession.mockResolvedValue(summary());
-  mocks.attachBrowserScreencast.mockResolvedValue(undefined);
+  mocks.attachBrowserScreencast.mockResolvedValue({ can_drive: true });
   mocks.detachBrowserScreencast.mockResolvedValue(undefined);
   mocks.navigateBrowserSession.mockResolvedValue(summary());
   mocks.sendBrowserPointer.mockResolvedValue(undefined);
@@ -139,7 +139,9 @@ describe("BrowserSurface", () => {
 
   it("streams only while visible so a hidden tab stops costing frames", async () => {
     const { rerender } = await renderSurface();
-    await waitFor(() => expect(mocks.attachBrowserScreencast).toHaveBeenCalledWith("b-1"));
+    await waitFor(() =>
+      expect(mocks.attachBrowserScreencast).toHaveBeenCalledWith("b-1", expect.any(String)),
+    );
     rerender(
       <BrowserSurface
         surface_id="surface-1"
@@ -148,7 +150,9 @@ describe("BrowserSurface", () => {
         visibility="hidden"
       />,
     );
-    await waitFor(() => expect(mocks.detachBrowserScreencast).toHaveBeenCalledWith("b-1"));
+    await waitFor(() =>
+      expect(mocks.detachBrowserScreencast).toHaveBeenCalledWith("b-1", expect.any(String)),
+    );
   });
 
   it("submits the address bar as a navigation", async () => {
@@ -199,7 +203,13 @@ describe("BrowserSurface", () => {
     });
     await waitFor(() => expect(mocks.sendBrowserPointer).toHaveBeenCalled());
     expect(mocks.sendBrowserPointer).toHaveBeenCalledWith(
-      expect.objectContaining({ browser_id: "b-1", event_type: "mousePressed", x: 500, y: 250 }),
+      expect.objectContaining({
+        browser_id: "b-1",
+        presentation_id: "surface-1:browser:b-1",
+        event_type: "mousePressed",
+        x: 500,
+        y: 250,
+      }),
     );
   });
 
@@ -279,6 +289,58 @@ describe("BrowserSurface", () => {
     expect(screen.getByText(/the browser process exited/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Reopen this page" }));
     expect(onReopen).toHaveBeenCalledWith("https://example.com/");
+  });
+
+  it("mirrors read-only when another presentation holds the drive lease", async () => {
+    mocks.attachBrowserScreencast.mockResolvedValue({ can_drive: false });
+    await renderSurface();
+    await waitFor(() =>
+      expect(screen.getByTestId("browser-surface-read-only")).toBeInTheDocument(),
+    );
+    act(() => {
+      emit?.({ kind: "frame", browser_id: "b-1", data: "AAAA", width: 1000, height: 500 });
+    });
+    stubFrameGeometry();
+
+    // Every driving path must be closed, not just the viewport.
+    expect(screen.getByLabelText("Go back")).toBeDisabled();
+    expect(screen.getByLabelText("Reload")).toBeDisabled();
+    expect(screen.getByTestId("browser-surface-address")).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Go back"));
+    fireEvent.pointerDown(screen.getByTestId("browser-surface-viewport"), {
+      clientX: 10,
+      clientY: 10,
+      button: 0,
+    });
+    expect(mocks.navigateBrowserSession).not.toHaveBeenCalled();
+    expect(mocks.sendBrowserPointer).not.toHaveBeenCalled();
+  });
+
+  it("detaches a screencast whose attach resolved after the surface was hidden", async () => {
+    let resolveAttach: ((role: { can_drive: boolean }) => void) | null = null;
+    mocks.attachBrowserScreencast.mockImplementation(
+      () => new Promise((resolve) => { resolveAttach = resolve; }),
+    );
+    const { rerender } = await renderSurface();
+    await waitFor(() => expect(mocks.attachBrowserScreencast).toHaveBeenCalled());
+
+    rerender(
+      <BrowserSurface
+        surface_id="surface-1"
+        resource_key="b-1"
+        persisted_url="https://example.com/"
+        visibility="hidden"
+      />,
+    );
+    expect(mocks.detachBrowserScreencast).not.toHaveBeenCalled();
+
+    // The in-flight attach lands after cleanup already ran; without the
+    // cancellation check the stream would run forever for a hidden surface.
+    await act(async () => {
+      resolveAttach?.({ can_drive: true });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mocks.detachBrowserScreencast).toHaveBeenCalledTimes(1));
   });
 
   it("shows the unavailable state when the session never resolves", async () => {

@@ -227,7 +227,7 @@ async fn navigation_still_completes_while_a_screencast_is_streaming() {
 
     // A surface attaching is what makes this different from a headless CLI
     // session, and it is the case that regressed.
-    session.attach_screencast().await.expect("attach");
+    session.attach_screencast("pane-1").await.expect("attach");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     session
@@ -239,7 +239,7 @@ async fn navigation_still_completes_while_a_screencast_is_streaming() {
         .await
         .expect("second page");
 
-    session.detach_screencast().await.expect("detach");
+    session.detach_screencast("pane-1").await.expect("detach");
     broker.close(session.browser_id()).await.expect("close");
     server.abort();
 }
@@ -300,6 +300,230 @@ async fn captures_a_screenshot_and_honors_a_viewport_override() {
     assert!(bytes.len() > 1000, "screenshot was {} bytes", bytes.len());
     assert_eq!(&bytes[1..4], b"PNG");
     let _ = std::fs::remove_file(&path);
+
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_first_load_that_fails_still_leaves_a_usable_session() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    // Nothing is listening on this port, so the first navigation cannot commit.
+    let dead_port = {
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = probe.local_addr().expect("addr").port();
+        drop(probe);
+        port
+    };
+
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(format!("http://127.0.0.1:{dead_port}/")),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("a failed first load must not fail the open");
+
+    // The session has to remain addressable, or its browser would be stranded
+    // with no handle to close it.
+    assert_eq!(broker.list().await.len(), 1);
+    broker
+        .resolve("browser:1")
+        .await
+        .expect("the session must still resolve");
+
+    session.navigate(&base_url).await.expect("recovery navigate");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("the session is still usable after a failed first load");
+
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn closing_a_session_removes_its_profile_directory() {
+    let profile_root = std::env::temp_dir().join(format!("wardian-profile-{}", uuid::Uuid::new_v4()));
+    let broker = BrowserSessionBroker::new(profile_root.clone());
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let profile = profile_root.join(session.browser_id());
+    assert!(profile.is_dir(), "the session should own a profile directory");
+
+    broker.close(session.browser_id()).await.expect("close");
+    assert!(
+        !profile.exists(),
+        "a closed session must not leave its profile behind at {}",
+        profile.display()
+    );
+    let _ = std::fs::remove_dir_all(&profile_root);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_browser_that_exits_reports_the_session_closed() {
+    let broker = broker();
+    let mut events = broker.subscribe();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let browser_id = session.browser_id().to_string();
+
+    // Kill the process without going through `close`, which is what a crash
+    // looks like. The surface must learn about it rather than waiting forever.
+    session.kill_child_for_test().await;
+
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            match events.recv().await {
+                Ok(super::actor::BrowserSessionEvent::Closed { browser_id, reason }) => {
+                    return (browser_id, reason);
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => panic!("channel closed"),
+            }
+        }
+    })
+    .await
+    .expect("a dead browser must publish a closed event");
+
+    assert_eq!(closed.0, browser_id);
+    assert!(closed.1.contains("exited"), "reason was {:?}", closed.1);
+
+    broker.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn only_the_first_attached_presentation_may_drive_the_page() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+
+    session.attach_screencast("pane-a").await.expect("first");
+    session.attach_screencast("pane-b").await.expect("second");
+    assert!(session.presentation_may_drive(Some("pane-a")).await);
+    assert!(
+        !session.presentation_may_drive(Some("pane-b")).await,
+        "a mirroring pane must not drive the shared page"
+    );
+    // The CLI has no presentation and is not a competing driver.
+    assert!(session.presentation_may_drive(None).await);
+
+    let refused = session
+        .dispatch_mouse(
+            Some("pane-b"),
+            &super::actor::PointerEvent {
+                event_type: "mousePressed",
+                x: 1.0,
+                y: 1.0,
+                button: "left",
+                click_count: 1,
+                modifiers: 0,
+            },
+        )
+        .await
+        .expect_err("a mirror must not dispatch input");
+    assert_eq!(refused.code(), "browser_read_only_presentation");
+
+    // When the driver leaves, the lease passes rather than stranding the page.
+    session.detach_screencast("pane-a").await.expect("detach");
+    assert!(session.presentation_may_drive(Some("pane-b")).await);
+
+    session.detach_screencast("pane-b").await.expect("detach");
+    broker.close(session.browser_id()).await.expect("close");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_same_document_navigation_invalidates_refs_and_updates_the_url() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(base_url.clone()),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+    let snapshot = session.snapshot(true).await.expect("snapshot");
+    let stale_ref = snapshot.elements.first().expect("an element").element_ref.clone();
+
+    // A History API route change never commits a frame, so it would otherwise
+    // leave both the URL and the refs pointing at the previous route.
+    session
+        .eval("history.pushState({}, '', '/routed'); true")
+        .await
+        .expect("pushState");
+    session
+        .wait(&WaitCondition::UrlContains("/routed".to_string()), 10_000)
+        .await
+        .expect("route change");
+
+    let summary = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let summary = session.summary().await;
+            if summary.url.contains("/routed") {
+                return summary;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the session URL must follow a same-document navigation");
+    assert!(summary.url.ends_with("/routed"), "url was {}", summary.url);
+
+    let error = session
+        .act(&stale_ref, &ElementAction::Click)
+        .await
+        .expect_err("refs from the previous route must not survive it");
+    assert_eq!(error.code(), "snapshot_stale", "got {error}");
+
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_ref_whose_element_was_repurposed_is_refused() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(base_url),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+    let snapshot = session.snapshot(true).await.expect("snapshot");
+    let button = snapshot
+        .elements
+        .iter()
+        .find(|element| element.name.trim() == "Go")
+        .expect("the button");
+
+    // Recycle the node in place, as a virtualized list does: same element,
+    // same stamped ref, entirely different meaning. No navigation occurs, so
+    // the generation check alone would let this through.
+    session
+        .eval("document.getElementById('go').textContent = 'Delete everything'; true")
+        .await
+        .expect("repurpose");
+
+    let error = session
+        .act(&button.element_ref, &ElementAction::Click)
+        .await
+        .expect_err("a repurposed element must not be clicked as the original");
+    assert_eq!(error.code(), "ref_changed", "got {error}");
 
     broker.close(session.browser_id()).await.expect("close");
     server.abort();

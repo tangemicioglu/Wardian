@@ -24,10 +24,11 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::time::{sleep, Instant};
 use uuid::Uuid;
 
-use super::cdp::{required_str, CdpConnection, CdpError, CdpEvent};
-use super::engine::{discover_engine, launch_engine, EngineError, EngineKind};
+use super::cdp::{required_str, CdpConnection, CdpError, CdpEvent, DISCONNECTED_METHOD};
+use super::engine::{discover_engine, launch_engine, EngineBinary, EngineError, EngineKind};
 use super::snapshot::{
-    parse_snapshot, snapshot_expression, PageSnapshot, RefError, SnapshotLedger, REF_ATTRIBUTE,
+    action_expression, parse_snapshot, snapshot_expression, PageSnapshot, RefError,
+    SnapshotLedger,
 };
 
 /// How often a `wait` predicate is re-evaluated.
@@ -92,6 +93,8 @@ pub enum BrowserError {
     Invalid { detail: String },
     /// A filesystem operation around a screenshot failed.
     Io { detail: String },
+    /// A mirrored presentation tried to drive the page.
+    ReadOnlyPresentation,
 }
 
 impl std::fmt::Display for BrowserError {
@@ -116,6 +119,10 @@ impl std::fmt::Display for BrowserError {
             } => write!(formatter, "timed out after {timeout_ms}ms waiting for {condition}"),
             BrowserError::Invalid { detail } => write!(formatter, "{detail}"),
             BrowserError::Io { detail } => write!(formatter, "{detail}"),
+            BrowserError::ReadOnlyPresentation => write!(
+                formatter,
+                "this presentation is mirroring the page read-only; another surface holds the drive lease"
+            ),
         }
     }
 }
@@ -134,6 +141,7 @@ impl BrowserError {
             BrowserError::WaitTimeout { .. } => "browser_wait_timeout",
             BrowserError::Invalid { .. } => "browser_invalid_request",
             BrowserError::Io { .. } => "browser_io_error",
+            BrowserError::ReadOnlyPresentation => "browser_read_only_presentation",
         }
     }
 }
@@ -201,6 +209,17 @@ impl WaitCondition {
     }
 }
 
+/// One pointer event forwarded from a surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PointerEvent<'a> {
+    pub event_type: &'a str,
+    pub x: f64,
+    pub y: f64,
+    pub button: &'a str,
+    pub click_count: u32,
+    pub modifiers: u32,
+}
+
 /// A DOM action against a snapshot ref.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ElementAction {
@@ -256,7 +275,10 @@ struct SessionState {
     ledger: SnapshotLedger,
     console: VecDeque<ConsoleEntry>,
     console_error_count: usize,
-    screencast_viewers: usize,
+    /// Presentations currently streaming, in attach order.
+    screencast_viewers: Vec<String>,
+    /// The presentation allowed to drive the page. First attach wins.
+    owner_presentation_id: Option<String>,
 }
 
 /// One live browser, its protocol session, and everything derived from it.
@@ -502,20 +524,28 @@ impl BrowserSession {
                 current_generation: state.ledger.current_generation(),
             }));
         }
-        state.ledger.record_snapshot(snapshot.elements.len());
+        state.ledger.record_snapshot(&snapshot.elements);
         state.url = snapshot.url.clone();
         state.title = snapshot.title.clone();
         Ok(snapshot)
     }
 
     /// Performs an action against a ref minted by the current snapshot.
+    ///
+    /// Three checks stand between a ref and a click: the snapshot generation,
+    /// that the ref resolves to exactly one element, and that the element is
+    /// still what the snapshot described. Any of them failing is a refusal,
+    /// never a best guess.
     pub async fn act(
         &self,
         element_ref: &str,
         action: &ElementAction,
     ) -> Result<(), BrowserError> {
-        self.state.read().await.ledger.validate(element_ref)?;
-        let selector = json!(format!("[{REF_ATTRIBUTE}={:?}]", element_ref));
+        let (generation, expected) = {
+            let state = self.state.read().await;
+            let identity = state.ledger.validate(element_ref)?.clone();
+            (state.ledger.current_generation(), identity)
+        };
         let body = match action {
             ElementAction::Click => {
                 "node.scrollIntoView({ block: 'center' }); node.click();".to_string()
@@ -535,16 +565,21 @@ impl BrowserSession {
             ),
             ElementAction::Scroll => "node.scrollIntoView({ block: 'center' });".to_string(),
         };
-        let expression = format!(
-            "(() => {{ const node = document.querySelector({selector}); if (!node) return 'detached'; {body} return 'ok'; }})()"
-        );
-        let outcome = self.evaluate(&expression).await?;
-        if outcome.as_str() == Some("detached") {
-            return Err(BrowserError::Ref(RefError::Detached {
+        let outcome = self
+            .evaluate(&action_expression(element_ref, generation, &expected, &body))
+            .await?;
+        match outcome.as_str() {
+            Some("ok") => Ok(()),
+            Some("ambiguous") => Err(BrowserError::Ref(RefError::Ambiguous {
                 element_ref: element_ref.to_string(),
-            }));
+            })),
+            Some("changed") => Err(BrowserError::Ref(RefError::Changed {
+                element_ref: element_ref.to_string(),
+            })),
+            _ => Err(BrowserError::Ref(RefError::Detached {
+                element_ref: element_ref.to_string(),
+            })),
         }
-        Ok(())
     }
 
     /// Scrolls the page itself rather than an element.
@@ -617,11 +652,19 @@ impl BrowserSession {
     }
 
     /// Starts streaming frames while at least one surface is watching.
-    pub async fn attach_screencast(&self) -> Result<(), BrowserError> {
+    ///
+    /// The first presentation to attach becomes the driver; later ones mirror
+    /// it read-only, matching how a terminal session treats its presentations.
+    pub async fn attach_screencast(&self, presentation_id: &str) -> Result<(), BrowserError> {
         let should_start = {
             let mut state = self.state.write().await;
-            state.screencast_viewers += 1;
-            state.screencast_viewers == 1
+            if !state.screencast_viewers.iter().any(|id| id == presentation_id) {
+                state.screencast_viewers.push(presentation_id.to_string());
+            }
+            if state.owner_presentation_id.is_none() {
+                state.owner_presentation_id = Some(presentation_id.to_string());
+            }
+            state.screencast_viewers.len() == 1
         };
         if should_start {
             self.connection
@@ -636,11 +679,17 @@ impl BrowserSession {
     }
 
     /// Stops streaming once the last surface detaches. The page keeps running.
-    pub async fn detach_screencast(&self) -> Result<(), BrowserError> {
+    ///
+    /// When the driver leaves, the lease passes to the longest-attached
+    /// remaining presentation rather than leaving the page undrivable.
+    pub async fn detach_screencast(&self, presentation_id: &str) -> Result<(), BrowserError> {
         let should_stop = {
             let mut state = self.state.write().await;
-            state.screencast_viewers = state.screencast_viewers.saturating_sub(1);
-            state.screencast_viewers == 0
+            state.screencast_viewers.retain(|id| id != presentation_id);
+            if state.owner_presentation_id.as_deref() == Some(presentation_id) {
+                state.owner_presentation_id = state.screencast_viewers.first().cloned();
+            }
+            state.screencast_viewers.is_empty()
         };
         if should_stop {
             self.connection
@@ -650,22 +699,45 @@ impl BrowserSession {
         Ok(())
     }
 
+    /// Whether a presentation currently holds the drive lease.
+    ///
+    /// An unattached caller — the CLI, or a surface that has not started
+    /// streaming — is not a competing driver and is allowed through.
+    pub async fn presentation_may_drive(&self, presentation_id: Option<&str>) -> bool {
+        let Some(presentation_id) = presentation_id else {
+            return true;
+        };
+        let state = self.state.read().await;
+        match state.owner_presentation_id.as_deref() {
+            None => true,
+            Some(owner) => owner == presentation_id,
+        }
+    }
+
+    /// Refuses a mutation from a presentation that does not hold the lease.
+    async fn require_drive(&self, presentation_id: Option<&str>) -> Result<(), BrowserError> {
+        if self.presentation_may_drive(presentation_id).await {
+            return Ok(());
+        }
+        Err(BrowserError::ReadOnlyPresentation)
+    }
+
     /// Forwards a pointer event from a surface into the page.
     pub async fn dispatch_mouse(
         &self,
-        event_type: &str,
-        x: f64,
-        y: f64,
-        button: &str,
-        click_count: u32,
-        modifiers: u32,
+        presentation_id: Option<&str>,
+        event: &PointerEvent<'_>,
     ) -> Result<(), BrowserError> {
+        self.require_drive(presentation_id).await?;
         if !matches!(
-            event_type,
+            event.event_type,
             "mousePressed" | "mouseReleased" | "mouseMoved" | "mouseWheel"
         ) {
             return Err(BrowserError::Invalid {
-                detail: format!("{event_type} is not a pointer event this surface forwards"),
+                detail: format!(
+                    "{} is not a pointer event this surface forwards",
+                    event.event_type
+                ),
             });
         }
         self.connection
@@ -673,12 +745,12 @@ impl BrowserSession {
                 &self.cdp_session_id,
                 "Input.dispatchMouseEvent",
                 json!({
-                    "type": event_type,
-                    "x": x,
-                    "y": y,
-                    "button": button,
-                    "clickCount": click_count,
-                    "modifiers": modifiers,
+                    "type": event.event_type,
+                    "x": event.x,
+                    "y": event.y,
+                    "button": event.button,
+                    "clickCount": event.click_count,
+                    "modifiers": event.modifiers,
                 }),
             )
             .await?;
@@ -688,12 +760,14 @@ impl BrowserSession {
     /// Forwards a wheel event from a surface into the page.
     pub async fn dispatch_wheel(
         &self,
+        presentation_id: Option<&str>,
         x: f64,
         y: f64,
         delta_x: f64,
         delta_y: f64,
         modifiers: u32,
     ) -> Result<(), BrowserError> {
+        self.require_drive(presentation_id).await?;
         self.connection
             .call_session(
                 &self.cdp_session_id,
@@ -714,12 +788,14 @@ impl BrowserSession {
     /// Forwards a key event from a surface into the page.
     pub async fn dispatch_key(
         &self,
+        presentation_id: Option<&str>,
         event_type: &str,
         key: &str,
         code: &str,
         text: Option<&str>,
         modifiers: u32,
     ) -> Result<(), BrowserError> {
+        self.require_drive(presentation_id).await?;
         if !matches!(event_type, "keyDown" | "keyUp" | "rawKeyDown" | "char") {
             return Err(BrowserError::Invalid {
                 detail: format!("{event_type} is not a key event this surface forwards"),
@@ -750,6 +826,17 @@ impl BrowserSession {
             )
             .await?;
         Ok(())
+    }
+
+    /// Kills the browser process without going through `close`.
+    ///
+    /// Only for tests that need to simulate a crash: production teardown goes
+    /// through the broker so the session is deregistered too.
+    #[cfg(test)]
+    pub(crate) async fn kill_child_for_test(&self) {
+        if let Some(mut child) = self.child.lock().await.take() {
+            let _ = child.kill().await;
+        }
     }
 
     async fn shutdown(&self) {
@@ -853,7 +940,57 @@ impl BrowserSessionBroker {
         let browser_id = Uuid::new_v4().to_string();
         let viewport = request.viewport.unwrap_or_default();
         let profile_dir = self.profile_root.join(&browser_id);
-        let launched = launch_engine(&binary, &profile_dir, viewport.width, viewport.height)
+
+        // Every step from here to a registered session can fail with a profile
+        // already on disk and, past `launch_engine`, a live child. The child
+        // dies with its dropped handle (`kill_on_drop`), but the profile
+        // directory would be left behind on every failed open.
+        let started = self
+            .start_session(&binary, &browser_id, &profile_dir, viewport, &request)
+            .await;
+        let session = match started {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&profile_dir);
+                return Err(error);
+            }
+        };
+
+        self.spawn_event_pump(Arc::clone(&session));
+        self.sessions
+            .write()
+            .await
+            .insert(browser_id.clone(), Arc::clone(&session));
+
+        if let Some(url) = target_url {
+            // A failed first load is a page outcome, not a failed open. The
+            // session is already registered and its browser is running, so
+            // returning Err here would strand a live browser with no handle.
+            // The caller sees `load_state: failed` and can navigate again.
+            if session.navigate(&url).await.is_err() {
+                session.state.write().await.load_state = LoadState::Failed;
+            }
+        }
+        let _ = self.events.send(BrowserSessionEvent::State {
+            browser_id,
+            summary: session.summary().await,
+        });
+        Ok(session)
+    }
+
+    /// Launches a browser, attaches to a fresh page, and builds the session.
+    ///
+    /// Split out so `open` has one place to clean up after any failure in the
+    /// sequence rather than a cleanup arm per step.
+    async fn start_session(
+        &self,
+        binary: &EngineBinary,
+        browser_id: &str,
+        profile_dir: &std::path::Path,
+        viewport: Viewport,
+        request: &OpenBrowserRequest,
+    ) -> Result<Arc<BrowserSession>, BrowserError> {
+        let launched = launch_engine(binary, profile_dir, viewport.width, viewport.height)
             .await
             .map_err(BrowserError::Engine)?;
         let connection = CdpConnection::connect(&launched.websocket_url).await?;
@@ -880,14 +1017,14 @@ impl BrowserSessionBroker {
         }
 
         let session = Arc::new(BrowserSession {
-            browser_id: browser_id.clone(),
+            browser_id: browser_id.to_string(),
             short_ref: self.next_short_ref.fetch_add(1, Ordering::Relaxed),
-            owner_agent_id: request.owner_agent_id,
-            workspace: request.workspace,
+            owner_agent_id: request.owner_agent_id.clone(),
+            workspace: request.workspace.clone(),
             engine: launched.kind,
-            connection: Arc::clone(&connection),
-            cdp_session_id: cdp_session_id.clone(),
-            profile_dir,
+            connection,
+            cdp_session_id,
+            profile_dir: profile_dir.to_path_buf(),
             child: Mutex::new(Some(launched.child)),
             state: RwLock::new(SessionState {
                 viewport,
@@ -895,20 +1032,6 @@ impl BrowserSessionBroker {
             }),
         });
         session.set_viewport(Some(viewport)).await?;
-
-        self.spawn_event_pump(Arc::clone(&session));
-        self.sessions
-            .write()
-            .await
-            .insert(browser_id.clone(), Arc::clone(&session));
-
-        if let Some(url) = target_url {
-            session.navigate(&url).await?;
-        }
-        let _ = self.events.send(BrowserSessionEvent::State {
-            browser_id,
-            summary: session.summary().await,
-        });
         Ok(session)
     }
 
@@ -922,9 +1045,17 @@ impl BrowserSessionBroker {
             loop {
                 let event = match receiver.recv().await {
                     Ok(event) => event,
-                    // Lagging means dropped frames, which is survivable; the
-                    // next frame re-syncs the surface.
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    // A lagging receiver dropped events, and this channel
+                    // carries `Page.frameNavigated` as well as frames. Rather
+                    // than assume only frames were lost, invalidate every
+                    // outstanding ref and resynchronize: a spurious
+                    // `snapshot_stale` costs one re-snapshot, while a missed
+                    // navigation would let a ref act on a different document.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        session.state.write().await.ledger.invalidate();
+                        resynchronize(&session, &events).await;
+                        continue;
+                    }
                     Err(broadcast::error::RecvError::Closed) => {
                         let _ = events.send(BrowserSessionEvent::Closed {
                             browser_id: browser_id.clone(),
@@ -933,6 +1064,15 @@ impl BrowserSessionBroker {
                         return;
                     }
                 };
+                // Checked before the session filter: the disconnect signal is
+                // connection-scoped and carries no target session.
+                if event.method == DISCONNECTED_METHOD {
+                    let _ = events.send(BrowserSessionEvent::Closed {
+                        browser_id: browser_id.clone(),
+                        reason: "the browser process exited".to_string(),
+                    });
+                    return;
+                }
                 if event.session_id.as_deref() != Some(cdp_session_id.as_str()) {
                     continue;
                 }
@@ -1084,6 +1224,28 @@ async fn handle_protocol_event(
                 height,
             });
         }
+        // A History API or fragment navigation changes the route without a
+        // frame commit. The URL has to follow it, and refs taken against the
+        // previous route must not survive it.
+        "Page.navigatedWithinDocument" => {
+            let url = event
+                .params
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            {
+                let mut state = session.state.write().await;
+                state.ledger.invalidate();
+                if !url.is_empty() {
+                    state.url = url;
+                }
+            }
+            let _ = events.send(BrowserSessionEvent::State {
+                browser_id,
+                summary: session.summary().await,
+            });
+        }
         "Page.frameNavigated" => {
             // Only a main-frame commit invalidates refs; an iframe navigating
             // must not throw away the refs the agent just took.
@@ -1146,6 +1308,25 @@ async fn handle_protocol_event(
         }
         _ => {}
     }
+}
+
+/// Re-reads the page's own view of itself after events were dropped.
+///
+/// Cheaper and more truthful than guessing which events were lost.
+async fn resynchronize(
+    session: &Arc<BrowserSession>,
+    events: &broadcast::Sender<BrowserSessionEvent>,
+) {
+    if let Ok(url) = session.get(PageField::Url, None).await {
+        session.state.write().await.url = url;
+    }
+    if let Ok(title) = session.get(PageField::Title, None).await {
+        session.state.write().await.title = title;
+    }
+    let _ = events.send(BrowserSessionEvent::State {
+        browser_id: session.browser_id().to_string(),
+        summary: session.summary().await,
+    });
 }
 
 /// Flattens either console event shape into one level/text pair.

@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   BrowserEngineStatus,
   BrowserNavigateAction,
+  BrowserPresentationRole,
   BrowserSessionEvent,
   BrowserSessionSummary,
 } from "../../types";
@@ -135,12 +136,27 @@ export function navigateBrowserSession(
   return invoke<BrowserSessionSummary>("navigate_browser_session", { browserId, action });
 }
 
-export function attachBrowserScreencast(browserId: string): Promise<void> {
-  return invoke<void>("attach_browser_screencast", { browserId });
+/**
+ * Starts streaming and reports whether this presentation may drive the page.
+ *
+ * The first presentation to attach holds the drive lease; later ones mirror it
+ * read-only, so two panes of one session cannot race the same page.
+ */
+export function attachBrowserScreencast(
+  browserId: string,
+  presentationId: string,
+): Promise<BrowserPresentationRole> {
+  return invoke<BrowserPresentationRole>("attach_browser_screencast", {
+    browserId,
+    presentationId,
+  });
 }
 
-export function detachBrowserScreencast(browserId: string): Promise<void> {
-  return invoke<void>("detach_browser_screencast", { browserId });
+export function detachBrowserScreencast(
+  browserId: string,
+  presentationId: string,
+): Promise<void> {
+  return invoke<void>("detach_browser_screencast", { browserId, presentationId });
 }
 
 export function setBrowserViewport(
@@ -153,6 +169,7 @@ export function setBrowserViewport(
 
 export function sendBrowserPointer(request: {
   browser_id: string;
+  presentation_id: string;
   event_type: "mousePressed" | "mouseReleased" | "mouseMoved";
   x: number;
   y: number;
@@ -165,6 +182,7 @@ export function sendBrowserPointer(request: {
 
 export function sendBrowserWheel(request: {
   browser_id: string;
+  presentation_id: string;
   x: number;
   y: number;
   delta_x: number;
@@ -176,6 +194,7 @@ export function sendBrowserWheel(request: {
 
 export function sendBrowserKey(request: {
   browser_id: string;
+  presentation_id: string;
   event_type: "keyDown" | "keyUp" | "char";
   key: string;
   code?: string;

@@ -38,7 +38,7 @@ export interface BrowserSurfaceProps {
   /** URL persisted in surface state, used to reopen after a cold restart. */
   persisted_url: string;
   visibility?: TerminalVisibility;
-  /** Suppresses input, matching a mirrored terminal presentation. */
+  /** Forces read-only regardless of the drive lease. */
   read_only?: boolean;
   on_url_change?: (surface_id: string, url: string) => void;
   on_reopen?: (url: string) => void;
@@ -93,6 +93,8 @@ export function BrowserSurface({
   const [addressDraft, setAddressDraft] = useState(persisted_url);
   const [addressFocused, setAddressFocused] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  /** Null until the backend has said whether this presentation drives. */
+  const [canDrive, setCanDrive] = useState<boolean | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
 
@@ -161,18 +163,30 @@ export function BrowserSurface({
     // Attaching before the session is known to exist would start a stream
     // against an id that may never resolve.
     if (!resolved || missing || visibility === "hidden") return undefined;
+    let cancelled = false;
     let attached = false;
-    void attachBrowserScreencast(resource_key)
-      .then(() => {
+    void attachBrowserScreencast(resource_key, presentationId)
+      .then((role) => {
         attached = true;
+        // Cleanup may already have run while the attach was in flight. Without
+        // this the stream would keep producing frames for a hidden or
+        // unmounted surface, since cleanup saw `attached === false`.
+        if (cancelled) {
+          void detachBrowserScreencast(resource_key, presentationId).catch(() => {});
+          return;
+        }
+        setCanDrive(role.can_drive);
       })
       .catch(() => {
         /* A closed session reports itself through the `closed` event. */
       });
     return () => {
-      if (attached) void detachBrowserScreencast(resource_key).catch(() => {});
+      cancelled = true;
+      if (attached) {
+        void detachBrowserScreencast(resource_key, presentationId).catch(() => {});
+      }
     };
-  }, [missing, resolved, resource_key, visibility]);
+  }, [missing, presentationId, resolved, resource_key, visibility]);
 
   useEffect(() => {
     const url = summary?.url;
@@ -181,14 +195,22 @@ export function BrowserSurface({
     on_url_change?.(surface_id, url);
   }, [addressFocused, on_url_change, summary?.url, surface_id]);
 
+  // A mirroring presentation is read-only even when the caller did not ask
+  // for it: the backend refuses its input either way, and a control that looks
+  // live but does nothing is worse than one that is visibly disabled.
+  const isReadOnly = read_only || canDrive === false;
+
   const runNavigation = useCallback(
     (action: string) => {
+      // The chrome bar drives the same shared page as the viewport, so a
+      // read-only presentation must not be able to navigate it either.
+      if (isReadOnly || missing) return;
       setActionError(null);
       void navigateBrowserSession(resource_key, action).catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
       });
     },
-    [resource_key],
+    [isReadOnly, missing, presentationId, resource_key],
   );
 
   const toPageCoordinates = useCallback(
@@ -202,12 +224,13 @@ export function BrowserSurface({
 
   const handlePointer = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>, eventType: "mousePressed" | "mouseReleased" | "mouseMoved") => {
-      if (read_only || missing) return;
+      if (isReadOnly || missing) return;
       const point = toPageCoordinates(event.clientX, event.clientY);
       if (!point) return;
       if (eventType === "mousePressed") viewportRef.current?.focus();
       void sendBrowserPointer({
         browser_id: resource_key,
+        presentation_id: presentationId,
         event_type: eventType,
         x: point.x,
         y: point.y,
@@ -216,16 +239,17 @@ export function BrowserSurface({
         modifiers: cdpModifiers(event),
       }).catch(() => {});
     },
-    [missing, read_only, resource_key, toPageCoordinates],
+    [isReadOnly, missing, presentationId, resource_key, toPageCoordinates],
   );
 
   const handleWheel = useCallback(
     (event: ReactWheelEvent<HTMLDivElement>) => {
-      if (read_only || missing) return;
+      if (isReadOnly || missing) return;
       const point = toPageCoordinates(event.clientX, event.clientY);
       if (!point) return;
       void sendBrowserWheel({
         browser_id: resource_key,
+        presentation_id: presentationId,
         x: point.x,
         y: point.y,
         delta_x: event.deltaX,
@@ -233,12 +257,12 @@ export function BrowserSurface({
         modifiers: cdpModifiers(event),
       }).catch(() => {});
     },
-    [missing, read_only, resource_key, toPageCoordinates],
+    [isReadOnly, missing, presentationId, resource_key, toPageCoordinates],
   );
 
   const handleKey = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>, eventType: "keyDown" | "keyUp") => {
-      if (read_only || missing) return;
+      if (isReadOnly || missing) return;
       // Leave the workbench's own chords alone so a focused page cannot
       // swallow tab switching or the command palette.
       if (event.ctrlKey || event.metaKey) return;
@@ -246,6 +270,7 @@ export function BrowserSurface({
       const text = eventType === "keyDown" && isTextKey(event.key) ? event.key : undefined;
       void sendBrowserKey({
         browser_id: resource_key,
+        presentation_id: presentationId,
         event_type: eventType,
         key: event.key,
         code: event.code,
@@ -253,7 +278,7 @@ export function BrowserSurface({
         modifiers: cdpModifiers(event),
       }).catch(() => {});
     },
-    [missing, read_only, resource_key],
+    [isReadOnly, missing, presentationId, resource_key],
   );
 
   if (missing) {
@@ -308,7 +333,8 @@ export function BrowserSurface({
       <header className="flex min-h-9 shrink-0 items-center gap-1.5 border-b border-wardian-border bg-[var(--color-wardian-sidebar-secondary)] px-2 py-1.5">
         <button
           aria-label="Go back"
-          className="rounded px-2 py-1 text-sm text-primary transition-colors hover:bg-[var(--color-wardian-card-bg-muted)]"
+          className="rounded px-2 py-1 text-sm text-primary transition-colors hover:bg-[var(--color-wardian-card-bg-muted)] disabled:opacity-40"
+          disabled={isReadOnly}
           onClick={() => runNavigation("back")}
           type="button"
         >
@@ -316,7 +342,8 @@ export function BrowserSurface({
         </button>
         <button
           aria-label="Go forward"
-          className="rounded px-2 py-1 text-sm text-primary transition-colors hover:bg-[var(--color-wardian-card-bg-muted)]"
+          className="rounded px-2 py-1 text-sm text-primary transition-colors hover:bg-[var(--color-wardian-card-bg-muted)] disabled:opacity-40"
+          disabled={isReadOnly}
           onClick={() => runNavigation("forward")}
           type="button"
         >
@@ -324,7 +351,8 @@ export function BrowserSurface({
         </button>
         <button
           aria-label={summary?.load_state === "loading" ? "Stop loading" : "Reload"}
-          className="rounded px-2 py-1 text-sm text-primary transition-colors hover:bg-[var(--color-wardian-card-bg-muted)]"
+          className="rounded px-2 py-1 text-sm text-primary transition-colors hover:bg-[var(--color-wardian-card-bg-muted)] disabled:opacity-40"
+          disabled={isReadOnly}
           onClick={() => runNavigation(summary?.load_state === "loading" ? "stop" : "reload")}
           type="button"
         >
@@ -340,8 +368,9 @@ export function BrowserSurface({
         >
           <input
             aria-label="Address"
-            className="w-full rounded border border-wardian-border bg-[var(--color-wardian-card)] px-2 py-1 text-xs text-primary"
+            className="w-full rounded border border-wardian-border bg-[var(--color-wardian-card)] px-2 py-1 text-xs text-primary disabled:opacity-60"
             data-testid="browser-surface-address"
+            disabled={isReadOnly}
             onBlur={() => setAddressFocused(false)}
             onChange={(event) => setAddressDraft(event.target.value)}
             onFocus={() => setAddressFocused(true)}
@@ -364,7 +393,7 @@ export function BrowserSurface({
               {summary.short_ref}
             </span>
           ) : null}
-          {read_only ? (
+          {isReadOnly ? (
             <span
               className="rounded-full border border-wardian-border bg-[var(--color-wardian-card)] px-2 py-0.5 text-[10px] font-medium text-muted-neutral"
               data-testid="browser-surface-read-only"
@@ -386,7 +415,7 @@ export function BrowserSurface({
         ref={viewportRef}
         role="application"
         aria-label={summary?.title || "Browser page"}
-        tabIndex={read_only ? -1 : 0}
+        tabIndex={isReadOnly ? -1 : 0}
       >
         {frame ? (
           <img
