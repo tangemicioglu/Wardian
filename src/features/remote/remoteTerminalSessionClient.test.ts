@@ -73,7 +73,9 @@ function parsed(socket: TestSocket) {
   return socket.sent.map((payload) => JSON.parse(payload) as Record<string, unknown>);
 }
 
-function harness(options: { applySnapshot?: () => void | Promise<void> } = {}) {
+function harness(options: {
+  applySnapshot?: (snapshot: TerminalSnapshot) => void | Promise<void>;
+} = {}) {
   const socket = new TestSocket();
   const states: RemoteTerminalV2State[] = [];
   const events: RemoteTerminalBrokerEvent[][] = [];
@@ -185,6 +187,58 @@ describe("RemoteTerminalSessionClient", () => {
       },
     });
     expect(client.state.mode).toBe("owner");
+  });
+
+  it("does not publish activation ownership until the acknowledgement snapshot is applied", async () => {
+    let releaseAcknowledgementSnapshot: (() => void) | undefined;
+    const acknowledgementSnapshotApplied = new Promise<void>((resolve) => {
+      releaseAcknowledgementSnapshot = resolve;
+    });
+    const { client, states } = harness({
+      applySnapshot: (value) => value.snapshot_id === "activation-ack"
+        ? acknowledgementSnapshotApplied
+        : undefined,
+    });
+    await client.handleMessage(registered());
+
+    const handling = client.handleMessage({
+      type: "activation_ack",
+      result: {
+        decision: {
+          status: "accepted",
+          reason: null,
+          runtime_generation: 4,
+          lease_epoch: 8,
+          owner_presentation_id: presentation.presentation_id,
+        },
+        broker_state: brokerState({
+          lease_epoch: 8,
+          geometry: { cols: 72, rows: 22 },
+          owner_presentation_id: presentation.presentation_id,
+        }),
+        snapshot: snapshot({
+          snapshot_id: "activation-ack",
+          sequence_barrier: 15,
+          geometry: { cols: 72, rows: 22 },
+        }),
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(client.state.mode).toBe("mirror");
+    expect(states).not.toContainEqual(expect.objectContaining({ mode: "owner" }));
+
+    releaseAcknowledgementSnapshot?.();
+    await handling;
+
+    expect(client.state).toMatchObject({
+      mode: "owner",
+      broker_state: {
+        geometry: { cols: 72, rows: 22 },
+        owner_presentation_id: presentation.presentation_id,
+      },
+    });
   });
 
   it("reports mirror viewport without resizing and enables owner-only input and ordered resize", async () => {

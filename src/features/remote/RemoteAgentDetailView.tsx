@@ -216,7 +216,7 @@ function installTerminalScrollBridge(
     const touch = event.touches[0];
     if (!touch) return;
     const nextTouchPoint = { clientX: touch.clientX, clientY: touch.clientY };
-    const deltaY = lastTouchPoint.clientY - nextTouchPoint.clientY;
+    const fingerDeltaY = lastTouchPoint.clientY - nextTouchPoint.clientY;
     if (terminalOwnsMouseInteraction(terminal)) {
       (terminal.element ?? measureHost).dispatchEvent(
         new WheelEvent("wheel", {
@@ -225,12 +225,15 @@ function installTerminalScrollBridge(
           clientX: nextTouchPoint.clientX,
           clientY: nextTouchPoint.clientY,
           deltaMode: WheelEvent.DOM_DELTA_PIXEL,
-          deltaY,
+          deltaY: fingerDeltaY,
         }),
       );
     } else {
       const rowHeight = terminalRowPixelHeight(terminal, measureHost);
-      touchRemainder = scrollByRows(touchRemainder + deltaY / rowHeight);
+      // Touch gestures move the terminal viewport with the finger: upward
+      // travel advances toward newer output, while downward travel reveals
+      // retained history. xterm scrollLines uses that same wheel direction.
+      touchRemainder = scrollByRows(touchRemainder + fingerDeltaY / rowHeight);
     }
     lastTouchPoint = nextTouchPoint;
     event.preventDefault();
@@ -1085,4 +1088,3 @@ function ChatPane({
     </section>
   );
 }
-

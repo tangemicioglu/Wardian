@@ -439,10 +439,10 @@ export class TerminalSessionClient {
           rows,
         },
       });
-      this.#notifyDecision(result.decision);
       if (result.snapshot) {
         await this.#applySnapshot(binding, result.snapshot);
       }
+      this.#notifyDecision(result.decision);
       return result;
     });
   }
@@ -837,11 +837,11 @@ export class TerminalSessionClient {
         activation_id: begin.activation_id,
       },
     });
-    this.#setBrokerState(ack.broker_state);
-    this.#notifyDecision(ack.decision);
     if (ack.snapshot) {
       await this.#applySnapshot(binding, ack.snapshot);
     }
+    this.#setBrokerState(ack.broker_state);
+    this.#notifyDecision(ack.decision);
     this.queueDrain();
     return { begin, ack };
   }

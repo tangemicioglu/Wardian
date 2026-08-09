@@ -248,11 +248,10 @@ export class RemoteTerminalSessionClient {
     }
 
     if (message.type === "activation_ack") {
-      this.#notifyDecision(message.result.decision);
       if (message.result.snapshot) {
         await this.#applySnapshot(message.result.snapshot);
       }
-      this.#replaceBrokerState(message.result.broker_state);
+      this.#notifyDecision(message.result.decision, message.result.broker_state);
       return;
     }
 
@@ -272,14 +271,13 @@ export class RemoteTerminalSessionClient {
     }
 
     if (message.type === "owner_resync_ack") {
-      this.#notifyDecision(message.result.decision);
       if (message.result.decision.status === "accepted" && this.#state.presentation) {
         this.#state = {
           ...this.#state,
           presentation: { ...this.#state.presentation, requires_resync: false },
         };
       }
-      this.#replaceBrokerState(message.result.broker_state);
+      this.#notifyDecision(message.result.decision, message.result.broker_state);
       return;
     }
 
@@ -289,10 +287,10 @@ export class RemoteTerminalSessionClient {
     }
 
     if (message.type === "resize_result") {
-      this.#notifyDecision(message.result.decision);
       if (message.result.snapshot) {
         await this.#applySnapshot(message.result.snapshot);
       }
+      this.#notifyDecision(message.result.decision);
       return;
     }
 
@@ -425,9 +423,12 @@ export class RemoteTerminalSessionClient {
       : null;
   }
 
-  #notifyDecision(decision: TerminalLeaseDecision) {
+  #notifyDecision(
+    decision: TerminalLeaseDecision,
+    brokerStateOverride?: TerminalBrokerState,
+  ) {
     this.#callbacks.onLeaseDecision?.(decision);
-    const brokerState = this.#state.broker_state;
+    const brokerState = brokerStateOverride ?? this.#state.broker_state;
     if (!brokerState) return;
     const generationAdvanced = decision.runtime_generation > brokerState.runtime_generation;
     this.#replaceBrokerState({
