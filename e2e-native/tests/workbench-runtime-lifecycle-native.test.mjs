@@ -261,10 +261,17 @@ test(
       }, agentsTerminalHost)
     ));
     assert.equal(initialAgentsFit.transform, "", "Agents first paint must use a locally fitted renderer");
-    const initialPresentationDebug = await driver.executeScript((host) => ({
-      presentation_id: host.getAttribute("data-terminal-presentation-id"),
-      presentation_ids: window.__wardianTerminalDebug?.presentationIds() ?? [],
-    }), agentsTerminalHost);
+    const initialPresentationDebug = await waitFor("registered Agents presentation", 30000, async () => (
+      await driver.executeScript((host) => {
+        const presentationId = host.getAttribute("data-terminal-presentation-id");
+        const presentationIds = window.__wardianTerminalDebug?.presentationIds() ?? [];
+        return {
+          ok: presentationId !== null && presentationIds.includes(presentationId),
+          presentation_id: presentationId,
+          presentation_ids: presentationIds,
+        };
+      }, agentsTerminalHost)
+    ));
     assert.ok(
       initialPresentationDebug.presentation_ids.includes(initialPresentationDebug.presentation_id),
       `Agents presentation must be registered before clear: ${JSON.stringify(initialPresentationDebug)}`,
