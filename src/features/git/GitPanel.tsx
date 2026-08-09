@@ -17,7 +17,10 @@ import { useConfirm } from "../../components/ConfirmDialog";
 import { formatGitStatusError, type SelectedAgentGitStatus } from "./useSelectedAgentGitStatus";
 import { ContextMenu, type ContextMenuItem } from "../../components/ContextMenu";
 import { CompactOverflowButton } from "../../components/CompactOverflowButton";
+import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { openFileWithSettings } from "../files/fileOpenRouting";
+import type { WorkbenchNavigationService } from "../workbench/navigationService";
 
 const DEFAULT_GIT_ERROR = "Unable to load git status.";
 const MERGE_CONFLICT_STATUSES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
@@ -51,6 +54,7 @@ interface GitPanelProps {
   onAgentsUpdated: () => void;
   telemetry: Record<string, import("../../types").AgentTelemetry>;
   sourceControlStatus: SelectedAgentGitStatus;
+  navigation?: WorkbenchNavigationService | null;
 }
 
 interface ActiveWorktreeName {
@@ -134,10 +138,19 @@ const validateCommitMessage = (message: string): CommitMessageValidation | null 
   return null;
 };
 
-export const GitPanel: React.FC<GitPanelProps> = ({ selectedAgentIds, agents, onAgentsUpdated, sourceControlStatus }) => {
+export const GitPanel: React.FC<GitPanelProps> = ({
+  selectedAgentIds,
+  agents,
+  onAgentsUpdated,
+  sourceControlStatus,
+  navigation,
+}) => {
+  const appShellNavigation = useAppShellWorkbenchNavigation();
+  const workbenchNavigation = navigation === undefined ? appShellNavigation : navigation;
   const confirm = useConfirm();
   const externalEditor = useSettingsStore((state) => state.externalEditor);
   const externalEditorCustomExecutable = useSettingsStore((state) => state.externalEditorCustomExecutable);
+  const fileOpenActions = useSettingsStore((state) => state.fileOpenActions);
   const {
     rootPath,
     status,
@@ -548,12 +561,11 @@ export const GitPanel: React.FC<GitPanelProps> = ({ selectedAgentIds, agents, on
     if (!rootPath) return;
     setOperationError(null);
     try {
-      await invoke("open_in_external_editor", {
-        path: resolveGitResourcePath(rootPath, path),
-        editor: {
-          external_editor: externalEditor,
-          external_editor_custom_executable: externalEditorCustomExecutable.trim() || null,
-        },
+      await openFileWithSettings(resolveGitResourcePath(rootPath, path), {
+        navigation: workbenchNavigation,
+        file_open_actions: fileOpenActions,
+        external_editor: externalEditor,
+        external_editor_custom_executable: externalEditorCustomExecutable,
       });
     } catch (err) {
       setOperationError(formatError(err));
