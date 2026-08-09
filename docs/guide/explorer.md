@@ -10,7 +10,7 @@ Use it when you need to inspect generated files, logs, prompt assets, or the sel
 
 - Browse the workspace for the agent selected in [Watchlists](./watchlists.md).
 - Inspect files after an agent reports completion in [Inbox](./inbox.md).
-- Open a quick preview in a Workbench tab before deciding whether to keep it.
+- Open a file in a permanent Files tab for reading or editing.
 - Open a file or folder in your configured local app or editor.
 - Reveal a file in the system file manager when you need native OS actions.
 
@@ -20,10 +20,10 @@ Use it when you need to inspect generated files, logs, prompt assets, or the sel
 2. Open the **Explorer** tab in the left sidebar.
 3. Expand folders to inspect files.
 4. Click a file to use the matching broad file-family preference in
-   [Settings](./settings.md). Wardian-supported files open in a transient Files
-   preview by default; unsupported files use the system-preferred viewer.
+   [Settings](./settings.md). Wardian-supported files open in a permanent Files
+   tab by default; unsupported files use the system-preferred viewer.
 5. Use the Explorer title actions to reveal the current root in your system file manager or open the entire root in your configured external app.
-6. Use preview, open externally, reveal, copy path, or delete from the file context menu.
+6. Use open, open externally, reveal, copy path, or delete from the file context menu.
 7. Move to [Source Control](./source-control.md) when the selected root is a Git workspace and you need to review changes.
 
 ## Root Behavior
@@ -48,9 +48,8 @@ This allows you to manually browse common data, shared lineages, and global conf
 Clicking a folder expands or collapses it. Clicking a supported file uses its
 configured broad file-family preference from Settings:
 
-- **Open in Wardian** opens a read-only Files tab. A single click creates or
-  replaces the current pane's transient preview. Double-clicking or pressing
-  `Enter` makes that file a permanent tab.
+- **Open in Wardian** opens a permanent read-only Files tab. Single clicks,
+  double-clicks, and pressing `Enter` use the same permanent opening behavior.
 - **Open in external app** uses the configured External editor preference.
 
 Unknown or unsupported files, such as office documents, always open in the
@@ -60,8 +59,8 @@ or custom editor as a fallback.
 The Explorer also supports standard right-click actions for rapid file
 management:
 
-- **Open**: Opens a permanent Files tab, or pins the matching transient preview;
-  unsupported files use the system-preferred application.
+- **Open**: Opens a permanent Files tab; unsupported files use the
+  system-preferred application.
 - **Open to Side**: Opens a permanent Files tab in an adjacent pane when the
   Workbench can admit the split.
 - **Open in External App**: Opens the selected folder, or an editor-friendly file, using the configured Explorer editor preference. Binary, media, archive, executable, and document files use the operating system's default handler. You can switch editor-friendly paths to VS Code or a custom executable in [Settings](./settings.md).
@@ -69,10 +68,11 @@ management:
 - **Copy Path**: Copies the absolute path of the file to your clipboard.
 - **Delete**: Permanently removes the file or directory from your disk (requires confirmation).
 
-The example below shows an Explorer-driven transient preview beside a permanent
-file tab. The second pane has already reloaded its stable backend revision.
+The example below shows Explorer-driven Markdown files in permanent Files tabs
+across two panes. The second pane has already reloaded its stable backend
+revision.
 
-![Explorer opening Markdown files as transient and permanent Workbench tabs across two panes](../assets/screenshots/explorer/files-tabs.png)
+![Explorer opening Markdown files in permanent Workbench tabs across two panes](../assets/screenshots/explorer/files-tabs.png)
 
 ## Preview Controls
 
