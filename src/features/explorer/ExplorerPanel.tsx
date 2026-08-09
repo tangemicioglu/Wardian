@@ -235,6 +235,15 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
       await openSystemPath(node.path);
       return;
     }
+    const destination = fileOpenDestinationForPath(node.path, {
+      text: 'external',
+      image: 'external',
+      pdf: 'external',
+    });
+    if (destination === 'system') {
+      await openSystemPath(node.path);
+      return;
+    }
     await openExternalPath(node.path);
   };
 

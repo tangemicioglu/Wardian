@@ -69,6 +69,30 @@ vi.mock('./FileTree', () => ({
       >
         report.docx
       </button>
+      <button
+        type="button"
+        data-testid="mock-bitmap-file-row"
+        onContextMenu={(event) => onContextMenu?.(event, {
+          name: 'bitmap.bmp',
+          path: 'C:\\Users\\test\\repo\\bitmap.bmp',
+          is_dir: false,
+          extension: 'bmp',
+        })}
+      >
+        bitmap.bmp
+      </button>
+      <button
+        type="button"
+        data-testid="mock-tiff-file-row"
+        onContextMenu={(event) => onContextMenu?.(event, {
+          name: 'photo.tiff',
+          path: 'C:\\Users\\test\\repo\\photo.tiff',
+          is_dir: false,
+          extension: 'tiff',
+        })}
+      >
+        photo.tiff
+      </button>
     </div>
   ),
 }));
@@ -231,6 +255,37 @@ describe('ExplorerPanel', () => {
         path: 'C:\\Users\\test\\repo\\notes.md',
         editor: {
           external_editor: 'vscode',
+          external_editor_custom_executable: null,
+        },
+      });
+    });
+  });
+
+  it.each([
+    ['BMP', 'mock-bitmap-file-row', 'C:\\Users\\test\\repo\\bitmap.bmp'],
+    ['TIFF', 'mock-tiff-file-row', 'C:\\Users\\test\\repo\\photo.tiff'],
+  ])('opens unsupported %s files in the system viewer from the explicit external action', async (_label, testId, path) => {
+    useSettingsStore.setState({
+      externalEditor: 'vscode',
+      externalEditorCustomExecutable: '',
+    });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} />);
+
+    const tree = await screen.findByTestId(testId);
+    await userEvent.pointer({ keys: '[MouseRight]', target: tree });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open in External App' }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+        path,
+        editor: {
+          external_editor: 'system',
           external_editor_custom_executable: null,
         },
       });
