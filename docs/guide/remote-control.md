@@ -271,14 +271,12 @@ The mobile action strip includes lifecycle controls for the selected agent.
 Clone remains a desktop-only operation so the phone does not create new agent
 sessions accidentally from a compact remote surface.
 
-The mobile Inbox tab shows completion cards derived from live remote terminal
-output and status transitions that the phone has observed in the current
-browser session. These cards help review recent mobile work, but they are not
-the durable desktop Inbox: CLI `notify` updates, CLI approval requests, and
-workflow Approval nodes remain desktop-only in this release. Restarting the
-PWA, using another phone, or opening the desktop Inbox may show different
-history until a future remote Inbox endpoint hydrates the mobile surface from
-desktop-owned Inbox storage.
+The mobile Inbox tab shows the same remote Inbox projection used by the desktop
+queue. Cards start with long summaries collapsed to a four-line preview; use
+Show details or Hide details to change the card state. When an item identifies
+an agent session, use Open agent to move directly into that agent's detail view.
+The mobile card keeps the desktop unread, status, and timestamp cues while
+remaining sized for a phone screen.
 
 ![Mobile PWA Inbox showing a recent agent completion summary](../assets/screenshots/remote-control/mobile-pwa-queue-summary.png)
 
