@@ -17,7 +17,7 @@ const TEXT_EXTENSIONS = new Set([
   "htm", "html", "ini", "java", "js", "json", "jsx", "lock", "log", "md", "mdx", "mjs", "patch", "ps1",
   "py", "rs", "scss", "sh", "sql", "svelte", "svg", "toml", "ts", "tsx", "txt", "vue", "xml", "yaml", "yml", "markdown",
 ]);
-const IMAGE_EXTENSIONS = new Set(["bmp", "gif", "jpg", "jpeg", "png", "tif", "tiff", "webp"]);
+const IMAGE_EXTENSIONS = new Set(["gif", "jpg", "jpeg", "png", "webp"]);
 
 function fileNameFromPath(path: string) {
   const withoutLocation = path.replace(/:\d+(?::\d+)?$/, "");

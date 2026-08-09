@@ -32,6 +32,8 @@ describe("file open routing", () => {
     expect(fileOpenKindForPath("C:/repo/README.markdown")).toBe("text");
     expect(fileOpenKindForPath("C:/repo/diagram.png")).toBe("image");
     expect(fileOpenKindForPath("C:/repo/report.pdf")).toBe("pdf");
+    expect(fileOpenKindForPath("C:/repo/bitmap.bmp")).toBeNull();
+    expect(fileOpenKindForPath("C:/repo/photo.tiff")).toBeNull();
     expect(fileOpenKindForPath("C:/repo/report.docx")).toBeNull();
   });
 

@@ -208,10 +208,13 @@ fn load_app_settings_document_from_path(path: &Path) -> Result<AppSettingsDocume
     {
         let persisted =
             serde_json::from_value::<PersistedAppSettings>(value).map_err(|e| e.to_string())?;
-        return Ok(app_settings_document_from_overrides(
-            persisted.overrides,
-            true,
-        ));
+        let legacy_present = persisted.overrides.explorer_file_click_action.is_some();
+        let document = app_settings_document_from_overrides(persisted.overrides, true);
+        return if legacy_present {
+            save_app_settings_document_to_path(path, &document)
+        } else {
+            Ok(document)
+        };
     }
 
     let legacy_file_click_action = value
@@ -225,12 +228,13 @@ fn load_app_settings_document_from_path(path: &Path) -> Result<AppSettingsDocume
             file_open_actions_from_legacy(legacy_file_click_action.as_deref());
     }
     let normalized = normalize_app_settings(settings);
-    Ok(AppSettingsDocument {
+    let document = AppSettingsDocument {
         schema_version: 2,
         overrides: app_overrides_from_settings(&normalized, &AppSettings::default()),
         settings: normalized,
         persisted: true,
-    })
+    };
+    save_app_settings_document_to_path(path, &document)
 }
 
 fn save_app_settings_to_path(path: &Path, settings: &AppSettings) -> Result<AppSettings, String> {
@@ -258,8 +262,7 @@ fn save_app_settings_document_to_path(
         schema_version: 2,
         overrides: normalized_overrides,
     };
-    let content = serde_json::to_string_pretty(&persisted).map_err(|e| e.to_string())?;
-    std::fs::write(path, content).map_err(|e| e.to_string())?;
+    wardian_core::conversations::write_json_atomic(path, &persisted).map_err(|e| e.to_string())?;
     Ok(AppSettingsDocument {
         schema_version: 2,
         settings: normalized,
@@ -785,6 +788,13 @@ mod tests {
                 pdf: "external".to_string(),
             }
         );
+        let raw = fs::read_to_string(&path).expect("read migrated settings file");
+        let json: serde_json::Value =
+            serde_json::from_str(&raw).expect("parse migrated settings file");
+        assert!(json["overrides"]
+            .get("explorer_file_click_action")
+            .is_none());
+        assert_eq!(json["overrides"]["file_open_actions"]["text"], "external");
     }
 
     #[test]
@@ -811,6 +821,14 @@ mod tests {
                 pdf: "external".to_string(),
             }
         );
+        let raw = fs::read_to_string(&path).expect("read migrated settings file");
+        let json: serde_json::Value =
+            serde_json::from_str(&raw).expect("parse migrated settings file");
+        assert_eq!(json["schema_version"], 2);
+        assert!(json["overrides"]
+            .get("explorer_file_click_action")
+            .is_none());
+        assert_eq!(json["overrides"]["file_open_actions"]["text"], "external");
     }
 
     #[test]
