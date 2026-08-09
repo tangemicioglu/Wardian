@@ -1,0 +1,97 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  CDP_MODIFIER_ALT,
+  CDP_MODIFIER_CTRL,
+  CDP_MODIFIER_META,
+  CDP_MODIFIER_SHIFT,
+  cdpModifiers,
+  cdpMouseButton,
+  isTextKey,
+  pageCoordinates,
+} from "./browserSessionClient";
+
+const noModifiers = { altKey: false, ctrlKey: false, metaKey: false, shiftKey: false };
+
+describe("cdpModifiers", () => {
+  it("packs each modifier into its own bit", () => {
+    expect(cdpModifiers(noModifiers)).toBe(0);
+    expect(cdpModifiers({ ...noModifiers, altKey: true })).toBe(CDP_MODIFIER_ALT);
+    expect(cdpModifiers({ ...noModifiers, ctrlKey: true })).toBe(CDP_MODIFIER_CTRL);
+    expect(cdpModifiers({ ...noModifiers, metaKey: true })).toBe(CDP_MODIFIER_META);
+    expect(cdpModifiers({ ...noModifiers, shiftKey: true })).toBe(CDP_MODIFIER_SHIFT);
+  });
+
+  it("combines several modifiers without losing any", () => {
+    expect(cdpModifiers({ altKey: true, ctrlKey: true, metaKey: true, shiftKey: true }))
+      .toBe(CDP_MODIFIER_ALT | CDP_MODIFIER_CTRL | CDP_MODIFIER_META | CDP_MODIFIER_SHIFT);
+  });
+});
+
+describe("cdpMouseButton", () => {
+  it("maps DOM button numbers to protocol names", () => {
+    expect(cdpMouseButton(0)).toBe("left");
+    expect(cdpMouseButton(1)).toBe("middle");
+    expect(cdpMouseButton(2)).toBe("right");
+    expect(cdpMouseButton(3)).toBe("back");
+    expect(cdpMouseButton(4)).toBe("forward");
+  });
+
+  it("treats an unknown button as the primary one", () => {
+    expect(cdpMouseButton(99)).toBe("left");
+  });
+});
+
+describe("isTextKey", () => {
+  it("treats single printable characters as text", () => {
+    expect(isTextKey("a")).toBe(true);
+    expect(isTextKey(" ")).toBe(true);
+    expect(isTextKey("é")).toBe(true);
+  });
+
+  it("excludes named keys that must not be inserted as text", () => {
+    for (const key of ["Enter", "Tab", "Backspace", "Escape", "ArrowLeft", "Shift", "F5"]) {
+      expect(isTextKey(key), key).toBe(false);
+    }
+  });
+});
+
+describe("pageCoordinates", () => {
+  const viewport = { width: 1000, height: 500 };
+
+  it("maps a click at the centre of a matching-ratio image to the page centre", () => {
+    const rect = { left: 0, top: 0, width: 1000, height: 500 };
+    expect(pageCoordinates(500, 250, rect, viewport)).toEqual({ x: 500, y: 250 });
+  });
+
+  it("accounts for the letterbox when the container is taller than the page", () => {
+    // 1000x1000 container fitting a 2:1 page renders 1000x500 centred, so the
+    // rendered image starts 250px down.
+    const rect = { left: 0, top: 0, width: 1000, height: 1000 };
+    expect(pageCoordinates(500, 500, rect, viewport)).toEqual({ x: 500, y: 250 });
+    expect(pageCoordinates(0, 250, rect, viewport)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("accounts for the container's own offset on the screen", () => {
+    const rect = { left: 100, top: 40, width: 1000, height: 500 };
+    expect(pageCoordinates(600, 290, rect, viewport)).toEqual({ x: 500, y: 250 });
+  });
+
+  it("scales a click when the image is rendered smaller than the page", () => {
+    const rect = { left: 0, top: 0, width: 500, height: 250 };
+    expect(pageCoordinates(250, 125, rect, viewport)).toEqual({ x: 500, y: 250 });
+  });
+
+  it("returns null for a point in the letterbox rather than clamping it", () => {
+    const rect = { left: 0, top: 0, width: 1000, height: 1000 };
+    expect(pageCoordinates(500, 100, rect, viewport)).toBeNull();
+    expect(pageCoordinates(500, 900, rect, viewport)).toBeNull();
+  });
+
+  it("returns null when a dimension is degenerate", () => {
+    expect(pageCoordinates(0, 0, { left: 0, top: 0, width: 0, height: 500 }, viewport)).toBeNull();
+    expect(
+      pageCoordinates(0, 0, { left: 0, top: 0, width: 100, height: 100 }, { width: 0, height: 0 }),
+    ).toBeNull();
+  });
+});

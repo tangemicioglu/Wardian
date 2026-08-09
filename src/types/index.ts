@@ -265,6 +265,7 @@ export interface AgentWorktreeSummary {
 export * from "./workflow";
 export * from "./remote";
 export * from "./files";
+export * from "./browser";
 
 export interface AgentOutputPayload {
     session_id: string;

@@ -83,6 +83,11 @@ import { LibrarySurface } from "../features/workbench/surfaces/LibrarySurface";
 import { WorkflowsSurface } from "../features/workbench/surfaces/WorkflowsSurface";
 import { useDirtySurfacePrompt } from "../features/workbench/surfaces/DirtySurfacePromptDialog";
 import { FilesSurface } from "../features/files/FilesSurface";
+import { BrowserSurface } from "../features/browser/BrowserSurface";
+import {
+  openBrowserSession,
+  subscribeBrowserSurfaceOpen,
+} from "../features/browser/browserSessionClient";
 import { FileEditorControllerRegistry } from "../features/files/fileEditorController";
 import { createFilesCloseAdapter } from "../features/files/filesCloseAdapter";
 import { fileResourceClient } from "../features/files/fileResourceClient";
@@ -93,7 +98,7 @@ import {
   filesSurfaceMigrationCommands,
   isFilesSurfaceStateV1,
 } from "../features/files/filesSurfaceState";
-import type { FilesSurfaceStateV2 } from "../types";
+import type { BrowserSurfaceState, FilesSurfaceStateV2 } from "../types";
 
 declare global {
   interface Window {
@@ -1244,6 +1249,66 @@ function AppBody() {
     workbenchPersistence.store.getState().set_launcher_open(true);
   }, [workbenchPersistence.store]);
 
+  /**
+   * Creates the runtime resource a provisioning surface needs before it opens.
+   *
+   * Returning null aborts the open, so a host with no browser installed leaves
+   * no surface behind pointing at a session that was never created.
+   */
+  const provisionWorkbenchSurfaceResource = useCallback(
+    async (surfaceType: string): Promise<string | null> => {
+      if (surfaceType !== "browser") return null;
+      try {
+        const session = await openBrowserSession({});
+        return session.browser_id;
+      } catch (error) {
+        console.error("[Wardian] could not open a browser session", error);
+        return null;
+      }
+    },
+    [],
+  );
+
+  /** Replaces a dead browser surface's session with a fresh one at the same URL. */
+  const reopenBrowserSurface = useCallback(
+    async (surfaceId: string, url: string): Promise<void> => {
+      try {
+        const session = await openBrowserSession(url ? { url } : {});
+        await workbenchNavigation.canonicalize_resource(surfaceId, {
+          surface_type: "browser",
+          resource_key: session.browser_id,
+          state: { url: session.url || url, viewport: null },
+        });
+      } catch (error) {
+        console.error("[Wardian] could not reopen the browser session", error);
+      }
+    },
+    [workbenchNavigation],
+  );
+
+  // A CLI `wardian browser open` asks the app to surface the session it made.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void subscribeBrowserSurfaceOpen((summary) => {
+      workbenchNavigation.open({
+        surface_type: "browser",
+        resource_key: summary.browser_id,
+        state: { url: summary.url, viewport: null },
+      });
+    }).then((dispose) => {
+      if (cancelled) {
+        dispose();
+        return;
+      }
+      unlisten = dispose;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [workbenchNavigation]);
+
   const renderWorkbenchSurface: WorkbenchSurfaceRenderer = (surface, lifecycle) => {
     const resolvedSurface = workbenchRegistry.resolve_surface(surface);
     const restoreResult = resolvedSurface.restore_result;
@@ -1316,6 +1381,30 @@ function AppBody() {
     }
 
     const visibility = lifecycle?.visible === false ? "hidden" : "visible";
+    if (surface.surface_type === "browser") {
+      const browserState = restoredSurface.state as BrowserSurfaceState;
+      return (
+        <BrowserSurface
+          surface_id={surface.surface_id}
+          resource_key={surface.resource_key ?? ""}
+          persisted_url={browserState.url}
+          visibility={visibility}
+          on_url_change={(surfaceId, url) => {
+            // Persisting the page, not the session id, is what lets a cold
+            // restart reopen the same address against a fresh runtime.
+            if (url === browserState.url) return;
+            workbenchPersistence.store.getState().apply_commands([{
+              type: "update_surface_state",
+              surface_id: surfaceId,
+              state_schema_version: 1,
+              state: { ...browserState, url },
+            }]);
+          }}
+          on_reopen={(url) => { void reopenBrowserSurface(surface.surface_id, url); }}
+          on_close_surface={() => { void workbenchNavigation.close(surface.surface_id); }}
+        />
+      );
+    }
     if (surface.surface_type === "files") {
       const filesState = restoredSurface.state as FilesSurfaceStateV2;
       const filesStateSnapshot = JSON.stringify(filesState);
@@ -1673,6 +1762,7 @@ function AppBody() {
               on_focus_right_dock={focusRightDock}
               resource_key={selectedWorkbenchResourceKey}
               render_surface={renderWorkbenchSurface}
+              provision_surface_resource={provisionWorkbenchSurfaceResource}
               surface_title={(surface) => {
                 if (surface.surface_type === "agent-session" && surface.resource_key) {
                   return agents.find((agent) => agent.session_id === surface.resource_key)

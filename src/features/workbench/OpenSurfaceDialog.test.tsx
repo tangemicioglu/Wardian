@@ -47,14 +47,15 @@ describe("OpenSurfaceDialog", () => {
       "garden",
       "library",
       "workflows",
+      // Browser provisions its own session, so it is offered without the
+      // caller having to supply a resource key first.
+      "browser",
     ]) {
       expect(document.querySelector(`[role="option"][data-surface-type="${surfaceType}"]`)).not.toBeNull();
     }
     expect(document.querySelector('[role="option"][data-surface-type="agent-session"]'))
       .toBeNull();
     expect(document.querySelector('[role="option"][data-surface-type="files"]'))
-      .toBeNull();
-    expect(document.querySelector('[role="option"][data-surface-type="browser"]'))
       .toBeNull();
   });
 

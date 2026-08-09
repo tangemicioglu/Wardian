@@ -1,5 +1,6 @@
 use crate::state::active_agent::ActiveAgent;
 use crate::state::artifact_runtime::ArtifactRuntime;
+use crate::state::browser_session::BrowserSessionBroker;
 use crate::state::change_snapshot_runtime::ChangeSnapshotRuntime;
 use crate::state::conversation_archive::ConversationArchiveState;
 use crate::state::file_resources::FileResourceRuntime;
@@ -75,6 +76,8 @@ pub struct AppState {
     // Authoritative per-runtime terminal actors. Presentations and feed
     // consumers attach to this broker without owning PTY lifetime or queues.
     pub terminal_sessions: Arc<TerminalSessionBroker>,
+    /// Out-of-process browser runtimes backing browser surfaces.
+    pub browser_sessions: Arc<BrowserSessionBroker>,
 }
 
 #[derive(Debug, Clone)]
@@ -343,6 +346,13 @@ impl Default for AppState {
             remote_runtime: Mutex::new(crate::remote::models::RemoteRuntimeState::default()),
             terminal_theme: RwLock::new("dark".to_string()),
             terminal_sessions: Arc::new(TerminalSessionBroker::default()),
+            // Profiles live under Wardian home so an isolated WARDIAN_HOME
+            // test run cannot collide with production browser state.
+            browser_sessions: Arc::new(BrowserSessionBroker::new(
+                crate::utils::fs::get_wardian_home()
+                    .map(|home| home.join("browser").join("profiles"))
+                    .unwrap_or_else(|| std::env::temp_dir().join("wardian-browser-profiles")),
+            )),
         }
     }
 }

@@ -170,6 +170,89 @@ pub enum ControlRequest {
         bindings: Option<HashMap<String, String>>,
         assignments: Option<crate::models::WorkflowAssignments>,
     },
+    /// Opens a browser session and, unless detached, a surface presenting it.
+    BrowserOpen {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        /// Owning agent. Defaults to the caller's `WARDIAN_SESSION_ID`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+        /// Open the runtime without opening a workbench surface for it.
+        #[serde(default)]
+        detached: bool,
+    },
+    BrowserList,
+    BrowserClose {
+        target: String,
+    },
+    /// `back`, `forward`, `reload`, `stop`, or a URL to navigate to.
+    BrowserNavigate {
+        target: String,
+        action: String,
+    },
+    BrowserGet {
+        target: String,
+        field: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+    },
+    BrowserWait {
+        target: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        load_state: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url_contains: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        function: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
+    BrowserSnapshot {
+        target: String,
+        #[serde(default)]
+        interactive: bool,
+    },
+    BrowserAct {
+        target: String,
+        element_ref: String,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+        #[serde(default)]
+        snapshot_after: bool,
+    },
+    BrowserScreenshot {
+        target: String,
+        path: String,
+        #[serde(default)]
+        full_page: bool,
+    },
+    BrowserViewport {
+        target: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+        #[serde(default)]
+        reset: bool,
+    },
+    BrowserEval {
+        target: String,
+        expression: String,
+    },
+    BrowserConsole {
+        target: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
