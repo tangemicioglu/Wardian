@@ -12,7 +12,21 @@ export type ConversationLoggingSetting = 'enabled' | 'disabled';
 export type AppThemeSetting = 'dark' | 'light' | 'system';
 export type WatchlistNewAgentPosition = 'top' | 'bottom';
 export type ExternalEditorSetting = 'system' | 'vscode' | 'custom';
-export type ExplorerFileClickAction = 'preview' | 'external';
+export type FileOpenAction = 'wardian' | 'external';
+export type FileOpenKind = 'text' | 'image' | 'pdf';
+
+export interface FileOpenActions {
+  text: FileOpenAction;
+  image: FileOpenAction;
+  pdf: FileOpenAction;
+}
+
+export const DEFAULT_FILE_OPEN_ACTIONS: FileOpenActions = {
+  text: 'wardian',
+  image: 'wardian',
+  pdf: 'wardian',
+};
+
 export type WorkbenchNewTabAction = 'home' | 'palette';
 
 export interface CodexRuntimePolicy {
@@ -59,7 +73,7 @@ export interface AppSettings {
   titlebar_telemetry_visible: boolean;
   external_editor: ExternalEditorSetting;
   external_editor_custom_executable: string | null;
-  explorer_file_click_action: ExplorerFileClickAction;
+  file_open_actions: FileOpenActions;
   workbench_new_tab_action: WorkbenchNewTabAction;
 }
 
@@ -73,7 +87,7 @@ export interface AppSettingsOverrides {
   titlebar_telemetry_visible?: boolean;
   external_editor?: ExternalEditorSetting;
   external_editor_custom_executable?: string | null;
-  explorer_file_click_action?: ExplorerFileClickAction;
+  file_open_actions?: FileOpenActions;
   workbench_new_tab_action?: WorkbenchNewTabAction;
 }
 

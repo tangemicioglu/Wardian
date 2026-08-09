@@ -167,7 +167,10 @@ function SafeLink({
   href?: string;
   children: ReactNode;
   sourcePath: string;
-  onOpenFile: (path: string, openInNewTab?: boolean) => Promise<void> | void;
+  onOpenFile: (
+    path: string,
+    openInNewTab?: boolean,
+  ) => Promise<void> | void;
   onOpenFragment: (fragment: string) => void;
   onError: (message: string) => void;
 }) {
@@ -183,7 +186,7 @@ function SafeLink({
         const targetPath = resolveLocalMarkdownTarget(sourcePath, href);
         const opened = openInNewTab
           ? onOpenFile(targetPath, true)
-          : onOpenFile(targetPath);
+          : onOpenFile(targetPath, false);
         void Promise.resolve(opened).catch((cause) => onError(errorMessage(cause)));
       } catch (cause) {
         onError(errorMessage(cause));
@@ -389,9 +392,16 @@ export default function MarkdownRenderer({
       <SafeLink
         href={href}
         sourcePath={sourcePath}
-        onOpenFile={(path, openInNewTab) => (
-          openInNewTab ? onOpenFileRef.current(path, true) : onOpenFileRef.current(path)
-        )}
+        onOpenFile={(path, openInNewTab) => {
+          if (resource_request) {
+            return openInNewTab
+              ? onOpenFileRef.current(path, true, embeddedResourceRequest)
+              : onOpenFileRef.current(path, false, embeddedResourceRequest);
+          }
+          return openInNewTab
+            ? onOpenFileRef.current(path, true)
+            : onOpenFileRef.current(path);
+        }}
         onOpenFragment={openFragment}
         onError={setError}
       >

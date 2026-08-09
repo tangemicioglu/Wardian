@@ -8,9 +8,11 @@ import { FileTree, FileNode } from './FileTree';
 import { useConfirm } from '../../components/ConfirmDialog';
 import { AgentConfig, GitStatusResult } from '../../types';
 import { useSettingsStore } from '../../store/useSettingsStore';
+import type { ExternalEditorSetting } from '../../types/settings';
 import { normalizeExplorerPathForCompare } from './pathUtils';
 import { createFileSurfaceState, fileResourceKey } from '../files/fileResourceKey';
 import { openPermanentFileSurface } from '../files/fileSurfaceNavigation';
+import { fileOpenDestinationForResource, openFileInExternalApp } from '../files/fileOpenRouting';
 import type { WorkbenchNavigationService } from '../workbench/navigationService';
 import { useAppShellWorkbenchNavigation } from '../../layout/AppShell';
 import { formatExplorerPathForDisplay } from '../../utils/displayPath';
@@ -44,7 +46,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
   const workbenchNavigation = navigation === undefined ? appShellNavigation : navigation;
   const externalEditor = useSettingsStore((state) => state.externalEditor);
   const externalEditorCustomExecutable = useSettingsStore((state) => state.externalEditorCustomExecutable);
-  const explorerFileClickAction = useSettingsStore((state) => state.explorerFileClickAction);
+  const fileOpenActions = useSettingsStore((state) => state.fileOpenActions);
   const [rootPath, setRootPath] = useState<string | null>(null);
   const [gitStatusMap, setGitStatusMap] = useState<Record<string, string>>({});
   const changedDirectories = useMemo(() => {
@@ -196,26 +198,52 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
     setMenuPos(null);
   };
 
-  const openExternalPath = async (path: string) => {
+  const openPath = async (
+    path: string,
+    editor: { external_editor: ExternalEditorSetting; external_editor_custom_executable: string | null },
+    failureMessage: string,
+  ) => {
     try {
-      await invoke('open_in_external_editor', {
-        path,
-        editor: {
-          external_editor: externalEditor,
-          external_editor_custom_executable: externalEditorCustomExecutable.trim() || null,
-        },
-      });
+      await openFileInExternalApp(path, editor);
       setExternalOpenError(null);
     } catch (err) {
-      console.error("External editor open failed:", err);
-      setExternalOpenError(
-        `External app open failed for ${externalEditorLabel(externalEditor)}: ${String(err)}`,
-      );
+      console.error(`${failureMessage}:`, err);
+      setExternalOpenError(`${failureMessage}: ${String(err)}`);
     }
   };
 
-  const openExternalEditor = async (node: FileNode) => {
-    await openExternalPath(node.path);
+  const openExternalPath = async (path: string) => openPath(
+    path,
+    {
+      external_editor: externalEditor,
+      external_editor_custom_executable: externalEditorCustomExecutable,
+    },
+    `External app open failed for ${externalEditorLabel(externalEditor)}`,
+  );
+
+  const openSystemPath = async (path: string) => openPath(
+    path,
+    {
+      external_editor: 'system',
+      external_editor_custom_executable: null,
+    },
+    'System viewer open failed',
+  );
+
+  const openExternalEditor = async (node: FileNode, systemDefault = false) => {
+    if (systemDefault) {
+      await openSystemPath(node.path);
+      return;
+    }
+    const destination = await fileOpenDestinationForResource(node.path, {
+      file_open_actions: {
+        text: 'external',
+        image: 'external',
+        pdf: 'external',
+      },
+    });
+    if (destination === 'system') await openSystemPath(node.path);
+    else await openExternalPath(node.path);
   };
 
   const handleOpenExternalEditor = async () => {
@@ -284,60 +312,55 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
     });
   };
 
+  const openToSide = (path: string) => {
+    runNavigationAction('Open to Side', (currentNavigation) => {
+      const surfaceId = currentNavigation.open_to_side(
+        fileSurfaceRequest(path, false),
+        'horizontal',
+      );
+      if (surfaceId === null) {
+        throw new Error('The current pane is too small to open a file to the side.');
+      }
+      return surfaceId;
+    });
+  };
+
+  const openFileBySettings = async (path: string, isDir: boolean, openInSide = false) => {
+    if (isDir) return;
+    const destination = await fileOpenDestinationForResource(path, {
+      file_open_actions: fileOpenActions,
+    });
+    if (destination === 'external') {
+      await openExternalPath(path);
+    } else if (destination === 'system') {
+      await openSystemPath(path);
+    } else {
+      if (openInSide) openToSide(path);
+      else openPermanent(path);
+    }
+  };
+
   const handleOpen = () => {
-    if (activeNode && !activeNode.is_dir) openPermanent(activeNode.path);
+    if (activeNode) void openFileBySettings(activeNode.path, activeNode.is_dir);
     setMenuPos(null);
   };
 
   const handleOpenToSide = () => {
-    if (activeNode && !activeNode.is_dir) {
-      runNavigationAction('Open to Side', (currentNavigation) => {
-        const surfaceId = currentNavigation.open_to_side(
-          fileSurfaceRequest(activeNode.path, false),
-          'horizontal',
-        );
-        if (surfaceId === null) {
-          throw new Error('The current pane is too small to open a file to the side.');
-        }
-        return surfaceId;
-      });
-    }
+    if (activeNode) void openFileBySettings(activeNode.path, activeNode.is_dir, true);
     setMenuPos(null);
-  };
-
-  const fileNode = (path: string): FileNode => {
-    const normalizedPath = path.replace(/\\/g, '/');
-    const name = normalizedPath.split('/').filter(Boolean).pop() ?? path;
-    return {
-      path,
-      name,
-      is_dir: false,
-      extension: name.includes('.') ? name.split('.').pop() ?? null : null,
-    };
   };
 
   const handleFileSelect = async (path: string, isDir: boolean, openInNewTab = false) => {
     if (isDir) return;
 
     if (openInNewTab) {
-      openPermanent(path);
-    } else if (explorerFileClickAction === 'external') {
-      await openExternalEditor(fileNode(path));
+      await openFileBySettings(path, isDir);
     } else {
-      runNavigationAction('File preview', (currentNavigation) => (
-        currentNavigation.open_transient(fileSurfaceRequest(path, true))
-      ));
+      await openFileBySettings(path, isDir);
     }
   };
 
-  const handleFileOpen = async (path: string, isDir: boolean) => {
-    if (isDir) return;
-    if (explorerFileClickAction === 'external') {
-      await openExternalEditor(fileNode(path));
-    } else {
-      openPermanent(path);
-    }
-  };
+  const handleFileOpen = async (path: string, isDir: boolean) => openFileBySettings(path, isDir);
 
   const handleDelete = async () => {
     if (activeNode) {

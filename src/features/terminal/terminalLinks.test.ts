@@ -68,6 +68,16 @@ describe("findTerminalLinks", () => {
     ]);
   });
 
+  it("detects rendered and unsupported file families for shared opening routing", () => {
+    const links = findTerminalLinks("Open report.pdf, diagram.png, or contract.docx");
+
+    expect(links.map((link) => ({ kind: link.kind, text: link.text, target: link.target }))).toEqual([
+      { kind: "file", text: "report.pdf", target: "report.pdf" },
+      { kind: "file", text: "diagram.png", target: "diagram.png" },
+      { kind: "file", text: "contract.docx", target: "contract.docx" },
+    ]);
+  });
+
   it("links extensionless slash paths only when the resolved target exists", async () => {
     const validateFile = vi.fn(async (path: string) => path === "C:\\repo\\bin\\wardian");
 

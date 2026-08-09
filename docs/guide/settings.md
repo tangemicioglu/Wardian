@@ -19,7 +19,8 @@ computed defaults for the app and operating system.
 
 - `settings/app.json`: app preferences such as theme, top bar telemetry
   visibility, Agent card display, Watchlist new agent position, terminal font
-  size, terminal font family, Explorer opening behavior, and Gemini auto-patch.
+  size, terminal font family, file opening preferences, Explorer behavior, and
+  Gemini auto-patch.
 - `settings/shell.json`: runtime preferences such as shell selection, default
   provider, regular agent session policy, and Codex runtime defaults.
 
@@ -37,8 +38,8 @@ Categories:
 - **Appearance**: app theme and top bar telemetry visibility.
 - **Grid**: display mode for agent cards in Agents surfaces.
 - **Inbox**: Inbox event desktop and sound notification rules.
-- **Explorer**: file click behavior and the external app or editor used by the
-  Explorer.
+- **Explorer**: broad file-family opening behavior and the external app or
+  editor used by Explorer, chat, and terminals.
 - **Watchlist**: roster behavior for newly spawned agents.
 - **Terminal**: terminal font and shell defaults.
 - **Agent Runtime**: default provider, regular agent session behavior, and
@@ -156,19 +157,26 @@ between Terminal and Chat from the card header without changing this default.
 
 ## Explorer
 
-The **File click action** control sets what happens when you click a file in the
-Explorer sidebar:
+The **Text and code files**, **Image files**, and **PDF files** controls set
+where each broad file family opens from Explorer, chat Markdown links, agent
+terminals, and the bottom user terminal:
 
-- **Preview in Wardian** opens Wardian's read-only preview modal. This is the
-  default.
-- **Open in external app** opens the file through the configured external editor
-  preference.
+- **Open in Wardian** opens a permanent Files tab. This is the default.
+- **Open in external app** uses the configured External editor preference.
+
+These controls are intentionally grouped by file family rather than exposing
+one setting for every extension. Files that Wardian does not recognize or
+cannot render, including office documents, use the system-preferred viewer.
+Older settings documents that contain `explorer_file_click_action` are migrated
+once into the family preferences; current settings expose and use only those
+family controls.
 
 Folders always expand or collapse when clicked.
 
-The **External editor** control sets what happens when you choose **Open in
-External App** from the Explorer right-click menu and when you click file paths
-in terminal output:
+The **External editor** control sets which configured app is used when a file
+family is set to **Open in external app**, when you choose **Open in External
+App** from the Explorer right-click menu, and for editor-friendly file paths in
+terminal output:
 
 - **System default app** uses the operating system's registered app for the
   selected file or folder. This is Wardian's default because it respects file
@@ -187,7 +195,7 @@ If VS Code does not open, Wardian shows the launch error in Explorer. Verify the
 executable to point directly at your editor.
 
 Terminal URLs open as URLs, including OSC hyperlinks emitted by provider TUIs.
-Terminal file paths use the same type-sensitive external-open behavior so agent
+Terminal file paths use the same type-sensitive opening behavior so agent
 terminals and the bottom user terminal match Explorer. Terminal file paths are
 validated before they become clickable, which keeps command names such as
 `/model` from being treated as files unless they resolve to a real target.

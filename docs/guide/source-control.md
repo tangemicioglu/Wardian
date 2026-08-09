@@ -100,8 +100,10 @@ reviewing without returning to the resource list. Individual hunk headers also
 include **Stage Hunk** or **Unstage Hunk** for applying only that hunk to the
 index.
 
-Right-click a file and choose **Open File** to launch it through Wardian's
-configured external editor, or **Reveal in Explorer View** to inspect its
+Right-click a file and choose **Open File** to use the file-family preference
+from Settings: Wardian-preferred files open in a permanent Files surface,
+external-preferred files use the configured editor, and unsupported files use
+the system-preferred application. **Reveal in Explorer View** inspects the
 workspace location. Choose **Open File (HEAD)** to inspect the committed
 version of a changed file without changing the working tree. On unstaged file
 resources, choose **Add to .gitignore** to append that file path to the

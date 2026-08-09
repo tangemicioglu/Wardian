@@ -482,6 +482,7 @@ async function startNativeSessionAttempt(harness) {
     env: {
       ...process.env,
       WARDIAN_HOME: harness.isolatedHome,
+      WARDIAN_E2E_NATIVE_HOME: harness.isolatedHome,
     },
   });
 

@@ -10,7 +10,7 @@ Use it when you need to inspect generated files, logs, prompt assets, or the sel
 
 - Browse the workspace for the agent selected in [Watchlists](./watchlists.md).
 - Inspect files after an agent reports completion in [Inbox](./inbox.md).
-- Open a quick preview in a Workbench tab before deciding whether to keep it.
+- Open a file in a permanent Files tab for reading or editing.
 - Open a file or folder in your configured local app or editor.
 - Reveal a file in the system file manager when you need native OS actions.
 
@@ -19,9 +19,11 @@ Use it when you need to inspect generated files, logs, prompt assets, or the sel
 1. Select an agent in the right roster, or clear selection for global Wardian home browsing.
 2. Open the **Explorer** tab in the left sidebar.
 3. Expand folders to inspect files.
-4. Click a file to open a transient Files preview, or change the click behavior in [Settings](./settings.md).
+4. Click a file to use the matching broad file-family preference in
+   [Settings](./settings.md). Wardian-supported files open in a permanent Files
+   tab by default; unsupported files use the system-preferred viewer.
 5. Use the Explorer title actions to reveal the current root in your system file manager or open the entire root in your configured external app.
-6. Use preview, open externally, reveal, copy path, or delete from the file context menu.
+6. Use open, open externally, reveal, copy path, or delete from the file context menu.
 7. Move to [Source Control](./source-control.md) when the selected root is a Git workspace and you need to review changes.
 
 ## Root Behavior
@@ -43,31 +45,37 @@ This allows you to manually browse common data, shared lineages, and global conf
 
 ## 🖱️ File Interactions
 
-Clicking a folder expands or collapses it. Clicking a file uses the configured
-**File click action** from Settings:
+Clicking a folder expands or collapses it. Clicking a supported file uses its
+configured broad file-family preference from Settings:
 
-- **Preview in Wardian** opens a read-only Files tab. This is the default.
-  A single click creates or replaces the current pane's transient preview.
-  Double-clicking or pressing `Enter` makes that file a permanent tab.
-- **Open in external app** opens editor-friendly files through the configured
-  Explorer external editor preference. Binary, media, archive, executable, and
-  document files use the operating system's default handler.
+- **Open in Wardian** opens a permanent read-only Files tab. Single clicks,
+  double-clicks, and pressing `Enter` use the same permanent opening behavior.
+- **Open in external app** uses the configured External editor preference.
+
+Unknown or unsupported files, such as office documents, always open in the
+operating system's preferred application. Configured VS Code and custom editor
+settings do not apply to them.
 
 The Explorer also supports standard right-click actions for rapid file
 management:
 
-- **Open**: Opens a permanent Files tab, or pins the matching transient preview.
-- **Open to Side**: Opens a permanent Files tab in an adjacent pane when the
-  Workbench can admit the split.
+- **Open**: Uses the file family's Settings preference: Wardian-preferred files
+  open in a permanent Files tab, external-preferred files use the configured
+  editor, and unsupported files use the system-preferred application.
+- **Open to Side**: Uses the same family preference. Wardian-preferred files
+  open in a permanent Files tab in an adjacent pane when the Workbench can
+  admit the split; external and unsupported files use their configured or
+  system-preferred application instead.
 - **Open in External App**: Opens the selected folder, or an editor-friendly file, using the configured Explorer editor preference. Binary, media, archive, executable, and document files use the operating system's default handler. You can switch editor-friendly paths to VS Code or a custom executable in [Settings](./settings.md).
 - **Reveal in System Explorer**: Opens your OS file manager (Windows Explorer or macOS Finder) directly to the selected file or folder.
 - **Copy Path**: Copies the absolute path of the file to your clipboard.
 - **Delete**: Permanently removes the file or directory from your disk (requires confirmation).
 
-The example below shows an Explorer-driven transient preview beside a permanent
-file tab. The second pane has already reloaded its stable backend revision.
+The example below shows Explorer-driven Markdown files in permanent Files tabs
+across two panes when Markdown is Wardian-preferred. The second pane has
+already reloaded its stable backend revision.
 
-![Explorer opening Markdown files as transient and permanent Workbench tabs across two panes](../assets/screenshots/explorer/files-tabs.png)
+![Explorer opening Markdown files in permanent Workbench tabs across two panes](../assets/screenshots/explorer/files-tabs.png)
 
 ## Preview Controls
 
@@ -91,13 +99,17 @@ PDF document viewport to use the browser's native arrow and page scrolling.
 
 The **File actions** menu supports pointer use as well as `Arrow Up`,
 `Arrow Down`, `Home`, and `End`. `Escape` closes the menu and returns focus to
-its trigger. Markdown links to authorized local files stay inside Wardian's
-Files routing, including UNC `file://server/share/...` links; the backend still
-performs the final root/capability check before opening the target.
+its trigger. Markdown links to authorized local files use the same family
+preference as other file links, including UNC `file://server/share/...` links.
+Wardian keeps the target inside the Files surface when that family is
+Wardian-preferred and uses the configured external or system viewer otherwise;
+the backend still performs the final root/capability check before opening the
+target.
 
 Agent terminals and the bottom user terminal also make recognized file paths and
 URLs clickable, including links that wrap across terminal rows. File paths use
-the same type-sensitive behavior as **Open in External App**; URLs open as URLs.
+the same type-sensitive family preference as Explorer **Open**; URLs open as
+URLs.
 Wardian validates terminal file links before showing them, so slash-looking
 command names or prose fragments are ignored unless they resolve to a real file
 or folder.
@@ -112,9 +124,10 @@ When the selected root is a Git repository, the Explorer uses status colors and 
 - Explorer context follows selection. If the tree is not showing the workspace you expect, check the selected agent in the roster.
 - Current in-app previews support validated UTF-8 text and Markdown, images,
   and PDFs. Complete text models are limited to 16 MiB and 200,000 lines;
-  images to 64 MiB and 64 million decoded pixels; PDFs to 256 MiB. Oversized or
-  unsupported content shows metadata and **Open With** instead of allocating an
-  unsafe renderer. PDF search is bounded to 128 pages or two seconds per query;
+  images to 64 MiB and 64 million decoded pixels; PDFs to 256 MiB. Oversized
+  content stays in the metadata fallback with **Open With**; unsupported
+  content requests the system-preferred viewer and returns to metadata with
+  **Open With** if that launch fails. PDF search is bounded to 128 pages or two seconds per query;
   partial results show how much of the document was searched.
 - Active HTML and SVG are deliberately unavailable in this foundation. They
   will not render live until the capability-free, networkless artifact host and

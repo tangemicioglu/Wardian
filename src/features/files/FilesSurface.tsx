@@ -19,6 +19,7 @@ import type {
   OpenFileResourceRequestV1,
 } from "../../types";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { openFileInExternalApp } from "./fileOpenRouting";
 import { FileContentHost } from "./FileContentHost";
 import { FileComparisonLens } from "./FileComparisonLens";
 import { type FileResourceClient, fileResourceClient } from "./fileResourceClient";
@@ -57,8 +58,13 @@ export type FilesSurfaceProps = {
   on_canonical_resource?: (
     resource_key: string,
   ) => CloseDecision | void | Promise<CloseDecision | void>;
-  on_open_file?: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
+  on_open_file?: (
+    path: string,
+    open_in_new_tab?: boolean,
+    resource_request?: OpenFileResourceRequestV1,
+  ) => Promise<void> | void;
   on_open_with?: (path: string) => Promise<void> | void;
+  on_open_system?: (path: string) => Promise<void> | void;
   on_reveal?: (path: string) => Promise<void> | void;
   on_state_change?: (state: FilesSurfaceStateV2) => Promise<void> | void;
   legacy_presentation_intent?: FilesLegacyPresentationIntent;
@@ -71,13 +77,16 @@ function pathFromResourceKey(resourceKey: string) {
 
 async function openWithConfiguredEditor(path: string) {
   const settings = useSettingsStore.getState();
-  await invoke("open_in_external_editor", {
-    path,
-    editor: {
-      external_editor: settings.externalEditor,
-      external_editor_custom_executable:
-        settings.externalEditorCustomExecutable.trim() || null,
-    },
+  await openFileInExternalApp(path, {
+    external_editor: settings.externalEditor,
+    external_editor_custom_executable: settings.externalEditorCustomExecutable,
+  });
+}
+
+async function openWithSystemViewer(path: string) {
+  await openFileInExternalApp(path, {
+    external_editor: "system",
+    external_editor_custom_executable: null,
   });
 }
 
@@ -91,8 +100,13 @@ type ActiveFilesSurfaceProps = Required<Pick<
 >> & {
   resource: UseFileResourceResult;
   resource_request: OpenFileResourceRequestV1;
-  on_open_file: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
+  on_open_file: (
+    path: string,
+    open_in_new_tab?: boolean,
+    resource_request?: OpenFileResourceRequestV1,
+  ) => Promise<void> | void;
   on_open_with: (path: string) => Promise<void> | void;
+  on_open_system: (path: string) => Promise<void> | void;
   on_reveal: (path: string) => Promise<void> | void;
   on_state_change: (state: FilesSurfaceStateV2) => Promise<void> | void;
   legacy_presentation_intent?: FilesLegacyPresentationIntent;
@@ -548,6 +562,7 @@ function ActiveFilesSurface(props: ActiveFilesSurfaceProps) {
               resource_request={props.resource_request}
               on_open_file={props.on_open_file}
               on_open_with={props.on_open_with}
+              on_open_system={props.on_open_system}
               on_reveal={props.on_reveal}
             />
           </div>
@@ -618,6 +633,7 @@ function FileBackedFilesSurface({
   on_canonical_resource = () => "allow",
   on_open_file = () => undefined,
   on_open_with = openWithConfiguredEditor,
+  on_open_system = openWithSystemViewer,
   on_reveal = revealPath,
   on_state_change = () => undefined,
   resource_request,
@@ -1012,6 +1028,15 @@ function FileBackedFilesSurface({
       setActionError(`Open With failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, [on_open_with]);
+  const guardedOpenSystem = useCallback(async (path: string) => {
+    try {
+      await on_open_system(path);
+      setActionError(null);
+    } catch (error) {
+      setActionError(`System viewer failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }, [on_open_system]);
   const guardedReveal = useCallback(async (path: string) => {
     try {
       await on_reveal(path);
@@ -1099,6 +1124,7 @@ function FileBackedFilesSurface({
       resource_request={resolvedResourceRequest}
       on_open_file={on_open_file}
       on_open_with={guardedOpenWith}
+      on_open_system={guardedOpenSystem}
       on_reveal={guardedReveal}
       on_state_change={on_state_change}
       action_error={actionError}

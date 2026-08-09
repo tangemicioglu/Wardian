@@ -95,12 +95,17 @@ import { createFilesCloseAdapter } from "../features/files/filesCloseAdapter";
 import { fileResourceClient } from "../features/files/fileResourceClient";
 import { fileResourceKey } from "../features/files/fileResourceKey";
 import { openPermanentFileSurface } from "../features/files/fileSurfaceNavigation";
+import {
+  fileOpenDestinationForKind,
+  fileOpenKindForDescriptor,
+  openFileWithSettings,
+} from "../features/files/fileOpenRouting";
 import { useArtifactEvents } from "../features/files/useArtifactEvents";
 import {
   filesSurfaceMigrationCommands,
   isFilesSurfaceStateV1,
 } from "../features/files/filesSurfaceState";
-import type { BrowserSurfaceState, FilesSurfaceStateV2 } from "../types";
+import type { BrowserSurfaceState, FilesSurfaceStateV2, OpenFileResourceRequestV1 } from "../types";
 import type { SurfaceResourceProvision } from "../features/workbench/coreSurfaceRegistry";
 
 declare global {
@@ -126,6 +131,29 @@ function normalizeCollapsedTeamIdsByList(value: unknown): Record<string, string[
       return [[listId, teamIds.filter((teamId): teamId is string => typeof teamId === "string")]];
     }),
   );
+}
+
+async function canonicalizeFileOpenPath(
+  path: string,
+  sourceRequest?: OpenFileResourceRequestV1,
+) {
+  const snapshot = await fileResourceClient.open({
+    ...(sourceRequest ?? {
+      path,
+      agent_id: null,
+      user_file_capability_id: null,
+    }),
+    path,
+  });
+  try {
+    return {
+      path: snapshot.descriptor.canonical_path,
+      kind: fileOpenKindForDescriptor(snapshot.descriptor),
+      renderer_kind: snapshot.descriptor.renderer_kind,
+    };
+  } finally {
+    await fileResourceClient.close(snapshot.subscription_id).catch(() => undefined);
+  }
 }
 
 const NATIVE_WINDOW_WIDTH_VAR = "--wardian-native-window-width";
@@ -460,6 +488,9 @@ function AppBody() {
     autoPatchGemini,
     titlebarTelemetryVisible,
     workbenchNewTabAction,
+    fileOpenActions,
+    externalEditor,
+    externalEditorCustomExecutable,
     app_settings_loaded,
     loadAppSettings,
     settingsOpen,
@@ -1435,14 +1466,26 @@ function AppBody() {
               state: filesState,
             });
           }}
-          on_open_file={async (path, openInNewTab = false) => {
+          on_open_file={async (path, openInNewTab = false, sourceRequest) => {
+            const authorizedFile = await canonicalizeFileOpenPath(path, sourceRequest);
+            const destination = fileOpenDestinationForKind(authorizedFile.kind, fileOpenActions);
+            if (destination !== "wardian") {
+              await openFileWithSettings(authorizedFile.path, {
+                navigation: workbenchNavigation,
+                file_open_actions: fileOpenActions,
+                external_editor: externalEditor,
+                external_editor_custom_executable: externalEditorCustomExecutable,
+                verified_renderer_kind: authorizedFile.renderer_kind,
+              });
+              return;
+            }
             if (openInNewTab) {
-              openPermanentFileSurface(workbenchNavigation, path);
+              openPermanentFileSurface(workbenchNavigation, authorizedFile.path);
               return;
             }
             await workbenchNavigation.rebind_resource(surface.surface_id, {
               surface_type: "files",
-              resource_key: fileResourceKey(path),
+              resource_key: fileResourceKey(authorizedFile.path),
               state: filesState,
             });
           }}

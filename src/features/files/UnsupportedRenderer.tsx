@@ -1,19 +1,79 @@
+import { useEffect, useRef, useState } from "react";
 import type { FileRendererProps } from "./rendererRegistry";
 
 export default function UnsupportedRenderer({
   snapshot,
+  lifecycle,
   on_open_with,
+  on_open_system,
   on_reveal,
 }: FileRendererProps) {
   const { descriptor } = snapshot;
+  const [openError, setOpenError] = useState<string | null>(null);
+  const shouldAutoOpen = Boolean(
+    on_open_system
+    && lifecycle.visible
+    && descriptor.unavailable_reason === "unsupported_content",
+  );
+  const [opening, setOpening] = useState(shouldAutoOpen);
+  const [openedInSystem, setOpenedInSystem] = useState(false);
+  const attemptedOpenRef = useRef<string | null>(null);
+  const activeAttemptRef = useRef<string | null>(null);
   const liveDocument = descriptor.mime_type === "text/html"
     || descriptor.mime_type === "image/svg+xml";
   const reason = descriptor.unavailable_reason
     ?? (liveDocument ? "live_renderer_not_activated" : "renderer_not_activated");
+  const attemptKey = `${snapshot.resource_id}:${snapshot.revision}:${descriptor.unavailable_reason ?? ""}`;
+
+  useEffect(() => {
+    setOpenError(null);
+    setOpenedInSystem(false);
+    setOpening(shouldAutoOpen);
+    activeAttemptRef.current = attemptKey;
+  }, [attemptKey]);
+
+  useEffect(() => {
+    if (
+      !on_open_system
+      || !lifecycle.visible
+      || descriptor.unavailable_reason !== "unsupported_content"
+    ) return;
+    if (attemptedOpenRef.current === attemptKey) return;
+    attemptedOpenRef.current = attemptKey;
+    setOpening(true);
+    void Promise.resolve(on_open_system(descriptor.canonical_path)).then(
+      () => {
+        if (activeAttemptRef.current !== attemptKey) return;
+        setOpening(false);
+        setOpenedInSystem(true);
+      },
+      (error) => {
+        if (activeAttemptRef.current !== attemptKey) return;
+        setOpening(false);
+        setOpenError(error instanceof Error ? error.message : String(error));
+      },
+    );
+  }, [attemptKey, descriptor.canonical_path, descriptor.unavailable_reason, lifecycle.visible, on_open_system]);
+
+  if (shouldAutoOpen && opening && !openError) {
+    return (
+      <section className="files-resource-state" role="status" aria-label="Opening in system viewer">
+        <h2>Opening in system viewer</h2>
+        <p>{descriptor.display_name} is not supported by Wardian.</p>
+      </section>
+    );
+  }
+
   return (
-    <section className="files-resource-state" role="status" aria-label="Preview unavailable">
-      <h2>Preview unavailable</h2>
-      <p>{reason}</p>
+    <section className="files-resource-state" role={openError ? "alert" : "status"} aria-label="Preview unavailable">
+      <h2>{openedInSystem && !openError ? "Opened in system viewer" : "Preview unavailable"}</h2>
+      <p>
+        {openError
+          ? `System viewer could not open this file: ${openError}`
+          : openedInSystem
+            ? `${descriptor.display_name} was handed off to the system viewer.`
+            : reason}
+      </p>
       <dl className="files-resource-metadata">
         <div><dt>Type</dt><dd>{descriptor.mime_type}</dd></div>
         <div><dt>Size</dt><dd>{descriptor.size_bytes.toLocaleString()} bytes</dd></div>

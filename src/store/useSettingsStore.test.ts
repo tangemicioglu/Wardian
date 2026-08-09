@@ -24,7 +24,7 @@ function resetAppPreferences() {
     titlebarTelemetryVisible: true,
     externalEditor: 'system',
     externalEditorCustomExecutable: '',
-    explorerFileClickAction: 'preview',
+    fileOpenActions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
     workbenchNewTabAction: 'home',
     app_settings_overrides: {},
     app_settings_loaded: false,
@@ -276,7 +276,7 @@ describe('app settings persistence', () => {
       titlebar_telemetry_visible: false,
       external_editor: 'vscode',
       external_editor_custom_executable: null,
-      explorer_file_click_action: 'external',
+      file_open_actions: { text: 'external', image: 'external', pdf: 'external' },
     });
 
     await useSettingsStore.getState().loadAppSettings();
@@ -290,8 +290,32 @@ describe('app settings persistence', () => {
     expect(useSettingsStore.getState().watchlistNewAgentPosition).toBe('bottom');
     expect(useSettingsStore.getState().titlebarTelemetryVisible).toBe(false);
     expect(useSettingsStore.getState().externalEditor).toBe('vscode');
-    expect(useSettingsStore.getState().explorerFileClickAction).toBe('external');
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({ text: 'external', image: 'external', pdf: 'external' });
+    expect(useSettingsStore.getState().app_settings_overrides).not.toHaveProperty(
+      'explorer_file_click_action',
+    );
     expect(useSettingsStore.getState().app_settings_loaded).toBe(true);
+  });
+
+  it('migrates a version-2 local preference without family actions', async () => {
+    localStorage.setItem('wardian-settings', JSON.stringify({
+      state: {
+        explorerFileClickAction: 'external',
+        externalEditor: 'vscode',
+      },
+      version: 2,
+    }));
+
+    await useSettingsStore.persist.rehydrate();
+
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'external',
+      image: 'external',
+      pdf: 'external',
+    });
+    expect(JSON.parse(localStorage.getItem('wardian-settings') ?? '{}')).toEqual(
+      expect.objectContaining({ version: 4 }),
+    );
   });
 
   it('saves app preferences through the backend app settings file', async () => {
@@ -305,7 +329,7 @@ describe('app settings persistence', () => {
       titlebar_telemetry_visible: false,
       external_editor: 'custom',
       external_editor_custom_executable: 'C:/Tools/editor.exe',
-      explorer_file_click_action: 'external',
+      file_open_actions: { text: 'wardian', image: 'external', pdf: 'wardian' },
     });
 
     useSettingsStore.getState().setTheme('light');
@@ -317,7 +341,7 @@ describe('app settings persistence', () => {
     useSettingsStore.getState().setTitlebarTelemetryVisible(false);
     useSettingsStore.getState().setExternalEditor('custom');
     useSettingsStore.getState().setExternalEditorCustomExecutable('C:/Tools/editor.exe');
-    useSettingsStore.getState().setExplorerFileClickAction('external');
+    useSettingsStore.getState().setFileOpenAction('image', 'external');
 
     await useSettingsStore.getState().saveAppSettings();
 
@@ -333,31 +357,105 @@ describe('app settings persistence', () => {
           titlebar_telemetry_visible: false,
           external_editor: 'custom',
           external_editor_custom_executable: 'C:/Tools/editor.exe',
-          explorer_file_click_action: 'external',
+          file_open_actions: { text: 'wardian', image: 'external', pdf: 'wardian' },
         }),
       }),
     });
+    expect(mockedInvoke.mock.calls[mockedInvoke.mock.calls.length - 1]?.[1]).not.toEqual(
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          overrides: expect.objectContaining({ explorer_file_click_action: expect.anything() }),
+        }),
+      }),
+    );
     expect(useSettingsStore.getState().theme).toBe('light');
     expect(useSettingsStore.getState().terminalFontSize).toBe(12);
     expect(useSettingsStore.getState().gridCardDisplayMode).toBe('chat');
     expect(useSettingsStore.getState().watchlistNewAgentPosition).toBe('bottom');
     expect(useSettingsStore.getState().titlebarTelemetryVisible).toBe(false);
     expect(useSettingsStore.getState().externalEditor).toBe('custom');
-    expect(useSettingsStore.getState().explorerFileClickAction).toBe('external');
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'wardian',
+      image: 'external',
+      pdf: 'wardian',
+    });
   });
 
-  it('removes the Explorer file click override when reset to preview', () => {
-    useSettingsStore.getState().setExplorerFileClickAction('external');
-    expect(useSettingsStore.getState().app_settings_overrides).toEqual(
-      expect.objectContaining({
-        explorer_file_click_action: 'external',
+  it('loads authoritative family preferences without a legacy fallback', async () => {
+    mockedInvoke.mockResolvedValueOnce({
+      schema_version: 2,
+      persisted: true,
+      settings: { file_open_actions: { text: 'external', image: 'external', pdf: 'external' } },
+      overrides: { file_open_actions: { text: 'external', image: 'external', pdf: 'external' } },
+    });
+
+    await useSettingsStore.getState().loadAppSettings();
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'external',
+      image: 'external',
+      pdf: 'external',
+    });
+
+    useSettingsStore.getState().setFileOpenAction('text', 'wardian');
+    useSettingsStore.getState().setFileOpenAction('image', 'wardian');
+    useSettingsStore.getState().setFileOpenAction('pdf', 'wardian');
+
+    mockedInvoke.mockResolvedValueOnce({
+      schema_version: 2,
+      persisted: true,
+      settings: {
+        file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
+      },
+      overrides: {
+        file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
+      },
+    });
+
+    await useSettingsStore.getState().saveAppSettings();
+
+    expect(mockedInvoke).toHaveBeenLastCalledWith('save_app_settings', {
+      settings: expect.objectContaining({
+        overrides: {
+          file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
+        },
       }),
+    });
+
+    resetAppPreferences();
+    mockedInvoke.mockResolvedValueOnce({
+      schema_version: 2,
+      persisted: true,
+      settings: {
+        file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
+      },
+      overrides: {
+        file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
+      },
+    });
+
+    await useSettingsStore.getState().loadAppSettings();
+
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'wardian',
+      image: 'wardian',
+      pdf: 'wardian',
+    });
+    expect(useSettingsStore.getState().app_settings_overrides).not.toHaveProperty(
+      'explorer_file_click_action',
     );
+  });
 
-    useSettingsStore.getState().setExplorerFileClickAction('preview');
+  it('persists a targeted file-family opening preference', () => {
+    useSettingsStore.getState().setFileOpenAction('image', 'external');
 
-    expect(useSettingsStore.getState().explorerFileClickAction).toBe('preview');
-    expect(useSettingsStore.getState().app_settings_overrides).not.toHaveProperty('explorer_file_click_action');
+    expect(useSettingsStore.getState().fileOpenActions).toEqual({
+      text: 'wardian',
+      image: 'external',
+      pdf: 'wardian',
+    });
+    expect(useSettingsStore.getState().app_settings_overrides).toEqual(expect.objectContaining({
+      file_open_actions: { text: 'wardian', image: 'external', pdf: 'wardian' },
+    }));
   });
 
   it('keeps migrated local preferences when no backend app settings file exists yet', async () => {

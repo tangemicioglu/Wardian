@@ -7,6 +7,23 @@ const MIN_TERMINAL_FONT_SIZE: u8 = 10;
 const MAX_TERMINAL_FONT_SIZE: u8 = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileOpenActions {
+    pub text: String,
+    pub image: String,
+    pub pdf: String,
+}
+
+impl Default for FileOpenActions {
+    fn default() -> Self {
+        Self {
+            text: "wardian".to_string(),
+            image: "wardian".to_string(),
+            pdf: "wardian".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppSettings {
     pub theme: String,
     #[serde(default)]
@@ -25,8 +42,8 @@ pub struct AppSettings {
     pub external_editor: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_editor_custom_executable: Option<String>,
-    #[serde(default = "default_explorer_file_click_action")]
-    pub explorer_file_click_action: String,
+    #[serde(default)]
+    pub file_open_actions: FileOpenActions,
     #[serde(default = "default_workbench_new_tab_action")]
     pub workbench_new_tab_action: String,
 }
@@ -52,7 +69,7 @@ pub struct AppSettingsOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_editor_custom_executable: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub explorer_file_click_action: Option<String>,
+    pub file_open_actions: Option<FileOpenActions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workbench_new_tab_action: Option<String>,
 }
@@ -85,7 +102,7 @@ impl Default for AppSettings {
             titlebar_telemetry_visible: default_titlebar_telemetry_visible(),
             external_editor: default_external_editor(),
             external_editor_custom_executable: None,
-            explorer_file_click_action: default_explorer_file_click_action(),
+            file_open_actions: FileOpenActions::default(),
             workbench_new_tab_action: default_workbench_new_tab_action(),
         }
     }
@@ -116,10 +133,6 @@ fn default_titlebar_telemetry_visible() -> bool {
 
 fn default_external_editor() -> String {
     "system".to_string()
-}
-
-fn default_explorer_file_click_action() -> String {
-    "preview".to_string()
 }
 
 fn default_workbench_new_tab_action() -> String {
@@ -184,22 +197,46 @@ fn load_app_settings_document_from_path(path: &Path) -> Result<AppSettingsDocume
         .and_then(|version| version.as_u64())
         == Some(2)
     {
-        let persisted =
+        let legacy_file_click_action = value
+            .get("overrides")
+            .and_then(|overrides| overrides.get("explorer_file_click_action"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let mut persisted =
             serde_json::from_value::<PersistedAppSettings>(value).map_err(|e| e.to_string())?;
-        return Ok(app_settings_document_from_overrides(
-            persisted.overrides,
-            true,
-        ));
+        let legacy_present = legacy_file_click_action.is_some();
+        if persisted.overrides.file_open_actions.is_none() {
+            persisted.overrides.file_open_actions = legacy_file_click_action
+                .as_deref()
+                .map(|action| file_open_actions_from_legacy(Some(action)))
+                .filter(|actions| *actions != FileOpenActions::default());
+        }
+        let document = app_settings_document_from_overrides(persisted.overrides, true);
+        return if legacy_present {
+            save_app_settings_document_to_path(path, &document)
+        } else {
+            Ok(document)
+        };
     }
 
-    let settings = serde_json::from_value::<AppSettings>(value).map_err(|e| e.to_string())?;
+    let legacy_file_click_action = value
+        .get("explorer_file_click_action")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let has_file_open_actions = value.get("file_open_actions").is_some();
+    let mut settings = serde_json::from_value::<AppSettings>(value).map_err(|e| e.to_string())?;
+    if !has_file_open_actions {
+        settings.file_open_actions =
+            file_open_actions_from_legacy(legacy_file_click_action.as_deref());
+    }
     let normalized = normalize_app_settings(settings);
-    Ok(AppSettingsDocument {
+    let document = AppSettingsDocument {
         schema_version: 2,
         overrides: app_overrides_from_settings(&normalized, &AppSettings::default()),
         settings: normalized,
         persisted: true,
-    })
+    };
+    save_app_settings_document_to_path(path, &document)
 }
 
 fn save_app_settings_to_path(path: &Path, settings: &AppSettings) -> Result<AppSettings, String> {
@@ -227,8 +264,7 @@ fn save_app_settings_document_to_path(
         schema_version: 2,
         overrides: normalized_overrides,
     };
-    let content = serde_json::to_string_pretty(&persisted).map_err(|e| e.to_string())?;
-    std::fs::write(path, content).map_err(|e| e.to_string())?;
+    wardian_core::conversations::write_json_atomic(path, &persisted).map_err(|e| e.to_string())?;
     Ok(AppSettingsDocument {
         schema_version: 2,
         settings: normalized,
@@ -257,8 +293,7 @@ fn normalize_app_settings(mut settings: AppSettings) -> AppSettings {
     settings.external_editor_custom_executable = settings
         .external_editor_custom_executable
         .and_then(|value| trim_to_option(&value));
-    settings.explorer_file_click_action =
-        normalize_explorer_file_click_action(&settings.explorer_file_click_action);
+    settings.file_open_actions = normalize_file_open_actions(settings.file_open_actions);
     settings.workbench_new_tab_action =
         normalize_workbench_new_tab_action(&settings.workbench_new_tab_action);
     settings
@@ -322,10 +357,10 @@ fn app_settings_from_overrides_for_build(
             .external_editor_custom_executable
             .clone()
             .unwrap_or(defaults.external_editor_custom_executable),
-        explorer_file_click_action: overrides
-            .explorer_file_click_action
+        file_open_actions: overrides
+            .file_open_actions
             .clone()
-            .unwrap_or(defaults.explorer_file_click_action),
+            .unwrap_or(defaults.file_open_actions),
         workbench_new_tab_action: overrides
             .workbench_new_tab_action
             .clone()
@@ -353,11 +388,7 @@ fn normalize_app_overrides(mut overrides: AppSettingsOverrides) -> AppSettingsOv
     overrides.external_editor_custom_executable = overrides
         .external_editor_custom_executable
         .map(|executable| executable.and_then(|value| trim_to_option(&value)));
-    overrides.explorer_file_click_action =
-        overrides.explorer_file_click_action.and_then(|action| {
-            let normalized = normalize_explorer_file_click_action(&action);
-            (normalized != default_explorer_file_click_action()).then_some(normalized)
-        });
+    overrides.file_open_actions = overrides.file_open_actions.map(normalize_file_open_actions);
     overrides.workbench_new_tab_action = overrides.workbench_new_tab_action.and_then(|action| {
         let normalized = normalize_workbench_new_tab_action(&action);
         (normalized != default_workbench_new_tab_action()).then_some(normalized)
@@ -391,9 +422,8 @@ fn app_overrides_from_settings(
         external_editor_custom_executable: (settings.external_editor_custom_executable
             != defaults.external_editor_custom_executable)
             .then(|| settings.external_editor_custom_executable.clone()),
-        explorer_file_click_action: (settings.explorer_file_click_action
-            != defaults.explorer_file_click_action)
-            .then(|| settings.explorer_file_click_action.clone()),
+        file_open_actions: (settings.file_open_actions != defaults.file_open_actions)
+            .then(|| settings.file_open_actions.clone()),
         workbench_new_tab_action: (settings.workbench_new_tab_action
             != defaults.workbench_new_tab_action)
             .then(|| settings.workbench_new_tab_action.clone()),
@@ -430,10 +460,31 @@ fn normalize_external_editor(value: &str) -> String {
     }
 }
 
-fn normalize_explorer_file_click_action(value: &str) -> String {
+fn normalize_file_open_action(value: &str) -> String {
     match value.trim() {
         "external" => "external".to_string(),
-        _ => "preview".to_string(),
+        _ => "wardian".to_string(),
+    }
+}
+
+fn normalize_file_open_actions(actions: FileOpenActions) -> FileOpenActions {
+    FileOpenActions {
+        text: normalize_file_open_action(&actions.text),
+        image: normalize_file_open_action(&actions.image),
+        pdf: normalize_file_open_action(&actions.pdf),
+    }
+}
+
+fn file_open_actions_from_legacy(action: Option<&str>) -> FileOpenActions {
+    let target = if action.map(str::trim) == Some("external") {
+        "external"
+    } else {
+        "wardian"
+    };
+    FileOpenActions {
+        text: target.to_string(),
+        image: target.to_string(),
+        pdf: target.to_string(),
     }
 }
 
@@ -477,7 +528,7 @@ mod tests {
         assert!(settings.titlebar_telemetry_visible);
         assert_eq!(settings.external_editor, "system");
         assert_eq!(settings.external_editor_custom_executable, None);
-        assert_eq!(settings.explorer_file_click_action, "preview");
+        assert_eq!(settings.file_open_actions, FileOpenActions::default());
         assert_eq!(
             serde_json::to_value(&settings).expect("serialize defaults")
                 ["workbench_new_tab_action"],
@@ -600,7 +651,11 @@ mod tests {
             titlebar_telemetry_visible: true,
             external_editor: "custom".to_string(),
             external_editor_custom_executable: Some("/opt/editor/bin/editor".to_string()),
-            explorer_file_click_action: "external".to_string(),
+            file_open_actions: FileOpenActions {
+                text: "external".to_string(),
+                image: "external".to_string(),
+                pdf: "external".to_string(),
+            },
             workbench_new_tab_action: "palette".to_string(),
         };
 
@@ -609,8 +664,8 @@ mod tests {
         let loaded = load_app_settings_from_path(&path).expect("load settings");
 
         assert!(document.persisted);
-        assert_eq!(saved, settings);
-        assert_eq!(loaded, settings);
+        assert_eq!(saved.file_open_actions, settings.file_open_actions);
+        assert_eq!(loaded, saved);
     }
 
     #[test]
@@ -627,7 +682,7 @@ mod tests {
             titlebar_telemetry_visible: true,
             external_editor: "system".to_string(),
             external_editor_custom_executable: None,
-            explorer_file_click_action: "preview".to_string(),
+            file_open_actions: FileOpenActions::default(),
             workbench_new_tab_action: "home".to_string(),
         };
 
@@ -646,20 +701,22 @@ mod tests {
     }
 
     #[test]
-    fn app_settings_drops_default_explorer_file_click_override() {
+    fn app_settings_discards_legacy_explorer_file_click_override() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let path = temp_dir.path().join("settings/app.json");
-        let document = AppSettingsDocument {
-            schema_version: 2,
-            settings: AppSettings::default(),
-            overrides: AppSettingsOverrides {
-                explorer_file_click_action: Some("preview".to_string()),
-                ..AppSettingsOverrides::default()
-            },
-            persisted: false,
-        };
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(
+            &path,
+            r#"{
+              "schema_version": 2,
+              "overrides": {
+                "explorer_file_click_action": "preview"
+              }
+            }"#,
+        )
+        .expect("write settings");
 
-        save_app_settings_document_to_path(&path, &document).expect("save settings");
+        load_app_settings_document_from_path(&path).expect("load settings");
         let raw = fs::read_to_string(&path).expect("read settings file");
         let json: serde_json::Value = serde_json::from_str(&raw).expect("parse settings file");
 
@@ -699,7 +756,55 @@ mod tests {
         assert_eq!(loaded.grid_card_display_mode, "terminal");
         assert_eq!(loaded.watchlist_new_agent_position, "bottom");
         assert_eq!(loaded.external_editor, "vscode");
-        assert_eq!(loaded.explorer_file_click_action, "external");
+        assert_eq!(
+            loaded.file_open_actions,
+            FileOpenActions {
+                text: "external".to_string(),
+                image: "external".to_string(),
+                pdf: "external".to_string(),
+            }
+        );
+        let raw = fs::read_to_string(&path).expect("read migrated settings file");
+        let json: serde_json::Value =
+            serde_json::from_str(&raw).expect("parse migrated settings file");
+        assert!(json["overrides"]
+            .get("explorer_file_click_action")
+            .is_none());
+        assert_eq!(json["overrides"]["file_open_actions"]["text"], "external");
+    }
+
+    #[test]
+    fn app_settings_migrates_legacy_flat_file_click_action_to_family_preferences() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let path = temp_dir.path().join("settings/app.json");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(
+            &path,
+            r#"{
+              "theme": "system",
+              "explorer_file_click_action": "external"
+            }"#,
+        )
+        .expect("write settings");
+
+        let loaded = load_app_settings_from_path(&path).expect("load settings");
+
+        assert_eq!(
+            loaded.file_open_actions,
+            FileOpenActions {
+                text: "external".to_string(),
+                image: "external".to_string(),
+                pdf: "external".to_string(),
+            }
+        );
+        let raw = fs::read_to_string(&path).expect("read migrated settings file");
+        let json: serde_json::Value =
+            serde_json::from_str(&raw).expect("parse migrated settings file");
+        assert_eq!(json["schema_version"], 2);
+        assert!(json["overrides"]
+            .get("explorer_file_click_action")
+            .is_none());
+        assert_eq!(json["overrides"]["file_open_actions"]["text"], "external");
     }
 
     #[test]
@@ -733,6 +838,5 @@ mod tests {
         assert_eq!(loaded.watchlist_new_agent_position, "top");
         assert_eq!(loaded.external_editor, "system");
         assert_eq!(loaded.external_editor_custom_executable, None);
-        assert_eq!(loaded.explorer_file_click_action, "preview");
     }
 }

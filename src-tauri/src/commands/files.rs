@@ -95,10 +95,29 @@ async fn open_file_resource_for_app(
     state: &AppState,
     app: Option<tauri::AppHandle>,
 ) -> Result<FileResourceSnapshotV1, FileResourceErrorV1> {
-    // Authorization fields remain in the v1 DTO for persisted-state and CLI
-    // compatibility, but Workbench file access is owned by the user and does
-    // not expire with an agent process or picker capability.
-    open_trusted_workbench_file(state, Path::new(&request.path), app).await
+    match (
+        request.agent_id.as_deref(),
+        request.user_file_capability_id.as_deref(),
+    ) {
+        (Some(_), Some(_)) => Err(resource_error(
+            "unauthorized_path",
+            "file resource request cannot combine agent and user-file authorization",
+        )),
+        (Some(agent_id), None) => {
+            let config = current_agent_config(state, agent_id).await?;
+            state
+                .file_resources
+                .open_agent_file(agent_id, &config, Path::new(&request.path), app)
+                .await
+        }
+        (None, Some(capability_id)) => {
+            state
+                .file_resources
+                .open_user_file(capability_id, Path::new(&request.path), app)
+                .await
+        }
+        (None, None) => open_trusted_workbench_file(state, Path::new(&request.path), app).await,
+    }
 }
 
 /// Opens any existing local file selected or restored by the Workbench.
@@ -611,12 +630,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trusted_workbench_open_ignores_stale_agent_attribution() {
+    async fn agent_authorized_open_rejects_stale_agent_attribution() {
         let temp = tempfile::tempdir().expect("temp root");
         let path = temp.path().join("restored.md");
         fs::write(&path, "# Restored\n").expect("fixture");
         let state = AppState::new();
-        let opened = open_file_resource_for_app(
+        let error = open_file_resource_for_app(
             OpenFileResourceRequestV1 {
                 path: path.to_string_lossy().into_owned(),
                 agent_id: Some("agent-that-is-not-running".to_string()),
@@ -626,26 +645,69 @@ mod tests {
             None,
         )
         .await
-        .expect("restored open");
+        .expect_err("stale agent authorization");
+        assert_eq!(error.code(), "unauthorized_path");
+    }
+
+    #[tokio::test]
+    async fn agent_authorized_open_stays_within_the_agent_workspace_root() {
+        let temp = tempfile::tempdir().expect("temp root");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let inside = workspace.join("docs/readme.md");
+        fs::create_dir_all(inside.parent().expect("docs parent")).expect("docs");
+        fs::write(&inside, "# Inside\n").expect("inside fixture");
+        let outside = temp.path().join("outside.md");
+        fs::write(&outside, "# Outside\n").expect("outside fixture");
+        let config = AgentConfig {
+            session_id: "agent-a".to_string(),
+            folder: workspace.to_string_lossy().into_owned(),
+            ..AgentConfig::default()
+        };
+        let state = AppState::new();
+        state.agents.lock().await.insert(
+            "agent-a".to_string(),
+            crate::restored_agent_without_process(
+                config.clone(),
+                "idle",
+                String::new(),
+                None,
+                None,
+            ),
+        );
+
+        let opened = open_file_resource_for_app(
+            OpenFileResourceRequestV1 {
+                path: inside.to_string_lossy().into_owned(),
+                agent_id: Some("agent-a".to_string()),
+                user_file_capability_id: None,
+            },
+            &state,
+            None,
+        )
+        .await
+        .expect("authorized workspace file");
         assert_eq!(
             state
                 .file_resources
                 .authorization_agent_id(&opened.resource_id, &opened.subscription_id)
                 .await
                 .expect("claim"),
-            None
+            Some("agent-a".to_string())
         );
-        let text = state
-            .file_resources
-            .read_text(
-                &opened.resource_id,
-                &opened.subscription_id,
-                opened.revision,
-                None,
-            )
-            .await
-            .expect("read restored file");
-        assert_eq!(text.text, "# Restored\n");
+
+        let error = open_file_resource_for_app(
+            OpenFileResourceRequestV1 {
+                path: outside.to_string_lossy().into_owned(),
+                agent_id: Some("agent-a".to_string()),
+                user_file_capability_id: None,
+            },
+            &state,
+            None,
+        )
+        .await
+        .expect_err("outside workspace file");
+        assert_eq!(error.code(), "unauthorized_path");
     }
 
     #[tokio::test]

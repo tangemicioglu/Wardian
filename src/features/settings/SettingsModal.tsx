@@ -18,8 +18,9 @@ import { useQueueStore } from "../../store/useQueueStore";
 import type {
   AppThemeSetting,
   ConversationLoggingSetting,
-  ExplorerFileClickAction,
   ExternalEditorSetting,
+  FileOpenAction,
+  FileOpenKind,
   WatchlistNewAgentPosition,
   WorkbenchNewTabAction,
 } from "../../types/settings";
@@ -159,11 +160,25 @@ const rowDefinitions: SettingsRowDefinition[] = [
     keywords: ["explorer", "files", "editor", "open", "vscode", "default app"],
   },
   {
-    id: "explorer-file-click-action",
+    id: "file-open-text",
     category: "Explorer",
-    label: "File click action",
-    detail: "Choose whether clicking a file previews it in Wardian or opens it externally.",
-    keywords: ["explorer", "files", "click", "preview", "external", "open"],
+    label: "Text and code files",
+    detail: "Choose whether text, code, and Markdown links open in Wardian or an external app.",
+    keywords: ["explorer", "files", "text", "code", "markdown", "wardian", "external"],
+  },
+  {
+    id: "file-open-image",
+    category: "Explorer",
+    label: "Image files",
+    detail: "Choose whether image links open in Wardian or the configured external app.",
+    keywords: ["explorer", "files", "image", "png", "jpg", "viewer", "wardian"],
+  },
+  {
+    id: "file-open-pdf",
+    category: "Explorer",
+    label: "PDF files",
+    detail: "Choose whether PDF links open in Wardian or the configured external app.",
+    keywords: ["explorer", "files", "pdf", "document", "viewer", "wardian"],
   },
   {
     id: "custom-editor-executable",
@@ -413,8 +428,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
     setExternalEditor,
     externalEditorCustomExecutable,
     setExternalEditorCustomExecutable,
-    explorerFileClickAction,
-    setExplorerFileClickAction,
+    fileOpenActions,
+    setFileOpenAction,
     workbenchNewTabAction,
     setWorkbenchNewTabAction,
     gridCardDisplayMode,
@@ -595,8 +610,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
     await useSettingsStore.getState().saveAppSettings();
   };
 
-  const handleExplorerFileClickActionChange = async (value: ExplorerFileClickAction) => {
-    setExplorerFileClickAction(value);
+  const handleFileOpenActionChange = async (kind: FileOpenKind, value: FileOpenAction) => {
+    setFileOpenAction(kind, value);
     await useSettingsStore.getState().saveAppSettings();
   };
 
@@ -949,20 +964,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
             />
           </SettingRow>
         );
-      case "explorer-file-click-action":
+      case "file-open-text":
+      case "file-open-image":
+      case "file-open-pdf": {
+        const kind = row.id.replace("file-open-", "") as FileOpenKind;
+        const labels: Record<FileOpenKind, string> = {
+          text: "Text and code files",
+          image: "Image files",
+          pdf: "PDF files",
+        };
         return (
           <SettingRow key={row.id} label={row.label} detail={row.detail}>
             <select
-              aria-label="File click action"
-              value={explorerFileClickAction}
-              onChange={(event) => void handleExplorerFileClickActionChange(event.target.value as ExplorerFileClickAction)}
+              aria-label={`${labels[kind]} open location`}
+              value={fileOpenActions[kind]}
+              onChange={(event) => void handleFileOpenActionChange(kind, event.target.value as FileOpenAction)}
               className={optionClass}
             >
-              <option value="preview">Preview in Wardian</option>
+              <option value="wardian">Open in Wardian</option>
               <option value="external">Open in external app</option>
             </select>
           </SettingRow>
         );
+      }
       case "shell":
         return (
           <SettingRow

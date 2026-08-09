@@ -5,6 +5,8 @@ import { ConfirmProvider } from "../../components/ConfirmDialog";
 import type { AgentConfig, AgentTelemetry, GitStatusResult } from "../../types";
 import { useSelectedAgentGitStatus, type SelectedAgentGitStatus } from "./useSelectedAgentGitStatus";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import type { WorkbenchNavigationService } from "../workbench/navigationService";
+import { mockOpenFileResource } from "../../test/fileResourceMock";
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -28,6 +30,15 @@ const telemetry: Record<string, AgentTelemetry> = {
     log_path: null,
   },
 };
+
+function makeNavigation() {
+  return {
+    open: vi.fn(() => "files-surface"),
+    open_transient: vi.fn(() => "files-surface"),
+    pin_transient: vi.fn(),
+    open_to_side: vi.fn(() => "files-side-surface"),
+  } as unknown as WorkbenchNavigationService;
+}
 
 function createSourceControlStatus(overrides?: Partial<SelectedAgentGitStatus>): SelectedAgentGitStatus {
   const status: GitStatusResult = overrides?.status ?? {
@@ -57,11 +68,13 @@ function ObservedGitPanelHarness({
   agents,
   onAgentsUpdated,
   telemetry,
+  navigation,
 }: {
   selectedAgentIds: Set<string>;
   agents: AgentConfig[];
   onAgentsUpdated: () => void;
   telemetry: Record<string, AgentTelemetry>;
+  navigation?: WorkbenchNavigationService | null;
 }) {
   const observedStatus = useSelectedAgentGitStatus(selectedAgentIds, agents);
   return (
@@ -70,6 +83,7 @@ function ObservedGitPanelHarness({
       agents={agents}
       onAgentsUpdated={onAgentsUpdated}
       telemetry={telemetry}
+      navigation={navigation}
       sourceControlStatus={observedStatus}
     />
   );
@@ -81,12 +95,14 @@ function GitPanelHarness({
   onAgentsUpdated,
   telemetry,
   sourceControlStatus,
+  navigation,
 }: {
   selectedAgentIds: Set<string>;
   agents: AgentConfig[];
   onAgentsUpdated: () => void;
   telemetry: Record<string, AgentTelemetry>;
   sourceControlStatus?: SelectedAgentGitStatus;
+  navigation?: WorkbenchNavigationService | null;
 }) {
   if (!sourceControlStatus) {
     return (
@@ -95,6 +111,7 @@ function GitPanelHarness({
         agents={agents}
         onAgentsUpdated={onAgentsUpdated}
         telemetry={telemetry}
+        navigation={navigation}
       />
     );
   }
@@ -104,6 +121,7 @@ function GitPanelHarness({
       agents={agents}
       onAgentsUpdated={onAgentsUpdated}
       telemetry={telemetry}
+      navigation={navigation}
       sourceControlStatus={sourceControlStatus}
     />
   );
@@ -114,6 +132,7 @@ function renderGitPanel(options?: {
   telemetryOverride?: Record<string, AgentTelemetry>;
   sourceControlStatus?: SelectedAgentGitStatus;
   onAgentsUpdated?: () => void;
+  navigation?: WorkbenchNavigationService | null;
 }) {
   const renderedAgent = { ...agent, ...options?.agentOverride };
   const renderedTelemetry = options?.telemetryOverride ?? telemetry;
@@ -126,6 +145,7 @@ function renderGitPanel(options?: {
         onAgentsUpdated={options?.onAgentsUpdated ?? vi.fn()}
         telemetry={renderedTelemetry}
         sourceControlStatus={options?.sourceControlStatus}
+        navigation={options?.navigation}
       />
     </ConfirmProvider>,
   );
@@ -155,6 +175,7 @@ describe("GitPanel", () => {
     useSettingsStore.setState({
       externalEditor: "system",
       externalEditorCustomExecutable: "",
+      fileOpenActions: { text: "wardian", image: "wardian", pdf: "wardian" },
     });
   });
 
@@ -1303,8 +1324,11 @@ describe("GitPanel", () => {
     useSettingsStore.setState({
       externalEditor: "vscode",
       externalEditorCustomExecutable: "",
+      fileOpenActions: { text: "external", image: "external", pdf: "external" },
     });
-    mockInvoke.mockImplementation(async (command) => {
+    mockInvoke.mockImplementation(async (command, args) => {
+      const fileResource = mockOpenFileResource(command, args);
+      if (fileResource) return fileResource;
       if (command === "git_log") return [];
       if (command === "list_agent_worktrees") return [];
       if (command === "open_in_external_editor") return null;
@@ -1362,6 +1386,92 @@ describe("GitPanel", () => {
     });
     expect(await screen.findByText("HEAD: src/app.tsx")).toBeInTheDocument();
     expect(screen.getByText("committed version")).toBeInTheDocument();
+  });
+
+  it("opens text resources in a permanent Files surface when Wardian is preferred", async () => {
+    const navigation = makeNavigation();
+    useSettingsStore.setState({
+      externalEditor: "vscode",
+      externalEditorCustomExecutable: "",
+      fileOpenActions: { text: "wardian", image: "external", pdf: "external" },
+    });
+    mockInvoke.mockImplementation(async (command, args) => {
+      const fileResource = mockOpenFileResource(command, args);
+      if (fileResource) return fileResource;
+      if (command === "git_log") return [];
+      if (command === "list_agent_worktrees") return [];
+      return null;
+    });
+
+    renderGitPanel({
+      navigation,
+      sourceControlStatus: createSourceControlStatus({
+        status: {
+          branch: "main",
+          upstream: "origin/main",
+          has_upstream: true,
+          ahead: 0,
+          behind: 0,
+          files: [{ path: "src/app.tsx", status: "M", is_staged: false }],
+        },
+        changeCount: 1,
+      }),
+    });
+
+    const fileRow = await screen.findByRole("button", { name: "View diff for src/app.tsx" });
+    fireEvent.contextMenu(fileRow);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Open File" }));
+
+    await waitFor(() => {
+      expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
+        surface_type: "files",
+        resource_key: "file:C:/repo/src/app.tsx",
+      }));
+      expect(navigation.pin_transient).toHaveBeenCalledWith("files-surface");
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith("open_in_external_editor", expect.anything());
+  });
+
+  it("opens unsupported resources in the system viewer from Source Control", async () => {
+    useSettingsStore.setState({
+      externalEditor: "vscode",
+      externalEditorCustomExecutable: "",
+      fileOpenActions: { text: "external", image: "external", pdf: "external" },
+    });
+    mockInvoke.mockImplementation(async (command) => {
+      if (command === "git_log") return [];
+      if (command === "list_agent_worktrees") return [];
+      if (command === "open_in_external_editor") return null;
+      return null;
+    });
+
+    renderGitPanel({
+      sourceControlStatus: createSourceControlStatus({
+        status: {
+          branch: "main",
+          upstream: "origin/main",
+          has_upstream: true,
+          ahead: 0,
+          behind: 0,
+          files: [{ path: "bitmap.bmp", status: "M", is_staged: false }],
+        },
+        changeCount: 1,
+      }),
+    });
+
+    const fileRow = await screen.findByRole("button", { name: "View diff for bitmap.bmp" });
+    fireEvent.contextMenu(fileRow);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Open File" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("open_in_external_editor", {
+        path: "C:/repo/bitmap.bmp",
+        editor: {
+          external_editor: "system",
+          external_editor_custom_executable: null,
+        },
+      });
+    });
   });
 
   it("compares a staged resource with the workspace from the file context menu", async () => {

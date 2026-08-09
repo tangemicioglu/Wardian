@@ -137,6 +137,25 @@ test.describe("Wardian Core Feature Tests", () => {
     });
   });
 
+  test("8b. Settings - broad file opening preferences", async () => {
+    const dialog = await openSettings(page);
+    await dialog.getByRole("button", { name: "Explorer" }).click();
+
+    await expect(dialog.getByLabel("Text and code files open location")).toBeVisible();
+    await expect(dialog.getByLabel("Image files open location")).toBeVisible();
+    await expect(dialog.getByLabel("PDF files open location")).toBeVisible();
+    await dialog.screenshot({
+      path: path.join(
+        "e2e",
+        "screenshots",
+        "file-opening-preferences",
+        "2026-08-09",
+        "settings-file-opening-preferences.png",
+      ),
+      animations: "disabled",
+    });
+  });
+
   test("9. Settings - Shell selection", async () => {
     const dialog = await openSettings(page);
     await dialog.getByRole("button", { name: "Terminal" }).click();

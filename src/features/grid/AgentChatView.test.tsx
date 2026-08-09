@@ -5,8 +5,11 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEvent } from "../../types";
+import { AppShell } from "../../layout/AppShell";
+import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { AgentChatView } from "./AgentChatView";
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
@@ -28,6 +31,28 @@ const imageFromPathMock = vi.mocked(Image.fromPath);
 const openMock = vi.mocked(open);
 const writeImageMock = vi.mocked(writeImage);
 const writeTextMock = vi.mocked(writeText);
+
+function renderWithNavigation(content: ReactNode, navigation: WorkbenchNavigationService) {
+  return render(
+    <AppShell
+      titlebar={null}
+      leftRail={null}
+      leftPane={null}
+      mainContent={content}
+      roster={null}
+      navigation={navigation}
+    />,
+  );
+}
+
+function chatNavigation() {
+  return {
+    open: vi.fn(() => "files-surface"),
+    open_transient: vi.fn(() => "files-surface"),
+    pin_transient: vi.fn(),
+    open_to_side: vi.fn(() => "files-side-surface"),
+  } as unknown as WorkbenchNavigationService;
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -1255,6 +1280,80 @@ describe("AgentChatView", () => {
     expect(await screen.findByText("Tool result")).toBeInTheDocument();
     expect(screen.getByText("Changed files")).toBeInTheDocument();
     expect(screen.getByText(".../grid/AgentChatView.tsx")).toBeInTheDocument();
+  });
+
+  it("shows changed-file system-viewer failures in the chat", async () => {
+    const navigation = chatNavigation();
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "load_agent_chat_transcript") {
+        return [event({
+          id: "user-change",
+          kind: "message",
+          role: "user",
+          text: "Open the document.",
+          sequence: 1,
+        }), event({
+          id: "changed-doc-call",
+          kind: "tool_call",
+          role: null,
+          title: "Edit",
+          status: "running",
+          metadata: {
+            tool_name: "Edit",
+            tool_input: { file_path: "report.docx", old_string: "old", new_string: "new" },
+          },
+          sequence: 2,
+        }), event({
+          id: "assistant-change",
+          kind: "message",
+          role: "assistant",
+          text: "Done.",
+          sequence: 3,
+        })];
+      }
+      if (command === "open_in_external_editor") throw new Error("no associated app");
+      return null;
+    });
+
+    renderWithNavigation(
+      <AgentChatView sessionId="agent-1" workspacePath="C:/repo" />,
+      navigation,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /report\.docx/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Failed to open changed file: Error: no associated app",
+    );
+  });
+
+  it("shows Markdown-link system-viewer failures in the chat", async () => {
+    const navigation = chatNavigation();
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "load_agent_chat_transcript") {
+        return [event({
+          id: "markdown-doc-message",
+          kind: "message",
+          role: "assistant",
+          text: "Open [report.docx](file:///C:/repo/report.docx).",
+          sequence: 1,
+        })];
+      }
+      if (command === "terminal_link_target_exists") return true;
+      if (command === "open_in_external_editor") throw new Error("no associated app");
+      return null;
+    });
+
+    renderWithNavigation(
+      <AgentChatView sessionId="agent-1" workspacePath="C:/repo" />,
+      navigation,
+    );
+
+    await userEvent.click(await screen.findByRole("link", { name: "report.docx" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Failed to open terminal link: Error: no associated app",
+    );
   });
 
   it("copies messages, code blocks, activity output, and grouped file paths", async () => {

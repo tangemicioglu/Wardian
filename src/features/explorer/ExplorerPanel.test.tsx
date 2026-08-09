@@ -9,6 +9,7 @@ import type { AgentConfig } from '../../types';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { ConfirmProvider } from '../../components/ConfirmDialog';
 import type { WorkbenchNavigationService } from '../workbench/navigationService';
+import { mockOpenFileResource } from '../../test/fileResourceMock';
 
 const mockListen = vi.mocked(listen);
 
@@ -56,6 +57,43 @@ vi.mock('./FileTree', () => ({
       >
         src
       </button>
+      <button
+        type="button"
+        data-testid="mock-unsupported-file-row"
+        onClick={() => onSelect?.('C:\\Users\\test\\repo\\report.docx', false)}
+        onContextMenu={(event) => onContextMenu?.(event, {
+          name: 'report.docx',
+          path: 'C:\\Users\\test\\repo\\report.docx',
+          is_dir: false,
+          extension: 'docx',
+        })}
+      >
+        report.docx
+      </button>
+      <button
+        type="button"
+        data-testid="mock-bitmap-file-row"
+        onContextMenu={(event) => onContextMenu?.(event, {
+          name: 'bitmap.bmp',
+          path: 'C:\\Users\\test\\repo\\bitmap.bmp',
+          is_dir: false,
+          extension: 'bmp',
+        })}
+      >
+        bitmap.bmp
+      </button>
+      <button
+        type="button"
+        data-testid="mock-tiff-file-row"
+        onContextMenu={(event) => onContextMenu?.(event, {
+          name: 'photo.tiff',
+          path: 'C:\\Users\\test\\repo\\photo.tiff',
+          is_dir: false,
+          extension: 'tiff',
+        })}
+      >
+        photo.tiff
+      </button>
     </div>
   ),
 }));
@@ -69,6 +107,14 @@ function makeNavigation() {
   } as unknown as WorkbenchNavigationService;
 }
 
+function mockExplorerInvoke(handler: (command: string, args?: unknown) => unknown) {
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    const fileResource = mockOpenFileResource(command, args);
+    if (fileResource) return fileResource;
+    return handler(command, args);
+  });
+}
+
 describe('ExplorerPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -76,7 +122,7 @@ describe('ExplorerPanel', () => {
     useSettingsStore.setState({
       externalEditor: 'system',
       externalEditorCustomExecutable: '',
-      explorerFileClickAction: 'preview',
+      fileOpenActions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
     });
   });
 
@@ -201,7 +247,7 @@ describe('ExplorerPanel', () => {
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -224,13 +270,44 @@ describe('ExplorerPanel', () => {
     });
   });
 
+  it.each([
+    ['BMP', 'mock-bitmap-file-row', 'C:\\Users\\test\\repo\\bitmap.bmp'],
+    ['TIFF', 'mock-tiff-file-row', 'C:\\Users\\test\\repo\\photo.tiff'],
+  ])('opens unsupported %s files in the system viewer from the explicit external action', async (_label, testId, path) => {
+    useSettingsStore.setState({
+      externalEditor: 'vscode',
+      externalEditorCustomExecutable: '',
+    });
+    mockExplorerInvoke(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} />);
+
+    const tree = await screen.findByTestId(testId);
+    await userEvent.pointer({ keys: '[MouseRight]', target: tree });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open in External App' }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+        path,
+        editor: {
+          external_editor: 'system',
+          external_editor_custom_executable: null,
+        },
+      });
+    });
+  });
+
   it('shows a visible error when the configured external editor cannot open', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     useSettingsStore.setState({
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       if (command === 'open_in_external_editor') throw new Error('program not found');
@@ -248,8 +325,32 @@ describe('ExplorerPanel', () => {
     consoleError.mockRestore();
   });
 
+  it('shows a visible error when the system viewer cannot open unsupported content', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockExplorerInvoke(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      if (command === 'open_in_external_editor') throw new Error('no associated app');
+      return null;
+    });
+    const unhandled = vi.fn();
+    window.addEventListener('unhandledrejection', unhandled);
+
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} />);
+
+    await userEvent.click(await screen.findByTestId('mock-unsupported-file-row'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'System viewer open failed: Error: no associated app',
+    );
+    expect(unhandled).not.toHaveBeenCalled();
+
+    window.removeEventListener('unhandledrejection', unhandled);
+    consoleError.mockRestore();
+  });
+
   it('surfaces missing Workbench navigation locally and recovers on the next action', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -262,7 +363,7 @@ describe('ExplorerPanel', () => {
 
     await userEvent.click(await screen.findByTestId('mock-file-row'));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/File preview failed/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/File open failed/i);
     expect(screen.getByRole('alert')).toHaveTextContent(/Workbench navigation is unavailable/i);
     expect(unhandled).not.toHaveBeenCalled();
 
@@ -270,22 +371,24 @@ describe('ExplorerPanel', () => {
     rerender(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
     await userEvent.click(await screen.findByTestId('mock-file-row'));
 
-    await waitFor(() => expect(navigation.open_transient).toHaveBeenCalledOnce());
-    expect(screen.queryByText(/File preview failed/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(navigation.open).toHaveBeenCalledOnce());
+    expect(screen.queryByText(/File open failed/i)).not.toBeInTheDocument();
     expect(unhandled).not.toHaveBeenCalled();
     window.removeEventListener('unhandledrejection', unhandled);
   });
 
   it('contains rejected navigation actions and allows a later action to succeed', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
     });
     const tabs: string[] = [];
     const navigation = makeNavigation();
-    vi.mocked(navigation.open_transient)
-      .mockImplementationOnce(() => Promise.reject(new Error('navigation offline')) as never)
+    vi.mocked(navigation.open)
+      .mockImplementationOnce(() => {
+        throw new Error('navigation offline');
+      })
       .mockImplementation(() => {
         tabs.push('notes');
         return 'files-surface';
@@ -309,7 +412,7 @@ describe('ExplorerPanel', () => {
   });
 
   it('contains synchronous navigation failures without mutating tabs', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -330,12 +433,12 @@ describe('ExplorerPanel', () => {
 
   it('clears an external command error after a successful retry', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
     let attempts = 0;
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       if (command === 'open_in_external_editor' && attempts++ === 0) {
@@ -354,13 +457,12 @@ describe('ExplorerPanel', () => {
     expect(attempts).toBe(2);
   });
 
-  it('routes an internal single click to one transient Files surface without reading preview bytes', async () => {
+  it('routes an internal single click to a permanent Files surface without reading preview bytes', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'preview',
       externalEditor: 'system',
       externalEditorCustomExecutable: '',
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -372,12 +474,12 @@ describe('ExplorerPanel', () => {
     await userEvent.click(await screen.findByTestId('mock-file-row'));
 
     await waitFor(() => {
-      expect(navigation.open_transient).toHaveBeenCalledWith({
+      expect(navigation.open).toHaveBeenCalledWith({
         surface_type: 'files',
         resource_key: 'file:C:/Users/test/repo/notes.md',
         state: {
           resource_kind: 'file',
-          transient_preview: true,
+          transient_preview: false,
           presentation: 'rendered',
           comparison_open: false,
           comparison_layout_preference: 'auto',
@@ -388,11 +490,13 @@ describe('ExplorerPanel', () => {
         },
       });
     });
+    expect(navigation.open_transient).not.toHaveBeenCalled();
+    expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
     expect(invoke).not.toHaveBeenCalledWith('read_file_preview', expect.anything());
   });
 
   it('pins a matching transient or opens a permanent Files surface on Ctrl/Cmd-click and double click', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -403,29 +507,33 @@ describe('ExplorerPanel', () => {
     const file = await screen.findByTestId('mock-file-row');
     fireEvent.click(file, { ctrlKey: true });
 
-    expect(navigation.open).toHaveBeenCalledOnce();
-    expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
-      surface_type: 'files',
-      resource_key: 'file:C:/Users/test/repo/notes.md',
-      state: expect.objectContaining({ transient_preview: false }),
-    }));
-    expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
+    await waitFor(() => {
+      expect(navigation.open).toHaveBeenCalledOnce();
+      expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
+        surface_type: 'files',
+        resource_key: 'file:C:/Users/test/repo/notes.md',
+        state: expect.objectContaining({ transient_preview: false }),
+      }));
+      expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
+    });
     expect(navigation.open_transient).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalledWith('read_file_preview', expect.anything());
 
     vi.clearAllMocks();
     fireEvent.doubleClick(file);
-    expect(navigation.open).toHaveBeenCalledOnce();
-    expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
+    await waitFor(() => {
+      expect(navigation.open).toHaveBeenCalledOnce();
+      expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
+    });
   });
 
-  it('opens a permanent Files surface on Ctrl/Cmd-click even when normal clicks open externally', async () => {
+  it('routes Ctrl/Cmd-click through the selected external family preference', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -437,17 +545,18 @@ describe('ExplorerPanel', () => {
     fireEvent.click(file, { ctrlKey: true });
     fireEvent.click(file, { metaKey: true });
 
-    expect(navigation.open).toHaveBeenCalledTimes(2);
-    expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
-      resource_key: 'file:C:/Users/test/repo/notes.md',
-      state: expect.objectContaining({ transient_preview: false }),
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\notes.md',
+      editor: {
+        external_editor: 'vscode',
+        external_editor_custom_executable: null,
+      },
     }));
-    expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
-    expect(invoke).not.toHaveBeenCalledWith('open_in_external_editor', expect.anything());
+    expect(navigation.open).not.toHaveBeenCalled();
   });
 
   it('uses permanent Open and standard horizontal Open to Side context actions', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -473,8 +582,128 @@ describe('ExplorerPanel', () => {
     expect(invoke).not.toHaveBeenCalledWith('read_file_preview', expect.anything());
   });
 
+  it('routes context-menu Open through the selected family preference', async () => {
+    useSettingsStore.setState({
+      externalEditor: 'vscode',
+      externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
+    });
+    mockExplorerInvoke(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+    const navigation = makeNavigation();
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
+
+    const tree = await screen.findByTestId('mock-file-row');
+    await userEvent.pointer({ keys: '[MouseRight]', target: tree });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\notes.md',
+      editor: {
+        external_editor: 'vscode',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open).not.toHaveBeenCalled();
+  });
+
+  it('routes unsupported context-menu Open to the system viewer', async () => {
+    mockExplorerInvoke(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+    const navigation = makeNavigation();
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
+
+    const tree = await screen.findByTestId('mock-unsupported-file-row');
+    await userEvent.pointer({ keys: '[MouseRight]', target: tree });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\report.docx',
+      editor: {
+        external_editor: 'system',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open).not.toHaveBeenCalled();
+  });
+
+  it('routes Ctrl-click and Open to Side through an external family preference', async () => {
+    useSettingsStore.setState({
+      externalEditor: 'vscode',
+      externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
+    });
+    mockExplorerInvoke(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+    const navigation = makeNavigation();
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
+
+    const tree = await screen.findByTestId('mock-file-row');
+    fireEvent.click(tree, { ctrlKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\notes.md',
+      editor: {
+        external_editor: 'vscode',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open).not.toHaveBeenCalled();
+
+    await userEvent.pointer({ keys: '[MouseRight]', target: tree });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open to Side' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\notes.md',
+      editor: {
+        external_editor: 'vscode',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open_to_side).not.toHaveBeenCalled();
+  });
+
+  it('routes unsupported Ctrl-click and Open to Side to the system viewer', async () => {
+    mockExplorerInvoke(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+    const navigation = makeNavigation();
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
+
+    const tree = await screen.findByTestId('mock-unsupported-file-row');
+    fireEvent.click(tree, { ctrlKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\report.docx',
+      editor: {
+        external_editor: 'system',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open).not.toHaveBeenCalled();
+
+    await userEvent.pointer({ keys: '[MouseRight]', target: tree });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open to Side' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\report.docx',
+      editor: {
+        external_editor: 'system',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open_to_side).not.toHaveBeenCalled();
+  });
+
   it('reports when Open to Side is rejected because the current pane is too small', async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -494,11 +723,11 @@ describe('ExplorerPanel', () => {
 
   it('opens a clicked file externally when Explorer file click action is External app', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -525,11 +754,11 @@ describe('ExplorerPanel', () => {
 
   it('opens a double-clicked file externally without creating or pinning a Files tab', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
     });
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    mockExplorerInvoke(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
       if (command === 'git_status') return { files: [] };
       return null;
@@ -553,7 +782,6 @@ describe('ExplorerPanel', () => {
 
   it('does not preview or externally open clicked folders', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
     });

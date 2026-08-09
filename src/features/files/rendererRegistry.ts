@@ -31,8 +31,14 @@ export type FileRendererProps = {
   /** Authorization context inherited by embedded local resources such as Markdown images. */
   resource_request?: OpenFileResourceRequestV1;
   /** Set `open_in_new_tab` for Ctrl/Cmd-click navigation from embedded file links. */
-  on_open_file: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
+  on_open_file: (
+    path: string,
+    open_in_new_tab?: boolean,
+    resource_request?: OpenFileResourceRequestV1,
+  ) => Promise<void> | void;
   on_open_with: (path: string) => Promise<void> | void;
+  /** Opens content that has no Wardian renderer in the system preferred viewer. */
+  on_open_system?: (path: string) => Promise<void> | void;
   on_reveal: (path: string) => Promise<void> | void;
 };
 
