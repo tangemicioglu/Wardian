@@ -27,9 +27,12 @@ function snapshot(): FileResourceSnapshotV1 {
   };
 }
 
-function props(on_open_system: FileRendererProps["on_open_system"]): FileRendererProps {
+function props(
+  on_open_system: FileRendererProps["on_open_system"],
+  currentSnapshot = snapshot(),
+): FileRendererProps {
   return {
-    snapshot: snapshot(),
+    snapshot: currentSnapshot,
     client: {} as FileRendererProps["client"],
     lifecycle: { visible: true },
     on_open_file: vi.fn(),
@@ -59,5 +62,22 @@ describe("UnsupportedRenderer", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("no associated app");
     expect(screen.getByRole("button", { name: "Open With" })).toBeInTheDocument();
+  });
+
+  it("resets the launch state when a later resource revision succeeds", async () => {
+    const on_open_system = vi.fn()
+      .mockRejectedValueOnce(new Error("no associated app"))
+      .mockResolvedValueOnce(undefined);
+    const view = render(<UnsupportedRenderer {...props(on_open_system)} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("no associated app");
+
+    const nextSnapshot = snapshot();
+    nextSnapshot.revision = 2;
+    view.rerender(<UnsupportedRenderer {...props(on_open_system, nextSnapshot)} />);
+
+    expect(await screen.findByRole("heading", { name: "Opened in system viewer" })).toBeInTheDocument();
+    expect(screen.queryByText(/no associated app/)).not.toBeInTheDocument();
+    expect(on_open_system).toHaveBeenCalledTimes(2);
   });
 });

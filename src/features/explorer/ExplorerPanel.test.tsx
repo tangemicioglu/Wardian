@@ -60,6 +60,12 @@ vi.mock('./FileTree', () => ({
         type="button"
         data-testid="mock-unsupported-file-row"
         onClick={() => onSelect?.('C:\\Users\\test\\repo\\report.docx', false)}
+        onContextMenu={(event) => onContextMenu?.(event, {
+          name: 'report.docx',
+          path: 'C:\\Users\\test\\repo\\report.docx',
+          is_dir: false,
+          extension: 'docx',
+        })}
       >
         report.docx
       </button>
@@ -509,6 +515,57 @@ describe('ExplorerPanel', () => {
       state: expect.objectContaining({ transient_preview: false }),
     }), 'horizontal');
     expect(invoke).not.toHaveBeenCalledWith('read_file_preview', expect.anything());
+  });
+
+  it('routes context-menu Open through the selected family preference', async () => {
+    useSettingsStore.setState({
+      externalEditor: 'vscode',
+      externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
+    });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+    const navigation = makeNavigation();
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
+
+    const tree = await screen.findByTestId('mock-file-row');
+    await userEvent.pointer({ keys: '[MouseRight]', target: tree });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\notes.md',
+      editor: {
+        external_editor: 'vscode',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open).not.toHaveBeenCalled();
+  });
+
+  it('routes unsupported context-menu Open to the system viewer', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+    const navigation = makeNavigation();
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
+
+    const tree = await screen.findByTestId('mock-unsupported-file-row');
+    await userEvent.pointer({ keys: '[MouseRight]', target: tree });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\report.docx',
+      editor: {
+        external_editor: 'system',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open).not.toHaveBeenCalled();
   });
 
   it('reports when Open to Side is rejected because the current pane is too small', async () => {

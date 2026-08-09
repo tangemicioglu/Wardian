@@ -18,32 +18,39 @@ export default function UnsupportedRenderer({
   const [opening, setOpening] = useState(shouldAutoOpen);
   const [openedInSystem, setOpenedInSystem] = useState(false);
   const attemptedOpenRef = useRef<string | null>(null);
+  const activeAttemptRef = useRef<string | null>(null);
   const liveDocument = descriptor.mime_type === "text/html"
     || descriptor.mime_type === "image/svg+xml";
   const reason = descriptor.unavailable_reason
     ?? (liveDocument ? "live_renderer_not_activated" : "renderer_not_activated");
 
   useEffect(() => {
+    const attemptKey = `${snapshot.resource_id}:${snapshot.revision}`;
+    setOpenError(null);
+    setOpenedInSystem(false);
+    setOpening(shouldAutoOpen);
     if (
       !on_open_system
       || !lifecycle.visible
       || descriptor.unavailable_reason !== "unsupported_content"
     ) return;
-    const attemptKey = `${snapshot.resource_id}:${snapshot.revision}`;
     if (attemptedOpenRef.current === attemptKey) return;
     attemptedOpenRef.current = attemptKey;
+    activeAttemptRef.current = attemptKey;
     setOpening(true);
     void Promise.resolve(on_open_system(descriptor.canonical_path)).then(
       () => {
+        if (activeAttemptRef.current !== attemptKey) return;
         setOpening(false);
         setOpenedInSystem(true);
       },
       (error) => {
+        if (activeAttemptRef.current !== attemptKey) return;
         setOpening(false);
         setOpenError(error instanceof Error ? error.message : String(error));
       },
     );
-  }, [descriptor.canonical_path, descriptor.unavailable_reason, lifecycle.visible, on_open_system, snapshot.resource_id, snapshot.revision]);
+  }, [descriptor.canonical_path, descriptor.unavailable_reason, lifecycle.visible, on_open_system, shouldAutoOpen, snapshot.resource_id, snapshot.revision]);
 
   if (shouldAutoOpen && opening && !openError) {
     return (

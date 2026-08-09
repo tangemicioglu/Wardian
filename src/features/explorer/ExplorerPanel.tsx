@@ -304,8 +304,20 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
     });
   };
 
+  const openFileBySettings = async (path: string, isDir: boolean) => {
+    if (isDir) return;
+    const destination = fileOpenDestinationForPath(path, fileOpenActions);
+    if (destination === 'external') {
+      await openExternalEditor(fileNode(path));
+    } else if (destination === 'system') {
+      await openExternalEditor(fileNode(path), true);
+    } else {
+      openPermanent(path);
+    }
+  };
+
   const handleOpen = () => {
-    if (activeNode && !activeNode.is_dir) openPermanent(activeNode.path);
+    if (activeNode) void openFileBySettings(activeNode.path, activeNode.is_dir);
     setMenuPos(null);
   };
 
@@ -342,28 +354,11 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
     if (openInNewTab) {
       openPermanent(path);
     } else {
-      const destination = fileOpenDestinationForPath(path, fileOpenActions);
-      if (destination === 'external') {
-        await openExternalEditor(fileNode(path));
-      } else if (destination === 'system') {
-        await openExternalEditor(fileNode(path), true);
-      } else {
-        openPermanent(path);
-      }
+      await openFileBySettings(path, isDir);
     }
   };
 
-  const handleFileOpen = async (path: string, isDir: boolean) => {
-    if (isDir) return;
-    const destination = fileOpenDestinationForPath(path, fileOpenActions);
-    if (destination === 'external') {
-      await openExternalEditor(fileNode(path));
-    } else if (destination === 'system') {
-      await openExternalEditor(fileNode(path), true);
-    } else {
-      openPermanent(path);
-    }
-  };
+  const handleFileOpen = async (path: string, isDir: boolean) => openFileBySettings(path, isDir);
 
   const handleDelete = async () => {
     if (activeNode) {
