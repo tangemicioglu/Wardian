@@ -108,6 +108,21 @@ drained the backend queue and then discarded what it got, losing opens nothing
 would replay. A drain that resolves after disposal is now surfaced anyway,
 which is safe because opening a surface is idempotent by resource key.
 
+A seventh round (run `1786298645199-5e7ea9e2`) found two.
+
+| Finding | Outcome |
+|---|---|
+| A rejected release still unlistened, so a failed teardown invoke reopened the same no-listener gap round six closed | The listener handshake is gone. Every open stays recorded until a frontend acknowledges it, so no delivery decision depends on a message arriving. |
+| `Page.navigatedWithinDocument` was not filtered by frame, so an iframe changing its hash rewrote the session URL and invalidated the top-level page's refs — contradicting the documented iframe rule | The event is compared against the main frame id, read from `Page.getFrameTree` at attach and refreshed on every main-frame commit. |
+
+The first finding was the third variant of one shape: three rounds in a row
+found a window where the backend believed a frontend listener existed while
+none did. Narrowing the window again would have invited a fourth, so the
+handshake was replaced rather than repaired. `queue_surface_open` now always
+records; `pending_browser_surface_opens` reads without consuming; and
+`ack_browser_surface_open` is the only thing that removes an entry. Repeat
+delivery is the accepted cost, and `focus_resource` already made it harmless.
+
 ### What differs from the plan below
 
 - **WebView2's `msedgewebview2.exe` is not in the discovery order.** It is not supported as a standalone browser, and every Windows 11 host that can run Wardian already has Edge proper.

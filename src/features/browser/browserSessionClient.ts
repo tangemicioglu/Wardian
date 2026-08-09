@@ -148,63 +148,48 @@ export function listBrowserSessions(): Promise<BrowserSessionSummary[]> {
   return invoke<BrowserSessionSummary[]>("list_browser_sessions");
 }
 
-/**
- * Registers this frontend as the surface-open listener.
- *
- * Returns the opens queued while nobody was listening, plus the epoch that
- * retires this registration. Queueing resumes as soon as it is released, so a
- * remount's gap loses nothing.
- */
-export function registerBrowserSurfaceListener(): Promise<{
-  listener_epoch: number;
-  pending: BrowserSessionSummary[];
-}> {
-  return invoke<{ listener_epoch: number; pending: BrowserSessionSummary[] }>(
-    "register_browser_surface_listener",
-  );
+/** Surface opens the backend is still waiting to see acknowledged. */
+export function pendingBrowserSurfaceOpens(): Promise<BrowserSessionSummary[]> {
+  return invoke<BrowserSessionSummary[]>("pending_browser_surface_opens");
 }
 
-/** Retires a listener registration by epoch. */
-export function releaseBrowserSurfaceListener(listenerEpoch: number): Promise<void> {
-  return invoke<void>("release_browser_surface_listener", { listenerEpoch });
+/** Confirms one open was surfaced, so no later reader repeats it. */
+export function ackBrowserSurfaceOpen(browserId: string): Promise<void> {
+  return invoke<void>("ack_browser_surface_open", { browserId });
 }
 
 /**
  * Subscribes to CLI surface opens for as long as the caller holds the handle.
  *
- * Retirement is ordered: the registration is released *before* the event
- * listener is removed. The other order leaves a window where the backend still
- * believes a listener exists — so it emits instead of queueing — while nothing
- * is left to receive the event, which is the handoff loss the queue exists to
- * prevent. The same ordering covers disposal during a registration still in
- * flight, because the listener stays installed until that resolves.
+ * Delivery is acknowledged rather than assumed. The backend keeps an open
+ * outstanding until a frontend confirms it surfaced one, so nothing depends on
+ * a message arriving at a particular moment — not the live event, not a
+ * registration, not a release on teardown. A reload simply finds the open
+ * still waiting. Repeat delivery is harmless because the surface is
+ * `focus_resource`, so a second open focuses the first.
  */
 export function subscribeToBrowserSurfaceOpens(
   onOpen: (summary: BrowserSessionSummary) => void,
 ): () => void {
-  const ready = subscribeBrowserSurfaceOpen(onOpen).then(async (dispose) => {
-    let epoch: number | null = null;
+  let disposed = false;
+  const surface = (summary: BrowserSessionSummary) => {
+    if (disposed) return;
+    onOpen(summary);
+    void ackBrowserSurfaceOpen(summary.browser_id).catch(() => {});
+  };
+  const ready = subscribeBrowserSurfaceOpen(surface).then(async (dispose) => {
+    // Read after subscribing, so an open landing in between is seen by one
+    // path or the other, and by both at worst.
     try {
-      const listener = await registerBrowserSurfaceListener();
-      epoch = listener.listener_epoch;
-      // Surfaced even when disposal has already begun. The drain removed them
-      // from the backend queue, so discarding them here would lose them for
-      // good, and opening a surface is idempotent by resource key.
-      for (const summary of listener.pending) onOpen(summary);
+      for (const summary of await pendingBrowserSurfaceOpens()) surface(summary);
     } catch {
-      /* Registration failed; the live event stays the only delivery path. */
+      /* Still outstanding; the next mount reads it again. */
     }
-    return { dispose, epoch };
+    return dispose;
   });
   return () => {
-    void ready
-      .then(async ({ dispose, epoch }) => {
-        if (epoch !== null) {
-          await releaseBrowserSurfaceListener(epoch).catch(() => {});
-        }
-        dispose();
-      })
-      .catch(() => {});
+    disposed = true;
+    void ready.then((dispose) => dispose()).catch(() => {});
   };
 }
 

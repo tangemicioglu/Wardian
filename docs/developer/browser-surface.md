@@ -56,11 +56,15 @@ generation and what each ref pointed at.
 Three checks stand between a ref and a click, and all three are refusals rather
 than best guesses:
 
-1. **Generation.** A main-frame `Page.frameNavigated` or a
+1. **Generation.** A main-frame `Page.frameNavigated` or
    `Page.navigatedWithinDocument` bumps the generation, so refs do not survive
    a route change even when no frame commits. An iframe navigating does not
-   bump it, because it must not throw away refs the agent just took. Acting on
-   an older generation returns `snapshot_stale`.
+   bump it, because it must not throw away refs the agent just took — both
+   events are filtered to the main frame, `frameNavigated` by its missing
+   `parentId` and `navigatedWithinDocument` by its `frameId`, which is compared
+   against the main frame id read from `Page.getFrameTree` at attach and
+   refreshed on every main-frame commit. Acting on an older generation returns
+   `snapshot_stale`.
 2. **Uniqueness.** The action selector pins both the ref and the generation and
    requires exactly one match; several matches return `ref_ambiguous`.
 3. **Identity.** The guard re-derives the element's role and accessible name
@@ -225,31 +229,27 @@ than reaching the network.
   transition lock held across the call — would stall every later attach and
   detach for the full ceiling.
 
-- **CLI open during startup.** The control endpoint serves before the webview
-  mounts, so a `wardian browser open` can win that race and its one-shot event
-  reaches nobody. Non-detached opens are queued as well as emitted, and the
-  frontend drains the queue right after subscribing. The surface is
-  `focus_resource`, so a session reported by both paths is focused rather than
-  opened twice, and a queued session that has since closed is dropped.
+- **A CLI open the frontend has not surfaced yet.** The control endpoint serves
+  before the webview mounts, and a reload can retire the event listener at any
+  moment, so the emitted event is never treated as proof of delivery. Every
+  non-detached open is recorded first, then emitted, and the record stays until
+  a frontend calls `ack_browser_surface_open` for it.
 
-  Queueing is tied to whether a listener is registered *right now*, not to
-  whether one ever was. `register_browser_surface_listener` drains and returns
-  an epoch; the effect cleanup passes that epoch to
-  `release_browser_surface_listener`, and queueing resumes. Tying it to the
-  first drain instead would leave every later gap — a webview reload, an effect
-  re-subscription — silently lossy, which is the failure the queue exists to
-  prevent. A release for a superseded epoch is ignored, because React can mount
-  the replacement listener before the outgoing one's cleanup reaches the
-  backend. While a listener is registered nothing is queued, so ordinary agent
-  use cannot grow the list, and a burst arriving with nothing subscribed is
-  bounded by `MAX_PENDING_SURFACE_OPENS`.
+  Reading `pending_browser_surface_opens` does not consume: a frontend that
+  reads and then dies before opening anything must not take the work with it.
+  Nothing here depends on a message arriving at a particular moment — not the
+  event, not a registration, not a release on teardown — which is what earlier
+  designs kept getting wrong. Each of those had a window where the backend
+  believed a listener existed while none did, and the open in that window
+  reached neither the listener nor the queue.
 
-  Retirement is ordered the only way that loses nothing: release first, remove
-  the event listener after it is acknowledged. Unlistening first leaves a
-  window where the backend still believes a listener exists — so it emits
-  rather than queues — while nothing is left to receive the event. For the same
-  reason a drain that resolves after disposal is still surfaced: those opens
-  are already out of the backend queue, and nothing would replay them.
+  Repeat delivery is the accepted cost. The surface is `focus_resource`, so a
+  session reported by both the event and the read is focused rather than opened
+  twice, and re-reading an unacknowledged open at the next mount is the
+  behavior that makes the loss impossible. Acknowledgement is also what keeps a
+  remount from replaying work already done: an open the user has seen is gone
+  from the record. Sessions that have since closed are pruned on read, and
+  `MAX_PENDING_SURFACE_OPENS` bounds a burst nothing ever acknowledges.
 
 - **A session that closes while the surface is mounting.** `getBrowserSession`
   and `subscribeBrowserSession` are both in flight at mount, so a closure in

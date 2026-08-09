@@ -281,6 +281,12 @@ struct SessionState {
     load_state: LoadState,
     viewport: Viewport,
     ledger: SnapshotLedger,
+    /// The target's main frame, so a subframe's events can be told apart.
+    ///
+    /// `Page.navigatedWithinDocument` carries only a frame id, with no parent
+    /// to test, so without this an iframe changing its hash would rewrite the
+    /// session URL and invalidate the top-level page's refs.
+    main_frame_id: Option<String>,
     console: VecDeque<ConsoleEntry>,
     console_error_count: usize,
     /// Attachments currently streaming, in attach order.
@@ -970,25 +976,16 @@ pub struct BrowserSessionBroker {
     next_short_ref: AtomicU32,
     events: broadcast::Sender<BrowserSessionEvent>,
     profile_root: PathBuf,
-    /// Sessions that asked for a surface before the frontend was listening.
-    pending_surface_opens: Mutex<PendingSurfaceOpens>,
+    /// Sessions that have asked for a surface and not yet been acknowledged.
+    ///
+    /// Outstanding work, not a startup buffer: an entry leaves only when a
+    /// frontend confirms it opened the surface, so no delivery decision
+    /// depends on a message that might not arrive. Repeated delivery is
+    /// harmless because the surface is `focus_resource`.
+    pending_surface_opens: Mutex<Vec<BrowserSessionSummary>>,
 }
 
-/// Any gap in which no frontend is listening for surface opens, and what fell
-/// into it.
-#[derive(Debug, Default)]
-struct PendingSurfaceOpens {
-    /// The epoch of the listener currently subscribed, if there is one. While
-    /// it is set the event is delivery enough and nothing is queued, so the
-    /// queue cannot grow with ordinary use.
-    active_listener: Option<u64>,
-    /// Monotonic, so a listener that retires after its replacement registered
-    /// cannot revoke the newer one.
-    next_epoch: u64,
-    queued: Vec<BrowserSessionSummary>,
-}
-
-/// Ceiling on the queue, in case a burst arrives while nothing is listening.
+/// Ceiling on unacknowledged opens, in case nothing ever acknowledges them.
 const MAX_PENDING_SURFACE_OPENS: usize = 32;
 
 impl Default for BrowserSessionBroker {
@@ -1005,61 +1002,49 @@ impl BrowserSessionBroker {
             next_short_ref: AtomicU32::new(1),
             events,
             profile_root,
-            pending_surface_opens: Mutex::new(PendingSurfaceOpens::default()),
+            pending_surface_opens: Mutex::new(Vec::new()),
         }
     }
 
     /// Records a session that still needs a workbench surface.
     ///
-    /// The control endpoint serves before the webview finishes mounting, so a
-    /// `wardian browser open` can win that race and its one-shot event would
-    /// reach nobody. Queueing is tied to whether a listener is registered right
-    /// now rather than to whether one ever was: a webview reload retires its
-    /// listener, and an open landing in that window has to survive it too.
+    /// Recorded unconditionally, then emitted. The control endpoint serves
+    /// before the webview mounts and a reload can retire the listener at any
+    /// moment, so the event alone is never treated as delivery — the entry
+    /// stays until a frontend acknowledges it.
     pub async fn queue_surface_open(&self, summary: BrowserSessionSummary) {
         let mut pending = self.pending_surface_opens.lock().await;
-        if pending.active_listener.is_some() {
+        if pending
+            .iter()
+            .any(|queued| queued.browser_id == summary.browser_id)
+        {
             return;
         }
-        if pending.queued.len() >= MAX_PENDING_SURFACE_OPENS {
-            pending.queued.remove(0);
+        if pending.len() >= MAX_PENDING_SURFACE_OPENS {
+            pending.remove(0);
         }
-        pending.queued.push(summary);
+        pending.push(summary);
     }
 
-    /// Registers the frontend listener and hands it everything queued since the
-    /// last one retired.
+    /// Every surface open still waiting to be acknowledged.
     ///
-    /// Returns the listener's epoch, which it passes back to
-    /// [`Self::release_surface_listener`]. Sessions that have since closed are
-    /// dropped, so draining cannot resurrect a surface for a browser that no
-    /// longer exists.
-    pub async fn register_surface_listener(&self) -> (u64, Vec<BrowserSessionSummary>) {
-        let (epoch, queued) = {
-            let mut pending = self.pending_surface_opens.lock().await;
-            pending.next_epoch += 1;
-            pending.active_listener = Some(pending.next_epoch);
-            (pending.next_epoch, std::mem::take(&mut pending.queued))
-        };
+    /// Reading does not consume: a frontend that reads and then dies before
+    /// opening anything must not have taken the work with it. Sessions that
+    /// have since closed are pruned, so this cannot resurrect a surface for a
+    /// browser that no longer exists.
+    pub async fn pending_surface_opens(&self) -> Vec<BrowserSessionSummary> {
         let sessions = self.sessions.read().await;
-        let live = queued
-            .into_iter()
-            .filter(|summary| sessions.contains_key(&summary.browser_id))
-            .collect();
-        (epoch, live)
+        let mut pending = self.pending_surface_opens.lock().await;
+        pending.retain(|summary| sessions.contains_key(&summary.browser_id));
+        pending.clone()
     }
 
-    /// Retires a listener, so opens are queued again until one registers.
-    ///
-    /// A stale epoch is ignored. React can mount the replacement listener
-    /// before the outgoing one's cleanup reaches the backend, and honouring
-    /// that release would turn a live listener into a queueing gap nothing
-    /// would ever drain.
-    pub async fn release_surface_listener(&self, epoch: u64) {
-        let mut pending = self.pending_surface_opens.lock().await;
-        if pending.active_listener == Some(epoch) {
-            pending.active_listener = None;
-        }
+    /// Marks one open as surfaced, so no later reader repeats it.
+    pub async fn ack_surface_open(&self, browser_id: &str) {
+        self.pending_surface_opens
+            .lock()
+            .await
+            .retain(|summary| summary.browser_id != browser_id);
     }
 
     /// Subscribes to every session's events, for forwarding to the frontend.
@@ -1098,7 +1083,7 @@ impl BrowserSessionBroker {
         // its profile lock — so the child is killed and awaited explicitly
         // before the directory is removed.
         let attached = attach_page(&launched.websocket_url).await;
-        let (connection, cdp_session_id) = match attached {
+        let (connection, cdp_session_id, main_frame_id) = match attached {
             Ok(attached) => attached,
             Err(error) => {
                 let _ = launched.child.kill().await;
@@ -1119,6 +1104,7 @@ impl BrowserSessionBroker {
             child: Mutex::new(Some(launched.child)),
             state: RwLock::new(SessionState {
                 viewport,
+                main_frame_id,
                 ..SessionState::default()
             }),
             screencast_transition: Mutex::new(()),
@@ -1355,7 +1341,7 @@ async fn reap_dead_session(
 /// fallible region and can reap it before touching the profile directory.
 async fn attach_page(
     websocket_url: &str,
-) -> Result<(Arc<CdpConnection>, String), BrowserError> {
+) -> Result<(Arc<CdpConnection>, String, Option<String>), BrowserError> {
     let connection = CdpConnection::connect(websocket_url).await?;
 
     // Size is deliberately omitted: the protocol only accepts it alongside
@@ -1379,7 +1365,21 @@ async fn attach_page(
             .call_session(&cdp_session_id, method, json!({}))
             .await?;
     }
-    Ok((connection, cdp_session_id))
+    // Read once at attach rather than waiting for the first main-frame commit,
+    // so a session that only ever routes within its document can still tell its
+    // own frame's events from a subframe's.
+    let main_frame_id = connection
+        .call_session(&cdp_session_id, "Page.getFrameTree", json!({}))
+        .await
+        .ok()
+        .and_then(|tree| {
+            tree.get("frameTree")
+                .and_then(|frame_tree| frame_tree.get("frame"))
+                .and_then(|frame| frame.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    Ok((connection, cdp_session_id, main_frame_id))
 }
 
 /// Applies one protocol event to session state and republishes what surfaces need.
@@ -1425,6 +1425,7 @@ async fn handle_protocol_event(
         // frame commit. The URL has to follow it, and refs taken against the
         // previous route must not survive it.
         "Page.navigatedWithinDocument" => {
+            let frame_id = event.params.get("frameId").and_then(Value::as_str);
             let url = event
                 .params
                 .get("url")
@@ -1433,6 +1434,14 @@ async fn handle_protocol_event(
                 .to_string();
             {
                 let mut state = session.state.write().await;
+                // An iframe routing itself is not a top-level navigation. Only
+                // an unknown main frame falls through, so a session whose frame
+                // tree never resolved still tracks its own route.
+                if let (Some(main), Some(frame_id)) = (state.main_frame_id.as_deref(), frame_id) {
+                    if main != frame_id {
+                        return;
+                    }
+                }
                 state.ledger.invalidate();
                 if !url.is_empty() {
                     state.url = url;
@@ -1461,8 +1470,19 @@ async fn handle_protocol_event(
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
+            let frame_id = event
+                .params
+                .get("frame")
+                .and_then(|frame| frame.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
             {
                 let mut state = session.state.write().await;
+                // A cross-process navigation can hand the target a new main
+                // frame id, so this is refreshed rather than set once.
+                if frame_id.is_some() {
+                    state.main_frame_id = frame_id;
+                }
                 state.ledger.invalidate();
                 state.url = url;
                 state.load_state = LoadState::Loading;

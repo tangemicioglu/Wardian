@@ -40,6 +40,27 @@ fn fixture_with_long_label() -> String {
 const SECOND_PAGE: &str = r#"<!doctype html>
 <html><head><title>Second</title></head><body><p id="marker">arrived</p></body></html>"#;
 
+/// A page whose iframe routes itself without touching the top-level document.
+const IFRAME_HOST: &str = r##"<!doctype html>
+<html>
+  <head><title>Iframe Host</title></head>
+  <body>
+    <h1 id="heading">Outer document</h1>
+    <button id="go">Go</button>
+    <iframe id="inner" src="/inner"></iframe>
+  </body>
+</html>"##;
+
+/// Loaded inside the iframe. The test drives its routing, so the moment it
+/// happens is known rather than raced against.
+const IFRAME_INNER: &str = r##"<!doctype html>
+<html>
+  <head><title>Inner</title></head>
+  <body>
+    <p id="inner-marker">inner</p>
+  </body>
+</html>"##;
+
 /// Serves the fixture pages on an ephemeral loopback port.
 ///
 /// A hand-rolled responder keeps the test free of a web-framework dependency
@@ -61,6 +82,10 @@ async fn serve_fixture() -> (String, tokio::task::JoinHandle<()>) {
                 let long_label = fixture_with_long_label();
                 let body: &str = if request.starts_with("GET /second") {
                     SECOND_PAGE
+                } else if request.starts_with("GET /iframe-host") {
+                    IFRAME_HOST
+                } else if request.starts_with("GET /inner") {
+                    IFRAME_INNER
                 } else {
                     &long_label
                 };
@@ -473,29 +498,92 @@ async fn concurrent_attaches_serialize_into_one_stream() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a Chromium-based browser on the host"]
-async fn a_surface_open_queued_before_the_frontend_listens_is_drained_once() {
+async fn an_iframe_routing_itself_leaves_the_outer_page_and_its_refs_alone() {
+    let (base_url, server) = serve_fixture().await;
+    let host_url = format!("{base_url}iframe-host");
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(host_url.clone()),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+    session
+        .wait(&WaitCondition::Selector("#inner".to_string()), 15_000)
+        .await
+        .expect("the iframe should be in the tree");
+
+    let snapshot = session.snapshot(true).await.expect("snapshot");
+    let button = snapshot
+        .elements
+        .iter()
+        .find(|element| element.name.trim() == "Go")
+        .expect("the outer button should be in the snapshot");
+
+    // The iframe routes itself, then the outer page logs an error. Waiting for
+    // the error to land proves the pump has already processed the iframe's
+    // navigation, so the assertions below are not racing it.
+    session
+        .eval(
+            "document.getElementById('inner').contentWindow.location.hash = '#routed'; console.error('settled'); 1",
+        )
+        .await
+        .expect("eval");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if session.summary().await.console_error_count > 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the console error should reach the session"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    // An iframe routing itself is not a top-level navigation.
+    assert_eq!(
+        session.summary().await.url,
+        host_url,
+        "an iframe's own routing must not rewrite the session URL"
+    );
+    session
+        .act(&button.element_ref, &ElementAction::Click)
+        .await
+        .expect("a ref taken before an iframe routed itself must still be valid");
+
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_surface_open_stays_outstanding_until_it_is_acknowledged() {
     let broker = broker();
     let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
     let summary = session.summary().await;
     broker.queue_surface_open(summary.clone()).await;
 
-    let (epoch, drained) = broker.register_surface_listener().await;
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].browser_id, summary.browser_id);
-    assert!(
-        broker.register_surface_listener().await.1.is_empty(),
-        "draining must not replay the same request"
+    let pending = broker.pending_surface_opens().await;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].browser_id, summary.browser_id);
+    // A frontend that reads and then dies before opening anything must not
+    // have taken the work with it.
+    assert_eq!(
+        broker.pending_surface_opens().await.len(),
+        1,
+        "reading must not consume an open that was never acknowledged"
     );
 
-    // While a listener is registered the event is delivery enough. Continuing
-    // to queue would grow the list for the app's lifetime under normal use.
-    broker.release_surface_listener(epoch).await;
-    let (_, live) = broker.register_surface_listener().await;
-    assert!(live.is_empty(), "a retired epoch must not resume queueing");
-    broker.queue_surface_open(summary.clone()).await;
+    broker.ack_surface_open(&summary.browser_id).await;
     assert!(
-        broker.register_surface_listener().await.1.is_empty(),
-        "opens while a listener is registered must not be queued"
+        broker.pending_surface_opens().await.is_empty(),
+        "an acknowledged open must not be handed out again"
     );
 
     broker.close(&summary.browser_id).await.expect("close");
@@ -503,43 +591,14 @@ async fn a_surface_open_queued_before_the_frontend_listens_is_drained_once() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a Chromium-based browser on the host"]
-async fn an_open_while_no_listener_is_registered_survives_the_gap() {
+async fn queueing_the_same_open_twice_does_not_duplicate_it() {
     let broker = broker();
     let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
     let summary = session.summary().await;
 
-    // A webview reload retires the listener, and the CLI keeps serving through
-    // the gap. Queueing has to resume, not stay disabled by the first drain.
-    let (epoch, _) = broker.register_surface_listener().await;
-    broker.release_surface_listener(epoch).await;
     broker.queue_surface_open(summary.clone()).await;
-
-    let (_, drained) = broker.register_surface_listener().await;
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].browser_id, summary.browser_id);
-
-    broker.close(&summary.browser_id).await.expect("close");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires a Chromium-based browser on the host"]
-async fn a_stale_listener_release_cannot_retire_its_replacement() {
-    let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
-    let summary = session.summary().await;
-
-    // React can mount the replacement before the outgoing listener's cleanup
-    // reaches the backend. Honouring that release would leave a live listener
-    // queueing into a list nothing would drain.
-    let (stale, _) = broker.register_surface_listener().await;
-    let (_current, _) = broker.register_surface_listener().await;
-    broker.release_surface_listener(stale).await;
-
     broker.queue_surface_open(summary.clone()).await;
-    assert!(
-        broker.register_surface_listener().await.1.is_empty(),
-        "a stale release must not resume queueing behind a live listener"
-    );
+    assert_eq!(broker.pending_surface_opens().await.len(), 1);
 
     broker.close(&summary.browser_id).await.expect("close");
 }
@@ -553,8 +612,8 @@ async fn a_queued_open_for_a_closed_session_is_dropped() {
     broker.queue_surface_open(summary.clone()).await;
     broker.close(&summary.browser_id).await.expect("close");
 
-    // Draining must not resurrect a surface for a browser that is gone.
-    assert!(broker.register_surface_listener().await.1.is_empty());
+    // Reading must not resurrect a surface for a browser that is gone.
+    assert!(broker.pending_surface_opens().await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -872,3 +931,4 @@ async fn closing_an_agents_sessions_leaves_other_sessions_running() {
 
     broker.shutdown_all().await;
 }
+

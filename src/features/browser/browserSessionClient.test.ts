@@ -156,16 +156,10 @@ describe("reopenBrowserSurfaceSession", () => {
   });
 });
 
-/** A promise whose settlement the test drives, to pin an async interleaving. */
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => { resolve = settle; });
-  return { promise, resolve };
-}
-
 describe("subscribeToBrowserSurfaceOpens", () => {
   let calls: string[] = [];
   let deliver: ((summary: BrowserSessionSummary) => void) | null = null;
+  let pending: BrowserSessionSummary[] = [];
 
   function sessionSummary(browserId: string): BrowserSessionSummary {
     return {
@@ -183,6 +177,7 @@ describe("subscribeToBrowserSurfaceOpens", () => {
   beforeEach(() => {
     calls = [];
     deliver = null;
+    pending = [];
     vi.mocked(listen).mockImplementation(async (_event, handler) => {
       calls.push("listen");
       deliver = (summary) => handler({ payload: summary } as never);
@@ -192,75 +187,70 @@ describe("subscribeToBrowserSurfaceOpens", () => {
       };
     });
     invoked.mockReset();
-    invoked.mockImplementation(async (command: string) => {
+    invoked.mockImplementation(async (command: string, args?: unknown) => {
       calls.push(command);
-      if (command === "register_browser_surface_listener") {
-        return { listener_epoch: 7, pending: [] };
+      if (command === "pending_browser_surface_opens") return pending;
+      if (command === "ack_browser_surface_open") {
+        const { browserId } = args as { browserId: string };
+        pending = pending.filter((summary) => summary.browser_id !== browserId);
       }
       return undefined;
     });
   });
 
-  it("releases the registration before removing the event listener", async () => {
-    const dispose = subscribeToBrowserSurfaceOpens(() => {});
-    await vi.waitFor(() => expect(calls).toContain("register_browser_surface_listener"));
-
-    dispose();
-    await vi.waitFor(() => expect(calls).toContain("unlisten"));
-
-    // Unlistening first leaves a window where the backend still believes a
-    // listener exists, so it emits an open that nothing can receive and does
-    // not queue it either.
-    expect(calls.indexOf("release_browser_surface_listener"))
-      .toBeLessThan(calls.indexOf("unlisten"));
-  });
-
-  it("still receives an open emitted while the release is in flight", async () => {
+  it("acknowledges a live open so no later reader repeats it", async () => {
     const opened: string[] = [];
-    const release = deferred<void>();
-    invoked.mockImplementation(async (command: string) => {
-      calls.push(command);
-      if (command === "register_browser_surface_listener") {
-        return { listener_epoch: 7, pending: [] };
-      }
-      if (command === "release_browser_surface_listener") {
-        await release.promise;
-      }
-      return undefined;
-    });
+    subscribeToBrowserSurfaceOpens((summary) => opened.push(summary.browser_id));
+    await vi.waitFor(() => expect(calls).toContain("pending_browser_surface_opens"));
 
-    const dispose = subscribeToBrowserSurfaceOpens((summary) => opened.push(summary.browser_id));
-    await vi.waitFor(() => expect(calls).toContain("register_browser_surface_listener"));
+    deliver?.(sessionSummary("b-live"));
 
-    dispose();
-    await vi.waitFor(() => expect(calls).toContain("release_browser_surface_listener"));
-    deliver?.(sessionSummary("b-mid-release"));
-    release.resolve();
-
-    expect(opened).toEqual(["b-mid-release"]);
+    expect(opened).toEqual(["b-live"]);
+    await vi.waitFor(() => expect(calls).toContain("ack_browser_surface_open"));
   });
 
-  it("surfaces a drain that landed after disposal rather than discarding it", async () => {
+  it("surfaces an open that was still outstanding at mount", async () => {
+    pending = [sessionSummary("b-outstanding")];
     const opened: string[] = [];
-    const registration = deferred<{ listener_epoch: number; pending: BrowserSessionSummary[] }>();
+    subscribeToBrowserSurfaceOpens((summary) => opened.push(summary.browser_id));
+
+    await vi.waitFor(() => expect(opened).toEqual(["b-outstanding"]));
+    await vi.waitFor(() => expect(pending).toHaveLength(0));
+  });
+
+  it("leaves an open outstanding when disposal beats delivery", async () => {
+    // Nothing here depends on a message arriving before teardown: an open the
+    // frontend never surfaced stays queued for whoever mounts next.
+    const opened: string[] = [];
+    const dispose = subscribeToBrowserSurfaceOpens((summary) => opened.push(summary.browser_id));
+    await vi.waitFor(() => expect(calls).toContain("pending_browser_surface_opens"));
+
+    const late = deliver;
+    dispose();
+    pending = [sessionSummary("b-late")];
+    late?.(sessionSummary("b-late"));
+
+    expect(opened).toEqual([]);
+    expect(calls).not.toContain("ack_browser_surface_open");
+    expect(pending).toHaveLength(1);
+  });
+
+  it("keeps an open outstanding when reading it fails", async () => {
     invoked.mockImplementation(async (command: string) => {
       calls.push(command);
-      if (command === "register_browser_surface_listener") {
-        return await registration.promise;
+      if (command === "pending_browser_surface_opens") {
+        throw new Error("ipc unavailable");
       }
       return undefined;
     });
+    const opened: string[] = [];
 
-    const dispose = subscribeToBrowserSurfaceOpens((summary) => opened.push(summary.browser_id));
-    await vi.waitFor(() => expect(calls).toContain("register_browser_surface_listener"));
-    dispose();
-    // The drain already removed these from the backend queue, so dropping them
-    // here would lose them with nothing left to replay them.
-    registration.resolve({ listener_epoch: 7, pending: [sessionSummary("b-queued")] });
+    subscribeToBrowserSurfaceOpens((summary) => opened.push(summary.browser_id));
+    await vi.waitFor(() => expect(calls).toContain("pending_browser_surface_opens"));
 
-    await vi.waitFor(() => expect(opened).toEqual(["b-queued"]));
-    await vi.waitFor(() => expect(calls).toContain("release_browser_surface_listener"));
-    expect(calls.indexOf("release_browser_surface_listener"))
-      .toBeLessThan(calls.indexOf("unlisten"));
+    // A failed read is not a lost open: it was never acknowledged, so the next
+    // mount reads it again.
+    expect(opened).toEqual([]);
+    expect(calls).not.toContain("ack_browser_surface_open");
   });
 });

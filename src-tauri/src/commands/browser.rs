@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -420,36 +420,21 @@ pub async fn open_browser_session(
         .map_err(command_error)
 }
 
-/// A listener registration and everything queued while none was subscribed.
-#[derive(Debug, Serialize)]
-pub struct BrowserSurfaceListener {
-    /// Passed back to `release_browser_surface_listener` on unsubscribe.
-    pub listener_epoch: u64,
-    pub pending: Vec<BrowserSessionSummary>,
-}
-
-/// Subscribes the frontend and hands it any surface opens it missed.
+/// Surface opens still waiting to be acknowledged.
 #[tauri::command]
-pub async fn register_browser_surface_listener(
+pub async fn pending_browser_surface_opens(
     state: State<'_, AppState>,
-) -> Result<BrowserSurfaceListener, String> {
-    let (listener_epoch, pending) = state.browser_sessions.register_surface_listener().await;
-    Ok(BrowserSurfaceListener {
-        listener_epoch,
-        pending,
-    })
+) -> Result<Vec<BrowserSessionSummary>, String> {
+    Ok(state.browser_sessions.pending_surface_opens().await)
 }
 
-/// Retires the frontend listener, so later opens are queued for its successor.
+/// Confirms one open was surfaced, so no later reader repeats it.
 #[tauri::command]
-pub async fn release_browser_surface_listener(
-    listener_epoch: u64,
+pub async fn ack_browser_surface_open(
+    browser_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state
-        .browser_sessions
-        .release_surface_listener(listener_epoch)
-        .await;
+    state.browser_sessions.ack_surface_open(&browser_id).await;
     Ok(())
 }
 
