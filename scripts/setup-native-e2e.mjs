@@ -10,6 +10,50 @@ const repoRoot = path.resolve(__dirname, "..");
 const nativeToolsDir = path.join(repoRoot, "tools", "e2e-native");
 const MSEDGEDRIVER_TOOL_REV = "8c4b34f51b45f5cf08013366d703de464ab871d1";
 
+function compareVersionStrings(left, right) {
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+  return 0;
+}
+
+export function webview2RuntimeRoots(env = process.env) {
+  return [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA]
+    .filter(Boolean)
+    .map((root) => path.join(root, "Microsoft", "EdgeWebView", "Application"));
+}
+
+export function edgeDriverDownloadUrl(version, architecture = process.arch) {
+  const platform = architecture === "arm64" ? "arm64" : architecture === "ia32" ? "win32" : "win64";
+  return `https://msedgedriver.microsoft.com/${version}/edgedriver_${platform}.zip`;
+}
+
+function installedWebview2Version(env = process.env) {
+  const versions = [];
+  for (const root of webview2RuntimeRoots(env)) {
+    if (!fs.existsSync(root)) {
+      continue;
+    }
+
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^\d+(?:\.\d+){3}$/.test(entry.name)) {
+        continue;
+      }
+      const executable = path.join(root, entry.name, "msedgewebview2.exe");
+      if (fs.existsSync(executable)) {
+        versions.push(entry.name);
+      }
+    }
+  }
+
+  return versions.sort(compareVersionStrings).at(-1) || null;
+}
+
 function splitPathEntries(env = process.env) {
   return (env.PATH || "")
     .split(path.delimiter)
@@ -110,6 +154,36 @@ function run(command, args, options = {}) {
   }
 }
 
+function powershellQuote(value) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function downloadMatchingWindowsEdgeDriver(version) {
+  const archivePath = path.join(nativeToolsDir, `.msedgedriver-${version}.zip`);
+  const extractionPath = path.join(nativeToolsDir, `.msedgedriver-${version}`);
+  const driverPath = path.join(nativeToolsDir, "msedgedriver.exe");
+  const sourceExpression = "Get-ChildItem -LiteralPath $extract -Filter msedgedriver.exe -Recurse -File | Select-Object -First 1";
+  const powershell = [
+    "$ErrorActionPreference = 'Stop'",
+    `$archive = ${powershellQuote(archivePath)}`,
+    `$extract = ${powershellQuote(extractionPath)}`,
+    `$destination = ${powershellQuote(driverPath)}`,
+    `$url = ${powershellQuote(edgeDriverDownloadUrl(version))}`,
+    "Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archive",
+    "Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force",
+    `$source = ${sourceExpression}`,
+    "if (-not $source) { throw 'The downloaded Edge WebDriver archive did not contain msedgedriver.exe.' }",
+    "Copy-Item -LiteralPath $source.FullName -Destination $destination -Force",
+  ].join("; ");
+
+  try {
+    run("powershell", ["-NoProfile", "-NonInteractive", "-Command", powershell]);
+  } finally {
+    fs.rmSync(archivePath, { force: true });
+    fs.rmSync(extractionPath, { force: true, recursive: true });
+  }
+}
+
 function ensureCargo() {
   const cargo = resolveCommand("cargo");
   if (!cargo) {
@@ -147,6 +221,13 @@ export function msEdgeDriverToolInstallArgs() {
 
 function ensureWindowsEdgeDriver() {
   fs.mkdirSync(nativeToolsDir, { recursive: true });
+
+  const webview2Version = installedWebview2Version();
+  if (webview2Version) {
+    console.log(`Downloading Edge WebDriver matching WebView2 ${webview2Version}...`);
+    downloadMatchingWindowsEdgeDriver(webview2Version);
+    return;
+  }
 
   const existing = existingDriver(nativeDriverCandidates("win32"));
   if (existing) {
@@ -192,14 +273,14 @@ function ensureNativeDriver(options) {
     return;
   }
 
-  const existing = existingDriver(nativeDriverCandidates());
-  if (existing) {
-    console.log(`Native WebDriver already available at ${existing}`);
+  if (process.platform === "win32") {
+    ensureWindowsEdgeDriver();
     return;
   }
 
-  if (process.platform === "win32") {
-    ensureWindowsEdgeDriver();
+  const existing = existingDriver(nativeDriverCandidates());
+  if (existing) {
+    console.log(`Native WebDriver already available at ${existing}`);
     return;
   }
 
