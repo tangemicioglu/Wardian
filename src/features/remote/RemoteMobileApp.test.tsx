@@ -2456,7 +2456,7 @@ describe("RemoteMobileApp", () => {
     fireEvent.touchStart(terminalHost, { touches: [{ clientY: 220 }] });
     fireEvent.touchMove(terminalHost, { touches: [{ clientY: 184 }] });
 
-    expect(terminalInstance.scrollLines).toHaveBeenCalledWith(2);
+    expect(terminalInstance.scrollLines).toHaveBeenCalledWith(-2);
   });
 
   it("leaves wheel events to an alternate-screen mouse session", async () => {
@@ -2567,7 +2567,7 @@ describe("RemoteMobileApp", () => {
     fireEvent.touchStart(terminalChild, { touches: [{ clientY: 220 }] });
     fireEvent.touchMove(terminalChild, { touches: [{ clientY: 184 }] });
 
-    expect(terminalInstance.scrollLines).toHaveBeenCalledWith(2);
+    expect(terminalInstance.scrollLines).toHaveBeenCalledWith(-2);
   });
 
   it("maps terminal pane drags outside the xterm host to xterm scrollback", async () => {
@@ -2628,7 +2628,7 @@ describe("RemoteMobileApp", () => {
     fireEvent.touchStart(terminalSurface, { touches: [{ clientY: 220 }] });
     fireEvent.touchMove(terminalSurface, { touches: [{ clientY: 184 }] });
 
-    expect(terminalInstance.scrollLines).toHaveBeenCalledWith(2);
+    expect(terminalInstance.scrollLines).toHaveBeenCalledWith(-2);
   });
 
   it("sends terminal resize messages after mobile layout changes", async () => {

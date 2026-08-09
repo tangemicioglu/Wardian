@@ -2,6 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, test, type Locator, type WebSocketRoute } from "@playwright/test";
 
+test.use({
+  hasTouch: true,
+  isMobile: true,
+  userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+});
+
 function remoteActionBody(body: unknown): {
   action?: string;
   target?: string;
@@ -352,7 +358,6 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await expect(page.getByRole("button", { name: "Take terminal control" })).toHaveCount(0);
   await captureFeatureScreenshot("lifecycle-actions.png", page.locator('[data-testid="remote-agent-detail"]'));
   await captureFeatureScreenshot("terminal-detail.png", page.locator('[data-testid="remote-agent-detail"]'));
-  const terminalScreen = page.locator('[data-testid="remote-terminal-scroll-surface"] .xterm-screen');
   const terminalScrollThumb = page.locator(
     '[data-testid="remote-terminal-scroll-surface"] .scrollbar.vertical .slider',
   );
@@ -360,8 +365,17 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
     (element) => Number.parseFloat((element as HTMLElement).style.top),
   );
   expect(scrollTopBefore).toBeGreaterThan(0);
-  await terminalScreen.hover();
-  await page.mouse.wheel(0, -2_000);
+  const scrollSurface = page.locator('[data-testid="remote-terminal-scroll-surface"]');
+  const scrollSurfaceBox = await scrollSurface.boundingBox();
+  expect(scrollSurfaceBox).not.toBeNull();
+  if (!scrollSurfaceBox) throw new Error("remote terminal scroll surface is not visible");
+  const cdp = await page.context().newCDPSession(page);
+  const touchX = scrollSurfaceBox.x + scrollSurfaceBox.width / 2;
+  const touchY = scrollSurfaceBox.y + scrollSurfaceBox.height * 0.7;
+  const touchPoint = (y: number) => ({ id: 1, x: touchX, y, radiusX: 1, radiusY: 1, force: 1 });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [touchPoint(touchY)] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [touchPoint(touchY - 180)] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await expect.poll(async () => terminalScrollThumb.evaluate(
     (element) => Number.parseFloat((element as HTMLElement).style.top),
   )).toBeLessThan(scrollTopBefore);
