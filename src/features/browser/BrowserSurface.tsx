@@ -108,9 +108,12 @@ export function BrowserSurface({
     void getBrowserSession(resource_key)
       .then((found) => {
         if (cancelled) return;
-        setMissing(found === null);
-        setResolved(found !== null);
-        if (found) setSummary(found);
+        if (found === null) {
+          setMissing(true);
+          return;
+        }
+        setSummary(found);
+        setResolved(true);
       })
       .catch(() => {
         if (!cancelled) setMissing(true);
@@ -150,6 +153,16 @@ export function BrowserSurface({
         return;
       }
       unlisten = dispose;
+      // Events emitted before `listen` resolved reached nobody. A session that
+      // closed inside that window would leave this pane resolved with no
+      // frame, no lease, and no way back: the attach fails, and the `closed`
+      // event its handler defers to is the one that was missed. Re-checking
+      // once the listener exists closes the window.
+      void getBrowserSession(resource_key)
+        .then((found) => {
+          if (!cancelled && found === null) setMissing(true);
+        })
+        .catch(() => {});
     });
     return () => {
       cancelled = true;

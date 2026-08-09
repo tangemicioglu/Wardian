@@ -974,18 +974,21 @@ pub struct BrowserSessionBroker {
     pending_surface_opens: Mutex<PendingSurfaceOpens>,
 }
 
-/// The startup gap between the control endpoint serving and the frontend
-/// subscribing, and what fell into it.
+/// Any gap in which no frontend is listening for surface opens, and what fell
+/// into it.
 #[derive(Debug, Default)]
 struct PendingSurfaceOpens {
-    /// Set by the first drain. Afterwards the event is delivery enough, so
-    /// nothing is queued and the queue cannot grow with normal use.
-    listener_ready: bool,
+    /// The epoch of the listener currently subscribed, if there is one. While
+    /// it is set the event is delivery enough and nothing is queued, so the
+    /// queue cannot grow with ordinary use.
+    active_listener: Option<u64>,
+    /// Monotonic, so a listener that retires after its replacement registered
+    /// cannot revoke the newer one.
+    next_epoch: u64,
     queued: Vec<BrowserSessionSummary>,
 }
 
-/// Ceiling on the startup queue, in case a burst arrives before the frontend
-/// ever subscribes.
+/// Ceiling on the queue, in case a burst arrives while nothing is listening.
 const MAX_PENDING_SURFACE_OPENS: usize = 32;
 
 impl Default for BrowserSessionBroker {
@@ -1010,12 +1013,12 @@ impl BrowserSessionBroker {
     ///
     /// The control endpoint serves before the webview finishes mounting, so a
     /// `wardian browser open` can win that race and its one-shot event would
-    /// reach nobody. Only opens before the first drain are queued: once the
-    /// listener exists the event is delivery enough, so ordinary agent use
-    /// cannot grow this without bound.
+    /// reach nobody. Queueing is tied to whether a listener is registered right
+    /// now rather than to whether one ever was: a webview reload retires its
+    /// listener, and an open landing in that window has to survive it too.
     pub async fn queue_surface_open(&self, summary: BrowserSessionSummary) {
         let mut pending = self.pending_surface_opens.lock().await;
-        if pending.listener_ready {
+        if pending.active_listener.is_some() {
             return;
         }
         if pending.queued.len() >= MAX_PENDING_SURFACE_OPENS {
@@ -1024,21 +1027,39 @@ impl BrowserSessionBroker {
         pending.queued.push(summary);
     }
 
-    /// Hands over every queued request and marks the listener ready.
+    /// Registers the frontend listener and hands it everything queued since the
+    /// last one retired.
     ///
-    /// Sessions that have since closed are dropped, so draining cannot
-    /// resurrect a surface for a browser that no longer exists.
-    pub async fn take_pending_surface_opens(&self) -> Vec<BrowserSessionSummary> {
-        let queued = {
+    /// Returns the listener's epoch, which it passes back to
+    /// [`Self::release_surface_listener`]. Sessions that have since closed are
+    /// dropped, so draining cannot resurrect a surface for a browser that no
+    /// longer exists.
+    pub async fn register_surface_listener(&self) -> (u64, Vec<BrowserSessionSummary>) {
+        let (epoch, queued) = {
             let mut pending = self.pending_surface_opens.lock().await;
-            pending.listener_ready = true;
-            std::mem::take(&mut pending.queued)
+            pending.next_epoch += 1;
+            pending.active_listener = Some(pending.next_epoch);
+            (pending.next_epoch, std::mem::take(&mut pending.queued))
         };
         let sessions = self.sessions.read().await;
-        queued
+        let live = queued
             .into_iter()
             .filter(|summary| sessions.contains_key(&summary.browser_id))
-            .collect()
+            .collect();
+        (epoch, live)
+    }
+
+    /// Retires a listener, so opens are queued again until one registers.
+    ///
+    /// A stale epoch is ignored. React can mount the replacement listener
+    /// before the outgoing one's cleanup reaches the backend, and honouring
+    /// that release would turn a live listener into a queueing gap nothing
+    /// would ever drain.
+    pub async fn release_surface_listener(&self, epoch: u64) {
+        let mut pending = self.pending_surface_opens.lock().await;
+        if pending.active_listener == Some(epoch) {
+            pending.active_listener = None;
+        }
     }
 
     /// Subscribes to every session's events, for forwarding to the frontend.

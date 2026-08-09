@@ -387,6 +387,21 @@ describe("BrowserSurface", () => {
     expect(mocks.attachBrowserScreencast).not.toHaveBeenCalled();
   });
 
+  it("recovers a closure that landed before the listener was installed", async () => {
+    // The lookup and the subscribe are both in flight at mount. A session that
+    // closes in between emits its one `closed` event to nobody, and the attach
+    // failure the surface would otherwise rely on is silent by design.
+    mocks.getBrowserSession.mockResolvedValueOnce(summary()).mockResolvedValueOnce(null);
+    mocks.attachBrowserScreencast.mockRejectedValue(new Error("browser_not_found"));
+
+    await renderSurface({ on_reopen: vi.fn() }, { expectAttach: false });
+
+    await waitFor(() =>
+      expect(screen.getByText("Browser session unavailable")).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Reopen this page" })).toBeInTheDocument();
+  });
+
   it("reports the page URL upward so the surface can persist it", async () => {
     const onUrlChange = vi.fn();
     await renderSurface({ on_url_change: onUrlChange });

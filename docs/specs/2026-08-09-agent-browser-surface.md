@@ -87,6 +87,15 @@ force on its own.
 | `reopenBrowserSurface` orphaned its replacement Chromium when `rebind_resource` returned a non-`allow` decision or threw — the same leak class round three closed for launcher provisioning, on the open-then-commit path | The reopen closes the session it just created on both a rejected decision and an exception. |
 | The pending-surface-open queue had no listener-ready state, so every normal CLI open stayed queued for the app's lifetime and a remount replayed stale work | Opens are queued only before the first drain; the drain marks the listener ready, and a `MAX_PENDING_SURFACE_OPENS` ceiling bounds a pre-readiness burst. |
 
+A fifth round (run `1786296198062-0a6f55f8`) found two, both real, both in the
+handoff between a live runtime and the frontend that presents it. No finding
+recurred from an earlier round.
+
+| Finding | Outcome |
+|---|---|
+| The pending-open queue was disabled permanently by the first drain, so any later gap with no listener — a webview reload, an effect re-subscription — silently dropped a CLI open | Registration returns an epoch and the cleanup releases it, so queueing tracks whether a listener exists right now. A release for a superseded epoch is ignored, since React can mount the replacement before the outgoing cleanup lands. |
+| A session closing between the surface's initial lookup and its listener being installed missed the only `closed` event, leaving a resolved pane with no frame, no lease, and no Reopen | The surface re-checks the session once the listener is installed. |
+
 ### What differs from the plan below
 
 - **WebView2's `msedgewebview2.exe` is not in the discovery order.** It is not supported as a standalone browser, and every Windows 11 host that can run Wardian already has Edge proper.

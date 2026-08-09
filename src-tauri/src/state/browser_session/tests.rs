@@ -479,20 +479,66 @@ async fn a_surface_open_queued_before_the_frontend_listens_is_drained_once() {
     let summary = session.summary().await;
     broker.queue_surface_open(summary.clone()).await;
 
-    let drained = broker.take_pending_surface_opens().await;
+    let (epoch, drained) = broker.register_surface_listener().await;
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].browser_id, summary.browser_id);
     assert!(
-        broker.take_pending_surface_opens().await.is_empty(),
+        broker.register_surface_listener().await.1.is_empty(),
         "draining must not replay the same request"
     );
 
-    // Once the listener exists the event is delivery enough. Continuing to
-    // queue would grow the list for the app's lifetime under normal use.
+    // While a listener is registered the event is delivery enough. Continuing
+    // to queue would grow the list for the app's lifetime under normal use.
+    broker.release_surface_listener(epoch).await;
+    let (_, live) = broker.register_surface_listener().await;
+    assert!(live.is_empty(), "a retired epoch must not resume queueing");
     broker.queue_surface_open(summary.clone()).await;
     assert!(
-        broker.take_pending_surface_opens().await.is_empty(),
-        "opens after the listener is ready must not be queued"
+        broker.register_surface_listener().await.1.is_empty(),
+        "opens while a listener is registered must not be queued"
+    );
+
+    broker.close(&summary.browser_id).await.expect("close");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn an_open_while_no_listener_is_registered_survives_the_gap() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let summary = session.summary().await;
+
+    // A webview reload retires the listener, and the CLI keeps serving through
+    // the gap. Queueing has to resume, not stay disabled by the first drain.
+    let (epoch, _) = broker.register_surface_listener().await;
+    broker.release_surface_listener(epoch).await;
+    broker.queue_surface_open(summary.clone()).await;
+
+    let (_, drained) = broker.register_surface_listener().await;
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].browser_id, summary.browser_id);
+
+    broker.close(&summary.browser_id).await.expect("close");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_stale_listener_release_cannot_retire_its_replacement() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let summary = session.summary().await;
+
+    // React can mount the replacement before the outgoing listener's cleanup
+    // reaches the backend. Honouring that release would leave a live listener
+    // queueing into a list nothing would drain.
+    let (stale, _) = broker.register_surface_listener().await;
+    let (_current, _) = broker.register_surface_listener().await;
+    broker.release_surface_listener(stale).await;
+
+    broker.queue_surface_open(summary.clone()).await;
+    assert!(
+        broker.register_surface_listener().await.1.is_empty(),
+        "a stale release must not resume queueing behind a live listener"
     );
 
     broker.close(&summary.browser_id).await.expect("close");
@@ -508,7 +554,7 @@ async fn a_queued_open_for_a_closed_session_is_dropped() {
     broker.close(&summary.browser_id).await.expect("close");
 
     // Draining must not resurrect a surface for a browser that is gone.
-    assert!(broker.take_pending_surface_opens().await.is_empty());
+    assert!(broker.register_surface_listener().await.1.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

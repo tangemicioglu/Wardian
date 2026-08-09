@@ -148,9 +148,25 @@ export function listBrowserSessions(): Promise<BrowserSessionSummary[]> {
   return invoke<BrowserSessionSummary[]>("list_browser_sessions");
 }
 
-/** Surface opens the backend queued while the frontend was still mounting. */
-export function takePendingBrowserSurfaceOpens(): Promise<BrowserSessionSummary[]> {
-  return invoke<BrowserSessionSummary[]>("take_pending_browser_surface_opens");
+/**
+ * Registers this frontend as the surface-open listener.
+ *
+ * Returns the opens queued while nobody was listening, plus the epoch that
+ * retires this registration. Queueing resumes as soon as it is released, so a
+ * remount's gap loses nothing.
+ */
+export function registerBrowserSurfaceListener(): Promise<{
+  listener_epoch: number;
+  pending: BrowserSessionSummary[];
+}> {
+  return invoke<{ listener_epoch: number; pending: BrowserSessionSummary[] }>(
+    "register_browser_surface_listener",
+  );
+}
+
+/** Retires a listener registration by epoch. */
+export function releaseBrowserSurfaceListener(listenerEpoch: number): Promise<void> {
+  return invoke<void>("release_browser_surface_listener", { listenerEpoch });
 }
 
 export function getBrowserSession(browserId: string): Promise<BrowserSessionSummary | null> {

@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -420,12 +420,37 @@ pub async fn open_browser_session(
         .map_err(command_error)
 }
 
-/// Hands the frontend any surface opens it may have missed while mounting.
+/// A listener registration and everything queued while none was subscribed.
+#[derive(Debug, Serialize)]
+pub struct BrowserSurfaceListener {
+    /// Passed back to `release_browser_surface_listener` on unsubscribe.
+    pub listener_epoch: u64,
+    pub pending: Vec<BrowserSessionSummary>,
+}
+
+/// Subscribes the frontend and hands it any surface opens it missed.
 #[tauri::command]
-pub async fn take_pending_browser_surface_opens(
+pub async fn register_browser_surface_listener(
     state: State<'_, AppState>,
-) -> Result<Vec<BrowserSessionSummary>, String> {
-    Ok(state.browser_sessions.take_pending_surface_opens().await)
+) -> Result<BrowserSurfaceListener, String> {
+    let (listener_epoch, pending) = state.browser_sessions.register_surface_listener().await;
+    Ok(BrowserSurfaceListener {
+        listener_epoch,
+        pending,
+    })
+}
+
+/// Retires the frontend listener, so later opens are queued for its successor.
+#[tauri::command]
+pub async fn release_browser_surface_listener(
+    listener_epoch: u64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .browser_sessions
+        .release_surface_listener(listener_epoch)
+        .await;
+    Ok(())
 }
 
 #[tauri::command]

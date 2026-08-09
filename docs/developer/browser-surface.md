@@ -232,10 +232,25 @@ than reaching the network.
   `focus_resource`, so a session reported by both paths is focused rather than
   opened twice, and a queued session that has since closed is dropped.
 
-  The queue covers that startup gap only. Draining marks the listener ready and
-  nothing is queued afterwards, so ordinary agent use cannot grow it; a burst
-  arriving before the frontend ever subscribes is bounded by
-  `MAX_PENDING_SURFACE_OPENS`.
+  Queueing is tied to whether a listener is registered *right now*, not to
+  whether one ever was. `register_browser_surface_listener` drains and returns
+  an epoch; the effect cleanup passes that epoch to
+  `release_browser_surface_listener`, and queueing resumes. Tying it to the
+  first drain instead would leave every later gap — a webview reload, an effect
+  re-subscription — silently lossy, which is the failure the queue exists to
+  prevent. A release for a superseded epoch is ignored, because React can mount
+  the replacement listener before the outgoing one's cleanup reaches the
+  backend. While a listener is registered nothing is queued, so ordinary agent
+  use cannot grow the list, and a burst arriving with nothing subscribed is
+  bounded by `MAX_PENDING_SURFACE_OPENS`.
+
+- **A session that closes while the surface is mounting.** `getBrowserSession`
+  and `subscribeBrowserSession` are both in flight at mount, so a closure in
+  between emits its one `closed` event to nobody. The surface re-checks the
+  session once its listener is installed: without that the pane stays resolved
+  with no frame, no lease, and no Reopen, because the attach failure it would
+  otherwise notice is deliberately silent — that handler defers to the very
+  `closed` event that was missed.
 
 ## Not built yet
 
