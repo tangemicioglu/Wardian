@@ -170,6 +170,27 @@ describe("RemoteAgentDetailView terminal protocol v2", () => {
         type: "activation_begin",
         result: {
           decision: {
+            status: "rejected", reason: "lease_epoch_changed", runtime_generation: 1, lease_epoch: 4,
+            owner_presentation_id: "desktop:presentation-2",
+          },
+          activation_id: null,
+          snapshot: null,
+          sequence_barrier: 4,
+        },
+      });
+    });
+    expect(screen.getByText("lease epoch changed")).toBeVisible();
+    expect(screen.getByTestId("remote-terminal-presentation-mode")).toHaveTextContent("Mirror");
+
+    await userEvent.click(screen.getByRole("button", { name: "Take terminal control" }));
+    expect(socket.sent.map((payload) => JSON.parse(payload)).filter((message) => message.type === "begin_activation"))
+      .toHaveLength(2);
+
+    await act(async () => {
+      await handlers?.onMessage({
+        type: "activation_begin",
+        result: {
+          decision: {
             status: "accepted", reason: null, runtime_generation: 1, lease_epoch: 4,
             owner_presentation_id: "desktop:presentation-1",
           },
