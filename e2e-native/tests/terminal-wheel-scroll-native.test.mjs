@@ -58,6 +58,12 @@ async function invokeTauri(driver, command, args = {}) {
   return result.value;
 }
 
+async function readBrokerSnapshot(driver, sessionId) {
+  return await invokeTauri(driver, "request_terminal_snapshot", {
+    request: { session_id: sessionId },
+  });
+}
+
 function rendererViewport(snapshot) {
   return {
     baseY: snapshot?.renderer?.baseY ?? snapshot?.baseY ?? 0,
@@ -237,22 +243,33 @@ process.stdin.resume();
   return scriptPath;
 }
 
-async function waitForScrollback(driver, presentationId, expectedText = "wheel-70") {
+async function waitForBrokerAndRendererScrollback(
+  driver,
+  sessionId,
+  presentationId,
+  expectedText,
+) {
   const startedAt = Date.now();
   let last = null;
   while (Date.now() - startedAt < 30000) {
-    last = await readTerminalDebugSnapshot(driver, presentationId);
-    const viewport = rendererViewport(last);
-    const text = (last?.allLines ?? last?.lines ?? []).join("\n");
-    if (viewport.baseY > 0 && text.includes(expectedText)) {
+    const broker = await readBrokerSnapshot(driver, sessionId);
+    const renderer = await readTerminalDebugSnapshot(driver, presentationId);
+    const brokerText = [...broker.scrollback, broker.visible_grid].join("\n");
+    const viewport = rendererViewport(renderer);
+    last = { broker, renderer, brokerText, viewport };
+    if (
+      broker.scrollback.length > 0
+      && brokerText.includes(expectedText)
+      && viewport.baseY > 0
+    ) {
       return last;
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error(`Timed out waiting for scrollback: ${JSON.stringify(last)}`);
+  throw new Error(`Timed out waiting for broker/renderer scrollback: ${JSON.stringify(last)}`);
 }
 
-test("user mouse wheel scrolls the agent terminal renderer and parser", { timeout: 180000 }, async (t) => {
+test("desktop terminal preserves broker and renderer scrollback through owner geometry resize", { timeout: 180000 }, async (t) => {
   const harness = await createNativeHarness();
   const previousTerminalDebug = process.env.VITE_WARDIAN_TERMINAL_DEBUG;
 
@@ -381,7 +398,23 @@ test("user mouse wheel scrolls the agent terminal renderer and parser", { timeou
   const presentationId = await resolveAgentTerminalPresentationId(driver, sessionId);
   await focusAgentTerminal(driver, sessionId, presentationId);
 
-  const beforeSnapshot = await waitForScrollback(driver, presentationId);
+  const initialHistory = await waitForBrokerAndRendererScrollback(
+    driver,
+    sessionId,
+    presentationId,
+    "wheel-70",
+  );
+  const beforeSnapshot = initialHistory.renderer;
+  assert.equal(
+    beforeSnapshot?.broker?.ownerPresentationId,
+    presentationId,
+    "Expected the visible desktop presentation to own the terminal before resize",
+  );
+  assert.ok(
+    initialHistory.broker.scrollback.length > 0,
+    "Expected the broker snapshot to retain history before resize",
+  );
+  const replayCountBeforeResize = beforeSnapshot?.snapshotReplays?.length ?? 0;
   console.log("renderer diagnostics:", JSON.stringify({
     bufferType: beforeSnapshot?.renderer?.bufferType,
     mouseTrackingMode: beforeSnapshot?.renderer?.mouseTrackingMode,
@@ -412,7 +445,26 @@ test("user mouse wheel scrolls the agent terminal renderer and parser", { timeou
   // A broker resize returns a formatted vt100 snapshot. Its visible grid does
   // not include early history, so this asserts the client restores the broker
   // scrollback projection before applying that formatted grid.
-  await waitForScrollback(driver, presentationId, "wheel-16");
+  const narrowHistory = await waitForBrokerAndRendererScrollback(
+    driver,
+    sessionId,
+    presentationId,
+    "wheel-16",
+  );
+  const latestReplay = narrowHistory.renderer?.snapshotReplays?.at(-1);
+  assert.ok(
+    (narrowHistory.renderer?.snapshotReplays?.length ?? 0) > replayCountBeforeResize,
+    "Expected the owner geometry change to trigger a new broker snapshot replay",
+  );
+  assert.ok(latestReplay, "Expected a broker snapshot replay after owner geometry changed");
+  assert.ok(
+    latestReplay.brokerScrollbackRows > 0,
+    "Expected the geometry snapshot to retain broker scrollback",
+  );
+  assert.ok(
+    (latestReplay.rendererAfter?.baseY ?? 0) > 0,
+    "Expected the renderer to retain scrollback after the geometry snapshot replay",
+  );
   await assertWheelScrolls(driver, sessionId, presentationId, "narrow");
 
   await driver.manage().window().setRect({ width: 1920, height: 1080 });
@@ -423,6 +475,11 @@ test("user mouse wheel scrolls the agent terminal renderer and parser", { timeou
     presentationId,
     `${RESTORE_SCROLLBACK_MARKER}\r`,
   );
-  await waitForScrollback(driver, presentationId, "restored-wheel-80");
+  await waitForBrokerAndRendererScrollback(
+    driver,
+    sessionId,
+    presentationId,
+    "restored-wheel-80",
+  );
   await assertWheelScrolls(driver, sessionId, presentationId, "restored");
 });
