@@ -16,6 +16,12 @@ import { defaultTerminalFontFamily, useSettingsStore } from "../../store/useSett
 import { useQueueStore } from "../../store/useQueueStore";
 import { resetTerminalSessionClientsForTesting } from "./terminalSessionClient";
 import { terminalRendererBudget } from "./terminalRendererBudget";
+import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
+import type { WorkbenchNavigationService } from "../workbench/navigationService";
+
+vi.mock("../../layout/AppShell", () => ({
+  useAppShellWorkbenchNavigation: vi.fn(),
+}));
 
 const mockInvoke = vi.mocked(invoke);
 const mockListen = vi.mocked(listen);
@@ -24,6 +30,11 @@ const mockHeadlessTerminal = vi.mocked(HeadlessTerminal);
 const mockSerializeAddon = vi.mocked(SerializeAddon);
 const mockFitAddon = vi.mocked(FitAddon);
 const mockWebglAddon = vi.mocked(WebglAddon);
+let terminalLinkText = "src/App.tsx:12";
+const navigationMock = {
+  open: vi.fn(() => "files-surface"),
+  pin_transient: vi.fn(),
+} as unknown as WorkbenchNavigationService;
 
 type TestAgentTerminalProps = Omit<
   ComponentProps<typeof BrokerAgentTerminal>,
@@ -136,7 +147,15 @@ describe("AgentTerminal scrollback", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    useSettingsStore.setState({ terminalFontSize: 14, terminalFontFamily: "" });
+    terminalLinkText = "src/App.tsx:12";
+    vi.mocked(useAppShellWorkbenchNavigation).mockReturnValue(navigationMock);
+    useSettingsStore.setState({
+      terminalFontSize: 14,
+      terminalFontFamily: "",
+      externalEditor: "system",
+      externalEditorCustomExecutable: "",
+      fileOpenActions: { text: "wardian", image: "wardian", pdf: "wardian" },
+    });
     useQueueStore.setState({ items: [], _agentBuffers: {}, _workflowLastOutput: {} });
     openConnectedStates = [];
     rectSpy = vi
@@ -224,7 +243,7 @@ describe("AgentTerminal scrollback", () => {
             type: "normal",
             baseY: 10,
             viewportY: 10,
-            getLine: vi.fn(() => ({ translateToString: () => "src/App.tsx:12" })),
+            getLine: vi.fn(() => ({ translateToString: () => terminalLinkText })),
           },
         },
         modes: { mouseTrackingMode: "none" },
@@ -2551,6 +2570,7 @@ describe("AgentTerminal scrollback", () => {
     useSettingsStore.setState({
       externalEditor: "vscode",
       externalEditorCustomExecutable: "",
+      fileOpenActions: { text: "external", image: "wardian", pdf: "wardian" },
     });
     render(
       <AgentTerminal
@@ -2577,6 +2597,60 @@ describe("AgentTerminal scrollback", () => {
           external_editor: "vscode",
           external_editor_custom_executable: null,
         },
+      });
+    });
+  });
+
+  it("opens text links in a permanent Files surface when Wardian is preferred", async () => {
+    useSettingsStore.setState({
+      fileOpenActions: { text: "wardian", image: "external", pdf: "external" },
+    });
+    render(
+      <AgentTerminal
+        sessionId="codex-wardian-links"
+        theme="dark"
+        workspacePath="C:\\repo"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getLatestTerminalInstance().registerLinkProvider).toHaveBeenCalledTimes(1);
+    });
+    const provider = getLatestTerminalInstance().registerLinkProvider.mock.calls[0][0];
+    const links = await new Promise<any[] | undefined>((resolve) => provider.provideLinks(1, resolve));
+    links?.[0].activate(new MouseEvent("click"), links[0].text);
+
+    await waitFor(() => {
+      expect(navigationMock.open).toHaveBeenCalledWith(expect.objectContaining({
+        surface_type: "files",
+        resource_key: "file:C:/repo/src/App.tsx",
+      }));
+      expect(navigationMock.pin_transient).toHaveBeenCalledWith("files-surface");
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith("open_in_external_editor", expect.anything());
+  });
+
+  it("opens unsupported links with the system handler", async () => {
+    terminalLinkText = "src/image.bmp:12";
+    render(
+      <AgentTerminal
+        sessionId="codex-system-links"
+        theme="dark"
+        workspacePath="C:\\repo"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getLatestTerminalInstance().registerLinkProvider).toHaveBeenCalledTimes(1);
+    });
+    const provider = getLatestTerminalInstance().registerLinkProvider.mock.calls[0][0];
+    const links = await new Promise<any[] | undefined>((resolve) => provider.provideLinks(1, resolve));
+    links?.[0].activate(new MouseEvent("click"), links[0].text);
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("open_in_external_editor", {
+        path: "C:\\repo\\src\\image.bmp",
+        editor: { external_editor: "system", external_editor_custom_executable: null },
       });
     });
   });

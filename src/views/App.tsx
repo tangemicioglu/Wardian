@@ -94,7 +94,7 @@ import {
   filesSurfaceMigrationCommands,
   isFilesSurfaceStateV1,
 } from "../features/files/filesSurfaceState";
-import type { FilesSurfaceStateV2 } from "../types";
+import type { FilesSurfaceStateV2, OpenFileResourceRequestV1 } from "../types";
 
 declare global {
   interface Window {
@@ -119,6 +119,25 @@ function normalizeCollapsedTeamIdsByList(value: unknown): Record<string, string[
       return [[listId, teamIds.filter((teamId): teamId is string => typeof teamId === "string")]];
     }),
   );
+}
+
+async function canonicalizeFileOpenPath(
+  path: string,
+  sourceRequest?: OpenFileResourceRequestV1,
+) {
+  const snapshot = await fileResourceClient.open({
+    ...(sourceRequest ?? {
+      path,
+      agent_id: null,
+      user_file_capability_id: null,
+    }),
+    path,
+  });
+  try {
+    return snapshot.descriptor.canonical_path;
+  } finally {
+    await fileResourceClient.close(snapshot.subscription_id).catch(() => undefined);
+  }
 }
 
 const NATIVE_WINDOW_WIDTH_VAR = "--wardian-native-window-width";
@@ -1344,10 +1363,11 @@ function AppBody() {
               state: filesState,
             });
           }}
-          on_open_file={async (path, openInNewTab = false) => {
-            const destination = fileOpenDestinationForPath(path, fileOpenActions);
+          on_open_file={async (path, openInNewTab = false, sourceRequest) => {
+            const authorizedPath = await canonicalizeFileOpenPath(path, sourceRequest);
+            const destination = fileOpenDestinationForPath(authorizedPath, fileOpenActions);
             if (destination !== "wardian") {
-              await openFileWithSettings(path, {
+              await openFileWithSettings(authorizedPath, {
                 navigation: workbenchNavigation,
                 file_open_actions: fileOpenActions,
                 external_editor: externalEditor,
@@ -1356,12 +1376,12 @@ function AppBody() {
               return;
             }
             if (openInNewTab) {
-              openPermanentFileSurface(workbenchNavigation, path);
+              openPermanentFileSurface(workbenchNavigation, authorizedPath);
               return;
             }
             await workbenchNavigation.rebind_resource(surface.surface_id, {
               surface_type: "files",
-              resource_key: fileResourceKey(path),
+              resource_key: fileResourceKey(authorizedPath),
               state: filesState,
             });
           }}

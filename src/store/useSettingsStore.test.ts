@@ -276,7 +276,7 @@ describe('app settings persistence', () => {
       titlebar_telemetry_visible: false,
       external_editor: 'vscode',
       external_editor_custom_executable: null,
-      explorer_file_click_action: 'external',
+      file_open_actions: { text: 'external', image: 'external', pdf: 'external' },
     });
 
     await useSettingsStore.getState().loadAppSettings();
@@ -329,7 +329,6 @@ describe('app settings persistence', () => {
       titlebar_telemetry_visible: false,
       external_editor: 'custom',
       external_editor_custom_executable: 'C:/Tools/editor.exe',
-      explorer_file_click_action: 'external',
       file_open_actions: { text: 'wardian', image: 'external', pdf: 'wardian' },
     });
 
@@ -382,12 +381,12 @@ describe('app settings persistence', () => {
     });
   });
 
-  it('migrates legacy backend settings into authoritative family preferences', async () => {
+  it('loads authoritative family preferences without a legacy fallback', async () => {
     mockedInvoke.mockResolvedValueOnce({
       schema_version: 2,
       persisted: true,
-      settings: { explorer_file_click_action: 'external' },
-      overrides: { explorer_file_click_action: 'external' },
+      settings: { file_open_actions: { text: 'external', image: 'external', pdf: 'external' } },
+      overrides: { file_open_actions: { text: 'external', image: 'external', pdf: 'external' } },
     });
 
     await useSettingsStore.getState().loadAppSettings();
@@ -405,7 +404,6 @@ describe('app settings persistence', () => {
       schema_version: 2,
       persisted: true,
       settings: {
-        explorer_file_click_action: 'external',
         file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
       },
       overrides: {
@@ -428,7 +426,6 @@ describe('app settings persistence', () => {
       schema_version: 2,
       persisted: true,
       settings: {
-        explorer_file_click_action: 'external',
         file_open_actions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
       },
       overrides: {

@@ -58,7 +58,11 @@ export type FilesSurfaceProps = {
   on_canonical_resource?: (
     resource_key: string,
   ) => CloseDecision | void | Promise<CloseDecision | void>;
-  on_open_file?: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
+  on_open_file?: (
+    path: string,
+    open_in_new_tab?: boolean,
+    resource_request?: OpenFileResourceRequestV1,
+  ) => Promise<void> | void;
   on_open_with?: (path: string) => Promise<void> | void;
   on_open_system?: (path: string) => Promise<void> | void;
   on_reveal?: (path: string) => Promise<void> | void;
@@ -96,7 +100,11 @@ type ActiveFilesSurfaceProps = Required<Pick<
 >> & {
   resource: UseFileResourceResult;
   resource_request: OpenFileResourceRequestV1;
-  on_open_file: (path: string, open_in_new_tab?: boolean) => Promise<void> | void;
+  on_open_file: (
+    path: string,
+    open_in_new_tab?: boolean,
+    resource_request?: OpenFileResourceRequestV1,
+  ) => Promise<void> | void;
   on_open_with: (path: string) => Promise<void> | void;
   on_open_system: (path: string) => Promise<void> | void;
   on_reveal: (path: string) => Promise<void> | void;

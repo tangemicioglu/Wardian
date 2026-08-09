@@ -12,7 +12,6 @@ import type {
   CodexSandboxMode,
   ConversationLoggingSetting,
   DefaultProviderSetting,
-  ExplorerFileClickAction,
   ExternalEditorSetting,
   FileOpenAction,
   FileOpenActions,
@@ -84,7 +83,6 @@ const CONVERSATION_LOGGING_SETTINGS: ConversationLoggingSetting[] = ['enabled', 
 const GRID_CARD_DISPLAY_MODES: GridCardDisplayMode[] = ['terminal', 'chat'];
 const WATCHLIST_NEW_AGENT_POSITIONS: WatchlistNewAgentPosition[] = ['top', 'bottom'];
 const EXTERNAL_EDITOR_SETTINGS: ExternalEditorSetting[] = ['system', 'vscode', 'custom'];
-const EXPLORER_FILE_CLICK_ACTIONS: ExplorerFileClickAction[] = ['preview', 'external'];
 const FILE_OPEN_ACTIONS: FileOpenAction[] = ['wardian', 'external'];
 
 export const DEFAULT_CODEX_RUNTIME_POLICY: CodexRuntimePolicy = {
@@ -155,31 +153,25 @@ export function normalizeExternalEditorSetting(
     : 'system';
 }
 
-export function normalizeExplorerFileClickAction(
-  value: string | null | undefined,
-): ExplorerFileClickAction {
-  return EXPLORER_FILE_CLICK_ACTIONS.includes(value as ExplorerFileClickAction)
-    ? value as ExplorerFileClickAction
-    : 'preview';
-}
-
 export function normalizeFileOpenAction(value: string | null | undefined): FileOpenAction {
   return FILE_OPEN_ACTIONS.includes(value as FileOpenAction)
     ? value as FileOpenAction
     : 'wardian';
 }
 
-/** Normalizes current family preferences, using the legacy value only during migration. */
 export function normalizeFileOpenActions(
   value: Partial<FileOpenActions> | null | undefined,
-  legacyAction: ExplorerFileClickAction = 'preview',
 ): FileOpenActions {
-  const legacyDefault: FileOpenAction = legacyAction === 'external' ? 'external' : 'wardian';
   return {
-    text: normalizeFileOpenAction(value?.text ?? legacyDefault),
-    image: normalizeFileOpenAction(value?.image ?? legacyDefault),
-    pdf: normalizeFileOpenAction(value?.pdf ?? legacyDefault),
+    text: normalizeFileOpenAction(value?.text),
+    image: normalizeFileOpenAction(value?.image),
+    pdf: normalizeFileOpenAction(value?.pdf),
   };
+}
+
+function fileOpenActionsFromLegacy(value: string | null | undefined): FileOpenActions {
+  const action: FileOpenAction = value?.trim() === 'external' ? 'external' : 'wardian';
+  return { text: action, image: action, pdf: action };
 }
 
 function fileOpenActionsEqual(left: FileOpenActions, right: FileOpenActions) {
@@ -284,7 +276,6 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   titlebar_telemetry_visible: true,
   external_editor: 'system',
   external_editor_custom_executable: null,
-  explorer_file_click_action: 'preview',
   file_open_actions: DEFAULT_FILE_OPEN_ACTIONS,
   workbench_new_tab_action: 'home',
 };
@@ -338,10 +329,7 @@ function shellSettingsFromResponse(response: ShellSettingsResponse) {
 }
 
 function appOverridesFromSettings(settings: AppSettings): AppSettingsOverrides {
-  const fileOpenActions = normalizeFileOpenActions(
-    settings.file_open_actions,
-    normalizeExplorerFileClickAction(settings.explorer_file_click_action),
-  );
+  const fileOpenActions = normalizeFileOpenActions(settings.file_open_actions);
   return {
     ...(normalizeTheme(settings.theme) !== DEFAULT_APP_SETTINGS.theme ? { theme: normalizeTheme(settings.theme) } : {}),
     ...(Boolean(settings.auto_patch_gemini) !== DEFAULT_APP_SETTINGS.auto_patch_gemini
@@ -388,7 +376,6 @@ function appOverridesFromState(state: SettingsState): AppSettingsOverrides {
     titlebar_telemetry_visible: state.titlebarTelemetryVisible,
     external_editor: state.externalEditor,
     external_editor_custom_executable: state.externalEditorCustomExecutable.trim() || null,
-    explorer_file_click_action: DEFAULT_APP_SETTINGS.explorer_file_click_action,
     file_open_actions: state.fileOpenActions,
     workbench_new_tab_action: state.workbenchNewTabAction,
   });
@@ -433,9 +420,7 @@ function shellOverridesFromSettings(settings: ShellSettings): ShellSettingsOverr
 function normalizeAppOverrides(overrides: AppSettingsOverrides | undefined): AppSettingsOverrides {
   const fileOpenActions = overrides?.file_open_actions
     ? normalizeFileOpenActions(overrides.file_open_actions)
-    : normalizeExplorerFileClickAction(overrides?.explorer_file_click_action) === 'external'
-      ? normalizeFileOpenActions(undefined, 'external')
-      : undefined;
+    : undefined;
   return {
     ...(overrides?.theme ? { theme: normalizeTheme(overrides.theme) } : {}),
     ...(typeof overrides?.auto_patch_gemini === 'boolean' ? { auto_patch_gemini: overrides.auto_patch_gemini } : {}),
@@ -606,11 +591,10 @@ export const useSettingsStore = create<SettingsState>()(
           ...normalizeFileOpenActions(state.fileOpenActions),
           [kind]: normalized,
         };
-        const { explorer_file_click_action: _legacyFallback, ...rest } = state.app_settings_overrides;
         return {
           fileOpenActions,
           app_settings_overrides: {
-            ...rest,
+            ...state.app_settings_overrides,
             file_open_actions: fileOpenActions,
           },
         };
@@ -728,10 +712,7 @@ export const useSettingsStore = create<SettingsState>()(
             titlebarTelemetryVisible: settings.titlebar_telemetry_visible !== false,
             externalEditor: normalizeExternalEditorSetting(settings.external_editor),
             externalEditorCustomExecutable: settings.external_editor_custom_executable?.trim() ?? '',
-            fileOpenActions: normalizeFileOpenActions(
-              settings.file_open_actions,
-              normalizeExplorerFileClickAction(settings.explorer_file_click_action),
-            ),
+            fileOpenActions: normalizeFileOpenActions(settings.file_open_actions),
             workbenchNewTabAction: normalizeWorkbenchNewTabAction(settings.workbench_new_tab_action),
             app_settings_overrides: normalizeAppOverrides(overrides),
             app_settings_loaded: true,
@@ -752,7 +733,6 @@ export const useSettingsStore = create<SettingsState>()(
           titlebar_telemetry_visible: get().titlebarTelemetryVisible,
           external_editor: normalizeExternalEditorSetting(get().externalEditor),
           external_editor_custom_executable: get().externalEditorCustomExecutable.trim() || null,
-          explorer_file_click_action: DEFAULT_APP_SETTINGS.explorer_file_click_action,
           file_open_actions: normalizeFileOpenActions(get().fileOpenActions),
           workbench_new_tab_action: normalizeWorkbenchNewTabAction(get().workbenchNewTabAction),
         };
@@ -774,10 +754,7 @@ export const useSettingsStore = create<SettingsState>()(
           titlebarTelemetryVisible: saved.titlebar_telemetry_visible !== false,
           externalEditor: normalizeExternalEditorSetting(saved.external_editor),
           externalEditorCustomExecutable: saved.external_editor_custom_executable?.trim() ?? '',
-          fileOpenActions: normalizeFileOpenActions(
-            saved.file_open_actions,
-            normalizeExplorerFileClickAction(saved.explorer_file_click_action),
-          ),
+          fileOpenActions: normalizeFileOpenActions(saved.file_open_actions),
           workbenchNewTabAction: normalizeWorkbenchNewTabAction(saved.workbench_new_tab_action),
           app_settings_overrides: normalizeAppOverrides(overrides),
           app_settings_loaded: true,
@@ -885,10 +862,9 @@ export const useSettingsStore = create<SettingsState>()(
           titlebarTelemetryVisible: typeof state.titlebarTelemetryVisible === 'boolean' ? state.titlebarTelemetryVisible : true,
           externalEditor: normalizeExternalEditorSetting(state.externalEditor),
           externalEditorCustomExecutable: state.externalEditorCustomExecutable?.trim() ?? '',
-          fileOpenActions: normalizeFileOpenActions(
-            state.fileOpenActions,
-            normalizeExplorerFileClickAction(state.explorerFileClickAction),
-          ),
+          fileOpenActions: state.fileOpenActions
+            ? normalizeFileOpenActions(state.fileOpenActions)
+            : fileOpenActionsFromLegacy(state.explorerFileClickAction),
           workbenchNewTabAction: normalizeWorkbenchNewTabAction(state.workbenchNewTabAction),
         };
       },

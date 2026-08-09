@@ -57,6 +57,11 @@ The final native launch remains behind `open_in_external_editor`; selecting
 the system destination passes `system` explicitly so configured VS Code or
 custom-editor settings cannot intercept unsupported content.
 
+Files Markdown links are canonicalized through the Files resource backend
+before this destination decision. The link inherits the source resource's
+agent workspace or exact user-file capability when one is present; a rejected
+resource open stops the external or system launch.
+
 ## Verification
 
 - Unit coverage checks family classification, Workbench opening, configured
