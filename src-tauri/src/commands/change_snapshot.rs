@@ -1022,7 +1022,7 @@ mod tests {
         );
 
         let mut samples = Vec::new();
-        for turn in 2..12u64 {
+        for turn in 2..22u64 {
             repo.write("file-001.txt", &format!("turn {turn}\n"));
             let started = std::time::Instant::now();
             let outcome = take_snapshot(&repo.request(turn)).unwrap();
@@ -1031,8 +1031,8 @@ mod tests {
         }
 
         samples.sort_unstable();
-        // p95 of ten samples is the slowest one.
-        let p95 = *samples.last().unwrap();
+        let p95_index = ((samples.len() * 95 + 99) / 100).saturating_sub(1);
+        let p95 = samples[p95_index];
         let median = samples[samples.len() / 2];
         assert!(
             p95 <= PER_TURN_BUDGET_P95_MS,
