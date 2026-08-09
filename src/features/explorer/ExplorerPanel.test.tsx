@@ -89,7 +89,6 @@ describe('ExplorerPanel', () => {
     useSettingsStore.setState({
       externalEditor: 'system',
       externalEditorCustomExecutable: '',
-      explorerFileClickAction: 'preview',
       fileOpenActions: { text: 'wardian', image: 'wardian', pdf: 'wardian' },
     });
   });
@@ -370,7 +369,6 @@ describe('ExplorerPanel', () => {
 
   it('clears an external command error after a successful retry', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
       fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
@@ -397,7 +395,6 @@ describe('ExplorerPanel', () => {
 
   it('routes an internal single click to a permanent Files surface without reading preview bytes', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'preview',
       externalEditor: 'system',
       externalEditorCustomExecutable: '',
     });
@@ -462,9 +459,8 @@ describe('ExplorerPanel', () => {
     expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
   });
 
-  it('opens a permanent Files surface on Ctrl/Cmd-click even when normal clicks open externally', async () => {
+  it('routes Ctrl/Cmd-click through the selected external family preference', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
       fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
@@ -481,13 +477,14 @@ describe('ExplorerPanel', () => {
     fireEvent.click(file, { ctrlKey: true });
     fireEvent.click(file, { metaKey: true });
 
-    expect(navigation.open).toHaveBeenCalledTimes(2);
-    expect(navigation.open).toHaveBeenCalledWith(expect.objectContaining({
-      resource_key: 'file:C:/Users/test/repo/notes.md',
-      state: expect.objectContaining({ transient_preview: false }),
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\notes.md',
+      editor: {
+        external_editor: 'vscode',
+        external_editor_custom_executable: null,
+      },
     }));
-    expect(navigation.pin_transient).toHaveBeenCalledWith('files-surface');
-    expect(invoke).not.toHaveBeenCalledWith('open_in_external_editor', expect.anything());
+    expect(navigation.open).not.toHaveBeenCalled();
   });
 
   it('uses permanent Open and standard horizontal Open to Side context actions', async () => {
@@ -568,6 +565,75 @@ describe('ExplorerPanel', () => {
     expect(navigation.open).not.toHaveBeenCalled();
   });
 
+  it('routes Ctrl-click and Open to Side through an external family preference', async () => {
+    useSettingsStore.setState({
+      externalEditor: 'vscode',
+      externalEditorCustomExecutable: '',
+      fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
+    });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+    const navigation = makeNavigation();
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
+
+    const tree = await screen.findByTestId('mock-file-row');
+    fireEvent.click(tree, { ctrlKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\notes.md',
+      editor: {
+        external_editor: 'vscode',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open).not.toHaveBeenCalled();
+
+    await userEvent.pointer({ keys: '[MouseRight]', target: tree });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open to Side' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\notes.md',
+      editor: {
+        external_editor: 'vscode',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open_to_side).not.toHaveBeenCalled();
+  });
+
+  it('routes unsupported Ctrl-click and Open to Side to the system viewer', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
+      if (command === 'git_status') return { files: [] };
+      return null;
+    });
+    const navigation = makeNavigation();
+    render(<ExplorerPanel selectedAgentIds={new Set()} agents={[]} navigation={navigation} />);
+
+    const tree = await screen.findByTestId('mock-unsupported-file-row');
+    fireEvent.click(tree, { ctrlKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\report.docx',
+      editor: {
+        external_editor: 'system',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open).not.toHaveBeenCalled();
+
+    await userEvent.pointer({ keys: '[MouseRight]', target: tree });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open to Side' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_in_external_editor', {
+      path: 'C:\\Users\\test\\repo\\report.docx',
+      editor: {
+        external_editor: 'system',
+        external_editor_custom_executable: null,
+      },
+    }));
+    expect(navigation.open_to_side).not.toHaveBeenCalled();
+  });
+
   it('reports when Open to Side is rejected because the current pane is too small', async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'get_explorer_root') return 'C:\\Users\\test\\repo';
@@ -589,7 +655,6 @@ describe('ExplorerPanel', () => {
 
   it('opens a clicked file externally when Explorer file click action is External app', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
       fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
@@ -621,7 +686,6 @@ describe('ExplorerPanel', () => {
 
   it('opens a double-clicked file externally without creating or pinning a Files tab', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
       fileOpenActions: { text: 'external', image: 'external', pdf: 'external' },
@@ -650,7 +714,6 @@ describe('ExplorerPanel', () => {
 
   it('does not preview or externally open clicked folders', async () => {
     useSettingsStore.setState({
-      explorerFileClickAction: 'external',
       externalEditor: 'vscode',
       externalEditorCustomExecutable: '',
     });

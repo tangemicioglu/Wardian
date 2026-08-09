@@ -28,12 +28,10 @@ configured external editor setting. Unsupported or otherwise unclassified
 files always use the system-preferred application; they do not use a custom
 editor as a document viewer.
 
-The existing `explorer_file_click_action` setting remains as a compatibility
-fallback for older settings documents and clients. A legacy external value
-migrates to all three family preferences; new family-specific values take
-precedence afterward. Changing the compatibility fallback does not overwrite
-explicit family preferences, and saving any family preference clears the
-legacy external override so it cannot regain precedence after reload.
+The old `explorer_file_click_action` value is accepted only while loading older
+settings documents. A legacy external value migrates once to all three family
+preferences, after which the persisted legacy override is discarded. Current
+settings and routing use only the family-specific values.
 
 ## Unsupported Files Surface Behavior
 

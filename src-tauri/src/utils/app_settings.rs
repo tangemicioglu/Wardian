@@ -388,15 +388,10 @@ fn normalize_app_overrides(mut overrides: AppSettingsOverrides) -> AppSettingsOv
     overrides.external_editor_custom_executable = overrides
         .external_editor_custom_executable
         .map(|executable| executable.and_then(|value| trim_to_option(&value)));
-    overrides.explorer_file_click_action =
-        overrides.explorer_file_click_action.and_then(|action| {
-            let normalized = normalize_explorer_file_click_action(&action);
-            (normalized != default_explorer_file_click_action()).then_some(normalized)
-        });
+    let legacy_file_click_action = overrides.explorer_file_click_action.take();
     overrides.file_open_actions = overrides.file_open_actions.map(normalize_file_open_actions);
     if overrides.file_open_actions.is_none() {
-        overrides.file_open_actions = overrides
-            .explorer_file_click_action
+        overrides.file_open_actions = legacy_file_click_action
             .as_deref()
             .map(|action| file_open_actions_from_legacy(Some(action)))
             .filter(|actions| *actions != FileOpenActions::default());
@@ -434,9 +429,7 @@ fn app_overrides_from_settings(
         external_editor_custom_executable: (settings.external_editor_custom_executable
             != defaults.external_editor_custom_executable)
             .then(|| settings.external_editor_custom_executable.clone()),
-        explorer_file_click_action: (settings.explorer_file_click_action
-            != defaults.explorer_file_click_action)
-            .then(|| settings.explorer_file_click_action.clone()),
+        explorer_file_click_action: None,
         file_open_actions: (settings.file_open_actions != defaults.file_open_actions)
             .then(|| settings.file_open_actions.clone()),
         workbench_new_tab_action: (settings.workbench_new_tab_action
@@ -691,8 +684,9 @@ mod tests {
         let loaded = load_app_settings_from_path(&path).expect("load settings");
 
         assert!(document.persisted);
-        assert_eq!(saved, settings);
-        assert_eq!(loaded, settings);
+        assert_eq!(saved.explorer_file_click_action, "preview");
+        assert_eq!(saved.file_open_actions, settings.file_open_actions);
+        assert_eq!(loaded, saved);
     }
 
     #[test]
@@ -782,7 +776,7 @@ mod tests {
         assert_eq!(loaded.grid_card_display_mode, "terminal");
         assert_eq!(loaded.watchlist_new_agent_position, "bottom");
         assert_eq!(loaded.external_editor, "vscode");
-        assert_eq!(loaded.explorer_file_click_action, "external");
+        assert_eq!(loaded.explorer_file_click_action, "preview");
         assert_eq!(
             loaded.file_open_actions,
             FileOpenActions {

@@ -304,7 +304,20 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
     });
   };
 
-  const openFileBySettings = async (path: string, isDir: boolean) => {
+  const openToSide = (path: string) => {
+    runNavigationAction('Open to Side', (currentNavigation) => {
+      const surfaceId = currentNavigation.open_to_side(
+        fileSurfaceRequest(path, false),
+        'horizontal',
+      );
+      if (surfaceId === null) {
+        throw new Error('The current pane is too small to open a file to the side.');
+      }
+      return surfaceId;
+    });
+  };
+
+  const openFileBySettings = async (path: string, isDir: boolean, openInSide = false) => {
     if (isDir) return;
     const destination = fileOpenDestinationForPath(path, fileOpenActions);
     if (destination === 'external') {
@@ -312,7 +325,8 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
     } else if (destination === 'system') {
       await openExternalEditor(fileNode(path), true);
     } else {
-      openPermanent(path);
+      if (openInSide) openToSide(path);
+      else openPermanent(path);
     }
   };
 
@@ -322,18 +336,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
   };
 
   const handleOpenToSide = () => {
-    if (activeNode && !activeNode.is_dir) {
-      runNavigationAction('Open to Side', (currentNavigation) => {
-        const surfaceId = currentNavigation.open_to_side(
-          fileSurfaceRequest(activeNode.path, false),
-          'horizontal',
-        );
-        if (surfaceId === null) {
-          throw new Error('The current pane is too small to open a file to the side.');
-        }
-        return surfaceId;
-      });
-    }
+    if (activeNode) void openFileBySettings(activeNode.path, activeNode.is_dir, true);
     setMenuPos(null);
   };
 
@@ -352,7 +355,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ selectedAgentIds, 
     if (isDir) return;
 
     if (openInNewTab) {
-      openPermanent(path);
+      await openFileBySettings(path, isDir);
     } else {
       await openFileBySettings(path, isDir);
     }

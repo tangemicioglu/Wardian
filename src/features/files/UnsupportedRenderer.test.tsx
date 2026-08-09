@@ -30,11 +30,12 @@ function snapshot(): FileResourceSnapshotV1 {
 function props(
   on_open_system: FileRendererProps["on_open_system"],
   currentSnapshot = snapshot(),
+  visible = true,
 ): FileRendererProps {
   return {
     snapshot: currentSnapshot,
     client: {} as FileRendererProps["client"],
-    lifecycle: { visible: true },
+    lifecycle: { visible },
     on_open_file: vi.fn(),
     on_open_with: vi.fn(),
     on_open_system,
@@ -79,5 +80,18 @@ describe("UnsupportedRenderer", () => {
     expect(await screen.findByRole("heading", { name: "Opened in system viewer" })).toBeInTheDocument();
     expect(screen.queryByText(/no associated app/)).not.toBeInTheDocument();
     expect(on_open_system).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves a settled launch state when visibility changes", async () => {
+    const on_open_system = vi.fn().mockResolvedValue(undefined);
+    const view = render(<UnsupportedRenderer {...props(on_open_system)} />);
+
+    expect(await screen.findByRole("heading", { name: "Opened in system viewer" })).toBeInTheDocument();
+
+    view.rerender(<UnsupportedRenderer {...props(on_open_system, snapshot(), false)} />);
+    view.rerender(<UnsupportedRenderer {...props(on_open_system)} />);
+
+    expect(screen.getByRole("heading", { name: "Opened in system viewer" })).toBeInTheDocument();
+    expect(on_open_system).toHaveBeenCalledTimes(1);
   });
 });

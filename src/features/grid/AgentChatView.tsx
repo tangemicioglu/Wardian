@@ -83,6 +83,7 @@ export function AgentChatView({
   const [internalDraft, setInternalDraft] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [fileOpenError, setFileOpenError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [visibleRowLimit, setVisibleRowLimit] = useState(CHAT_INITIAL_ROW_LIMIT);
   const workbenchNavigation = useAppShellWorkbenchNavigation();
@@ -210,8 +211,11 @@ export function AgentChatView({
           external_editor: externalEditor,
           external_editor_custom_executable: externalEditorCustomExecutable,
         });
+        setFileOpenError(null);
       } catch (reason) {
-        console.warn("Failed to open changed file from chat:", reason);
+        const message = `Failed to open changed file: ${String(reason)}`;
+        console.warn(message);
+        setFileOpenError(message);
       }
     };
   }, [externalEditor, externalEditorCustomExecutable, fileOpenActions, workbenchNavigation, workspacePath]);
@@ -229,7 +233,10 @@ export function AgentChatView({
         external_editor_custom_executable: editor.external_editor_custom_executable,
       });
     },
-    onOpenError: (message) => console.warn(message),
+    onOpenError: (message) => {
+      console.warn(message);
+      setFileOpenError(message);
+    },
   }), [externalEditor, externalEditorCustomExecutable, fileOpenActions, workbenchNavigation, workspacePath]);
 
   useEffect(() => {
@@ -332,6 +339,14 @@ export function AgentChatView({
       data-theme-mode={theme}
       data-testid="agent-chat-view"
     >
+      {fileOpenError ? (
+        <div
+          role="alert"
+          className="mx-3 mt-2 rounded-md border border-wardian-error/40 bg-wardian-error/10 px-3 py-2 text-xs leading-relaxed text-wardian-error"
+        >
+          {fileOpenError}
+        </div>
+      ) : null}
       <div
         className="min-h-0 flex-1 overflow-auto px-3 py-3"
         data-testid="agent-chat-scroll-region"

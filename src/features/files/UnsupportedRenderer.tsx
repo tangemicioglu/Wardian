@@ -23,12 +23,16 @@ export default function UnsupportedRenderer({
     || descriptor.mime_type === "image/svg+xml";
   const reason = descriptor.unavailable_reason
     ?? (liveDocument ? "live_renderer_not_activated" : "renderer_not_activated");
+  const attemptKey = `${snapshot.resource_id}:${snapshot.revision}:${descriptor.unavailable_reason ?? ""}`;
 
   useEffect(() => {
-    const attemptKey = `${snapshot.resource_id}:${snapshot.revision}`;
     setOpenError(null);
     setOpenedInSystem(false);
     setOpening(shouldAutoOpen);
+    activeAttemptRef.current = attemptKey;
+  }, [attemptKey]);
+
+  useEffect(() => {
     if (
       !on_open_system
       || !lifecycle.visible
@@ -36,7 +40,6 @@ export default function UnsupportedRenderer({
     ) return;
     if (attemptedOpenRef.current === attemptKey) return;
     attemptedOpenRef.current = attemptKey;
-    activeAttemptRef.current = attemptKey;
     setOpening(true);
     void Promise.resolve(on_open_system(descriptor.canonical_path)).then(
       () => {
@@ -50,7 +53,7 @@ export default function UnsupportedRenderer({
         setOpenError(error instanceof Error ? error.message : String(error));
       },
     );
-  }, [descriptor.canonical_path, descriptor.unavailable_reason, lifecycle.visible, on_open_system, shouldAutoOpen, snapshot.resource_id, snapshot.revision]);
+  }, [attemptKey, descriptor.canonical_path, descriptor.unavailable_reason, lifecycle.visible, on_open_system]);
 
   if (shouldAutoOpen && opening && !openError) {
     return (

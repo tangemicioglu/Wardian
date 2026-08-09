@@ -54,7 +54,6 @@ describe("SettingsModal", () => {
       titlebarTelemetryVisible: true,
       externalEditor: "system",
       externalEditorCustomExecutable: "",
-      explorerFileClickAction: "preview",
       fileOpenActions: { text: "wardian", image: "wardian", pdf: "wardian" },
       workbenchNewTabAction: "home",
       shell_id: "auto",
@@ -402,7 +401,6 @@ describe("SettingsModal", () => {
     useSettingsStore.setState({
       externalEditor: "system",
       externalEditorCustomExecutable: "",
-      explorerFileClickAction: "preview",
     });
     render(<SettingsModal isOpen onClose={vi.fn()} />);
 
@@ -415,9 +413,6 @@ describe("SettingsModal", () => {
     fireEvent.change(select, { target: { value: "custom" } });
     fireEvent.change(screen.getByLabelText("Custom editor executable"), {
       target: { value: "C:/Tools/editor.exe" },
-    });
-    fireEvent.change(screen.getByLabelText("Legacy file click fallback"), {
-      target: { value: "external" },
     });
     fireEvent.change(screen.getByLabelText("Text and code files open location"), {
       target: { value: "wardian" },
@@ -436,7 +431,7 @@ describe("SettingsModal", () => {
       });
     });
     expect(useSettingsStore.getState().externalEditor).toBe("custom");
-    expect(useSettingsStore.getState().explorerFileClickAction).toBe("external");
+    expect(screen.queryByLabelText("Legacy file click fallback")).not.toBeInTheDocument();
   });
 
   it("loads and saves the top bar telemetry preference", async () => {

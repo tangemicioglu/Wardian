@@ -74,6 +74,7 @@ export interface AppSettings {
   titlebar_telemetry_visible: boolean;
   external_editor: ExternalEditorSetting;
   external_editor_custom_executable: string | null;
+  /** @deprecated Read only while migrating older settings documents. */
   explorer_file_click_action: ExplorerFileClickAction;
   file_open_actions: FileOpenActions;
   workbench_new_tab_action: WorkbenchNewTabAction;
@@ -89,6 +90,7 @@ export interface AppSettingsOverrides {
   titlebar_telemetry_visible?: boolean;
   external_editor?: ExternalEditorSetting;
   external_editor_custom_executable?: string | null;
+  /** @deprecated Read only while migrating older settings documents. */
   explorer_file_click_action?: ExplorerFileClickAction;
   file_open_actions?: FileOpenActions;
   workbench_new_tab_action?: WorkbenchNewTabAction;

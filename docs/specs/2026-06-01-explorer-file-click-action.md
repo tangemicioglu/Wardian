@@ -1,7 +1,7 @@
 # Explorer File Click Action
 
 > Superseded by [Consistent File Opening Preferences](./2026-08-09-file-opening-preferences.md).
-> The legacy setting remains only as a compatibility fallback.
+> The legacy value is retained only as one-time migration input.
 
 Wardian's Explorer sidebar already supports file previews and opening files or folders in the configured external editor through the context menu. The default click behavior should now make files directly openable while keeping folder clicks focused on expanding and collapsing the tree.
 

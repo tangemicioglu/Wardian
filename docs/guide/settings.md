@@ -167,10 +167,9 @@ terminals, and the bottom user terminal:
 These controls are intentionally grouped by file family rather than exposing
 one setting for every extension. Files that Wardian does not recognize or
 cannot render, including office documents, use the system-preferred viewer.
-The older **Legacy file click fallback** setting remains for compatibility with
-older settings documents and clients. It does not describe folder behavior or
-overwrite explicit family preferences; saving a family preference makes those
-values authoritative for the current and future sessions.
+Older settings documents that contain `explorer_file_click_action` are migrated
+once into the family preferences; current settings expose and use only those
+family controls.
 
 Folders always expand or collapse when clicked.
 

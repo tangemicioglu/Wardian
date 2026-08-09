@@ -18,7 +18,6 @@ import { useQueueStore } from "../../store/useQueueStore";
 import type {
   AppThemeSetting,
   ConversationLoggingSetting,
-  ExplorerFileClickAction,
   ExternalEditorSetting,
   FileOpenAction,
   FileOpenKind,
@@ -159,13 +158,6 @@ const rowDefinitions: SettingsRowDefinition[] = [
     label: "External editor",
     detail: "Choose how Explorer opens files and folders from the right-click menu.",
     keywords: ["explorer", "files", "editor", "open", "vscode", "default app"],
-  },
-  {
-    id: "explorer-file-click-action",
-    category: "Explorer",
-    label: "Legacy file click fallback",
-    detail: "Compatibility fallback for older settings documents and clients; family preferences below control current file opens.",
-    keywords: ["explorer", "files", "click", "legacy", "compatibility", "preview", "external", "open"],
   },
   {
     id: "file-open-text",
@@ -436,8 +428,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
     setExternalEditor,
     externalEditorCustomExecutable,
     setExternalEditorCustomExecutable,
-    explorerFileClickAction,
-    setExplorerFileClickAction,
     fileOpenActions,
     setFileOpenAction,
     workbenchNewTabAction,
@@ -617,11 +607,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
 
   const handleExternalEditorCustomExecutableChange = async (value: string) => {
     setExternalEditorCustomExecutable(value);
-    await useSettingsStore.getState().saveAppSettings();
-  };
-
-  const handleExplorerFileClickActionChange = async (value: ExplorerFileClickAction) => {
-    setExplorerFileClickAction(value);
     await useSettingsStore.getState().saveAppSettings();
   };
 
@@ -977,20 +962,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
               placeholder="Path to editor executable"
               className={optionClass}
             />
-          </SettingRow>
-        );
-      case "explorer-file-click-action":
-        return (
-          <SettingRow key={row.id} label={row.label} detail={row.detail}>
-            <select
-              aria-label="Legacy file click fallback"
-              value={explorerFileClickAction}
-              onChange={(event) => void handleExplorerFileClickActionChange(event.target.value as ExplorerFileClickAction)}
-              className={optionClass}
-            >
-              <option value="preview">Preview in Wardian</option>
-              <option value="external">Open in external app</option>
-            </select>
           </SettingRow>
         );
       case "file-open-text":
