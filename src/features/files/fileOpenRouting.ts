@@ -15,7 +15,7 @@ export type FileOpenRoutingOptions = {
 const TEXT_EXTENSIONS = new Set([
   "bat", "c", "cc", "cjs", "cmd", "conf", "cpp", "cs", "css", "csv", "diff", "env", "go", "h", "hpp",
   "htm", "html", "ini", "java", "js", "json", "jsx", "lock", "log", "md", "mdx", "mjs", "patch", "ps1",
-  "py", "rs", "scss", "sh", "sql", "svelte", "svg", "toml", "ts", "tsx", "txt", "vue", "xml", "yaml", "yml",
+  "py", "rs", "scss", "sh", "sql", "svelte", "svg", "toml", "ts", "tsx", "txt", "vue", "xml", "yaml", "yml", "markdown",
 ]);
 const IMAGE_EXTENSIONS = new Set(["bmp", "gif", "jpg", "jpeg", "png", "tif", "tiff", "webp"]);
 

@@ -33,11 +33,12 @@ A recursive, lazy-loading component responsible for accurately representing nest
 - **Targeted Refresh**: Each mounted tree refetches its directory when the refresh token changes and one of the changed paths directly affects that directory. Expanded state stays local to the component, so refreshes do not collapse the visible tree.
 - **Path Identity**: Explorer path comparisons use `normalizeExplorerPathForCompare` so Windows-specific watcher paths such as `\\?\<absolute-windows-path>` match ordinary display paths from directory reads without rewriting POSIX path spelling, case, or significant whitespace.
 - **Open Coordination**: One root-owned interaction controller delays a file
-  single-click for 200 ms. A double-click or keyboard open cancels every pending
-  selection in the tree, preventing a permanent open from racing a later
-  transient replacement. Single-click uses `open_transient`; double-click and
-  `Enter` use `open` plus `pin_transient` when the matching preview already
-  exists.
+  selection until it can route the path through the shared
+  `fileOpenDestinationForPath` helper. Wardian-preferred supported files use
+  `openPermanentFileSurface` for a permanent Files surface; external-preferred
+  supported files use `open_in_external_editor`; unknown and unsupported files
+  always use the system destination. Double-click and `Enter` follow the same
+  permanent or external/system route rather than pinning a transient preview.
 - **Theming**: Integrates seamlessly with Wardian typography and spacing. Nested items have fixed padding metrics to align correctly underneath parent elements without succumbing to horizontal flex contraction (`shrink-0`). Directory rows use only their expansion chevron; file rows use `lucide-react` icons with colors mapped explicitly to `wardian-*` CSS variables based on file extensions.
 
 ### 3. Backend Commands (`src-tauri/src/commands/fs.rs`)

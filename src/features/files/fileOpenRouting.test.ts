@@ -29,9 +29,39 @@ describe("file open routing", () => {
 
   it("classifies supported files by broad renderer family", () => {
     expect(fileOpenKindForPath("C:/repo/App.tsx")).toBe("text");
+    expect(fileOpenKindForPath("C:/repo/README.markdown")).toBe("text");
     expect(fileOpenKindForPath("C:/repo/diagram.png")).toBe("image");
     expect(fileOpenKindForPath("C:/repo/report.pdf")).toBe("pdf");
     expect(fileOpenKindForPath("C:/repo/report.docx")).toBeNull();
+  });
+
+  it("routes Markdown files through the text-family preference", async () => {
+    const nav = navigation();
+
+    expect(fileOpenDestinationForPath("C:/repo/README.markdown", { text: "wardian" })).toBe("wardian");
+    await openFileWithSettings("C:/repo/README.markdown", {
+      navigation: nav,
+      file_open_actions: { text: "wardian" },
+    });
+
+    expect(nav.open).toHaveBeenCalledWith(expect.objectContaining({
+      surface_type: "files",
+      resource_key: "file:C:/repo/README.markdown",
+    }));
+
+    expect(fileOpenDestinationForPath("C:/repo/README.markdown", { text: "external" })).toBe("external");
+    await openFileWithSettings("C:/repo/README.markdown", {
+      file_open_actions: { text: "external" },
+      external_editor: "vscode",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("open_in_external_editor", {
+      path: "C:/repo/README.markdown",
+      editor: {
+        external_editor: "vscode",
+        external_editor_custom_executable: null,
+      },
+    });
   });
 
   it("opens Wardian-preferred supported links as permanent Files surfaces", async () => {
