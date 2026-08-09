@@ -1315,18 +1315,15 @@ describe("RemoteMobileApp", () => {
         data: JSON.stringify(remoteTerminalRegisteredMessage()),
       });
     });
-    await waitFor(() => expect(screen.getByTestId("remote-terminal-presentation-mode")).toHaveTextContent("Mirror"));
-    expect(MockWebSocket.instances[1]?.sent.map((payload) => JSON.parse(payload))).not.toContainEqual({
-      type: "begin_activation",
-      runtime_generation: 1,
-      observed_lease_epoch: 1,
+    await waitFor(() => {
+      expect(MockWebSocket.instances[1]?.sent.map((payload) => JSON.parse(payload))).toContainEqual({
+        type: "begin_activation",
+        runtime_generation: 1,
+        observed_lease_epoch: 1,
+      });
     });
-    await userEvent.click(screen.getByRole("button", { name: "Take terminal control" }));
-    expect(MockWebSocket.instances[1]?.sent.map((payload) => JSON.parse(payload))).toContainEqual({
-      type: "begin_activation",
-      runtime_generation: 1,
-      observed_lease_epoch: 1,
-    });
+    expect(screen.queryByText("Mirror")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Take terminal control" })).not.toBeInTheDocument();
     const terminalTicketCall = fetchMock.mock.calls
       .filter(([url]) => url === "/remote/api/ws-ticket")
       .map(([, init]) => JSON.parse(init?.body as string))

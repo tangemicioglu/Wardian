@@ -1,5 +1,4 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -127,7 +126,7 @@ describe("RemoteAgentDetailView terminal protocol v2", () => {
     });
   });
 
-  it("keeps the terminal mirror passive until the user takes control", async () => {
+  it("implicitly requests terminal ownership when the terminal view opens", async () => {
     const socket = new DetailSocket();
     let handlers: Parameters<typeof remoteClient.openTerminalStream>[3] | undefined;
     vi.spyOn(remoteClient, "openTerminalStream").mockImplementation(async (_session, _cols, _rows, nextHandlers) => {
@@ -151,40 +150,13 @@ describe("RemoteAgentDetailView terminal protocol v2", () => {
     const fitCallsBeforeActivation = fit.mock.calls.length;
     expect(terminalInstance.write).toHaveBeenCalledWith("ready", expect.any(Function));
     expect(terminalInstance.options.disableStdin).toBe(true);
-    expect(screen.getByTestId("remote-terminal-presentation-mode")).toHaveTextContent("Mirror");
-    expect(socket.sent.map((payload) => JSON.parse(payload))).not.toContainEqual({
-      type: "begin_activation",
-      runtime_generation: 1,
-      observed_lease_epoch: 3,
-    });
-
-    await userEvent.click(screen.getByRole("button", { name: "Take terminal control" }));
+    expect(screen.queryByText("Mirror")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Take terminal control" })).not.toBeInTheDocument();
     expect(socket.sent.map((payload) => JSON.parse(payload))).toContainEqual({
       type: "begin_activation",
       runtime_generation: 1,
       observed_lease_epoch: 3,
     });
-
-    await act(async () => {
-      await handlers?.onMessage({
-        type: "activation_begin",
-        result: {
-          decision: {
-            status: "rejected", reason: "lease_epoch_changed", runtime_generation: 1, lease_epoch: 4,
-            owner_presentation_id: "desktop:presentation-2",
-          },
-          activation_id: null,
-          snapshot: null,
-          sequence_barrier: 4,
-        },
-      });
-    });
-    expect(screen.getByText("lease epoch changed")).toBeVisible();
-    expect(screen.getByTestId("remote-terminal-presentation-mode")).toHaveTextContent("Mirror");
-
-    await userEvent.click(screen.getByRole("button", { name: "Take terminal control" }));
-    expect(socket.sent.map((payload) => JSON.parse(payload)).filter((message) => message.type === "begin_activation"))
-      .toHaveLength(2);
 
     await act(async () => {
       await handlers?.onMessage({
