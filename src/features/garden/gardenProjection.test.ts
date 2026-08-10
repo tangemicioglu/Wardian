@@ -3,14 +3,16 @@ import type { AgentConfig } from "../../types";
 import type { AgentTeam } from "../../layout/watchlist/types";
 import type { AgentGraphProjection } from "../graph/graphProjection";
 import {
+  agentWorkspaceRoots,
   buildAgentUnits,
   buildWorkflowUnits,
   computeGardenLayout,
+  districtReachTiers,
   gardenLayoutSignature,
   type GardenWorkflowInput,
 } from "./gardenProjection";
 import { createScene, pinEntity } from "./gardenScene";
-import { COMMONS_DISTRICT_ID } from "./districts";
+import { COMMONS_DISTRICT_ID, reachTier } from "./districts";
 import { ANCHOR_QUANTUM } from "./terrain";
 import { MIN_FIT_SCALE, fitTransform } from "./gardenViewport";
 
@@ -318,6 +320,133 @@ describe("gardenLayoutSignature", () => {
     expect(gardenLayoutSignature(projectionOf([...nodes].reverse()), [...teams].reverse(), workflows)).toBe(
       gardenLayoutSignature(projectionOf(nodes), teams, workflows),
     );
+  });
+});
+
+describe("reach becomes district centrality", () => {
+  it("collects roots the roster works in, without duplicates", () => {
+    expect(agentWorkspaceRoots([agent("a1", "D:\\Dev\\Hardware"), agent("a2", "D:/Dev/Hardware")]))
+      .toEqual(["d:/dev/hardware"]);
+  });
+
+  it("prefers the worktree folder, so a worktree is its own root", () => {
+    const worktree = {
+      ...agent("a1", "D:\\Dev\\App"),
+      git_worktree_folder: "D:\\Dev\\App.wt\\feature",
+    } as AgentConfig;
+    expect(agentWorkspaceRoots([worktree])).toEqual(["d:/dev/app.wt/feature"]);
+  });
+
+  it("counts a write into another district's root and not one into its own", () => {
+    const districtByAgent = new Map([
+      ["manager", "team:academic"],
+      ["writer", "workspace:d:/papers"],
+    ]);
+    const rootsByDistrict = new Map([
+      ["team:academic", new Set(["d:/academic"])],
+      ["workspace:d:/papers", new Set(["d:/papers"])],
+    ]);
+    const tiers = districtReachTiers(
+      [
+        { agent_id: "manager", roots: ["d:/academic", "d:/papers"] },
+        { agent_id: "writer", roots: ["d:/papers"] },
+      ],
+      districtByAgent,
+      rootsByDistrict,
+    );
+    expect(tiers.get("team:academic")).toBe(reachTier(1));
+    // An agent that only ever writes at home reaches nothing and stays absent.
+    expect(tiers.has("workspace:d:/papers")).toBe(false);
+  });
+
+  it("counts every district holding a root, because more than one can", () => {
+    // A team district and the workspace district of an unteamed agent in the
+    // same repository both occupy it; a write really did land in both.
+    const tiers = districtReachTiers(
+      [{ agent_id: "manager", roots: ["D:/Shared"] }],
+      new Map([["manager", "team:academic"]]),
+      new Map([
+        ["team:academic", new Set(["d:/academic"])],
+        ["team:review", new Set(["d:/shared"])],
+        ["workspace:d:/shared", new Set(["d:/shared"])],
+      ]),
+    );
+    expect(tiers.get("team:academic")).toBe(reachTier(2));
+  });
+
+  it("seats a coordinating district inside one that keeps to itself", () => {
+    // The coordinator's root sorts *last*, so without reach it takes the outer
+    // slot. That is what makes this test able to fail: reach has to overturn the
+    // seating that placement would otherwise have produced.
+    const roster = [
+      node("m1", "Manager", "D:\\Zeta"),
+      node("w1", "Writer", "D:\\Alpha"),
+      node("w2", "Writer2", "D:\\Alpha"),
+    ];
+    const coordinator = "workspace:d:/zeta";
+    const coordinated = "workspace:d:/alpha";
+    const seatOf = (result: ReturnType<typeof computeGardenLayout>, districtId: string) =>
+      result.scene.districts.cells[districtId];
+
+    const withoutReach = computeGardenLayout({
+      projection: projectionOf(roster),
+      teams: [],
+      workflows: [],
+      scene: createScene(),
+    });
+    expect(seatOf(withoutReach, coordinator)).toBeGreaterThan(seatOf(withoutReach, coordinated));
+
+    const withReach = computeGardenLayout({
+      projection: projectionOf(roster),
+      teams: [],
+      workflows: [],
+      reach: [{ agent_id: "m1", roots: ["d:/alpha"] }],
+      scene: createScene(),
+    });
+    // Slots are numbered from the centre outward, so this is the whole claim.
+    expect(seatOf(withReach, coordinator)).toBeLessThan(seatOf(withReach, coordinated));
+  });
+
+  it("keeps reach out of nothing else — the same roster lays out identically", () => {
+    // Reach may move a district between slots. It must not change how units sit
+    // *within* a district, which is the metric's business.
+    const roster = [node("a1", "Alpha", "D:\\Dev\\Hardware"), node("a2", "Beta", "D:\\Dev\\Hardware")];
+    const plain = computeGardenLayout({
+      projection: projectionOf(roster),
+      teams: [],
+      workflows: [],
+      scene: createScene(),
+    });
+    const reached = computeGardenLayout({
+      projection: projectionOf(roster),
+      teams: [],
+      workflows: [],
+      // A root nobody else holds, so the tier stays 0 and nothing may move.
+      reach: [{ agent_id: "a1", roots: ["d:/elsewhere"] }],
+      scene: createScene(),
+    });
+    expect([...reached.positions]).toEqual([...plain.positions]);
+  });
+
+  it("enters the layout signature, so arriving reach provokes a relayout", () => {
+    const base = gardenLayoutSignature(projectionOf(nodes), teams, workflows, []);
+    expect(
+      gardenLayoutSignature(projectionOf(nodes), teams, workflows, [], [
+        { agent_id: "a1", roots: ["d:/dev/web"] },
+      ]),
+    ).not.toBe(base);
+  });
+
+  it("digests reach independently of ordering", () => {
+    const one = gardenLayoutSignature(projectionOf(nodes), teams, workflows, [], [
+      { agent_id: "a1", roots: ["d:/b", "d:/a"] },
+      { agent_id: "a2", roots: ["d:/c"] },
+    ]);
+    const other = gardenLayoutSignature(projectionOf(nodes), teams, workflows, [], [
+      { agent_id: "a2", roots: ["d:/c"] },
+      { agent_id: "a1", roots: ["d:/a", "d:/b"] },
+    ]);
+    expect(one).toBe(other);
   });
 });
 

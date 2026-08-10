@@ -108,6 +108,17 @@ export const GARDEN_AREA_NOTE =
   "Cell area is a share of the parent folder, not a file size. Folders take more room than files, and depth divides what is left — so a file at a repository root can be larger than a folder several levels down.";
 
 /**
+ * What a district's distance from the centre says.
+ *
+ * The ring lattice was built so centrality could be expressible, and reach is
+ * what finally expresses it. Shown only when some district actually reaches past
+ * its own territory — a legend entry explaining a distinction the map is not
+ * currently drawing is noise.
+ */
+export const GARDEN_CENTRALITY_NOTE =
+  "Districts whose agents write into other districts' workspaces are seated nearer the middle. Distance from the centre is about coordination, not activity or importance.";
+
+/**
  * What a selected piece of ground reads as.
  *
  * Names the count and the evidence rather than the churn: "3 files, attributed"

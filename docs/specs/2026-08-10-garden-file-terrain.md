@@ -194,6 +194,14 @@ A district whose units genuinely reach further than that gap keeps its full
 extent. At that point the units themselves overlap, and shrinking the ground
 would hide a layout problem rather than fix one.
 
+**Superseded in part.** [Garden District
+Centrality](./2026-08-10-garden-district-centrality.md) turns the relationship
+around: the lattice now reserves `districtFootprint` — `max(extent,
+MIN_GROUND_RADIUS)` — with `DISTRICT_GROUND_MARGIN` between neighbours, so the
+room the ground needs is set aside before the ground is drawn rather than
+discovered afterwards. The clip described above still exists and still governs;
+it simply stops being what decides how big a ground gets in the ordinary case.
+
 The radius is resolved once, in `computeGardenLayout`, and both the geometry and
 the Konva clip read the resolved value. Re-deriving it in each consumer is how a
 cell ends up wider than the clip that cuts it, which draws as a folder that

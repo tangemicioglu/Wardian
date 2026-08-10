@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import { MAX_TERRAIN_CELLS } from "./terrainFrontier";
 import {
   DIR_WEIGHT,
+  DISTRICT_GROUND_MARGIN,
   GROUND_GAP,
   MIN_GROUND_RADIUS,
   area,
   assignRootsToCells,
   basename,
   buildTerrain,
+  districtFootprint,
   groundRadiusFor,
   intersectsDisc,
   quantizeAnchor,
@@ -128,6 +130,35 @@ describe("groundRadiusFor", () => {
 
   it("never inflates past the floor when there is room to spare", () => {
     expect(groundRadiusFor(10, 5000)).toBe(MIN_GROUND_RADIUS);
+  });
+
+  it("reaches the floor at the separation the lattice now reserves", () => {
+    // The lattice sizes slots on `districtFootprint` with `DISTRICT_GROUND_MARGIN`
+    // between them, so two one-agent districts sit this far apart — and the clip
+    // stops being what decides how big a ground gets.
+    const reserved = 2 * MIN_GROUND_RADIUS + DISTRICT_GROUND_MARGIN;
+    expect(groundRadiusFor(20, reserved)).toBe(MIN_GROUND_RADIUS);
+    expect(reserved - 2 * groundRadiusFor(20, reserved)).toBe(DISTRICT_GROUND_MARGIN);
+  });
+});
+
+describe("districtFootprint", () => {
+  it("reserves the plot a small district will draw, not the point its units make", () => {
+    expect(districtFootprint(0)).toBe(MIN_GROUND_RADIUS);
+    expect(districtFootprint(48)).toBe(MIN_GROUND_RADIUS);
+  });
+
+  it("reserves the units when they reach further than the floor", () => {
+    expect(districtFootprint(400)).toBe(400);
+  });
+
+  it("treats a missing measurement as the floor rather than as infinity", () => {
+    expect(districtFootprint(Number.NaN)).toBe(MIN_GROUND_RADIUS);
+    expect(districtFootprint(-10)).toBe(MIN_GROUND_RADIUS);
+  });
+
+  it("leaves one GROUND_GAP per side, which is what the ground already promised", () => {
+    expect(DISTRICT_GROUND_MARGIN).toBe(2 * GROUND_GAP);
   });
 });
 

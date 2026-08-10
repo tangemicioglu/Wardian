@@ -1,4 +1,5 @@
 import type { AgentGraphProjection, CommEdgeState } from "../graph/graphProjection";
+import type { AgentConfig, AgentReachEntry } from "../../types";
 import type { AgentTeam } from "../../layout/watchlist/types";
 import type {
   GardenAgentUnit,
@@ -11,6 +12,7 @@ import { emitAgentFacets, emitWorkflowFacets } from "./facets";
 import {
   buildDistrictAffinity,
   districtId,
+  reachTier,
   resolveAgentDistrict,
   resolveEntityDistrict,
 } from "./districts";
@@ -73,7 +75,74 @@ export interface GardenProjectionInput {
   workflows: readonly GardenWorkflowInput[];
   skills?: readonly GardenSkillInput[];
   scene: GardenScene;
+  /** Workspace roots each agent has written under; see `useGardenReach`. */
+  reach?: readonly AgentReachEntry[];
   now?: number;
+}
+
+/**
+ * Workspace roots the roster works in, sorted and de-duplicated.
+ *
+ * Derived from the agents rather than from a computed layout, and the direction
+ * is the point: reach is a layout *input*, so reading roots off the layout's
+ * districts would close a loop — roots would depend on a layout that depended on
+ * the reach those roots produced. The same `git_worktree_folder ?? folder` value
+ * `computeGardenLayout` districts on, so the two cannot disagree about what a
+ * root is.
+ */
+export function agentWorkspaceRoots(agents: readonly AgentConfig[]): string[] {
+  const roots = new Set<string>();
+  for (const agent of agents) {
+    const root =
+      normalizeEntityPath(agent.git_worktree_folder) ?? normalizeEntityPath(agent.folder);
+    if (root) roots.add(root);
+  }
+  return [...roots].sort();
+}
+
+/**
+ * Reach tier per district: how many *other* districts its agents write into.
+ *
+ * A root can belong to more than one district — a team district and the
+ * workspace district of an untamed agent in the same repository both claim it —
+ * so a write counts toward every district that holds the root, minus the writer's
+ * own. That is the honest reading: the write really did land in territory those
+ * districts occupy.
+ */
+export function districtReachTiers(
+  reach: readonly AgentReachEntry[],
+  districtByAgentId: ReadonlyMap<string, string>,
+  rootsByDistrict: ReadonlyMap<string, ReadonlySet<string>>,
+): Map<string, number> {
+  const districtsByRoot = new Map<string, Set<string>>();
+  for (const [district, roots] of rootsByDistrict) {
+    for (const root of roots) {
+      const existing = districtsByRoot.get(root);
+      if (existing) existing.add(district);
+      else districtsByRoot.set(root, new Set([district]));
+    }
+  }
+
+  const reachedByDistrict = new Map<string, Set<string>>();
+  for (const entry of reach) {
+    const home = districtByAgentId.get(entry.agent_id);
+    if (!home) continue;
+    for (const rawRoot of entry.roots) {
+      const root = normalizeEntityPath(rawRoot);
+      if (!root) continue;
+      for (const district of districtsByRoot.get(root) ?? []) {
+        if (district === home) continue;
+        const existing = reachedByDistrict.get(home);
+        if (existing) existing.add(district);
+        else reachedByDistrict.set(home, new Set([district]));
+      }
+    }
+  }
+
+  return new Map([...reachedByDistrict].map(([district, reached]) => [
+    district,
+    reachTier(reached.size),
+  ]));
 }
 
 export interface UnitPlacement {
@@ -115,6 +184,14 @@ export interface GardenProjectionResult {
    * and district membership cannot disagree.
    */
   districts: Map<string, TerrainDistrict>;
+  /**
+   * districtId -> reach tier, for districts that reach past their own territory.
+   *
+   * Published so the view can say that centrality means something on this map.
+   * An arrangement that encodes a claim nobody can read is not an improvement
+   * over one that encodes nothing.
+   */
+  reachTiers: Map<string, number>;
 }
 
 /**
@@ -249,7 +326,14 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
     })),
   );
 
-  const result = layoutGarden({ entities, scene: input.scene, ppr, now: input.now });
+  const reachTiers = districtReachTiers(input.reach ?? [], districtByAgentId, rootsByDistrict);
+  const result = layoutGarden({
+    entities,
+    scene: input.scene,
+    ppr,
+    reachTiers,
+    now: input.now,
+  });
 
   // Ground is sized against the free space around each district, measured over
   // *every* district and not only the ones carrying terrain: a neighbour with
@@ -305,6 +389,7 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
   return {
     positions: new Map(result.units.map((unit) => [unit.key, unit.position])),
     districts: territory,
+    reachTiers,
     crowns,
     scene: result.scene,
     stalePinKeys: result.stalePinKeys,
@@ -346,6 +431,7 @@ export function gardenLayoutSignature(
   teams: readonly AgentTeam[],
   workflows: readonly GardenWorkflowInput[],
   skills: readonly GardenSkillInput[] = [],
+  reach: readonly AgentReachEntry[] = [],
 ): string {
   const agents = [...projection.nodes]
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -408,7 +494,17 @@ export function gardenLayoutSignature(
     .sort()
     .join(";");
 
-  return [agents, teamKey, workflowKey, edgeKey, skillKey].join("#");
+  // Reach seats districts, so it belongs here — and it is safe to include for
+  // the same reason it is safe to lay out on: it is history, fetched once, and
+  // it changes only when an agent writes somewhere it never had. Digested at
+  // full resolution rather than as tiers because the tier is derived from
+  // district membership, which this digest cannot see.
+  const reachKey = [...reach]
+    .map((entry) => `${entry.agent_id}:${[...entry.roots].sort().join(",")}`)
+    .sort()
+    .join(";");
+
+  return [agents, teamKey, workflowKey, edgeKey, skillKey, reachKey].join("#");
 }
 
 /** Attach live display fields to computed positions. */

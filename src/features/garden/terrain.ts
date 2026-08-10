@@ -170,16 +170,46 @@ export const MIN_GROUND_RADIUS = 120;
 export const GROUND_GAP = 24;
 
 /**
+ * Room the ring lattice must reserve for a district.
+ *
+ * The lattice used to size slots against the *unit extent* alone, and the two
+ * were never introduced to each other. A ring of one-agent districts measured
+ * extents around 48 and got a radial step of 192, so every ground on it was
+ * clipped to 72; a ring sitting outside a large commons was pushed out so far
+ * that its grounds stayed at 120 with hundreds of units of grass between them.
+ * Same map, both failure modes, opposite directions.
+ *
+ * Sizing the lattice against what will actually be *drawn* collapses both into
+ * one number: with `DISTRICT_GROUND_MARGIN` between footprints, the clear space
+ * between two grounds is the same everywhere, and `groundRadiusFor`'s clip stops
+ * being what decides how big a ground gets.
+ *
+ * Applied to districts that draw no ground as well. In practice that is only the
+ * commons, whose extent exceeds the floor anyway — and threading "does this
+ * district have a workspace" into the lattice would put a terrain concept inside
+ * the geometry module for no gain.
+ */
+export function districtFootprint(extent: number): number {
+  const safe = Math.max(0, Number.isFinite(extent) ? extent : 0);
+  return Math.max(safe, MIN_GROUND_RADIUS);
+}
+
+/**
+ * Clear space the lattice leaves between two districts' footprints.
+ *
+ * One `GROUND_GAP` per side, which is exactly what `groundRadiusFor` promises,
+ * so the lattice reserves the separation the ground was already going to take.
+ */
+export const DISTRICT_GROUND_MARGIN = 2 * GROUND_GAP;
+
+/**
  * Radius of a district's ground.
  *
- * The lattice reserves each district's slot against its *unit extent*
- * (`ringRadii`), so inflating the ground to a fixed floor spends territory the
- * layout never set aside: two neighbouring one-agent districts sit about 216
- * apart, and two 120-radius discs at that distance visibly overlap — which was
- * being reported as districts bleeding into each other.
- *
- * So the floor is applied only as far as the free space allows. A district
- * whose units genuinely reach further than its neighbour gap keeps its full
+ * The lattice now reserves `districtFootprint` per district, so the floor
+ * normally fits and this returns `MIN_GROUND_RADIUS` outright. The cap remains
+ * because the lattice is sized from each *ring's widest* district and a slot can
+ * still end up tighter than the reservation implies — and because a district
+ * whose units genuinely reach further than its neighbour gap must keep its full
  * extent: at that point the *units* overlap too, and shrinking the ground would
  * hide a layout problem rather than fix one.
  *

@@ -33,7 +33,6 @@ import {
 import {
   COMMONS_DISTRICT_ID,
   DEFAULT_DISTRICT_SPACING,
-  DISTRICT_MARGIN,
   MAX_DISTRICT_MEMBERS,
   districtCenter,
   parcelsFor,
@@ -41,7 +40,9 @@ import {
   retireDistricts,
   spacingFor,
   type DistrictLayout,
+  type DistrictReachTiers,
 } from "./districts";
+import { DISTRICT_GROUND_MARGIN, districtFootprint } from "./terrain";
 import {
   DEFAULT_KNN,
   DEFAULT_METRIC_WEIGHTS,
@@ -91,6 +92,17 @@ export interface LayoutEntity {
 export interface LayoutInput {
   entities: readonly LayoutEntity[];
   scene: GardenScene;
+  /**
+   * districtId -> reach tier, seating coordinating districts nearer the centre.
+   *
+   * Admissible here where telemetry is not, and the difference is worth being
+   * precise about. A tier is derived from turn records — history that has
+   * already happened — over the whole roster, not from live status and not from
+   * what is currently on screen. It is discrete, it is read once per session,
+   * and it moves a district only when that district gains a whole class of
+   * collaborators. See `reachTier`.
+   */
+  reachTiers?: DistrictReachTiers;
   /** Interaction affinity, agent subgraph only. */
   ppr?: PprMatrix;
   coUse?: CoUseIndex;
@@ -195,6 +207,7 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
     input.scene.districts,
     activeDistricts,
     districtSimilarity(byDistrict, context),
+    input.reachTiers,
   );
   const districts = retireDistricts(placement.layout, activeDistricts, now);
 
@@ -328,11 +341,19 @@ export function layoutGarden(input: LayoutInput): LayoutResult {
   // largest district on the map, so thirty-odd one-agent districts each sat
   // alone in a cell scaled for the commons, and the result read as empty. Each
   // ring now only has to clear its own widest member and the ring inside it.
+  //
+  // Measured as the *drawn* footprint rather than the raw unit extent: a
+  // district's ground is what occupies its slot, and sizing slots against the
+  // units alone left the ground to fit into whatever was left over. See
+  // `districtFootprint`.
   const radii = ringRadii(
     new Map(
-      activeDistricts.map((id) => [cellFor(districts, id), extentByDistrict.get(id) ?? 0]),
+      activeDistricts.map((id) => [
+        cellFor(districts, id),
+        districtFootprint(extentByDistrict.get(id) ?? 0),
+      ]),
     ),
-    DISTRICT_MARGIN,
+    DISTRICT_GROUND_MARGIN,
   );
   const spacedDistricts: DistrictLayout = {
     ...districts,

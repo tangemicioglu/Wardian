@@ -3,6 +3,7 @@ import type { AgentConfig, AgentTelemetry } from "../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlist/types";
 import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph/graphProjection";
 import {
+  agentWorkspaceRoots,
   buildAgentUnits,
   buildWorkflowUnits,
   computeGardenLayout,
@@ -13,6 +14,7 @@ import { unitKey, type GardenPosition } from "../features/garden/garden.types";
 import {
   GARDEN_AGENT_STATUS_LEGEND,
   GARDEN_AREA_NOTE,
+  GARDEN_CENTRALITY_NOTE,
   GARDEN_CHANGE_LEGEND,
   gardenAgentStatusLabel,
   gardenChangeBaselineLabel,
@@ -23,6 +25,7 @@ import {
 import { agentsCarrying } from "../features/garden/skillGlyphs";
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
 import { useGardenSkills } from "../features/garden/useGardenSkills";
+import { useGardenReach } from "../features/garden/useGardenReach";
 import { useGardenTerrain } from "../features/garden/useGardenTerrain";
 import { useTerrainChanges } from "../features/garden/useTerrainChanges";
 import { useTerrainOpen } from "../features/garden/useTerrainOpen";
@@ -145,6 +148,14 @@ export const GardenView: React.FC<GardenViewProps> = ({
     [filteredAgents, telemetry, teams, activeList, interactions, selectedAgentIds, offAgentIds],
   );
 
+  // Which districts coordinate others, so the lattice can seat them nearer the
+  // middle. Roots come from the roster rather than from `layout.districts`,
+  // because this feeds the layout and reading them back out of it would close a
+  // loop. Fetched once per root set — see `useGardenReach` on why geometry does
+  // not subscribe to writes the way the paint does.
+  const reachRoots = useMemo(() => agentWorkspaceRoots(filteredAgents), [filteredAgents]);
+  const reach = useGardenReach(visibility === "visible", reachRoots);
+
   // Layout output — district cells and settled positions — is carried forward
   // through a ref, never through the reactive dependency chain.
   //
@@ -172,9 +183,14 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const { pins, exclusions } = scene;
   const projectionRef = useRef(projection);
   projectionRef.current = projection;
+  // Carried the same way and for the same reason: `signature` already covers
+  // every reach change that may move something, so the array's identity must
+  // not be a second trigger.
+  const reachRef = useRef(reach);
+  reachRef.current = reach;
   const signature = useMemo(
-    () => gardenLayoutSignature(projection, teams, workflowInputs, skillInputs),
-    [projection, teams, workflowInputs, skillInputs],
+    () => gardenLayoutSignature(projection, teams, workflowInputs, skillInputs, reach),
+    [projection, teams, workflowInputs, skillInputs, reach],
   );
 
   // A reset discards the scene rather than advancing it, and the carried copy
@@ -194,6 +210,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
       teams,
       workflows: workflowInputs,
       skills: skillInputs,
+      reach: reachRef.current,
       scene: { ...carriedSceneRef.current, pins, exclusions },
     });
     carriedSceneRef.current = result.scene;
@@ -207,6 +224,13 @@ export const GardenView: React.FC<GardenViewProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signature, pins, exclusions, generation]);
   const { placement } = layout;
+  // How many districts the arrangement is actually making a claim about. Zero
+  // means every district keeps to itself and the centrality legend would be
+  // explaining a distinction nothing on screen is drawing.
+  const coordinatingDistricts = useMemo(
+    () => [...layout.reachTiers.values()].filter((tier) => tier > 0).length,
+    [layout.reachTiers],
+  );
 
   // Display fields are attached per render from the live projection, so status
   // and colour stay current without touching geometry.
@@ -350,6 +374,17 @@ export const GardenView: React.FC<GardenViewProps> = ({
                 repository root is a peer of `src/` and is drawn as one. */}
             <span className="text-muted-neutral" title={GARDEN_AREA_NOTE}>
               Area = share of folder
+            </span>
+          </>
+        )}
+        {coordinatingDistricts > 0 && (
+          <>
+            <span className="h-3 w-px bg-wardian-border" aria-hidden="true" />
+            {/* An arrangement that encodes a claim nobody can read is no better
+                than one that encodes nothing, so the map says what its middle
+                means — and only when some district is actually claiming it. */}
+            <span className="text-muted-neutral" title={GARDEN_CENTRALITY_NOTE}>
+              Centre = coordinates others
             </span>
           </>
         )}
