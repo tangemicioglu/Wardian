@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FileText, Hand, Loader2, Plus, SendHorizontal, X } from "lucide-react";
+import { FileText, Hand, Loader2, Plus, SendHorizontal, Square, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { AgentChatEvent, AgentConfig, AgentTelemetry } from "../../types";
@@ -82,6 +82,8 @@ export function AgentChatView({
   const [reloadKey, setReloadKey] = useState(0);
   const [internalDraft, setInternalDraft] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isInterrupting, setIsInterrupting] = useState(false);
+  const [interruptRequested, setInterruptRequested] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [fileOpenError, setFileOpenError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -177,6 +179,7 @@ export function AgentChatView({
   const mergedEvents = useMemo(() => mergePendingMessages(events, pendingMessages), [events, pendingMessages]);
   const activeStatus = status ?? telemetry?.current_status ?? null;
   const showThinking = isProcessingAgentStatus(activeStatus) || awaitingResponse !== null || pendingMessages.length > 0;
+  const isExecutionActive = showThinking && !interruptRequested;
   const displayEvents = useMemo(
     () =>
       appendThinkingIndicator(
@@ -244,6 +247,8 @@ export function AgentChatView({
     prependScrollSnapshotRef.current = null;
     setVisibleRowLimit(CHAT_INITIAL_ROW_LIMIT);
     setAwaitingResponse(null);
+    setInterruptRequested(false);
+    setIsInterrupting(false);
     setAttachments([]);
   }, [sessionId]);
 
@@ -277,6 +282,7 @@ export function AgentChatView({
     const submittedPrompt = promptWithChatAttachments(prompt, selectedAttachments);
 
     stickToLatestRef.current = true;
+    setInterruptRequested(false);
     setIsSubmitting(true);
     setSubmitError(null);
     try {
@@ -312,6 +318,24 @@ export function AgentChatView({
 
   const handleApprovalSubmit = (response: string) => {
     void submitPrompt(response, false);
+  };
+
+  const handleInterrupt = async () => {
+    if (isInterrupting || !showThinking) return;
+    setInterruptRequested(true);
+    setIsInterrupting(true);
+    setSubmitError(null);
+    try {
+      await invoke("send_input_to_agent", { sessionId, input: "\u0003" });
+      setAwaitingResponse(null);
+      setPendingMessages([]);
+      setReloadKey((key) => key + 1);
+    } catch (reason) {
+      setInterruptRequested(false);
+      setSubmitError(errorMessage(reason));
+    } finally {
+      setIsInterrupting(false);
+    }
   };
 
   const handleTranscriptScroll = () => {
@@ -391,11 +415,14 @@ export function AgentChatView({
         disabledReason={disabledReason}
         draft={activeDraft}
         hasActionRequired={hasActionRequired}
+        isExecuting={isExecutionActive}
+        isInterrupting={isInterrupting}
         isSubmitting={isSubmitting}
         attachments={attachments}
         onAutoFocused={onComposerAutoFocused}
         onAttachmentsChange={setAttachments}
         onChange={setActiveDraft}
+        onInterrupt={handleInterrupt}
         onSubmit={handleSubmit}
         sessionId={sessionId}
         submitError={submitError}
@@ -416,10 +443,13 @@ function ChatComposer({
   disabledReason,
   draft,
   hasActionRequired,
+  isExecuting,
+  isInterrupting,
   isSubmitting,
   onAutoFocused,
   onAttachmentsChange,
   onChange,
+  onInterrupt,
   onSubmit,
   sessionId,
   submitError,
@@ -430,10 +460,13 @@ function ChatComposer({
   disabledReason: string | null;
   draft: string;
   hasActionRequired: boolean;
+  isExecuting: boolean;
+  isInterrupting: boolean;
   isSubmitting: boolean;
   onAutoFocused?: () => void;
   onAttachmentsChange: (attachments: ChatAttachment[]) => void;
   onChange: (value: string) => void;
+  onInterrupt: () => void;
   onSubmit: () => void;
   sessionId: string;
   submitError: string | null;
@@ -520,7 +553,7 @@ function ChatComposer({
     if (!textarea) return;
     textarea.style.height = "0px";
     const maxHeight = 112;
-    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    const nextHeight = draft.length > 0 ? Math.min(textarea.scrollHeight, maxHeight) : 28;
     textarea.style.height = `${Math.max(nextHeight, 28)}px`;
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [draft]);
@@ -616,20 +649,22 @@ function ChatComposer({
         </div>
         <div className="ml-auto flex min-w-0 items-center gap-1">
           <ChatModelSelection agent={agent} sessionId={sessionId} />
-        {canSubmit || isSubmitting ? (
           <button
-            aria-label={isSubmitting ? "Sending message" : "Send message"}
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-wardian-light disabled:bg-[var(--color-wardian-card-bg-muted)] disabled:text-muted-neutral"
-            disabled={!canSubmit}
-            type="submit"
+            aria-label={isInterrupting ? "Interrupting agent" : isExecuting ? "Interrupt agent" : isSubmitting ? "Sending message" : "Send message"}
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-wardian-light disabled:bg-[var(--color-wardian-card-bg-muted)] disabled:text-muted-neutral"
+            disabled={isInterrupting || isSubmitting || (!isExecuting && !canSubmit)}
+            onClick={isExecuting ? onInterrupt : undefined}
+            title={isExecuting ? "Interrupt agent" : isSubmitting ? "Sending message" : "Send message"}
+            type={isExecuting ? "button" : "submit"}
           >
-            {isSubmitting ? (
+            {isInterrupting || isSubmitting ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : isExecuting ? (
+              <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
             ) : (
               <SendHorizontal className="h-4 w-4" aria-hidden="true" />
             )}
           </button>
-        ) : null}
         </div>
       </div>
       {submitError ? (

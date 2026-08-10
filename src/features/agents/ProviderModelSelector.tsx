@@ -4,6 +4,7 @@ import { ChevronDown } from "lucide-react";
 import type { AgentConfig, ProviderModelCatalog } from "../../types";
 
 const AUTO_REFRESH_MS = 5 * 60 * 1000;
+const HIDDEN_MODEL_IDS = new Set(["gpt-5.6-sol-wm"]);
 
 export interface ModelSelection {
   model?: string;
@@ -62,15 +63,17 @@ export function ProviderModelSelector({
     return () => window.clearInterval(timer);
   }, [loadCatalog]);
 
-  const models = catalog?.models ?? [];
+  const models = (catalog?.models ?? []).filter((model) => !HIDDEN_MODEL_IDS.has(model.id));
   const selectedModel = useMemo(() => {
     if (selection.model) return models.find((model) => model.id === selection.model) ?? null;
     return models.find((model) => model.is_default) ?? models[0] ?? null;
   }, [models, selection.model]);
   const effortOptions = selectedModel?.effort_options ?? [];
-  const modelValue = selection.model ?? "";
+  const modelValue = selection.model && !HIDDEN_MODEL_IDS.has(selection.model) ? selection.model : "";
   const modelIsCurrentButUndiscovered = Boolean(
-    selection.model && !models.some((model) => model.id === selection.model),
+    selection.model
+      && !HIDDEN_MODEL_IDS.has(selection.model)
+      && !models.some((model) => model.id === selection.model),
   );
   const showEffort = effortOptions.length > 0;
   const modelId = `${idPrefix}-model`;

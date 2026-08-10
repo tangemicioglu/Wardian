@@ -1707,8 +1707,8 @@ describe("AgentChatView", () => {
       render(<AgentChatView sessionId="agent-1" status="Idle" />);
 
       const input = await screen.findByLabelText("Message agent");
-      expect(input).toHaveStyle({ height: "72px", overflowY: "hidden" });
-      expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
+      expect(input).toHaveStyle({ height: "28px", overflowY: "hidden" });
+      expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
       fireEvent.change(input, { target: { value: "line one\nline two" } });
       expect(input).toHaveValue("line one\nline two");
     } finally {
@@ -1823,7 +1823,7 @@ describe("AgentChatView", () => {
     await waitFor(() => expect(input).toHaveValue(""));
 
     fireEvent.change(input, { target: { value: "run tests" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => expect(screen.getAllByText("run tests")).toHaveLength(3));
   });
@@ -1900,6 +1900,27 @@ describe("AgentChatView", () => {
 
     expect(await screen.findByLabelText("Message agent")).not.toBeDisabled();
     expect(screen.getByPlaceholderText("Respond to action required...")).toBeInTheDocument();
+  });
+
+  it("turns the composer action into an interrupt control while the agent is executing", async () => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "send_input_to_agent") return Promise.resolve(undefined);
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    render(<AgentChatView sessionId="agent-1" status="Processing" />);
+
+    await screen.findByLabelText("Message agent");
+    const interruptButton = await screen.findByRole("button", { name: "Interrupt agent" });
+    expect(interruptButton).toBeEnabled();
+
+    fireEvent.click(interruptButton);
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("send_input_to_agent", {
+      sessionId: "agent-1",
+      input: "\u0003",
+    }));
   });
 
   it("shows submit failures without clearing the draft", async () => {

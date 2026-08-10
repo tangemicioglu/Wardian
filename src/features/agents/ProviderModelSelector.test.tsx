@@ -80,6 +80,43 @@ describe("ProviderModelSelector", () => {
     expect(screen.queryByRole("button", { name: "Refresh models" })).not.toBeInTheDocument();
   });
 
+  it("does not expose Codex's hidden Work Mode alias", async () => {
+    invokeMock.mockResolvedValue({
+      provider: "codex",
+      version: "codex-cli 0.147.0",
+      source: "live_catalog",
+      refresh_error: null,
+      models: [
+        {
+          id: "gpt-5.6-sol",
+          display_name: "GPT-5.6 Sol",
+          effort_options: ["low"],
+          default_effort: "low",
+          is_default: true,
+        },
+        {
+          id: "gpt-5.6-sol-wm",
+          display_name: "GPT-5.6 Sol WM",
+          effort_options: ["low"],
+          default_effort: "low",
+          is_default: false,
+        },
+      ],
+    });
+
+    render(
+      <ProviderModelSelector
+        idPrefix="hidden-work-mode"
+        provider="codex"
+        selection={{}}
+        onSelectionChange={() => {}}
+      />,
+    );
+
+    await screen.findByRole("option", { name: "GPT-5.6 Sol" });
+    expect(screen.queryByRole("option", { name: "GPT-5.6 Sol WM" })).not.toBeInTheDocument();
+  });
+
   it("refreshes an open selector every five minutes", async () => {
     vi.useFakeTimers();
     invokeMock.mockResolvedValue({
