@@ -506,7 +506,7 @@ fn handle_workflow(args: WorkflowArgs) -> Result<String, CliError> {
             render_workflow_gen(&out, GenKind::Schema, check)
         }
         WorkflowCommand::GenDocs { out, check } => render_workflow_gen(&out, GenKind::Docs, check),
-        WorkflowCommand::Schedule(command) => render_workflow_schedule(command),
+        WorkflowCommand::Schedule(command) => render_workflow_schedule(*command),
     }
 }
 

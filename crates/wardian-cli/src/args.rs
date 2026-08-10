@@ -481,7 +481,7 @@ pub enum WorkflowCommand {
     },
     /// Manage workflow schedules (schedules.json). UI lives in the app; these edit the file.
     #[command(subcommand)]
-    Schedule(WorkflowScheduleCommand),
+    Schedule(Box<WorkflowScheduleCommand>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -1491,7 +1491,8 @@ mod tests {
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Schedule(WorkflowScheduleCommand::Add { .. })
+            WorkflowCommand::Schedule(ref command)
+                if matches!(command.as_ref(), WorkflowScheduleCommand::Add { .. })
         ));
     }
 
@@ -1517,8 +1518,9 @@ mod tests {
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Schedule(WorkflowScheduleCommand::Update { ref id, ref cadence, active, .. })
-                if id == "s1" && cadence.monthly.as_deref() == Some("1,15@09:30") && active
+            WorkflowCommand::Schedule(ref command)
+                if matches!(command.as_ref(), WorkflowScheduleCommand::Update { id, cadence, active, .. }
+                    if id == "s1" && cadence.monthly.as_deref() == Some("1,15@09:30") && *active)
         ));
     }
 
