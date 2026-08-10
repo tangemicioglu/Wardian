@@ -28,6 +28,7 @@ closing a tab, unmounting the renderer — never disturbs the runtime.
 | `src-tauri/src/state/browser_session/cdp.rs` | DevTools Protocol client: correlation, target sessions, event stream. |
 | `src-tauri/src/state/browser_session/snapshot.rs` | The injected DOM walker, the ref ledger, and staleness rules. |
 | `src-tauri/src/state/browser_session/network.rs` | The request ledger: folding `Network.*` events into bounded records. |
+| `src-tauri/src/state/browser_session/discovery.rs` | Guessing what address a workspace is serving, for a session opened with no URL. |
 | `src-tauri/src/state/browser_session/actor.rs` | Session lifecycle, page operations, screencast, input. |
 | `src-tauri/src/commands/browser.rs` | Tauri commands and the shared operations the control plane calls. |
 | `crates/wardian-core/src/browser.rs` | Wire types shared by the app, the control plane, and the CLI. |
@@ -184,6 +185,47 @@ question — and redacting in one place while printing in the other would be wor
 than doing neither. What makes it defensible is the isolated profile: these are
 credentials the session itself acquired, never the human's. Both guides say
 plainly that the output does not belong in a shared artifact.
+
+## Where a session opens with no URL
+
+An unspecified address is a question, not an answer. A browser opened in a web
+workspace almost never wants `about:blank`, and an agent verifying a change
+should not have to guess which port the dev server picked. `open_address`
+resolves the three cases — an explicit URL, `--blank`, and a guess — and is
+split from the probing so the decision is testable without a socket.
+
+The guess is a heuristic and is treated as one. Reading the OS socket table and
+attributing sockets to processes under the workspace would be the precise
+answer, but that needs per-platform code, elevated access on some hosts, and a
+process-ancestry walk to be even approximately right. Two cheap signals get most
+of the value:
+
+1. **What the workspace declares.** `vite.config.*`, `package.json`, and
+   `.env*` at the workspace root are scanned — not parsed — for a port.
+   Three formats would need three parsers, `vite.config.ts` is TypeScript
+   rather than data, and the cost of a wrong guess is one probe against a
+   closed port. Only the root is read: a monorepo's hundred `package.json`
+   files are a hundred wrong answers, and the root is where the command an
+   operator actually runs lives. Ports below 1024 are ignored, because no dev
+   server asks for privileges.
+2. **What is actually listening.** Declared ports first, then a conventional
+   list ordered by what modern web workspaces use. Every candidate is probed at
+   once with a 250 ms loopback connect, and the **highest-ranked** listener wins
+   rather than whichever socket answered first — a fast reply from a stray
+   service should not outrank the port the workspace declared.
+
+The whole sweep is bounded at 24 candidates, and a declaration file is only read
+at its head, so opening a tab cannot turn into a lockfile-sized disk read.
+
+Nothing here can be wrong in a damaging way. The worst case is a tab pointed at
+the wrong local service, which the address bar fixes. `--blank` says the blank
+page was the point.
+
+`wardian browser open` defaults its `--workspace` to the working directory,
+because an agent runs it from the workspace whose dev server it wants to look
+at. The launcher passes the selected agent's workspace, the same rule the user
+terminal already follows; with nothing selected there is no declaration to read
+and detection falls back to the conventional ports.
 
 ## Error codes
 

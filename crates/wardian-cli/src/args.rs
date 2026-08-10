@@ -42,13 +42,17 @@ pub struct BrowserArgs {
 #[derive(Debug, Subcommand)]
 pub enum BrowserCommand {
     /// Open a browser session, and a surface for it unless detached.
+    ///
+    /// With no URL, the workspace is checked for a dev server that is already
+    /// listening and the page opens there. `--blank` skips that.
     Open {
         /// Address to load. A bare host is treated as http.
         url: Option<String>,
         /// Owning agent. Defaults to this terminal's WARDIAN_SESSION_ID.
         #[arg(long)]
         agent: Option<String>,
-        /// Attribute the session to a workspace path.
+        /// Workspace to attribute to and guess an address from. Defaults to the
+        /// working directory.
         #[arg(long)]
         workspace: Option<String>,
         #[arg(long, requires = "height")]
@@ -58,6 +62,9 @@ pub enum BrowserCommand {
         /// Start the runtime without opening a workbench surface.
         #[arg(long)]
         detached: bool,
+        /// Open `about:blank` instead of guessing an address.
+        #[arg(long, conflicts_with = "url")]
+        blank: bool,
     },
     /// List open browser sessions.
     List,

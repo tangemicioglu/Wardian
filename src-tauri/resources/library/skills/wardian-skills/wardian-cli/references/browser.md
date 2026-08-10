@@ -12,7 +12,7 @@ the binary with `WARDIAN_BROWSER_BINARY`.
 ## The loop
 
 ```bash
-wardian browser --json open http://localhost:5173
+wardian browser --json open               # lands on the workspace's dev server
 wardian browser browser:1 wait --load-state complete --timeout-ms 15000
 wardian browser browser:1 snapshot --interactive
 wardian browser browser:1 fill e3 "wardian"
@@ -21,6 +21,13 @@ wardian browser browser:1 get text "#result"
 ```
 
 Open once, keep the session for the whole task, and close it when done.
+
+`open` with no URL looks for the workspace's dev server — the port declared in
+`vite.config.*`, `package.json`, or `.env`, then the ports frameworks commonly
+use — and loads the first one that is listening. It defaults `--workspace` to
+your working directory, so running it from the workspace you are changing is
+usually enough. Pass a URL to be explicit, or `--blank` for no page at all.
+Check the address you actually landed on before treating the page as evidence.
 
 ## Addressing a session
 
@@ -54,7 +61,7 @@ mean the same thing for you: re-snapshot.
 
 | Command | Purpose |
 | --- | --- |
-| `browser open [url] [--agent] [--workspace] [--width --height] [--detached]` | Start a session. A bare host is treated as `http`. |
+| `browser open [url] [--agent] [--workspace] [--width --height] [--detached] [--blank]` | Start a session. A bare host is treated as `http`. |
 | `browser list` | Open sessions, one line each. |
 | `browser <target> close` | End the session and stop its browser. |
 | `browser <target> navigate <url\|back\|forward\|reload\|stop>` | Move the page. |

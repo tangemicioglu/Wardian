@@ -19,6 +19,16 @@ use wardian_core::browser::{
     NetworkOutcome, PageSnapshot, StatusFilter, StorageAction, StorageArea, StorageOutcome,
 };
 
+/// The working directory as a path string, when it can be read.
+///
+/// Not an error when it cannot: a session with no workspace still opens, it
+/// just has nothing to guess an address from.
+fn working_directory() -> Option<String> {
+    std::env::current_dir()
+        .ok()
+        .map(|path| path.display().to_string())
+}
+
 /// Serializes a response under the CLI's standard envelope.
 fn json_envelope<T: serde::Serialize>(key: &str, value: &T) -> Result<String, CliError> {
     let envelope = serde_json::json!({ "schema": 1, key: value });
@@ -102,12 +112,19 @@ pub fn handle_browser(args: BrowserArgs) -> Result<String, CliError> {
             width,
             height,
             detached,
+            blank,
         } => {
             // An agent that does not name an owner owns what it opens, so its
             // sessions are closed with it rather than outliving it.
             let owner = agent.or_else(live::current_session_id);
-            let summary = live::browser_open(url, owner, workspace, width, height, detached)
-                .map_err(crate::control_error)?;
+            // An agent runs this from its own workspace, which is where the dev
+            // server it wants to look at is running. Defaulting to the working
+            // directory is what makes `wardian browser open` with no arguments
+            // land on the right page instead of a blank one.
+            let workspace = workspace.or_else(working_directory);
+            let summary =
+                live::browser_open(url, owner, workspace, width, height, detached, blank)
+                    .map_err(crate::control_error)?;
             emit_summary(&summary, json)
         }
         BrowserCommand::List => {
@@ -974,6 +991,43 @@ mod tests {
             )
             .expect("render"),
             "dark\n"
+        );
+    }
+
+    #[test]
+    fn open_refuses_blank_alongside_an_address() {
+        // Asking for a page and for no page is not a preference to resolve.
+        let parsed = crate::args::Cli::try_parse_from(tokens(&[
+            "wardian", "browser", "open", "https://example.com/", "--blank",
+        ]));
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn open_accepts_blank_on_its_own() {
+        let parsed = crate::args::Cli::try_parse_from(tokens(&["wardian", "browser", "open", "--blank"]))
+            .expect("parse");
+        match parsed.command {
+            crate::args::Command::Browser(args) => match args.command {
+                BrowserCommand::Open { url, blank, .. } => {
+                    assert!(url.is_none());
+                    assert!(blank);
+                }
+                other => panic!("expected open, got {other:?}"),
+            },
+            _ => panic!("expected the browser command"),
+        }
+    }
+
+    #[test]
+    fn the_working_directory_stands_in_for_an_unnamed_workspace() {
+        // An agent runs this from its own workspace, which is where the dev
+        // server it wants to look at is running.
+        let directory = working_directory().expect("a working directory");
+        assert!(!directory.is_empty());
+        assert_eq!(
+            std::path::Path::new(&directory),
+            std::env::current_dir().expect("cwd"),
         );
     }
 

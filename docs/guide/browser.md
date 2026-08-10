@@ -17,6 +17,14 @@ The tab shows an address bar, back, forward, and reload controls, a load-state
 chip, and a short reference such as `browser:1`. That short reference is how
 you target the same page from the command line.
 
+A new Browser opens on your dev server when it can find one, rather than on a
+blank page. Wardian reads the port out of the workspace's `vite.config.*`,
+`package.json`, or `.env`, falls back to the ports frameworks commonly use, and
+opens the first one that is actually listening. Selecting a single agent first
+scopes that to the agent's workspace.
+
+It is a guess, and the address bar overrules it.
+
 ## Drive the Page Yourself
 
 Type a URL in the address bar and press `Enter`. Click, scroll, and type in the
@@ -36,6 +44,8 @@ Agents use `wardian browser`, which acts on exactly the same session you are
 watching. Anything the agent does appears live in the surface.
 
 ```bash
+wardian browser open                      # the workspace's dev server, if one is up
+wardian browser open --blank              # no page at all
 wardian browser open https://localhost:5173
 wardian browser list
 wardian browser browser:1 navigate https://localhost:5173/settings

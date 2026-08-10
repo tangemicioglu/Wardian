@@ -11,6 +11,7 @@ import {
   cdpModifiers,
   cdpMouseButton,
   isTextKey,
+  openBrowserSession,
   pageCoordinates,
   reopenBrowserSurfaceSession,
   subscribeToBrowserSurfaceOpens,
@@ -147,6 +148,35 @@ describe("reopenBrowserSurfaceSession", () => {
       url: "https://example.com/",
       width: 900,
       height: 600,
+      workspace: null,
+      blank: false,
+    });
+  });
+
+  it("sends the workspace a default address should be guessed from", async () => {
+    // The backend cannot read a declared port out of a workspace nobody named.
+    await openBrowserSession({ workspace: "/work/app" });
+
+    expect(invoked).toHaveBeenCalledWith("open_browser_session", {
+      url: null,
+      width: null,
+      height: null,
+      workspace: "/work/app",
+      blank: false,
+    });
+  });
+
+  it("defaults every optional field rather than omitting it", async () => {
+    // Tauri distinguishes an absent argument from a null one, and an absent
+    // `blank` would fail deserialization on the command's `Option<bool>`.
+    await openBrowserSession({});
+
+    expect(invoked).toHaveBeenCalledWith("open_browser_session", {
+      url: null,
+      width: null,
+      height: null,
+      workspace: null,
+      blank: false,
     });
   });
 

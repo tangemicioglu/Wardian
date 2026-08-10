@@ -226,9 +226,10 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             width,
             height,
             detached,
+            blank,
         } => ok_json(
             &crate::commands::browser::open_session(
-                app, url, agent, workspace, width, height, detached,
+                app, url, agent, workspace, width, height, detached, blank,
             )
             .await
             .map_err(browser_control_error)?,

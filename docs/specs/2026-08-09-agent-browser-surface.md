@@ -2,7 +2,7 @@
 
 Filename: `2026-08-09-agent-browser-surface.md`
 
-- **Status:** Implemented (phases 1, 2, 3, and 4a; 4b outstanding, 4c deferred). Phases 1 and 2 landed in #869 after a review loop that converged at round nine; phase 3 landed in #874, and phase 4a in #877.
+- **Status:** Implemented (phases 1, 2, 3, 4a, and 4b; 4c deferred). Phases 1 and 2 landed in #869 after a review loop that converged at round nine; phase 3 in #874, phase 4a in #877, and phase 4b in #878.
 - **Date:** 2026-08-09
 
 ## Delivery status
@@ -20,13 +20,14 @@ Filename: `2026-08-09-agent-browser-surface.md`
 | Drive lease | Attaching mints an opaque token; the first attachment drives and later ones mirror read-only. Every surface-originated mutation, navigation and viewport included, carries the token, and an omitted one is refused rather than waved through. |
 | Introspection | `network.rs` folds `Network.*` events into a bounded ledger that navigation does not clear; cookies, `localStorage`/`sessionStorage`, and downloads are first-class commands. Downloads live beside the profile rather than inside it, so closing a session never takes the file. |
 | Restore | A surface whose session is gone reopens its persisted page the first time it becomes visible, at the persisted viewport. A crash, a hidden tab, and a blank address stay manual. |
+| Default address | `discovery.rs` scans the workspace root for a declared port, ranks it above the conventional ones, probes them all on loopback, and opens the highest-ranked listener. `--blank` opts out. |
 
-Verification: 77 Rust unit tests, 37 `#[ignore]`d engine-backed integration
-tests against real Edge, 33 CLI unit tests, 29 core wire-type tests, 51 frontend
+Verification: 107 Rust unit tests, 38 `#[ignore]`d engine-backed integration
+tests against real Edge, 36 CLI unit tests, 29 core wire-type tests, 53 frontend
 tests, and two native E2Es — one that provisions a session from the launcher,
 renders a screencast frame, and drives the page through the CLI, and one that
-restarts the app and finds the tab loaded again under a new session. Phase 4b
-below is not built; 4c is deferred.
+restarts the app and finds the tab loaded again under a new session. 4c is
+deferred and tracked as #876.
 
 ## Review round
 
@@ -554,9 +555,20 @@ rather than one:
   This also fixed a shipped bug: a reopen rebinds `resource_key` in place, the
   workbench does not key its panel on it, and the reused component kept showing
   the old placeholder over the live page.
-- **4b, a default URL from the workspace.** Probe the conventional dev-server
-  ports on loopback and prefill a new surface's address instead of opening
-  blank.
+- **4b, a default URL from the workspace.** An unspecified address is a
+  question, not an answer, so a session opened with no URL guesses one and
+  `--blank` says the blank page was the point. Two cheap signals, no
+  per-platform code: what the workspace *declares* (a port scanned out of
+  `vite.config.*`, `package.json`, or `.env` at the root — scanned rather than
+  parsed, because three formats would need three parsers and one of them is
+  TypeScript) and what is *actually listening* on loopback. Declared ports
+  outrank conventional ones, and the highest-ranked listener wins rather than
+  the fastest to answer. Reading the OS socket table and attributing sockets to
+  processes under the workspace would be precise, and needs per-platform code,
+  elevated access on some hosts, and a process-ancestry walk to be even
+  approximately right. Nothing here can be wrong in a damaging way: the worst
+  case is a tab pointed at the wrong local service, which the address bar
+  fixes.
 - **4c, remote/PWA mirroring — deferred by decision, not by backlog.** It is
   roughly phase-1 sized: a gateway websocket route, frame transport,
   lease-aware input forwarding, auth and policy integration, and a PWA-side

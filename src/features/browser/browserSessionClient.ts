@@ -109,11 +109,17 @@ export function openBrowserSession(options: {
   url?: string;
   width?: number;
   height?: number;
+  /** Workspace to guess a default address from when no URL is given. */
+  workspace?: string | null;
+  /** Skip the guess and open blank. */
+  blank?: boolean;
 }): Promise<BrowserSessionSummary> {
   return invoke<BrowserSessionSummary>("open_browser_session", {
     url: options.url ?? null,
     width: options.width ?? null,
     height: options.height ?? null,
+    workspace: options.workspace ?? null,
+    blank: options.blank ?? false,
   });
 }
 

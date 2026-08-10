@@ -5,6 +5,7 @@
 
 mod actor;
 mod cdp;
+mod discovery;
 mod engine;
 mod network;
 mod snapshot;
@@ -19,6 +20,7 @@ pub use actor::{
     DEFAULT_VIEWPORT_WIDTH,
 };
 pub use cdp::{CdpError, CdpEvent};
+pub use discovery::detect_workspace_url;
 pub use engine::{discover_engine, EngineBinary, EngineError, EngineKind, ENGINE_BINARY_ENV};
 pub use snapshot::{
     render_snapshot, PageSnapshot, RefError, SnapshotElement, MAX_SNAPSHOT_ELEMENTS,
