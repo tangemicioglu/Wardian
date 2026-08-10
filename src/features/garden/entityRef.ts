@@ -139,6 +139,42 @@ export function normalizeEntityPath(value: string | undefined | null): string | 
   return normalized;
 }
 
+/**
+ * True when `path` is `root` itself or sits beneath it.
+ *
+ * The obvious spelling — `path.startsWith(`${root}/`)` — is wrong at a root, and
+ * wrong in a way that survives review because roots are rare. `normalizeEntityPath`
+ * deliberately *preserves* `/` and `d:/` (see `stripTrailingSeparators`), so a
+ * root that already ends in a separator produces `//` or `d://` and matches none
+ * of its own children.
+ *
+ * That bug was written independently in four places — reach containment, the
+ * attribution walk, the change-paint ancestor chain, and the frontier prune — so
+ * it lives here now and the callers share it.
+ */
+export function isUnderPath(root: string, path: string): boolean {
+  if (path === root) return true;
+  return path.startsWith(root.endsWith("/") ? root : `${root}/`);
+}
+
+/**
+ * The containing directory, or `null` once a root is reached.
+ *
+ * Returns the root *including* its separator — `/` and `d:/`, never the empty
+ * string or a bare `d:` — so the result is a path `isUnderPath` and
+ * `normalizeEntityPath` both recognize.
+ */
+export function parentPath(path: string): string | null {
+  if (path === "/" || /^[a-zA-Z]:\/$/.test(path)) return null;
+  const uncRoot = path.match(/^\/\/[^/]+\/[^/]+$/);
+  if (uncRoot) return null;
+  const separator = path.lastIndexOf("/");
+  if (separator < 0) return null;
+  if (separator === 0) return "/";
+  const parent = path.slice(0, separator);
+  return /^[a-zA-Z]:$/.test(parent) ? `${parent}/` : parent;
+}
+
 function stripTrailingSeparators(path: string): string {
   if (path === "/") return path;
   if (/^[a-zA-Z]:\/$/.test(path)) return path;

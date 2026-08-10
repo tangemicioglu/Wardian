@@ -3,7 +3,6 @@ import type { AgentConfig, AgentTelemetry } from "../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlist/types";
 import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph/graphProjection";
 import {
-  agentWorkspaceRoots,
   buildAgentUnits,
   buildWorkflowUnits,
   computeGardenLayout,
@@ -153,8 +152,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
   // because this feeds the layout and reading them back out of it would close a
   // loop. Fetched once per root set — see `useGardenReach` on why geometry does
   // not subscribe to writes the way the paint does.
-  const reachRoots = useMemo(() => agentWorkspaceRoots(filteredAgents), [filteredAgents]);
-  const reach = useGardenReach(visibility === "visible", reachRoots);
+  const reach = useGardenReach(visibility === "visible", filteredAgents);
 
   // Layout output — district cells and settled positions — is carried forward
   // through a ref, never through the reactive dependency chain.

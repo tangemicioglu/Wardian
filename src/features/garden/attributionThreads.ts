@@ -7,6 +7,7 @@
  * into the test run.
  */
 
+import { parentPath } from "./entityRef";
 import type { GardenPosition } from "./garden.types";
 import type { TerrainCell } from "./terrain";
 import type { TerrainPaint } from "./terrainPaint";
@@ -77,27 +78,6 @@ function supersededByDescendant(paths: Iterable<string>): Set<string> {
     }
   }
   return superseded;
-}
-
-/**
- * The containing directory, or `null` once the root is reached.
- *
- * A plain `lastIndexOf("/")` walk cannot express a root: it stops *before* `/`
- * on POSIX and lands on `d:` rather than `d:/` on Windows, so a cell sitting at
- * a filesystem or drive root was never recognized as an ancestor and drew a
- * duplicate thread alongside its own descendant. Roots are rare here — an agent
- * would have to be rooted at `/` or a bare drive — which is exactly why it would
- * have gone unnoticed.
- */
-function parentPath(path: string): string | null {
-  const driveRoot = /^[A-Za-z]:\/$/;
-  if (path === "/" || driveRoot.test(path)) return null;
-  const cut = path.lastIndexOf("/");
-  if (cut < 0) return null;
-  // `d:/src` -> `d:/`, not `d:`; `/srv` -> `/`, not the empty string.
-  if (cut === 0) return "/";
-  const parent = path.slice(0, cut);
-  return driveRoot.test(`${parent}/`) ? `${parent}/` : parent;
 }
 
 /**

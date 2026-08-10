@@ -8,6 +8,8 @@ import {
   entityKey,
   folderRef,
   fromFileResourceKey,
+  isUnderPath,
+  parentPath,
   fromGardenUnitKey,
   libraryEntryRef,
   normalizeEntityPath,
@@ -175,5 +177,54 @@ describe("dedupeRefs", () => {
 
   it("keeps distinct entities apart", () => {
     expect(dedupeRefs([agentRef("a1"), agentRef("a2")])).toHaveLength(2);
+  });
+});
+
+describe("isUnderPath and parentPath", () => {
+  it("contains ordinary children and rejects a sibling sharing a prefix", () => {
+    expect(isUnderPath("d:/dev/app", "d:/dev/app")).toBe(true);
+    expect(isUnderPath("d:/dev/app", "d:/dev/app/src/main.rs")).toBe(true);
+    expect(isUnderPath("d:/dev/app", "d:/dev/application/src/main.rs")).toBe(false);
+  });
+
+  it("contains children of a root that already ends in a separator", () => {
+    // The reason this helper exists. `${root}/` builds `//` and `d://`, which
+    // match none of their own children — the same bug was written independently
+    // in reach containment, the attribution walk, the change-paint ancestor
+    // chain, and the frontier prune.
+    expect(isUnderPath("/", "/srv/app/main.rs")).toBe(true);
+    expect(isUnderPath("d:/", "d:/dev/app/main.rs")).toBe(true);
+    expect(isUnderPath("//server/share", "//server/share/app")).toBe(true);
+  });
+
+  it("walks to a root and stops there, keeping the root's separator", () => {
+    expect(parentPath("d:/dev/app/src")).toBe("d:/dev/app");
+    expect(parentPath("d:/dev")).toBe("d:/");
+    expect(parentPath("d:/")).toBeNull();
+    expect(parentPath("/srv/app")).toBe("/srv");
+    expect(parentPath("/srv")).toBe("/");
+    expect(parentPath("/")).toBeNull();
+    expect(parentPath("//server/share")).toBeNull();
+  });
+
+  it("returns a parent that normalizeEntityPath still recognizes", () => {
+    // `d:` and `""` would both be unusable as roots downstream, which is how the
+    // truncated walks went unnoticed.
+    for (const path of ["d:/dev", "/srv"]) {
+      const parent = parentPath(path)!;
+      expect(normalizeEntityPath(parent)).toBe(parent);
+    }
+  });
+
+  it("terminates on every input", () => {
+    for (const start of ["d:/a/b/c", "/a/b", "relative/path", "bare", "//server/share/x"]) {
+      let cursor: string | null = start;
+      let steps = 0;
+      while (cursor !== null && steps < 50) {
+        cursor = parentPath(cursor);
+        steps += 1;
+      }
+      expect(cursor).toBeNull();
+    }
   });
 });

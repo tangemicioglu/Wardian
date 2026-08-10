@@ -25,7 +25,7 @@ import type {
   ChangeReviewEvidence,
   ChangeReviewFileEntry,
 } from "../../types";
-import { normalizeEntityPath } from "./entityRef";
+import { isUnderPath, normalizeEntityPath, parentPath } from "./entityRef";
 
 /**
  * The aggregate kind of a cell.
@@ -251,13 +251,18 @@ export function ancestorChain(path: string, root: string): string[] {
   let current = path;
   // A path outside its root cannot be walked to it, so it contributes only
   // itself rather than climbing to the filesystem root and painting everything.
-  if (current !== root && !current.startsWith(`${root}/`)) return [current];
-  while (current.length >= root.length) {
+  //
+  // `isUnderPath` rather than a `${root}/` prefix: a root that already ends in a
+  // separator — `/` or `d:/`, both of which `normalizeEntityPath` preserves —
+  // built `//` or `d://` and rejected every one of its own children, so a change
+  // under such a root painted the file and nothing above it.
+  if (!isUnderPath(root, current)) return [current];
+  for (;;) {
     chain.push(current);
     if (current === root) break;
-    const separator = current.lastIndexOf("/");
-    if (separator <= 0) break;
-    current = current.slice(0, separator);
+    const parent = parentPath(current);
+    if (parent === null || !isUnderPath(root, parent)) break;
+    current = parent;
   }
   return chain;
 }

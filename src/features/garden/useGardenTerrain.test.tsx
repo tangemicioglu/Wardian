@@ -279,6 +279,52 @@ describe("useGardenTerrain", () => {
     await waitFor(() => expect(listedRepo()).toBe(2));
   });
 
+  it("discards a listing that lands after its root has left the roster", async () => {
+    // Pruning runs when the root set changes, but a listing outlives the render
+    // that asked for it. Committing it unconditionally reinstated the entry
+    // after the prune, where it held frontier budget and — being treated as
+    // cached — suppressed the refetch when that root came back.
+    let release: (nodes: unknown) => void = () => {};
+    invokeMock.mockImplementation(
+      (command: string) =>
+        command === "get_directory_tree"
+          ? new Promise((resolve) => {
+              release = resolve;
+            })
+          : Promise.resolve(undefined) as Promise<unknown>,
+    );
+
+    const { result, rerender } = renderHook(
+      ({ districts }) => useGardenTerrain({ enabled: true, districts, viewport: VIEWPORT }),
+      { initialProps: { districts: DISTRICTS } },
+    );
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
+
+    const replaced = new Map<string, TerrainDistrict>([
+      [
+        "workspace:d:/work/other",
+        { roots: ["d:/work/other"], origin: { x: 0, y: 0 }, radius: 400 },
+      ],
+    ]);
+    rerender({ districts: replaced });
+    await act(async () => {
+      release(directoryTree("a.ts", "b.ts"));
+    });
+
+    // Coming back must still re-list: the late result was dropped rather than
+    // reinstated behind the prune.
+    const listedRepo = () =>
+      invokeMock.mock.calls.filter(
+        ([command, args]) =>
+          command === "get_directory_tree" &&
+          (args as unknown as { path?: string } | undefined)?.path === "d:/work/repo",
+      ).length;
+    const before = listedRepo();
+    rerender({ districts: DISTRICTS });
+    await waitFor(() => expect(listedRepo()).toBe(before + 1));
+    expect(result.current.cells.length).toBeGreaterThan(0);
+  });
+
   it("draws nothing and watches nothing while disabled", () => {
     const { result } = renderHook(() =>
       useGardenTerrain({ enabled: false, districts: DISTRICTS, viewport: VIEWPORT }),

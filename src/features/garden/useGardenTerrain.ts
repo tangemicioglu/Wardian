@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import { normalizeEntityPath } from "./entityRef";
+import { isUnderPath, normalizeEntityPath } from "./entityRef";
 import {
   buildTerrain,
   type TerrainCell,
@@ -130,6 +130,13 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
     return [...unique].sort();
   }, [districts]);
   const rootKey = roots.join(ROOT_KEY_SEPARATOR);
+  // The roots a completing request must be checked against. Read from a ref
+  // because a listing outlives the render that asked for it: a root removed
+  // while its listing is in flight would otherwise have the result committed
+  // *after* the prune, reinstating an entry that then holds frontier budget and
+  // masks the refetch when that root comes back.
+  const rootsRef = useRef(roots);
+  rootsRef.current = roots;
 
   // Drop listings belonging to roots that have left the roster.
   //
@@ -150,7 +157,7 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
       if (current.size === 0) return current;
       const next = new Map<string, TerrainListing>();
       for (const [path, listing] of current) {
-        if (roots.some((root) => path === root || path.startsWith(`${root}/`))) {
+        if (rootsRef.current.some((root) => isUnderPath(root, path))) {
           next.set(path, listing);
         }
       }
@@ -186,10 +193,14 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
 
     const fetched = results.filter((listing): listing is TerrainListing => listing !== null);
     const unreadable = wanted.filter((path) => failed.current.has(path));
-    if (fetched.length === 0 && unreadable.length === 0) return;
+    // Only results still belonging to a live root are committed; see `rootsRef`.
+    const live = fetched.filter((listing) =>
+      rootsRef.current.some((root) => isUnderPath(root, listing.path)),
+    );
+    if (live.length === 0 && unreadable.length === 0) return;
     setListings((current) => {
       const next = new Map(current);
-      for (const listing of fetched) next.set(listing.path, listing);
+      for (const listing of live) next.set(listing.path, listing);
       // A refresh that could not be read is the one case where dropping a
       // listing is right: the directory is gone or unreadable, and keeping its
       // children on screen would be the map asserting what it just failed to

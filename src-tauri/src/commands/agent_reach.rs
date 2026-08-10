@@ -213,9 +213,26 @@ fn root_for<'a>(roots: &'a [RootPrefix], path: &str) -> Option<&'a RootPrefix> {
 }
 
 /// Resolve a written path against the conversation it was written in.
+/// True for `C:notes.md` — a location on drive C's *own* current directory.
+///
+/// Neither rooted nor workspace-relative. Joining it onto the workspace fabricates
+/// a child literally named `C:notes.md`, which can then match a root and credit a
+/// district with a write that never happened under it; treating it as rooted is
+/// equally wrong, since only the process's per-drive cwd can say where it points.
+/// Reach has no access to that, so such a record names nowhere this can resolve
+/// and is dropped. Understating reach is the safe direction — it seats a district
+/// where it already was.
+fn is_drive_relative(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes.get(2) != Some(&b'/')
+}
+
 fn resolve(workspace: &str, path: &str) -> String {
     let trimmed = path.trim().replace('\\', "/");
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || is_drive_relative(&trimmed) {
         return String::new();
     }
     if is_absolute(&trimmed) {
@@ -440,11 +457,17 @@ mod tests {
     }
 
     #[test]
-    fn a_drive_relative_path_is_not_treated_as_rooted() {
-        // `C:x` names a location only the process's per-drive cwd can resolve,
-        // so it is relative and must be joined onto the workspace.
+    fn a_drive_relative_path_resolves_to_nothing_rather_than_to_a_fabricated_child() {
+        // The earlier test only checked `!is_absolute`, which was true and gave
+        // false comfort: `resolve` then joined it onto the workspace and
+        // invented `D:/dev/app/C:notes.md`, a path that can match a root and
+        // credit a district with a write that never happened under it.
         assert!(!is_absolute("C:notes.md"));
         assert!(is_absolute("C:/notes.md"));
+        assert_eq!(resolve("D:/dev/app", "C:notes.md"), "");
+
+        let roots = prefixes(&["D:/dev/app"]);
+        assert!(root_for(&roots, &resolve("D:/dev/app", "C:notes.md")).is_none());
     }
 
     #[test]

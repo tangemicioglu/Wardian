@@ -93,6 +93,16 @@ describe("ancestorChain", () => {
     expect(ancestorChain("d:/other/a.ts", ROOT)).toEqual(["d:/other/a.ts"]);
   });
 
+  it("climbs to a drive root, which the old `${root}/` check rejected outright", () => {
+    // With root `d:/` the prefix test built `d://` and matched no child, so a
+    // change under such a root painted the file and nothing above it.
+    expect(ancestorChain("d:/src/a.ts", "d:/")).toEqual(["d:/src/a.ts", "d:/src", "d:/"]);
+  });
+
+  it("climbs to a filesystem root", () => {
+    expect(ancestorChain("/srv/a.ts", "/")).toEqual(["/srv/a.ts", "/srv", "/"]);
+  });
+
   it("does not treat a sibling with a shared prefix as a descendant", () => {
     expect(ancestorChain("d:/work/repo-two/a.ts", ROOT)).toEqual(["d:/work/repo-two/a.ts"]);
   });
