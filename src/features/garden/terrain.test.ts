@@ -164,6 +164,38 @@ describe("buildTerrain", () => {
     expect(cells.filter((cell) => cell.depth === 1).every((cell) => cell.truncated)).toBe(true);
   });
 
+  it("keeps a district's detail independent of what other districts ingest", () => {
+    // The instability this replaced a shared budget to fix: with one pool, the
+    // deepest level was a function of the *total* cell count, so a listing
+    // arriving in one district deleted a level in a district on the other side
+    // of the map — and the next invalidation there put it back.
+    const alone = new Map([
+      ["alpha:root", district({ roots: ["d:/alpha"] })],
+    ]);
+    const crowded = new Map([
+      ["alpha:root", district({ roots: ["d:/alpha"] })],
+      ["beta:root", district({ roots: ["d:/beta"], origin: { x: 5000, y: 0 } })],
+    ]);
+    const listings = new Map([
+      ["d:/alpha", listing("d:/alpha", ["a", "b"], ["a", "b"])],
+      ["d:/alpha/a", listing("d:/alpha/a", ["1", "2"])],
+      ["d:/alpha/b", listing("d:/alpha/b", ["3", "4"])],
+      // Beta is listed several levels deep, so a shared pool would be exhausted
+      // by it and alpha would lose its second level.
+      ["d:/beta", listing("d:/beta", ["x", "y", "z"], ["x", "y", "z"])],
+      ["d:/beta/x", listing("d:/beta/x", ["1", "2", "3", "4"])],
+      ["d:/beta/y", listing("d:/beta/y", ["5", "6", "7", "8"])],
+      ["d:/beta/z", listing("d:/beta/z", ["9", "10", "11", "12"])],
+    ]);
+
+    const before = buildTerrain({ districts: alone, listings, minSubdivideArea: 0, maxCells: 14 });
+    const after = buildTerrain({ districts: crowded, listings, minSubdivideArea: 0, maxCells: 14 });
+    const alphaCells = (cells: ReturnType<typeof buildTerrain>) =>
+      cells.filter((cell) => cell.districtId === "alpha:root");
+
+    expect(alphaCells(after)).toEqual(alphaCells(before));
+  });
+
   it("lays several roots out as the top level of one district", () => {
     const cells = buildTerrain({
       districts: new Map([

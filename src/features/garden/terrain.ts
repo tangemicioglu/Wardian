@@ -99,8 +99,28 @@ export interface TerrainInput {
    * where a drawn cell sits.
    */
   minSubdivideArea: number;
-  /** Hard ceiling on drawn cells. */
+  /** Ceiling on drawn cells, divided between the districts. */
   maxCells: number;
+}
+
+/**
+ * Floor on a district's share of `maxCells`.
+ *
+ * The budget is divided between districts rather than spent first-come, so a
+ * 37-district install would otherwise allot 54 cells each and never show a
+ * second level anywhere. The real ceiling is therefore
+ * `max(maxCells, districts * MIN_DISTRICT_CELLS)`, which is the price of the
+ * stability the division buys.
+ */
+export const MIN_DISTRICT_CELLS = 64;
+
+/** A district's share of the cell budget. */
+export function districtCellBudget(maxCells: number, districtCount: number): number {
+  if (districtCount <= 0) return maxCells;
+  // The floor never exceeds the whole budget, so a caller asking for a small
+  // ceiling gets one rather than silently getting 64.
+  const floor = Math.min(maxCells, MIN_DISTRICT_CELLS);
+  return Math.max(floor, Math.floor(maxCells / districtCount));
 }
 
 /**
@@ -223,10 +243,18 @@ export function squarify<T>(
 /**
  * Build every drawn cell.
  *
- * Level by level, so that when `maxCells` binds the deepest level is dropped
+ * Level by level, so that when the budget binds the deepest level is dropped
  * *whole*. Dropping a level partially would show half of one folder's children
  * and none of its neighbour's, which reads as a claim about the two folders
  * rather than as a budget.
+ *
+ * Each district descends against its own share of `maxCells`, and this is a
+ * stability requirement rather than a fairness one. A single shared pool makes
+ * the deepest level a function of the *total* cell count, so one district
+ * receiving a listing silently deletes a level in a district on the other side
+ * of the map, and the next invalidation there puts it back. The map blinks in
+ * places nothing happened to. A district's detail must depend on that
+ * district's data.
  */
 export function buildTerrain(input: TerrainInput): TerrainCell[] {
   const cells: TerrainCell[] = [];
@@ -235,16 +263,17 @@ export function buildTerrain(input: TerrainInput): TerrainCell[] {
     cell: TerrainCell;
     /** Rect the children are laid out into, already inset. */
     inner: TerrainRect;
-    /** Disc the cell's district occupies, for the visibility test. */
-    disc: { origin: GardenPosition; radius: number };
   }
 
-  let frontier: Pending[] = [];
-
   // Districts in id order so the output is identical run to run.
-  for (const districtId of [...input.districts.keys()].sort()) {
+  const districtIds = [...input.districts.keys()]
+    .sort()
+    .filter((id) => (input.districts.get(id)?.roots.length ?? 0) > 0);
+  const budget = districtCellBudget(input.maxCells, districtIds.length);
+
+  for (const districtId of districtIds) {
     const district = input.districts.get(districtId);
-    if (!district || district.roots.length === 0) continue;
+    if (!district) continue;
 
     const radius = Math.max(district.radius, MIN_GROUND_RADIUS);
     const disc = { origin: district.origin, radius };
@@ -261,6 +290,9 @@ export function buildTerrain(input: TerrainInput): TerrainCell[] {
       ground,
     );
 
+    let districtCells = 0;
+    let frontier: Pending[] = [];
+
     for (const { datum: path, rect } of placed) {
       if (!intersectsDisc(rect, disc)) continue;
       const cell: TerrainCell = {
@@ -273,55 +305,57 @@ export function buildTerrain(input: TerrainInput): TerrainCell[] {
         truncated: true,
       };
       cells.push(cell);
-      frontier.push({ cell, inner: innerRect(rect), disc });
+      districtCells += 1;
+      frontier.push({ cell, inner: innerRect(rect) });
     }
-  }
 
-  // Breadth-first descent. Each pass produces one whole level or none.
-  let depth = 1;
-  while (frontier.length > 0) {
-    const next: Pending[] = [];
-    const level: TerrainCell[] = [];
-    // Parents that contributed to this level, so they can be un-truncated only
-    // if the level is actually admitted.
-    const expanded: TerrainCell[] = [];
+    // Breadth-first descent. Each pass produces one whole level or none.
+    let depth = 1;
+    while (frontier.length > 0) {
+      const next: Pending[] = [];
+      const level: TerrainCell[] = [];
+      // Parents that contributed to this level, so they can be un-truncated only
+      // if the level is actually admitted.
+      const expanded: TerrainCell[] = [];
 
-    for (const parent of frontier) {
-      const listing = input.listings.get(parent.cell.path);
-      if (!listing || listing.children.length === 0) continue;
-      if (area(parent.cell.rect) < input.minSubdivideArea) continue;
-      if (parent.inner.width <= 0 || parent.inner.height <= 0) continue;
+      for (const parent of frontier) {
+        const listing = input.listings.get(parent.cell.path);
+        if (!listing || listing.children.length === 0) continue;
+        if (area(parent.cell.rect) < input.minSubdivideArea) continue;
+        if (parent.inner.width <= 0 || parent.inner.height <= 0) continue;
 
-      const placed = squarify(
-        listing.children.map((child) => ({ value: 1, datum: child })),
-        parent.inner,
-      );
-      let contributed = false;
-      for (const { datum: child, rect } of placed) {
-        if (!intersectsDisc(rect, parent.disc)) continue;
-        const cell: TerrainCell = {
-          path: child.path,
-          name: child.name,
-          isDir: child.isDir,
-          districtId: parent.cell.districtId,
-          depth,
-          rect,
-          truncated: child.isDir,
-        };
-        level.push(cell);
-        contributed = true;
-        if (child.isDir) next.push({ cell, inner: innerRect(rect), disc: parent.disc });
+        const placedChildren = squarify(
+          listing.children.map((child) => ({ value: 1, datum: child })),
+          parent.inner,
+        );
+        let contributed = false;
+        for (const { datum: child, rect } of placedChildren) {
+          if (!intersectsDisc(rect, disc)) continue;
+          const cell: TerrainCell = {
+            path: child.path,
+            name: child.name,
+            isDir: child.isDir,
+            districtId,
+            depth,
+            rect,
+            truncated: child.isDir,
+          };
+          level.push(cell);
+          contributed = true;
+          if (child.isDir) next.push({ cell, inner: innerRect(rect) });
+        }
+        if (contributed) expanded.push(parent.cell);
       }
-      if (contributed) expanded.push(parent.cell);
+
+      if (level.length === 0) break;
+      if (districtCells + level.length > budget) break;
+
+      for (const parent of expanded) parent.truncated = false;
+      cells.push(...level);
+      districtCells += level.length;
+      frontier = next;
+      depth += 1;
     }
-
-    if (level.length === 0) break;
-    if (cells.length + level.length > input.maxCells) break;
-
-    for (const parent of expanded) parent.truncated = false;
-    cells.push(...level);
-    frontier = next;
-    depth += 1;
   }
 
   return cells;

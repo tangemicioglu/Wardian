@@ -173,6 +173,48 @@ export function buildTerrainPaint(
   return paint;
 }
 
+/**
+ * Strongest a change tint ever paints.
+ *
+ * The ground is context and the units are content, so a repository with ten
+ * thousand changed lines has to stay quieter than an agent's status halo. A
+ * full-strength wash also destroys the churn comparison it exists to make:
+ * everything above the knee reads the same.
+ */
+export const MAX_CHANGE_ALPHA = 0.55;
+
+/** Floor, so a one-line change is visible rather than technically painted. */
+export const MIN_CHANGE_ALPHA = 0.12;
+
+/** How much of the tint recency controls, the rest coming from churn. */
+export const RECENCY_SHARE = 0.4;
+
+/**
+ * What a folder keeps of its own tint once its children are drawn.
+ *
+ * Tints composite. A folder and its child are two rects at the same place, so
+ * painting both at their computed alpha stacks them — two washes at 0.5 read as
+ * 0.75, three as 0.87 — and the map ends up encoding *depth* in the channel
+ * reserved for churn. So a cell paints at full strength only where it is the
+ * finest statement available: a file, or a folder whose contents are not drawn.
+ * A folder whose children are on screen steps back and lets them say it.
+ */
+export const EXPANDED_TINT_SHARE = 0.3;
+
+/**
+ * Opacity for a cell's change tint.
+ *
+ * @param expanded Whether this cell's children are themselves drawn.
+ */
+export function changeAlpha(paint: TerrainPaint, expanded: boolean): number {
+  const intensity = paint.churn * (1 - RECENCY_SHARE) + paint.recency * RECENCY_SHARE;
+  const scaled = MIN_CHANGE_ALPHA + intensity * (MAX_CHANGE_ALPHA - MIN_CHANGE_ALPHA);
+  const stacked = expanded ? scaled * EXPANDED_TINT_SHARE : scaled;
+  // Reviewed work is still work: dimmed rather than hidden, because the
+  // change-review rule is that no state may remove a path git reports.
+  return paint.reviewed ? stacked * 0.4 : stacked;
+}
+
 function emptyAccumulator(): Accumulator {
   return {
     kinds: new Set(),

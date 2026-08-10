@@ -14,8 +14,8 @@ import {
   MAX_TERRAIN_CELLS,
   frontierRequests,
   intersectsViewport,
-  invalidateUnder,
   minSubdivideArea,
+  staleListings,
   type TerrainViewport,
 } from "./terrainFrontier";
 import type { FileNode } from "../explorer/FileTree";
@@ -115,6 +115,13 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
   // frontier evaluation forever.
   const failed = useRef(new Set<string>());
 
+  // The live listing map, for the watcher. Reading it from a ref rather than
+  // depending on it keeps a single subscription across every ingestion, instead
+  // of tearing the watchers down and re-registering them each time a folder
+  // arrives — which loses whatever the filesystem did in the gap.
+  const listingsRef = useRef(listings);
+  listingsRef.current = listings;
+
   const roots = useMemo(() => {
     const unique = new Set<string>();
     for (const district of districts.values()) {
@@ -124,10 +131,49 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
   }, [districts]);
   const rootKey = roots.join(ROOT_KEY_SEPARATOR);
 
-  // Watch every root and drop listings beneath whichever one reports a change.
-  // Invalidation is by prefix because `explorer-changed` reports the watched
-  // root rather than the file: trusting a debounced burst to have named every
-  // path would leave the map claiming a directory exists after it was deleted.
+  const requestListings = useCallback(async (paths: readonly string[]) => {
+    const wanted = paths.filter(
+      (path) => !inFlight.current.has(path) && !failed.current.has(path),
+    );
+    if (wanted.length === 0) return;
+    for (const path of wanted) inFlight.current.add(path);
+    setPending(new Set(inFlight.current));
+
+    const results = await Promise.all(
+      wanted.map(async (path): Promise<TerrainListing | null> => {
+        try {
+          const nodes = await invoke<FileNode[]>("get_directory_tree", { path });
+          return { path, children: toChildren(nodes ?? []) };
+        } catch {
+          failed.current.add(path);
+          return null;
+        }
+      }),
+    );
+
+    for (const path of wanted) inFlight.current.delete(path);
+    setPending(new Set(inFlight.current));
+
+    const fetched = results.filter((listing): listing is TerrainListing => listing !== null);
+    const unreadable = wanted.filter((path) => failed.current.has(path));
+    if (fetched.length === 0 && unreadable.length === 0) return;
+    setListings((current) => {
+      const next = new Map(current);
+      for (const listing of fetched) next.set(listing.path, listing);
+      // A refresh that could not be read is the one case where dropping a
+      // listing is right: the directory is gone or unreadable, and keeping its
+      // children on screen would be the map asserting what it just failed to
+      // confirm. Its parent's refresh removes the cell itself.
+      for (const path of unreadable) next.delete(path);
+      return next;
+    });
+  }, []);
+
+  // Watch every root and refresh the listings a change actually invalidates.
+  //
+  // Refresh, not eviction: see `staleListings`. Scoped by the event's own
+  // `changed_paths`, which accumulate across the 150 ms debounce window rather
+  // than being sampled from it, so the set is complete for that window.
   useEffect(() => {
     if (!enabled || roots.length === 0) return;
     let disposed = false;
@@ -136,8 +182,14 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
     const unlistenPromise = listen<ExplorerChangedEvent>("explorer-changed", (event) => {
       const changedRoot = normalizeEntityPath(event.payload.root_path);
       if (!changedRoot || !roots.includes(changedRoot)) return;
-      failed.current.clear();
-      setListings((current) => invalidateUnder(current, changedRoot));
+      const changed = event.payload.changed_paths
+        .map((path) => normalizeEntityPath(path))
+        .filter((path): path is string => Boolean(path));
+      // Retry only what this event touched. Clearing every failure would make
+      // one unreadable folder cost a call on every write anywhere in the repo.
+      for (const path of changed) failed.current.delete(path);
+      const stale = staleListings(listingsRef.current, changedRoot, changed);
+      if (stale.length > 0) void requestListings(stale);
     });
 
     void (async () => {
@@ -181,38 +233,6 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
       maxCells: MAX_TERRAIN_CELLS,
     });
   }, [enabled, districts, listings, quantizedScale]);
-
-  const requestListings = useCallback(async (paths: readonly string[]) => {
-    const wanted = paths.filter(
-      (path) => !inFlight.current.has(path) && !failed.current.has(path),
-    );
-    if (wanted.length === 0) return;
-    for (const path of wanted) inFlight.current.add(path);
-    setPending(new Set(inFlight.current));
-
-    const results = await Promise.all(
-      wanted.map(async (path): Promise<TerrainListing | null> => {
-        try {
-          const nodes = await invoke<FileNode[]>("get_directory_tree", { path });
-          return { path, children: toChildren(nodes ?? []) };
-        } catch {
-          failed.current.add(path);
-          return null;
-        }
-      }),
-    );
-
-    for (const path of wanted) inFlight.current.delete(path);
-    setPending(new Set(inFlight.current));
-
-    const fetched = results.filter((listing): listing is TerrainListing => listing !== null);
-    if (fetched.length === 0) return;
-    setListings((current) => {
-      const next = new Map(current);
-      for (const listing of fetched) next.set(listing.path, listing);
-      return next;
-    });
-  }, []);
 
   // Expansion is debounced so a wheel gesture sweeping four zoom levels issues
   // listings for the level it lands on, not for each level it passed through.

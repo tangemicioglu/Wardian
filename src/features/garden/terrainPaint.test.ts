@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import type { ChangeReviewFileEntry } from "../../types";
 import {
+  MAX_CHANGE_ALPHA,
+  MIN_CHANGE_ALPHA,
   RECENCY_HALF_LIFE_TURNS,
   ancestorChain,
   buildTerrainPaint,
+  changeAlpha,
   joinWorkspacePath,
   type RootChangeSet,
+  type TerrainPaint,
 } from "./terrainPaint";
 
 const ROOT = "d:/work/repo";
@@ -31,6 +35,44 @@ function entry(overrides: Partial<ChangeReviewFileEntry> = {}): ChangeReviewFile
 function changeSet(entries: ChangeReviewFileEntry[], toTurnIndex: number | null = 10): RootChangeSet {
   return { root: ROOT, entries, toTurnIndex };
 }
+
+describe("changeAlpha", () => {
+  function paint(overrides: Partial<TerrainPaint> = {}): TerrainPaint {
+    return {
+      kind: "modified",
+      churn: 1,
+      recency: 1,
+      evidence: "attributed",
+      reviewed: false,
+      agentIds: ["a1"],
+      count: 1,
+      ...overrides,
+    };
+  }
+
+  it("stays within the band at both extremes", () => {
+    expect(changeAlpha(paint(), false)).toBeCloseTo(MAX_CHANGE_ALPHA, 6);
+    expect(changeAlpha(paint({ churn: 0, recency: 0 }), false)).toBeCloseTo(MIN_CHANGE_ALPHA, 6);
+  });
+
+  it("rises with churn and with recency", () => {
+    const quiet = changeAlpha(paint({ churn: 0.1, recency: 0.1 }), false);
+    expect(changeAlpha(paint({ churn: 0.9, recency: 0.1 }), false)).toBeGreaterThan(quiet);
+    expect(changeAlpha(paint({ churn: 0.1, recency: 0.9 }), false)).toBeGreaterThan(quiet);
+  });
+
+  it("steps a folder back once its children carry the same signal", () => {
+    // Tints composite, so a folder painting at full strength on top of its
+    // children would put nesting depth into the channel that means churn.
+    expect(changeAlpha(paint(), true)).toBeLessThan(changeAlpha(paint(), false));
+  });
+
+  it("dims reviewed work rather than hiding it", () => {
+    const reviewed = changeAlpha(paint({ reviewed: true }), false);
+    expect(reviewed).toBeGreaterThan(0);
+    expect(reviewed).toBeLessThan(changeAlpha(paint(), false));
+  });
+});
 
 describe("ancestorChain", () => {
   it("returns the path and every ancestor up to the root", () => {

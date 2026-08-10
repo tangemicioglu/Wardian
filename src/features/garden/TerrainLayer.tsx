@@ -3,7 +3,7 @@ import { Group, Rect, Text } from "react-konva";
 import type Konva from "konva";
 
 import { MIN_GROUND_RADIUS, type TerrainCell, type TerrainDistrict } from "./terrain";
-import type { TerrainPaint } from "./terrainPaint";
+import { changeAlpha, type TerrainPaint } from "./terrainPaint";
 import type { GardenTheme } from "./useGardenTheme";
 
 interface TerrainLayerProps {
@@ -26,30 +26,6 @@ interface TerrainLayerProps {
   highlightedPaths?: ReadonlySet<string>;
   onSelectPath?: (path: string) => void;
   onOpenPath?: (path: string) => void;
-}
-
-/**
- * Strongest a change tint ever paints.
- *
- * The ground is context and the units are content, so a repository with ten
- * thousand changed lines has to stay quieter than an agent's status halo. A
- * full-strength wash also destroys the churn comparison it exists to make:
- * everything above the knee reads the same.
- */
-const MAX_CHANGE_ALPHA = 0.55;
-
-/** Floor, so a one-line change is visible rather than technically painted. */
-const MIN_CHANGE_ALPHA = 0.12;
-
-/** How much of the tint recency controls, the rest coming from churn. */
-const RECENCY_SHARE = 0.4;
-
-function changeAlpha(paint: TerrainPaint): number {
-  const intensity = paint.churn * (1 - RECENCY_SHARE) + paint.recency * RECENCY_SHARE;
-  const scaled = MIN_CHANGE_ALPHA + intensity * (MAX_CHANGE_ALPHA - MIN_CHANGE_ALPHA);
-  // Reviewed work is still work: dimmed rather than hidden, because the
-  // change-review rule is that no state may remove a path git reports.
-  return paint.reviewed ? scaled * 0.4 : scaled;
 }
 
 /** Smallest cell, in screen pixels, that gets a name written on it. */
@@ -195,7 +171,10 @@ const TerrainCellShape: React.FC<{
           width={rect.width}
           height={rect.height}
           fill={theme.change[paint.kind]}
-          opacity={changeAlpha(paint)}
+          // A folder whose children are drawn has already said this in more
+          // detail; painting both at full strength would stack two washes and
+          // put depth in the channel that carries churn.
+          opacity={changeAlpha(paint, cell.isDir && !cell.truncated)}
           stroke={theme.change[paint.kind]}
           strokeWidth={cell.depth === 0 ? 1.5 : 0.75}
           dash={paint.evidence === "inferred" ? [4, 3] : undefined}

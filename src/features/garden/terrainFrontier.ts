@@ -110,21 +110,62 @@ export function frontierRequests(
 }
 
 /**
- * Drop cached listings under a changed root.
+ * Cached listings a filesystem event has made stale.
  *
- * `explorer-changed` reports the watched root, not the file, so invalidation is
- * by prefix. Coarser than necessary and deliberately so: the alternative is
- * trusting a debounced watcher to have reported every path in a burst, and a
- * stale listing is a directory the map claims exists after it was deleted.
+ * Returns paths to *re-fetch*, never a map to install. Evicting and refetching
+ * is what made the ground blink: dropping a subtree collapses the district to
+ * its root cell for a debounce plus a round trip, and an agent writing steadily
+ * keeps it collapsed. Refreshing in place costs one stale render instead — a
+ * directory deleted a moment ago survives until its parent's listing lands,
+ * which is a far smaller lie than a district that keeps vanishing.
+ *
+ * Scoping is by *parent*, because a directory listing is what asserts a child
+ * exists: refreshing the parent of a changed path both adds new children and
+ * removes deleted ones, and a deleted directory's own stale listing is orphaned
+ * rather than drawn. `changed_paths` carries every path the watcher saw in the
+ * debounce window (it accumulates into a `BTreeSet` rather than sampling), so
+ * this is not the guess a per-event payload would have been. An empty set falls
+ * back to every cached listing under the root.
  */
-export function invalidateUnder(
+export function staleListings(
   listings: ReadonlyMap<string, TerrainListing>,
   root: string,
-): Map<string, TerrainListing> {
-  const next = new Map(listings);
+  changedPaths: readonly string[],
+  budget: { maxRequests?: number } = {},
+): string[] {
+  const maxRequests = budget.maxRequests ?? MAX_LISTING_REQUESTS;
+  if (maxRequests <= 0 || listings.size === 0) return [];
   const prefix = root.endsWith("/") ? root : `${root}/`;
-  for (const path of listings.keys()) {
-    if (path === root || path.startsWith(prefix)) next.delete(path);
+  const under = (path: string) => path === root || path.startsWith(prefix);
+
+  const stale = new Set<string>();
+  if (changedPaths.length === 0) {
+    for (const path of listings.keys()) {
+      if (under(path)) stale.add(path);
+    }
+  } else {
+    for (const changed of changedPaths) {
+      // The path itself, for a watcher that reports the directory rather than
+      // the file inside it, and its parent, which is what lists it.
+      if (listings.has(changed) && under(changed)) stale.add(changed);
+      const separator = changed.lastIndexOf("/");
+      if (separator <= 0) continue;
+      const parent = changed.slice(0, separator);
+      if (listings.has(parent) && under(parent)) stale.add(parent);
+    }
   }
-  return next;
+
+  // Shallowest first: a parent's refresh settles whether its children exist at
+  // all, so when the budget binds it is spent where it decides the most.
+  return [...stale]
+    .sort((left, right) => depthOf(left) - depthOf(right) || left.localeCompare(right))
+    .slice(0, maxRequests);
+}
+
+function depthOf(path: string): number {
+  let depth = 0;
+  for (let index = 0; index < path.length; index += 1) {
+    if (path.charCodeAt(index) === 47) depth += 1;
+  }
+  return depth;
 }

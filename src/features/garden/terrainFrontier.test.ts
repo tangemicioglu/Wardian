@@ -5,8 +5,8 @@ import {
   EXPAND_AREA_PX,
   MAX_LISTING_REQUESTS,
   frontierRequests,
-  invalidateUnder,
   minSubdivideArea,
+  staleListings,
   type TerrainViewport,
 } from "./terrainFrontier";
 
@@ -106,29 +106,65 @@ describe("frontierRequests", () => {
   });
 });
 
-describe("invalidateUnder", () => {
-  it("drops the root and everything beneath it", () => {
-    const listings = new Map([
+describe("staleListings", () => {
+  const cached = () =>
+    new Map([
       ["d:/work/repo", listing("d:/work/repo")],
       ["d:/work/repo/src", listing("d:/work/repo/src")],
+      ["d:/work/repo/src/deep", listing("d:/work/repo/src/deep")],
       ["d:/work/other", listing("d:/work/other")],
     ]);
-    const next = invalidateUnder(listings, "d:/work/repo");
-    expect([...next.keys()]).toEqual(["d:/work/other"]);
+
+  it("refreshes the listing that lists the changed file, and only it", () => {
+    // The whole point of the change: a write to one file must not disturb the
+    // rest of the district, or the ground blinks whenever an agent is working.
+    expect(staleListings(cached(), "d:/work/repo", ["d:/work/repo/src/a.ts"])).toEqual([
+      "d:/work/repo/src",
+    ]);
   });
 
-  it("does not drop a sibling with a shared prefix", () => {
+  it("refreshes a changed directory itself as well as its parent", () => {
+    expect(staleListings(cached(), "d:/work/repo", ["d:/work/repo/src"])).toEqual([
+      "d:/work/repo",
+      "d:/work/repo/src",
+    ]);
+  });
+
+  it("names nothing for a change beneath a folder that was never listed", () => {
+    expect(staleListings(cached(), "d:/work/repo", ["d:/work/repo/docs/guide/a.md"])).toEqual(
+      [],
+    );
+  });
+
+  it("refreshes every cached listing under the root when the event names no path", () => {
+    expect(staleListings(cached(), "d:/work/repo", [])).toEqual([
+      "d:/work/repo",
+      "d:/work/repo/src",
+      "d:/work/repo/src/deep",
+    ]);
+  });
+
+  it("ignores a sibling root whose name shares a prefix", () => {
     const listings = new Map([
       ["d:/work/repo", listing("d:/work/repo")],
       ["d:/work/repo-two", listing("d:/work/repo-two")],
     ]);
-    const next = invalidateUnder(listings, "d:/work/repo");
-    expect([...next.keys()]).toEqual(["d:/work/repo-two"]);
+    expect(staleListings(listings, "d:/work/repo", ["d:/work/repo-two/a.ts"])).toEqual([]);
+  });
+
+  it("spends a bound budget shallowest first", () => {
+    const result = staleListings(
+      cached(),
+      "d:/work/repo",
+      ["d:/work/repo/src/deep/b.ts", "d:/work/repo/src/a.ts", "d:/work/repo/a.ts"],
+      { maxRequests: 2 },
+    );
+    expect(result).toEqual(["d:/work/repo", "d:/work/repo/src"]);
   });
 
   it("leaves the input untouched", () => {
-    const listings = new Map([["d:/work/repo", listing("d:/work/repo")]]);
-    invalidateUnder(listings, "d:/work/repo");
-    expect(listings.size).toBe(1);
+    const listings = cached();
+    staleListings(listings, "d:/work/repo", []);
+    expect(listings.size).toBe(4);
   });
 });

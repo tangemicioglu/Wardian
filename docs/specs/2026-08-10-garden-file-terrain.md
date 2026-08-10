@@ -146,10 +146,44 @@ subset of a level. A folder whose children were not listed draws as solid ground
 with a chevron, which is a legible "there is more here" rather than a lie about
 emptiness.
 
-Listings are cached by normalized path and invalidated by `explorer-changed`,
-the same 150 ms-debounced watcher the Changes pane uses, which already excludes
-`.git`, `node_modules`, `target`, `.venv`, `dist`, `build`, `.next`, `.turbo`,
-and `.cache`. The terrain inherits that filtering and does not reimplement it.
+**The cell budget is divided between districts, not shared.** This is a
+stability requirement, and it was learned the hard way: with a single pool, the
+deepest drawn level is a function of the *total* cell count, so a listing
+arriving in one district silently deletes a level in a district on the other
+side of the map, and the next invalidation there puts it back. The map blinks in
+places nothing happened to, which is indistinguishable from a rendering fault
+and destroys any trust in the ground as a stable surface. Each district
+therefore descends against `districtCellBudget(maxCells, districtCount)` —
+`maxCells / districts`, floored at `MIN_DISTRICT_CELLS` (64) so a 37-district
+install does not get 54 cells each and never show a second level anywhere. The
+real ceiling is `max(maxCells, districts × 64)`, which is what the division
+costs. A district's detail must depend on that district's data.
+
+Listings are cached by normalized path and **refreshed** — never evicted — when
+`explorer-changed` fires, using the same 150 ms-debounced watcher the Changes
+pane uses, which already excludes `.git`, `node_modules`, `target`, `.venv`,
+`dist`, `build`, `.next`, `.turbo`, and `.cache`. The terrain inherits that
+filtering and does not reimplement it.
+
+The refresh rule replaces an earlier evict-by-prefix rule that dropped every
+listing beneath the changed root. That was wrong in the way that matters: it
+collapsed the district to a bare square for a debounce plus a round trip, and an
+agent writing steadily kept it collapsed — the terrain visibly disappearing and
+reappearing while work was happening, which is precisely when it is worth
+looking at. Refreshing costs one stale render instead, and a directory deleted a
+moment ago survives until its parent's listing lands. That is a far smaller lie
+than a district that keeps vanishing.
+
+Scoping is by **parent**, because a directory listing is what asserts a child
+exists: refreshing the parent of a changed path adds new children and removes
+deleted ones in the same call, and a deleted directory's own stale listing is
+orphaned rather than drawn. This relies on `changed_paths`, which accumulates
+into a `BTreeSet` across the debounce window rather than sampling it, so the set
+is complete for that window — the original objection to using it does not hold.
+An empty set falls back to refreshing every cached listing under the root. A
+refresh that fails is the one case where a listing *is* dropped: the directory is
+gone or unreadable, and keeping its children on screen would be the map
+asserting what it just failed to confirm.
 
 **Nothing polls.** `ExplorerPanel`'s three-second `git_status` interval is
 explicitly not copied; the change-review spec already forbids it for exactly the
@@ -203,11 +237,38 @@ the change set's paths rather than from the drawn cells.
 
 | Channel | Encodes |
 | --- | --- |
-| Hue | `change_kind`: added, modified, deleted, renamed, untracked |
-| Saturation | Churn, `log1p(insertions + deletions)` normalized per root |
-| Opacity | Recency, decayed from the entry's latest `turn_indices` |
-| Stroke | `evidence`: `attributed` solid, `inferred` dashed |
-| Dimming | `reviewed` |
+| Hue | `change_kind`: added, modified, deleted, renamed, untracked, or `mixed` |
+| Opacity | Churn and recency together, `0.6 · churn + 0.4 · recency`, mapped onto `[0.12, 0.55]` |
+| Stroke dash | `evidence`: `attributed` solid, `inferred` dashed |
+| Dimming ×0.4 | `reviewed` — every changed path beneath the cell has been opened |
+| Dimming ×0.3 | The cell's own children are drawn, so they are already saying this |
+
+Churn is `log1p(insertions + deletions)` normalized against the **largest cell
+on the map**, not within each root. Per-root normalization would give a
+repository with three changed lines the same saturation as one with three
+thousand, which is precisely the comparison a map showing several repositories
+exists to make. Recency is `2^(-turnsAgo / 8)`, in turns rather than wall clock
+because turns are what the change set carries and because an agent that ran
+overnight and one that ran a minute ago produced the same amount of work; an
+`inferred` entry carries no turn index and paints at a flat 0.55, since zero
+would hide exactly the writes `inferred` exists to surface and full strength
+would claim a freshness the data does not support.
+
+`mixed` is a real answer rather than a fallback. A folder holding an addition
+and a deletion is not "modified", picking the most frequent kind would let one
+more file flip a folder's colour, and a precedence order would assert that
+deletions matter more than additions — a claim about the work, not about the
+data.
+
+**Tints composite, so only the finest statement paints at full strength.** A
+folder and its child are two rects in the same place; painting both at their
+computed alpha stacks them (two washes at 0.5 read as 0.75, three as 0.87) and
+the map ends up encoding *nesting depth* in the channel reserved for churn. A
+cell therefore paints fully only where it is the finest thing saying it — a
+file, or a folder whose contents are not drawn. A folder whose children are on
+screen keeps `EXPANDED_TINT_SHARE` (0.3) of its tint and lets them carry the
+signal. Without this a collapsed root reads as one flat orange disc, which is
+both unreadable and, since every repository has changes, uninformative.
 
 A deleted path has no cell of its own — it is not on disk — so it paints its
 parent folder and is listed in the selection summary. Inventing a cell for a
@@ -419,11 +480,13 @@ change rather than a rendering one.
 - A frontier evaluation issues at most 32 `get_directory_tree` calls, and none
   for a folder outside the viewport.
 - A wheel gesture crossing four zoom levels issues listings for one level.
-- Drawn cells never exceed 2000; when the budget binds, the deepest level is
-  dropped whole rather than partially.
+- When the budget binds, the deepest level is dropped whole rather than
+  partially, and only within the district whose data bound it: a district's
+  drawn depth is unchanged by what any other district ingests.
 - A folder with unlisted children draws as truncated ground, not as empty.
-- `explorer-changed` for a root invalidates that root's listings and change set
-  and no others.
+- `explorer-changed` for a root refreshes only the cached listings that name a
+  changed path, and no cell disappears while the replacement is in flight.
+- A cell's change tint does not grow with its depth in the tree.
 - No `git_status` or `get_directory_tree` call is issued on a render that
   changed only telemetry, selection, or zoom within one detail level.
 - A changed path inside an unlisted folder still tints its nearest drawn

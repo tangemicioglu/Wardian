@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -142,6 +142,71 @@ describe("useGardenTerrain", () => {
     watcher.emit?.({ payload: { root_path: "D:\\work\\repo", changed_paths: [] } });
 
     await waitFor(() => expect(result.current.cells.length).toBe(3));
+  });
+
+  it("refreshes only the folder a change touched, and never blanks the ground", async () => {
+    // The bug this locks: a write anywhere in the repo used to evict every
+    // listing under the root, collapsing the district to a bare square for a
+    // debounce plus a round trip. An agent writing steadily kept it collapsed.
+    type ExplorerChanged = (event: {
+      payload: { root_path: string; changed_paths: string[] };
+    }) => void;
+    const watcher: { emit: ExplorerChanged | null } = { emit: null };
+    listenMock.mockImplementation(async (_event: string, handler: unknown) => {
+      watcher.emit = handler as ExplorerChanged;
+      return () => {};
+    });
+
+    let srcChildren = ["a.ts"];
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command !== "get_directory_tree") return undefined;
+      const path = (args as { path: string }).path;
+      if (path === "d:/work/repo") {
+        return [
+          { name: "src", path: "D:\\work\\repo\\src", is_dir: true, extension: null },
+        ];
+      }
+      return srcChildren.map((name) => ({
+        name,
+        path: `D:\\work\\repo\\src\\${name}`,
+        is_dir: false,
+        extension: null,
+      }));
+    });
+
+    const lengths: number[] = [];
+    const { result } = renderHook(() => {
+      const terrain = useGardenTerrain({
+        enabled: true,
+        districts: DISTRICTS,
+        viewport: VIEWPORT,
+      });
+      lengths.push(terrain.cells.length);
+      return terrain;
+    });
+
+    await waitFor(() => expect(result.current.cells.length).toBe(3));
+    const listed = () =>
+      invokeMock.mock.calls
+        .filter(([command]) => command === "get_directory_tree")
+        .map(([, args]) => (args as { path: string }).path);
+    expect(listed()).toEqual(["d:/work/repo", "d:/work/repo/src"]);
+    const settled = lengths.length;
+
+    srcChildren = ["a.ts", "b.ts"];
+    await waitFor(() => expect(watcher.emit).not.toBeNull());
+    await act(async () => {
+      watcher.emit?.({
+        payload: { root_path: "D:\\work\\repo", changed_paths: ["D:\\work\\repo\\src\\b.ts"] },
+      });
+    });
+
+    await waitFor(() => expect(result.current.cells.length).toBe(4));
+    // Only the listing that names `b.ts` was re-read; the root was left alone.
+    expect(listed().slice(2)).toEqual(["d:/work/repo/src"]);
+    // And no render between the event and the new listing lost ground — the old
+    // children keep drawing until the replacement arrives.
+    expect(Math.min(...lengths.slice(settled))).toBeGreaterThanOrEqual(3);
   });
 
   it("retries an unreadable directory once, not on every evaluation", async () => {
