@@ -177,12 +177,34 @@ pub fn ports_in(text: &str) -> Vec<u16> {
     found
 }
 
+/// The name the browser is given once a port answers.
+///
+/// `localhost` rather than a literal address because that is the URL a dev
+/// server documents and sets its CORS and cookie expectations against. The
+/// browser resolves it with its own, far more patient fallback than a probe
+/// can afford.
+const PROBE_HOST: &str = "localhost";
+
+/// The loopback addresses a dev server might be bound to.
+///
+/// Both are probed, separately and at once, rather than resolving `localhost`
+/// and letting one connect attempt walk the list. `localhost` resolves to `::1`
+/// first on Windows, and a `::1` attempt that *hangs* rather than refusing —
+/// a firewall dropping the packet — would eat the whole budget before
+/// `127.0.0.1` was ever tried. A server bound to only one family is the common
+/// case, not the exotic one: Vite binds `127.0.0.1` by default.
+const LOOPBACK_ADDRESSES: &[&str] = &["127.0.0.1", "[::1]"];
+
 /// True when something accepts a loopback connection on `port`.
 async fn is_listening(port: u16) -> bool {
-    matches!(
-        timeout(PROBE_TIMEOUT, TcpStream::connect(("127.0.0.1", port))).await,
-        Ok(Ok(_))
-    )
+    let attempts = LOOPBACK_ADDRESSES.iter().map(|address| async move {
+        let target = format!("{address}:{port}");
+        matches!(timeout(PROBE_TIMEOUT, TcpStream::connect(target)).await, Ok(Ok(_)))
+    });
+    futures_util::future::join_all(attempts)
+        .await
+        .into_iter()
+        .any(|reachable| reachable)
 }
 
 /// Finds the best address a workspace appears to be serving, if any.
@@ -200,7 +222,7 @@ pub async fn detect_workspace_url(workspace: Option<&Path>) -> Option<String> {
     results
         .into_iter()
         .find(|(_, listening)| *listening)
-        .map(|(port, _)| format!("http://localhost:{port}/"))
+        .map(|(port, _)| format!("http://{PROBE_HOST}:{port}/"))
 }
 
 #[cfg(test)]
@@ -357,6 +379,28 @@ mod tests {
             Some(format!("http://localhost:{declared_port}/")),
         );
         std::fs::remove_dir_all(&dir).expect("clean up");
+    }
+
+    #[tokio::test]
+    async fn a_server_bound_to_only_one_loopback_family_is_still_found() {
+        // Vite binds `127.0.0.1` and nothing else. Resolving `localhost` and
+        // letting one connect attempt walk the list would try `::1` first on
+        // Windows, and a dropped packet there would spend the whole budget.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        assert!(is_listening(port).await);
+    }
+
+    #[tokio::test]
+    async fn a_closed_port_is_not_reported_as_listening() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        assert!(!is_listening(port).await);
     }
 
     #[tokio::test]
