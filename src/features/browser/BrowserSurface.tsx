@@ -37,12 +37,38 @@ export interface BrowserSurfaceProps {
   resource_key: string;
   /** URL persisted in surface state, used to reopen after a cold restart. */
   persisted_url: string;
+  /** Viewport persisted alongside the URL, so a restore is the same size. */
+  persisted_viewport?: BrowserViewport | null;
   visibility?: TerminalVisibility;
   /** Forces read-only regardless of the drive lease. */
   read_only?: boolean;
   on_url_change?: (surface_id: string, url: string) => void;
-  on_reopen?: (url: string) => void;
+  /** Mints a fresh session at `url` and rebinds this surface to it. */
+  on_reopen?: (url: string, viewport: BrowserViewport | null) => Promise<void>;
   on_close_surface?: () => void;
+}
+
+/**
+ * Whether a missing session should reopen itself without being asked.
+ *
+ * Only a cold restart qualifies. A session that died while this surface was
+ * watching it produced a `closed` event, and silently respawning a browser
+ * that just crashed would hide the crash — the operator should see that it
+ * happened and decide. A hidden tab waits: `suspend_when_hidden` exists so a
+ * background browser costs nothing, and auto-launching one would spend exactly
+ * what that policy saves.
+ */
+export function shouldAutoRestore(input: {
+  missing: boolean;
+  closed_reason: string | null;
+  visibility: TerminalVisibility;
+  persisted_url: string;
+}): boolean {
+  if (!input.missing || input.closed_reason !== null) return false;
+  if (input.visibility === "hidden") return false;
+  const url = input.persisted_url.trim();
+  // `about:blank` is not worth a Chromium process; the operator can type one.
+  return url.length > 0 && !url.toLowerCase().startsWith("about:");
 }
 
 /** One renderer identity per workbench presentation of a browser runtime. */
@@ -76,6 +102,7 @@ export function BrowserSurface({
   surface_id,
   resource_key,
   persisted_url,
+  persisted_viewport = null,
   visibility = "visible",
   read_only = false,
   on_url_change,
@@ -93,10 +120,39 @@ export function BrowserSurface({
   const [addressDraft, setAddressDraft] = useState(persisted_url);
   const [addressFocused, setAddressFocused] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
   /** The lease this presentation currently holds, if it is attached. */
   const [lease, setLease] = useState<{ token: string; can_drive: boolean } | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
+  /**
+   * One automatic restore per surface, ever.
+   *
+   * A ref rather than state, and deliberately not reset when `resource_key`
+   * changes: a restore that produces a session which immediately dies would
+   * otherwise restore again, and again.
+   */
+  const autoRestored = useRef(false);
+
+  // Everything below is a property of the session, and a rebind replaces the
+  // session. The workbench does not key its panel on `resource_key`, so this
+  // component instance is reused across a reopen — without this reset it would
+  // keep showing the previous session's placeholder over a live page, and a
+  // session that is already loaded emits no further state event to clear it.
+  const [boundSession, setBoundSession] = useState(resource_key);
+  if (boundSession !== resource_key) {
+    setBoundSession(resource_key);
+    setSummary(null);
+    setFrame(null);
+    setConsoleErrors([]);
+    setMissing(false);
+    setResolved(false);
+    setClosedReason(null);
+    setLease(null);
+    setActionError(null);
+    setRestoreError(null);
+  }
 
   const viewport: BrowserViewport = useMemo(
     () => summary?.viewport ?? { width: frame?.width ?? 1280, height: frame?.height ?? 800 },
@@ -210,6 +266,37 @@ export function BrowserSurface({
     on_url_change?.(surface_id, url);
   }, [addressFocused, on_url_change, summary?.url, surface_id]);
 
+  /** Reopens a cold-restored surface the first time anyone looks at it. */
+  const reopen = useCallback(
+    async (url: string) => {
+      if (!on_reopen) return;
+      setRestoring(true);
+      setRestoreError(null);
+      try {
+        await on_reopen(url, persisted_viewport);
+      } catch (error) {
+        setRestoreError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setRestoring(false);
+      }
+    },
+    [on_reopen, persisted_viewport],
+  );
+
+  useEffect(() => {
+    if (autoRestored.current || restoring || !on_reopen) return;
+    if (!shouldAutoRestore({
+      missing,
+      closed_reason: closedReason,
+      visibility,
+      persisted_url,
+    })) {
+      return;
+    }
+    autoRestored.current = true;
+    void reopen(persisted_url);
+  }, [closedReason, missing, on_reopen, persisted_url, reopen, restoring, visibility]);
+
   // A mirroring presentation is read-only even when the caller did not ask
   // for it: the backend refuses its input either way, and a control that looks
   // live but does nothing is worse than one that is visibly disabled. An
@@ -307,20 +394,33 @@ export function BrowserSurface({
         data-testid="browser-surface"
       >
         <div className="max-w-md rounded-lg border border-wardian-border bg-[var(--color-wardian-card)] p-5 text-center shadow-sm">
-          <h2 className="text-base font-semibold text-primary">Browser session unavailable</h2>
-          <p className="mt-2 text-sm text-muted-neutral">
-            {closedReason
-              ? `This session ended: ${closedReason}.`
-              : "This surface references a browser session that is no longer running."}
+          <h2 className="text-base font-semibold text-primary">
+            {restoring ? "Reopening this page" : "Browser session unavailable"}
+          </h2>
+          <p className="mt-2 text-sm text-muted-neutral" data-testid="browser-surface-missing-reason">
+            {restoring
+              ? `Starting a fresh browser at ${persisted_url}.`
+              : closedReason
+                ? `This session ended: ${closedReason}.`
+                : "This surface references a browser session that is no longer running."}
           </p>
+          {restoreError ? (
+            <p
+              className="mt-2 text-sm text-[var(--color-wardian-status-error)]"
+              data-testid="browser-surface-restore-error"
+            >
+              {restoreError}
+            </p>
+          ) : null}
           <div className="mt-4 flex justify-center gap-2">
             {on_reopen ? (
               <button
-                className="rounded border border-wardian-border px-3 py-1.5 text-sm text-primary transition-colors hover:bg-[var(--color-wardian-card-bg-muted)]"
-                onClick={() => on_reopen(addressDraft || persisted_url)}
+                className="rounded border border-wardian-border px-3 py-1.5 text-sm text-primary transition-colors hover:bg-[var(--color-wardian-card-bg-muted)] disabled:opacity-50"
+                disabled={restoring}
+                onClick={() => { void reopen(addressDraft || persisted_url); }}
                 type="button"
               >
-                Reopen this page
+                {restoring ? "Reopening…" : "Reopen this page"}
               </button>
             ) : null}
             {on_close_surface ? (

@@ -2,7 +2,7 @@
 
 Filename: `2026-08-09-agent-browser-surface.md`
 
-- **Status:** Implemented (phases 1, 2, and 3; phase 4 outstanding). Phases 1 and 2 landed in #869 after a review loop that converged at round nine; phase 3 landed in #874.
+- **Status:** Implemented (phases 1, 2, 3, and 4a; 4b outstanding, 4c deferred). Phases 1 and 2 landed in #869 after a review loop that converged at round nine; phase 3 landed in #874, and phase 4a in #875.
 - **Date:** 2026-08-09
 
 ## Delivery status
@@ -536,9 +536,32 @@ Each phase is a shippable PR.
    phase that makes it an *agent* browser.
 3. **Introspection.** Console, network, cookies, storage, downloads, viewport,
    `eval`.
-4. **Parity polish.** Session restore across app restarts, remote/PWA
-   mirroring, and a default URL derived from the workspace's detected listening
-   ports.
+4. **Parity polish.** Session restore across app restarts, a default URL
+   derived from the workspace's detected listening ports, and remote/PWA
+   mirroring.
+
+Phase 4 is three items of very different size, so it ships as three pieces
+rather than one:
+
+- **4a, session restore.** A restored surface reopens its page the first time
+  it becomes visible. Lazy rather than eager: `suspend_when_hidden` exists so a
+  background browser costs nothing, and launching one Chromium per persisted
+  tab at startup would spend exactly what that policy saves. A session that
+  died while a surface was watching it keeps the manual button — silently
+  respawning a browser that just crashed would hide the crash. Frontend only.
+  This also fixed a shipped bug: a reopen rebinds `resource_key` in place, the
+  workbench does not key its panel on it, and the reused component kept showing
+  the old placeholder over the live page.
+- **4b, a default URL from the workspace.** Probe the conventional dev-server
+  ports on loopback and prefill a new surface's address instead of opening
+  blank.
+- **4c, remote/PWA mirroring — deferred by decision, not by backlog.** It is
+  roughly phase-1 sized: a gateway websocket route, frame transport,
+  lease-aware input forwarding, auth and policy integration, and a PWA-side
+  surface. That is a large bill for the narrow case of watching a headless
+  browser from a phone, and it touches the remote auth surface, which is the
+  part of Wardian least improved by being touched speculatively. Tracked
+  separately so the cost is visible when someone wants it.
 
 Phases 3 and 4 should start by reading
 [agent-browser](https://github.com/vercel-labs/agent-browser) rather than from

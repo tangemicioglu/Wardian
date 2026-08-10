@@ -105,7 +105,12 @@ import {
   filesSurfaceMigrationCommands,
   isFilesSurfaceStateV1,
 } from "../features/files/filesSurfaceState";
-import type { BrowserSurfaceState, FilesSurfaceStateV2, OpenFileResourceRequestV1 } from "../types";
+import type {
+  BrowserSurfaceState,
+  BrowserViewport,
+  FilesSurfaceStateV2,
+  OpenFileResourceRequestV1,
+} from "../types";
 import type { SurfaceResourceProvision } from "../features/workbench/coreSurfaceRegistry";
 
 declare global {
@@ -1310,17 +1315,26 @@ function AppBody() {
 
   /** Replaces a dead browser surface's session with a fresh one at the same URL. */
   const reopenBrowserSurface = useCallback(
-    async (surfaceId: string, url: string): Promise<void> => {
+    async (
+      surfaceId: string,
+      url: string,
+      viewport: BrowserViewport | null,
+    ): Promise<void> => {
       // `rebind_resource`, not `canonicalize_resource`: the latter converges
       // identity while deliberately keeping the persisted state, which is
       // wrong when the old session is gone and a new one has replaced it.
-      await reopenBrowserSurfaceSession(url, (session) => (
-        workbenchNavigation.rebind_resource(surfaceId, {
+      await reopenBrowserSurfaceSession(
+        url,
+        (session) => workbenchNavigation.rebind_resource(surfaceId, {
           surface_type: "browser",
           resource_key: session.browser_id,
-          state: { url: session.url || url, viewport: null },
-        })
-      ));
+          // The viewport is carried forward, not dropped: a restored surface
+          // that silently reverts to the default size would reopen the page at
+          // a width the operator never chose.
+          state: { url: session.url || url, viewport: viewport ?? null },
+        }),
+        viewport,
+      );
     },
     [workbenchNavigation],
   );
@@ -1425,6 +1439,7 @@ function AppBody() {
           surface_id={surface.surface_id}
           resource_key={surface.resource_key ?? ""}
           persisted_url={browserState.url}
+          persisted_viewport={browserState.viewport}
           visibility={visibility}
           on_url_change={(surfaceId, url) => {
             // Persisting the page, not the session id, is what lets a cold
@@ -1437,7 +1452,7 @@ function AppBody() {
               state: { ...browserState, url },
             }]);
           }}
-          on_reopen={(url) => { void reopenBrowserSurface(surface.surface_id, url); }}
+          on_reopen={(url, viewport) => reopenBrowserSurface(surface.surface_id, url, viewport)}
           on_close_surface={() => { void workbenchNavigation.close(surface.surface_id); }}
         />
       );

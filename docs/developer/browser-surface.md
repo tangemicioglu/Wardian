@@ -262,12 +262,44 @@ Closing a tab only detaches the presentation.
 
 Surface state persists `{ url, viewport }`, not the session id — the id lives
 in `resource_key` and means nothing after a restart. A restored surface whose
-session is gone shows "Browser session unavailable" with a Reopen action that
-mints a new session at the persisted URL and rebinds the surface. `rebind_resource`
-may legitimately answer something other than `allow` — a concurrent workbench
-transaction, a read-only document — so reopen closes the session it just created
-on both a rejected decision and an exception, the same rule launcher
-provisioning follows with its `release`.
+session is gone mints a new one at the persisted URL and rebinds to it.
+`rebind_resource` may legitimately answer something other than `allow` — a
+concurrent workbench transaction, a read-only document — so reopen closes the
+session it just created on both a rejected decision and an exception, the same
+rule launcher provisioning follows with its `release`. Either way it *throws*
+rather than logging quietly, because an automatic restore has to be able to say
+why it gave up instead of leaving a placeholder that looks like it is still
+trying.
+
+**When a restore happens by itself.** `shouldAutoRestore` gates it on four
+things, and each one is a decision rather than a precaution:
+
+- The session must be missing, which is the whole trigger.
+- No `closed` event may have been seen. A session that died while this surface
+  was watching it produced one, and silently respawning a browser that just
+  crashed would hide the crash. That case keeps the manual Reopen button.
+- The surface must be visible. `suspend_when_hidden` exists so a background
+  browser costs nothing, and auto-launching one at startup would spend exactly
+  what that policy saves. A hidden tab restores the moment someone looks at it.
+- The persisted URL must be worth a Chromium process. An empty or `about:`
+  address is not; the operator can type one.
+
+It runs **once per surface, ever** — a ref, deliberately not reset when
+`resource_key` changes, so a restore that produces a session which immediately
+dies cannot restore again in a loop. A failure is shown in the placeholder with
+the manual button still live.
+
+**A rebind resets session-scoped state.** The workbench does not key its panel
+on `resource_key`, so a reopen reuses this component instance with all of the
+previous session's state. Without an explicit reset the pane keeps showing
+"Browser session unavailable" over a live page: the mount lookup only ever
+*sets* `missing`, and a session that is already loaded emits no further state
+event to clear it. The reset runs during render on a changed `resource_key`
+rather than in an effect, so there is no frame of stale placeholder.
+
+The persisted viewport is carried into the replacement session rather than
+dropped. A restore that reverted to the default size would reopen the page at a
+width the operator never chose.
 
 ## Testing
 

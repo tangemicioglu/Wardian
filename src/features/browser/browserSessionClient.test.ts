@@ -121,21 +121,43 @@ describe("reopenBrowserSurfaceSession", () => {
   });
 
   it("closes the replacement when the rebind declines", async () => {
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
     // A coordinated workbench transaction can answer `cancel`. Nothing else
     // holds the runtime, so leaving it up would orphan a live Chromium.
-    await reopenBrowserSurfaceSession("https://example.com/", async () => "cancel");
+    await expect(
+      reopenBrowserSurfaceSession("https://example.com/", async () => "cancel"),
+    ).rejects.toThrow(/declined to rebind/);
 
     expect(invoked).toHaveBeenCalledWith("close_browser_session", {
       browserId: "b-replacement",
+    });
+    reported.mockRestore();
+  });
+
+  it("carries a persisted viewport into the replacement session", async () => {
+    // A restore that reverted to the default size would reopen the page at a
+    // width the operator never chose.
+    await reopenBrowserSurfaceSession(
+      "https://example.com/",
+      async () => "allow",
+      { width: 900, height: 600 },
+    );
+
+    expect(invoked).toHaveBeenCalledWith("open_browser_session", {
+      url: "https://example.com/",
+      width: 900,
+      height: 600,
     });
   });
 
   it("closes the replacement when the rebind throws", async () => {
     const reported = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await reopenBrowserSurfaceSession("https://example.com/", async () => {
-      throw new Error("workbench command rejected");
-    });
+    await expect(
+      reopenBrowserSurfaceSession("https://example.com/", async () => {
+        throw new Error("workbench command rejected");
+      }),
+    ).rejects.toThrow("workbench command rejected");
 
     expect(invoked).toHaveBeenCalledWith("close_browser_session", {
       browserId: "b-replacement",
@@ -148,7 +170,9 @@ describe("reopenBrowserSurfaceSession", () => {
     const reported = vi.spyOn(console, "error").mockImplementation(() => {});
     invoked.mockRejectedValueOnce(new Error("no browser engine"));
 
-    await reopenBrowserSurfaceSession("https://example.com/", async () => "allow");
+    await expect(
+      reopenBrowserSurfaceSession("https://example.com/", async () => "allow"),
+    ).rejects.toThrow("no browser engine");
 
     expect(invoked).not.toHaveBeenCalledWith("close_browser_session", expect.anything());
     expect(reported).toHaveBeenCalled();

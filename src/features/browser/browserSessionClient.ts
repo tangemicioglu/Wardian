@@ -130,17 +130,26 @@ export function openBrowserSession(options: {
 export async function reopenBrowserSurfaceSession(
   url: string,
   rebind: (summary: BrowserSessionSummary) => Promise<string>,
+  viewport?: { width: number; height: number } | null,
 ): Promise<void> {
   let session: BrowserSessionSummary | null = null;
   try {
-    session = await openBrowserSession(url ? { url } : {});
+    session = await openBrowserSession({
+      ...(url ? { url } : {}),
+      ...(viewport ? { width: viewport.width, height: viewport.height } : {}),
+    });
     const decision = await rebind(session);
     if (decision !== "allow") {
       void closeBrowserSession(session.browser_id).catch(() => {});
+      // The caller asked for a session and does not have one. Reporting the
+      // decision is what lets an automatic restore say why it gave up instead
+      // of leaving a placeholder that looks like it is still trying.
+      throw new Error(`the workbench declined to rebind this surface (${decision})`);
     }
   } catch (error) {
     if (session) void closeBrowserSession(session.browser_id).catch(() => {});
     console.error("[Wardian] could not reopen the browser session", error);
+    throw error;
   }
 }
 
