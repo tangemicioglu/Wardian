@@ -2,7 +2,7 @@
 
 Filename: `2026-08-09-agent-browser-surface.md`
 
-- **Status:** Implemented (phases 1, 2, and 3; phase 4 outstanding). Phases 1 and 2 landed in #869 after a review loop that converged at round nine; phase 3 landed in #874.
+- **Status:** Implemented (phases 1, 2, 3, and 4a; 4b outstanding, 4c deferred). Phases 1 and 2 landed in #869 after a review loop that converged at round nine; phase 3 landed in #874, and phase 4a in #877.
 - **Date:** 2026-08-09
 
 ## Delivery status
@@ -19,12 +19,14 @@ Filename: `2026-08-09-agent-browser-surface.md`
 | Lifecycle | Sessions close on explicit close, on the owning agent's `kill_agent`, and on app exit. Closing a tab only detaches. A failed launch leaves no profile behind; a crashed browser publishes a closed event. |
 | Drive lease | Attaching mints an opaque token; the first attachment drives and later ones mirror read-only. Every surface-originated mutation, navigation and viewport included, carries the token, and an omitted one is refused rather than waved through. |
 | Introspection | `network.rs` folds `Network.*` events into a bounded ledger that navigation does not clear; cookies, `localStorage`/`sessionStorage`, and downloads are first-class commands. Downloads live beside the profile rather than inside it, so closing a session never takes the file. |
+| Restore | A surface whose session is gone reopens its persisted page the first time it becomes visible, at the persisted viewport. A crash, a hidden tab, and a blank address stay manual. |
 
 Verification: 77 Rust unit tests, 37 `#[ignore]`d engine-backed integration
-tests against real Edge, 33 CLI unit tests, 29 core wire-type tests, 44 frontend
-tests, and a native E2E that provisions a session from the launcher, renders a
-screencast frame, then drives the page through the CLI. Phase 4 below is not
-built.
+tests against real Edge, 33 CLI unit tests, 29 core wire-type tests, 51 frontend
+tests, and two native E2Es — one that provisions a session from the launcher,
+renders a screencast frame, and drives the page through the CLI, and one that
+restarts the app and finds the tab loaded again under a new session. Phase 4b
+below is not built; 4c is deferred.
 
 ## Review round
 
@@ -536,9 +538,33 @@ Each phase is a shippable PR.
    phase that makes it an *agent* browser.
 3. **Introspection.** Console, network, cookies, storage, downloads, viewport,
    `eval`.
-4. **Parity polish.** Session restore across app restarts, remote/PWA
-   mirroring, and a default URL derived from the workspace's detected listening
-   ports.
+4. **Parity polish.** Session restore across app restarts, a default URL
+   derived from the workspace's detected listening ports, and remote/PWA
+   mirroring.
+
+Phase 4 is three items of very different size, so it ships as three pieces
+rather than one:
+
+- **4a, session restore.** A restored surface reopens its page the first time
+  it becomes visible. Lazy rather than eager: `suspend_when_hidden` exists so a
+  background browser costs nothing, and launching one Chromium per persisted
+  tab at startup would spend exactly what that policy saves. A session that
+  died while a surface was watching it keeps the manual button — silently
+  respawning a browser that just crashed would hide the crash. Frontend only.
+  This also fixed a shipped bug: a reopen rebinds `resource_key` in place, the
+  workbench does not key its panel on it, and the reused component kept showing
+  the old placeholder over the live page.
+- **4b, a default URL from the workspace.** Probe the conventional dev-server
+  ports on loopback and prefill a new surface's address instead of opening
+  blank.
+- **4c, remote/PWA mirroring — deferred by decision, not by backlog.** It is
+  roughly phase-1 sized: a gateway websocket route, frame transport,
+  lease-aware input forwarding, auth and policy integration, and a PWA-side
+  surface. That is a large bill for the narrow case of watching a headless
+  browser from a phone, and it touches the remote auth surface, which is the
+  part of Wardian least improved by being touched speculatively. Tracked as
+  #876, with the open questions written down, so the cost is visible when
+  someone wants it rather than the item sitting here as if it were nearly done.
 
 Phases 3 and 4 should start by reading
 [agent-browser](https://github.com/vercel-labs/agent-browser) rather than from

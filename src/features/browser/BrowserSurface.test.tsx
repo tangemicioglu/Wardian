@@ -333,6 +333,114 @@ describe("BrowserSurface", () => {
     );
   });
 
+  it("reopens a cold-restored surface the first time it is shown", async () => {
+    // A cold restart leaves the persisted id pointing at nothing. Nobody has
+    // seen this session die, so there is no crash to hide by reopening it.
+    mocks.getBrowserSession.mockResolvedValue(null);
+    const onReopen = vi.fn().mockResolvedValue(undefined);
+    await renderSurface(
+      { on_reopen: onReopen, persisted_viewport: { width: 900, height: 600 } },
+      { expectAttach: false },
+    );
+
+    await waitFor(() => {
+      expect(onReopen).toHaveBeenCalledWith("https://example.com/", {
+        width: 900,
+        height: 600,
+      });
+    });
+  });
+
+  it("leaves a hidden surface alone until someone looks at it", async () => {
+    // `suspend_when_hidden` exists so a background browser costs nothing.
+    // Auto-launching one would spend exactly what that policy saves.
+    mocks.getBrowserSession.mockResolvedValue(null);
+    const onReopen = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = await renderSurface(
+      { on_reopen: onReopen, visibility: "hidden" },
+      { expectAttach: false },
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(onReopen).not.toHaveBeenCalled();
+
+    rerender(
+      <BrowserSurface
+        surface_id="surface-1"
+        resource_key="b-1"
+        persisted_url="https://example.com/"
+        visibility="visible"
+        on_reopen={onReopen}
+      />,
+    );
+    await waitFor(() => expect(onReopen).toHaveBeenCalled());
+  });
+
+  it("does not reopen a session that died while it was being watched", async () => {
+    // Silently respawning a browser that just crashed would hide the crash.
+    const onReopen = vi.fn().mockResolvedValue(undefined);
+    await renderSurface({ on_reopen: onReopen });
+    act(() => {
+      emit?.({ kind: "closed", browser_id: "b-1", reason: "the browser process exited" });
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(onReopen).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Reopen this page" })).toBeEnabled();
+  });
+
+  it("does not spend a browser process on a blank persisted page", async () => {
+    mocks.getBrowserSession.mockResolvedValue(null);
+    const onReopen = vi.fn().mockResolvedValue(undefined);
+    await renderSurface(
+      { on_reopen: onReopen, persisted_url: "about:blank" },
+      { expectAttach: false },
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(onReopen).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed restore instead of looking like it is still trying", async () => {
+    mocks.getBrowserSession.mockResolvedValue(null);
+    const onReopen = vi.fn().mockRejectedValue(new Error("no browser engine is available"));
+    await renderSurface({ on_reopen: onReopen }, { expectAttach: false });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("browser-surface-restore-error")).toHaveTextContent(
+        "no browser engine is available",
+      );
+    });
+    // One attempt only: a failing restore must not retry itself forever.
+    expect(screen.getByRole("button", { name: "Reopen this page" })).toBeEnabled();
+    expect(onReopen).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the placeholder once a rebind points it at a live session", async () => {
+    // A reopen rebinds `resource_key` in place. The workbench does not key the
+    // panel on it, so this same component instance is reused with all of its
+    // session-scoped state — and a session that is already loaded emits no
+    // further state event to clear the placeholder with.
+    const { rerender } = await renderSurface({ on_reopen: vi.fn() });
+    act(() => {
+      emit?.({ kind: "closed", browser_id: "b-1", reason: "the browser process exited" });
+    });
+    expect(screen.getByText("Browser session unavailable")).toBeInTheDocument();
+
+    mocks.getBrowserSession.mockResolvedValue(summary({ browser_id: "b-2" }));
+    rerender(
+      <BrowserSurface
+        surface_id="surface-1"
+        resource_key="b-2"
+        persisted_url="https://example.com/"
+        on_reopen={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText("Browser session unavailable")).toBeNull();
+    });
+    expect(screen.getByTestId("browser-surface")).toHaveAttribute("data-resource-key", "b-2");
+  });
+
   it("offers a reopen path when the session is gone", async () => {
     const onReopen = vi.fn();
     await renderSurface({ on_reopen: onReopen });
@@ -341,7 +449,7 @@ describe("BrowserSurface", () => {
     });
     expect(screen.getByText(/the browser process exited/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Reopen this page" }));
-    expect(onReopen).toHaveBeenCalledWith("https://example.com/");
+    expect(onReopen).toHaveBeenCalledWith("https://example.com/", null);
   });
 
   it("mirrors read-only when another presentation holds the drive lease", async () => {

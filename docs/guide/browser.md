@@ -108,15 +108,30 @@ out of pull requests, artifacts, and anywhere else it outlives the task.
 ## Session Lifetime
 
 A browser session belongs to the app, not to the tab presenting it. Closing the
-tab detaches the view and leaves the page running; reopen it from the launcher
-to attach again.
+tab detaches the view and leaves the page running.
 
 A session ends when you run `wardian browser close`, when the agent that owns
 it stops, or when Wardian exits.
 
-If a surface points at a session that is no longer running — usually after
-restarting the app — it shows **Browser session unavailable** with a **Reopen
-this page** action that starts a fresh session at the same URL.
+## After a Restart
+
+Browser tabs come back with the app. A restored tab reopens its page by itself
+the first time you look at it, at the same address and the same size as before.
+Tabs you do not switch to stay dormant, so a restart never starts a browser you
+were not about to use.
+
+The page comes back; the session does not. Each session gets a fresh isolated
+profile, so cookies, logins, and web storage from before the restart are gone.
+
+Two cases stay manual on purpose:
+
+- **A browser that crashed while you were watching it** shows **Browser session
+  unavailable** and waits, so a crash is something you see rather than
+  something that quietly restarts.
+- **A tab that was left blank** has no address worth reopening.
+
+Both show a **Reopen this page** button. If reopening fails — usually no
+Chromium installed — the tab says why instead of retrying in the background.
 
 ## Requirements
 
