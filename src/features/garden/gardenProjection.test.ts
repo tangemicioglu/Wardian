@@ -166,6 +166,45 @@ describe("computeGardenLayout", () => {
     });
     expect(result.positions.size).toBe(0);
   });
+
+  it("publishes each district's territory and the roots its agents work in", () => {
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows,
+      scene: createScene(),
+    });
+
+    // Normalized into the map's one keyspace, and deduplicated: two agents in
+    // the same folder are one root, not two.
+    expect(result.districts.get("team:hw")?.roots).toEqual(["d:/dev/hardware"]);
+    expect(result.districts.get("team:web")?.roots).toEqual(["d:/dev/web"]);
+    for (const district of result.districts.values()) {
+      expect(Number.isFinite(district.origin.x)).toBe(true);
+      expect(district.radius).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("keeps every root of a district that spans several workspaces", () => {
+    const spanning: AgentTeam[] = [{ id: "hw", name: "Hardware", agentIds: ["a1", "b1"] }] as AgentTeam[];
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams: spanning,
+      workflows: [],
+      scene: createScene(),
+    });
+    expect(result.districts.get("team:hw")?.roots).toEqual(["d:/dev/hardware", "d:/dev/web"]);
+  });
+
+  it("gives an agent with no folder no territory rather than a bogus root", () => {
+    const result = computeGardenLayout({
+      projection: projectionOf([node("z1", "Zed", "")]),
+      teams: [],
+      workflows: [],
+      scene: createScene(),
+    });
+    expect(result.districts.size).toBe(0);
+  });
 });
 
 describe("gardenLayoutSignature", () => {

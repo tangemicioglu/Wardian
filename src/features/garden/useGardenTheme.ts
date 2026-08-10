@@ -15,6 +15,14 @@ export interface GardenTheme {
   selection: string;
   /** Backdrop drawn behind label text so it stays legible over units. */
   labelBackdrop: string;
+  /** Ground plane of a workspace root. */
+  ground: string;
+  /** Border between ground cells. */
+  groundBorder: string;
+  /** Fill for a directory cell below the root. */
+  groundDir: string;
+  /** Fill for a file cell. */
+  groundFile: string;
   font: string;
   labelSize: number;
   subLabelSize: number;
@@ -60,6 +68,10 @@ export function useGardenTheme(): GardenTheme {
       labelMuted: resolveCssVar("var(--color-wardian-text-muted-neutral)", "#4b5563"),
       selection: resolveCssVar("var(--color-wardian-accent)", "#926a09"),
       labelBackdrop: resolveCssVar("var(--color-wardian-bg)", "#fcfaf5"),
+      ground: resolveCssVar("var(--color-wardian-card)", "#f5f1e8"),
+      groundBorder: resolveCssVar("var(--color-wardian-border)", "#e0d8c8"),
+      groundDir: resolveCssVar("var(--color-wardian-card-bg-muted)", "#efe9dc"),
+      groundFile: resolveCssVar("var(--color-wardian-input-bg)", "#fbf8f1"),
       font: CANVAS_LABEL_FONT,
       labelSize: CANVAS_LABEL_SIZE,
       subLabelSize: CANVAS_SUBLABEL_SIZE,

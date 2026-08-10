@@ -1,0 +1,179 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { renderHook, waitFor } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+import { quantizeScale, useGardenTerrain } from "./useGardenTerrain";
+import type { TerrainDistrict } from "./terrain";
+import type { TerrainViewport } from "./terrainFrontier";
+
+const invokeMock = vi.mocked(invoke);
+const listenMock = vi.mocked(listen);
+
+const DISTRICTS = new Map<string, TerrainDistrict>([
+  ["workspace:d:/work/repo", { roots: ["d:/work/repo"], origin: { x: 0, y: 0 }, radius: 400 }],
+]);
+
+/** Wide enough that the root cell clears the expansion threshold at scale 1. */
+const VIEWPORT: TerrainViewport = {
+  world: { x: -600, y: -600, width: 1200, height: 1200 },
+  scale: 1,
+};
+
+function directoryTree(...names: string[]) {
+  return names.map((name) => ({
+    name,
+    path: `D:\\work\\repo\\${name}`,
+    is_dir: false,
+    extension: null,
+  }));
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  listenMock.mockResolvedValue(() => {});
+  invokeMock.mockResolvedValue(undefined);
+});
+
+describe("quantizeScale", () => {
+  it("snaps to sqrt(2) steps so detail does not churn on a wheel tick", () => {
+    expect(quantizeScale(1)).toBeCloseTo(1, 6);
+    expect(quantizeScale(1.01)).toBeCloseTo(1, 6);
+    expect(quantizeScale(1.4)).toBeCloseTo(Math.SQRT2, 6);
+    expect(quantizeScale(2)).toBeCloseTo(2, 6);
+  });
+
+  it("falls back to 1 for a degenerate scale", () => {
+    expect(quantizeScale(0)).toBe(1);
+    expect(quantizeScale(Number.NaN)).toBe(1);
+  });
+});
+
+describe("useGardenTerrain", () => {
+  it("draws nothing until the canvas reports a viewport", () => {
+    const { result } = renderHook(() =>
+      useGardenTerrain({ enabled: true, districts: DISTRICTS, viewport: null }),
+    );
+    expect(result.current.cells).toEqual([]);
+    expect(invokeMock).not.toHaveBeenCalledWith("get_directory_tree", expect.anything());
+  });
+
+  it("draws the root as truncated ground before any listing arrives", () => {
+    const { result } = renderHook(() =>
+      useGardenTerrain({ enabled: true, districts: DISTRICTS, viewport: VIEWPORT }),
+    );
+    expect(result.current.cells).toHaveLength(1);
+    expect(result.current.cells[0]).toMatchObject({ name: "repo", truncated: true });
+  });
+
+  it("lists a visible root and subdivides it", async () => {
+    invokeMock.mockImplementation(async (command: string) =>
+      command === "get_directory_tree" ? directoryTree("a.ts", "b.ts") : undefined,
+    );
+
+    const { result } = renderHook(() =>
+      useGardenTerrain({ enabled: true, districts: DISTRICTS, viewport: VIEWPORT }),
+    );
+
+    await waitFor(() => expect(result.current.cells.length).toBe(3));
+    expect(result.current.cells.filter((cell) => cell.depth === 1).map((cell) => cell.name)).toEqual(
+      ["a.ts", "b.ts"],
+    );
+    // Backslashes from the OS are normalized into the map's one keyspace.
+    expect(result.current.cells[1].path).toBe("d:/work/repo/a.ts");
+  });
+
+  it("does not list anything when the root is too small on screen", async () => {
+    invokeMock.mockImplementation(async (command: string) =>
+      command === "get_directory_tree" ? directoryTree("a.ts") : undefined,
+    );
+
+    renderHook(() =>
+      useGardenTerrain({
+        enabled: true,
+        districts: DISTRICTS,
+        viewport: { world: VIEWPORT.world, scale: 0.02 },
+      }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    expect(invokeMock).not.toHaveBeenCalledWith("get_directory_tree", expect.anything());
+  });
+
+  it("watches every root and releases the watch on unmount", async () => {
+    const { unmount } = renderHook(() =>
+      useGardenTerrain({ enabled: true, districts: DISTRICTS, viewport: VIEWPORT }),
+    );
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("explorer_watch", { rootPath: "d:/work/repo" }),
+    );
+    unmount();
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("explorer_unwatch", { rootPath: "d:/work/repo" }),
+    );
+  });
+
+  it("re-lists a root after explorer-changed rather than polling for it", async () => {
+    type ExplorerChanged = (event: {
+      payload: { root_path: string; changed_paths: string[] };
+    }) => void;
+    // Held in an object rather than a `let`: TypeScript narrows a closure-
+    // assigned local to `never` after the null check below.
+    const watcher: { emit: ExplorerChanged | null } = { emit: null };
+    listenMock.mockImplementation(async (_event: string, handler: unknown) => {
+      watcher.emit = handler as ExplorerChanged;
+      return () => {};
+    });
+    invokeMock.mockImplementation(async (command: string) =>
+      command === "get_directory_tree" ? directoryTree("a.ts") : undefined,
+    );
+
+    const { result } = renderHook(() =>
+      useGardenTerrain({ enabled: true, districts: DISTRICTS, viewport: VIEWPORT }),
+    );
+    await waitFor(() => expect(result.current.cells.length).toBe(2));
+    const listingCalls = invokeMock.mock.calls.filter(([command]) => command === "get_directory_tree");
+    expect(listingCalls).toHaveLength(1);
+
+    invokeMock.mockImplementation(async (command: string) =>
+      command === "get_directory_tree" ? directoryTree("a.ts", "c.ts") : undefined,
+    );
+    await waitFor(() => expect(watcher.emit).not.toBeNull());
+    watcher.emit?.({ payload: { root_path: "D:\\work\\repo", changed_paths: [] } });
+
+    await waitFor(() => expect(result.current.cells.length).toBe(3));
+  });
+
+  it("retries an unreadable directory once, not on every evaluation", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "get_directory_tree") throw new Error("EACCES");
+      return undefined;
+    });
+
+    const { rerender } = renderHook(
+      (props: { viewport: TerrainViewport }) =>
+        useGardenTerrain({ enabled: true, districts: DISTRICTS, viewport: props.viewport }),
+      { initialProps: { viewport: VIEWPORT } },
+    );
+
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter(([command]) => command === "get_directory_tree"),
+      ).toHaveLength(1),
+    );
+
+    rerender({ viewport: { ...VIEWPORT, world: { ...VIEWPORT.world, x: -601 } } });
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    expect(
+      invokeMock.mock.calls.filter(([command]) => command === "get_directory_tree"),
+    ).toHaveLength(1);
+  });
+
+  it("draws nothing and watches nothing while disabled", () => {
+    const { result } = renderHook(() =>
+      useGardenTerrain({ enabled: false, districts: DISTRICTS, viewport: VIEWPORT }),
+    );
+    expect(result.current.cells).toEqual([]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+});

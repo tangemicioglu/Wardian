@@ -6,7 +6,7 @@ import type {
   GardenWorkflowRunStatus,
   GardenWorkflowUnit,
 } from "./garden.types";
-import { agentRef, entityKey, workflowRef } from "./entityRef";
+import { agentRef, entityKey, normalizeEntityPath, workflowRef } from "./entityRef";
 import { emitAgentFacets, emitWorkflowFacets } from "./facets";
 import {
   buildDistrictAffinity,
@@ -19,6 +19,7 @@ import { buildSkillCrowns, crownExtent, type GardenSkillGlyph } from "./skillGly
 import { interactionWeight, personalizedPageRank } from "./metric";
 import { layoutGarden, type LayoutEntity } from "./gardenLayout";
 import type { GardenScene } from "./gardenScene";
+import type { TerrainDistrict } from "./terrain";
 
 export interface GardenWorkflowInput {
   id: string;
@@ -104,6 +105,16 @@ export interface GardenProjectionResult {
   stalePinKeys: string[];
   /** entityKey -> where it sits, so a drag can become a district-relative pin. */
   placement: Map<string, UnitPlacement>;
+  /**
+   * districtId -> the territory it occupies, plus the workspace roots its
+   * agents work in.
+   *
+   * Published so terrain can be drawn beneath the units without re-deriving
+   * district membership. Roots come from the same `git_worktree_folder ??
+   * folder` value `resolveAgentDistrict` partitions on, so ground membership
+   * and district membership cannot disagree.
+   */
+  districts: Map<string, TerrainDistrict>;
 }
 
 /**
@@ -151,11 +162,23 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
   );
 
   const districtByAgentId = new Map<string, string>();
+  // districtId -> the workspace roots its agents actually operate in. A team
+  // district spanning several repositories keeps all of them: that overlap is
+  // the thing the malleable-garden spec asked Garden to make visible rather
+  // than nest away.
+  const rootsByDistrict = new Map<string, Set<string>>();
   for (const node of input.projection.nodes) {
     const ref = agentRef(node.id);
     const teamIds = teamsByAgent.get(node.id);
     const district = districtId(resolveAgentDistrict(node.agent, { teamIds }));
     districtByAgentId.set(node.id, district);
+    const root =
+      normalizeEntityPath(node.agent.git_worktree_folder) ?? normalizeEntityPath(node.agent.folder);
+    if (root) {
+      const existing = rootsByDistrict.get(district);
+      if (existing) existing.add(root);
+      else rootsByDistrict.set(district, new Set([root]));
+    }
     const crown = crowns.get(node.id) ?? [];
     entities.push({
       ref,
@@ -224,8 +247,18 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
 
   const result = layoutGarden({ entities, scene: input.scene, ppr, now: input.now });
 
+  const territory = new Map<string, TerrainDistrict>();
+  for (const [district, roots] of rootsByDistrict) {
+    territory.set(district, {
+      roots: [...roots].sort(),
+      origin: result.districtOrigins.get(district) ?? { x: 0, y: 0 },
+      radius: result.districtExtents.get(district) ?? 0,
+    });
+  }
+
   return {
     positions: new Map(result.units.map((unit) => [unit.key, unit.position])),
+    districts: territory,
     crowns,
     scene: result.scene,
     stalePinKeys: result.stalePinKeys,

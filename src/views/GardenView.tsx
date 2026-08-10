@@ -19,6 +19,8 @@ import {
 import { agentsCarrying } from "../features/garden/skillGlyphs";
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
 import { useGardenSkills } from "../features/garden/useGardenSkills";
+import { useGardenTerrain } from "../features/garden/useGardenTerrain";
+import type { TerrainViewport } from "../features/garden/terrainFrontier";
 import { useGardenStore } from "../store/useGardenStore";
 import { useLibraryStore } from "../store/useLibraryStore";
 import type { GardenSurfaceState } from "../features/workbench/surfaces/coreSurfaceMetadata";
@@ -238,6 +240,17 @@ export const GardenView: React.FC<GardenViewProps> = ({
     ? (skillInputs.find((skill) => skill.entryRef === selectedSkillRef)?.label ?? selectedSkillRef)
     : null;
 
+  // Terrain is ingested against the visible world rectangle, so the canvas
+  // reports its viewport up. It arrives already coalesced to one value per
+  // animation frame; the expansion pass inside the hook debounces on top of
+  // that, so a pan produces listings once it settles rather than while it moves.
+  const [viewport, setViewport] = useState<TerrainViewport | null>(null);
+  const terrain = useGardenTerrain({
+    enabled: visibility === "visible" && rendererActive,
+    districts: layout.districts,
+    viewport,
+  });
+
   const selectedUnit = [...agentUnits, ...workflowUnits].find(
     (unit) => unitKey(unit.ref) === activeSelectionKey,
   );
@@ -281,6 +294,9 @@ export const GardenView: React.FC<GardenViewProps> = ({
         workflowUnits={workflowUnits}
         selectedKey={activeSelectionKey}
         highlightedAgentIds={highlightedAgentIds}
+        terrainCells={terrain.cells}
+        terrainDistricts={layout.districts}
+        onViewportChange={setViewport}
         onSelect={(ref) => {
           const key = unitKey(ref);
           setSelectedKey(key);
