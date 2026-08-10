@@ -19,12 +19,14 @@ Filename: `2026-08-09-agent-browser-surface.md`
 | Lifecycle | Sessions close on explicit close, on the owning agent's `kill_agent`, and on app exit. Closing a tab only detaches. A failed launch leaves no profile behind; a crashed browser publishes a closed event. |
 | Drive lease | Attaching mints an opaque token; the first attachment drives and later ones mirror read-only. Every surface-originated mutation, navigation and viewport included, carries the token, and an omitted one is refused rather than waved through. |
 | Introspection | `network.rs` folds `Network.*` events into a bounded ledger that navigation does not clear; cookies, `localStorage`/`sessionStorage`, and downloads are first-class commands. Downloads live beside the profile rather than inside it, so closing a session never takes the file. |
+| Restore | A surface whose session is gone reopens its persisted page the first time it becomes visible, at the persisted viewport. A crash, a hidden tab, and a blank address stay manual. |
 
 Verification: 77 Rust unit tests, 37 `#[ignore]`d engine-backed integration
-tests against real Edge, 33 CLI unit tests, 29 core wire-type tests, 44 frontend
-tests, and a native E2E that provisions a session from the launcher, renders a
-screencast frame, then drives the page through the CLI. Phase 4 below is not
-built.
+tests against real Edge, 33 CLI unit tests, 29 core wire-type tests, 51 frontend
+tests, and two native E2Es — one that provisions a session from the launcher,
+renders a screencast frame, and drives the page through the CLI, and one that
+restarts the app and finds the tab loaded again under a new session. Phase 4b
+below is not built; 4c is deferred.
 
 ## Review round
 
