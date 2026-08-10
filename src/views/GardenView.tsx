@@ -12,6 +12,7 @@ import { GardenCanvas } from "../features/garden/GardenCanvas";
 import { unitKey, type GardenPosition } from "../features/garden/garden.types";
 import {
   GARDEN_AGENT_STATUS_LEGEND,
+  GARDEN_AREA_NOTE,
   GARDEN_CHANGE_LEGEND,
   gardenAgentStatusLabel,
   gardenChangeBaselineLabel,
@@ -344,6 +345,12 @@ export const GardenView: React.FC<GardenViewProps> = ({
               </span>
             ))}
             <span className="text-muted-neutral">{gardenChangeBaselineLabel(changes.baseline)}</span>
+            {/* Area is a share of the parent folder, not a file size, and it
+                reads as size unless it is said out loud — a loose file at a
+                repository root is a peer of `src/` and is drawn as one. */}
+            <span className="text-muted-neutral" title={GARDEN_AREA_NOTE}>
+              Area = share of folder
+            </span>
           </>
         )}
       </section>

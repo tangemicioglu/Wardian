@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import { Group, Rect, Text } from "react-konva";
 import type Konva from "konva";
 
-import { MIN_GROUND_RADIUS, type TerrainCell, type TerrainDistrict } from "./terrain";
+import type { TerrainCell, TerrainDistrict } from "./terrain";
 import { changeAlpha, type TerrainPaint } from "./terrainPaint";
 import type { GardenTheme } from "./useGardenTheme";
 
@@ -89,7 +89,8 @@ export const TerrainLayer: React.FC<TerrainLayerProps> = React.memo(
           if (!district) return null;
           // The same radius `buildTerrain` measured the ground square against,
           // so the clip is exactly the territory and never a cell wider than it.
-          const radius = Math.max(district.radius, MIN_GROUND_RADIUS);
+          const radius = district.radius;
+          if (radius <= 0) return null;
           return (
             <Group
               key={districtId}

@@ -185,6 +185,31 @@ describe("computeGardenLayout", () => {
     }
   });
 
+  it("keeps two districts' ground from reaching each other", () => {
+    // Reported as districts bleeding into one another. The lattice sizes each
+    // slot against the district's *unit extent*, so inflating the ground to a
+    // fixed floor spent territory the layout never reserved.
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams,
+      workflows,
+      scene: createScene(),
+    });
+
+    const grounds = [...result.districts.values()];
+    expect(grounds.length).toBeGreaterThan(1);
+    for (const left of grounds) {
+      for (const right of grounds) {
+        if (left === right) continue;
+        const separation = Math.hypot(
+          left.origin.x - right.origin.x,
+          left.origin.y - right.origin.y,
+        );
+        expect(left.radius + right.radius).toBeLessThanOrEqual(separation);
+      }
+    }
+  });
+
   it("keeps every root of a district that spans several workspaces", () => {
     const spanning: AgentTeam[] = [{ id: "hw", name: "Hardware", agentIds: ["a1", "b1"] }] as AgentTeam[];
     const result = computeGardenLayout({

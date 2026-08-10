@@ -15,15 +15,29 @@
  * delete the reason districts were built. Terrain is a subdivision of territory
  * a district already occupies, so it costs the layout exactly nothing.
  *
- * ## Why cells are equal-weight
+ * ## What a cell's area means
  *
  * A treemap normally weights cells by a quantity, and none is available:
  * `FileNode` carries `name`, `path`, `is_dir`, and `extension`, and a
  * directory's recursive size cannot be had without the crawl this design exists
  * to avoid. Weighting files by bytes while directories fell back to a constant
  * would make `package-lock.json` the largest thing in a repository and `src/` a
- * small square — not a defensible claim about a codebase. Equal weight says
- * "one child of this folder", which the data supports.
+ * small square — not a defensible claim about a codebase.
+ *
+ * So area is *not* size. It is a share of the parent: a folder's children
+ * divide it between them, and a cell's area therefore says how deep in the tree
+ * it sits and how many siblings it has. A file directly in the repository root
+ * is a peer of `src/` and is drawn as one, which is why a single file can look
+ * larger than a folder several levels down.
+ *
+ * The one weighting the data does support is `is_dir`: a folder holds at least
+ * one thing and a file holds none, so folders take `DIR_WEIGHT` shares to a
+ * file's one. Both values are known the moment the parent is listed, which is
+ * what keeps this admissible — a child's rect stays fixed from its parent's
+ * single listing and cannot shift as deeper listings arrive. Weighting a folder
+ * by its *subtree* would be more informative and is not available at any price
+ * the stability contract can pay: it would make geometry a function of the
+ * frontier, so zooming in would resize everything already on screen.
  *
  * ## What geometry may depend on
  *
@@ -63,7 +77,13 @@ export interface TerrainDistrict {
   /** Distinct normalized workspace roots of the district's agents. */
   roots: readonly string[];
   origin: GardenPosition;
-  /** How far the district reaches from its origin, from `layoutGarden`. */
+  /**
+   * Radius of the ground disc, already resolved by `groundRadiusFor`.
+   *
+   * Resolved once by the projection rather than by each consumer, because the
+   * geometry and the clip must agree exactly: a cell wider than the clip is
+   * drawn and then invisibly cut, which reads as a missing folder.
+   */
   radius: number;
 }
 
@@ -124,14 +144,49 @@ export function districtCellBudget(maxCells: number, districtCount: number): num
 }
 
 /**
- * Ground radius floor.
+ * Ground radius a district is inflated *towards*.
  *
  * A district holding one agent measures a near-zero extent, and territory that
  * collapses to a point is not territory. This is the smallest plot worth
- * drawing, and it sits well inside `DISTRICT_MARGIN` so it can never reach a
- * neighbour.
+ * drawing — but it is a target, never a guarantee. See `groundRadiusFor`.
  */
 export const MIN_GROUND_RADIUS = 120;
+
+/** Clear space left between two districts' ground discs, per side. */
+export const GROUND_GAP = 24;
+
+/**
+ * Radius of a district's ground.
+ *
+ * The lattice reserves each district's slot against its *unit extent*
+ * (`ringRadii`), so inflating the ground to a fixed floor spends territory the
+ * layout never set aside: two neighbouring one-agent districts sit about 216
+ * apart, and two 120-radius discs at that distance visibly overlap — which was
+ * being reported as districts bleeding into each other.
+ *
+ * So the floor is applied only as far as the free space allows. A district
+ * whose units genuinely reach further than its neighbour gap keeps its full
+ * extent: at that point the *units* overlap too, and shrinking the ground would
+ * hide a layout problem rather than fix one.
+ *
+ * @param extent Distance from the origin to the district's furthest unit.
+ * @param nearestNeighbour Distance to the closest other district's origin,
+ *   `Infinity` when this is the only district on the map.
+ */
+export function groundRadiusFor(extent: number, nearestNeighbour: number): number {
+  const safe = Math.max(0, Number.isFinite(extent) ? extent : 0);
+  const cap = Math.max(0, nearestNeighbour / 2 - GROUND_GAP);
+  return Math.max(safe, Math.min(MIN_GROUND_RADIUS, cap));
+}
+
+/**
+ * Shares a folder takes to a file's one.
+ *
+ * A constant claim — "a folder holds more than a file" — rather than an
+ * estimate of how much more. Anything proportional to the real subtree would
+ * have to be measured, and measuring is the crawl this design avoids.
+ */
+export const DIR_WEIGHT = 3;
 
 /** Inset applied inside a folder before its children are laid out. */
 const CELL_PADDING = 3;
@@ -275,7 +330,8 @@ export function buildTerrain(input: TerrainInput): TerrainCell[] {
     const district = input.districts.get(districtId);
     if (!district) continue;
 
-    const radius = Math.max(district.radius, MIN_GROUND_RADIUS);
+    const radius = district.radius;
+    if (radius <= 0) continue;
     const disc = { origin: district.origin, radius };
     const ground: TerrainRect = {
       x: district.origin.x - radius,
@@ -325,7 +381,10 @@ export function buildTerrain(input: TerrainInput): TerrainCell[] {
         if (parent.inner.width <= 0 || parent.inner.height <= 0) continue;
 
         const placedChildren = squarify(
-          listing.children.map((child) => ({ value: 1, datum: child })),
+          listing.children.map((child) => ({
+            value: child.isDir ? DIR_WEIGHT : 1,
+            datum: child,
+          })),
           parent.inner,
         );
         let contributed = false;

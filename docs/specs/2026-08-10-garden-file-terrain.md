@@ -100,7 +100,7 @@ the malleable-garden spec asked Garden to make visible instead of nesting away.
 value that only differs when an explorer override is set, and the district
 partition already committed to the config path. One source, one answer.
 
-### Cells are equal-weight, and that is a decision
+### Area is a share of the parent, not a size
 
 A treemap normally weights cells by a quantity. None is available: `FileNode`
 carries `name`, `path`, `is_dir`, and `extension`, and a directory's recursive
@@ -110,11 +110,58 @@ Weighting files by byte size while directories fall back to a constant would
 produce a map where `package-lock.json` is the largest thing in a repository and
 `src/` is a small square. That is not a defensible statement about a codebase.
 
-Cells are therefore **equal-weight, squarified, in a deterministic order**
-(directories first, then name — the order `get_directory_tree` already returns).
-Area means "one child of this folder", which is a claim the data can support.
-Squarified rather than slice-and-dice because aspect ratio is what makes a cell
-clickable and labellable at small sizes.
+Cells are therefore **squarified in a deterministic order** (directories first,
+then name — the order `get_directory_tree` already returns), and a cell's area
+is its share of its parent. Squarified rather than slice-and-dice because aspect
+ratio is what makes a cell clickable and labellable at small sizes.
+
+The consequence has to be stated because it reads as a bug otherwise, and was
+reported as one: **a file can be drawn larger than a folder.** A loose file at a
+repository root is a peer of `src/`, so it gets a peer's share; everything
+inside `src/` then divides what `src/` received. Area encodes depth in the tree
+and number of siblings. Anyone who has used a disk-usage treemap will read it as
+size, so the legend says what it is.
+
+The one weighting the data supports is `is_dir`: a folder holds at least one
+thing and a file holds none, so folders take `DIR_WEIGHT` (3) shares to a file's
+one. This is a constant claim, not an estimate of how much more. It is
+admissible precisely because both values are known the moment the parent is
+listed — a child's rect is fixed by its parent's single listing and cannot shift
+as deeper listings arrive.
+
+Weighting a folder by its actual subtree would be more informative and is not
+available at any price the stability contract can pay: subtree size is only
+known for the ingested frontier, so geometry would become a function of the
+viewport and zooming in would resize everything already on screen. That is the
+one thing this design may not do.
+
+A consequence to state plainly: adding a file reflows its parent's cell
+subdivision. That is a canonical record changing, which the stability contract
+permits; it is bounded to one folder's children and cannot move a unit, because
+units are not in the treemap.
+
+### Ground is sized against the space the lattice actually reserved
+
+`ringLattice.ts` sizes every ring against the districts it holds, using each
+district's **unit extent** — the distance from its origin to its furthest unit.
+Two constraints decide a radius and the larger wins, so neighbouring districts
+clear each other's extents by `DISTRICT_MARGIN`.
+
+The ground disc must live inside that reservation, and a fixed floor does not.
+Two one-agent districts sit roughly 216 apart; inflating each to a 120 floor
+gives two discs whose sum exceeds the gap, and they visibly bleed into each
+other. `groundRadiusFor` therefore treats `MIN_GROUND_RADIUS` as a target rather
+than a guarantee: a district is inflated towards it only as far as half the
+distance to its nearest neighbour, less `GROUND_GAP`.
+
+A district whose units genuinely reach further than that gap keeps its full
+extent. At that point the units themselves overlap, and shrinking the ground
+would hide a layout problem rather than fix one.
+
+The radius is resolved once, in `computeGardenLayout`, and both the geometry and
+the Konva clip read the resolved value. Re-deriving it in each consumer is how a
+cell ends up wider than the clip that cuts it, which draws as a folder that
+silently disappears at the district edge.
 
 A consequence to state plainly: adding a file reflows its parent's cell
 subdivision. That is a canonical record changing, which the stability contract
@@ -487,6 +534,8 @@ change rather than a rendering one.
 - `explorer-changed` for a root refreshes only the cached listings that name a
   changed path, and no cell disappears while the replacement is in flight.
 - A cell's change tint does not grow with its depth in the tree.
+- No two districts' ground discs overlap, at any roster size.
+- A folder is drawn larger than a file it sits beside.
 - No `git_status` or `get_directory_tree` call is issued on a render that
   changed only telemetry, selection, or zoom within one detail level.
 - A changed path inside an unlisted folder still tints its nearest drawn

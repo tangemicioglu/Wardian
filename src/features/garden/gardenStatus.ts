@@ -98,6 +98,16 @@ const CHANGE_KIND_LABEL: Record<TerrainChangeKind, string> = {
 };
 
 /**
+ * What a ground cell's size does and does not mean.
+ *
+ * File sizes are not available without a recursive crawl, so a cell's area is
+ * its share of its parent — which reads as "size" to anyone who has used a disk
+ * usage treemap, and therefore has to be said explicitly.
+ */
+export const GARDEN_AREA_NOTE =
+  "Cell area is a share of the parent folder, not a file size. Folders take more room than files, and depth divides what is left — so a file at a repository root can be larger than a folder several levels down.";
+
+/**
  * What a selected piece of ground reads as.
  *
  * Names the count and the evidence rather than the churn: "3 files, attributed"

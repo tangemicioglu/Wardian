@@ -19,7 +19,7 @@ import { buildSkillCrowns, crownExtent, type GardenSkillGlyph } from "./skillGly
 import { interactionWeight, personalizedPageRank } from "./metric";
 import { layoutGarden, type LayoutEntity } from "./gardenLayout";
 import type { GardenScene } from "./gardenScene";
-import type { TerrainDistrict } from "./terrain";
+import { groundRadiusFor, type TerrainDistrict } from "./terrain";
 
 export interface GardenWorkflowInput {
   id: string;
@@ -247,12 +247,22 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
 
   const result = layoutGarden({ entities, scene: input.scene, ppr, now: input.now });
 
+  // Ground is sized against the free space around each district, measured over
+  // *every* district and not only the ones carrying terrain: a neighbour with
+  // no workspace still holds units that the ground must not be drawn over.
+  const origins = [...result.districtOrigins.entries()];
   const territory = new Map<string, TerrainDistrict>();
   for (const [district, roots] of rootsByDistrict) {
+    const origin = result.districtOrigins.get(district) ?? { x: 0, y: 0 };
+    let nearest = Number.POSITIVE_INFINITY;
+    for (const [other, point] of origins) {
+      if (other === district) continue;
+      nearest = Math.min(nearest, Math.hypot(point.x - origin.x, point.y - origin.y));
+    }
     territory.set(district, {
       roots: [...roots].sort(),
-      origin: result.districtOrigins.get(district) ?? { x: 0, y: 0 },
-      radius: result.districtExtents.get(district) ?? 0,
+      origin,
+      radius: groundRadiusFor(result.districtExtents.get(district) ?? 0, nearest),
     });
   }
 

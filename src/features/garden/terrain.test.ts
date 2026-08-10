@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DIR_WEIGHT,
+  GROUND_GAP,
   MIN_GROUND_RADIUS,
   area,
   basename,
   buildTerrain,
+  groundRadiusFor,
   intersectsDisc,
   squarify,
   type TerrainDistrict,
@@ -33,6 +36,29 @@ function listing(path: string, names: readonly string[], dirs: readonly string[]
     })),
   };
 }
+
+describe("groundRadiusFor", () => {
+  it("inflates a collapsed district to a plot worth drawing", () => {
+    expect(groundRadiusFor(0, Number.POSITIVE_INFINITY)).toBe(MIN_GROUND_RADIUS);
+  });
+
+  it("stops inflating before it reaches a neighbour", () => {
+    // Two one-agent districts about 216 apart is the reported case: at the old
+    // fixed floor both discs were 120 and visibly bled into each other.
+    expect(groundRadiusFor(20, 216)).toBe(216 / 2 - GROUND_GAP);
+    expect(groundRadiusFor(20, 216) * 2).toBeLessThan(216);
+  });
+
+  it("keeps a district that genuinely reaches further than its gap", () => {
+    // The units already overlap here. Shrinking the ground would hide a layout
+    // problem rather than fix one.
+    expect(groundRadiusFor(400, 300)).toBe(400);
+  });
+
+  it("never inflates past the floor when there is room to spare", () => {
+    expect(groundRadiusFor(10, 5000)).toBe(MIN_GROUND_RADIUS);
+  });
+});
 
 describe("squarify", () => {
   it("fills the rect exactly", () => {
@@ -164,6 +190,18 @@ describe("buildTerrain", () => {
     expect(cells.filter((cell) => cell.depth === 1).every((cell) => cell.truncated)).toBe(true);
   });
 
+  it("gives a folder more room than a file it sits beside", () => {
+    // The reported confusion: with equal weights a loose file at the repository
+    // root was drawn exactly as large as `src/`.
+    const listings = new Map([
+      ["d:/work/repo", listing("d:/work/repo", ["src", "readme.md"], ["src"])],
+    ]);
+    const cells = buildTerrain({ districts, listings, minSubdivideArea: 0, maxCells: 100 });
+    const src = cells.find((cell) => cell.name === "src");
+    const readme = cells.find((cell) => cell.name === "readme.md");
+    expect(area(src!.rect) / area(readme!.rect)).toBeCloseTo(DIR_WEIGHT, 4);
+  });
+
   it("keeps a district's detail independent of what other districts ingest", () => {
     // The instability this replaced a shared budget to fix: with one pool, the
     // deepest level was a function of the *total* cell count, so a listing
@@ -231,14 +269,27 @@ describe("buildTerrain", () => {
     expect(first).toEqual(second);
   });
 
-  it("floors a collapsed district to a plot worth drawing", () => {
+  it("draws the ground at exactly the radius it was given", () => {
+    // The floor lives in `groundRadiusFor`, which is the only place that knows
+    // how much free space there is. If the geometry re-applied it, the ground
+    // could exceed the clip and folders would vanish at the district edge.
+    const cells = buildTerrain({
+      districts: new Map([["workspace:d:/solo", district({ radius: 40, roots: ["d:/solo"] })]]),
+      listings: new Map(),
+      minSubdivideArea: 0,
+      maxCells: 100,
+    });
+    expect(cells[0].rect.width).toBe(80);
+  });
+
+  it("draws nothing for a district with no territory", () => {
     const cells = buildTerrain({
       districts: new Map([["workspace:d:/solo", district({ radius: 0, roots: ["d:/solo"] })]]),
       listings: new Map(),
       minSubdivideArea: 0,
       maxCells: 100,
     });
-    expect(cells[0].rect.width).toBe(MIN_GROUND_RADIUS * 2);
+    expect(cells).toEqual([]);
   });
 
   it("skips a district with no roots", () => {
