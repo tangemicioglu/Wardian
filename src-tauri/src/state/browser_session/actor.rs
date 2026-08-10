@@ -7,7 +7,7 @@
 //! on app exit.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +18,11 @@ pub use wardian_core::browser::{
     BrowserSessionSummary, ConsoleEntry, LoadState, Viewport, DEFAULT_VIEWPORT_HEIGHT,
     DEFAULT_VIEWPORT_WIDTH,
 };
+use wardian_core::browser::{
+    BrowserCookie, CookieAction, DownloadRecord, NetworkEntry, NetworkFilter, NetworkRequestDetail,
+    StorageArea, StorageEntry, StorageSnapshot, DOWNLOAD_RETENTION_DAYS, MAX_RESPONSE_BODY_BYTES,
+    MAX_STORAGE_BYTES, MAX_STORAGE_VALUE_CHARS,
+};
 use serde_json::{json, Value};
 use tokio::process::Child;
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -26,6 +31,7 @@ use uuid::Uuid;
 
 use super::cdp::{required_str, CdpConnection, CdpError, CdpEvent, DISCONNECTED_METHOD};
 use super::engine::{discover_engine, launch_engine, EngineError, EngineKind};
+use super::network::NetworkLedger;
 use super::snapshot::{
     action_expression, parse_snapshot, snapshot_expression, PageSnapshot, RefError,
     SnapshotLedger,
@@ -289,6 +295,10 @@ struct SessionState {
     main_frame_id: Option<String>,
     console: VecDeque<ConsoleEntry>,
     console_error_count: usize,
+    /// Every request the page has made, bounded and never cleared by navigation.
+    network: NetworkLedger,
+    /// Downloads this session has started, newest last.
+    downloads: Vec<DownloadRecord>,
     /// Attachments currently streaming, in attach order.
     screencast_viewers: Vec<Attachment>,
     /// The attachment allowed to drive the page. First attach wins.
@@ -317,6 +327,11 @@ pub struct BrowserSession {
     connection: Arc<CdpConnection>,
     cdp_session_id: String,
     profile_dir: PathBuf,
+    /// Where this session's downloads land.
+    ///
+    /// A sibling of the profile rather than a child of it: the profile is
+    /// deleted on close, and a download's whole purpose is the file afterwards.
+    download_dir: PathBuf,
     child: Mutex<Option<Child>>,
     state: RwLock<SessionState>,
     /// Serializes attach/detach with their CDP start/stop.
@@ -354,6 +369,7 @@ impl BrowserSession {
             owner_agent_id: self.owner_agent_id.clone(),
             workspace: self.workspace.clone(),
             console_error_count: state.console_error_count,
+            network_failure_count: state.network.failure_count(),
         }
     }
 
@@ -679,8 +695,325 @@ impl BrowserSession {
     }
 
     /// Returns the retained console entries, newest last.
-    pub async fn console(&self) -> Vec<ConsoleEntry> {
-        self.state.read().await.console.iter().cloned().collect()
+    ///
+    /// `level` keeps only one severity; `clear` empties the buffer after
+    /// reading it, so an agent can establish a clean baseline before an action.
+    pub async fn console(&self, level: Option<&str>, clear: bool) -> Vec<ConsoleEntry> {
+        let mut state = self.state.write().await;
+        let entries: Vec<ConsoleEntry> = state
+            .console
+            .iter()
+            .filter(|entry| level.is_none_or(|level| entry.level == level))
+            .cloned()
+            .collect();
+        if clear {
+            state.console.clear();
+            state.console_error_count = 0;
+        }
+        entries
+    }
+
+    /// Returns the recorded requests that survive `filter`.
+    pub async fn network(&self, filter: &NetworkFilter) -> Vec<NetworkEntry> {
+        filter.apply(&self.state.read().await.network.entries())
+    }
+
+    /// Returns one request in full, optionally reading its body back live.
+    ///
+    /// The body is never stored: it is fetched through `Network.getResponseBody`
+    /// only when asked, and only while the browser's own buffer still holds it.
+    pub async fn network_detail(
+        &self,
+        request_id: &str,
+        with_body: bool,
+    ) -> Result<NetworkRequestDetail, BrowserError> {
+        let record = {
+            let state = self.state.read().await;
+            state.network.detail(request_id).cloned()
+        };
+        let record = record.ok_or_else(|| BrowserError::Invalid {
+            detail: format!(
+                "no recorded request has id {request_id}. Run `network` to list what was captured."
+            ),
+        })?;
+        let mut detail = NetworkRequestDetail {
+            entry: record.entry,
+            request_headers: record.request_headers,
+            response_headers: record.response_headers,
+            body: None,
+            body_error: None,
+        };
+        if with_body {
+            match self.response_body(request_id).await {
+                Ok(body) => detail.body = Some(body),
+                Err(error) => detail.body_error = Some(error.to_string()),
+            }
+        }
+        Ok(detail)
+    }
+
+    /// Reads one response body back out of the browser, capped.
+    async fn response_body(
+        &self,
+        request_id: &str,
+    ) -> Result<wardian_core::browser::NetworkBody, BrowserError> {
+        let result = self
+            .connection
+            .call_session(
+                &self.cdp_session_id,
+                "Network.getResponseBody",
+                json!({ "requestId": request_id }),
+            )
+            .await?;
+        let text = result
+            .get("body")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let base64_encoded = result
+            .get("base64Encoded")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let truncated = text.len() > MAX_RESPONSE_BODY_BYTES;
+        let text = if truncated {
+            // Cut on a character boundary so the result is still valid UTF-8.
+            let mut end = MAX_RESPONSE_BODY_BYTES;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text[..end].to_string()
+        } else {
+            text.to_string()
+        };
+        Ok(wardian_core::browser::NetworkBody {
+            text,
+            base64_encoded,
+            truncated,
+        })
+    }
+
+    /// Empties the network ledger. Nothing about the page changes.
+    pub async fn clear_network(&self) {
+        self.state.write().await.network.clear();
+    }
+
+    /// Runs one cookie verb against the session's isolated profile.
+    pub async fn cookies(&self, action: &CookieAction) -> Result<Vec<BrowserCookie>, BrowserError> {
+        match action {
+            CookieAction::List { all } => {
+                let method = if *all {
+                    "Storage.getCookies"
+                } else {
+                    "Network.getCookies"
+                };
+                let result = self
+                    .connection
+                    .call_session(&self.cdp_session_id, method, json!({}))
+                    .await?;
+                Ok(cookies_from(&result))
+            }
+            CookieAction::Set {
+                name,
+                value,
+                url,
+                domain,
+                path,
+                secure,
+                http_only,
+                same_site,
+                expires,
+            } => {
+                // A cookie needs somewhere to live. Neither a URL nor a domain
+                // makes the browser silently drop it, so the page's own address
+                // stands in — which is what a caller setting a cookie for the
+                // page they are looking at means anyway.
+                let mut params = json!({ "name": name, "value": value });
+                match (url.as_deref(), domain.as_deref()) {
+                    (Some(url), _) => params["url"] = json!(url),
+                    (None, Some(_)) => {}
+                    (None, None) => {
+                        let current = self.state.read().await.url.clone();
+                        if current.is_empty() || current.starts_with("about:") {
+                            return Err(BrowserError::Invalid {
+                                detail:
+                                    "this page has no address to scope a cookie to; pass --url or --domain"
+                                        .to_string(),
+                            });
+                        }
+                        params["url"] = json!(current);
+                    }
+                }
+                if let Some(domain) = domain {
+                    params["domain"] = json!(domain);
+                }
+                if let Some(path) = path {
+                    params["path"] = json!(path);
+                }
+                if *secure {
+                    params["secure"] = json!(true);
+                }
+                if *http_only {
+                    params["httpOnly"] = json!(true);
+                }
+                if let Some(same_site) = same_site {
+                    params["sameSite"] = json!(normalize_same_site(same_site)?);
+                }
+                if let Some(expires) = expires {
+                    params["expires"] = json!(expires);
+                }
+                self.connection
+                    .call_session(&self.cdp_session_id, "Network.setCookie", params)
+                    .await?;
+                Ok(Vec::new())
+            }
+            CookieAction::Delete {
+                name,
+                url,
+                domain,
+                path,
+            } => {
+                let mut params = json!({ "name": name });
+                match (url.as_deref(), domain.as_deref()) {
+                    (Some(url), _) => params["url"] = json!(url),
+                    (None, Some(_)) => {}
+                    (None, None) => {
+                        let current = self.state.read().await.url.clone();
+                        if current.is_empty() || current.starts_with("about:") {
+                            return Err(BrowserError::Invalid {
+                                detail:
+                                    "this page has no address to scope the deletion to; pass --url or --domain"
+                                        .to_string(),
+                            });
+                        }
+                        params["url"] = json!(current);
+                    }
+                }
+                if let Some(domain) = domain {
+                    params["domain"] = json!(domain);
+                }
+                if let Some(path) = path {
+                    params["path"] = json!(path);
+                }
+                self.connection
+                    .call_session(&self.cdp_session_id, "Network.deleteCookies", params)
+                    .await?;
+                Ok(Vec::new())
+            }
+            CookieAction::Clear => {
+                self.connection
+                    .call_session(&self.cdp_session_id, "Network.clearBrowserCookies", json!({}))
+                    .await?;
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    /// Reads a whole web-storage area at the page's own origin.
+    pub async fn storage(&self, area: StorageArea) -> Result<StorageSnapshot, BrowserError> {
+        let accessor = area.accessor();
+        let value = self
+            .storage_evaluate(&format!(
+                "(() => {{ const store = window.{accessor}; const out = []; for (let index = 0; index < store.length; index += 1) {{ const key = store.key(index); out.push([key, store.getItem(key) ?? '']); }} return JSON.stringify({{ origin: window.location.origin, entries: out }}); }})()"
+            ))
+            .await?;
+        let text = value.as_str().unwrap_or("{}");
+        let parsed: Value = serde_json::from_str(text).map_err(|error| BrowserError::Invalid {
+            detail: format!("the page returned an unreadable storage listing: {error}"),
+        })?;
+        Ok(storage_snapshot_from(area, &parsed))
+    }
+
+    /// Reads one key, returning `None` when the area does not hold it.
+    pub async fn storage_get(
+        &self,
+        area: StorageArea,
+        key: &str,
+    ) -> Result<Option<String>, BrowserError> {
+        let accessor = area.accessor();
+        let value = self
+            .storage_evaluate(&format!(
+                "window.{accessor}.getItem({})",
+                json!(key)
+            ))
+            .await?;
+        Ok(value.as_str().map(str::to_string))
+    }
+
+    /// Writes, removes, or empties a web-storage area.
+    pub async fn storage_mutate(
+        &self,
+        area: StorageArea,
+        action: &wardian_core::browser::StorageAction,
+    ) -> Result<(), BrowserError> {
+        use wardian_core::browser::StorageAction;
+        let accessor = area.accessor();
+        let expression = match action {
+            StorageAction::Set { key, value } => format!(
+                "window.{accessor}.setItem({}, {})",
+                json!(key),
+                json!(value)
+            ),
+            StorageAction::Remove { key } => {
+                format!("window.{accessor}.removeItem({})", json!(key))
+            }
+            StorageAction::Clear => format!("window.{accessor}.clear()"),
+            StorageAction::Get { .. } => {
+                return Err(BrowserError::Invalid {
+                    detail: "a storage read is not a mutation".to_string(),
+                })
+            }
+        };
+        self.storage_evaluate(&expression).await?;
+        Ok(())
+    }
+
+    /// Evaluates a storage expression, naming the one failure that is expected.
+    ///
+    /// `about:blank`, a sandboxed frame, and a `data:` URL all have opaque
+    /// origins where the DOM throws `SecurityError` on any storage access. That
+    /// is a caller mistake with an obvious fix, not a protocol fault, so it gets
+    /// a message that names the fix instead of a raw evaluation error.
+    async fn storage_evaluate(&self, expression: &str) -> Result<Value, BrowserError> {
+        self.evaluate(expression).await.map_err(|error| {
+            let text = error.to_string();
+            if text.contains("SecurityError") || text.contains("Access is denied") {
+                return BrowserError::Invalid {
+                    detail: "this page's origin has no web storage; navigate to an http or https page first"
+                        .to_string(),
+                };
+            }
+            error
+        })
+    }
+
+    /// Returns the downloads this session has started, newest last.
+    ///
+    /// Completed downloads are renamed from their GUID to their suggested
+    /// filename here rather than in the event pump: the pump must stay free of
+    /// filesystem work, and doing it on read also cannot race the browser's own
+    /// finalization of the file.
+    pub async fn downloads(&self) -> Vec<DownloadRecord> {
+        let mut state = self.state.write().await;
+        for record in state.downloads.iter_mut() {
+            if record.state != "completed" || record.path.is_some() {
+                continue;
+            }
+            record.path = resolve_completed_download(
+                &self.download_dir,
+                &record.guid,
+                &record.suggested_filename,
+            );
+        }
+        state.downloads.clone()
+    }
+
+    /// Forgets the recorded downloads. The files themselves stay on disk.
+    pub async fn clear_downloads(&self) {
+        self.state.write().await.downloads.clear();
+    }
+
+    /// Where this session writes downloads.
+    pub fn download_dir(&self) -> &Path {
+        &self.download_dir
     }
 
     /// Starts streaming frames and issues this attachment's lease token.
@@ -930,6 +1263,104 @@ impl BrowserSession {
 /// Bare hosts and `localhost:3000` are the common agent inputs and must not be
 /// rejected, but a scheme that could reach the local filesystem or execute
 /// script is refused outright.
+/// Reads a `Network.getCookies` or `Storage.getCookies` result.
+fn cookies_from(result: &Value) -> Vec<BrowserCookie> {
+    result
+        .get("cookies")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|cookie| BrowserCookie {
+                    name: string_field(cookie, "name"),
+                    value: string_field(cookie, "value"),
+                    domain: string_field(cookie, "domain"),
+                    path: string_field(cookie, "path"),
+                    secure: cookie
+                        .get("secure")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    http_only: cookie
+                        .get("httpOnly")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    same_site: cookie
+                        .get("sameSite")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    // The protocol reports -1 for a session cookie rather than
+                    // omitting the field, so a non-positive expiry means "none".
+                    expires: cookie
+                        .get("expires")
+                        .and_then(Value::as_f64)
+                        .filter(|expires| *expires > 0.0),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn string_field(value: &Value, field: &str) -> String {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Maps a `--same-site` value onto the three the protocol accepts.
+fn normalize_same_site(value: &str) -> Result<&'static str, BrowserError> {
+    match value.to_ascii_lowercase().as_str() {
+        "strict" => Ok("Strict"),
+        "lax" => Ok("Lax"),
+        "none" => Ok("None"),
+        other => Err(BrowserError::Invalid {
+            detail: format!("{other} is not a SameSite value; use strict, lax, or none"),
+        }),
+    }
+}
+
+/// Builds a bounded storage snapshot out of what the page reported.
+///
+/// Both ceilings are applied here rather than in the page: a value that would
+/// blow an agent's context should not be serialized across the protocol first.
+fn storage_snapshot_from(area: StorageArea, parsed: &Value) -> StorageSnapshot {
+    let origin = string_field(parsed, "origin");
+    let mut entries = Vec::new();
+    let mut total = 0usize;
+    let mut truncated = false;
+    for pair in parsed
+        .get("entries")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let key = pair
+            .get(0)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let raw = pair.get(1).and_then(Value::as_str).unwrap_or_default();
+        let value: String = raw.chars().take(MAX_STORAGE_VALUE_CHARS).collect();
+        let value_truncated = value.chars().count() < raw.chars().count();
+        total += key.len() + value.len();
+        if total > MAX_STORAGE_BYTES {
+            truncated = true;
+            break;
+        }
+        entries.push(StorageEntry {
+            key,
+            value,
+            truncated: value_truncated,
+        });
+    }
+    StorageSnapshot {
+        area,
+        origin,
+        entries,
+        truncated,
+    }
+}
+
 pub fn normalize_url(input: &str) -> Result<String, BrowserError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -976,6 +1407,8 @@ pub struct BrowserSessionBroker {
     next_short_ref: AtomicU32,
     events: broadcast::Sender<BrowserSessionEvent>,
     profile_root: PathBuf,
+    /// Sibling of `profile_root`, so a session's downloads outlive its profile.
+    download_root: PathBuf,
     /// Sessions that have asked for a surface and not yet been acknowledged.
     ///
     /// Outstanding work, not a startup buffer: an entry leaves only when a
@@ -990,18 +1423,28 @@ const MAX_PENDING_SURFACE_OPENS: usize = 32;
 
 impl Default for BrowserSessionBroker {
     fn default() -> Self {
-        Self::new(std::env::temp_dir().join("wardian-browser-profiles"))
+        Self::new(std::env::temp_dir().join("wardian-browser"))
     }
 }
 
 impl BrowserSessionBroker {
-    pub fn new(profile_root: PathBuf) -> Self {
+    /// Roots every session's on-disk state under one directory.
+    ///
+    /// Profiles and downloads are siblings rather than nested: a profile is
+    /// deleted when its session closes, and taking the agent's downloaded file
+    /// with it would defeat the point of downloading.
+    pub fn new(browser_root: PathBuf) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+        let download_root = browser_root.join("downloads");
+        // Growth is bounded at this end rather than at close, because the files
+        // are meant to survive their session.
+        prune_old_downloads(&download_root);
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             next_short_ref: AtomicU32::new(1),
             events,
-            profile_root,
+            profile_root: browser_root.join("profiles"),
+            download_root,
             pending_surface_opens: Mutex::new(Vec::new()),
         }
     }
@@ -1066,6 +1509,7 @@ impl BrowserSessionBroker {
         let browser_id = Uuid::new_v4().to_string();
         let viewport = request.viewport.unwrap_or_default();
         let profile_dir = self.profile_root.join(&browser_id);
+        let download_dir = self.download_root.join(&browser_id);
 
         let mut launched = match launch_engine(&binary, &profile_dir, viewport.width, viewport.height)
             .await
@@ -1101,6 +1545,7 @@ impl BrowserSessionBroker {
             connection,
             cdp_session_id,
             profile_dir: profile_dir.clone(),
+            download_dir: download_dir.clone(),
             child: Mutex::new(Some(launched.child)),
             state: RwLock::new(SessionState {
                 viewport,
@@ -1114,6 +1559,26 @@ impl BrowserSessionBroker {
         if let Err(error) = session.set_viewport(Some(viewport)).await {
             session.shutdown().await;
             return Err(error);
+        }
+        // Best effort, and deliberately not fatal: a browser that cannot be
+        // told where to put downloads is still a usable browser, and failing
+        // the open would trade every other capability for one.
+        if std::fs::create_dir_all(&download_dir).is_ok() {
+            let _ = session
+                .connection
+                .call(
+                    "Browser.setDownloadBehavior",
+                    json!({
+                        // `allowAndName` writes each file under its GUID, which
+                        // makes the path deterministic before the suggested name
+                        // is known. Completion renames it to something a caller
+                        // can actually use.
+                        "behavior": "allowAndName",
+                        "downloadPath": download_dir.to_string_lossy(),
+                        "eventsEnabled": true,
+                    }),
+                )
+                .await;
         }
 
         // Registered before the pump starts. The other order lets a browser
@@ -1182,8 +1647,16 @@ impl BrowserSessionBroker {
                     reap_dead_session(&sessions, &session, &events).await;
                     return;
                 }
-                if event.session_id.as_deref() != Some(cdp_session_id.as_str()) {
-                    continue;
+                match event.session_id.as_deref() {
+                    Some(id) if id == cdp_session_id => {}
+                    // Browser-scoped events — download progress among them —
+                    // carry no session id, and this connection serves exactly
+                    // one browser, so an unaddressed event here is this
+                    // session's by construction.
+                    None => {}
+                    // Some other target: a popup, an extension worker. Its page
+                    // events must not rewrite this session's state.
+                    Some(_) => continue,
                 }
                 handle_protocol_event(&session, &events, event).await;
             }
@@ -1365,6 +1838,21 @@ async fn attach_page(
             .call_session(&cdp_session_id, method, json!({}))
             .await?;
     }
+    // Recording starts with the session, not with the first `network` call. An
+    // agent asks about the network *after* something went wrong, and a ledger
+    // that begins recording at the moment of the question is empty exactly when
+    // it matters. The buffer ceilings bound what the browser keeps for
+    // `Network.getResponseBody`, which is the only thing read back live.
+    connection
+        .call_session(
+            &cdp_session_id,
+            "Network.enable",
+            json!({
+                "maxTotalBufferSize": 10 * 1024 * 1024,
+                "maxResourceBufferSize": 5 * 1024 * 1024,
+            }),
+        )
+        .await?;
     // Read once at attach rather than waiting for the first main-frame commit,
     // so a session that only ever routes within its document can still tell its
     // own frame's events from a subframe's.
@@ -1523,7 +2011,188 @@ async fn handle_protocol_event(
             }
             let _ = events.send(BrowserSessionEvent::Console { browser_id, entry });
         }
+        // Deliberately free of protocol calls. The pump is a single consumer on
+        // a channel that also carries screencast frames, and a lag there does
+        // not merely drop a frame — it invalidates every outstanding ref. A page
+        // load emits several hundred of these, so folding one must never wait
+        // on a round-trip the way the title read after `loadEventFired` does.
+        method if method.starts_with("Network.") => {
+            let failures_moved = {
+                let mut state = session.state.write().await;
+                let before = state.network.failure_count();
+                state.network.apply(method, &event.params);
+                state.network.failure_count() != before
+            };
+            // A failed request arrives with no navigation and no load event to
+            // carry it, so without this the surface would keep showing a stale
+            // count until the page happened to move on its own. Gated on the
+            // count actually changing: a page load is several hundred of these
+            // and almost none of them are news.
+            if failures_moved {
+                let _ = events.send(BrowserSessionEvent::State {
+                    browser_id,
+                    summary: session.summary().await,
+                });
+            }
+        }
+        "Browser.downloadWillBegin" => {
+            let record = DownloadRecord {
+                guid: string_field(&event.params, "guid"),
+                url: string_field(&event.params, "url"),
+                suggested_filename: string_field(&event.params, "suggestedFilename"),
+                state: "in_progress".to_string(),
+                received_bytes: 0,
+                total_bytes: 0,
+                path: None,
+            };
+            if record.guid.is_empty() {
+                return;
+            }
+            let mut state = session.state.write().await;
+            if state.downloads.len() >= MAX_TRACKED_DOWNLOADS {
+                state.downloads.remove(0);
+            }
+            state.downloads.push(record);
+        }
+        "Browser.downloadProgress" => {
+            let guid = string_field(&event.params, "guid");
+            let progress_state = event
+                .params
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("inProgress");
+            let received = event
+                .params
+                .get("receivedBytes")
+                .and_then(Value::as_f64)
+                .unwrap_or_default()
+                .max(0.0) as u64;
+            let total = event
+                .params
+                .get("totalBytes")
+                .and_then(Value::as_f64)
+                .unwrap_or_default()
+                .max(0.0) as u64;
+            let mut state = session.state.write().await;
+            if let Some(record) = state
+                .downloads
+                .iter_mut()
+                .rev()
+                .find(|record| record.guid == guid)
+            {
+                record.received_bytes = received;
+                record.total_bytes = total;
+                record.state = match progress_state {
+                    "completed" => "completed",
+                    "canceled" => "canceled",
+                    _ => "in_progress",
+                }
+                .to_string();
+            }
+            // The file is not touched here. Renaming it belongs to `downloads`,
+            // which is not on the hot path and cannot race the browser's own
+            // finalization of the file.
+        }
         _ => {}
+    }
+}
+
+/// Ceiling on tracked downloads, so a page that downloads in a loop cannot grow
+/// the record without bound.
+const MAX_TRACKED_DOWNLOADS: usize = 100;
+
+/// Renames a completed download from its GUID to its suggested filename.
+///
+/// `allowAndName` gives a deterministic path before the name is known, which is
+/// what makes the file findable at all — but a GUID is useless to a caller, so
+/// the last step is to put the name back. A rename that fails is not an error:
+/// the file exists either way, and reporting the GUID path is more useful than
+/// reporting nothing.
+fn resolve_completed_download(
+    download_dir: &Path,
+    guid: &str,
+    suggested_filename: &str,
+) -> Option<String> {
+    let source = download_dir.join(guid);
+    if !source.exists() {
+        return None;
+    }
+    // Only the file name is taken from the page, so a suggestion like
+    // `../../.bashrc` cannot escape the download directory.
+    let name = Path::new(suggested_filename)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.is_empty() && name != "." && name != "..");
+    let Some(name) = name else {
+        return Some(source.to_string_lossy().to_string());
+    };
+    let destination = unique_download_path(download_dir, &name);
+    match std::fs::rename(&source, &destination) {
+        Ok(()) => Some(destination.to_string_lossy().to_string()),
+        Err(_) => Some(source.to_string_lossy().to_string()),
+    }
+}
+
+/// Finds a free name, appending ` (2)`, ` (3)`, … before the extension.
+fn unique_download_path(download_dir: &Path, name: &str) -> PathBuf {
+    let candidate = download_dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| name.to_string());
+    let extension = path
+        .extension()
+        .map(|extension| format!(".{}", extension.to_string_lossy()))
+        .unwrap_or_default();
+    for index in 2..1000 {
+        let candidate = download_dir.join(format!("{stem} ({index}){extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    download_dir.join(format!("{stem} ({}){extension}", Uuid::new_v4()))
+}
+
+/// Removes download directories older than [`DOWNLOAD_RETENTION_DAYS`].
+///
+/// Downloads deliberately outlive their session, so this is the only thing
+/// standing between that and unbounded disk use.
+fn prune_old_downloads(download_root: &Path) {
+    let Some(cutoff) = std::time::SystemTime::now()
+        .checked_sub(Duration::from_secs(DOWNLOAD_RETENTION_DAYS * 24 * 60 * 60))
+    else {
+        return;
+    };
+    prune_downloads_before(download_root, cutoff);
+}
+
+/// The pruning rule, with its cutoff supplied.
+///
+/// Split out so the rule can be tested against a chosen instant rather than by
+/// backdating a directory, which has no portable API.
+fn prune_downloads_before(download_root: &Path, cutoff: std::time::SystemTime) {
+    let Ok(entries) = std::fs::read_dir(download_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+        // A directory whose age cannot be read is left alone: deleting on a
+        // missing timestamp would be a guess, and the guess destroys data.
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if modified < cutoff {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
     }
 }
 
@@ -1785,5 +2454,213 @@ mod tests {
         let encoded = serde_json::to_value(&event).expect("serialize");
         assert_eq!(encoded["kind"], "frame");
         assert_eq!(encoded["browser_id"], "abc");
+    }
+
+    #[test]
+    fn a_session_cookie_reports_no_expiry_rather_than_the_protocols_minus_one() {
+        let cookies = cookies_from(&json!({
+            "cookies": [
+                { "name": "sid", "value": "a", "domain": "example.com", "path": "/", "expires": -1.0 },
+                {
+                    "name": "keep", "value": "b", "domain": "example.com", "path": "/",
+                    "expires": 1_800_000_000.0, "secure": true, "httpOnly": true, "sameSite": "Lax",
+                },
+            ]
+        }));
+        assert_eq!(cookies.len(), 2);
+        assert_eq!(cookies[0].expires, None);
+        assert!(!cookies[0].secure);
+        assert_eq!(cookies[1].expires, Some(1_800_000_000.0));
+        assert!(cookies[1].secure && cookies[1].http_only);
+        assert_eq!(cookies[1].same_site.as_deref(), Some("Lax"));
+    }
+
+    #[test]
+    fn a_result_with_no_cookies_is_an_empty_list_not_a_failure() {
+        assert!(cookies_from(&json!({})).is_empty());
+        assert!(cookies_from(&json!({ "cookies": [] })).is_empty());
+    }
+
+    #[test]
+    fn same_site_is_normalized_to_the_three_values_the_protocol_accepts() {
+        assert_eq!(normalize_same_site("STRICT").expect("strict"), "Strict");
+        assert_eq!(normalize_same_site("lax").expect("lax"), "Lax");
+        assert_eq!(normalize_same_site("None").expect("none"), "None");
+        let error = normalize_same_site("maybe").expect_err("rejected");
+        assert_eq!(error.code(), "browser_invalid_request");
+        assert!(error.to_string().contains("strict, lax, or none"));
+    }
+
+    #[test]
+    fn a_storage_listing_carries_the_origin_it_was_read_at() {
+        let snapshot = storage_snapshot_from(
+            StorageArea::Local,
+            &json!({
+                "origin": "https://example.com",
+                "entries": [["token", "abc"], ["theme", "dark"]],
+            }),
+        );
+        assert_eq!(snapshot.origin, "https://example.com");
+        assert_eq!(snapshot.entries.len(), 2);
+        assert_eq!(snapshot.entries[0].key, "token");
+        assert!(!snapshot.truncated);
+        assert!(snapshot.entries.iter().all(|entry| !entry.truncated));
+    }
+
+    #[test]
+    fn an_oversized_storage_value_is_cut_and_flagged_on_its_own_entry() {
+        let value = "v".repeat(MAX_STORAGE_VALUE_CHARS + 50);
+        let snapshot = storage_snapshot_from(
+            StorageArea::Session,
+            &json!({ "origin": "https://example.com", "entries": [["big", value]] }),
+        );
+        assert!(snapshot.entries[0].truncated);
+        assert_eq!(
+            snapshot.entries[0].value.chars().count(),
+            MAX_STORAGE_VALUE_CHARS
+        );
+        assert!(!snapshot.truncated, "one long value is not a short listing");
+    }
+
+    #[test]
+    fn a_storage_area_larger_than_the_ceiling_stops_and_says_so() {
+        let value = "v".repeat(MAX_STORAGE_VALUE_CHARS);
+        let entries: Vec<Value> = (0..100)
+            .map(|index| json!([format!("key-{index}"), value]))
+            .collect();
+        let snapshot = storage_snapshot_from(
+            StorageArea::Local,
+            &json!({ "origin": "https://example.com", "entries": entries }),
+        );
+        assert!(snapshot.truncated);
+        assert!(snapshot.entries.len() < 100);
+        let total: usize = snapshot
+            .entries
+            .iter()
+            .map(|entry| entry.key.len() + entry.value.len())
+            .sum();
+        assert!(total <= MAX_STORAGE_BYTES);
+    }
+
+    #[test]
+    fn a_download_name_that_is_already_taken_gets_a_numeric_suffix() {
+        let dir = std::env::temp_dir().join(format!("wardian-download-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create");
+        assert_eq!(unique_download_path(&dir, "report.csv"), dir.join("report.csv"));
+
+        std::fs::write(dir.join("report.csv"), b"first").expect("write");
+        assert_eq!(
+            unique_download_path(&dir, "report.csv"),
+            dir.join("report (2).csv")
+        );
+
+        std::fs::write(dir.join("report (2).csv"), b"second").expect("write");
+        assert_eq!(
+            unique_download_path(&dir, "report.csv"),
+            dir.join("report (3).csv")
+        );
+
+        // An extensionless name keeps the suffix at the end.
+        std::fs::write(dir.join("archive"), b"third").expect("write");
+        assert_eq!(unique_download_path(&dir, "archive"), dir.join("archive (2)"));
+        std::fs::remove_dir_all(&dir).expect("clean up");
+    }
+
+    #[test]
+    fn a_completed_download_is_renamed_from_its_guid_to_its_suggested_name() {
+        let dir = std::env::temp_dir().join(format!("wardian-download-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create");
+        std::fs::write(dir.join("guid-1"), b"payload").expect("write");
+
+        let resolved = resolve_completed_download(&dir, "guid-1", "report.csv").expect("resolved");
+        assert_eq!(resolved, dir.join("report.csv").to_string_lossy());
+        assert!(dir.join("report.csv").exists());
+        assert!(!dir.join("guid-1").exists());
+        std::fs::remove_dir_all(&dir).expect("clean up");
+    }
+
+    #[test]
+    fn a_suggested_name_cannot_write_outside_the_download_directory() {
+        let root = std::env::temp_dir().join(format!("wardian-download-{}", Uuid::new_v4()));
+        let dir = root.join("session");
+        std::fs::create_dir_all(&dir).expect("create");
+        std::fs::write(dir.join("guid-1"), b"payload").expect("write");
+
+        let resolved =
+            resolve_completed_download(&dir, "guid-1", "../escaped.txt").expect("resolved");
+        // Only the file name survives, so the escape lands inside the directory.
+        assert_eq!(resolved, dir.join("escaped.txt").to_string_lossy());
+        assert!(!root.join("escaped.txt").exists());
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    #[test]
+    fn a_suggested_name_that_is_only_a_traversal_falls_back_to_the_guid_path() {
+        let dir = std::env::temp_dir().join(format!("wardian-download-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create");
+        std::fs::write(dir.join("guid-1"), b"payload").expect("write");
+
+        let resolved = resolve_completed_download(&dir, "guid-1", "..").expect("resolved");
+        assert_eq!(resolved, dir.join("guid-1").to_string_lossy());
+        assert!(dir.join("guid-1").exists());
+        std::fs::remove_dir_all(&dir).expect("clean up");
+    }
+
+    #[test]
+    fn a_download_whose_file_is_not_there_yet_resolves_to_no_path() {
+        let dir = std::env::temp_dir().join(format!("wardian-download-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create");
+        assert_eq!(resolve_completed_download(&dir, "guid-1", "report.csv"), None);
+        std::fs::remove_dir_all(&dir).expect("clean up");
+    }
+
+    #[test]
+    fn pruning_removes_expired_session_directories_and_only_directories() {
+        let root = std::env::temp_dir().join(format!("wardian-downloads-{}", Uuid::new_v4()));
+        let session = root.join("session-1");
+        std::fs::create_dir_all(&session).expect("create");
+        std::fs::write(session.join("report.csv"), b"payload").expect("write");
+        std::fs::write(root.join("loose-file"), b"not a session").expect("write");
+
+        // Everything present is older than a cutoff in the future.
+        prune_downloads_before(&root, std::time::SystemTime::now() + Duration::from_secs(60));
+
+        assert!(!session.exists(), "an expired session loses its downloads");
+        assert!(
+            root.join("loose-file").exists(),
+            "only directories are pruned"
+        );
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    #[test]
+    fn pruning_spares_a_session_younger_than_the_cutoff() {
+        let root = std::env::temp_dir().join(format!("wardian-downloads-{}", Uuid::new_v4()));
+        let session = root.join("session-1");
+        std::fs::create_dir_all(&session).expect("create");
+
+        prune_downloads_before(&root, std::time::SystemTime::UNIX_EPOCH);
+
+        assert!(session.exists());
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    #[test]
+    fn pruning_a_directory_that_does_not_exist_is_not_an_error() {
+        let root = std::env::temp_dir().join(format!("wardian-missing-{}", Uuid::new_v4()));
+        prune_old_downloads(&root);
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn the_broker_keeps_profiles_and_downloads_as_siblings() {
+        let root = std::env::temp_dir().join(format!("wardian-browser-{}", Uuid::new_v4()));
+        let broker = BrowserSessionBroker::new(root.clone());
+        assert_eq!(broker.profile_root, root.join("profiles"));
+        assert_eq!(broker.download_root, root.join("downloads"));
+        assert!(
+            !broker.download_root.starts_with(&broker.profile_root),
+            "a profile is deleted on close; downloads must not be inside one"
+        );
     }
 }

@@ -45,6 +45,7 @@ function summary(overrides: Partial<BrowserSessionSummary> = {}): BrowserSession
     viewport: { width: 1000, height: 500 },
     engine: "edge",
     console_error_count: 0,
+    network_failure_count: 0,
     ...overrides,
   };
 }
@@ -300,6 +301,36 @@ describe("BrowserSurface", () => {
       emit?.({ kind: "console", browser_id: "b-1", entry: { level: "error", text: "boom" } });
     });
     expect(screen.getByTestId("browser-surface-console-errors")).toHaveTextContent("1 console error");
+  });
+
+  it("reports failed requests from the summary rather than counting events", async () => {
+    await renderSurface();
+    // Nothing yet: a session with a clean ledger shows no indicator at all.
+    expect(screen.queryByTestId("browser-surface-network-failures")).toBeNull();
+
+    // The ledger predates this pane and survives navigation, so the count has
+    // to come from the summary; a local tally would start at zero here.
+    act(() => {
+      emit?.({
+        kind: "state",
+        browser_id: "b-1",
+        summary: summary({ network_failure_count: 3 }),
+      });
+    });
+    expect(screen.getByTestId("browser-surface-network-failures")).toHaveTextContent(
+      "3 failed requests",
+    );
+
+    act(() => {
+      emit?.({
+        kind: "state",
+        browser_id: "b-1",
+        summary: summary({ network_failure_count: 1 }),
+      });
+    });
+    expect(screen.getByTestId("browser-surface-network-failures")).toHaveTextContent(
+      "1 failed request",
+    );
   });
 
   it("offers a reopen path when the session is gone", async () => {

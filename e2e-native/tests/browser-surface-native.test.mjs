@@ -5,7 +5,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { By } from "selenium-webdriver";
+import { By, until } from "selenium-webdriver";
 
 import {
   createNativeHarness,
@@ -44,6 +44,12 @@ const FIXTURE = `<!doctype html>
   <button id="go" onclick="document.getElementById('out').textContent = 'searched for ' + document.getElementById('q').value">Go</button>
   <p id="out"></p>
   <p><a id="next" href="/second">Second page</a></p>
+  <!--
+    One request that 404s, so the ledger has a failure to report and the
+    surface footer has something to count. Introspection is the point of the
+    phase this fixture now also covers.
+  -->
+  <script>fetch('/api/missing').catch(() => {});</script>
 </body></html>`;
 
 const SECOND = `<!doctype html>
@@ -54,6 +60,15 @@ const SECOND = `<!doctype html>
 /** Serves the fixture on an ephemeral loopback port. */
 async function serveFixture(t) {
   const server = http.createServer((request, response) => {
+    if (request.url?.startsWith("/api/missing")) {
+      const body = JSON.stringify({ error: "nope" });
+      response.writeHead(404, {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      });
+      response.end(body);
+      return;
+    }
     const body = request.url?.startsWith("/second") ? SECOND : FIXTURE;
     response.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
@@ -274,6 +289,55 @@ ${stale.stderr}`,
     const state = await driver.findElement(By.css('[data-testid="browser-surface-load-state"]'));
     return (await state.getText()) === "Ready";
   }, 30_000, "the page never reloaded after the stale-ref check");
+
+  // Introspection over real IPC. The engine-backed Rust tests already prove
+  // the runtime; what only this layer can prove is that the new control-plane
+  // variants round-trip between the CLI and the app, where a serde tag
+  // mismatch would compile cleanly and fail at runtime.
+  let failed = [];
+  await driver.wait(async () => {
+    const listed = await runCliOk(cliPath, harness, [
+      "browser", "--json", browserId, "network", "--failed",
+    ]);
+    failed = JSON.parse(listed).network.entries ?? [];
+    return failed.length > 0;
+  }, 30_000, "the network ledger never recorded the failing request");
+  assert.equal(failed[0].status, 404, `expected the 404, got ${JSON.stringify(failed[0])}`);
+
+  const detail = JSON.parse(
+    await runCliOk(cliPath, harness, [
+      "browser", "--json", browserId, "network", failed[0].request_id, "--body",
+    ]),
+  ).network.detail;
+  assert.equal(detail.entry.status, 404);
+  assert.equal(detail.response_headers["content-type"], "application/json");
+
+  await runCliOk(cliPath, harness, ["browser", browserId, "cookies", "set", "sid", "abc"]);
+  const cookies = JSON.parse(
+    await runCliOk(cliPath, harness, ["browser", "--json", browserId, "cookies"]),
+  ).cookies;
+  assert.equal(
+    cookies.find((cookie) => cookie.name === "sid")?.value,
+    "abc",
+    `the cookie did not round-trip: ${JSON.stringify(cookies)}`,
+  );
+
+  await runCliOk(cliPath, harness, [
+    "browser", browserId, "storage", "local", "set", "theme", "dark",
+  ]);
+  const stored = JSON.parse(
+    await runCliOk(cliPath, harness, ["browser", "--json", browserId, "storage", "local", "theme"]),
+  ).storage;
+  assert.equal(stored.value, "dark", `web storage did not round-trip: ${JSON.stringify(stored)}`);
+
+  // The surface reads the count off the session summary, so this also proves
+  // the ledger reached the frontend rather than only the CLI.
+  const failures = await driver.wait(
+    until.elementLocated(By.css('[data-testid="browser-surface-network-failures"]')),
+    30_000,
+    "the surface never reported the failed request",
+  );
+  assert.match(await failures.getText(), /failed request/);
 
   const screenshotDir = path.join(
     harness.repoRoot,

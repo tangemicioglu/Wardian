@@ -344,8 +344,40 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 .map_err(browser_control_error)?,
         ),
 
-        ControlRequest::BrowserConsole { target } => ok_json(
-            &crate::commands::browser::console_for_session(app, &target)
+        ControlRequest::BrowserConsole {
+            target,
+            level,
+            clear,
+        } => ok_json(
+            &crate::commands::browser::console_for_session(app, &target, level.as_deref(), clear)
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserNetwork { target, action } => ok_json(
+            &crate::commands::browser::network_for_session(app, &target, &action)
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserCookies { target, action } => ok_json(
+            &crate::commands::browser::cookies_for_session(app, &target, &action)
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserStorage {
+            target,
+            area,
+            action,
+        } => ok_json(
+            &crate::commands::browser::storage_for_session(app, &target, area, &action)
+                .await
+                .map_err(browser_control_error)?,
+        ),
+
+        ControlRequest::BrowserDownloads { target, clear } => ok_json(
+            &crate::commands::browser::downloads_for_session(app, &target, clear)
                 .await
                 .map_err(browser_control_error)?,
         ),

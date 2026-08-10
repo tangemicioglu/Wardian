@@ -160,7 +160,114 @@ pub enum BrowserTargetCommand {
     /// Evaluate an expression in the page and print its JSON value.
     Eval { expression: String },
     /// Print the console messages captured since the last navigation.
-    Console,
+    Console {
+        /// Keep only this severity: error, warning, or info.
+        #[arg(long)]
+        level: Option<String>,
+        /// Empty the buffer after printing it.
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Inspect the requests the page has made. Not cleared by navigation.
+    Network {
+        /// A recorded request id, for the full headers of one request.
+        request_id: Option<String>,
+        /// Read the response body back as well. Only with a request id.
+        #[arg(long, requires = "request_id")]
+        body: bool,
+        /// Case-insensitive substring of the URL.
+        #[arg(long)]
+        filter: Option<String>,
+        /// Only this HTTP method.
+        #[arg(long)]
+        method: Option<String>,
+        /// An exact code or a class, e.g. `404` or `2xx`.
+        #[arg(long)]
+        status: Option<String>,
+        /// Comma-separated resource types, e.g. `xhr,fetch`.
+        #[arg(long = "type")]
+        resource_type: Option<String>,
+        /// Only requests that failed or answered 4xx/5xx.
+        #[arg(long)]
+        failed: bool,
+        /// Keep only the most recent N records.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Empty the ledger. Nothing about the page changes.
+        #[arg(long, conflicts_with_all = ["request_id", "filter", "method", "status", "resource_type", "failed", "limit"])]
+        clear: bool,
+    },
+    /// Read or change the cookies held by this session's isolated profile.
+    Cookies {
+        #[command(subcommand)]
+        command: Option<BrowserCookieCommand>,
+        /// List every cookie in the browser context, not only the page's.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Read or change web storage at the page's own origin.
+    Storage {
+        /// `local` or `session`.
+        area: String,
+        #[command(subcommand)]
+        command: Option<BrowserStorageCommand>,
+    },
+    /// List the files this session has downloaded.
+    Downloads {
+        /// Forget the records. The files themselves stay on disk.
+        #[arg(long)]
+        clear: bool,
+    },
+}
+
+/// Cookie verbs. Omitting one lists the page's cookies.
+#[derive(Debug, Subcommand)]
+pub enum BrowserCookieCommand {
+    Set {
+        name: String,
+        value: String,
+        /// Scope the cookie to this URL. Defaults to the current page.
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long)]
+        domain: Option<String>,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        secure: bool,
+        #[arg(long = "http-only")]
+        http_only: bool,
+        /// `strict`, `lax`, or `none`.
+        #[arg(long = "same-site")]
+        same_site: Option<String>,
+        /// Whole seconds since the epoch. Omit for a session cookie.
+        #[arg(long)]
+        expires: Option<i64>,
+    },
+    Delete {
+        name: String,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long)]
+        domain: Option<String>,
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Remove every cookie in this session's profile.
+    Clear,
+}
+
+/// Storage verbs. A bare key reads it; no key at all lists the area.
+#[derive(Debug, Subcommand)]
+pub enum BrowserStorageCommand {
+    Set { key: String, value: String },
+    Remove { key: String },
+    Clear,
+    /// Read one key. Also reached by writing the key with no verb.
+    Get { key: String },
+    /// A bare key, which clap sees as an unrecognized subcommand.
+    #[command(external_subcommand)]
+    Key(Vec<String>),
 }
 
 // ---------------------------------------------------------------------------

@@ -6,12 +6,17 @@
 
 use clap::Parser;
 
-use crate::args::{BrowserArgs, BrowserCommand, BrowserTargetArgs, BrowserTargetCommand};
+use crate::args::{
+    BrowserArgs, BrowserCommand, BrowserCookieCommand, BrowserStorageCommand, BrowserTargetArgs,
+    BrowserTargetCommand,
+};
 use crate::errors::{CliError, ExitCode};
 use crate::live;
 use wardian_core::browser::{
-    render_session_line, render_snapshot, BrowserActionResult, BrowserSessionSummary, ConsoleEntry,
-    PageSnapshot,
+    render_cookie_line, render_download_line, render_network_detail, render_network_line,
+    render_session_line, render_snapshot, render_storage, BrowserActionResult,
+    BrowserSessionSummary, ConsoleEntry, CookieAction, NetworkAction, NetworkFilter,
+    NetworkOutcome, PageSnapshot, StatusFilter, StorageAction, StorageArea, StorageOutcome,
 };
 
 /// Serializes a response under the CLI's standard envelope.
@@ -240,10 +245,243 @@ fn handle_target(
                     .unwrap_or_else(|| value.to_string())
             ))
         }
-        BrowserTargetCommand::Console => {
-            let entries = live::browser_console(target).map_err(crate::control_error)?;
+        BrowserTargetCommand::Console { level, clear } => {
+            let entries = live::browser_console(target, level, clear)
+                .map_err(crate::control_error)?;
             emit_console(&entries, json)
         }
+        BrowserTargetCommand::Network {
+            request_id,
+            body,
+            filter,
+            method,
+            status,
+            resource_type,
+            failed,
+            limit,
+            clear,
+        } => {
+            let action = network_action(
+                request_id,
+                body,
+                filter,
+                method,
+                status.as_deref(),
+                resource_type.as_deref(),
+                failed,
+                limit,
+                clear,
+            )?;
+            let value = live::browser_network(target, action).map_err(crate::control_error)?;
+            let outcome: NetworkOutcome = serde_json::from_value(value)
+                .map_err(|error| CliError::generic(error.to_string()))?;
+            emit_network(&outcome, json)
+        }
+        BrowserTargetCommand::Cookies { command, all } => {
+            let action = cookie_action(command, all)?;
+            let listing = matches!(action, CookieAction::List { .. });
+            let cookies = live::browser_cookies(target, action).map_err(crate::control_error)?;
+            if json {
+                return json_envelope("cookies", &cookies);
+            }
+            if !listing {
+                return Ok("ok\n".to_string());
+            }
+            if cookies.is_empty() {
+                return Ok("no cookies\n".to_string());
+            }
+            Ok(cookies
+                .iter()
+                .map(render_cookie_line)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n")
+        }
+        BrowserTargetCommand::Storage { area, command } => {
+            let (area, action) = storage_action(&area, command)?;
+            let value = live::browser_storage(target, area, action).map_err(crate::control_error)?;
+            let outcome: StorageOutcome = serde_json::from_value(value)
+                .map_err(|error| CliError::generic(error.to_string()))?;
+            emit_storage(&outcome, json)
+        }
+        BrowserTargetCommand::Downloads { clear } => {
+            let records = live::browser_downloads(target, clear).map_err(crate::control_error)?;
+            if json {
+                return json_envelope("downloads", &records);
+            }
+            if records.is_empty() {
+                return Ok("no downloads\n".to_string());
+            }
+            Ok(records
+                .iter()
+                .map(render_download_line)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n")
+        }
+    }
+}
+
+/// Builds the network verb from its mutually shaped flags.
+///
+/// `--body` without a request id is refused by clap; everything else that can
+/// only be wrong at runtime is refused here rather than silently ignored.
+#[allow(clippy::too_many_arguments)]
+pub fn network_action(
+    request_id: Option<String>,
+    body: bool,
+    filter: Option<String>,
+    method: Option<String>,
+    status: Option<&str>,
+    resource_type: Option<&str>,
+    failed: bool,
+    limit: Option<usize>,
+    clear: bool,
+) -> Result<NetworkAction, CliError> {
+    if clear {
+        return Ok(NetworkAction::Clear);
+    }
+    if let Some(request_id) = request_id {
+        return Ok(NetworkAction::Detail { request_id, body });
+    }
+    let status = match status {
+        Some(status) => Some(StatusFilter::parse(status).ok_or_else(|| {
+            CliError::generic(format!(
+                "{status} is not a status; use an exact code like 404 or a class like 2xx"
+            ))
+        })?),
+        None => None,
+    };
+    let resource_types = resource_type
+        .map(|types| {
+            types
+                .split(',')
+                .map(str::trim)
+                .filter(|kind| !kind.is_empty())
+                .map(str::to_lowercase)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(NetworkAction::List {
+        filter: NetworkFilter {
+            text: filter,
+            method,
+            status,
+            resource_types,
+            failed_only: failed,
+            limit,
+        },
+    })
+}
+
+/// Builds the cookie verb, refusing `--all` on anything but a listing.
+pub fn cookie_action(
+    command: Option<BrowserCookieCommand>,
+    all: bool,
+) -> Result<CookieAction, CliError> {
+    match command {
+        None => Ok(CookieAction::List { all }),
+        Some(_) if all => Err(CliError::generic(
+            "--all only applies to listing cookies",
+        )),
+        Some(BrowserCookieCommand::Set {
+            name,
+            value,
+            url,
+            domain,
+            path,
+            secure,
+            http_only,
+            same_site,
+            expires,
+        }) => Ok(CookieAction::Set {
+            name,
+            value,
+            url,
+            domain,
+            path,
+            secure,
+            http_only,
+            same_site,
+            expires,
+        }),
+        Some(BrowserCookieCommand::Delete {
+            name,
+            url,
+            domain,
+            path,
+        }) => Ok(CookieAction::Delete {
+            name,
+            url,
+            domain,
+            path,
+        }),
+        Some(BrowserCookieCommand::Clear) => Ok(CookieAction::Clear),
+    }
+}
+
+/// Builds the storage verb, including the bare-key form clap cannot express.
+///
+/// `storage local token` reads one key. clap sees `token` as an unrecognized
+/// subcommand, so it arrives as an external subcommand and is unpacked here.
+pub fn storage_action(
+    area: &str,
+    command: Option<BrowserStorageCommand>,
+) -> Result<(StorageArea, StorageAction), CliError> {
+    let parsed = StorageArea::parse(area).ok_or_else(|| {
+        CliError::generic(format!("{area} is not a storage area; use local or session"))
+    })?;
+    let action = match command {
+        None => StorageAction::Get { key: None },
+        Some(BrowserStorageCommand::Get { key }) => StorageAction::Get { key: Some(key) },
+        Some(BrowserStorageCommand::Set { key, value }) => StorageAction::Set { key, value },
+        Some(BrowserStorageCommand::Remove { key }) => StorageAction::Remove { key },
+        Some(BrowserStorageCommand::Clear) => StorageAction::Clear,
+        Some(BrowserStorageCommand::Key(tokens)) => {
+            let mut tokens = tokens.into_iter();
+            let key = tokens.next().unwrap_or_default();
+            if key.is_empty() {
+                return Err(CliError::generic("storage needs a key or a verb"));
+            }
+            if tokens.next().is_some() {
+                return Err(CliError::generic(format!(
+                    "`storage {area} {key} …` takes no extra arguments; use `set {key} <value>` to write"
+                )));
+            }
+            StorageAction::Get { key: Some(key) }
+        }
+    };
+    Ok((parsed, action))
+}
+
+fn emit_network(outcome: &NetworkOutcome, json: bool) -> Result<String, CliError> {
+    if json {
+        return json_envelope("network", outcome);
+    }
+    match outcome {
+        NetworkOutcome::Cleared => Ok("cleared the network ledger\n".to_string()),
+        NetworkOutcome::Detail { detail } => Ok(format!("{}\n", render_network_detail(detail))),
+        NetworkOutcome::List { entries } if entries.is_empty() => {
+            Ok("no requests match\n".to_string())
+        }
+        NetworkOutcome::List { entries } => Ok(entries
+            .iter()
+            .map(render_network_line)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"),
+    }
+}
+
+fn emit_storage(outcome: &StorageOutcome, json: bool) -> Result<String, CliError> {
+    if json {
+        return json_envelope("storage", outcome);
+    }
+    match outcome {
+        StorageOutcome::Applied => Ok("ok\n".to_string()),
+        StorageOutcome::Value { value: None } => Ok("(not set)\n".to_string()),
+        StorageOutcome::Value { value: Some(value) } => Ok(format!("{value}\n")),
+        StorageOutcome::Snapshot { snapshot } => Ok(format!("{}\n", render_storage(snapshot))),
     }
 }
 
@@ -436,5 +674,314 @@ mod tests {
         assert!(rendered.starts_with("click e4\n"));
         assert!(rendered.contains("generation: 3"));
         assert!(rendered.contains("https://example.com/next"));
+    }
+
+    /// Parses a full `wardian browser <target> …` tail the way the CLI does.
+    fn target(values: &[&str]) -> BrowserTargetCommand {
+        BrowserTargetArgs::try_parse_from(tokens(values))
+            .expect("parse")
+            .command
+    }
+
+    #[test]
+    fn console_takes_a_level_and_a_clear_flag() {
+        match target(&["console", "--level", "error", "--clear"]) {
+            BrowserTargetCommand::Console { level, clear } => {
+                assert_eq!(level.as_deref(), Some("error"));
+                assert!(clear);
+            }
+            other => panic!("expected console, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bare_network_call_lists_everything() {
+        match target(&["network"]) {
+            BrowserTargetCommand::Network {
+                request_id,
+                clear,
+                filter,
+                ..
+            } => assert!(request_id.is_none() && !clear && filter.is_none()),
+            other => panic!("expected network, got {other:?}"),
+        }
+        let action =
+            network_action(None, false, None, None, None, None, false, None, false).expect("action");
+        assert_eq!(
+            action,
+            NetworkAction::List {
+                filter: NetworkFilter::default()
+            }
+        );
+    }
+
+    #[test]
+    fn network_flags_become_one_filter() {
+        let action = network_action(
+            None,
+            false,
+            Some("api".to_string()),
+            Some("POST".to_string()),
+            Some("2xx"),
+            Some("xhr, Fetch ,"),
+            true,
+            Some(25),
+            false,
+        )
+        .expect("action");
+        match action {
+            NetworkAction::List { filter } => {
+                assert_eq!(filter.text.as_deref(), Some("api"));
+                assert_eq!(filter.method.as_deref(), Some("POST"));
+                assert_eq!(filter.status, Some(StatusFilter::Class(2)));
+                assert_eq!(filter.resource_types, vec!["xhr", "fetch"]);
+                assert!(filter.failed_only);
+                assert_eq!(filter.limit, Some(25));
+            }
+            other => panic!("expected a listing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unreadable_status_names_both_accepted_forms() {
+        let error =
+            network_action(None, false, None, None, Some("okay"), None, false, None, false)
+                .expect_err("rejected");
+        assert!(error.message.contains("404"));
+        assert!(error.message.contains("2xx"));
+    }
+
+    #[test]
+    fn a_request_id_selects_the_detail_view_and_carries_the_body_flag() {
+        let action = network_action(
+            Some("42.1".to_string()),
+            true,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+        )
+        .expect("action");
+        assert_eq!(
+            action,
+            NetworkAction::Detail {
+                request_id: "42.1".to_string(),
+                body: true
+            }
+        );
+    }
+
+    #[test]
+    fn clear_wins_over_everything_it_is_allowed_beside() {
+        let action =
+            network_action(None, false, None, None, None, None, false, None, true).expect("action");
+        assert_eq!(action, NetworkAction::Clear);
+    }
+
+    #[test]
+    fn network_refuses_a_body_read_without_a_request_to_read_it_from() {
+        assert!(BrowserTargetArgs::try_parse_from(tokens(&["network", "--body"])).is_err());
+    }
+
+    #[test]
+    fn network_refuses_clear_alongside_a_filter() {
+        assert!(BrowserTargetArgs::try_parse_from(tokens(&[
+            "network", "--clear", "--filter", "api"
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn a_bare_cookies_call_lists_the_pages_cookies() {
+        assert_eq!(
+            cookie_action(None, false).expect("action"),
+            CookieAction::List { all: false }
+        );
+        assert_eq!(
+            cookie_action(None, true).expect("action"),
+            CookieAction::List { all: true }
+        );
+    }
+
+    #[test]
+    fn cookie_set_carries_every_attribute_it_was_given() {
+        match target(&[
+            "cookies",
+            "set",
+            "sid",
+            "abc",
+            "--secure",
+            "--http-only",
+            "--same-site",
+            "lax",
+            "--expires",
+            "1800000000",
+        ]) {
+            BrowserTargetCommand::Cookies { command, all } => assert_eq!(
+                cookie_action(command, all).expect("action"),
+                CookieAction::Set {
+                    name: "sid".to_string(),
+                    value: "abc".to_string(),
+                    url: None,
+                    domain: None,
+                    path: None,
+                    secure: true,
+                    http_only: true,
+                    same_site: Some("lax".to_string()),
+                    expires: Some(1_800_000_000),
+                }
+            ),
+            other => panic!("expected cookies, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_is_refused_on_a_cookie_mutation_rather_than_silently_ignored() {
+        let error = cookie_action(Some(BrowserCookieCommand::Clear), true).expect_err("rejected");
+        assert!(error.message.contains("only applies to listing"));
+    }
+
+    #[test]
+    fn a_bare_storage_area_lists_the_whole_area() {
+        let (area, action) = storage_action("local", None).expect("action");
+        assert_eq!(area, StorageArea::Local);
+        assert_eq!(action, StorageAction::Get { key: None });
+    }
+
+    #[test]
+    fn a_bare_key_reads_that_key() {
+        match target(&["storage", "session", "token"]) {
+            BrowserTargetCommand::Storage { area, command } => {
+                let (area, action) = storage_action(&area, command).expect("action");
+                assert_eq!(area, StorageArea::Session);
+                assert_eq!(
+                    action,
+                    StorageAction::Get {
+                        key: Some("token".to_string())
+                    }
+                );
+            }
+            other => panic!("expected storage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bare_key_with_a_stray_value_points_at_set_instead_of_guessing() {
+        match target(&["storage", "local", "token", "abc"]) {
+            BrowserTargetCommand::Storage { area, command } => {
+                let error = storage_action(&area, command).expect_err("rejected");
+                assert!(error.message.contains("set token <value>"));
+            }
+            other => panic!("expected storage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn storage_verbs_parse_into_their_actions() {
+        for (values, expected) in [
+            (
+                vec!["storage", "local", "set", "theme", "dark"],
+                StorageAction::Set {
+                    key: "theme".to_string(),
+                    value: "dark".to_string(),
+                },
+            ),
+            (
+                vec!["storage", "session", "remove", "theme"],
+                StorageAction::Remove {
+                    key: "theme".to_string(),
+                },
+            ),
+            (vec!["storage", "local", "clear"], StorageAction::Clear),
+        ] {
+            match target(&values) {
+                BrowserTargetCommand::Storage { area, command } => {
+                    let (_, action) = storage_action(&area, command).expect("action");
+                    assert_eq!(action, expected, "{values:?}");
+                }
+                other => panic!("expected storage, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_storage_area_names_the_two_that_exist() {
+        let error = storage_action("cookies", None).expect_err("rejected");
+        assert!(error.message.contains("local or session"));
+    }
+
+    #[test]
+    fn a_network_listing_renders_one_line_per_request() {
+        let outcome = NetworkOutcome::List {
+            entries: vec![wardian_core::browser::NetworkEntry {
+                request_id: "1".to_string(),
+                method: "GET".to_string(),
+                url: "https://example.com/api".to_string(),
+                resource_type: "xhr".to_string(),
+                status: Some(200),
+                mime_type: None,
+                encoded_data_length: None,
+                failure: None,
+                from_cache: false,
+                duration_ms: None,
+                url_truncated: false,
+            }],
+        };
+        let text = emit_network(&outcome, false).expect("render");
+        assert!(text.contains("https://example.com/api"));
+        assert!(text.ends_with('\n'));
+
+        let empty = NetworkOutcome::List {
+            entries: Vec::new(),
+        };
+        assert_eq!(
+            emit_network(&empty, false).expect("render"),
+            "no requests match\n"
+        );
+        assert_eq!(
+            emit_network(&NetworkOutcome::Cleared, false).expect("render"),
+            "cleared the network ledger\n"
+        );
+    }
+
+    #[test]
+    fn json_output_wraps_every_shape_in_the_standard_envelope() {
+        let text = emit_network(&NetworkOutcome::Cleared, true).expect("render");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(value["schema"], 1);
+        assert_eq!(value["network"]["outcome"], "cleared");
+
+        let text = emit_storage(&StorageOutcome::Applied, true).expect("render");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(value["storage"]["outcome"], "applied");
+    }
+
+    #[test]
+    fn a_storage_key_that_is_not_set_says_so_rather_than_printing_a_blank_line() {
+        assert_eq!(
+            emit_storage(&StorageOutcome::Value { value: None }, false).expect("render"),
+            "(not set)\n"
+        );
+        assert_eq!(
+            emit_storage(
+                &StorageOutcome::Value {
+                    value: Some("dark".to_string())
+                },
+                false
+            )
+            .expect("render"),
+            "dark\n"
+        );
+    }
+
+    #[test]
+    fn downloads_parse_their_clear_flag() {
+        match target(&["downloads", "--clear"]) {
+            BrowserTargetCommand::Downloads { clear } => assert!(clear),
+            other => panic!("expected downloads, got {other:?}"),
+        }
     }
 }

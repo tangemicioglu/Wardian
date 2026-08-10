@@ -18,9 +18,15 @@ use tokio_tungstenite::tungstenite::Message;
 
 /// Ceiling on how long any single protocol call may take.
 pub const CDP_CALL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Buffered protocol events. Frames are the high-volume producer, so this is
-/// sized to absorb a screencast burst without dropping navigation events.
-const EVENT_CHANNEL_CAPACITY: usize = 512;
+/// Buffered protocol events.
+///
+/// Sized to absorb a screencast burst *and* a page load's network events
+/// without dropping a navigation. Lagging here is not a dropped frame: the
+/// session pump cannot know whether a `Page.frameNavigated` was among the
+/// discarded messages, so it has to invalidate every outstanding snapshot ref.
+/// A page load emits several hundred `Network.*` events, which is why this is
+/// well above what frames alone would need.
+const EVENT_CHANNEL_CAPACITY: usize = 2048;
 
 /// Synthetic event published when the websocket closes.
 ///

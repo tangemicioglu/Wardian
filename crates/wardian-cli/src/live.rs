@@ -1214,10 +1214,70 @@ pub fn browser_eval(target: &str, expression: &str) -> io::Result<serde_json::Va
     )
 }
 
-pub fn browser_console(target: &str) -> io::Result<Vec<ConsoleEntry>> {
+pub fn browser_console(
+    target: &str,
+    level: Option<String>,
+    clear: bool,
+) -> io::Result<Vec<ConsoleEntry>> {
     browser_request(
         ControlRequest::BrowserConsole {
             target: target.to_string(),
+            level,
+            clear,
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_network(
+    target: &str,
+    action: wardian_core::browser::NetworkAction,
+) -> io::Result<serde_json::Value> {
+    browser_request(
+        ControlRequest::BrowserNetwork {
+            target: target.to_string(),
+            action,
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_cookies(
+    target: &str,
+    action: wardian_core::browser::CookieAction,
+) -> io::Result<Vec<wardian_core::browser::BrowserCookie>> {
+    browser_request(
+        ControlRequest::BrowserCookies {
+            target: target.to_string(),
+            action,
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_storage(
+    target: &str,
+    area: wardian_core::browser::StorageArea,
+    action: wardian_core::browser::StorageAction,
+) -> io::Result<serde_json::Value> {
+    browser_request(
+        ControlRequest::BrowserStorage {
+            target: target.to_string(),
+            area,
+            action,
+        },
+        BROWSER_TIMEOUT,
+    )
+}
+
+pub fn browser_downloads(
+    target: &str,
+    clear: bool,
+) -> io::Result<Vec<wardian_core::browser::DownloadRecord>> {
+    browser_request(
+        ControlRequest::BrowserDownloads {
+            target: target.to_string(),
+            clear,
         },
         BROWSER_TIMEOUT,
     )

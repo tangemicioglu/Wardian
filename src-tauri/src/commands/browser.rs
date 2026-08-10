@@ -16,8 +16,9 @@ use crate::state::browser_session::{
 };
 use crate::state::AppState;
 use wardian_core::browser::{
-    BrowserActionResult, BrowserGetResult, BrowserScreenshotResult, BrowserSessionSummary,
-    ConsoleEntry, PageSnapshot,
+    BrowserActionResult, BrowserCookie, BrowserGetResult, BrowserScreenshotResult,
+    BrowserSessionSummary, ConsoleEntry, CookieAction, DownloadRecord, NetworkAction,
+    NetworkOutcome, PageSnapshot, StorageAction, StorageArea, StorageOutcome,
 };
 
 /// Event the frontend listens for to open a surface for a new session.
@@ -346,8 +347,91 @@ pub async fn eval_in_session(
 pub async fn console_for_session(
     app: &AppHandle,
     target: &str,
+    level: Option<&str>,
+    clear: bool,
 ) -> Result<Vec<ConsoleEntry>, BrowserError> {
-    Ok(resolve(app, target).await?.console().await)
+    let level = match level {
+        Some(level) => Some(normalize_console_filter(level)?),
+        None => None,
+    };
+    Ok(resolve(app, target).await?.console(level, clear).await)
+}
+
+/// Validates a `--level` value against the three severities capture collapses to.
+pub fn normalize_console_filter(level: &str) -> Result<&'static str, BrowserError> {
+    match level.to_ascii_lowercase().as_str() {
+        "error" => Ok("error"),
+        "warn" | "warning" => Ok("warning"),
+        "info" | "log" => Ok("info"),
+        other => Err(BrowserError::Invalid {
+            detail: format!("{other} is not a console level; use error, warning, or info"),
+        }),
+    }
+}
+
+/// Runs one `network` verb and returns whichever shape it produces.
+pub async fn network_for_session(
+    app: &AppHandle,
+    target: &str,
+    action: &NetworkAction,
+) -> Result<NetworkOutcome, BrowserError> {
+    let session = resolve(app, target).await?;
+    match action {
+        NetworkAction::List { filter } => Ok(NetworkOutcome::List {
+            entries: session.network(filter).await,
+        }),
+        NetworkAction::Detail { request_id, body } => Ok(NetworkOutcome::Detail {
+            detail: Box::new(session.network_detail(request_id, *body).await?),
+        }),
+        NetworkAction::Clear => {
+            session.clear_network().await;
+            Ok(NetworkOutcome::Cleared)
+        }
+    }
+}
+
+/// Runs one `cookies` verb. Only `list` returns cookies; the rest return none.
+pub async fn cookies_for_session(
+    app: &AppHandle,
+    target: &str,
+    action: &CookieAction,
+) -> Result<Vec<BrowserCookie>, BrowserError> {
+    resolve(app, target).await?.cookies(action).await
+}
+
+/// Runs one `storage` verb against one area.
+pub async fn storage_for_session(
+    app: &AppHandle,
+    target: &str,
+    area: StorageArea,
+    action: &StorageAction,
+) -> Result<StorageOutcome, BrowserError> {
+    let session = resolve(app, target).await?;
+    match action {
+        StorageAction::Get { key: Some(key) } => Ok(StorageOutcome::Value {
+            value: session.storage_get(area, key).await?,
+        }),
+        StorageAction::Get { key: None } => Ok(StorageOutcome::Snapshot {
+            snapshot: session.storage(area).await?,
+        }),
+        mutation => {
+            session.storage_mutate(area, mutation).await?;
+            Ok(StorageOutcome::Applied)
+        }
+    }
+}
+
+pub async fn downloads_for_session(
+    app: &AppHandle,
+    target: &str,
+    clear: bool,
+) -> Result<Vec<DownloadRecord>, BrowserError> {
+    let session = resolve(app, target).await?;
+    let records = session.downloads().await;
+    if clear {
+        session.clear_downloads().await;
+    }
+    Ok(records)
 }
 
 // ---------------------------------------------------------------------------

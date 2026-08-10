@@ -460,6 +460,17 @@ export function BrowserSurface({
             {consoleErrors.length} console error{consoleErrors.length === 1 ? "" : "s"}
           </span>
         ) : null}
+        {/*
+          The count comes from the summary rather than a local tally: the ledger
+          survives navigation and predates this surface, so counting events seen
+          here would under-report every request made before the pane opened.
+        */}
+        {summary && summary.network_failure_count > 0 ? (
+          <span data-testid="browser-surface-network-failures">
+            {summary.network_failure_count} failed request
+            {summary.network_failure_count === 1 ? "" : "s"}
+          </span>
+        ) : null}
         {actionError ? (
           <span className="truncate text-[var(--color-wardian-status-error)]" data-testid="browser-surface-error">
             {actionError}
