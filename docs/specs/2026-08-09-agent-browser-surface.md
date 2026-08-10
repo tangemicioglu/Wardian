@@ -2,7 +2,7 @@
 
 Filename: `2026-08-09-agent-browser-surface.md`
 
-- **Status:** Implemented (phases 1, 2, 3, 4a, and 4b; 4c deferred). Phases 1 and 2 landed in #869 after a review loop that converged at round nine; phase 3 in #874, phase 4a in #877, and phase 4b in #878.
+- **Status:** Implemented (phases 1, 2, 3, 4a, and 4b; 4c deferred). Phases 1 and 2 landed in #869 after a review loop that converged at round nine; phase 3 in #874, phase 4a in #877, and phase 4b in #880.
 - **Date:** 2026-08-09
 
 ## Delivery status
