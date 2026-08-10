@@ -560,8 +560,9 @@ rather than one:
   lease-aware input forwarding, auth and policy integration, and a PWA-side
   surface. That is a large bill for the narrow case of watching a headless
   browser from a phone, and it touches the remote auth surface, which is the
-  part of Wardian least improved by being touched speculatively. Tracked
-  separately so the cost is visible when someone wants it.
+  part of Wardian least improved by being touched speculatively. Tracked as
+  #876, with the open questions written down, so the cost is visible when
+  someone wants it rather than the item sitting here as if it were nearly done.
 
 Phases 3 and 4 should start by reading
 [agent-browser](https://github.com/vercel-labs/agent-browser) rather than from

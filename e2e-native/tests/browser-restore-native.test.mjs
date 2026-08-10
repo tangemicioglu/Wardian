@@ -27,6 +27,7 @@ import { openWorkbenchSurface, waitForWorkbenchReady } from "../lib/workbench.mj
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RESTORE_TIMEOUT_MS = 60_000;
+const SCREENSHOT_DATE = "2026-08-09";
 
 const FIXTURE = `<!doctype html>
 <html><head><title>Restored page</title></head>
@@ -186,4 +187,20 @@ test("a browser surface reopens its page after the app restarts", async (t) => {
   assert.equal(sessions.length, 1, `expected exactly one session, got ${JSON.stringify(sessions)}`);
   assert.equal(sessions[0].browser_id, restoredBrowserId);
   assert.equal(sessions[0].url, baseUrl);
+
+  // PR evidence: this is the moment that used to show the unavailable
+  // placeholder, captured after the restart rather than staged.
+  const screenshotDir = path.join(
+    harness.repoRoot,
+    "e2e",
+    "screenshots",
+    "browser-session-restore",
+    SCREENSHOT_DATE,
+  );
+  fs.mkdirSync(screenshotDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(screenshotDir, "restored-after-restart.png"),
+    await session.driver.takeScreenshot(),
+    "base64",
+  );
 });
