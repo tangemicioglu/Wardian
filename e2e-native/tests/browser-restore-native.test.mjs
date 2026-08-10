@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { By } from "selenium-webdriver";
+import { By, Key } from "selenium-webdriver";
 
 import {
   createNativeHarness,
@@ -64,6 +64,28 @@ async function waitForDocument(primaryPath, predicate, what) {
   throw new Error(`timed out waiting for ${what}; last document was ${JSON.stringify(last)}`);
 }
 
+/**
+ * Types an address into the surface's address bar and submits it.
+ *
+ * Selects the existing text rather than calling `clear()`: the input is a
+ * controlled React field, and a WebDriver clear can empty the DOM value
+ * without React seeing a change, so the next keystrokes land appended to
+ * whatever was already there. That is invisible until the surface opens on a
+ * non-blank address, at which point the navigation silently goes to
+ * `<old><new>`. Asserting the field afterwards keeps the failure legible.
+ */
+async function navigateTo(driver, url) {
+  const address = await driver.findElement(By.css('[data-testid="browser-surface-address"]'));
+  await address.click();
+  await address.sendKeys(Key.chord(Key.CONTROL, "a"), url);
+  assert.equal(
+    await address.getAttribute("value"),
+    url,
+    "the address bar did not take the typed address",
+  );
+  await address.sendKeys("\n");
+}
+
 /** The visible browser surface, once one has rendered. */
 async function browserSurface(driver, what) {
   return await driver.wait(async () => {
@@ -112,11 +134,7 @@ test("a browser surface reopens its page after the app restarts", async (t) => {
 
   // Drive it to a real page so there is an address worth restoring. The
   // address bar is the surface's own control, which holds the drive lease.
-  const address = await session.driver.findElement(
-    By.css('[data-testid="browser-surface-address"]'),
-  );
-  await address.clear();
-  await address.sendKeys(baseUrl, "\n");
+  await navigateTo(session.driver, baseUrl);
   await session.driver.wait(async () => {
     const state = await session.driver.findElement(
       By.css('[data-testid="browser-surface-load-state"]'),
