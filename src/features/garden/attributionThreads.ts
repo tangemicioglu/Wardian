@@ -43,6 +43,45 @@ function centre(cell: TerrainCell): GardenPosition {
 }
 
 /**
+ * Paths that have a more specific path in the same set, and so should not be
+ * threaded.
+ *
+ * `buildTerrainPaint` rolls every change onto its path *and every ancestor*, and
+ * pools `agentIds` and `evidence` up the chain — that is what lets a folder say
+ * its subtree changed. It also means an agent that wrote one file appears on
+ * every folder above it, so without this the map drew a thread to the file, to
+ * `src/features`, to `src`, and to the repository root: four lines making one
+ * claim.
+ *
+ * Worse, the churn cap ranked them backwards. A folder's churn is the sum of its
+ * subtree, so ancestors always outrank the file they contain, and `MAX_THREADS`
+ * filled with the least specific cells while the actual writes were cut. The
+ * lines that survived ended at the geometric centre of a large folder rect,
+ * where nothing is drawn — a label sits at its top-left — which reads exactly
+ * like a line going nowhere.
+ *
+ * A folder still keeps its thread when it is the deepest *rendered* cell, which
+ * is the truthful answer at that level of detail: the write is somewhere in
+ * here, and here is as precise as the map currently is.
+ */
+function supersededByDescendant(paths: Iterable<string>): Set<string> {
+  const present = new Set(paths);
+  const superseded = new Set<string>();
+  for (const path of present) {
+    let cursor = path;
+    for (;;) {
+      const cut = cursor.lastIndexOf("/");
+      // `cut <= 0` stops at a POSIX root (`/a`) and, together with the drive
+      // prefix losing its slash on the next pass, at a Windows one (`d:/a`).
+      if (cut <= 0) break;
+      cursor = cursor.slice(0, cut);
+      if (present.has(cursor)) superseded.add(cursor);
+    }
+  }
+  return superseded;
+}
+
+/**
  * Which agent-to-ground ties to draw.
  *
  * Exported for test, and pure so the selection rule can be checked without a
@@ -66,7 +105,12 @@ export function threadsFor(options: {
   const max = options.max ?? MAX_THREADS;
   if (!selectedAgentId && !selectedPath) return [];
 
-  const candidates: Array<{ thread: Thread; churn: number }> = [];
+  // One supersession set rather than one per agent, because a selection is
+  // either a single agent or a single cell: the agent case leaves exactly one
+  // claimant on every candidate, and the cell case leaves exactly one candidate.
+  // Neither can put two agents at different depths of the same tree, so keying
+  // by agent would be machinery guarding a state that cannot arise.
+  const claimed: Array<{ cell: TerrainCell; churn: number; agentIds: readonly string[] }> = [];
   for (const cell of cells) {
     const cellPaint = paint.get(cell.path);
     if (!cellPaint || cellPaint.evidence !== "attributed") continue;
@@ -77,13 +121,22 @@ export function threadsFor(options: {
         ? [selectedAgentId]
         : []
       : cellPaint.agentIds;
+    if (agentIds.length === 0) continue;
 
-    for (const agentId of agentIds) {
+    claimed.push({ cell, churn: cellPaint.churn, agentIds });
+  }
+
+  const superseded = supersededByDescendant(claimed.map((entry) => entry.cell.path));
+
+  const candidates: Array<{ thread: Thread; churn: number }> = [];
+  for (const entry of claimed) {
+    if (superseded.has(entry.cell.path)) continue;
+    for (const agentId of entry.agentIds) {
       const from = positions.get(agentId);
       if (!from) continue;
       candidates.push({
-        thread: { key: threadKey(agentId, cell.path), from, to: centre(cell) },
-        churn: cellPaint.churn,
+        thread: { key: threadKey(agentId, entry.cell.path), from, to: centre(entry.cell) },
+        churn: entry.churn,
       });
     }
   }

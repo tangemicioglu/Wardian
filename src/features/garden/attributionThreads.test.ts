@@ -120,6 +120,58 @@ describe("threadsFor", () => {
     expect(threads[0].key).toBe(threadKey("a1", "d:/repo/39.ts"));
   });
 
+  it("threads the file, not every folder above it", () => {
+    // `buildTerrainPaint` rolls a change onto every ancestor and pools the agent
+    // ids up the chain, so without supersession one write drew four lines making
+    // one claim — and the folders' churn is the sum of their subtree, so they
+    // outranked the file and the cap kept the least specific ones.
+    const cells = [
+      cell("d:/repo", 0),
+      cell("d:/repo/src", 20),
+      cell("d:/repo/src/features", 40),
+      cell("d:/repo/src/features/row.tsx", 60),
+    ];
+    const paints = new Map([
+      ["d:/repo", paint({ churn: 1 })],
+      ["d:/repo/src", paint({ churn: 0.8 })],
+      ["d:/repo/src/features", paint({ churn: 0.6 })],
+      ["d:/repo/src/features/row.tsx", paint({ churn: 0.2 })],
+    ]);
+    const threads = threadsFor({ cells, paint: paints, positions, selectedAgentId: "a1" });
+    expect(threads.map((thread) => thread.key)).toEqual([
+      threadKey("a1", "d:/repo/src/features/row.tsx"),
+    ]);
+  });
+
+  it("keeps a folder's thread when it is the deepest cell rendered", () => {
+    // At a coarse level of detail "the write is somewhere in here" is the
+    // truthful answer, and dropping the thread would lose the tie entirely.
+    const cells = [cell("d:/repo", 0), cell("d:/repo/src", 20)];
+    const paints = new Map([
+      ["d:/repo", paint({ churn: 1 })],
+      ["d:/repo/src", paint({ churn: 0.8 })],
+    ]);
+    const threads = threadsFor({ cells, paint: paints, positions, selectedAgentId: "a1" });
+    expect(threads.map((thread) => thread.key)).toEqual([threadKey("a1", "d:/repo/src")]);
+  });
+
+  it("still threads a selected folder even though its children are rendered", () => {
+    // Selecting a piece of ground asks "who wrote *this*", so supersession must
+    // not answer a different question.
+    const cells = [cell("d:/repo/src", 0), cell("d:/repo/src/row.tsx", 20)];
+    const paints = new Map([
+      ["d:/repo/src", paint({ churn: 1, agentIds: ["a1"] })],
+      ["d:/repo/src/row.tsx", paint({ churn: 0.2, agentIds: ["a1"] })],
+    ]);
+    const threads = threadsFor({
+      cells,
+      paint: paints,
+      positions,
+      selectedPath: "d:/repo/src",
+    });
+    expect(threads.map((thread) => thread.key)).toEqual([threadKey("a1", "d:/repo/src")]);
+  });
+
   it("is deterministic when churn ties", () => {
     const cells = [cell("d:/repo/b.ts"), cell("d:/repo/a.ts", 40)];
     const paints = new Map(cells.map((entry) => [entry.path, paint({ churn: 0.5 })]));

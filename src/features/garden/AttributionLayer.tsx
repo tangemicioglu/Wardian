@@ -1,11 +1,14 @@
 import React, { useMemo } from "react";
-import { Line } from "react-konva";
+import { Circle, Line } from "react-konva";
 
 import type { GardenAgentUnit } from "./garden.types";
 import type { TerrainCell } from "./terrain";
 import type { TerrainPaint } from "./terrainPaint";
 import type { GardenTheme } from "./useGardenTheme";
 import { threadsFor } from "./attributionThreads";
+
+/** World-space radius of the dot marking where a thread lands. */
+const THREAD_TERMINATOR_RADIUS = 3;
 
 interface AttributionLayerProps {
   cells: readonly TerrainCell[];
@@ -44,15 +47,29 @@ export const AttributionLayer: React.FC<AttributionLayerProps> = React.memo(
     return (
       <>
         {threads.map((thread) => (
-          <Line
-            key={thread.key}
-            points={[thread.from.x, thread.from.y, thread.to.x, thread.to.y]}
-            stroke={theme.selection}
-            strokeWidth={1}
-            opacity={0.55}
-            listening={false}
-            perfectDrawEnabled={false}
-          />
+          <React.Fragment key={thread.key}>
+            <Line
+              points={[thread.from.x, thread.from.y, thread.to.x, thread.to.y]}
+              stroke={theme.selection}
+              strokeWidth={1}
+              opacity={0.55}
+              listening={false}
+              perfectDrawEnabled={false}
+            />
+            {/* A thread lands on a cell's geometric centre, and a cell's only
+                visual anchor is a label at its top-left — so a line into a large
+                folder ends in blank space and reads as going nowhere. The
+                terminator says the line arrived. */}
+            <Circle
+              x={thread.to.x}
+              y={thread.to.y}
+              radius={THREAD_TERMINATOR_RADIUS}
+              fill={theme.selection}
+              opacity={0.75}
+              listening={false}
+              perfectDrawEnabled={false}
+            />
+          </React.Fragment>
         ))}
       </>
     );
