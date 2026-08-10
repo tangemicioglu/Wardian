@@ -201,10 +201,24 @@ side of the map, and the next invalidation there puts it back. The map blinks in
 places nothing happened to, which is indistinguishable from a rendering fault
 and destroys any trust in the ground as a stable surface. Each district
 therefore descends against `districtCellBudget(maxCells, districtCount)` —
-`maxCells / districts`, floored at `MIN_DISTRICT_CELLS` (64) so a 37-district
-install does not get 54 cells each and never show a second level anywhere. The
-real ceiling is `max(maxCells, districts × 64)`, which is what the division
-costs. A district's detail must depend on that district's data.
+`maxCells / districts`, floored at `MIN_DISTRICT_CELLS`. A district's detail
+must depend on that district's data.
+
+**The floor is sized against what one level costs, and this was got wrong
+once.** The cut is whole-level, so a share too small to admit a level does not
+show less detail — it shows none, and the ground draws as bare squares that
+never open however far the user zooms. A real district holding four repository
+roots of ~46 entries each needs ~190 cells for its *first* level; a floor of 64
+gave exactly the bare-squares failure, on a 37-district roster where
+`2000 / 37 = 54`. The floor is now 512.
+
+Being generous is safe because the budget is not what bounds the map. **The
+frontier is.** A folder is listed only when its cell is large on screen, so
+districts the user is not looking at contribute one cell each regardless of what
+they are permitted, and the nominal ceiling of `districts × 512` is never
+approached in practice. The budget is a backstop against one pathological folder
+with thousands of entries, not the mechanism that keeps the scene graph small.
+Reading it as the latter is what produced the 64.
 
 Listings are cached by normalized path and **refreshed** — never evicted — when
 `explorer-changed` fires, using the same 150 ms-debounced watcher the Changes

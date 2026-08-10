@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { MAX_TERRAIN_CELLS } from "./terrainFrontier";
 import {
   DIR_WEIGHT,
   GROUND_GAP,
@@ -200,6 +201,42 @@ describe("buildTerrain", () => {
     const src = cells.find((cell) => cell.name === "src");
     const readme = cells.find((cell) => cell.name === "readme.md");
     expect(area(src!.rect) / area(readme!.rect)).toBeCloseTo(DIR_WEIGHT, 4);
+  });
+
+  it("opens a realistic district under a realistic roster", () => {
+    // The regression a toy fixture missed entirely: four repository roots of
+    // ~46 entries each need ~190 cells for their *first* level, and the cut is
+    // whole-level. A per-district share below that drew four bare squares that
+    // never opened at any zoom — which is what shipped, briefly.
+    const roots = ["d:/dev/wardian", "d:/dev/wt-2", "d:/dev/wt-3", "d:/dev/wardian.org"];
+    const listings = new Map<string, TerrainListing>();
+    for (const root of roots) {
+      const names = Array.from({ length: 46 }, (_, index) => `entry-${index}`);
+      listings.set(root, listing(root, names, names.slice(0, 20)));
+    }
+    const crowded = new Map(
+      Array.from({ length: 37 }, (_, index) => [
+        `workspace:d${index}`,
+        district({
+          roots: index === 0 ? roots : [`d:/other/${index}`],
+          origin: { x: index * 5000, y: 0 },
+        }),
+      ]),
+    );
+
+    const cells = buildTerrain({
+      districts: crowded,
+      listings,
+      minSubdivideArea: 0,
+      maxCells: MAX_TERRAIN_CELLS,
+    });
+    const mine = cells.filter((cell) => cell.districtId === "workspace:d0");
+    // No root is left as a bare square, and each one actually opened. The count
+    // falls short of 46 x 4 because cells in the ground square's corners fall
+    // outside the district's disc, which is the clip working as intended.
+    const openedRoots = mine.filter((cell) => cell.depth === 0 && !cell.truncated);
+    expect(openedRoots.map((cell) => cell.path).sort()).toEqual([...roots].sort());
+    expect(mine.filter((cell) => cell.depth === 1).length).toBeGreaterThan(150);
   });
 
   it("keeps a district's detail independent of what other districts ingest", () => {

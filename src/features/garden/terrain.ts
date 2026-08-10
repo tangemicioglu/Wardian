@@ -126,13 +126,19 @@ export interface TerrainInput {
 /**
  * Floor on a district's share of `maxCells`.
  *
- * The budget is divided between districts rather than spent first-come, so a
- * 37-district install would otherwise allot 54 cells each and never show a
- * second level anywhere. The real ceiling is therefore
- * `max(maxCells, districts * MIN_DISTRICT_CELLS)`, which is the price of the
- * stability the division buys.
+ * Sized against what one level actually costs. A district holding four
+ * repository roots of about forty-six entries each needs ~190 cells to draw its
+ * *first* level, and the budget is all-or-nothing per level — so a floor below
+ * that does not show less detail, it shows none, and the ground sits there as
+ * bare squares that never open. An earlier value of 64 did exactly that.
+ *
+ * Generous is safe here because the budget is not what bounds the map. The
+ * frontier is: a folder is listed only when its cell is large on screen, so
+ * districts the user is not looking at contribute one cell each no matter what
+ * they are allowed. This is a backstop against one pathological folder, not the
+ * mechanism that keeps the scene graph small.
  */
-export const MIN_DISTRICT_CELLS = 64;
+export const MIN_DISTRICT_CELLS = 512;
 
 /** A district's share of the cell budget. */
 export function districtCellBudget(maxCells: number, districtCount: number): number {
@@ -310,6 +316,11 @@ export function squarify<T>(
  * of the map, and the next invalidation there puts it back. The map blinks in
  * places nothing happened to. A district's detail must depend on that
  * district's data.
+ *
+ * The share is `districtCellBudget`, which floors well above what one level
+ * costs. A share too small to admit a level does not degrade gracefully — the
+ * cut is whole-level, so the ground draws as bare squares that never open no
+ * matter how far in the user zooms.
  */
 export function buildTerrain(input: TerrainInput): TerrainCell[] {
   const cells: TerrainCell[] = [];
