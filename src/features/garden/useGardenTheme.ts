@@ -5,6 +5,7 @@ import {
   CANVAS_SUBLABEL_SIZE,
 } from "../../utils/canvasTypography";
 import { clearResolvedColorCache, resolveCssVar } from "./resolveColor";
+import type { TerrainChangeKind } from "./terrainPaint";
 
 export interface GardenTheme {
   /** Primary label colour. */
@@ -23,6 +24,14 @@ export interface GardenTheme {
   groundDir: string;
   /** Fill for a file cell. */
   groundFile: string;
+  /**
+   * Change tint per aggregate kind.
+   *
+   * Deliberately the same hues `ChangesPanel` uses for the same kinds: the map
+   * and the pane describe one change set, and two palettes for one fact is a
+   * thing the operator has to learn twice.
+   */
+  change: Record<TerrainChangeKind, string>;
   font: string;
   labelSize: number;
   subLabelSize: number;
@@ -41,6 +50,35 @@ export interface GardenTheme {
  * a dark background, so in the default light theme labels were barely readable
  * and the selection ring was invisible.
  */
+/**
+ * The palette used when a CSS custom property cannot be read.
+ *
+ * Exported so canvas unit tests have one base to spread over rather than each
+ * carrying its own literal: every new channel added here otherwise breaks every
+ * fixture, which teaches people to stop adding channels.
+ */
+export const GARDEN_THEME_FALLBACK: GardenTheme = {
+  label: "#111827",
+  labelMuted: "#4b5563",
+  selection: "#926a09",
+  labelBackdrop: "#fcfaf5",
+  ground: "#f5f1e8",
+  groundBorder: "#e0d8c8",
+  groundDir: "#efe9dc",
+  groundFile: "#fbf8f1",
+  change: {
+    added: "#059669",
+    modified: "#b45309",
+    deleted: "#b91c1c",
+    renamed: "#0891b2",
+    untracked: "#059669",
+    mixed: "#b45309",
+  },
+  font: CANVAS_LABEL_FONT,
+  labelSize: CANVAS_LABEL_SIZE,
+  subLabelSize: CANVAS_SUBLABEL_SIZE,
+};
+
 export function useGardenTheme(): GardenTheme {
   const [themeVersion, setThemeVersion] = useState(0);
 
@@ -64,14 +102,40 @@ export function useGardenTheme(): GardenTheme {
   // re-render the whole map on every telemetry tick.
   return useMemo(
     () => ({
-      label: resolveCssVar("var(--color-wardian-text)", "#111827"),
-      labelMuted: resolveCssVar("var(--color-wardian-text-muted-neutral)", "#4b5563"),
-      selection: resolveCssVar("var(--color-wardian-accent)", "#926a09"),
-      labelBackdrop: resolveCssVar("var(--color-wardian-bg)", "#fcfaf5"),
-      ground: resolveCssVar("var(--color-wardian-card)", "#f5f1e8"),
-      groundBorder: resolveCssVar("var(--color-wardian-border)", "#e0d8c8"),
-      groundDir: resolveCssVar("var(--color-wardian-card-bg-muted)", "#efe9dc"),
-      groundFile: resolveCssVar("var(--color-wardian-input-bg)", "#fbf8f1"),
+      label: resolveCssVar("var(--color-wardian-text)", GARDEN_THEME_FALLBACK.label),
+      labelMuted: resolveCssVar(
+        "var(--color-wardian-text-muted-neutral)",
+        GARDEN_THEME_FALLBACK.labelMuted,
+      ),
+      selection: resolveCssVar("var(--color-wardian-accent)", GARDEN_THEME_FALLBACK.selection),
+      labelBackdrop: resolveCssVar("var(--color-wardian-bg)", GARDEN_THEME_FALLBACK.labelBackdrop),
+      ground: resolveCssVar("var(--color-wardian-card)", GARDEN_THEME_FALLBACK.ground),
+      groundBorder: resolveCssVar(
+        "var(--color-wardian-border)",
+        GARDEN_THEME_FALLBACK.groundBorder,
+      ),
+      groundDir: resolveCssVar(
+        "var(--color-wardian-card-bg-muted)",
+        GARDEN_THEME_FALLBACK.groundDir,
+      ),
+      groundFile: resolveCssVar("var(--color-wardian-input-bg)", GARDEN_THEME_FALLBACK.groundFile),
+      change: {
+        added: resolveCssVar("var(--color-wardian-success)", GARDEN_THEME_FALLBACK.change.added),
+        modified: resolveCssVar(
+          "var(--color-wardian-warning)",
+          GARDEN_THEME_FALLBACK.change.modified,
+        ),
+        deleted: resolveCssVar("var(--color-wardian-error)", GARDEN_THEME_FALLBACK.change.deleted),
+        renamed: resolveCssVar(
+          "var(--color-wardian-processing)",
+          GARDEN_THEME_FALLBACK.change.renamed,
+        ),
+        untracked: resolveCssVar(
+          "var(--color-wardian-success)",
+          GARDEN_THEME_FALLBACK.change.untracked,
+        ),
+        mixed: resolveCssVar("var(--color-wardian-warning)", GARDEN_THEME_FALLBACK.change.mixed),
+      },
       font: CANVAS_LABEL_FONT,
       labelSize: CANVAS_LABEL_SIZE,
       subLabelSize: CANVAS_SUBLABEL_SIZE,

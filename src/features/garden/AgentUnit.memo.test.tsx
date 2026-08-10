@@ -18,17 +18,10 @@ vi.mock("./SkillCrown", () => ({ SkillCrown: () => <div /> }));
 import { AgentUnit } from "./AgentUnit";
 import type { GardenAgentUnit } from "./garden.types";
 import type { GardenSkillGlyph } from "./skillGlyphs";
-import type { GardenTheme } from "./useGardenTheme";
+import { GARDEN_THEME_FALLBACK, type GardenTheme } from "./useGardenTheme";
 
 const theme: GardenTheme = {
-  label: "#111827",
-  labelMuted: "#4b5563",
-  selection: "#926a09",
-  labelBackdrop: "#fcfaf5",
-  ground: "#f5f1e8",
-  groundBorder: "#e0d8c8",
-  groundDir: "#efe9dc",
-  groundFile: "#fbf8f1",
+  ...GARDEN_THEME_FALLBACK,
   font: "sans-serif",
   labelSize: 12,
   subLabelSize: 10,

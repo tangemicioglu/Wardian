@@ -56,7 +56,7 @@ export function minSubdivideArea(scale: number): number {
   return SUBDIVIDE_AREA_PX / (scale * scale);
 }
 
-function intersectsViewport(rect: TerrainRect, world: TerrainRect): boolean {
+export function intersectsViewport(rect: TerrainRect, world: TerrainRect): boolean {
   return (
     rect.x < world.x + world.width &&
     rect.x + rect.width > world.x &&

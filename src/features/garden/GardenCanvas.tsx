@@ -13,6 +13,7 @@ import { isActiveAgentStatus, isActiveWorkflowStatus } from "./gardenStatus";
 import { useGardenTheme } from "./useGardenTheme";
 import { TerrainLayer } from "./TerrainLayer";
 import type { TerrainCell, TerrainDistrict } from "./terrain";
+import type { TerrainPaint } from "./terrainPaint";
 import type { TerrainViewport } from "./terrainFrontier";
 import { wheelZoomFactor } from "../../utils/wheelZoom";
 
@@ -25,6 +26,8 @@ interface GardenCanvasProps {
   /** Ground cells drawn beneath the units. Empty until terrain is ingested. */
   terrainCells?: readonly TerrainCell[];
   terrainDistricts?: ReadonlyMap<string, TerrainDistrict>;
+  /** Change tint per terrain path. Absent until a change set has loaded. */
+  terrainPaint?: ReadonlyMap<string, TerrainPaint>;
   /**
    * Reports the visible world rectangle and zoom.
    *
@@ -60,6 +63,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   highlightedAgentIds,
   terrainCells,
   terrainDistricts,
+  terrainPaint,
   onViewportChange,
   onSelect,
   onOpenAgent,
@@ -399,6 +403,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               districts={terrainDistricts}
               scale={scale}
               theme={theme}
+              paint={terrainPaint}
             />
           )}
           {workflowUnits.map((unit) => (

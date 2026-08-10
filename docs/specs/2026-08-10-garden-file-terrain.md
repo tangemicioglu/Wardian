@@ -73,8 +73,16 @@ paint(cell)      = f( changeSummary, now )     // separate pass, separate input
 ```
 
 The separation is a type boundary, mirroring the one that already protects
-geometry from telemetry: `TerrainInput` accepts no change data and no viewport,
-and `paintTerrain` accepts no geometry it can alter.
+geometry from telemetry: `TerrainInput` accepts no change data, and
+`buildTerrainPaint` accepts no geometry it can alter.
+
+The viewport is the one thing that crosses, and only as a scalar. `TerrainInput`
+carries `minSubdivideArea` — the world-space area below which a cell is not
+subdivided — derived from zoom. It can add or drop a whole level of detail; it
+cannot alter a rect, because a cell's rect is a function of its parent's rect and
+its siblings and of nothing else. `terrain.test.ts` asserts that a cell drawn at
+two thresholds occupies the identical rect at both, which is the claim the whole
+design rests on.
 
 ### Roots
 
@@ -162,10 +170,30 @@ level it passed through.
 ### Change is paint
 
 `ChangeReviewSummary` supplies everything the paint needs. For each root, one
-`load_change_review` call against the baseline in `changes/prefs.json` — shared
-with the Changes pane so the map and the pane cannot hold two definitions of
-"changed" — yields per-path `change_kind`, `insertions`/`deletions`, `evidence`,
-`agent_ids`, `turn_indices`, and `reviewed`.
+`load_change_review` call yields per-path `change_kind`, `insertions` and
+`deletions`, `evidence`, `agent_ids`, `turn_indices`, and `reviewed`.
+
+**One call per root, not per agent.** `read_turns_for_workspace` in
+`change_review.rs` selects conversations by workspace, so attribution already
+spans every agent that worked there; the request's `agent_id` selects only the
+watermark and the snapshot baseline. A 37-district install therefore costs a
+handful of `git status` invocations rather than one per agent.
+
+### Which baseline the ground uses
+
+Three of the five baselines — `last_effective_turn`, `conversation_start`, and
+`unreviewed` — resolve against one agent's snapshots and watermark. That is
+exactly right for the Changes pane, which shows one selected agent. It is
+meaningless for a map showing every agent at once: picking a representative
+agent per root would make the entire colouring depend on an arbitrary choice
+that nothing in the UI could explain.
+
+`head` and `branch_point` are computed from the repository and name no agent. So
+the terrain adopts the pane's stored preference when it is one of these, and
+falls back to `head` when it is not. This is a deliberate, narrow divergence
+from the "one definition of changed" rule, and it is made safe by stating the
+baseline in words in the legend: the two surfaces may differ, and they may never
+differ silently.
 
 Paths roll **up** the tree: a folder cell carries the aggregate churn of its
 subtree whether or not that subtree is listed. This is the property that makes
@@ -279,7 +307,9 @@ interface TerrainChild {
 interface TerrainInput {
   districts: ReadonlyMap<string, TerrainDistrict>;  // districtId -> roots + extent
   listings: ReadonlyMap<string, TerrainListing>;    // the frontier
-  budget: { maxCells: number };
+  /** World-space area below which a cell is not subdivided. Derived from zoom. */
+  minSubdivideArea: number;
+  maxCells: number;
 }
 
 interface TerrainDistrict {

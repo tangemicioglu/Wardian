@@ -20,6 +20,11 @@ import { agentsCarrying } from "../features/garden/skillGlyphs";
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
 import { useGardenSkills } from "../features/garden/useGardenSkills";
 import { useGardenTerrain } from "../features/garden/useGardenTerrain";
+import { useTerrainChanges } from "../features/garden/useTerrainChanges";
+import {
+  GARDEN_CHANGE_LEGEND,
+  gardenChangeBaselineLabel,
+} from "../features/garden/gardenStatus";
 import type { TerrainViewport } from "../features/garden/terrainFrontier";
 import { useGardenStore } from "../store/useGardenStore";
 import { useLibraryStore } from "../store/useLibraryStore";
@@ -245,11 +250,16 @@ export const GardenView: React.FC<GardenViewProps> = ({
   // animation frame; the expansion pass inside the hook debounces on top of
   // that, so a pan produces listings once it settles rather than while it moves.
   const [viewport, setViewport] = useState<TerrainViewport | null>(null);
+  const terrainEnabled = visibility === "visible" && rendererActive;
   const terrain = useGardenTerrain({
-    enabled: visibility === "visible" && rendererActive,
+    enabled: terrainEnabled,
     districts: layout.districts,
     viewport,
   });
+  // Change review is fetched per visible workspace root, not per agent:
+  // attribution already spans every conversation in a workspace, so one call
+  // answers for all of them.
+  const changes = useTerrainChanges({ enabled: terrainEnabled, roots: terrain.visibleRoots });
 
   const selectedUnit = [...agentUnits, ...workflowUnits].find(
     (unit) => unitKey(unit.ref) === activeSelectionKey,
@@ -276,6 +286,28 @@ export const GardenView: React.FC<GardenViewProps> = ({
             {item.label}
           </span>
         ))}
+        {changes.paint.size > 0 && (
+          <>
+            <span className="h-3 w-px bg-wardian-border" aria-hidden="true" />
+            {/* The baseline is named rather than assumed: the ground uses a
+                workspace-level baseline while the Changes pane may be showing an
+                agent-scoped one, and the two must not differ silently. */}
+            <span className="font-bold text-primary" title={gardenChangeBaselineLabel(changes.baseline)}>
+              Ground
+            </span>
+            {GARDEN_CHANGE_LEGEND.map((item) => (
+              <span key={item.kind} className="inline-flex items-center gap-1 text-muted-neutral">
+                <span
+                  className="h-1.5 w-1.5 rounded-sm"
+                  style={{ backgroundColor: item.colorVar }}
+                  aria-hidden="true"
+                />
+                {item.label}
+              </span>
+            ))}
+            <span className="text-muted-neutral">{gardenChangeBaselineLabel(changes.baseline)}</span>
+          </>
+        )}
       </section>
       <div
         id="garden-selection-summary"
@@ -296,6 +328,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
         highlightedAgentIds={highlightedAgentIds}
         terrainCells={terrain.cells}
         terrainDistricts={layout.districts}
+        terrainPaint={changes.paint}
         onViewportChange={setViewport}
         onSelect={(ref) => {
           const key = unitKey(ref);
