@@ -327,7 +327,7 @@ fn parse_codex_catalog(output: &str) -> Result<Vec<ProviderModelOption>, String>
             if id.is_empty() {
                 return None;
             }
-            if id == "codex-auto-review" {
+            if matches!(id, "codex-auto-review" | "gpt-5.6-sol-wm") {
                 return None;
             }
             let display_name = model
@@ -450,6 +450,12 @@ mod tests {
               "display_name": "Codex Auto Review",
               "default_reasoning_level": "medium",
               "supported_reasoning_levels": [{"effort": "low"}, {"effort": "medium"}]
+            },
+            {
+              "slug": "gpt-5.6-sol-wm",
+              "display_name": "GPT-5.6-Sol-WM",
+              "default_reasoning_level": "low",
+              "supported_reasoning_levels": [{"effort": "low"}]
             }
           ]
         }"#;
