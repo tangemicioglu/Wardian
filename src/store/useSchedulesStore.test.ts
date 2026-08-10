@@ -64,12 +64,27 @@ describe('useSchedulesStore', () => {
       name: 'HB',
       schedule: { schedule_type: 'interval', interval_minutes: 60, active: true },
       provider: 'codex',
+      workspace: '/workspace',
       input: {},
       bindings: {},
     });
     expect(invokeMock).toHaveBeenCalledWith(
       'schedule_create',
       expect.objectContaining({ blueprintId: 'heartbeat', name: 'HB' }),
+    );
+  });
+
+  it('update invokes schedule_update while retaining the schedule id', async () => {
+    invokeMock.mockResolvedValue(sample);
+    await useSchedulesStore.getState().update({
+      id: 's1',
+      name: 'Updated',
+      schedule: { schedule_type: 'interval', interval_minutes: 30, active: true },
+      workspace: '/workspace',
+    });
+    expect(invokeMock).toHaveBeenCalledWith(
+      'schedule_update',
+      expect.objectContaining({ id: 's1', name: 'Updated', workspace: '/workspace' }),
     );
   });
 

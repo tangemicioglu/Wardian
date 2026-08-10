@@ -588,7 +588,7 @@ pub enum WorkflowCommand {
     },
     /// Manage workflow schedules (schedules.json). UI lives in the app; these edit the file.
     #[command(subcommand)]
-    Schedule(WorkflowScheduleCommand),
+    Schedule(Box<WorkflowScheduleCommand>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -599,26 +599,55 @@ pub enum WorkflowScheduleCommand {
         blueprint: String,
         #[arg(long)]
         name: String,
-        /// Interval cadence in minutes.
-        #[arg(long, conflicts_with_all = ["daily", "weekly", "at"])]
-        every: Option<u32>,
-        /// Daily at HH:MM local time.
-        #[arg(long, conflicts_with_all = ["every", "weekly", "at"])]
-        daily: Option<String>,
-        /// Weekly comma-separated days and time, e.g. Mon,Wed,Fri@09:30.
-        #[arg(long, conflicts_with_all = ["every", "daily", "at"])]
-        weekly: Option<String>,
-        /// One-time run at RFC3339 / YYYY-MM-DDTHH:MM local time.
-        #[arg(long, conflicts_with_all = ["every", "daily", "weekly"])]
-        at: Option<String>,
+        #[command(flatten)]
+        cadence: ScheduleDefinitionArgs,
         #[arg(long)]
         provider: Option<String>,
+        /// Existing directory used as the scheduled run workspace.
+        #[arg(long)]
+        workspace: String,
         /// JSON object of run input.
         #[arg(long)]
         input: Option<String>,
         /// Role/class -> provider binding, repeatable: --bind role=provider.
         #[arg(long)]
         bind: Vec<String>,
+        /// Typed role assignments as a JSON object keyed by role name.
+        #[arg(long, alias = "assignment")]
+        assignments: Option<String>,
+        /// Create the schedule paused instead of active.
+        #[arg(long)]
+        paused: bool,
+    },
+    /// Update selected schedule configuration without replacing its identity or history.
+    Update {
+        id: String,
+        #[arg(long)]
+        blueprint: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[command(flatten)]
+        cadence: ScheduleDefinitionArgs,
+        #[arg(long)]
+        provider: Option<String>,
+        /// Existing directory used as the scheduled run workspace.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// JSON object of run input.
+        #[arg(long)]
+        input: Option<String>,
+        /// Role/class -> provider binding, repeatable: --bind role=provider.
+        #[arg(long)]
+        bind: Vec<String>,
+        /// Typed role assignments as a JSON object keyed by role name.
+        #[arg(long, alias = "assignment")]
+        assignments: Option<String>,
+        /// Pause the schedule after applying configuration changes.
+        #[arg(long, conflicts_with = "active")]
+        paused: bool,
+        /// Resume the schedule after applying configuration changes.
+        #[arg(long, conflicts_with = "paused")]
+        active: bool,
     },
     List,
     Pause {
@@ -633,6 +662,37 @@ pub enum WorkflowScheduleCommand {
     RunNow {
         id: String,
     },
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ScheduleDefinitionArgs {
+    /// Interval cadence in minutes.
+    #[arg(long, conflicts_with_all = ["daily", "weekly", "monthly", "specific_dates", "at"])]
+    pub every: Option<u32>,
+    /// Daily at HH:MM local time.
+    #[arg(long, conflicts_with_all = ["every", "weekly", "monthly", "specific_dates", "at"])]
+    pub daily: Option<String>,
+    /// Weekly comma-separated days and time, e.g. Mon,Wed,Fri@09:30.
+    #[arg(long, conflicts_with_all = ["every", "daily", "monthly", "specific_dates", "at"])]
+    pub weekly: Option<String>,
+    /// Monthly comma-separated day numbers and time, e.g. 1,15@09:30.
+    #[arg(long, conflicts_with_all = ["every", "daily", "weekly", "specific_dates", "at"])]
+    pub monthly: Option<String>,
+    /// Specific comma-separated dates and time, e.g. 2026-09-01,2026-09-15@09:30.
+    #[arg(long, conflicts_with_all = ["every", "daily", "weekly", "monthly", "at"])]
+    pub specific_dates: Option<String>,
+    /// One-time run at RFC3339 / YYYY-MM-DDTHH:MM local time.
+    #[arg(long, conflicts_with_all = ["every", "daily", "weekly", "monthly", "specific_dates"])]
+    pub at: Option<String>,
+    /// End condition: never, on_date, or after_occurrences.
+    #[arg(long)]
+    pub end: Option<String>,
+    /// End date used with --end on_date.
+    #[arg(long)]
+    pub end_date: Option<String>,
+    /// Maximum occurrence count used with --end after_occurrences.
+    #[arg(long)]
+    pub max_occurrences: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1529,6 +1589,8 @@ mod tests {
             "HB",
             "--every",
             "60",
+            "--workspace",
+            ".",
         ])
         .unwrap();
         let Command::Workflow(args) = cli.command else {
@@ -1536,7 +1598,36 @@ mod tests {
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Schedule(WorkflowScheduleCommand::Add { .. })
+            WorkflowCommand::Schedule(ref command)
+                if matches!(command.as_ref(), WorkflowScheduleCommand::Add { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_schedule_update_with_extended_cadence_options() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "workflow",
+            "schedule",
+            "update",
+            "s1",
+            "--monthly",
+            "1,15@09:30",
+            "--end",
+            "after_occurrences",
+            "--max-occurrences",
+            "4",
+            "--active",
+        ])
+        .unwrap();
+        let Command::Workflow(args) = cli.command else {
+            panic!("expected Workflow")
+        };
+        assert!(matches!(
+            args.command,
+            WorkflowCommand::Schedule(ref command)
+                if matches!(command.as_ref(), WorkflowScheduleCommand::Update { id, cadence, active, .. }
+                    if id == "s1" && cadence.monthly.as_deref() == Some("1,15@09:30") && *active)
         ));
     }
 

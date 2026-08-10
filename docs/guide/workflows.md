@@ -53,6 +53,12 @@ share the control endpoint and run logs.
 Pass `--workspace <absolute-workspace-path>` when headless workflow tasks should
 run against a specific project checkout.
 
+Scheduled workflows always require an existing workspace directory. The
+Schedule launch form validates this value before saving, and the CLI uses the
+same rule for `workflow schedule add` and `workflow schedule update`. Use the
+CLI update command to change cadence, assignments, provider, input, or pause
+state without replacing the schedule identity.
+
 Bash:
 
 ```bash

@@ -130,6 +130,7 @@ test("the workflow scheduler tick loop fires a scheduled run", { timeout: 180000
     name: "Native Scheduled Fire",
     schedule: { schedule_type: "interval", interval_minutes: 60, active: true },
     provider: "mock",
+    workspace: harness.isolatedHome,
     input: { symbol: "SPY" },
   });
   assert.ok(created.id, "schedule_create should return a schedule with an id");

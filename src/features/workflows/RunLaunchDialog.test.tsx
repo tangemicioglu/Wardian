@@ -118,6 +118,7 @@ describe('RunLaunchDialog', () => {
     await waitFor(() => expect(screen.getByLabelText(/provider/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole('radio', { name: /schedule/i }));
     fireEvent.change(screen.getByLabelText(/schedule name/i), { target: { value: 'Nightly' } });
+    fireEvent.change(screen.getByLabelText(/^workspace$/i), { target: { value: '/workspace' } });
     fireEvent.click(screen.getByRole('button', { name: /save schedule/i }));
 
     await waitFor(() => expect(onScheduled).toHaveBeenCalled());
@@ -125,6 +126,24 @@ describe('RunLaunchDialog', () => {
       'schedule_create',
       expect.objectContaining({ blueprintId: 'wf', name: 'Nightly' }),
     );
+  });
+
+  it('requires a workspace before saving a schedule', async () => {
+    render(
+      <RunLaunchDialog
+        path="/x/wf.md"
+        blueprintId="wf"
+        onLaunched={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText(/provider/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('radio', { name: /schedule/i }));
+    fireEvent.click(screen.getByRole('button', { name: /save schedule/i }));
+
+    expect(await screen.findByText('Workspace is required for scheduled workflows.')).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith('schedule_create', expect.anything());
   });
 
   it('keeps long workflow forms inside a scrollable viewport-bounded dialog', async () => {
@@ -160,8 +179,7 @@ describe('RunLaunchDialog', () => {
   it('preserves provider and input when editing an existing schedule', async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === 'list_provider_readiness') return providerReadiness;
-      if (command === 'schedule_remove') return null;
-      if (command === 'schedule_create') return { id: 's2' };
+      if (command === 'schedule_update') return { id: 's1' };
       return null;
     });
     const editSchedule: WorkflowSchedule = {
@@ -169,7 +187,7 @@ describe('RunLaunchDialog', () => {
       blueprint_id: 'wf',
       name: 'Nightly',
       provider: 'claude',
-      workspace: null,
+      workspace: '/workspace',
       input: { symbol: 'IBM' },
       bindings: { planner: 'agent-1' },
       schedule: { schedule_type: 'interval', interval_minutes: 60, active: true },
@@ -191,16 +209,16 @@ describe('RunLaunchDialog', () => {
     expect(screen.getByLabelText(/symbol/i)).toHaveValue('IBM');
     fireEvent.click(screen.getByRole('button', { name: /save schedule/i }));
 
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('schedule_remove', { id: 's1' }));
-    expect(invokeMock).toHaveBeenCalledWith(
-      'schedule_create',
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      'schedule_update',
       expect.objectContaining({
-        blueprintId: 'wf',
+        id: 's1',
         provider: 'claude',
+        workspace: '/workspace',
         input: { symbol: 'IBM' },
         bindings: { planner: 'agent-1' },
       }),
-    );
+    ));
   });
 
   it('lets a workflow role bind to an active agent when launched', async () => {

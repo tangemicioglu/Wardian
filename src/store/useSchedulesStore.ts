@@ -8,7 +8,19 @@ export interface CreateScheduleArgs {
   name: string;
   schedule: ScheduleDefinition;
   provider?: string;
-  workspace?: string;
+  workspace: string;
+  input?: unknown;
+  bindings?: Record<string, string>;
+  assignments?: WorkflowAssignments;
+}
+
+export interface UpdateScheduleArgs {
+  id: string;
+  blueprintId?: string;
+  name?: string;
+  schedule: ScheduleDefinition;
+  provider?: string;
+  workspace: string;
   input?: unknown;
   bindings?: Record<string, string>;
   assignments?: WorkflowAssignments;
@@ -21,6 +33,7 @@ interface SchedulesState {
   load: () => Promise<void>;
   subscribe: () => Promise<() => void>;
   create: (args: CreateScheduleArgs) => Promise<void>;
+  update: (args: UpdateScheduleArgs) => Promise<void>;
   pause: (id: string) => Promise<void>;
   resume: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
@@ -60,7 +73,26 @@ export const useSchedulesStore = create<SchedulesState>((set, get) => ({
         name: args.name,
         schedule: args.schedule,
         ...(args.provider ? { provider: args.provider } : {}),
-        ...(args.workspace ? { workspace: args.workspace } : {}),
+        workspace: args.workspace,
+        ...(args.input !== undefined ? { input: args.input } : {}),
+        ...(args.bindings ? { bindings: args.bindings } : {}),
+        ...(args.assignments ? { assignments: args.assignments } : {}),
+      });
+      await get().load();
+    } catch (error) {
+      set({ error: String(error) });
+    }
+  },
+
+  async update(args) {
+    try {
+      await invoke('schedule_update', {
+        id: args.id,
+        ...(args.blueprintId ? { blueprintId: args.blueprintId } : {}),
+        ...(args.name ? { name: args.name } : {}),
+        schedule: args.schedule,
+        ...(args.provider ? { provider: args.provider } : {}),
+        workspace: args.workspace,
         ...(args.input !== undefined ? { input: args.input } : {}),
         ...(args.bindings ? { bindings: args.bindings } : {}),
         ...(args.assignments ? { assignments: args.assignments } : {}),

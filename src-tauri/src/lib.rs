@@ -751,6 +751,7 @@ pub fn run() {
             commands::workflow::workflow_approve,
             commands::workflow::workflow_cancel,
             commands::workflow::schedule_create,
+            commands::workflow::schedule_update,
             commands::workflow::schedule_list,
             commands::workflow::schedule_pause,
             commands::workflow::schedule_resume,

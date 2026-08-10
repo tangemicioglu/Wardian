@@ -166,7 +166,8 @@ export function RunLaunchDialog({
     : true;
   const showGlobalProvider = !blueprint || invocation.hasGlobalProviderBackedAgent;
   const hasFreshRoleAssignments = roleProviderSelections.length > 0;
-  const showWorkspace = !blueprint
+  const showWorkspace = launchMode === 'schedule'
+    || !blueprint
     || invocation.needsRunWorkspace
     || invocation.hasGlobalProviderBackedAgent
     || hasFreshRoleAssignments;
@@ -230,23 +231,25 @@ export function RunLaunchDialog({
       setProviderNote('Choose an installed provider before scheduling this workflow.');
       return;
     }
+    if (!workspace.trim()) {
+      setError('Workspace is required for scheduled workflows.');
+      return;
+    }
 
     setBusy(true);
     setError(null);
     try {
       const input = collectInput(inputParams, inputValues);
       const schedule = { active: true, ...scheduleDef } as ScheduleDefinition;
-      if (editSchedule) {
-        await invoke('schedule_remove', { id: editSchedule.id });
-      }
       const bindings = collectBindings(roles, roleBindings, provider);
       const assignments = collectAssignments(roles, selectedRoleTargets, roleConversations, roleBusyPolicies, launchMode, workspace);
-      await invoke('schedule_create', {
-        blueprintId,
-        name: scheduleName || blueprintId,
+      await invoke(editSchedule ? 'schedule_update' : 'schedule_create', {
+        ...(editSchedule ? { id: editSchedule.id } : { blueprintId }),
+        ...(editSchedule ? {} : { name: scheduleName || blueprintId }),
+        ...(editSchedule ? { name: scheduleName || editSchedule.name } : {}),
         schedule,
         ...(showGlobalProvider ? { provider } : {}),
-        ...(showWorkspace && workspace ? { workspace } : {}),
+        workspace: workspace.trim(),
         ...(inputParams.length > 0 ? { input } : editSchedule ? { input: editSchedule.input } : {}),
         ...(Object.keys(bindings).length > 0 ? { bindings } : {}),
         ...(Object.keys(assignments).length > 0 ? { assignments } : {}),
@@ -419,14 +422,14 @@ export function RunLaunchDialog({
             {showWorkspace && (
               <div>
                 <label className="mb-1 block text-xs text-muted" htmlFor="run-workspace">
-                  Workspace (optional)
+                  Workspace
                 </label>
                 <input
                   id="run-workspace"
                   className="w-full rounded border border-wardian-border bg-[var(--color-wardian-bg)] px-2 py-1 text-xs text-primary"
                   value={workspace}
                   onChange={(event) => setWorkspace(event.currentTarget.value)}
-                  placeholder="Defaults to the run directory"
+                  placeholder="Existing directory used by scheduled runs"
                 />
               </div>
             )}
