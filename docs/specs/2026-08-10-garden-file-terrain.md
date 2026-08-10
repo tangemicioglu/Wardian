@@ -378,11 +378,36 @@ open through `openFileWithSettings` with baseline comparison and watermark
 advance, attribution threads, and the agent-to-ground highlight in both
 directions.
 
-**Slice 4 — The agent's private plot.** `~/.wardian/agents/<id>/workspace` is an
-attribute of exactly one agent with no contention, so it renders as a small plot
-on the unit rather than as district ground. This answers "did it write to my
-repo or to its own scratch space", which no other surface does. Lowest priority;
-the first three slices are independently complete without it.
+The watermark raised a question the design had not: a watermark is keyed by
+agent and workspace, and the map has no selected agent. It advances for **every
+agent in the path's `agent_ids`** — those are exactly the agents whose work was
+just read, and unlike a representative-agent choice it is not arbitrary. A path
+no agent claimed advances nothing, which is the same refusal that keeps an
+`inferred` write from being threaded to anybody.
+
+**Slice 4 — The agent's private plot. Measured, and not built.**
+`~/.wardian/agents/<id>/workspace` was to render as a small plot on the agent
+unit, answering "did it write to my repo or to its own scratch space". The
+measurement says no.
+
+On the reference install, **9 of 139 agent directories have a `workspace/` at
+all**, and in 8 of those 9 its entire contents are one `temp/` directory. The
+ninth adds `tools/`. Nothing in Wardian creates these; they exist only where an
+agent followed an instruction to put scratch files there.
+
+Building it as specified would add a root to the districts of 6.5% of agents
+and — because cells are equal-weight — halve the ground area of the repository
+those agents actually work in, to display an empty folder. The slice inverts its
+own emphasis at the moment it succeeds.
+
+There is also no cheaper honest version. A private workspace is not a git
+repository, so it carries no change paint; and a write inside one never reaches
+the change set, because `load_change_review` is scoped to a workspace root and
+the private directory is outside every root. The map is silent about scratch
+space, and at these numbers silence is the accurate rendering.
+
+Worth revisiting only if agent scratch usage becomes common, which is a product
+change rather than a rendering one.
 
 ## Verification
 
