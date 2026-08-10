@@ -9,6 +9,7 @@ import type {
   ChangeReviewPrefs,
 } from "../../types";
 import { normalizeEntityPath } from "./entityRef";
+import { ROOT_KEY_SEPARATOR } from "./useGardenTerrain";
 import {
   buildTerrainPaint,
   joinWorkspacePath,
@@ -119,7 +120,7 @@ export function useTerrainChanges(options: TerrainChangesOptions): TerrainChange
   const [withoutGit, setWithoutGit] = useState<ReadonlySet<string>>(() => new Set<string>());
   const inFlight = useRef(new Set<string>());
 
-  const rootKey = useMemo(() => [...roots].sort().join(" "), [roots]);
+  const rootKey = useMemo(() => [...roots].sort().join(ROOT_KEY_SEPARATOR), [roots]);
 
   // The pane's habitual baseline, narrowed to what a map can render. Fetching
   // waits on this: starting with the default and correcting afterwards would
