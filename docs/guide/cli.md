@@ -165,6 +165,10 @@ wardian workflow exec <path-to-library-workflow.md> --provider codex --workspace
 wardian workflow runs
 wardian workflow run-show <blueprint-id> <run-id>
 wardian workflow replay <blueprint-id> <run-id>
+wardian workflow schedule add --blueprint <id> --name <name> \
+  --workspace <absolute-workspace-path> --every 60
+wardian workflow schedule update <schedule-id> \
+  --workspace <absolute-workspace-path> --daily 09:30
 wardian workflow schedule list
 wardian library list [skills|prompts|classes|workflows|mcps] [--flat]
 wardian library show <section/path> [--content]

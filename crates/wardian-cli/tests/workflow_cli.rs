@@ -207,6 +207,7 @@ fn workflow_exec_runs_show_replay_round_trip() {
 #[test]
 fn workflow_schedule_add_list_pause_resume_run_now_remove_round_trip() {
     let home = TempDir::new().unwrap();
+    seed_demo_workflow(&home);
 
     let add = workflow_command(
         &home,
@@ -215,11 +216,13 @@ fn workflow_schedule_add_list_pause_resume_run_now_remove_round_trip() {
             "schedule",
             "add",
             "--blueprint",
-            "heartbeat",
+            "demo",
             "--name",
             "HB",
             "--every",
             "60",
+            "--workspace",
+            home.path().to_str().unwrap(),
             "--input",
             "{\"symbol\":\"SPY\"}",
             "--bind",
@@ -227,7 +230,7 @@ fn workflow_schedule_add_list_pause_resume_run_now_remove_round_trip() {
         ],
     );
     assert_eq!(add["ok"], true);
-    assert_eq!(add["schedule"]["blueprint_id"], "heartbeat");
+    assert_eq!(add["schedule"]["blueprint_id"], "demo");
     assert_eq!(add["schedule"]["input"]["symbol"], "SPY");
     assert_eq!(add["schedule"]["bindings"]["analyst"], "mock");
     let id = add["schedule"]["id"].as_str().unwrap();
@@ -255,4 +258,71 @@ fn workflow_schedule_add_list_pause_resume_run_now_remove_round_trip() {
     assert_eq!(remove["removed"], 1);
     let empty = workflow_command(&home, &["workflow", "schedule", "list"]);
     assert!(empty["schedules"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn workflow_schedule_update_preserves_identity_and_unspecified_configuration() {
+    let home = TempDir::new().unwrap();
+    seed_demo_workflow(&home);
+    let second_workspace = home.path().join("second-workspace");
+    std::fs::create_dir_all(&second_workspace).unwrap();
+    let assignments = serde_json::json!({
+        "planner": {
+            "target_type": "temporary_provider",
+            "provider": "gemini",
+            "workspace": home.path().to_string_lossy(),
+        }
+    })
+    .to_string();
+
+    let add = workflow_command(
+        &home,
+        &[
+            "workflow",
+            "schedule",
+            "add",
+            "--blueprint",
+            "demo",
+            "--name",
+            "Original",
+            "--every",
+            "60",
+            "--workspace",
+            home.path().to_str().unwrap(),
+            "--input",
+            r#"{"symbol":"SPY"}"#,
+            "--assignments",
+            assignments.as_str(),
+        ],
+    );
+    let assignment_json = add["schedule"]["assignments"].to_string();
+    assert!(assignment_json.contains("temporary_provider"));
+    let id = add["schedule"]["id"].as_str().unwrap().to_string();
+
+    let updated = workflow_command(
+        &home,
+        &[
+            "workflow",
+            "schedule",
+            "update",
+            &id,
+            "--name",
+            "Updated",
+            "--daily",
+            "09:30",
+            "--workspace",
+            second_workspace.to_str().unwrap(),
+        ],
+    );
+
+    assert_eq!(updated["ok"], true);
+    assert_eq!(updated["schedule"]["id"], id);
+    assert_eq!(updated["schedule"]["name"], "Updated");
+    assert_eq!(updated["schedule"]["schedule"]["schedule_type"], "daily");
+    assert_eq!(updated["schedule"]["input"]["symbol"], "SPY");
+    assert!(updated["schedule"]["assignments"]["planner"]["target_type"] == "temporary_provider");
+    assert!(updated["schedule"]["workspace"]
+        .as_str()
+        .unwrap()
+        .ends_with("second-workspace"));
 }

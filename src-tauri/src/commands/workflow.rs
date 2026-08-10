@@ -8,8 +8,13 @@ use tauri::{AppHandle, State};
 use wardian_core::control::WorkflowRunResponse;
 use wardian_core::engine::store::{read_checkpoint, read_events};
 use wardian_core::engine::RunStatus;
-use wardian_core::models::{InvocationKind, WorkflowAssignments, WorkflowSchedule};
-use wardian_core::schedule::{compute_next_run, load_schedules, save_schedules};
+use wardian_core::models::{
+    InvocationKind, WorkflowAssignments, WorkflowRoleAssignment, WorkflowSchedule,
+};
+use wardian_core::schedule::{
+    compute_next_run, load_schedules, resolve_workspace_path, save_schedules,
+    validate_schedule_definition,
+};
 use wardian_core::workflow::{self, Blueprint};
 
 const WORKFLOW_EVENTS_FILE: &str = "events.jsonl";
@@ -603,6 +608,55 @@ fn emit_schedules_updated(app: &AppHandle) {
     let _ = app.emit("schedules-updated", ());
 }
 
+fn validate_schedule_blueprint(blueprint_id: &str) -> Result<(), String> {
+    let path = resolve_blueprint_path(blueprint_id)
+        .ok_or_else(|| format!("blueprint not found in library/workflows: {blueprint_id}"))?;
+    let blueprint = workflow::parse_file(&path)
+        .map_err(|error| format!("could not parse blueprint {blueprint_id}: {error}"))?;
+    let report = workflow::validate(&blueprint);
+    if !report.is_valid() {
+        let diagnostics =
+            serde_json::to_string(&report.diagnostics).map_err(|error| error.to_string())?;
+        return Err(format!(
+            "blueprint {blueprint_id} is invalid: {diagnostics}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_schedule_provider(provider: Option<&str>) -> Result<(), String> {
+    if let Some(provider) = provider {
+        if !wardian_core::workflow::assignment::is_known_provider(provider) {
+            return Err(format!("unsupported provider `{provider}`"));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_schedule_assignments(
+    assignments: Option<WorkflowAssignments>,
+    bindings: &HashMap<String, String>,
+) -> Result<(HashMap<String, String>, WorkflowAssignments), String> {
+    let mut assignments = wardian_core::workflow::assignment::normalize_assignments(
+        assignments,
+        bindings,
+        InvocationKind::Scheduled,
+    );
+    for assignment in assignments.values_mut() {
+        if let WorkflowRoleAssignment::TemporaryProvider {
+            workspace: Some(workspace),
+            ..
+        } = assignment
+        {
+            let canonical = resolve_workspace_path(workspace)?;
+            *workspace = canonical.to_string_lossy().into_owned();
+        }
+    }
+    wardian_core::workflow::assignment::validate_assignments(&assignments)?;
+    let bindings = wardian_core::workflow::assignment::legacy_bindings(&assignments);
+    Ok((bindings, assignments))
+}
+
 /// Create a workflow schedule. `schedule` is the cadence definition; runtime fields are seeded.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -610,27 +664,35 @@ pub async fn schedule_create(
     app: AppHandle,
     blueprint_id: String,
     name: String,
-    schedule: wardian_core::models::ScheduleDefinition,
+    mut schedule: wardian_core::models::ScheduleDefinition,
     provider: Option<String>,
-    workspace: Option<String>,
+    workspace: String,
     input: Option<Value>,
     bindings: Option<HashMap<String, String>>,
     assignments: Option<wardian_core::models::WorkflowAssignments>,
 ) -> Result<WorkflowSchedule, String> {
+    if name.trim().is_empty() {
+        return Err("schedule name must not be empty".to_string());
+    }
+    validate_schedule_blueprint(&blueprint_id)?;
+    validate_schedule_provider(provider.as_deref())?;
+    if schedule.end_condition.trim().is_empty() {
+        schedule.end_condition = "never".to_string();
+    }
+    validate_schedule_definition(&schedule)?;
+    let workspace = resolve_workspace_path(&workspace)?
+        .to_string_lossy()
+        .into_owned();
     let mut schedules = load_schedules();
     let now = now_ms();
     let bindings = bindings.unwrap_or_default();
-    let assignments = wardian_core::workflow::assignment::normalize_assignments(
-        assignments,
-        &bindings,
-        InvocationKind::Scheduled,
-    );
+    let (bindings, assignments) = normalize_schedule_assignments(assignments, &bindings)?;
     let record = WorkflowSchedule {
         id: wardian_core::engine::driver::new_run_id(),
         blueprint_id,
         name,
         provider,
-        workspace,
+        workspace: Some(workspace),
         input: input.unwrap_or_else(|| serde_json::json!({})),
         bindings,
         assignments,
@@ -648,6 +710,88 @@ pub async fn schedule_create(
     save_schedules(&schedules).map_err(|error| error.to_string())?;
     emit_schedules_updated(&app);
     Ok(record)
+}
+
+/// Update a workflow schedule in place, preserving its identity and runtime history.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn schedule_update(
+    app: AppHandle,
+    id: String,
+    blueprint_id: Option<String>,
+    name: Option<String>,
+    mut schedule: wardian_core::models::ScheduleDefinition,
+    provider: Option<String>,
+    workspace: String,
+    input: Option<Value>,
+    bindings: Option<HashMap<String, String>>,
+    assignments: Option<wardian_core::models::WorkflowAssignments>,
+) -> Result<WorkflowSchedule, String> {
+    let mut schedules = load_schedules();
+    let existing = schedules
+        .iter_mut()
+        .find(|schedule| schedule.id == id)
+        .ok_or_else(|| format!("schedule not found: {id}"))?;
+
+    let next_blueprint_id = blueprint_id.unwrap_or_else(|| existing.blueprint_id.clone());
+    validate_schedule_blueprint(&next_blueprint_id)?;
+    if let Some(name) = name.as_deref() {
+        if name.trim().is_empty() {
+            return Err("schedule name must not be empty".to_string());
+        }
+    }
+    validate_schedule_provider(provider.as_deref())?;
+    if schedule.end_condition.trim().is_empty() {
+        schedule.end_condition = "never".to_string();
+    }
+    validate_schedule_definition(&schedule)?;
+    let workspace = resolve_workspace_path(&workspace)?
+        .to_string_lossy()
+        .into_owned();
+
+    let (next_bindings, next_assignments) = match (bindings, assignments) {
+        (None, None) => (existing.bindings.clone(), existing.assignments.clone()),
+        (bindings, assignments) => {
+            normalize_schedule_assignments(assignments, &bindings.unwrap_or_default())?
+        }
+    };
+    let schedule_changed = {
+        schedule.occurrence_count = existing.schedule.occurrence_count;
+        serde_json::to_value(&schedule).map_err(|error| error.to_string())?
+            != serde_json::to_value(&existing.schedule).map_err(|error| error.to_string())?
+    };
+    let now = now_ms();
+    let was_paused = existing.is_paused;
+
+    existing.blueprint_id = next_blueprint_id;
+    if let Some(name) = name {
+        existing.name = name;
+    }
+    if provider.is_some() {
+        existing.provider = provider;
+    }
+    existing.workspace = Some(workspace);
+    if let Some(input) = input {
+        existing.input = input;
+    }
+    existing.bindings = next_bindings;
+    existing.assignments = next_assignments;
+    existing.schedule = schedule;
+
+    if was_paused {
+        existing.next_run_epoch_ms = None;
+        if schedule_changed {
+            existing.paused_remaining_ms = None;
+        }
+    } else if schedule_changed || existing.next_run_epoch_ms.is_none() {
+        existing.paused_remaining_ms = None;
+        existing.next_run_epoch_ms = compute_next_run(&existing.schedule, now);
+    }
+
+    let updated = existing.clone();
+    save_schedules(&schedules).map_err(|error| error.to_string())?;
+    emit_schedules_updated(&app);
+    Ok(updated)
 }
 
 #[tauri::command]

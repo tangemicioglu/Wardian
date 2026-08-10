@@ -42,8 +42,10 @@ file/webhook listeners all use the same contract:
 - optional provider and workspace overrides.
 
 Schedules are persisted invokers stored in `library/schedules.json` and managed
-by `schedule_create`, `schedule_list`, `schedule_pause`, `schedule_resume`,
-`schedule_remove`, and `schedule_run_now`.
+by `schedule_create`, `schedule_update`, `schedule_list`, `schedule_pause`,
+`schedule_resume`, `schedule_remove`, and `schedule_run_now`. New and updated
+schedules require an existing workspace; `schedule_update` changes a schedule
+in place and preserves its identity and execution history.
 
 ### Registry
 

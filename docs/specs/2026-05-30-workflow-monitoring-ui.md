@@ -20,7 +20,7 @@ Ship the workflow monitoring + schedule-management UI so the old workflow system
 
 ## 2. What already exists (leverage, don't rebuild)
 
-- **6b commands** (Tauri): `schedule_create(blueprint_id, name, schedule, provider?, workspace?, input?, bindings?) -> WorkflowSchedule`, `schedule_list() -> WorkflowSchedule[]`, `schedule_pause(id)`, `schedule_resume(id)`, `schedule_remove(id)`, `schedule_run_now(id)`. Each emits `schedules-updated`.
+- **Schedule commands** (Tauri): `schedule_create(blueprint_id, name, schedule, provider?, workspace, input?, bindings?, assignments?) -> WorkflowSchedule`, `schedule_update(id, blueprint_id?, name?, schedule, provider?, workspace, input?, bindings?, assignments?) -> WorkflowSchedule`, `schedule_list() -> WorkflowSchedule[]`, `schedule_pause(id)`, `schedule_resume(id)`, `schedule_remove(id)`, `schedule_run_now(id)`. Each mutation emits `schedules-updated`; new and updated schedules require an existing workspace.
 - **Run listing**: `useRunStore` already exposes `loadRuns()` → `invoke('workflow_list_runs') : RunSummary[]` (all blueprints, each carries `blueprint_id`/`run_id`/`status`/`path`) and `openRun(blueprintId, runId)`. The Monitor's active/recent runs reuse this verbatim.
 - **`ScheduleEditor.tsx`** — a presentational form over `ScheduleDefinition` (interval/daily/weekly/monthly/specific_dates/one_time + end conditions), theme-variable styled, no old-workflow-system-engine coupling. **Reused as-is.**
 - **`RunLaunchDialog.tsx`** — already collects provider/workspace/input/bindings and calls `workflow_run`. Extended (not rebuilt) with the schedule toggle.
@@ -61,7 +61,7 @@ Rendered by `WorkflowsView` when `mode === 'monitor'`. Two regions:
 Replaces the old workflow system `WorkflowSidebar` for the `"workflows"` tab. Compact: "N active · N scheduled" counts, the active runs (click → Observe), and the next few upcoming schedules (by `next_run_epoch_ms`). A "Manage" / "Open Monitor" affordance switches the main view to Monitor mode. Reads the same two stores; no logic of its own beyond sorting/slicing.
 
 ### 3.4 Schedule creation in the Run flow (`RunLaunchDialog`)
-Add a segmented **Run now / Schedule** toggle. Default "Run now" = today's behavior (calls `workflow_run`). "Schedule" reveals a name field + the reused `ScheduleEditor`; the primary button becomes **Save schedule** and calls `schedule_create(blueprint_id, name, schedule, provider, workspace, input, bindings)` using the same provider/input/bindings already gathered. Editing an existing schedule reuses this dialog seeded from the `WorkflowSchedule` (on save, `remove` + `create`, or a future `schedule_update` — 6c uses remove+create to avoid a new backend command; flagged in risks).
+Add a segmented **Run now / Schedule** toggle. Default "Run now" = today's behavior (calls `workflow_run`). "Schedule" reveals a name field + the reused `ScheduleEditor`; the primary button becomes **Save schedule** and calls `schedule_create(blueprint_id, name, schedule, provider, workspace, input, bindings)` using the same provider/input/bindings already gathered. Editing an existing schedule reuses this dialog seeded from the `WorkflowSchedule` and calls `schedule_update` so the schedule id and execution history remain stable.
 
 ## 4. Data flow
 
@@ -80,7 +80,7 @@ run row click → useRunStore.openRun + useWorkflowsView.observeRun
 - A schedule whose `blueprint_id` no longer resolves still lists (with a muted "missing blueprint" note); run-now will surface the backend error.
 
 ## 6. Testing
-- **RTL — `useSchedulesStore`:** `load` populates from a mocked `schedule_list`; an emitted `schedules-updated` triggers reload; `pause/resume/runNow/remove/create` invoke the correct command with the right args.
+- **RTL — `useSchedulesStore`:** `load` populates from a mocked `schedule_list`; an emitted `schedules-updated` triggers reload; `pause/resume/runNow/remove/create/update` invoke the correct command with the right args.
 - **RTL — `ScheduleRow`/`SchedulesTable`:** renders cadence + next-run + status badge; each inline control calls the matching store action; paused vs active toggles the right icon.
 - **RTL — `RunLaunchDialog`:** toggling to Schedule renders `ScheduleEditor` + name; Save calls `schedule_create` with the assembled `ScheduleDefinition` + gathered provider/input/bindings; "Run now" still calls `workflow_run`.
 - **RTL — `WorkflowMonitorGlance`:** counts reflect store contents; clicking a run opens Observe.
@@ -89,7 +89,7 @@ run row click → useRunStore.openRun + useWorkflowsView.observeRun
 
 ## 7. Risks / notes
 - **old workflow system entry-point removal:** swapping the `"workflows"` left-rail pane to the workflow glance removes the last old workflow system UI entry. Intended — old workflow system's scheduled workflows were migrated to workflow (5c) and now fire via 6b. old workflow system `WorkflowSidebar.tsx`/`ActiveMonitoring.tsx`/`ScheduleEditor.tsx`-as-old-workflow-system-consumer stay on disk for 6d; only the *mount* changes here (mirrors how 5b removed the old workflow system main tab but left the file).
-- **No `schedule_update`:** editing a schedule is remove+create in 6c (id changes). Acceptable for parity; a stable-id update command is a small 6b follow-up if the id churn matters to 6c's monitoring (it doesn't — rows key on id and reload from the event).
+- **Stable schedule edits:** `schedule_update` replaces the earlier remove+create edit path and preserves schedule identity and execution history.
 - **Two ScheduleDefinition types:** `src/types/workflow.ts` already defines `ScheduleDefinition` for old workflow system; it is structurally identical to 6b's. 6c reuses that type for `ScheduleEditor` and the new `WorkflowSchedule` type, rather than introducing a second definition.
 - **Run polling:** Monitor reuses Observe's interval-poll approach (no run event stream yet); acceptable and consistent. A push-based run feed is a later optimization, not 6c.
 - **Theme/standards:** all new components use semantic theme variables + the emerald/cyan/amber/gray/red status palette per AGENTS.md; the left pane stays within the existing collapsible-pane shell.

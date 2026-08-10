@@ -77,7 +77,8 @@ This is old workflow system's `ScheduledRun` re-cut for the invoker model: `work
 A fire failure is logged into `last_run_error` and does **not** stop the loop; `next_run` still advances.
 
 ### 4.4 Tauri commands (`src-tauri/src/commands/workflow.rs`)
-- `schedule_create(blueprint_id, name, provider?, workspace?, input?, bindings?, schedule)` → persists a new `WorkflowSchedule` (id assigned, `next_run` computed), returns it.
+- `schedule_create(blueprint_id, name, provider?, workspace, input?, bindings?, assignments?, schedule)` → validates the blueprint, cadence, assignments, provider, and existing workspace before atomically persisting a new `WorkflowSchedule` (id assigned, `next_run` computed), returns it.
+- `schedule_update(id, blueprint_id?, name?, provider?, workspace, input?, bindings?, assignments?, schedule)` → applies selected configuration in place, preserving the schedule id and execution history.
 - `schedule_list()` → `Vec<WorkflowSchedule>`.
 - `schedule_pause(id)` / `schedule_resume(id)` → toggle `is_paused`; pause stores `paused_remaining_ms = next_run - now` and clears `next_run`; resume restores it.
 - `schedule_remove(id)`.

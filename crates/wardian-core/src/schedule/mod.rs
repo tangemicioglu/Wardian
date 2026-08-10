@@ -4,6 +4,7 @@ use crate::models::{ScheduleDefinition, WorkflowAssignments};
 use chrono::{Datelike, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::models::WorkflowSchedule;
 
@@ -211,6 +212,165 @@ pub fn compute_next_run(schedule: &ScheduleDefinition, now_ms: u64) -> Option<u6
         }
         _ => None,
     }
+}
+
+/// Validate a persisted schedule definition before it is handed to the scheduler.
+///
+/// The UI and CLI both construct this DTO, so this check deliberately validates
+/// the serialized fields rather than relying on a particular caller's controls.
+pub fn validate_schedule_definition(schedule: &ScheduleDefinition) -> Result<(), String> {
+    match schedule.schedule_type.as_str() {
+        "interval" => {
+            if schedule.interval_minutes.unwrap_or(0) == 0 {
+                return Err("interval schedules require --every greater than zero".to_string());
+            }
+        }
+        "daily" => {
+            validate_time_of_day(schedule.time_of_day.as_deref())?;
+        }
+        "weekly" => {
+            validate_time_of_day(schedule.time_of_day.as_deref())?;
+            let days = schedule
+                .days_of_week
+                .as_ref()
+                .filter(|days| !days.is_empty())
+                .ok_or_else(|| "weekly schedules require at least one day".to_string())?;
+            for day in days {
+                if !matches!(
+                    day.to_ascii_lowercase().as_str(),
+                    "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun"
+                ) {
+                    return Err(format!("invalid weekly day `{day}`"));
+                }
+            }
+            if schedule.repeat_every == 0 {
+                return Err("weekly schedules require repeat_every greater than zero".to_string());
+            }
+        }
+        "monthly" => {
+            validate_time_of_day(schedule.time_of_day.as_deref())?;
+            let days = schedule
+                .days_of_month
+                .as_ref()
+                .filter(|days| !days.is_empty())
+                .ok_or_else(|| "monthly schedules require at least one day".to_string())?;
+            if let Some(day) = days.iter().find(|day| **day == 0 || **day > 31) {
+                return Err(format!("invalid monthly day `{day}`; expected 1-31"));
+            }
+        }
+        "specific_dates" => {
+            validate_time_of_day(schedule.time_of_day.as_deref())?;
+            let dates = schedule
+                .specific_dates
+                .as_ref()
+                .filter(|dates| !dates.is_empty())
+                .ok_or_else(|| "specific_dates schedules require at least one date".to_string())?;
+            for date in dates {
+                chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                    .map_err(|_| format!("invalid specific date `{date}`; expected YYYY-MM-DD"))?;
+            }
+        }
+        "one_time" => {
+            let run_at = schedule
+                .run_at
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "one_time schedules require a run_at value".to_string())?;
+            if chrono::DateTime::parse_from_rfc3339(run_at).is_err()
+                && chrono::NaiveDateTime::parse_from_str(run_at, "%Y-%m-%dT%H:%M").is_err()
+            {
+                return Err(format!(
+                    "invalid run_at `{run_at}`; expected RFC3339 or YYYY-MM-DDTHH:MM"
+                ));
+            }
+        }
+        other => {
+            return Err(format!(
+                "unsupported schedule type `{other}`; expected interval, daily, weekly, monthly, specific_dates, or one_time"
+            ));
+        }
+    }
+
+    match schedule.end_condition.as_str() {
+        "never" => {}
+        "on_date" => {
+            let end_date = schedule
+                .end_date
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "on_date schedules require end_date".to_string())?;
+            chrono::NaiveDate::parse_from_str(end_date, "%Y-%m-%d")
+                .map_err(|_| format!("invalid end_date `{end_date}`; expected YYYY-MM-DD"))?;
+        }
+        "after_occurrences" => {
+            if schedule.max_occurrences.unwrap_or(0) == 0 {
+                return Err(
+                    "after_occurrences schedules require max_occurrences greater than zero"
+                        .to_string(),
+                );
+            }
+        }
+        other => {
+            return Err(format!(
+                "unsupported end condition `{other}`; expected never, on_date, or after_occurrences"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_time_of_day(time: Option<&str>) -> Result<(), String> {
+    let time = time
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "schedule requires a time_of_day value".to_string())?;
+    let mut parts = time.split(':');
+    let hour = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .ok_or_else(|| format!("invalid time_of_day `{time}`; expected HH:MM"))?;
+    let minute = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .ok_or_else(|| format!("invalid time_of_day `{time}`; expected HH:MM"))?;
+    if parts.next().is_some() || hour > 23 || minute > 59 {
+        return Err(format!("invalid time_of_day `{time}`; expected HH:MM"));
+    }
+    Ok(())
+}
+
+/// Resolve and validate a schedule workspace to an absolute existing directory.
+pub fn resolve_workspace_path(value: &str) -> Result<PathBuf, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("workspace is required".to_string());
+    }
+    let raw = Path::new(trimmed);
+    let absolute = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("could not resolve current directory: {error}"))?
+            .join(raw)
+    };
+    let canonical = absolute
+        .canonicalize()
+        .map_err(|error| format!("workspace is not an existing directory: {error}"))?;
+    #[cfg(windows)]
+    let canonical = {
+        let value = canonical.to_string_lossy();
+        value
+            .strip_prefix(r"\\?\")
+            .map(PathBuf::from)
+            .unwrap_or(canonical)
+    };
+    if !canonical.is_dir() {
+        return Err(format!(
+            "workspace is not a directory: {}",
+            canonical.display()
+        ));
+    }
+    Ok(canonical)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -517,5 +677,40 @@ mod tests {
         let fires = plan_tick(&mut v, 1000);
         assert!(fires.is_empty());
         assert!(v.is_empty());
+    }
+
+    #[test]
+    fn validates_extended_cadence_and_end_fields() {
+        let monthly = ScheduleDefinition {
+            schedule_type: "monthly".into(),
+            time_of_day: Some("09:30".into()),
+            days_of_month: Some(vec![1, 15]),
+            end_condition: "after_occurrences".into(),
+            max_occurrences: Some(4),
+            active: true,
+            ..Default::default()
+        };
+        validate_schedule_definition(&monthly).unwrap();
+
+        let invalid = ScheduleDefinition {
+            schedule_type: "weekly".into(),
+            time_of_day: Some("25:00".into()),
+            days_of_week: Some(vec!["Mon".into()]),
+            repeat_every: 1,
+            active: true,
+            ..Default::default()
+        };
+        assert!(validate_schedule_definition(&invalid).is_err());
+    }
+
+    #[test]
+    fn resolves_only_existing_directories_as_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-directory");
+        std::fs::write(&file, "x").unwrap();
+
+        assert!(resolve_workspace_path(&dir.path().to_string_lossy()).is_ok());
+        assert!(resolve_workspace_path(&file.to_string_lossy()).is_err());
+        assert!(resolve_workspace_path("definitely-missing-workspace").is_err());
     }
 }

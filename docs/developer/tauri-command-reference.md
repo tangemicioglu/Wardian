@@ -579,6 +579,7 @@ Current workflow commands:
 - `workflow_approve`
 - `workflow_cancel`
 - `schedule_create`
+- `schedule_update`
 - `schedule_list`
 - `schedule_pause`
 - `schedule_resume`

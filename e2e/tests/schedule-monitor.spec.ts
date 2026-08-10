@@ -249,6 +249,7 @@ test("schedule a blueprint and prove adaptive Monitor cards", async ({ page }) =
   await expect(dialog).toBeVisible();
   await dialog.getByRole("radio", { name: /schedule/i }).click();
   await dialog.getByLabel(/schedule name/i).fill("E2E Nightly");
+  await dialog.getByLabel(/^workspace$/i).fill("/workspace");
   await dialog.getByRole("button", { name: /save schedule/i }).click();
 
   await page.getByTestId("workflows-view").getByRole("button", { name: /^monitor$/i }).click();
