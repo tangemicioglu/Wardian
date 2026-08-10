@@ -14,6 +14,18 @@ interface TerrainLayerProps {
   theme: GardenTheme;
   /** Change tint per path, including ancestors. Empty when nothing is loaded. */
   paint?: ReadonlyMap<string, TerrainPaint>;
+  /** Currently selected cell path, if the selection is a piece of ground. */
+  selectedPath?: string | null;
+  /**
+   * Ground written to by the selected agent.
+   *
+   * The inverse of the skill crown's reverse index, and the reason to build any
+   * of this: selecting an agent lights up every patch of disk it has touched,
+   * across every district. No list view can show that.
+   */
+  highlightedPaths?: ReadonlySet<string>;
+  onSelectPath?: (path: string) => void;
+  onOpenPath?: (path: string) => void;
 }
 
 /**
@@ -70,7 +82,17 @@ function opacityForDepth(depth: number): number {
  * and its siblings and of nothing else.
  */
 export const TerrainLayer: React.FC<TerrainLayerProps> = React.memo(
-  ({ cells, districts, scale, theme, paint }) => {
+  ({
+    cells,
+    districts,
+    scale,
+    theme,
+    paint,
+    selectedPath,
+    highlightedPaths,
+    onSelectPath,
+    onOpenPath,
+  }) => {
     // Grouped per district so each can be clipped to its own territory. The
     // ground is the bounding square of the district's disc, so without the clip
     // a populous district would paint into the gap its neighbours rely on.
@@ -95,7 +117,6 @@ export const TerrainLayer: React.FC<TerrainLayerProps> = React.memo(
           return (
             <Group
               key={districtId}
-              listening={false}
               clipFunc={(context: Konva.Context) => {
                 context.arc(district.origin.x, district.origin.y, radius, 0, Math.PI * 2, false);
               }}
@@ -107,6 +128,10 @@ export const TerrainLayer: React.FC<TerrainLayerProps> = React.memo(
                   scale={scale}
                   theme={theme}
                   paint={paint?.get(cell.path)}
+                  selected={selectedPath === cell.path}
+                  highlighted={highlightedPaths?.has(cell.path) ?? false}
+                  onSelectPath={onSelectPath}
+                  onOpenPath={onOpenPath}
                 />
               ))}
             </Group>
@@ -123,7 +148,11 @@ const TerrainCellShape: React.FC<{
   scale: number;
   theme: GardenTheme;
   paint?: TerrainPaint;
-}> = ({ cell, scale, theme, paint }) => {
+  selected: boolean;
+  highlighted: boolean;
+  onSelectPath?: (path: string) => void;
+  onOpenPath?: (path: string) => void;
+}> = ({ cell, scale, theme, paint, selected, highlighted, onSelectPath, onOpenPath }) => {
   const { rect } = cell;
   const fill = cell.depth === 0 ? theme.ground : cell.isDir ? theme.groundDir : theme.groundFile;
   const showLabel =
@@ -146,7 +175,13 @@ const TerrainCellShape: React.FC<{
         // thousand ground cells that is the dominant cost, and the artefact it
         // prevents is invisible on a 0.5px hairline.
         perfectDrawEnabled={false}
-        listening={false}
+        // Only the base rect listens. The tint, the highlight, and the label sit
+        // on top of it, and a hit on any of them is a hit on this cell — so they
+        // stay out of the hit graph rather than each adding a shape to it.
+        onClick={onSelectPath ? () => onSelectPath(cell.path) : undefined}
+        onTap={onSelectPath ? () => onSelectPath(cell.path) : undefined}
+        onDblClick={onOpenPath ? () => onOpenPath(cell.path) : undefined}
+        onDblTap={onOpenPath ? () => onOpenPath(cell.path) : undefined}
       />
       {paint && (
         // A separate tint rect rather than a blended fill, so the ground keeps
@@ -164,6 +199,22 @@ const TerrainCellShape: React.FC<{
           stroke={theme.change[paint.kind]}
           strokeWidth={cell.depth === 0 ? 1.5 : 0.75}
           dash={paint.evidence === "inferred" ? [4, 3] : undefined}
+          cornerRadius={cell.depth === 0 ? 6 : 1}
+          perfectDrawEnabled={false}
+          listening={false}
+        />
+      )}
+      {(selected || highlighted) && (
+        <Rect
+          x={rect.x}
+          y={rect.y}
+          width={rect.width}
+          height={rect.height}
+          stroke={theme.selection}
+          strokeWidth={selected ? 2 : 1.25}
+          // Highlight is an outline rather than a wash: the fill is already
+          // carrying change, and two meanings in one channel is one too many.
+          opacity={selected ? 1 : 0.7}
           cornerRadius={cell.depth === 0 ? 6 : 1}
           perfectDrawEnabled={false}
           listening={false}

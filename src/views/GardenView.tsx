@@ -21,10 +21,13 @@ import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
 import { useGardenSkills } from "../features/garden/useGardenSkills";
 import { useGardenTerrain } from "../features/garden/useGardenTerrain";
 import { useTerrainChanges } from "../features/garden/useTerrainChanges";
+import { useTerrainOpen } from "../features/garden/useTerrainOpen";
 import {
   GARDEN_CHANGE_LEGEND,
   gardenChangeBaselineLabel,
+  gardenGroundLabel,
 } from "../features/garden/gardenStatus";
+import { basename as terrainCellName } from "../features/garden/terrain";
 import type { TerrainViewport } from "../features/garden/terrainFrontier";
 import { useGardenStore } from "../store/useGardenStore";
 import { useLibraryStore } from "../store/useLibraryStore";
@@ -237,12 +240,14 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const selectedSkillRef = activeSelectionKey?.startsWith("skill:")
     ? activeSelectionKey.slice("skill:".length)
     : null;
-  const highlightedAgentIds = useMemo(
-    () => (selectedSkillRef ? agentsCarrying(layout.crowns, selectedSkillRef) : new Set<string>()),
-    [selectedSkillRef, layout.crowns],
-  );
   const selectedSkillLabel = selectedSkillRef
     ? (skillInputs.find((skill) => skill.entryRef === selectedSkillRef)?.label ?? selectedSkillRef)
+    : null;
+  const selectedPath = activeSelectionKey?.startsWith("path:")
+    ? activeSelectionKey.slice("path:".length)
+    : null;
+  const selectedAgentId = activeSelectionKey?.startsWith("agent:")
+    ? activeSelectionKey.slice("agent:".length)
     : null;
 
   // Terrain is ingested against the visible world rectangle, so the canvas
@@ -261,17 +266,42 @@ export const GardenView: React.FC<GardenViewProps> = ({
   // answers for all of them.
   const changes = useTerrainChanges({ enabled: terrainEnabled, roots: terrain.visibleRoots });
 
+  // Both reverse indexes, in one place. A skill and a piece of ground answer
+  // "who?" the same way — with a set of agents — because neither is a thing you
+  // can navigate to. Selecting an agent runs it the other direction and lights
+  // up the disk it has written to, across every district.
+  const highlightedAgentIds = useMemo(() => {
+    if (selectedSkillRef) return agentsCarrying(layout.crowns, selectedSkillRef);
+    if (selectedPath) return new Set(changes.paint.get(selectedPath)?.agentIds ?? []);
+    return new Set<string>();
+  }, [selectedSkillRef, selectedPath, layout.crowns, changes.paint]);
+
+  const highlightedPaths = useMemo(() => {
+    if (!selectedAgentId) return new Set<string>();
+    const written = new Set<string>();
+    for (const [path, paint] of changes.paint) {
+      if (paint.agentIds.includes(selectedAgentId)) written.add(path);
+    }
+    return written;
+  }, [selectedAgentId, changes.paint]);
+
+  const openPath = useTerrainOpen({ entries: changes.entries, baseline: changes.baseline });
+
   const selectedUnit = [...agentUnits, ...workflowUnits].find(
     (unit) => unitKey(unit.ref) === activeSelectionKey,
   );
-  const summaryLabel = selectedSkillLabel ?? selectedUnit?.label ?? null;
+  const selectedPaint = selectedPath ? changes.paint.get(selectedPath) : undefined;
+  const summaryLabel =
+    selectedSkillLabel ?? (selectedPath ? terrainCellName(selectedPath) : null) ?? selectedUnit?.label ?? null;
   const summaryStatus = selectedSkillRef
     ? gardenSkillReachLabel(highlightedAgentIds.size)
-    : selectedUnit
-      ? "status" in selectedUnit
-        ? gardenAgentStatusLabel(selectedUnit.status)
-        : gardenWorkflowStatusLabel(selectedUnit.runStatus)
-      : null;
+    : selectedPath
+      ? gardenGroundLabel(selectedPaint)
+      : selectedUnit
+        ? "status" in selectedUnit
+          ? gardenAgentStatusLabel(selectedUnit.status)
+          : gardenWorkflowStatusLabel(selectedUnit.runStatus)
+        : null;
 
   return (
     <div className="garden-view relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -329,13 +359,16 @@ export const GardenView: React.FC<GardenViewProps> = ({
         terrainCells={terrain.cells}
         terrainDistricts={layout.districts}
         terrainPaint={changes.paint}
+        highlightedPaths={highlightedPaths}
+        onSelectPath={(path) => setSelectedKey(unitKey({ kind: "path", id: path }))}
+        onOpenPath={openPath}
         onViewportChange={setViewport}
         onSelect={(ref) => {
           const key = unitKey(ref);
           setSelectedKey(key);
-          // Skills are not placed, so there is no position for the scene to
-          // remember and nothing for `visit` to keep from drifting.
-          if (ref.kind !== "skill") visitUnit(key);
+          // Skills and ground are not placed, so there is no position for the
+          // scene to remember and nothing for `visit` to keep from drifting.
+          if (ref.kind !== "skill" && ref.kind !== "path") visitUnit(key);
           if (ref.kind === "agent") {
             onSelectionChange(new Set([ref.id]));
           }

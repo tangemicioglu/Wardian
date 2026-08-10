@@ -12,13 +12,20 @@ import type {
   ChangeReviewReviewedPath,
   ChangeReviewSummary,
   ChangeReviewWatermark,
-  FilesComparisonBaseline,
-  FilesSurfaceStateV2,
 } from "../../types";
 import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { fileResourceKey } from "../files/fileResourceKey";
 import { normalizeExplorerPathForCompare } from "../explorer/pathUtils";
+import {
+  CHANGE_BASELINE_OPTIONS,
+  DEFAULT_CHANGE_REVIEW_BASELINE,
+  baselineForFile,
+  changeBaselineLabel,
+  changeSurfaceState,
+  isChangeReviewBaseline,
+  pathForWorkspace,
+} from "./changeSurface";
 
 interface ExplorerChangedEvent {
   root_path: string;
@@ -32,16 +39,6 @@ type ChangesPanelProps = {
   turn_revision: number;
   navigation?: WorkbenchNavigationService | null;
 };
-
-const BASELINE_OPTIONS: readonly { value: ChangeReviewBaseline; label: string }[] = [
-  { value: "last_effective_turn", label: "Last turn" },
-  { value: "conversation_start", label: "This conversation" },
-  { value: "branch_point", label: "This branch" },
-  { value: "head", label: "Last commit" },
-  { value: "unreviewed", label: "I last looked" },
-];
-
-const DEFAULT_CHANGE_REVIEW_BASELINE: ChangeReviewBaseline = "last_effective_turn";
 
 const CHANGE_KIND_PRESENTATION: Record<ChangeReviewFileEntry["change_kind"], {
   label: string;
@@ -89,10 +86,6 @@ function changeEvidenceLabel(entry: ChangeReviewFileEntry): string {
     : "detected from workspace changes";
 }
 
-function isChangeReviewBaseline(value: unknown): value is ChangeReviewBaseline {
-  return BASELINE_OPTIONS.some((option) => option.value === value);
-}
-
 function baselineFromPrefs(prefs: unknown): ChangeReviewBaseline {
   if (typeof prefs !== "object" || prefs === null) return DEFAULT_CHANGE_REVIEW_BASELINE;
   const candidate = prefs as { schema?: unknown; baseline?: unknown };
@@ -105,53 +98,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function pathForWorkspace(workspace: string, path: string): string {
-  if (/^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/") || path.startsWith("\\\\")) {
-    return path;
-  }
-  return `${workspace.replace(/[\\/]+$/g, "")}/${path.replace(/^[\\/]+/g, "")}`;
-}
-
 function sameWorkspacePath(left: string, right: string): boolean {
   return normalizeExplorerPathForCompare(left) === normalizeExplorerPathForCompare(right);
-}
-
-/**
- * Builds the comparison baseline for a change-review entry.
- *
- * `old_path` is used when present so a renamed file is compared against the name
- * it had at the baseline. Added and untracked files are marked `absent` rather
- * than pointed at a revision that does not contain them.
- */
-function baselineForFile(
-  entry: ChangeReviewFileEntry,
-  baselineRef: string | null,
-  workspace: string,
-  label: string,
-): FilesComparisonBaseline {
-  return {
-    kind: "git_revision",
-    revision: baselineRef ?? "HEAD",
-    cwd: workspace,
-    path: entry.old_path ?? entry.path,
-    label,
-    absent: entry.change_kind === "added" || entry.change_kind === "untracked",
-  };
-}
-
-/** Opens a change-review diff in the workbench with its comparison already open. */
-function changeSurfaceState(baseline: FilesComparisonBaseline): FilesSurfaceStateV2 {
-  return {
-    resource_kind: "file",
-    transient_preview: false,
-    presentation: "editor",
-    comparison_open: true,
-    comparison_layout_preference: "auto",
-    comparison_baseline: baseline,
-    review_drawer_open: false,
-    selected_version_id: null,
-    optional_checkpoint_id: null,
-  };
 }
 
 export function ChangesPanel({
@@ -326,10 +274,7 @@ export function ChangesPanel({
     }).catch(() => undefined);
   }, [headRef, selectedAgentId, summary, workspace]);
 
-  const baselineLabel = useMemo(
-    () => BASELINE_OPTIONS.find((option) => option.value === baseline)?.label ?? "Baseline",
-    [baseline],
-  );
+  const baselineLabel = useMemo(() => changeBaselineLabel(baseline), [baseline]);
 
   const openFile = useCallback((entry: ChangeReviewFileEntry) => {
     if (!workspace) return;
@@ -388,7 +333,7 @@ export function ChangesPanel({
               if (isChangeReviewBaseline(nextBaseline)) handleBaselineChange(nextBaseline);
             }}
           >
-            {BASELINE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {CHANGE_BASELINE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
       </header>

@@ -12,6 +12,7 @@ import { unitKey } from "./garden.types";
 import { isActiveAgentStatus, isActiveWorkflowStatus } from "./gardenStatus";
 import { useGardenTheme } from "./useGardenTheme";
 import { TerrainLayer } from "./TerrainLayer";
+import { AttributionLayer } from "./AttributionLayer";
 import type { TerrainCell, TerrainDistrict } from "./terrain";
 import type { TerrainPaint } from "./terrainPaint";
 import type { TerrainViewport } from "./terrainFrontier";
@@ -28,6 +29,10 @@ interface GardenCanvasProps {
   terrainDistricts?: ReadonlyMap<string, TerrainDistrict>;
   /** Change tint per terrain path. Absent until a change set has loaded. */
   terrainPaint?: ReadonlyMap<string, TerrainPaint>;
+  /** Ground written to by the current selection, highlighted across districts. */
+  highlightedPaths?: ReadonlySet<string>;
+  onSelectPath?: (path: string) => void;
+  onOpenPath?: (path: string) => void;
   /**
    * Reports the visible world rectangle and zoom.
    *
@@ -64,6 +69,9 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   terrainCells,
   terrainDistricts,
   terrainPaint,
+  highlightedPaths,
+  onSelectPath,
+  onOpenPath,
   onViewportChange,
   onSelect,
   onOpenAgent,
@@ -146,6 +154,12 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   const detail = useMemo(() => gardenDetailForScale(scale), [scale]);
   const selectedSkillRef = selectedKey?.startsWith("skill:")
     ? selectedKey.slice("skill:".length)
+    : null;
+  const selectedTerrainPath = selectedKey?.startsWith("path:")
+    ? selectedKey.slice("path:".length)
+    : null;
+  const selectedAgentIdForThreads = selectedKey?.startsWith("agent:")
+    ? selectedKey.slice("agent:".length)
     : null;
 
   useEffect(() => {
@@ -398,13 +412,29 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
       >
         <Layer ref={layerRef}>
           {terrainCells && terrainCells.length > 0 && terrainDistricts && (
-            <TerrainLayer
-              cells={terrainCells}
-              districts={terrainDistricts}
-              scale={scale}
-              theme={theme}
-              paint={terrainPaint}
-            />
+            <>
+              <TerrainLayer
+                cells={terrainCells}
+                districts={terrainDistricts}
+                scale={scale}
+                theme={theme}
+                paint={terrainPaint}
+                selectedPath={selectedTerrainPath}
+                highlightedPaths={highlightedPaths}
+                onSelectPath={onSelectPath}
+                onOpenPath={onOpenPath}
+              />
+              {terrainPaint && (
+                <AttributionLayer
+                  cells={terrainCells}
+                  paint={terrainPaint}
+                  agentUnits={agentUnits}
+                  selectedAgentId={selectedAgentIdForThreads}
+                  selectedPath={selectedTerrainPath}
+                  theme={theme}
+                />
+              )}
+            </>
           )}
           {workflowUnits.map((unit) => (
             <WorkflowUnit

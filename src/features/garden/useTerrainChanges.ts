@@ -4,11 +4,17 @@ import { listen } from "@tauri-apps/api/event";
 
 import type {
   ChangeReviewBaseline,
+  ChangeReviewFileEntry,
   ChangeReviewLoadResponse,
   ChangeReviewPrefs,
 } from "../../types";
 import { normalizeEntityPath } from "./entityRef";
-import { buildTerrainPaint, type RootChangeSet, type TerrainPaint } from "./terrainPaint";
+import {
+  buildTerrainPaint,
+  joinWorkspacePath,
+  type RootChangeSet,
+  type TerrainPaint,
+} from "./terrainPaint";
 
 interface ExplorerChangedEvent {
   root_path: string;
@@ -46,15 +52,33 @@ export interface TerrainChangesOptions {
   roots: readonly string[];
 }
 
+/**
+ * A changed path, with everything needed to open its comparison.
+ *
+ * The paint is an aggregate and cannot answer this: a folder's paint says its
+ * subtree was modified, but opening a diff needs the entry's own `old_path`,
+ * `change_kind`, and the root and revision it was computed against.
+ */
+export interface TerrainChangeEntry {
+  entry: ChangeReviewFileEntry;
+  /** Normalized workspace root the entry belongs to. */
+  root: string;
+  /** Revision the baseline resolved to, for the comparison. */
+  baselineRef: string | null;
+}
+
 export interface TerrainChangesResult {
   /** Normalized absolute path -> paint, including every changed path's ancestors. */
   paint: ReadonlyMap<string, TerrainPaint>;
+  /** Normalized absolute path -> the change entry itself, for changed files only. */
+  entries: ReadonlyMap<string, TerrainChangeEntry>;
   baseline: ChangeReviewBaseline;
   /** Roots that reported no git repository, so the map can stay quiet about them. */
   withoutGit: ReadonlySet<string>;
 }
 
 const EMPTY_PAINT: ReadonlyMap<string, TerrainPaint> = new Map();
+const EMPTY_ENTRIES: ReadonlyMap<string, TerrainChangeEntry> = new Map();
 const EMPTY_ROOTS: ReadonlySet<string> = new Set();
 
 /**
@@ -82,6 +106,7 @@ const EMPTY_ROOTS: ReadonlySet<string> = new Set();
  */
 interface HeldChangeSet extends RootChangeSet {
   baseline: ChangeReviewBaseline;
+  baselineRef: string | null;
 }
 
 export function useTerrainChanges(options: TerrainChangesOptions): TerrainChangesResult {
@@ -147,6 +172,7 @@ export function useTerrainChanges(options: TerrainChangesOptions): TerrainChange
               next.set(root, {
                 root,
                 baseline,
+                baselineRef: response.summary.baseline_ref,
                 entries: response.summary.files,
                 toTurnIndex: response.summary.to_turn_index,
               });
@@ -223,8 +249,23 @@ export function useTerrainChanges(options: TerrainChangesOptions): TerrainChange
     return buildTerrainPaint(current);
   }, [enabled, changes, baseline]);
 
+  const entries = useMemo(() => {
+    if (!enabled || changes.size === 0) return EMPTY_ENTRIES;
+    const index = new Map<string, TerrainChangeEntry>();
+    for (const held of changes.values()) {
+      if (held.baseline !== baseline) continue;
+      for (const entry of held.entries) {
+        const absolute = joinWorkspacePath(held.root, entry.path);
+        if (!absolute) continue;
+        index.set(absolute, { entry, root: held.root, baselineRef: held.baselineRef });
+      }
+    }
+    return index;
+  }, [enabled, changes, baseline]);
+
   return {
     paint,
+    entries,
     baseline,
     withoutGit: enabled ? withoutGit : EMPTY_ROOTS,
   };

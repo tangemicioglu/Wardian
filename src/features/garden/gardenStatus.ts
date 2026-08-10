@@ -1,6 +1,6 @@
 import type { ChangeReviewBaseline } from "../../types";
 import type { GardenWorkflowRunStatus } from "./garden.types";
-import type { TerrainChangeKind } from "./terrainPaint";
+import type { TerrainChangeKind, TerrainPaint } from "./terrainPaint";
 import { formatAgentStatusLabel, getAgentStatusColorToken, getAgentStatusIndicatorClass, normalizeAgentStatus } from "../../utils/statusUtils";
 import { formatRunStatus, workflowRunStatusColor } from "../workflows/run/statusLabels";
 
@@ -86,6 +86,36 @@ export function gardenChangeBaselineLabel(baseline: ChangeReviewBaseline): strin
     default:
       return "Changed since the last commit";
   }
+}
+
+const CHANGE_KIND_LABEL: Record<TerrainChangeKind, string> = {
+  added: "Added",
+  modified: "Modified",
+  deleted: "Deleted",
+  renamed: "Renamed",
+  untracked: "Untracked",
+  mixed: "Mixed changes",
+};
+
+/**
+ * What a selected piece of ground reads as.
+ *
+ * Names the count and the evidence rather than the churn: "3 files, attributed"
+ * is what decides whether to open something, and the numbers are already in the
+ * colour. Unchanged ground says so plainly instead of showing an empty status,
+ * which would look like a failure to load.
+ */
+export function gardenGroundLabel(paint: TerrainPaint | undefined): string {
+  if (!paint) return "Unchanged";
+  const kind = CHANGE_KIND_LABEL[paint.kind];
+  const files = paint.count === 1 ? "1 file" : `${paint.count} files`;
+  const evidence =
+    paint.evidence === "attributed"
+      ? paint.agentIds.length === 1
+        ? "1 agent"
+        : `${paint.agentIds.length} agents`
+      : "no agent claimed it";
+  return `${kind} · ${files} · ${evidence}`;
 }
 
 /**
