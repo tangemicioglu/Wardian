@@ -140,6 +140,42 @@ subdivision. That is a canonical record changing, which the stability contract
 permits; it is bounded to one folder's children and cannot move a unit, because
 units are not in the treemap.
 
+### A root's ground goes under the agents that work in it
+
+A district spanning several repositories subdivides its ground in sorted path
+order, while the metric places its agents by what they resemble. The two orders
+agree only by luck, so an agent routinely sits over a neighbour's ground and
+reads as belonging to a repository it has never touched — which is the one thing
+territory exists to communicate.
+
+**The ground moves, not the units, and the direction is forced.** Ground radius
+is derived from how far a district's units settled, so units deriving from cell
+rects would close a cycle: rect → radius → extent → position → rect. It is also
+the safer half to move. Unit positions are persisted, pinned, and dragged by the
+operator; ground is derived per session and already reflows whenever a folder's
+contents change.
+
+Only the *assignment* is chosen. `squarify` still produces the cells in sorted
+order, so the set of rects remains a function of the root set and the ground
+square alone; `assignRootsToCells` then permutes which root receives which rect,
+minimizing the squared distance from each root's agent centroid to its cell
+centre. Every stability property of the treemap survives a permutation.
+
+Positions therefore enter geometry as an *ordering over rects that already
+exist*, never as an input to a rect. This is the same standard the change set is
+held to, and it is what keeps the arrangement legible without making the metric
+and the disk argue.
+
+Anchors are quantized to `ANCHOR_QUANTUM` (40) before they decide anything. The
+assignment is a discrete choice made from continuous positions, so without it a
+unit drifting a pixel could swap two roots' territory and the ground would jump
+for no visible reason — the same failure `RING_EXTENT_QUANTUM` prevents in the
+lattice, and the same remedy.
+
+Search is exhaustive with branch-and-bound up to six roots (720 orderings,
+evaluated once per layout) and greedy over the cheapest pairs beyond, with ties
+broken on sorted-root index so the result never depends on enumeration order.
+
 ### Ground is sized against the space the lattice actually reserved
 
 `ringLattice.ts` sizes every ring against the districts it holds, using each
@@ -581,6 +617,9 @@ change rather than a rendering one.
 - A cell's change tint does not grow with its depth in the tree.
 - No two districts' ground discs overlap, at any roster size.
 - A folder is drawn larger than a file it sits beside.
+- In a district spanning several repositories, each root's ground sits under the
+  agents that work in it, and moving one agent a few pixels does not rearrange
+  the ground.
 - No `git_status` or `get_directory_tree` call is issued on a render that
   changed only telemetry, selection, or zoom within one detail level.
 - A changed path inside an unlisted folder still tints its nearest drawn

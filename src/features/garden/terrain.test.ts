@@ -6,10 +6,12 @@ import {
   GROUND_GAP,
   MIN_GROUND_RADIUS,
   area,
+  assignRootsToCells,
   basename,
   buildTerrain,
   groundRadiusFor,
   intersectsDisc,
+  quantizeAnchor,
   squarify,
   type TerrainDistrict,
   type TerrainListing,
@@ -37,6 +39,74 @@ function listing(path: string, names: readonly string[], dirs: readonly string[]
     })),
   };
 }
+
+describe("assignRootsToCells", () => {
+  // Four quadrant cells of a 400x400 ground centred on the origin.
+  const QUADRANTS = [
+    { x: -200, y: -200, width: 200, height: 200 },
+    { x: 0, y: -200, width: 200, height: 200 },
+    { x: -200, y: 0, width: 200, height: 200 },
+    { x: 0, y: 0, width: 200, height: 200 },
+  ];
+  const ORIGIN = { x: 0, y: 0 };
+
+  it("puts each root under the agents that work in it", () => {
+    // Sorted order would give `alpha` the top-left cell, but its agents settled
+    // bottom-right — which is how an agent ends up sitting over a repository it
+    // has never touched.
+    const roots = ["alpha", "beta", "gamma", "delta"].sort();
+    const anchors = new Map([
+      ["alpha", { x: 100, y: 100 }],
+      ["beta", { x: -100, y: 100 }],
+      ["gamma", { x: 100, y: -100 }],
+      ["delta", { x: -100, y: -100 }],
+    ]);
+    expect(assignRootsToCells(roots, QUADRANTS, anchors, ORIGIN)).toEqual([
+      "delta",
+      "gamma",
+      "beta",
+      "alpha",
+    ]);
+  });
+
+  it("keeps sorted order when nothing says otherwise", () => {
+    const roots = ["alpha", "beta", "delta", "gamma"];
+    expect(assignRootsToCells(roots, QUADRANTS, undefined, ORIGIN)).toEqual(roots);
+  });
+
+  it("is a permutation, never a loss", () => {
+    const roots = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    const cells = roots.map((_, index) => ({ x: index * 10, y: 0, width: 10, height: 10 }));
+    const anchors = new Map(roots.map((root, index) => [root, { x: (7 - index) * 10, y: 0 }]));
+    const assigned = assignRootsToCells(roots, cells, anchors, ORIGIN);
+    expect([...assigned].sort()).toEqual([...roots].sort());
+  });
+
+  it("resolves against the district's own origin", () => {
+    // Anchors are district-relative; cells are world-space. Comparing them in
+    // one frame is the whole correctness condition.
+    const roots = ["alpha", "beta"];
+    const cells = [
+      { x: 900, y: 0, width: 100, height: 100 },
+      { x: 1000, y: 0, width: 100, height: 100 },
+    ];
+    const anchors = new Map([
+      ["alpha", { x: 50, y: 50 }],
+      ["beta", { x: -50, y: 50 }],
+    ]);
+    expect(assignRootsToCells(roots, cells, anchors, { x: 1000, y: 0 })).toEqual([
+      "beta",
+      "alpha",
+    ]);
+  });
+});
+
+describe("quantizeAnchor", () => {
+  it("snaps so a pixel of drift cannot swap two roots' territory", () => {
+    expect(quantizeAnchor({ x: 3, y: -3 })).toEqual({ x: 0, y: -0 });
+    expect(quantizeAnchor({ x: 101, y: 99 })).toEqual({ x: 120, y: 80 });
+  });
+});
 
 describe("groundRadiusFor", () => {
   it("inflates a collapsed district to a plot worth drawing", () => {

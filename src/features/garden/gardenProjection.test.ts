@@ -11,6 +11,7 @@ import {
 } from "./gardenProjection";
 import { createScene, pinEntity } from "./gardenScene";
 import { COMMONS_DISTRICT_ID } from "./districts";
+import { ANCHOR_QUANTUM } from "./terrain";
 import { MIN_FIT_SCALE, fitTransform } from "./gardenViewport";
 
 function agent(id: string, folder: string, agentClass = "Coder"): AgentConfig {
@@ -182,6 +183,32 @@ describe("computeGardenLayout", () => {
     for (const district of result.districts.values()) {
       expect(Number.isFinite(district.origin.x)).toBe(true);
       expect(district.radius).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("anchors each root where its own agents settled", () => {
+    const spanning: AgentTeam[] = [
+      { id: "hw", name: "Hardware", agentIds: ["a1", "b1"] },
+    ] as AgentTeam[];
+    const result = computeGardenLayout({
+      projection: projectionOf(nodes),
+      teams: spanning,
+      workflows: [],
+      scene: createScene(),
+    });
+
+    const district = result.districts.get("team:hw");
+    expect(district?.roots).toEqual(["d:/dev/hardware", "d:/dev/web"]);
+    // An anchor per root, district-relative, so the treemap can put each root's
+    // ground under the agents that work in it rather than in sorted order.
+    expect([...(district?.anchors?.keys() ?? [])].sort()).toEqual([
+      "d:/dev/hardware",
+      "d:/dev/web",
+    ]);
+    for (const anchor of district?.anchors?.values() ?? []) {
+      expect(Number.isFinite(anchor.x)).toBe(true);
+      expect(Math.abs(anchor.x % ANCHOR_QUANTUM)).toBe(0);
+      expect(Math.abs(anchor.y % ANCHOR_QUANTUM)).toBe(0);
     }
   });
 

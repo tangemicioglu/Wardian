@@ -76,6 +76,14 @@ export interface TerrainChild {
 export interface TerrainDistrict {
   /** Distinct normalized workspace roots of the district's agents. */
   roots: readonly string[];
+  /**
+   * root -> where that root's agents settled, relative to the district origin.
+   *
+   * Used to decide *which* cell a root gets, never what the cells look like.
+   * Absent for a district whose members have no position yet, which falls back
+   * to sorted order.
+   */
+  anchors?: ReadonlyMap<string, GardenPosition>;
   origin: GardenPosition;
   /**
    * Radius of the ground disc, already resolved by `groundRadiusFor`.
@@ -183,6 +191,116 @@ export function groundRadiusFor(extent: number, nearestNeighbour: number): numbe
   const safe = Math.max(0, Number.isFinite(extent) ? extent : 0);
   const cap = Math.max(0, nearestNeighbour / 2 - GROUND_GAP);
   return Math.max(safe, Math.min(MIN_GROUND_RADIUS, cap));
+}
+
+/**
+ * Grid an anchor is snapped to before it decides anything.
+ *
+ * The root-to-cell assignment is a discrete choice made from continuous
+ * positions, so without quantization a unit drifting a pixel could swap two
+ * roots' territory and the ground would jump for no visible reason. The same
+ * reasoning and the same remedy as `RING_EXTENT_QUANTUM` in the lattice: the
+ * ground rearranges only when a district's members move a visible amount.
+ */
+export const ANCHOR_QUANTUM = 40;
+
+export function quantizeAnchor(point: GardenPosition): GardenPosition {
+  return {
+    x: Math.round(point.x / ANCHOR_QUANTUM) * ANCHOR_QUANTUM,
+    y: Math.round(point.y / ANCHOR_QUANTUM) * ANCHOR_QUANTUM,
+  };
+}
+
+/**
+ * Give each root the cell nearest the agents that work in it.
+ *
+ * A district spanning several repositories lays its ground out in sorted path
+ * order while the metric places its agents by what they resemble, so the two
+ * orders agree only by luck. An agent then sits over a neighbour's ground and
+ * reads as belonging to a repository it has never touched — which is the one
+ * thing territory is supposed to communicate.
+ *
+ * The ground moves rather than the units, and the direction is forced: ground
+ * radius is derived from how far the units settled, so units deriving from cell
+ * rects would close a cycle. It is also the safer half to move. Unit positions
+ * are persisted, pinned, and dragged by the operator; the ground is derived per
+ * session and already reflows whenever a folder's contents change.
+ *
+ * Only the *assignment* is chosen here. Cells keep the shapes squarify gave
+ * them in sorted order, so the set of rects is still a function of the root set
+ * and the ground square alone, and every stability property of the treemap
+ * survives the permutation.
+ */
+export function assignRootsToCells(
+  roots: readonly string[],
+  cells: readonly TerrainRect[],
+  anchors: ReadonlyMap<string, GardenPosition> | undefined,
+  origin: GardenPosition,
+): string[] {
+  if (!anchors || cells.length !== roots.length || roots.length < 2) return [...roots];
+
+  const cost = (rootIndex: number, cellIndex: number): number => {
+    const anchor = anchors.get(roots[rootIndex]);
+    if (!anchor) return 0;
+    const rect = cells[cellIndex];
+    const dx = origin.x + anchor.x - (rect.x + rect.width / 2);
+    const dy = origin.y + anchor.y - (rect.y + rect.height / 2);
+    return dx * dx + dy * dy;
+  };
+
+  // Exhaustive below the point where it stops being free: six repositories is
+  // 720 orderings, evaluated once per layout, and branch-and-bound prunes most
+  // of them. Beyond that, a greedy pass over the cheapest pairs.
+  if (roots.length <= 6) {
+    let best: number[] | null = null;
+    let bestCost = Number.POSITIVE_INFINITY;
+    const order: number[] = [];
+    const used = new Array<boolean>(roots.length).fill(false);
+    const walk = (cellIndex: number, running: number) => {
+      if (running >= bestCost) return;
+      if (cellIndex === cells.length) {
+        bestCost = running;
+        best = [...order];
+        return;
+      }
+      for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+        if (used[rootIndex]) continue;
+        used[rootIndex] = true;
+        order.push(rootIndex);
+        walk(cellIndex + 1, running + cost(rootIndex, cellIndex));
+        order.pop();
+        used[rootIndex] = false;
+      }
+    };
+    walk(0, 0);
+    return best ? (best as number[]).map((rootIndex) => roots[rootIndex]) : [...roots];
+  }
+
+  const pairs: Array<{ rootIndex: number; cellIndex: number; cost: number }> = [];
+  for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+    for (let cellIndex = 0; cellIndex < cells.length; cellIndex += 1) {
+      pairs.push({ rootIndex, cellIndex, cost: cost(rootIndex, cellIndex) });
+    }
+  }
+  // Ties break on the indices, which are sorted-root order, so the result does
+  // not depend on how the pairs happened to be enumerated.
+  pairs.sort(
+    (left, right) =>
+      left.cost - right.cost ||
+      left.rootIndex - right.rootIndex ||
+      left.cellIndex - right.cellIndex,
+  );
+  const takenRoot = new Set<number>();
+  const takenCell = new Set<number>();
+  const result = new Array<string | null>(cells.length).fill(null);
+  for (const pair of pairs) {
+    if (takenRoot.has(pair.rootIndex) || takenCell.has(pair.cellIndex)) continue;
+    takenRoot.add(pair.rootIndex);
+    takenCell.add(pair.cellIndex);
+    result[pair.cellIndex] = roots[pair.rootIndex];
+  }
+  const leftover = roots.filter((root) => !result.includes(root));
+  return result.map((root) => root ?? leftover.shift() ?? roots[0]);
 }
 
 /**
@@ -352,10 +470,15 @@ export function buildTerrain(input: TerrainInput): TerrainCell[] {
     };
 
     const roots = [...new Set(district.roots)].sort();
-    const placed = squarify(
+    // Shapes first, in sorted order, so the set of rects depends only on the
+    // root set. Which root receives which of those rects is then chosen to sit
+    // under the agents that work in it.
+    const shapes = squarify(
       roots.map((path) => ({ value: 1, datum: path })),
       ground,
-    );
+    ).map((entry) => entry.rect);
+    const ordered = assignRootsToCells(roots, shapes, district.anchors, district.origin);
+    const placed = shapes.map((rect, index) => ({ datum: ordered[index], rect }));
 
     let districtCells = 0;
     let frontier: Pending[] = [];

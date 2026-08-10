@@ -19,7 +19,7 @@ import { buildSkillCrowns, crownExtent, type GardenSkillGlyph } from "./skillGly
 import { interactionWeight, personalizedPageRank } from "./metric";
 import { layoutGarden, type LayoutEntity } from "./gardenLayout";
 import type { GardenScene } from "./gardenScene";
-import { groundRadiusFor, type TerrainDistrict } from "./terrain";
+import { groundRadiusFor, quantizeAnchor, type TerrainDistrict } from "./terrain";
 
 export interface GardenWorkflowInput {
   id: string;
@@ -167,6 +167,9 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
   // the thing the malleable-garden spec asked Garden to make visible rather
   // than nest away.
   const rootsByDistrict = new Map<string, Set<string>>();
+  // Which root each agent works in, so the ground can be laid out under the
+  // agents rather than beside them. Agents only: a workflow has no workspace.
+  const rootByUnitKey = new Map<string, string>();
   for (const node of input.projection.nodes) {
     const ref = agentRef(node.id);
     const teamIds = teamsByAgent.get(node.id);
@@ -178,6 +181,7 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
       const existing = rootsByDistrict.get(district);
       if (existing) existing.add(root);
       else rootsByDistrict.set(district, new Set([root]));
+      rootByUnitKey.set(entityKey(ref), root);
     }
     const crown = crowns.get(node.id) ?? [];
     entities.push({
@@ -251,6 +255,28 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
   // *every* district and not only the ones carrying terrain: a neighbour with
   // no workspace still holds units that the ground must not be drawn over.
   const origins = [...result.districtOrigins.entries()];
+
+  // Where each root's agents settled, district-relative, so a district spanning
+  // several repositories can put each one's ground under the agents that work
+  // in it. Positions only enter as an *ordering* of cells that already exist —
+  // they can no more change a rect than the change set can.
+  const anchorTotals = new Map<string, Map<string, { x: number; y: number; count: number }>>();
+  for (const unit of result.units) {
+    const root = rootByUnitKey.get(unit.key);
+    if (!root) continue;
+    const origin = result.districtOrigins.get(unit.districtId) ?? { x: 0, y: 0 };
+    let byRoot = anchorTotals.get(unit.districtId);
+    if (!byRoot) {
+      byRoot = new Map();
+      anchorTotals.set(unit.districtId, byRoot);
+    }
+    const total = byRoot.get(root) ?? { x: 0, y: 0, count: 0 };
+    total.x += unit.position.x - origin.x;
+    total.y += unit.position.y - origin.y;
+    total.count += 1;
+    byRoot.set(root, total);
+  }
+
   const territory = new Map<string, TerrainDistrict>();
   for (const [district, roots] of rootsByDistrict) {
     const origin = result.districtOrigins.get(district) ?? { x: 0, y: 0 };
@@ -259,8 +285,18 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
       if (other === district) continue;
       nearest = Math.min(nearest, Math.hypot(point.x - origin.x, point.y - origin.y));
     }
+    const totals = anchorTotals.get(district);
+    const anchors = totals
+      ? new Map(
+          [...totals].map(([root, total]) => [
+            root,
+            quantizeAnchor({ x: total.x / total.count, y: total.y / total.count }),
+          ]),
+        )
+      : undefined;
     territory.set(district, {
       roots: [...roots].sort(),
+      anchors,
       origin,
       radius: groundRadiusFor(result.districtExtents.get(district) ?? 0, nearest),
     });
