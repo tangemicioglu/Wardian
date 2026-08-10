@@ -127,14 +127,28 @@ promises — `2 * GROUND_GAP` — in place of the old 96-unit margin.
 This is one change with two effects, and they point opposite ways on purpose:
 
 - Districts whose units spread wider than a ground move **closer**, because the
-  gap between their footprints drops from 96 to 48.
-- Districts smaller than a ground move **apart**, from a 192-unit step to 288 —
-  and their ground grows from 72 to the full 120 to fill it.
+  gap between their footprints drops from 96 to `2 * GROUND_GAP`.
+- Districts smaller than a ground move **apart**, from a 192-unit step to
+  `2 * MIN_GROUND_RADIUS + 2 * GROUND_GAP` — and their ground grows from 72 to
+  the full 120 to fill it.
 
-Both land on the same invariant: **the clear space between two grounds is 48,
-everywhere.** The lattice reserves what the ground will draw, so
-`groundRadiusFor`'s clip stops being the thing that decides ground size on a
+Both land on the same invariant: **the clear space between two grounds is
+`2 * GROUND_GAP`, everywhere.** The lattice reserves what the ground will draw,
+so `groundRadiusFor`'s clip stops being the thing that decides ground size on a
 crowded ring, and stops leaving hundreds of units of grass on a sparse one.
+
+`GROUND_GAP` is therefore the one knob for how much grass the map shows, set at
+16 for a 32-unit clearance. It buys less than it looks like where the floor
+dominates: a ring of one-agent districts steps by `240 + 2 * GROUND_GAP`, so the
+gap moves the pitch by a few percent and the floor decides the rest.
+
+The remaining slack is **angular, not radial**. Ring `r` holds `6r` slots at a
+radius set by clearing the ring inside it, and on a map several rings deep that
+radius is wider than the ring's own contents need — neighbours within a ring end
+up further apart than the margin asks for. Closing that means deriving slot count
+from radius, which makes a slot index mean something roster-dependent: a
+`RING_ARRANGEMENT` break that re-places every district, not a tuning change.
+Deferred deliberately.
 
 The floor applies to districts that draw no ground too — in practice only the
 commons, whose extent exceeds it anyway. Threading "does this district have a

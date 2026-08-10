@@ -166,8 +166,25 @@ export function districtCellBudget(maxCells: number, districtCount: number): num
  */
 export const MIN_GROUND_RADIUS = 120;
 
-/** Clear space left between two districts' ground discs, per side. */
-export const GROUND_GAP = 24;
+/**
+ * Clear space left between two districts' ground discs, per side.
+ *
+ * This is the single knob for how much grass the map shows. It sets both halves
+ * of the separation: the lattice reserves `2 * GROUND_GAP` between neighbouring
+ * footprints (`DISTRICT_GROUND_MARGIN`), and `groundRadiusFor` clips a ground to
+ * leave exactly that much when a slot ends up tighter than the reservation. The
+ * two cannot drift apart because there is only one number.
+ *
+ * It buys less than it looks like on a roster of small districts. Their step is
+ * `2 * MIN_GROUND_RADIUS + 2 * GROUND_GAP`, so the floor dominates and the gap
+ * moves the pitch by a few percent. The remaining slack is angular rather than
+ * radial: ring `r` holds `6r` slots at a radius set by clearing the ring inside
+ * it, which on a map several rings deep is wider than the ring's own contents
+ * need. Closing that means deriving slot count from radius, which makes a slot
+ * index mean something roster-dependent — a `RING_ARRANGEMENT` break, not a
+ * tuning change.
+ */
+export const GROUND_GAP = 16;
 
 /**
  * Room the ring lattice must reserve for a district.
