@@ -32,9 +32,20 @@ export function useGardenReach(
   const rootsRef = useRef(roots);
   rootsRef.current = roots;
   const rootKey = [...roots].sort().join(ROOT_KEY_SEPARATOR);
+  // Root sets already answered, so `enabled` going false and true again — which
+  // is what hiding and re-showing the surface does — cannot refetch.
+  //
+  // Without this the once-per-session rule was a claim the code did not keep:
+  // the effect depends on `enabled`, so re-showing the Garden re-read the
+  // archive, and a cross-boundary write made while it was hidden could re-seat
+  // districts the moment it came back. Reach is history; a new look at the map
+  // is not a reason to adopt more of it.
+  const answered = useRef(new Set<string>());
 
   useEffect(() => {
     if (!enabled || rootKey.length === 0) return;
+    if (answered.current.has(rootKey)) return;
+    answered.current.add(rootKey);
     let active = true;
     void Promise.resolve(
       invoke<AgentReachResponse>("load_agent_reach", { roots: [...rootsRef.current] }),
@@ -47,6 +58,11 @@ export function useGardenReach(
         // A roster whose reach cannot be read lays out as if nobody coordinated
         // anything, which is the arrangement that existed before this input. A
         // failure here must not be able to blank the map.
+        //
+        // The root set is released so a later pass may retry: a failed read
+        // answered nothing, and holding it would make one transient error
+        // permanent for the session.
+        answered.current.delete(rootKey);
         if (active) setReach(EMPTY_REACH);
       });
     return () => {

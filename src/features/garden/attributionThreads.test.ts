@@ -155,6 +155,27 @@ describe("threadsFor", () => {
     expect(threads.map((thread) => thread.key)).toEqual([threadKey("a1", "d:/repo/src")]);
   });
 
+  it("supersedes a filesystem root, which a plain slash walk stops before", () => {
+    const cells = [cell("/", 0), cell("/srv", 20), cell("/srv/main.rs", 40)];
+    const paints = new Map([
+      ["/", paint({ churn: 1 })],
+      ["/srv", paint({ churn: 0.8 })],
+      ["/srv/main.rs", paint({ churn: 0.2 })],
+    ]);
+    const threads = threadsFor({ cells, paint: paints, positions, selectedAgentId: "a1" });
+    expect(threads.map((thread) => thread.key)).toEqual([threadKey("a1", "/srv/main.rs")]);
+  });
+
+  it("supersedes a drive root, which a plain slash walk lands one character short of", () => {
+    const cells = [cell("d:/", 0), cell("d:/src", 20)];
+    const paints = new Map([
+      ["d:/", paint({ churn: 1 })],
+      ["d:/src", paint({ churn: 0.8 })],
+    ]);
+    const threads = threadsFor({ cells, paint: paints, positions, selectedAgentId: "a1" });
+    expect(threads.map((thread) => thread.key)).toEqual([threadKey("a1", "d:/src")]);
+  });
+
   it("still threads a selected folder even though its children are rendered", () => {
     // Selecting a piece of ground asks "who wrote *this*", so supersession must
     // not answer a different question.

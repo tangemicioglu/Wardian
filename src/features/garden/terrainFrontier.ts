@@ -29,7 +29,27 @@ export const EXPAND_AREA_PX = 5200;
  */
 export const SUBDIVIDE_AREA_PX = 2600;
 
-/** Hard ceiling on drawn cells, protecting scene-graph size and hit-testing. */
+/**
+ * Cell budget offered to the districts, protecting scene-graph size.
+ *
+ * **Not a hard ceiling on drawn cells**, and the distinction is load-bearing
+ * enough to state here rather than leave to be discovered. `districtCellBudget`
+ * divides this between the districts and then floors each share at
+ * `MIN_DISTRICT_CELLS`, because a share below that cannot admit even one
+ * directory level and a district that can only draw its own root cell is not
+ * showing terrain at all. On a roster with many districts the floor wins, and
+ * the drawn total is `districts * MIN_DISTRICT_CELLS`.
+ *
+ * The alternative was a global cap with proportional shares, and it is worse:
+ * 2000 across 37 districts is 54 cells each, which is under one level
+ * everywhere, so every district on a busy roster would show a single flat plot.
+ * A budget that is honoured by making the feature useless is not a budget worth
+ * honouring — so the ceiling gives way and the floor holds.
+ *
+ * What actually bounds the scene is per-district: the frontier only expands
+ * cells above `EXPAND_AREA_PX` of *screen* area and only inside the viewport, so
+ * cell count tracks what is visible rather than what exists.
+ */
 export const MAX_TERRAIN_CELLS = 2000;
 
 /** Hard ceiling on cached listings, protecting memory and calls in flight. */
@@ -80,13 +100,22 @@ export function frontierRequests(
   budget: {
     maxRequests?: number;
     maxFrontierDirs?: number;
+    /**
+     * Directories already requested and not yet cached.
+     *
+     * Counted against the budget because the cache is what the budget bounds,
+     * and an in-flight request is a cache entry that has not landed yet. Without
+     * it, two waves of the expansion pass could each measure the same
+     * `listings.size` and together overshoot by a whole `maxRequests`.
+     */
+    inFlight?: number;
   } = {},
 ): string[] {
   const maxRequests = budget.maxRequests ?? MAX_LISTING_REQUESTS;
   const maxFrontierDirs = budget.maxFrontierDirs ?? MAX_FRONTIER_DIRS;
   if (maxRequests <= 0) return [];
 
-  const remaining = maxFrontierDirs - listings.size;
+  const remaining = maxFrontierDirs - listings.size - Math.max(0, budget.inFlight ?? 0);
   if (remaining <= 0) return [];
 
   const scaleArea = viewport.scale * viewport.scale;

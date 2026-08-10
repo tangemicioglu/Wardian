@@ -234,6 +234,51 @@ describe("useGardenTerrain", () => {
     ).toHaveLength(1);
   });
 
+  it("drops the listings of a root that has left the roster", async () => {
+    // The frontier budget counts cached directories, and nothing used to remove
+    // them. A district that was removed or re-districted kept its share forever,
+    // so once the cache filled with departed roots a newly added root could
+    // never expand past its own root cell.
+    invokeMock.mockImplementation(async (command: string, args?: unknown) =>
+      command === "get_directory_tree" &&
+      String((args as { path?: string } | undefined)?.path ?? "").includes("repo")
+        ? directoryTree("a.ts", "b.ts")
+        : [],
+    );
+
+    const { result, rerender } = renderHook(
+      ({ districts }) => useGardenTerrain({ enabled: true, districts, viewport: VIEWPORT }),
+      { initialProps: { districts: DISTRICTS } },
+    );
+    await waitFor(() => expect(result.current.cells.length).toBe(3));
+
+    const listedRepo = () =>
+      invokeMock.mock.calls.filter(
+        ([command, args]) =>
+          command === "get_directory_tree" &&
+          (args as unknown as { path?: string } | undefined)?.path === "d:/work/repo",
+      ).length;
+    expect(listedRepo()).toBe(1);
+
+    const replaced = new Map<string, TerrainDistrict>([
+      [
+        "workspace:d:/work/other",
+        { roots: ["d:/work/other"], origin: { x: 0, y: 0 }, radius: 400 },
+      ],
+    ]);
+    rerender({ districts: replaced });
+    await waitFor(() =>
+      expect(result.current.cells.map((cell) => cell.path)).toEqual(["d:/work/other"]),
+    );
+
+    // Coming back must re-list, which is only true if the departed root's
+    // listing was actually dropped. Asserting on `cells` alone would pass
+    // either way — cells derive from the current districts, so a retained
+    // listing is invisible there while still holding frontier budget.
+    rerender({ districts: DISTRICTS });
+    await waitFor(() => expect(listedRepo()).toBe(2));
+  });
+
   it("draws nothing and watches nothing while disabled", () => {
     const { result } = renderHook(() =>
       useGardenTerrain({ enabled: false, districts: DISTRICTS, viewport: VIEWPORT }),

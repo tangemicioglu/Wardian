@@ -131,6 +131,36 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
   }, [districts]);
   const rootKey = roots.join(ROOT_KEY_SEPARATOR);
 
+  // Drop listings belonging to roots that have left the roster.
+  //
+  // The frontier budget is a count of cached directories (`MAX_FRONTIER_DIRS`),
+  // and nothing used to remove entries — only unreadable refreshes were deleted.
+  // So the listings of a district that was removed, renamed, or re-districted
+  // kept their share of the allowance forever, and once the cache filled with
+  // them `frontierRequests` returned nothing and a *newly added* root could
+  // never expand past its own root cell.
+  //
+  // Keyed on `rootKey` so this runs when the root set changes rather than on
+  // every ingestion, and it deliberately keeps everything under a surviving
+  // root: those listings are still correct and re-fetching them would be the
+  // eviction-and-refetch cycle that made the ground blink.
+  useEffect(() => {
+    if (!enabled) return;
+    setListings((current) => {
+      if (current.size === 0) return current;
+      const next = new Map<string, TerrainListing>();
+      for (const [path, listing] of current) {
+        if (roots.some((root) => path === root || path.startsWith(`${root}/`))) {
+          next.set(path, listing);
+        }
+      }
+      return next.size === current.size ? current : next;
+    });
+    // `rootKey` is the content of `roots`; the array identity changes on every
+    // layout pass and would make this run constantly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, rootKey]);
+
   const requestListings = useCallback(async (paths: readonly string[]) => {
     const wanted = paths.filter(
       (path) => !inFlight.current.has(path) && !failed.current.has(path),
@@ -239,7 +269,9 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
   useEffect(() => {
     if (!enabled || !viewport || cells.length === 0) return;
     const timer = window.setTimeout(() => {
-      const requests = frontierRequests(cells, viewport, listings);
+      const requests = frontierRequests(cells, viewport, listings, {
+        inFlight: inFlight.current.size,
+      });
       const fresh = requests.filter((path) => !failed.current.has(path));
       if (fresh.length > 0) void requestListings(fresh);
     }, EXPANSION_DEBOUNCE_MS);

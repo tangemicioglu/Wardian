@@ -77,21 +77,118 @@ fn path_identity(path: &str) -> String {
     }
 }
 
-fn normalize(path: &str) -> String {
-    path_identity(path.trim().replace('\\', "/").trim_end_matches('/'))
+/// Split a path into its root and the remainder.
+///
+/// The root is what `..` may not climb past and what containment compares
+/// against, so the three shapes have to be told apart:
+///
+///   - `//server/share` — a UNC root is two segments, not zero;
+///   - `D:/x` — drive-*rooted*, whereas `D:x` is drive-*relative* and names a
+///     location only the process's per-drive cwd can resolve. Treating the
+///     latter as rooted would compare a relative path against workspace roots;
+///   - `/x` — a POSIX root, which must survive normalization rather than being
+///     trimmed to the empty string and then discarded as an unusable root.
+fn split_root(path: &str) -> (&str, &str) {
+    let bytes = path.as_bytes();
+    if let Some(rest) = path.strip_prefix("//") {
+        let mut cut = 0;
+        let mut slashes = 0;
+        for (index, byte) in rest.bytes().enumerate() {
+            if byte == b'/' {
+                slashes += 1;
+                if slashes == 2 {
+                    cut = index;
+                    break;
+                }
+            }
+        }
+        let split = if slashes == 2 { cut + 3 } else { path.len() };
+        return path.split_at(split.min(path.len()));
+    }
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
+        return path.split_at(3);
+    }
+    if path.starts_with('/') {
+        return path.split_at(1);
+    }
+    ("", path)
 }
 
-/// True when `path` looks rooted rather than relative to a workspace.
+/// Lexically resolve `.` and `..`, preserving the root.
+///
+/// Without this, `resolve` produced strings like `D:/dev/app/../other/x.ts`, and
+/// `root_for` compared them as plain prefixes — so a write into a *sibling*
+/// repository was attributed to the workspace it escaped from. Reach feeds
+/// district seating, so that is not a cosmetic mismatch: it moves the map on
+/// evidence that does not exist.
+///
+/// Lexical rather than filesystem-resolving on purpose. These paths come from
+/// turn records that may name files since deleted or on a volume no longer
+/// mounted, and canonicalizing would turn a history read into a disk walk.
+/// `..` is clamped at the root, matching what the filesystem would have done.
+fn lexical_normalize(path: &str) -> String {
+    let value = path.trim().replace('\\', "/");
+    let (root, rest) = split_root(&value);
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in rest.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if parts.last().is_some_and(|last| *last != "..") {
+                    parts.pop();
+                } else if root.is_empty() {
+                    // A relative path may legitimately escape its own start; the
+                    // marker is kept so joining it onto a workspace still lands
+                    // outside, rather than being silently swallowed.
+                    parts.push("..");
+                }
+            }
+            other => parts.push(other),
+        }
+    }
+    let joined = parts.join("/");
+    if root.is_empty() {
+        return joined;
+    }
+    format!("{}{}", root, joined)
+}
+
+fn normalize(path: &str) -> String {
+    let normalized = lexical_normalize(path);
+    let (root, _) = split_root(&normalized);
+    let root_length = root.len();
+    // A trailing slash is noise everywhere except on the root itself, where it
+    // *is* the root.
+    let trimmed = if normalized.len() > root_length {
+        normalized.trim_end_matches('/')
+    } else {
+        normalized.as_str()
+    };
+    path_identity(trimmed)
+}
+
+/// True when `path` names a location on its own, rather than relative to a
+/// workspace.
 ///
 /// Turn records mix the two: providers report some writes relative to the
-/// session's cwd and others absolutely. Treating a relative path as rooted would
-/// silently match it against no root at all.
+/// session's cwd and others absolutely.
 fn is_absolute(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    if path.starts_with('/') {
+    !split_root(path).0.is_empty()
+}
+
+/// True when `candidate` is `root` or sits beneath it.
+///
+/// Both are already normalized, so this is a segment-aware prefix test. The
+/// root's own trailing slash is honoured, otherwise a drive root `d:/` would be
+/// compared as `d://` and match nothing.
+fn contains(root: &str, candidate: &str) -> bool {
+    if candidate == root {
         return true;
     }
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    if root.ends_with('/') {
+        return candidate.starts_with(root);
+    }
+    candidate.starts_with(&format!("{}/", root))
 }
 
 /// The longest requested root that contains `path`.
@@ -105,9 +202,7 @@ fn root_for<'a>(roots: &'a [RootPrefix], path: &str) -> Option<&'a RootPrefix> {
         if root.identity.is_empty() {
             continue;
         }
-        let contained = candidate == root.identity
-            || candidate.starts_with(&format!("{}/", root.identity));
-        if !contained {
+        if !contains(&root.identity, &candidate) {
             continue;
         }
         if best.is_none_or(|current| root.identity.len() > current.identity.len()) {
@@ -124,14 +219,15 @@ fn resolve(workspace: &str, path: &str) -> String {
         return String::new();
     }
     if is_absolute(&trimmed) {
-        return trimmed;
+        return lexical_normalize(&trimmed);
     }
     let base = workspace.trim().replace('\\', "/");
-    let base = base.trim_end_matches('/');
-    if base.is_empty() {
+    if base.trim_end_matches('/').is_empty() && !base.starts_with('/') {
         return String::new();
     }
-    format!("{}/{}", base, trimmed.trim_start_matches("./"))
+    // Joined first, then normalized, so `..` is resolved against the workspace
+    // it escapes from rather than being discarded.
+    lexical_normalize(&format!("{}/{}", base.trim_end_matches('/'), trimmed))
 }
 
 fn recency(entry: &ConversationIndexEntry) -> &str {
@@ -308,6 +404,71 @@ mod tests {
         assert_eq!(matched.expect("root").requested, "D:/Development/Wardian");
         #[cfg(not(windows))]
         assert!(matched.is_none());
+    }
+
+    #[test]
+    fn a_traversal_out_of_the_workspace_is_not_attributed_to_it() {
+        // The bug this replaces: `resolve` concatenated, so the string still
+        // began with the workspace and `root_for` accepted it as inside. Reach
+        // seats districts, so a false match moves the map on evidence that does
+        // not exist.
+        let roots = prefixes(&["D:/dev/app", "D:/dev/other"]);
+        let escaped = resolve("D:/dev/app", "../other/src/main.rs");
+        assert_eq!(escaped, "D:/dev/other/src/main.rs");
+        assert_eq!(root_for(&roots, &escaped).expect("root").requested, "D:/dev/other");
+    }
+
+    #[test]
+    fn a_traversal_to_nowhere_matches_no_root_at_all() {
+        let roots = prefixes(&["D:/dev/app"]);
+        let escaped = resolve("D:/dev/app", "../../elsewhere/notes.md");
+        assert_eq!(escaped, "D:/elsewhere/notes.md");
+        assert!(root_for(&roots, &escaped).is_none());
+    }
+
+    #[test]
+    fn dot_segments_resolve_rather_than_becoming_path_text() {
+        assert_eq!(resolve("D:/dev/app", "./src/./main.rs"), "D:/dev/app/src/main.rs");
+        assert_eq!(resolve("D:/dev/app", "src/nested/../main.rs"), "D:/dev/app/src/main.rs");
+    }
+
+    #[test]
+    fn climbing_past_the_root_stops_at_the_root() {
+        // What the filesystem would have done, rather than producing a path
+        // with a `..` above the drive that matches nothing.
+        assert_eq!(resolve("D:/dev", "../../../../x.txt"), "D:/x.txt");
+    }
+
+    #[test]
+    fn a_drive_relative_path_is_not_treated_as_rooted() {
+        // `C:x` names a location only the process's per-drive cwd can resolve,
+        // so it is relative and must be joined onto the workspace.
+        assert!(!is_absolute("C:notes.md"));
+        assert!(is_absolute("C:/notes.md"));
+    }
+
+    #[test]
+    fn a_posix_root_survives_normalization_and_still_contains_its_children() {
+        // `/` used to trim to the empty string and then be discarded as an
+        // unusable root, so every write under it was missed.
+        assert_eq!(normalize("/"), "/");
+        let roots = prefixes(&["/"]);
+        assert_eq!(root_for(&roots, "/srv/app/main.rs").expect("root").requested, "/");
+    }
+
+    #[test]
+    fn a_drive_root_contains_its_children() {
+        let roots = prefixes(&["D:/"]);
+        assert_eq!(normalize("D:/"), path_identity("D:/"));
+        assert!(root_for(&roots, "D:/dev/app/main.rs").is_some());
+    }
+
+    #[test]
+    fn a_unc_share_is_one_root_rather_than_two_empty_segments() {
+        let roots = prefixes(&["//server/share/app"]);
+        assert_eq!(normalize("//server/share/app/"), path_identity("//server/share/app"));
+        assert!(root_for(&roots, "//server/share/app/src/main.rs").is_some());
+        assert!(root_for(&roots, "//server/share/other/main.rs").is_none());
     }
 
     #[test]

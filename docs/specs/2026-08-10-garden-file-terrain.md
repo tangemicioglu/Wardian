@@ -228,8 +228,24 @@ Two budgets bound the result:
 
 | Budget | Limit | What it protects |
 | --- | --- | --- |
-| `MAX_TERRAIN_CELLS` | 2000 drawn cells | Konva scene-graph size and hit-testing |
-| `MAX_FRONTIER_DIRS` | 400 listed folders | Cached listings, and calls in flight |
+| `MAX_TERRAIN_CELLS` | 2000 cells *offered to the districts* | Konva scene-graph size and hit-testing |
+| `MAX_FRONTIER_DIRS` | 400 cached listings | Memory, and calls in flight |
+
+`MAX_TERRAIN_CELLS` is **not a hard ceiling on drawn cells**, and the name
+invites the opposite reading, so it is worth stating plainly: it is the amount
+the districts divide, and each district's share is then floored (see below), so
+on a roster with many districts the drawn total is
+`districts * MIN_DISTRICT_CELLS`. The alternative — a true global cap with
+proportional shares — was rejected because `2000 / 37 = 54` is under one
+directory level everywhere, so honouring the ceiling would make every district
+on a busy roster a single flat plot. The ceiling gives way and the floor holds.
+
+`MAX_FRONTIER_DIRS` *is* enforced, and enforcing it needs two things beyond the
+count itself: requests already in flight are charged against it, since an
+outstanding request is a cache entry that has not landed; and listings under a
+root that has left the roster are dropped, since otherwise a departed district
+holds its share forever and a newly added root can never expand past its own
+root cell.
 
 When a budget binds, expansion stops at the *shallowest* level that fits, so the
 map degrades by showing coarser territory rather than by showing an arbitrary
@@ -542,8 +558,8 @@ interface TerrainPaint {
 
 | Constraint | Limit |
 | --- | --- |
-| Drawn cells | 2000 |
-| Listed folders | 400 |
+| Cells offered to the districts | 2000, floored at 512 per district — see above, this is not a ceiling on drawn cells |
+| Cached listings | 400, counting requests in flight, pruned when a root leaves |
 | `get_directory_tree` calls per frontier evaluation | 32 |
 | Change-review calls in flight | 4 |
 | Frontier evaluations | ≤ 1 per animation frame |

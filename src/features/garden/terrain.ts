@@ -148,7 +148,16 @@ export interface TerrainInput {
  */
 export const MIN_DISTRICT_CELLS = 512;
 
-/** A district's share of the cell budget. */
+/**
+ * A district's share of the cell budget.
+ *
+ * The floor can raise the total above `maxCells`: `districtCount` districts each
+ * get at least `MIN_DISTRICT_CELLS`, so `maxCells` is what the districts divide,
+ * not a ceiling on what they draw. That is deliberate — see `MAX_TERRAIN_CELLS`
+ * for why a hard ceiling divided across a busy roster shows nothing at all — and
+ * it is stated in both places because a constant named like a limit that is not
+ * one will otherwise be read as a bug.
+ */
 export function districtCellBudget(maxCells: number, districtCount: number): number {
   if (districtCount <= 0) return maxCells;
   // The floor never exceeds the whole budget, so a caller asking for a small

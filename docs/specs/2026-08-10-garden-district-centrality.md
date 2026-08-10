@@ -77,9 +77,17 @@ doing its job. The guards that keep it from becoming churn:
 
 - **Tiers, not counts.** Reach is already an integer, and bucketing it means a
   district must gain a whole class of collaborators to move at all.
-- **Fetched once per session.** Reach is history. The hook reads it on mount and
-  does not subscribe to file events, so the map cannot rearrange itself while
-  you are looking at it. The next launch adopts the new arrangement.
+- **Fetched once per root set.** Reach is history. The hook does not subscribe
+  to file events, so the map cannot rearrange itself while you are looking at
+  it. The next launch adopts the new arrangement.
+
+  Answered root sets are remembered, and that is load-bearing rather than an
+  optimization: the fetch effect depends on whether the surface is enabled, so
+  without it, hiding and re-showing the Garden re-read the archive and a
+  cross-boundary write made in between could re-seat districts on return. A new
+  look at the map is not a reason to adopt more history. A *failed* read
+  releases its root set, so one transient error does not disable reach for the
+  session.
 - **Idempotent.** Cells are persisted. A sorted lattice re-sorts to itself, so
   the swap pass is a no-op on every session after the one that applied it.
 - **Bounded.** At most one swap per misplaced district; the pass is a selection
@@ -181,11 +189,28 @@ pub struct AgentReachResponse {
 }
 ```
 
-The caller supplies the roots. The backend owns path resolution — relative
-written paths resolve against the conversation's workspace, absolute ones are
-taken as they are — and the frontend owns the district mapping, because it is
-the only side that knows `rootsByDistrict`. Self-reach is reported rather than
-filtered: which roots share a district is not a question the backend can answer.
+The caller supplies the roots. The backend owns path resolution and the frontend
+owns the district mapping, because it is the only side that knows
+`rootsByDistrict`. Self-reach is reported rather than filtered: which roots share
+a district is not a question the backend can answer.
+
+Path resolution is **lexical, and containment is segment-aware**. A relative
+write is joined onto the conversation's workspace and *then* normalized, so `..`
+resolves against the workspace it escapes from. Skipping that step made
+containment a plain string prefix test, and `D:/dev/app/../other/x.ts` passed it
+— a write into a sibling repository attributed to the workspace it left. Reach
+seats districts, so that is not a cosmetic mismatch: it moves the map on evidence
+that does not exist.
+
+Three shapes have to be told apart for this to hold, and each was wrong before:
+a UNC root is two segments; `D:x` is drive-*relative* and must be joined, unlike
+`D:/x`; and a POSIX `/` must survive normalization rather than trimming to the
+empty string and being discarded as unusable. `..` clamps at the root, matching
+what the filesystem would have done.
+
+Resolution stays lexical rather than canonicalizing on disk. These paths come
+from turn records that may name files since deleted or volumes no longer
+mounted, and canonicalizing would turn a history read into a disk walk.
 
 Cost is bounded by `AGENT_REACH_CONVERSATION_LIMIT` (64) most-recent
 conversations per agent. Measured on a 140-agent archive: 302 conversations

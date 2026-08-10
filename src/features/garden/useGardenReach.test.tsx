@@ -39,6 +39,34 @@ describe("useGardenReach", () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
   });
 
+  it("does not re-fetch when the surface is hidden and shown again", async () => {
+    // The once-per-session rule was a claim the code did not keep: the effect
+    // depends on `enabled`, so re-showing the Garden re-read the archive and a
+    // write made while it was hidden could re-seat districts on return.
+    invokeMock.mockResolvedValue(response([{ agent_id: "m1", roots: ["d:/work/papers"] }]));
+    const { rerender } = renderHook(({ enabled }) => useGardenReach(enabled, ROOTS), {
+      initialProps: { enabled: true },
+    });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("retries a failed read rather than holding one transient error all session", async () => {
+    invokeMock.mockRejectedValueOnce(new Error("archive unreadable"));
+    const { rerender } = renderHook(({ enabled }) => useGardenReach(enabled, ROOTS), {
+      initialProps: { enabled: true },
+    });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+
+    invokeMock.mockResolvedValue(response([{ agent_id: "m1", roots: ["d:/work/papers"] }]));
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+  });
+
   it("stays quiet while disabled, so a hidden Garden costs nothing", () => {
     renderHook(() => useGardenReach(false, ROOTS));
     expect(invokeMock).not.toHaveBeenCalled();

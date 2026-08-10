@@ -100,6 +100,20 @@ describe("frontierRequests", () => {
     expect(frontierRequests([cell()], VIEWPORT, listings)).toEqual([]);
   });
 
+  it("counts requests already in flight against the frontier budget", () => {
+    // The cache is what the budget bounds, and an in-flight request is a cache
+    // entry that has not landed yet. Without this, two waves of the expansion
+    // pass each measured the same `listings.size` and together overshot.
+    const listings = new Map(
+      Array.from({ length: 398 }, (_, index) => [`d:/x/${index}`, listing(`d:/x/${index}`)]),
+    );
+    const cells = Array.from({ length: 10 }, (_, index) =>
+      cell({ path: `d:/work/repo/${index}` }),
+    );
+    expect(frontierRequests(cells, VIEWPORT, listings, { inFlight: 0 })).toHaveLength(2);
+    expect(frontierRequests(cells, VIEWPORT, listings, { inFlight: 2 })).toEqual([]);
+  });
+
   it("never returns the same path twice", () => {
     const duplicated = [cell(), cell()];
     expect(frontierRequests(duplicated, VIEWPORT, new Map())).toEqual(["d:/work/repo"]);
