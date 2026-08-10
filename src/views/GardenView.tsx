@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentConfig, AgentTelemetry } from "../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlist/types";
 import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph/graphProjection";
@@ -12,7 +12,10 @@ import { GardenCanvas } from "../features/garden/GardenCanvas";
 import { unitKey, type GardenPosition } from "../features/garden/garden.types";
 import {
   GARDEN_AGENT_STATUS_LEGEND,
+  GARDEN_CHANGE_LEGEND,
   gardenAgentStatusLabel,
+  gardenChangeBaselineLabel,
+  gardenGroundLabel,
   gardenSkillReachLabel,
   gardenWorkflowStatusLabel,
 } from "../features/garden/gardenStatus";
@@ -22,11 +25,6 @@ import { useGardenSkills } from "../features/garden/useGardenSkills";
 import { useGardenTerrain } from "../features/garden/useGardenTerrain";
 import { useTerrainChanges } from "../features/garden/useTerrainChanges";
 import { useTerrainOpen } from "../features/garden/useTerrainOpen";
-import {
-  GARDEN_CHANGE_LEGEND,
-  gardenChangeBaselineLabel,
-  gardenGroundLabel,
-} from "../features/garden/gardenStatus";
 import { basename as terrainCellName } from "../features/garden/terrain";
 import type { TerrainViewport } from "../features/garden/terrainFrontier";
 import { useGardenStore } from "../store/useGardenStore";
@@ -38,6 +36,9 @@ const ALL_REASONS: Set<GraphRelationshipReason> = new Set([
   "shared_workspace",
   "same_worktree",
 ]);
+
+/** Shared empty set, so "nothing highlighted" keeps a stable identity. */
+const EMPTY_HIGHLIGHT: ReadonlySet<string> = new Set<string>();
 
 /**
  * Hold a dropped unit inside the district it belongs to.
@@ -273,11 +274,11 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const highlightedAgentIds = useMemo(() => {
     if (selectedSkillRef) return agentsCarrying(layout.crowns, selectedSkillRef);
     if (selectedPath) return new Set(changes.paint.get(selectedPath)?.agentIds ?? []);
-    return new Set<string>();
+    return EMPTY_HIGHLIGHT;
   }, [selectedSkillRef, selectedPath, layout.crowns, changes.paint]);
 
   const highlightedPaths = useMemo(() => {
-    if (!selectedAgentId) return new Set<string>();
+    if (!selectedAgentId) return EMPTY_HIGHLIGHT;
     const written = new Set<string>();
     for (const [path, paint] of changes.paint) {
       if (paint.agentIds.includes(selectedAgentId)) written.add(path);
@@ -286,6 +287,13 @@ export const GardenView: React.FC<GardenViewProps> = ({
   }, [selectedAgentId, changes.paint]);
 
   const openPath = useTerrainOpen({ entries: changes.entries, baseline: changes.baseline });
+  // Stable identities: `TerrainLayer` is memoized, and a fresh empty set or a
+  // fresh closure per render would re-render two thousand ground cells on every
+  // telemetry tick.
+  const handleSelectPath = useCallback(
+    (path: string) => setSelectedKey(unitKey({ kind: "path", id: path })),
+    [],
+  );
 
   const selectedUnit = [...agentUnits, ...workflowUnits].find(
     (unit) => unitKey(unit.ref) === activeSelectionKey,
@@ -360,7 +368,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
         terrainDistricts={layout.districts}
         terrainPaint={changes.paint}
         highlightedPaths={highlightedPaths}
-        onSelectPath={(path) => setSelectedKey(unitKey({ kind: "path", id: path }))}
+        onSelectPath={handleSelectPath}
         onOpenPath={openPath}
         onViewportChange={setViewport}
         onSelect={(ref) => {
