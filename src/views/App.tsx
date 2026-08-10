@@ -1298,7 +1298,13 @@ function AppBody() {
     async (surfaceType: string): Promise<SurfaceResourceProvision | null> => {
       if (surfaceType !== "browser") return null;
       try {
-        const session = await openBrowserSession({});
+        // A Browser opened while one agent is selected takes that agent's
+        // workspace, which is the same rule the user terminal already follows.
+        // With nothing selected there is no workspace to read a declared port
+        // out of, and detection falls back to the conventional ones.
+        const session = await openBrowserSession({
+          workspace: selectedUserTerminalWorkspace,
+        });
         return {
           resource_key: session.browser_id,
           release: () => {
@@ -1310,7 +1316,7 @@ function AppBody() {
         return null;
       }
     },
-    [],
+    [selectedUserTerminalWorkspace],
   );
 
   /** Replaces a dead browser surface's session with a fresh one at the same URL. */

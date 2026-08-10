@@ -1064,6 +1064,7 @@ pub fn browser_open(
     width: Option<u32>,
     height: Option<u32>,
     detached: bool,
+    blank: bool,
 ) -> io::Result<BrowserSessionSummary> {
     browser_request(
         ControlRequest::BrowserOpen {
@@ -1073,6 +1074,7 @@ pub fn browser_open(
             width,
             height,
             detached,
+            blank,
         },
         BROWSER_TIMEOUT,
     )

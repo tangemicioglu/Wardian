@@ -11,7 +11,8 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::state::browser_session::{
-    discover_engine, BrowserError, BrowserSession, BrowserSessionBroker, ElementAction, LoadState,
+    detect_workspace_url, discover_engine, BrowserError, BrowserSession, BrowserSessionBroker,
+    ElementAction, LoadState,
     OpenBrowserRequest, PageField, PointerEvent, ScreencastAttachment, Viewport, WaitCondition,
 };
 use crate::state::AppState;
@@ -149,6 +150,33 @@ pub fn element_action_from_parts(
     }
 }
 
+/// Where a new session should point before anything has been probed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenAddress {
+    /// The caller named one.
+    Explicit(String),
+    /// The caller asked for nothing at all.
+    Blank,
+    /// Nothing was named; guess from the workspace.
+    Detect,
+}
+
+/// Decides what a new session should load.
+///
+/// A browser opened in a web workspace almost never wants `about:blank`, and an
+/// agent verifying a change should not have to guess which port the dev server
+/// picked — so an unspecified address is a question, not an answer. `--blank`
+/// is the way to say the blank page was the point.
+///
+/// Split from the probing so the decision can be tested without a socket.
+pub fn open_address(url: Option<String>, blank: bool) -> OpenAddress {
+    match url.map(|url| url.trim().to_string()).filter(|url| !url.is_empty()) {
+        Some(url) => OpenAddress::Explicit(url),
+        None if blank => OpenAddress::Blank,
+        None => OpenAddress::Detect,
+    }
+}
+
 fn broker(app: &AppHandle) -> Arc<BrowserSessionBroker> {
     Arc::clone(&app.state::<AppState>().browser_sessions)
 }
@@ -158,6 +186,7 @@ async fn resolve(app: &AppHandle, target: &str) -> Result<Arc<BrowserSession>, B
 }
 
 /// Opens a session and, unless detached, asks the frontend to surface it.
+#[allow(clippy::too_many_arguments)]
 pub async fn open_session(
     app: &AppHandle,
     url: Option<String>,
@@ -166,7 +195,15 @@ pub async fn open_session(
     width: Option<u32>,
     height: Option<u32>,
     detached: bool,
+    blank: bool,
 ) -> Result<BrowserSessionSummary, BrowserError> {
+    let url = match open_address(url, blank) {
+        OpenAddress::Explicit(url) => Some(url),
+        OpenAddress::Blank => None,
+        OpenAddress::Detect => {
+            detect_workspace_url(workspace.as_deref().map(std::path::Path::new)).await
+        }
+    };
     let viewport = match (width, height) {
         (Some(width), Some(height)) => Some(Viewport { width, height }),
         (None, None) => None,
@@ -490,18 +527,33 @@ pub fn browser_engine_status() -> BrowserEngineStatus {
     engine_status()
 }
 
+/// Opens a session for a workbench surface.
+///
+/// `workspace` is what a default address is guessed from when no URL is given;
+/// `blank` skips the guess.
 #[tauri::command]
 pub async fn open_browser_session(
     url: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
+    workspace: Option<String>,
+    blank: Option<bool>,
     app: AppHandle,
 ) -> Result<BrowserSessionSummary, String> {
     // The surface opens its own presentation, so the frontend must not be told
     // to open a second one.
-    open_session(&app, url, None, None, width, height, true)
-        .await
-        .map_err(command_error)
+    open_session(
+        &app,
+        url,
+        None,
+        workspace,
+        width,
+        height,
+        true,
+        blank.unwrap_or(false),
+    )
+    .await
+    .map_err(command_error)
 }
 
 /// Surface opens still waiting to be acknowledged.
@@ -782,5 +834,48 @@ mod tests {
                 "an unavailable engine must name the override"
             );
         }
+    }
+
+    #[test]
+    fn a_named_address_is_used_exactly_as_given() {
+        assert_eq!(
+            open_address(Some("https://example.com/".to_string()), false),
+            OpenAddress::Explicit("https://example.com/".to_string()),
+        );
+    }
+
+    #[test]
+    fn blank_is_ignored_when_an_address_was_named() {
+        // clap refuses this combination, but the control plane is a separate
+        // caller and an explicit address is the more specific instruction.
+        assert_eq!(
+            open_address(Some("https://example.com/".to_string()), true),
+            OpenAddress::Explicit("https://example.com/".to_string()),
+        );
+    }
+
+    #[test]
+    fn an_unspecified_address_is_a_question_rather_than_a_blank_page() {
+        assert_eq!(open_address(None, false), OpenAddress::Detect);
+    }
+
+    #[test]
+    fn blank_is_how_a_caller_says_the_blank_page_was_the_point() {
+        assert_eq!(open_address(None, true), OpenAddress::Blank);
+    }
+
+    #[test]
+    fn an_empty_or_blank_string_is_not_an_address() {
+        assert_eq!(open_address(Some(String::new()), false), OpenAddress::Detect);
+        assert_eq!(open_address(Some("   ".to_string()), false), OpenAddress::Detect);
+        assert_eq!(open_address(Some("  ".to_string()), true), OpenAddress::Blank);
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed_off_a_named_address() {
+        assert_eq!(
+            open_address(Some("  https://example.com/  ".to_string()), false),
+            OpenAddress::Explicit("https://example.com/".to_string()),
+        );
     }
 }

@@ -186,6 +186,9 @@ pub enum ControlRequest {
         /// Open the runtime without opening a workbench surface for it.
         #[serde(default)]
         detached: bool,
+        /// Skip the workspace address guess and open blank.
+        #[serde(default)]
+        blank: bool,
     },
     BrowserList,
     BrowserClose {
