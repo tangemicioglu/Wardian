@@ -32,7 +32,11 @@ function entry(overrides: Partial<ChangeReviewFileEntry> = {}): ChangeReviewFile
   };
 }
 
-function response(files: ChangeReviewFileEntry[], gitAvailable = true) {
+function response(
+  files: ChangeReviewFileEntry[],
+  gitAvailable = true,
+  workspaceRoot: string | null = ROOT,
+) {
   return {
     summary: {
       schema: 1,
@@ -49,6 +53,7 @@ function response(files: ChangeReviewFileEntry[], gitAvailable = true) {
     },
     git_available: gitAvailable,
     head_ref: "abc",
+    workspace_root: workspaceRoot,
     skipped_turn_records: 0,
   };
 }
@@ -84,10 +89,41 @@ describe("useTerrainChanges", () => {
 
     await waitFor(() => expect(result.current.paint.size).toBeGreaterThan(0));
     expect(invokeMock).toHaveBeenCalledWith("load_change_review", {
-      request: { cwd: ROOT, baseline: "head", agent_id: null },
+      request: { cwd: ROOT, baseline: DEFAULT_TERRAIN_BASELINE, agent_id: null },
     });
     expect(result.current.paint.get("d:/work/repo/src/a.ts")?.kind).toBe("modified");
     expect(result.current.paint.get("d:/work/repo")?.count).toBe(1);
+  });
+
+  it("roots an entry at the repository, not at the directory it asked about", async () => {
+    // Git reports paths relative to the repository root whatever directory it
+    // ran in, so an agent scoped to a subdirectory used to have every path
+    // joined onto the wrong base — plausible absolute paths matching no cell,
+    // and ground that was silently blank with nothing logged.
+    const SUBDIR = "d:/work/repo/packages/app";
+    invokeMock.mockImplementation(async (command: string) =>
+      command === "load_change_review" ? response([entry()], true, ROOT) : undefined,
+    );
+
+    const { result } = renderHook(() => useTerrainChanges({ enabled: true, roots: [SUBDIR] }));
+
+    await waitFor(() => expect(result.current.paint.size).toBeGreaterThan(0));
+    expect(invokeMock).toHaveBeenCalledWith("load_change_review", {
+      request: { cwd: SUBDIR, baseline: DEFAULT_TERRAIN_BASELINE, agent_id: null },
+    });
+    expect(result.current.paint.get("d:/work/repo/src/a.ts")).toBeDefined();
+    expect(result.current.paint.get(`${SUBDIR}/src/a.ts`)).toBeUndefined();
+    expect(result.current.entries.get("d:/work/repo/src/a.ts")?.root).toBe(ROOT);
+  });
+
+  it("falls back to the requested root when there is no repository", async () => {
+    invokeMock.mockImplementation(async (command: string) =>
+      command === "load_change_review" ? response([entry()], false, null) : undefined,
+    );
+
+    const { result } = renderHook(() => useTerrainChanges({ enabled: true, roots: [ROOT] }));
+    await waitFor(() => expect(result.current.paint.size).toBeGreaterThan(0));
+    expect(result.current.paint.get("d:/work/repo/src/a.ts")).toBeDefined();
   });
 
   it("adopts the pane's baseline when the map can render it", async () => {
@@ -115,7 +151,7 @@ describe("useTerrainChanges", () => {
 
     const { result } = renderHook(() => useTerrainChanges({ enabled: true, roots: [ROOT] }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("load_change_review_prefs"));
-    expect(result.current.baseline).toBe("head");
+    expect(result.current.baseline).toBe(DEFAULT_TERRAIN_BASELINE);
   });
 
   it("does not refetch a root it already holds", async () => {

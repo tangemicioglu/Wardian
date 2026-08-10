@@ -41,7 +41,18 @@ export const MAX_CHANGE_CONCURRENCY = 4;
  */
 const MAP_BASELINES: readonly ChangeReviewBaseline[] = ["head", "branch_point"];
 
-export const DEFAULT_TERRAIN_BASELINE: ChangeReviewBaseline = "head";
+/**
+ * What the map falls back to when the pane's baseline is agent-scoped.
+ *
+ * `branch_point` rather than `head`, and the default matters more than it
+ * looks: the stored preference defaults to `last_effective_turn`, which is
+ * agent-scoped, so *every* install that has never changed the setting lands on
+ * this fallback. With `head` that meant a ground showing only uncommitted work
+ * — blank across a tidy roster, and blank for exactly the repositories whose
+ * agents had finished and committed. The map-scale question is "what has this
+ * branch done", which is what `branch_point` answers.
+ */
+export const DEFAULT_TERRAIN_BASELINE: ChangeReviewBaseline = "branch_point";
 
 export function terrainBaselineFor(preference: ChangeReviewBaseline): ChangeReviewBaseline {
   return MAP_BASELINES.includes(preference) ? preference : DEFAULT_TERRAIN_BASELINE;
@@ -62,7 +73,12 @@ export interface TerrainChangesOptions {
  */
 export interface TerrainChangeEntry {
   entry: ChangeReviewFileEntry;
-  /** Normalized workspace root the entry belongs to. */
+  /**
+   * Normalized repository root the entry's path is relative to.
+   *
+   * The comparison opens with this as its `cwd`, so it must be the base the
+   * path resolves against and not merely some directory inside the repository.
+   */
   root: string;
   /** Revision the baseline resolved to, for the comparison. */
   baselineRef: string | null;
@@ -108,6 +124,20 @@ const EMPTY_ROOTS: ReadonlySet<string> = new Set();
 interface HeldChangeSet extends RootChangeSet {
   baseline: ChangeReviewBaseline;
   baselineRef: string | null;
+}
+
+/**
+ * Where an entry's path is rooted.
+ *
+ * Git reports paths relative to the *repository* root, not to the directory the
+ * command ran in, so an agent working in a subdirectory of a repository would
+ * otherwise have every path joined onto the wrong base — producing plausible
+ * absolute paths that match no cell, and ground that is silently blank with no
+ * error anywhere. The backend resolves it once; a workspace with no repository
+ * falls back to the requested root, where its turn-record paths do belong.
+ */
+function joinBaseFor(response: ChangeReviewLoadResponse, root: string): string {
+  return normalizeEntityPath(response.workspace_root) ?? root;
 }
 
 export function useTerrainChanges(options: TerrainChangesOptions): TerrainChangesResult {
@@ -170,8 +200,12 @@ export function useTerrainChanges(options: TerrainChangesOptions): TerrainChange
             });
             setChanges((current) => {
               const next = new Map(current);
+              // Keyed by the root that was requested — that is what `roots`
+              // names — but rooted at the repository, which is what the paths
+              // inside are relative to. The two differ for an agent scoped to a
+              // subdirectory, and conflating them is the bug this separates.
               next.set(root, {
-                root,
+                root: joinBaseFor(response, root),
                 baseline,
                 baselineRef: response.summary.baseline_ref,
                 entries: response.summary.files,

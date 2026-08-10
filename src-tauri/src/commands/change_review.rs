@@ -140,6 +140,11 @@ pub struct ChangeReviewLoadResponse {
     pub summary: ChangeReviewSummary,
     pub git_available: bool,
     pub head_ref: Option<String>,
+    /// Absolute repository root the summary's paths are relative to.
+    ///
+    /// `None` when the workspace is not a git repository, where the paths came
+    /// from turn records and are relative to the requested `cwd` instead.
+    pub workspace_root: Option<String>,
     pub skipped_turn_records: u64,
 }
 
@@ -589,6 +594,25 @@ fn current_head(cwd: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Repository root the reported paths are relative to.
+///
+/// Every path in a summary — from `git status --porcelain` and from
+/// `git diff --numstat` alike — is relative to the repository root, *not* to the
+/// `cwd` the command ran in. A caller that joins them onto its own working
+/// directory therefore produces real-looking absolute paths that point nowhere
+/// whenever that directory is a subdirectory of the repository, with no error to
+/// notice. Resolving it here costs one `rev-parse` on a call that already runs
+/// several, and leaves one answer for every surface.
+///
+/// For a worktree this is the worktree's own root, which is correct: that is
+/// where the reported paths live.
+fn repository_root(cwd: &str) -> Option<String> {
+    run_git(cwd, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn branch_point(cwd: &str, head: Option<&str>) -> Option<String> {
     let head = head?;
     let symbolic_default = run_git(
@@ -744,6 +768,7 @@ fn load_change_review_for_state(
                 },
                 git_available: false,
                 head_ref: None,
+                workspace_root: None,
                 skipped_turn_records,
             });
         }
@@ -780,6 +805,7 @@ fn load_change_review_for_state(
         },
         git_available: true,
         head_ref: head,
+        workspace_root: repository_root(cwd),
         skipped_turn_records,
     })
 }
@@ -1370,6 +1396,30 @@ mod tests {
                 None => std::env::remove_var("WARDIAN_HOME"),
             }
         }
+    }
+
+    #[test]
+    fn repository_root_is_reported_from_a_subdirectory() {
+        // Git reports every path relative to the repository root regardless of
+        // the directory it ran in. A caller that joins those paths onto its own
+        // working directory therefore builds real-looking absolute paths that
+        // point nowhere, silently, whenever an agent is scoped below the root.
+        let repo = SnapshotRepo::new();
+        let nested = std::path::Path::new(repo.cwd()).join("packages").join("app");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let from_root = repository_root(repo.cwd()).expect("root from the repository root");
+        let from_nested =
+            repository_root(nested.to_str().unwrap()).expect("root from a subdirectory");
+
+        assert_eq!(from_root, from_nested);
+        assert!(!from_nested.ends_with("app"));
+    }
+
+    #[test]
+    fn repository_root_is_absent_outside_a_repository() {
+        let plain = tempfile::tempdir().unwrap();
+        assert_eq!(repository_root(plain.path().to_str().unwrap()), None);
     }
 
     #[test]

@@ -121,6 +121,15 @@ export function ChangesPanel({
   const [summary, setSummary] = useState<ChangeReviewSummary | null>(null);
   const [gitAvailable, setGitAvailable] = useState(true);
   const [headRef, setHeadRef] = useState<string | null>(null);
+  /**
+   * Repository root the summary's paths resolve against.
+   *
+   * Distinct from `workspace`, which is where the *agent* works. Git reports
+   * every path relative to the repository root regardless of the directory it
+   * ran in, so an agent scoped to a subdirectory would otherwise open diffs at
+   * paths that do not exist.
+   */
+  const [pathRoot, setPathRoot] = useState<string | null>(null);
   const [openedPath, setOpenedPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -174,6 +183,7 @@ export function ChangesPanel({
       setSummary(response.summary);
       setGitAvailable(response.git_available);
       setHeadRef(response.head_ref);
+      setPathRoot(response.workspace_root ?? workspace);
     } catch (reason) {
       if (generation === requestGeneration.current) setError(errorMessage(reason));
     } finally {
@@ -286,12 +296,16 @@ export function ChangesPanel({
       setOpenError("Binary content is listed but not rendered.");
       return;
     }
+    // Paths resolve against the repository, not the agent's directory. The
+    // watermark below still keys on `workspace`, because "what has this agent
+    // seen" is a question about the agent, not about the repository.
+    const root = pathRoot ?? workspace;
     try {
       const surfaceId = workbenchNavigation.open({
         surface_type: "files",
-        resource_key: fileResourceKey(pathForWorkspace(workspace, entry.path)),
+        resource_key: fileResourceKey(pathForWorkspace(root, entry.path)),
         state: changeSurfaceState(
-          baselineForFile(entry, summary?.baseline_ref ?? null, workspace, baselineLabel),
+          baselineForFile(entry, summary?.baseline_ref ?? null, root, baselineLabel),
         ),
       });
       workbenchNavigation.pin_transient(surfaceId);
@@ -302,7 +316,7 @@ export function ChangesPanel({
     } catch (error) {
       setOpenError(`Unable to open the comparison: ${errorMessage(error)}`);
     }
-  }, [baselineLabel, reviewPathOnExpand, summary?.baseline_ref, workbenchNavigation, workspace]);
+  }, [baselineLabel, pathRoot, reviewPathOnExpand, summary?.baseline_ref, workbenchNavigation, workspace]);
 
   const handleBaselineChange = useCallback((nextBaseline: ChangeReviewBaseline) => {
     if (nextBaseline === baseline) return;

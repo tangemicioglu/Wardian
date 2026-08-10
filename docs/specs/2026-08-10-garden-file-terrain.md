@@ -260,6 +260,28 @@ spans every agent that worked there; the request's `agent_id` selects only the
 watermark and the snapshot baseline. A 37-district install therefore costs a
 handful of `git status` invocations rather than one per agent.
 
+### Entry paths are rooted at the repository, not at the agent
+
+Git reports every path relative to the **repository root**, whatever directory
+the command ran in — verified by running the same `git diff --numstat` from a
+subdirectory and getting identical output. An agent's folder is not required to
+be a repository root, so joining an entry's path onto it produces a
+real-looking absolute path that resolves to nothing whenever the agent is
+scoped below the root. Nothing errors: the paint is computed, keyed to paths no
+cell will ever carry, and the ground is silently blank.
+
+`load_change_review` therefore returns `workspace_root`, resolved once with
+`git rev-parse --show-toplevel` on a call that already runs several git
+commands, and both surfaces join against that. It is `null` for a workspace
+with no repository, where the paths came from turn records and *are* relative
+to the requested directory. For a worktree it is the worktree's own root, which
+is where the reported paths live.
+
+The requested root and the path root stay distinct rather than one overwriting
+the other. The requested root is what `roots` names and what the change-set
+cache is keyed by; the watermark also keys on it, because "what has this agent
+seen" is a question about the agent rather than about the repository.
+
 ### Which baseline the ground uses
 
 Three of the five baselines — `last_effective_turn`, `conversation_start`, and
@@ -271,10 +293,19 @@ that nothing in the UI could explain.
 
 `head` and `branch_point` are computed from the repository and name no agent. So
 the terrain adopts the pane's stored preference when it is one of these, and
-falls back to `head` when it is not. This is a deliberate, narrow divergence
-from the "one definition of changed" rule, and it is made safe by stating the
-baseline in words in the legend: the two surfaces may differ, and they may never
-differ silently.
+falls back when it is not. This is a deliberate, narrow divergence from the "one
+definition of changed" rule, and it is made safe by stating the baseline in
+words in the legend: the two surfaces may differ, and they may never differ
+silently.
+
+**The fallback is `branch_point`, and which one it is matters more than it
+looks.** The stored preference defaults to `last_effective_turn`, which is
+agent-scoped — so every install that has never changed the setting lands on the
+fallback rather than on a chosen value. An earlier `head` fallback therefore
+made the out-of-the-box ground show only uncommitted work: blank across a tidy
+roster, and blank for precisely the repositories whose agents had finished and
+committed, which are the ones worth looking at. At map scale the question is
+"what has this branch done", and that is `branch_point`.
 
 Paths roll **up** the tree: a folder cell carries the aggregate churn of its
 subtree whether or not that subtree is listed. This is the property that makes

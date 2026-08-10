@@ -1026,6 +1026,16 @@ export type ChangeReviewLoadResponse = {
     summary: ChangeReviewSummary;
     git_available: boolean;
     head_ref: string | null;
+    /**
+     * Absolute repository root the summary's paths are relative to.
+     *
+     * Git reports paths relative to the repository root regardless of the
+     * directory the command ran in, so this — not the requested `cwd` — is what
+     * an entry's path must be joined onto. `null` when the workspace is not a
+     * git repository, where paths came from turn records and are relative to
+     * the requested `cwd`.
+     */
+    workspace_root: string | null;
     skipped_turn_records: number;
 };
 

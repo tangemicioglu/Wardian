@@ -57,6 +57,7 @@ const response: ChangeReviewLoadResponse = {
   },
   git_available: true,
   head_ref: "head-1",
+  workspace_root: "C:/workspace",
   skipped_turn_records: 0,
 };
 

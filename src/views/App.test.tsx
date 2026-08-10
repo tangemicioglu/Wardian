@@ -3035,6 +3035,7 @@ describe("Sidebar Navigation", () => {
       },
       git_available: true,
       head_ref: "head-1",
+  workspace_root: null,
       skipped_turn_records: 0,
     };
     const defaultInvoke = mockInvoke.getMockImplementation();
