@@ -224,6 +224,7 @@ type SnapshotReplayTrace = {
   brokerScrollbackRows: number;
   brokerFormattedScrollbackRows: number;
   appliedFormattedState: boolean;
+  preservedLocalScrollback: boolean;
   parserBefore: TerminalBufferMetrics;
   parserAfter: TerminalBufferMetrics;
   rendererBefore: TerminalBufferMetrics | null;
@@ -1322,6 +1323,7 @@ async function applyBrokerSnapshot(
   terminalKey: string,
   entry: TerminalSessionEntry,
   snapshot: TerminalSnapshot,
+  options?: { preserveLocalScrollback?: boolean },
 ) {
   if (entry.disposed || snapshot.session_id !== entry.sessionId) {
     return;
@@ -1337,6 +1339,21 @@ async function applyBrokerSnapshot(
     renderer.term.cols === snapshot.geometry.cols &&
     renderer.term.rows === snapshot.geometry.rows
   );
+  // The active owner has already reflowed its xterm buffer before committing
+  // geometry to the PTY. Codex's inline scroll region renders real history in
+  // xterm but is not represented by vt100's canonical `scrollback`, so its
+  // resize snapshot can be an otherwise valid visible-grid update with zero
+  // history. Replaying that incomplete snapshot would erase the owner's only
+  // correct copy. Keep the local buffer until Codex's post-resize repaint
+  // arrives through the normal event stream.
+  const preserveLocalScrollback = Boolean(
+    options?.preserveLocalScrollback &&
+    renderer &&
+    rendererMatchesSnapshot &&
+    snapshot.scrollback.length === 0 &&
+    (snapshot.formatted_scrollback?.length ?? 0) === 0 &&
+    (renderer.term.buffer.active.baseY ?? 0) > 0,
+  );
   const snapshotTrace = shouldExposeTerminalDebug()
     ? {
         at: Date.now(),
@@ -1345,16 +1362,23 @@ async function applyBrokerSnapshot(
         brokerGeometry: snapshot.geometry,
         brokerScrollbackRows: snapshot.scrollback.length,
         brokerFormattedScrollbackRows: snapshot.formatted_scrollback?.length ?? 0,
-        appliedFormattedState: rendererMatchesSnapshot && Boolean(snapshot.terminal_state_base64),
+        appliedFormattedState: !preserveLocalScrollback &&
+          rendererMatchesSnapshot &&
+          Boolean(snapshot.terminal_state_base64),
+        preservedLocalScrollback: preserveLocalScrollback,
         parserBefore: terminalBufferMetrics(entry.parser),
         rendererBefore: renderer ? terminalBufferMetrics(renderer.term) : null,
       }
     : null;
   reserveRendererScrollbackForSnapshot(renderer, snapshot);
   applyCanonicalGeometry(entry, snapshot.geometry.cols, snapshot.geometry.rows);
-  const state = decodeTerminalSnapshot(snapshot, rendererMatchesSnapshot);
+  const state = preserveLocalScrollback ? "" : decodeTerminalSnapshot(snapshot, rendererMatchesSnapshot);
   try {
-    if (state) {
+    if (preserveLocalScrollback) {
+      // The existing parser/renderer buffers are the authoritative local view
+      // for this owner-resize boundary. Live broker output will repaint the
+      // resized TUI without discarding their retained history.
+    } else if (state) {
       // Restored snapshots must pass through the same provider capability and
       // theme normalization as live output. Writing raw broker state here
       // regressed Codex composer recoloring and color-probe filtering.
@@ -2907,7 +2931,7 @@ export const AgentTerminal = memo(function AgentTerminal({
         };
 
         const callbacks: TerminalPresentationCallbacks = {
-          applySnapshot: (snapshot) => applyBrokerSnapshot(terminalKey, session, snapshot),
+          applySnapshot: (snapshot, options) => applyBrokerSnapshot(terminalKey, session, snapshot, options),
           applyEvents: (events) => applyBrokerEvents(terminalKey, session, events),
           onBrokerState: (state) => {
             if (!isMounted || session.disposed) {

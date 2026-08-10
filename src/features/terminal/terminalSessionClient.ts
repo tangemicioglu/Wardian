@@ -68,7 +68,10 @@ function recordForegroundResumeTiming(
 }
 
 export type TerminalPresentationCallbacks = {
-  applySnapshot: (snapshot: TerminalSnapshot) => void | Promise<void>;
+  applySnapshot: (
+    snapshot: TerminalSnapshot,
+    options?: { preserveLocalScrollback?: boolean },
+  ) => void | Promise<void>;
   applyEvents: (events: readonly TerminalBrokerEvent[]) => void | Promise<void>;
   onBrokerState?: (state: TerminalBrokerState) => void;
   onRegistrationRecovered?: (result: TerminalPresentationRegistrationResult) => void;
@@ -440,7 +443,14 @@ export class TerminalSessionClient {
         },
       });
       if (result.snapshot) {
-        await this.#applySnapshot(binding, result.snapshot);
+        // The current owner already has the renderer's native scrollback and
+        // has just reflowed it to this geometry. Some inline TUIs (Codex) use
+        // a scroll region that the canonical VT parser cannot project into a
+        // broker snapshot, so mark this one owner-resize snapshot as a local
+        // history-preserving boundary rather than overwriting that buffer.
+        await this.#applySnapshot(binding, result.snapshot, false, undefined, {
+          preserveLocalScrollback: true,
+        });
       }
       this.#notifyDecision(result.decision);
       return result;
@@ -967,6 +977,7 @@ export class TerminalSessionClient {
     snapshot: TerminalSnapshot,
     force = false,
     shouldApply?: () => boolean,
+    options?: { preserveLocalScrollback?: boolean },
   ) {
     if (
       !force &&
@@ -979,7 +990,7 @@ export class TerminalSessionClient {
     if (shouldApply && !shouldApply()) {
       return;
     }
-    await binding.callbacks.applySnapshot(snapshot);
+    await binding.callbacks.applySnapshot(snapshot, options);
     binding.runtimeGeneration = snapshot.runtime_generation;
     binding.appliedSequence = snapshot.sequence_barrier;
   }

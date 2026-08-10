@@ -190,6 +190,22 @@ function ensureRealRenderingHome() {
   return true;
 }
 
+function skipGuidedTour(harness) {
+  // This audit starts from an otherwise empty native home. Persisting the
+  // first-launch choice before the WebView opens keeps the guided-tour
+  // backdrop from intercepting the Workbench interactions under test.
+  const onboarding = path.join(harness.isolatedHome, "settings", "onboarding.json");
+  fs.mkdirSync(path.dirname(onboarding), { recursive: true });
+  fs.writeFileSync(
+    onboarding,
+    JSON.stringify({
+      dismissed_hint_ids: [],
+      contextual_tips_enabled: false,
+      guided_tour_state: "skipped",
+    }),
+  );
+}
+
 function restoreEnv(name, previousValue) {
   if (previousValue === undefined) {
     delete process.env[name];
@@ -351,6 +367,41 @@ async function spawnProviderAgent(driver, provider) {
 async function readAgentConfig(driver, sessionId) {
   const agents = await invokeTauri(driver, "list_agents");
   return agents.find((agent) => agent.session_id === sessionId) ?? null;
+}
+
+async function activateAgentTerminalPresentation(driver, sessionId) {
+  const presentationId = await resolveAgentTerminalPresentationId(driver, sessionId, 60_000);
+  const focused = await driver.executeScript((sid, pid) => {
+    const card = document.getElementById(`agent-card-${sid}`);
+    const host = [...(card?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
+      .find((candidate) => candidate.getAttribute("data-terminal-presentation-id") === pid);
+    if (!host) return false;
+    host.focus();
+    host.click();
+    return document.activeElement === host || host.contains(document.activeElement);
+  }, sessionId, presentationId);
+  assert.equal(focused, true, `Expected terminal presentation ${presentationId} to receive focus`);
+
+  let latestSnapshot = null;
+  const snapshot = await driver.wait(async () => {
+    const current = await readPresentationDebugSnapshot(driver, presentationId);
+    latestSnapshot = current;
+    return current?.broker?.ownerPresentationId === presentationId ? current : false;
+  }, 60_000, `Timed out waiting for terminal presentation ${presentationId} to own input: ${JSON.stringify(latestSnapshot)}`);
+  return { presentationId, snapshot };
+}
+
+async function sendTerminalPresentationInput(driver, sessionId, input) {
+  const { presentationId, snapshot } = await activateAgentTerminalPresentation(driver, sessionId);
+  return await invokeTauri(driver, "send_terminal_presentation_input", {
+    request: {
+      session_id: sessionId,
+      presentation_id: presentationId,
+      runtime_generation: snapshot.broker.runtimeGeneration,
+      lease_epoch: snapshot.broker.leaseEpoch,
+      input,
+    },
+  });
 }
 
 async function waitForAgentTerminal(driver, sessionId) {
@@ -722,9 +773,29 @@ async function dismissProviderStartupModal(driver, sessionId, provider) {
   const capture = await readTerminalCapture(driver, sessionId);
   const terminalText = terminalVisibleAndHistoryTextFromCapture(capture);
 
+  if (
+    provider === "codex" &&
+    terminalText.includes("Do you trust the contents of this directory?") &&
+    terminalText.includes("Yes, continue")
+  ) {
+    const dismissedAt = nowIso();
+    // This only accepts Codex's trust prompt inside the audit's isolated
+    // profile and explicit test workspace. It prevents first-run setup from
+    // masking the terminal lifecycle that this test captures.
+    await sendTerminalPresentationInput(driver, sessionId, "\r");
+    const dismissedCapture = await waitForTerminalText(driver, sessionId, providerReadyText(provider), 30000);
+    return {
+      provider,
+      modal_text: "Codex workspace trust",
+      dismiss_input: "Enter",
+      dismissed_at: dismissedAt,
+      capture_debug: compactDebug(dismissedCapture?.debug),
+    };
+  }
+
   if (provider === "opencode" && terminalText.includes("Update Available")) {
     const dismissedAt = nowIso();
-    await invokeTauri(driver, "send_input_to_agent", { sessionId, input: "\u001b" });
+    await sendTerminalPresentationInput(driver, sessionId, "\u001b");
     const dismissedCapture = await waitForTerminalTextAbsence(driver, sessionId, "Update Available", 10000);
     return {
       provider,
@@ -737,7 +808,7 @@ async function dismissProviderStartupModal(driver, sessionId, provider) {
 
   if (provider === "codex" && terminalText.includes("Update available!") && terminalText.includes("Skip")) {
     const dismissedAt = nowIso();
-    await invokeTauri(driver, "send_input_to_agent", { sessionId, input: "\u001b[B\r" });
+    await sendTerminalPresentationInput(driver, sessionId, "\u001b[B\r");
     const dismissedCapture = await waitForTerminalText(driver, sessionId, providerReadyText(provider), 30000);
     return {
       provider,
@@ -799,7 +870,7 @@ async function submitAuditInput(driver, sessionId, provider, text) {
   }
 
   const typedAt = nowIso();
-  await invokeTauri(driver, "send_input_to_agent", { sessionId, input: text });
+  await sendTerminalPresentationInput(driver, sessionId, text);
   // Best-effort echo sync: narrow TUI input boxes wrap typed text around
   // border glyphs (opencode) or truncate it with ellipses (gemini), so even a
   // short probe can fail to match at extreme widths. The provider-turn wait
@@ -833,7 +904,7 @@ async function submitAuditInput(driver, sessionId, provider, text) {
   }
 
   const submittedAt = nowIso();
-  await invokeTauri(driver, "send_input_to_agent", { sessionId, input: auditInputSubmitSequence });
+  await sendTerminalPresentationInput(driver, sessionId, auditInputSubmitSequence);
   return {
     input_text: text,
     input_submitted: true,
@@ -1091,9 +1162,9 @@ async function maybeAnswerApprovalPrompt(driver, sessionId, capture, state) {
   }
   state.answers += 1;
   state.lastAnswerAt = now;
-  await invokeTauri(driver, "send_input_to_agent", { sessionId, input: "1" });
+  await sendTerminalPresentationInput(driver, sessionId, "1");
   await new Promise((resolve) => setTimeout(resolve, 300));
-  await invokeTauri(driver, "send_input_to_agent", { sessionId, input: "\r" });
+  await sendTerminalPresentationInput(driver, sessionId, "\r");
   return true;
 }
 
@@ -1131,9 +1202,9 @@ async function maybeResubmitNumberedPrompt(driver, sessionId, capture, max, minO
   }
   state.resubmits += 1;
   state.lastProgressAt = now;
-  await invokeTauri(driver, "send_input_to_agent", { sessionId, input: auditInputText });
+  await sendTerminalPresentationInput(driver, sessionId, auditInputText);
   await new Promise((resolve) => setTimeout(resolve, 1000));
-  await invokeTauri(driver, "send_input_to_agent", { sessionId, input: auditInputSubmitSequence });
+  await sendTerminalPresentationInput(driver, sessionId, auditInputSubmitSequence);
   return true;
 }
 
@@ -1427,6 +1498,18 @@ async function captureState(driver, providerDir, sessionId, stateName, options =
   const captureStartedAt = nowIso();
   const stability = options.stability ?? await waitForStableRenderedRows(driver, sessionId);
   const capture = stability.capture ?? await readTerminalCapture(driver, sessionId);
+  if (options.expectPreservedLocalScrollback) {
+    const replay = [...(capture.debug?.snapshotReplays ?? [])]
+      .reverse()
+      .find((item) => item?.preservedLocalScrollback === true);
+    assert.ok(
+      replay &&
+        replay.brokerScrollbackRows === 0 &&
+        replay.rendererBefore?.baseY > 0 &&
+        replay.rendererAfter?.baseY >= replay.rendererBefore.baseY,
+      `Expected the owner resize to preserve real Codex scrollback for ${stateName}: ${JSON.stringify(replay)}`,
+    );
+  }
   const screenshot = await writeScreenshot(driver, providerDir, stateName);
   const cardScreenshot = await writeCardScreenshot(driver, providerDir, sessionId, stateName);
   assert.ok(screenshot.bytes > 0, `Expected a non-empty app screenshot for ${stateName}`);
@@ -1489,8 +1572,93 @@ async function captureState(driver, providerDir, sessionId, stateName, options =
   };
 }
 
+async function capturePausedState(driver, providerDir, sessionId, stateName, lastVisibleState) {
+  // `pause_agent` releases the presentation and unmounts xterm. Capture the
+  // actual paused app frame, then retain the immediately pre-pause renderer
+  // snapshot as the last observable local buffer. The canonical broker
+  // snapshot is recorded separately because it intentionally cannot represent
+  // Codex's inline scroll-region history.
+  const captureStartedAt = nowIso();
+  const screenshot = await writeScreenshot(driver, providerDir, stateName);
+  const cardScreenshot = await writeCardScreenshot(driver, providerDir, sessionId, stateName);
+  const pausedBrokerSnapshot = await invokeTauri(driver, "request_terminal_snapshot", {
+    request: { session_id: sessionId },
+  }).catch((error) => ({ error: String(error?.message ?? error) }));
+  const previousCapture = lastVisibleState.capture;
+  const capture = {
+    ...previousCapture,
+    layout: {
+      ...previousCapture.layout,
+      hostRect: null,
+      screenRect: null,
+      viewportRect: null,
+      rowsRect: null,
+      textareaRect: null,
+      viewportScroll: null,
+      xtermScrollable: null,
+      scrollbarRect: null,
+      sliderRect: null,
+      sliderStyle: null,
+      rowRects: [],
+    },
+    paused_broker_snapshot: pausedBrokerSnapshot,
+  };
+  const artifact = path.join(providerDir, `${stateName}.json`);
+  const metrics = {
+    timestamps: {
+      capture_started_at: captureStartedAt,
+      screenshot_started_at: screenshot.started_at,
+      screenshot_written_at: screenshot.written_at,
+      card_screenshot_started_at: cardScreenshot.started_at,
+      card_screenshot_written_at: cardScreenshot.written_at,
+      artifact_written_at: nowIso(),
+    },
+    screenshot_duration_ms: screenshot.duration_ms,
+    card_screenshot_duration_ms: cardScreenshot.duration_ms,
+    card_screenshot_selector: cardScreenshot.selector,
+    card_screenshot_error: cardScreenshot.error,
+    xterm_screen_rect: null,
+    terminal_debug: compactDebug(capture.debug),
+    fit_count: debugCounts(capture.debug).fit_count,
+    resize_count: debugCounts(capture.debug).resize_count,
+    window_rect: await readWindowRect(driver),
+    browser_viewport: await readBrowserViewport(driver),
+    stability: {
+      stable: true,
+      stable_at: lastVisibleState.metrics.stability.stable_at,
+      stable_rows_duration_ms: lastVisibleState.metrics.stability.stable_rows_duration_ms,
+      timeout_ms: lastVisibleState.metrics.stability.timeout_ms,
+      quiet_ms: lastVisibleState.metrics.stability.quiet_ms,
+      sample_count: lastVisibleState.metrics.stability.sample_count,
+      final_signature: lastVisibleState.metrics.stability.final_signature,
+    },
+    validation: {
+      audit_text_present: null,
+      screen_rect_matches_debug: null,
+      expected_cols_changed: null,
+    },
+  };
+  writeJsonArtifact(artifact, {
+    state: stateName,
+    session_id: sessionId,
+    screenshot: screenshot.path,
+    card_screenshot: cardScreenshot.path,
+    metrics,
+    capture,
+  });
+  return {
+    screenshot: screenshot.path,
+    card_screenshot: cardScreenshot.path,
+    artifact,
+    metrics,
+    capture,
+  };
+}
+
 async function performWindowAction(driver, sessionId, actionName, action, options = {}) {
-  const beforeCapture = await readTerminalCapture(driver, sessionId);
+  const beforeCapture = options.allowMissingBeforeCapture
+    ? null
+    : await readTerminalCapture(driver, sessionId);
   const beforeWindowRect = await readWindowRect(driver);
   const beforeBrowserViewport = await readBrowserViewport(driver);
   const startedAt = nowIso();
@@ -1514,9 +1682,9 @@ async function performWindowAction(driver, sessionId, actionName, action, option
       after_window_rect: afterWindowRect,
       before_browser_viewport: beforeBrowserViewport,
       after_browser_viewport: afterBrowserViewport,
-      before_debug: compactDebug(beforeCapture.debug),
+      before_debug: beforeCapture ? compactDebug(beforeCapture.debug) : null,
       after_debug: compactDebug(afterCapture.debug),
-      before_screen_rect: beforeCapture.layout?.screenRect ?? null,
+      before_screen_rect: beforeCapture?.layout?.screenRect ?? null,
       after_screen_rect: afterCapture.layout?.screenRect ?? null,
       fit_count: debugCounts(afterCapture.debug).fit_count,
       resize_count: debugCounts(afterCapture.debug).resize_count,
@@ -1782,6 +1950,7 @@ test("real provider terminal rendering audit captures user-visible Wardian state
   }
 
   prepareIsolatedHome(harness);
+  skipGuidedTour(harness);
   let opencodeStateHome = null;
   if (providers.includes("opencode")) {
     opencodeStateHome = seedOpenCodeRenderingState(harness.isolatedHome);
@@ -1820,7 +1989,7 @@ test("real provider terminal rendering audit captures user-visible Wardian state
   await waitForAppShell(driver, 20000);
   await forceDarkTheme(driver);
   await driver.manage().window().setRect({ width: auditWindowWidth, height: auditWindowHeight });
-  await openWorkbenchSurface(driver, "agents-overview");
+  await openWorkbenchSurface(driver, "agents-overview", { timeoutMs: 60_000 });
 
   const manifest = {
     run_id: RUN_ID,
@@ -1914,6 +2083,7 @@ test("real provider terminal rendering audit captures user-visible Wardian state
     const narrowStateOptions = {
       ...narrowTransition,
       expectAuditText: true,
+      expectPreservedLocalScrollback: provider === "codex",
     };
     await addCapturedStateWithScrollback(record, driver, providerDir, sessionId, "narrow", narrowStateOptions);
     await addCapturedStateWithScrollback(record, driver, providerDir, sessionId, "resized", narrowStateOptions);
@@ -1960,7 +2130,9 @@ test("real provider terminal rendering audit captures user-visible Wardian state
       "minimized",
       () => driver.manage().window().minimize(),
     );
-    await addCapturedStateWithScrollback(record, driver, providerDir, sessionId, "minimized", {
+    // A minimized card has no rendered terminal host, so user-wheel evidence
+    // is neither observable nor meaningful until the following restore.
+    await addCapturedState(record, driver, providerDir, sessionId, "minimized", {
       ...minimizeTransition,
       expectAuditText: true,
     });
@@ -2037,20 +2209,24 @@ test("real provider terminal rendering audit captures user-visible Wardian state
       inputEvent.provider_turn = await waitForSubmittedProviderTurn(driver, sessionId, { provider });
       record.input_events.push(inputEvent);
     }
-    await addCapturedStateWithScrollback(record, driver, providerDir, sessionId, "cleared-immediate", {
+    const clearedState = await addCapturedStateWithScrollback(record, driver, providerDir, sessionId, "cleared-immediate", {
       resize: clearResize,
       expectAuditText: submitAfterClear && auditInputText.trim().length > 0,
     });
 
     await invokeTauri(driver, "pause_agent", { sessionId });
     await new Promise((resolve) => setTimeout(resolve, 500));
-    await addCapturedState(record, driver, providerDir, sessionId, "paused");
+    record.states.push({
+      name: "paused",
+      ...(await capturePausedState(driver, providerDir, sessionId, "paused", clearedState)),
+    });
 
     const { resize: resumeResize } = await performWindowAction(
       driver,
       sessionId,
       "resumed",
       () => invokeTauri(driver, "resume_agent", { sessionId }),
+      { allowMissingBeforeCapture: true },
     );
     await waitForAgentTerminal(driver, sessionId);
     await waitForReadableTerminal(driver, sessionId);

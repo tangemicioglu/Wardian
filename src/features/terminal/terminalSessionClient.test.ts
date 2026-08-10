@@ -1662,7 +1662,10 @@ describe("TerminalSessionClient", () => {
   });
 
   it("serializes accepted resize snapshots into the presentation barrier", async () => {
-    const snapshots: number[] = [];
+    const snapshots: Array<{
+      sequenceBarrier: number;
+      preserveLocalScrollback: boolean | undefined;
+    }> = [];
     const applied: number[][] = [];
     tauri.invoke.mockImplementation(async (command: string) => {
       if (command === "register_terminal_presentation") {
@@ -1708,8 +1711,11 @@ describe("TerminalSessionClient", () => {
 
     const client = terminalSessionClientFor("agent-1");
     await client.registerPresentation(registration("pane-a"), {
-      applySnapshot: (value) => {
-        snapshots.push(value.sequence_barrier);
+      applySnapshot: (value, options) => {
+        snapshots.push({
+          sequenceBarrier: value.sequence_barrier,
+          preserveLocalScrollback: options?.preserveLocalScrollback,
+        });
       },
       applyEvents: (events) => {
         applied.push(events.map((event) => event.sequence));
@@ -1721,7 +1727,7 @@ describe("TerminalSessionClient", () => {
     client.queueDrain();
 
     await vi.waitFor(() => expect(applied).toEqual([[3]]));
-    expect(snapshots).toEqual([2]);
+    expect(snapshots).toEqual([{ sequenceBarrier: 2, preserveLocalScrollback: true }]);
   });
 
   it("contains a feed read failure and retries on the next wake-up", async () => {
