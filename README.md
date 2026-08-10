@@ -6,7 +6,7 @@
 
 **Where local agent work becomes visible, durable, and malleable.**
 
-Run real CLI agents in real workspaces, keep their sessions and evidence
+Run CLI agents across all your workspaces, keep their sessions and evidence
 visible, and turn successful work into reusable prompts, skills, classes,
 workflows, and project context.
 
