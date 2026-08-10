@@ -46,6 +46,21 @@ function claudeLikeFrame() {
 const RAW_FRAME = claudeLikeFrame();
 const TERMINAL_HOST_SELECTOR = '[data-testid="agent-terminal-host"]';
 
+function skipGuidedTour(harness) {
+  // The isolated native home starts on the guided tour, whose backdrop blocks
+  // the Workbench interaction this terminal regression needs to exercise.
+  const onboarding = path.join(harness.isolatedHome, "settings", "onboarding.json");
+  fs.mkdirSync(path.dirname(onboarding), { recursive: true });
+  fs.writeFileSync(
+    onboarding,
+    JSON.stringify({
+      dismissed_hint_ids: [],
+      contextual_tips_enabled: false,
+      guided_tour_state: "skipped",
+    }),
+  );
+}
+
 async function invokeTauri(driver, command, args = {}) {
   const result = await driver.executeAsyncScript((cmd, payload, done) => {
     window.__TAURI_INTERNALS__.invoke(cmd, payload).then(
@@ -291,6 +306,7 @@ test("desktop terminal preserves broker and renderer scrollback through owner ge
   }
 
   prepareIsolatedHome(harness);
+  skipGuidedTour(harness);
 
   const mockScript = createScrollbackMockScript();
   const previousMockScript = process.env.WARDIAN_MOCK_SCRIPT;
