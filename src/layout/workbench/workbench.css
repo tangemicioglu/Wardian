@@ -118,6 +118,7 @@
   --dv-drag-over-background-color: color-mix(in srgb, var(--color-wardian-accent), transparent 80%);
   --dv-drag-over-border-color: var(--color-wardian-accent);
   --dv-group-view-background-color: var(--color-wardian-bg);
+  --dv-overlay-z-index: 10000;
   --dv-inactivegroup-hiddenpanel-tab-background-color: var(--color-wardian-card);
   --dv-inactivegroup-hiddenpanel-tab-color: var(--color-wardian-text-muted-neutral);
   --dv-inactivegroup-visiblepanel-tab-background-color: var(--color-wardian-card-bg-muted);
@@ -168,6 +169,27 @@
   border-bottom: 1px solid var(--color-wardian-border);
 }
 
+/* Let the tab viewport give space back to the header controls before the
+ * header itself overflows. Dockview's scrollbar wrapper has no flex basis by
+ * default, so its min-content width can otherwise push the overflow control
+ * outside the pane. */
+.dockview-theme-wardian .dv-tabs-and-actions-container > .dv-scrollable {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.dockview-theme-wardian .dv-tabs-and-actions-container > .dv-tabs-container {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+/* The built-in count is the number of currently clipped tabs. It changes as
+ * closing one tab exposes another, which is a misleading and unstable
+ * affordance. Keep the Obsidian-style switcher as a stable arrow instead. */
+.dockview-theme-wardian .dv-tabs-overflow-dropdown-default > span {
+  display: none;
+}
+
 .app-shell-titlebar:has(.titlebar[data-platform="mac"][data-left-collapsed="true"])
   ~ .app-shell-content
   .dv-tabs-and-actions-container[data-left-chrome-clearance="true"],
@@ -210,6 +232,7 @@
 .dockview-theme-wardian .dv-tab {
   min-width: 4.5rem;
   max-width: 12rem;
+  flex-shrink: 1;
   border: 0;
   border-radius: 0.25rem 0.25rem 0 0;
   font-size: 0.75rem;

@@ -30,6 +30,12 @@ The **Agent Session** choice needs one selected agent in the right roster. For a
 
 Each pane has its own tab strip and active surface. Every tab includes a compact type icon shared with the surface chooser, so different tools and agent sessions remain recognizable when titles are truncated. Top-edge strips form the window chrome; strips in downward splits remain local. The **+** sits immediately after the tabs, while **…** remains at the far edge.
 
+Tab labels compress and ellipsize as a pane fills, keeping the strip usable
+before tabs move into overflow. When the compact minimum is reached, select the
+overflow arrow to open the full tab switcher and choose any hidden tab. The
+arrow is intentionally count-free because the number of clipped tabs changes
+as neighboring tabs reflow after a close.
+
 Surfaces respond to the size of their own pane. In compact splits, toolbars wrap and inspectors or run drawers overlay their local canvas; they do not use the full application window as their layout boundary.
 
 - Select a tab to bring that surface forward.
