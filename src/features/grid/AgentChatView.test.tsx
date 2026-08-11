@@ -797,7 +797,7 @@ describe("AgentChatView", () => {
     expect(card).toHaveAttribute("data-expanded", "true");
     expect(within(card).getByTestId("turn-change-files")).toHaveTextContent("a.ts");
     expect(within(card).getByTestId("turn-change-files")).toHaveTextContent("b.md");
-    expect(card).toHaveTextContent("Reported by the agent, not a working-tree diff.");
+    expect(card).not.toHaveTextContent("Reported by the agent, not a working-tree diff.");
   });
 
   it("says how many files the headline counts cover when the turn mixes evidence", async () => {
@@ -836,7 +836,43 @@ describe("AgentChatView", () => {
     expect(
       within(card).getByRole("group", { name: "1 additions, 1 deletions, across 1 of 2 files" }),
     ).toBeInTheDocument();
-    expect(card).toHaveTextContent("in 1 of 2");
+    expect(card).not.toHaveTextContent("in 1 of 2");
+  });
+
+  it("keeps each change card after its own assistant response", async () => {
+    invokeMock.mockResolvedValue([
+      event({ id: "user-1", kind: "message", role: "user", text: "Update the first file.", sequence: 1 }),
+      event({
+        id: "edit-1",
+        kind: "tool_call",
+        title: "Edit",
+        status: "running",
+        sequence: 2,
+        metadata: { tool_name: "Edit", tool_input: { file_path: "src/first.ts", old_string: "one", new_string: "ONE" } },
+      }),
+      event({ id: "assistant-1", kind: "message", role: "assistant", text: "First file done.", sequence: 3 }),
+      event({ id: "user-2", kind: "message", role: "user", text: "Update the second file.", sequence: 4 }),
+      event({
+        id: "edit-2",
+        kind: "tool_call",
+        title: "Edit",
+        status: "running",
+        sequence: 5,
+        metadata: { tool_name: "Edit", tool_input: { file_path: "src/second.ts", old_string: "two", new_string: "TWO" } },
+      }),
+      event({ id: "assistant-2", kind: "message", role: "assistant", text: "Second file done.", sequence: 6 }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const firstAssistant = await screen.findByText("First file done.");
+    const secondUser = screen.getByText("Update the second file.");
+    const secondAssistant = screen.getByText("Second file done.");
+    const cards = screen.getAllByTestId("turn-change-card");
+    expect(cards).toHaveLength(2);
+    expect(firstAssistant.compareDocumentPosition(cards[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(cards[0].compareDocumentPosition(secondUser) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(secondAssistant.compareDocumentPosition(cards[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("collapses a wide turn change set to a scope preview", async () => {
