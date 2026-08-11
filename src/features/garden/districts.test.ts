@@ -9,6 +9,7 @@ import {
   districtId,
   parcelsFor,
   placeDistricts,
+  reachTier,
   resolveAgentDistrict,
   resolveDistrictByAffinity,
   resolveEntityDistrict,
@@ -218,6 +219,124 @@ describe("placeDistricts", () => {
     expect(Object.values(layout.cells)).not.toContain(CENTER_SLOT);
     layout = placeDistricts(layout, ["team:a", "team:b", COMMONS_DISTRICT_ID]).layout;
     expect(layout.cells[COMMONS_DISTRICT_ID]).toBe(CENTER_SLOT);
+  });
+});
+
+describe("reachTier", () => {
+  it("buckets a reach count into the four readings", () => {
+    expect(reachTier(0)).toBe(0);
+    expect(reachTier(1)).toBe(1);
+    expect(reachTier(2)).toBe(1);
+    expect(reachTier(3)).toBe(2);
+    expect(reachTier(5)).toBe(2);
+    expect(reachTier(6)).toBe(3);
+    expect(reachTier(40)).toBe(3);
+  });
+
+  it("treats nonsense as no reach rather than as maximum reach", () => {
+    expect(reachTier(Number.NaN)).toBe(0);
+    expect(reachTier(-3)).toBe(0);
+  });
+});
+
+describe("placeDistricts with reach", () => {
+  const districts = ["team:a", "team:b", "team:c", "team:d"];
+
+  it("seats a coordinating district inside the districts it coordinates", () => {
+    const seated = placeDistricts(createDistrictLayout(), districts).layout;
+    // "team:d" sorts last, so it takes the outermost of the four slots.
+    const outermost = seated.cells["team:d"];
+    expect(outermost).toBe(Math.max(...Object.values(seated.cells)));
+
+    const promoted = placeDistricts(
+      seated,
+      districts,
+      () => 0,
+      new Map([["team:d", reachTier(6)]]),
+    );
+    expect(promoted.layout.cells["team:d"]).toBeLessThan(outermost);
+    expect(promoted.stable).toBe(false);
+  });
+
+  it("promotes by swapping, so exactly one other district is displaced", () => {
+    const seated = placeDistricts(createDistrictLayout(), districts).layout;
+    const promoted = placeDistricts(
+      seated,
+      districts,
+      () => 0,
+      new Map([["team:d", reachTier(6)]]),
+    ).layout;
+
+    const moved = districts.filter((id) => promoted.cells[id] !== seated.cells[id]);
+    expect(moved).toHaveLength(2);
+    expect(moved).toContain("team:d");
+    // The displaced district takes the promoted one's old slot; nothing else
+    // shifts outward to make room.
+    const displaced = moved.find((id) => id !== "team:d")!;
+    expect(promoted.cells[displaced]).toBe(seated.cells["team:d"]);
+    expect(promoted.cells["team:d"]).toBe(seated.cells[displaced]);
+  });
+
+  it("is idempotent, so a sorted lattice never moves again", () => {
+    const tiers = new Map([
+      ["team:d", 3],
+      ["team:c", 1],
+    ]);
+    const once = placeDistricts(createDistrictLayout(), districts, () => 0, tiers).layout;
+    const twice = placeDistricts(once, districts, () => 0, tiers);
+    expect(twice.layout.cells).toEqual(once.cells);
+    expect(twice.stable).toBe(true);
+  });
+
+  it("leaves districts of equal tier exactly where they were", () => {
+    const seated = placeDistricts(createDistrictLayout(), districts).layout;
+    const tiers = new Map(districts.map((id) => [id, 2]));
+    const result = placeDistricts(seated, districts, () => 0, tiers);
+    expect(result.layout.cells).toEqual(seated.cells);
+    expect(result.stable).toBe(true);
+  });
+
+  it("never lets reach buy the centre from the commons", () => {
+    const active = [COMMONS_DISTRICT_ID, ...districts];
+    const seated = placeDistricts(createDistrictLayout(), active).layout;
+    expect(seated.cells[COMMONS_DISTRICT_ID]).toBe(CENTER_SLOT);
+
+    const promoted = placeDistricts(
+      seated,
+      active,
+      () => 0,
+      new Map([["team:d", 3]]),
+    ).layout;
+    expect(promoted.cells[COMMONS_DISTRICT_ID]).toBe(CENTER_SLOT);
+    expect(promoted.cells["team:d"]).not.toBe(CENTER_SLOT);
+  });
+
+  it("leaves a tombstoned district's reserved cell alone", () => {
+    // The reservation exists so a returning district lands where it was;
+    // swapping it away for someone else's reach would defeat it.
+    const now = 1_700_000_000_000;
+    let layout = placeDistricts(createDistrictLayout(), districts).layout;
+    const reserved = layout.cells["team:a"];
+    layout = retireDistricts(layout, ["team:b", "team:c", "team:d"], now);
+
+    const promoted = placeDistricts(
+      layout,
+      ["team:b", "team:c", "team:d"],
+      () => 0,
+      new Map([["team:d", 3]]),
+    ).layout;
+    expect(promoted.cells["team:a"]).toBe(reserved);
+  });
+
+  it("is deterministic regardless of enumeration order", () => {
+    const tiers = new Map([
+      ["team:c", 3],
+      ["team:a", 1],
+    ]);
+    const base = placeDistricts(createDistrictLayout(), districts).layout;
+    const forward = placeDistricts(base, districts, () => 0, tiers).layout;
+    const reversed = placeDistricts(base, [...districts].reverse(), () => 0, tiers).layout;
+    expect(forward.cells).toEqual(reversed.cells);
   });
 });
 

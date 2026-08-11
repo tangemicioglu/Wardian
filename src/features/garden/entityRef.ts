@@ -139,6 +139,98 @@ export function normalizeEntityPath(value: string | undefined | null): string | 
   return normalized;
 }
 
+/**
+ * True when `path` is `root` itself or sits beneath it.
+ *
+ * The obvious spelling — `path.startsWith(`${root}/`)` — is wrong at a root, and
+ * wrong in a way that survives review because roots are rare. `normalizeEntityPath`
+ * deliberately *preserves* `/` and `d:/` (see `stripTrailingSeparators`), so a
+ * root that already ends in a separator produces `//` or `d://` and matches none
+ * of its own children.
+ *
+ * That bug was written independently in four places — reach containment, the
+ * attribution walk, the change-paint ancestor chain, and the frontier prune — so
+ * it lives here now and the callers share it.
+ */
+export function isUnderPath(root: string, path: string): boolean {
+  if (path === root) return true;
+  return path.startsWith(root.endsWith("/") ? root : `${root}/`);
+}
+
+/**
+ * Split a path into its root and the part below it.
+ *
+ * Three shapes, matching `split_root` in `commands/agent_reach.rs`: a UNC share
+ * is two segments (`//server/share`), a drive root is three characters (`d:/`),
+ * and a POSIX root is one (`/`). Anything else is relative and has no root.
+ */
+function splitRoot(path: string): [root: string, rest: string] {
+  if (path.startsWith("//")) {
+    const segments = path.slice(2).split("/");
+    if (segments.length >= 2 && segments[0] && segments[1]) {
+      return [`//${segments[0]}/${segments[1]}`, segments.slice(2).join("/")];
+    }
+    return ["", path];
+  }
+  if (/^[a-zA-Z]:\//.test(path)) return [path.slice(0, 3), path.slice(3)];
+  if (path.startsWith("/")) return ["/", path.slice(1)];
+  return ["", path];
+}
+
+/**
+ * Resolve `.` and `..` without touching the disk.
+ *
+ * `normalizeEntityPath` only rewrites separators and case, so a joined path
+ * keeps its dot segments and `isUnderPath` — a prefix test — reads
+ * `d:/repo/../other/a.ts` as living inside `d:/repo`. A write into a sibling
+ * repository then lands on the workspace it left, and change paint credits churn
+ * to a root that never saw it.
+ *
+ * `..` clamps at the root, matching what the filesystem would have done. The
+ * Rust reach path already resolves lexically; this is the same rule on the
+ * frontend, and the two are exercised by equivalent cases in their tests.
+ */
+export function lexicalNormalizePath(path: string): string {
+  const [root, rest] = splitRoot(path.replace(/\\/g, "/"));
+  const segments: string[] = [];
+  for (const segment of rest.split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length > 0 && segments[segments.length - 1] !== "..") {
+        segments.pop();
+      } else if (!root) {
+        // A relative path has nothing to clamp against, so a leading `..` is
+        // still meaningful and is kept for whoever joins it onto a base.
+        segments.push("..");
+      }
+      continue;
+    }
+    segments.push(segment);
+  }
+  const below = segments.join("/");
+  if (!root) return below;
+  if (root.endsWith("/")) return `${root}${below}`;
+  return below ? `${root}/${below}` : root;
+}
+
+/**
+ * The containing directory, or `null` once a root is reached.
+ *
+ * Returns the root *including* its separator — `/` and `d:/`, never the empty
+ * string or a bare `d:` — so the result is a path `isUnderPath` and
+ * `normalizeEntityPath` both recognize.
+ */
+export function parentPath(path: string): string | null {
+  if (path === "/" || /^[a-zA-Z]:\/$/.test(path)) return null;
+  const uncRoot = path.match(/^\/\/[^/]+\/[^/]+$/);
+  if (uncRoot) return null;
+  const separator = path.lastIndexOf("/");
+  if (separator < 0) return null;
+  if (separator === 0) return "/";
+  const parent = path.slice(0, separator);
+  return /^[a-zA-Z]:$/.test(parent) ? `${parent}/` : parent;
+}
+
 function stripTrailingSeparators(path: string): string {
   if (path === "/") return path;
   if (/^[a-zA-Z]:\/$/.test(path)) return path;

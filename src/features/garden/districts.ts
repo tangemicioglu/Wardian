@@ -272,6 +272,30 @@ export interface PlaceDistrictsResult {
 }
 
 /**
+ * How far a district's agents write beyond their own territory, bucketed.
+ *
+ * `reach` is the number of *other* districts whose workspace roots this
+ * district's agents have written under — file writes, because that is the one
+ * thing an agent does that outlives it. See `agent_reach.rs` for where the
+ * count comes from and why change review cannot supply it.
+ *
+ * Bucketing is what makes this safe to put in front of geometry. A raw count
+ * would move a district the first time one of its agents touched one file in a
+ * neighbour; a tier moves it only when it gains a whole class of collaborators.
+ * The boundaries read as: touches a neighbour, coordinates a group, coordinates
+ * the map.
+ */
+export function reachTier(reach: number): number {
+  if (!Number.isFinite(reach) || reach <= 0) return 0;
+  if (reach <= 2) return 1;
+  if (reach <= 5) return 2;
+  return 3;
+}
+
+/** districtId -> its reach tier. Absent means tier 0. */
+export type DistrictReachTiers = ReadonlyMap<string, number>;
+
+/**
  * Assign slots to any districts that lack one, leaving existing slots untouched.
  *
  * A new district takes the free slot minimizing its similarity-weighted distance
@@ -292,6 +316,7 @@ export function placeDistricts(
   layout: DistrictLayout,
   activeDistrictIds: readonly string[],
   similarity: DistrictSimilarity = () => 0,
+  reachTiers: DistrictReachTiers = new Map(),
 ): PlaceDistrictsResult {
   const cells = { ...layout.cells };
   const tombstones = { ...layout.tombstones };
@@ -334,15 +359,76 @@ export function placeDistricts(
     placed.push(districtIdentifier);
   }
 
+  const seated = sortByReach(cells, active, reachTiers);
+
   let stable = true;
   for (const [id, cell] of before) {
-    if (cells[id] !== cell) stable = false;
+    if (seated[id] !== cell) stable = false;
   }
   return {
-    layout: { arrangement: RING_ARRANGEMENT, cells, tombstones, spacing: layout.spacing },
+    layout: { arrangement: RING_ARRANGEMENT, cells: seated, tombstones, spacing: layout.spacing },
     placed,
     stable,
   };
+}
+
+/**
+ * Re-seat districts so none sits outside a district of strictly lower reach tier.
+ *
+ * This is the one thing allowed to move a district that already has a cell, and
+ * the exception is narrow on purpose. `placeDistricts` is otherwise additive
+ * because *insertion* must not reshuffle a map the user has learned — but a
+ * district crossing a reach tier is not an insertion. It is a change in what
+ * that district is, and the lattice was built so centrality could say so.
+ *
+ * Sorted by **swaps** rather than by shifting. Promoting one district from the
+ * outer ring into ring 1 by shifting would slide every district between them
+ * outward by a slot; a swap displaces exactly one, and the one displaced is the
+ * one that was outranked. At most one move per misplaced district.
+ *
+ * Two exclusions:
+ *
+ *   - `CENTER_SLOT`, which the commons holds unconditionally. Reach cannot buy
+ *     the middle, for the same reason arrival order cannot.
+ *   - districts holding a cell but not currently active. Their cell is reserved
+ *     under a tombstone precisely so they land back where they were, and
+ *     swapping it away would defeat the reservation.
+ *
+ * Idempotent: cells are persisted, so a lattice already in tier order re-sorts
+ * to itself and this is a no-op on every session after the one that applied it.
+ */
+function sortByReach(
+  cells: Record<string, number>,
+  activeDistrictIds: readonly string[],
+  reachTiers: DistrictReachTiers,
+): Record<string, number> {
+  const tierOf = (id: string) => reachTiers.get(id) ?? 0;
+  const seats = activeDistrictIds
+    .filter((id) => cells[id] !== undefined && cells[id] !== CENTER_SLOT)
+    .map((id) => ({ id, slot: cells[id] }))
+    .sort((left, right) => left.slot - right.slot);
+  if (seats.length < 2) return cells;
+
+  // Selection sort, descending by tier. The strict comparison keeps the earliest
+  // district of a tied tier, so equal districts never trade places and the
+  // result does not depend on how `activeDistrictIds` was enumerated.
+  let moved = false;
+  for (let index = 0; index < seats.length; index += 1) {
+    let best = index;
+    for (let candidate = index + 1; candidate < seats.length; candidate += 1) {
+      if (tierOf(seats[candidate].id) > tierOf(seats[best].id)) best = candidate;
+    }
+    if (best === index) continue;
+    const displaced = seats[index].id;
+    seats[index].id = seats[best].id;
+    seats[best].id = displaced;
+    moved = true;
+  }
+  if (!moved) return cells;
+
+  const next = { ...cells };
+  for (const seat of seats) next[seat.id] = seat.slot;
+  return next;
 }
 
 /**

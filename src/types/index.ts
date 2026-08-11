@@ -1026,6 +1026,38 @@ export type ChangeReviewLoadResponse = {
     summary: ChangeReviewSummary;
     git_available: boolean;
     head_ref: string | null;
+    /**
+     * Absolute repository root the summary's paths are relative to.
+     *
+     * Git reports paths relative to the repository root regardless of the
+     * directory the command ran in, so this — not the requested `cwd` — is what
+     * an entry's path must be joined onto. `null` when the workspace is not a
+     * git repository, where paths came from turn records and are relative to
+     * the requested `cwd`.
+     */
+    workspace_root: string | null;
+    skipped_turn_records: number;
+};
+
+/**
+ * Workspace roots one agent has written under.
+ *
+ * Read from turn records rather than from change review: change review
+ * attributes a path only to agents whose *conversation* ran in that repository,
+ * so an agent writing across a boundary is invisible to it. Garden uses this to
+ * seat coordinating districts nearer the middle of the ring lattice.
+ */
+export type AgentReachEntry = {
+    agent_id: string;
+    /** Roots the agent wrote under, spelled exactly as they were requested. */
+    roots: string[];
+};
+
+export type AgentReachResponse = {
+    schema: 1;
+    /** Agents with at least one matched root, sorted by id. */
+    agents: AgentReachEntry[];
+    /** Turn records that could not be parsed — "unreadable", not "wrote nowhere". */
     skipped_turn_records: number;
 };
 

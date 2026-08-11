@@ -30,13 +30,10 @@ function filterProps(p: Record<string, unknown>) {
 import { AgentUnit } from "./AgentUnit";
 import { CANVAS_LABEL_FONT, CANVAS_LABEL_SIZE } from "../../utils/canvasTypography";
 import type { GardenSkillGlyph } from "./skillGlyphs";
-import type { GardenTheme } from "./useGardenTheme";
+import { GARDEN_THEME_FALLBACK, type GardenTheme } from "./useGardenTheme";
 
 const theme: GardenTheme = {
-  label: "#111827",
-  labelMuted: "#4b5563",
-  selection: "#926a09",
-  labelBackdrop: "#fcfaf5",
+  ...GARDEN_THEME_FALLBACK,
   font: CANVAS_LABEL_FONT,
   labelSize: CANVAS_LABEL_SIZE,
   subLabelSize: 10,

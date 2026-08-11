@@ -8,8 +8,14 @@ import type { GardenSkillGlyph } from "./skillGlyphs";
  * *placed*: `skill` is addressable so a glyph can be selected and deep-linked,
  * but a skill has no position of its own — it renders on the agents that carry
  * it. See `skillGlyphs.ts` for why.
+ *
+ * `path` is a piece of ground rather than an entity. It is addressable for the
+ * same reason a skill is — the operator can point at it, and the summary bar
+ * has to say what they pointed at — but a file is an attribute of its folder
+ * and never enters the layout. Its id is a normalized absolute path, so the
+ * key space stays the one `entityRef.ts` established.
  */
-export type GardenEntityKind = "agent" | "workflow" | "skill";
+export type GardenEntityKind = "agent" | "workflow" | "skill" | "path";
 
 export interface GardenEntityRef {
   kind: GardenEntityKind;

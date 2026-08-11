@@ -590,6 +590,7 @@ pub fn run() {
             commands::chat::load_agent_chat_transcript,
             commands::conversation::list_conversations,
             commands::conversation::show_conversation,
+            commands::agent_reach::load_agent_reach,
             commands::change_review::load_change_review,
             commands::change_review::load_change_review_prefs,
             commands::change_review::load_change_review_watermark,

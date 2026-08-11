@@ -11,6 +11,11 @@ import type { GardenAgentUnit, GardenEntityRef, GardenWorkflowUnit } from "./gar
 import { unitKey } from "./garden.types";
 import { isActiveAgentStatus, isActiveWorkflowStatus } from "./gardenStatus";
 import { useGardenTheme } from "./useGardenTheme";
+import { TerrainLayer } from "./TerrainLayer";
+import { AttributionLayer } from "./AttributionLayer";
+import type { TerrainCell, TerrainDistrict } from "./terrain";
+import type { TerrainPaint } from "./terrainPaint";
+import type { TerrainViewport } from "./terrainFrontier";
 import { wheelZoomFactor } from "../../utils/wheelZoom";
 
 interface GardenCanvasProps {
@@ -19,6 +24,25 @@ interface GardenCanvasProps {
   selectedKey: string | null;
   /** Agents carrying the selected skill; empty unless a skill is selected. */
   highlightedAgentIds?: ReadonlySet<string>;
+  /** Ground cells drawn beneath the units. Empty until terrain is ingested. */
+  terrainCells?: readonly TerrainCell[];
+  terrainDistricts?: ReadonlyMap<string, TerrainDistrict>;
+  /** Change tint per terrain path. Absent until a change set has loaded. */
+  terrainPaint?: ReadonlyMap<string, TerrainPaint>;
+  /** Ground written to by the current selection, highlighted across districts. */
+  highlightedPaths?: ReadonlySet<string>;
+  onSelectPath?: (path: string) => void;
+  onOpenPath?: (path: string) => void;
+  /**
+   * Reports the visible world rectangle and zoom.
+   *
+   * Terrain ingestion is driven by what is on screen and how large it is, so
+   * the viewport has to leave the canvas. It is coalesced to one report per
+   * animation frame: a wheel gesture fires dozens of events, and each one
+   * reaching React would re-render the map for a value only the debounced
+   * expansion pass reads.
+   */
+  onViewportChange?: (viewport: TerrainViewport) => void;
   onSelect: (ref: GardenEntityRef) => void;
   onOpenAgent: (id: string) => void;
   onOpenSkill?: (glyph: GardenSkillGlyph) => void;
@@ -42,6 +66,13 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   workflowUnits,
   selectedKey,
   highlightedAgentIds,
+  terrainCells,
+  terrainDistricts,
+  terrainPaint,
+  highlightedPaths,
+  onSelectPath,
+  onOpenPath,
+  onViewportChange,
   onSelect,
   onOpenAgent,
   onOpenSkill,
@@ -64,6 +95,43 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   const minScaleRef = useRef(MIN_SCALE);
   const theme = useGardenTheme();
 
+  // Publish the visible world rectangle, coalesced to one report per frame.
+  //
+  // A wheel gesture fires dozens of events and a drag fires one per pointer
+  // move; letting each reach React would re-render the map for a value only the
+  // debounced expansion pass reads. The world rect is the inverse of the stage
+  // transform: world = (screen - position) / scale.
+  const onViewportChangeRef = useRef(onViewportChange);
+  onViewportChangeRef.current = onViewportChange;
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
+  const viewportFrameRef = useRef<number | null>(null);
+  const reportViewport = useCallback(() => {
+    if (!onViewportChangeRef.current) return;
+    if (viewportFrameRef.current !== null) return;
+    viewportFrameRef.current = requestAnimationFrame(() => {
+      viewportFrameRef.current = null;
+      const { scale: current, position } = transformRef.current;
+      const { width, height } = sizeRef.current;
+      if (!Number.isFinite(current) || current <= 0 || width <= 0 || height <= 0) return;
+      onViewportChangeRef.current?.({
+        scale: current,
+        world: {
+          x: -position.x / current,
+          y: -position.y / current,
+          width: width / current,
+          height: height / current,
+        },
+      });
+    });
+  }, []);
+  useEffect(
+    () => () => {
+      if (viewportFrameRef.current !== null) cancelAnimationFrame(viewportFrameRef.current);
+    },
+    [],
+  );
+
   // Konva owns the live viewport transform. React still receives the scale so
   // detail labels and the readout can react to it, but the Stage transform is
   // not passed back as props: doing both lets reconciliation briefly restore a
@@ -77,7 +145,8 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
       stage.batchDraw();
     }
     setScale(transform.scale);
-  }, []);
+    reportViewport();
+  }, [reportViewport]);
 
   // Progressive disclosure. Detail is a pure function of zoom and touches only
   // what is painted — the layout reserved the crown's footprint regardless, so
@@ -85,6 +154,12 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   const detail = useMemo(() => gardenDetailForScale(scale), [scale]);
   const selectedSkillRef = selectedKey?.startsWith("skill:")
     ? selectedKey.slice("skill:".length)
+    : null;
+  const selectedTerrainPath = selectedKey?.startsWith("path:")
+    ? selectedKey.slice("path:".length)
+    : null;
+  const selectedAgentIdForThreads = selectedKey?.startsWith("agent:")
+    ? selectedKey.slice("agent:".length)
     : null;
 
   useEffect(() => {
@@ -96,6 +171,12 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  // A resize changes the visible world rectangle without touching the transform,
+  // so terrain would keep expanding against the old viewport without this.
+  useEffect(() => {
+    reportViewport();
+  }, [size, reportViewport]);
 
   // Open the menu on right-click via a native listener on the container (the
   // contextmenu event bubbles up from Konva's canvas, but binding directly to
@@ -325,10 +406,36 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               scale: transformRef.current.scale,
               position: { x: stage.x(), y: stage.y() },
             };
+            reportViewport();
           }
         }}
       >
         <Layer ref={layerRef}>
+          {terrainCells && terrainCells.length > 0 && terrainDistricts && (
+            <>
+              <TerrainLayer
+                cells={terrainCells}
+                districts={terrainDistricts}
+                scale={scale}
+                theme={theme}
+                paint={terrainPaint}
+                selectedPath={selectedTerrainPath}
+                highlightedPaths={highlightedPaths}
+                onSelectPath={onSelectPath}
+                onOpenPath={onOpenPath}
+              />
+              {terrainPaint && (
+                <AttributionLayer
+                  cells={terrainCells}
+                  paint={terrainPaint}
+                  agentUnits={agentUnits}
+                  selectedAgentId={selectedAgentIdForThreads}
+                  selectedPath={selectedTerrainPath}
+                  theme={theme}
+                />
+              )}
+            </>
+          )}
           {workflowUnits.map((unit) => (
             <WorkflowUnit
               key={unitKey(unit.ref)}

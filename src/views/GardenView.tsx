@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentConfig, AgentTelemetry } from "../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlist/types";
 import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph/graphProjection";
@@ -12,13 +12,24 @@ import { GardenCanvas } from "../features/garden/GardenCanvas";
 import { unitKey, type GardenPosition } from "../features/garden/garden.types";
 import {
   GARDEN_AGENT_STATUS_LEGEND,
+  GARDEN_AREA_NOTE,
+  GARDEN_CENTRALITY_NOTE,
+  GARDEN_CHANGE_LEGEND,
   gardenAgentStatusLabel,
+  gardenChangeBaselineLabel,
+  gardenGroundLabel,
   gardenSkillReachLabel,
   gardenWorkflowStatusLabel,
 } from "../features/garden/gardenStatus";
 import { agentsCarrying } from "../features/garden/skillGlyphs";
 import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
 import { useGardenSkills } from "../features/garden/useGardenSkills";
+import { useGardenReach } from "../features/garden/useGardenReach";
+import { useGardenTerrain } from "../features/garden/useGardenTerrain";
+import { useTerrainChanges } from "../features/garden/useTerrainChanges";
+import { useTerrainOpen } from "../features/garden/useTerrainOpen";
+import { basename as terrainCellName } from "../features/garden/terrain";
+import type { TerrainViewport } from "../features/garden/terrainFrontier";
 import { useGardenStore } from "../store/useGardenStore";
 import { useLibraryStore } from "../store/useLibraryStore";
 import type { GardenSurfaceState } from "../features/workbench/surfaces/coreSurfaceMetadata";
@@ -28,6 +39,9 @@ const ALL_REASONS: Set<GraphRelationshipReason> = new Set([
   "shared_workspace",
   "same_worktree",
 ]);
+
+/** Shared empty set, so "nothing highlighted" keeps a stable identity. */
+const EMPTY_HIGHLIGHT: ReadonlySet<string> = new Set<string>();
 
 /**
  * Hold a dropped unit inside the district it belongs to.
@@ -133,6 +147,13 @@ export const GardenView: React.FC<GardenViewProps> = ({
     [filteredAgents, telemetry, teams, activeList, interactions, selectedAgentIds, offAgentIds],
   );
 
+  // Which districts coordinate others, so the lattice can seat them nearer the
+  // middle. Roots come from the roster rather than from `layout.districts`,
+  // because this feeds the layout and reading them back out of it would close a
+  // loop. Fetched once per root set — see `useGardenReach` on why geometry does
+  // not subscribe to writes the way the paint does.
+  const reach = useGardenReach(visibility === "visible", filteredAgents);
+
   // Layout output — district cells and settled positions — is carried forward
   // through a ref, never through the reactive dependency chain.
   //
@@ -160,9 +181,14 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const { pins, exclusions } = scene;
   const projectionRef = useRef(projection);
   projectionRef.current = projection;
+  // Carried the same way and for the same reason: `signature` already covers
+  // every reach change that may move something, so the array's identity must
+  // not be a second trigger.
+  const reachRef = useRef(reach);
+  reachRef.current = reach;
   const signature = useMemo(
-    () => gardenLayoutSignature(projection, teams, workflowInputs, skillInputs),
-    [projection, teams, workflowInputs, skillInputs],
+    () => gardenLayoutSignature(projection, teams, workflowInputs, skillInputs, reach),
+    [projection, teams, workflowInputs, skillInputs, reach],
   );
 
   // A reset discards the scene rather than advancing it, and the carried copy
@@ -182,6 +208,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
       teams,
       workflows: workflowInputs,
       skills: skillInputs,
+      reach: reachRef.current,
       scene: { ...carriedSceneRef.current, pins, exclusions },
     });
     carriedSceneRef.current = result.scene;
@@ -195,6 +222,13 @@ export const GardenView: React.FC<GardenViewProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signature, pins, exclusions, generation]);
   const { placement } = layout;
+  // How many districts the arrangement is actually making a claim about. Zero
+  // means every district keeps to itself and the centrality legend would be
+  // explaining a distinction nothing on screen is drawing.
+  const coordinatingDistricts = useMemo(
+    () => [...layout.reachTiers.values()].filter((tier) => tier > 0).length,
+    [layout.reachTiers],
+  );
 
   // Display fields are attached per render from the live projection, so status
   // and colour stay current without touching geometry.
@@ -230,25 +264,75 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const selectedSkillRef = activeSelectionKey?.startsWith("skill:")
     ? activeSelectionKey.slice("skill:".length)
     : null;
-  const highlightedAgentIds = useMemo(
-    () => (selectedSkillRef ? agentsCarrying(layout.crowns, selectedSkillRef) : new Set<string>()),
-    [selectedSkillRef, layout.crowns],
-  );
   const selectedSkillLabel = selectedSkillRef
     ? (skillInputs.find((skill) => skill.entryRef === selectedSkillRef)?.label ?? selectedSkillRef)
     : null;
+  const selectedPath = activeSelectionKey?.startsWith("path:")
+    ? activeSelectionKey.slice("path:".length)
+    : null;
+  const selectedAgentId = activeSelectionKey?.startsWith("agent:")
+    ? activeSelectionKey.slice("agent:".length)
+    : null;
+
+  // Terrain is ingested against the visible world rectangle, so the canvas
+  // reports its viewport up. It arrives already coalesced to one value per
+  // animation frame; the expansion pass inside the hook debounces on top of
+  // that, so a pan produces listings once it settles rather than while it moves.
+  const [viewport, setViewport] = useState<TerrainViewport | null>(null);
+  const terrainEnabled = visibility === "visible" && rendererActive;
+  const terrain = useGardenTerrain({
+    enabled: terrainEnabled,
+    districts: layout.districts,
+    viewport,
+  });
+  // Change review is fetched per visible workspace root, not per agent:
+  // attribution already spans every conversation in a workspace, so one call
+  // answers for all of them.
+  const changes = useTerrainChanges({ enabled: terrainEnabled, roots: terrain.visibleRoots });
+
+  // Both reverse indexes, in one place. A skill and a piece of ground answer
+  // "who?" the same way — with a set of agents — because neither is a thing you
+  // can navigate to. Selecting an agent runs it the other direction and lights
+  // up the disk it has written to, across every district.
+  const highlightedAgentIds = useMemo(() => {
+    if (selectedSkillRef) return agentsCarrying(layout.crowns, selectedSkillRef);
+    if (selectedPath) return new Set(changes.paint.get(selectedPath)?.agentIds ?? []);
+    return EMPTY_HIGHLIGHT;
+  }, [selectedSkillRef, selectedPath, layout.crowns, changes.paint]);
+
+  const highlightedPaths = useMemo(() => {
+    if (!selectedAgentId) return EMPTY_HIGHLIGHT;
+    const written = new Set<string>();
+    for (const [path, paint] of changes.paint) {
+      if (paint.agentIds.includes(selectedAgentId)) written.add(path);
+    }
+    return written;
+  }, [selectedAgentId, changes.paint]);
+
+  const openPath = useTerrainOpen({ entries: changes.entries, baseline: changes.baseline });
+  // Stable identities: `TerrainLayer` is memoized, and a fresh empty set or a
+  // fresh closure per render would re-render two thousand ground cells on every
+  // telemetry tick.
+  const handleSelectPath = useCallback(
+    (path: string) => setSelectedKey(unitKey({ kind: "path", id: path })),
+    [],
+  );
 
   const selectedUnit = [...agentUnits, ...workflowUnits].find(
     (unit) => unitKey(unit.ref) === activeSelectionKey,
   );
-  const summaryLabel = selectedSkillLabel ?? selectedUnit?.label ?? null;
+  const selectedPaint = selectedPath ? changes.paint.get(selectedPath) : undefined;
+  const summaryLabel =
+    selectedSkillLabel ?? (selectedPath ? terrainCellName(selectedPath) : null) ?? selectedUnit?.label ?? null;
   const summaryStatus = selectedSkillRef
     ? gardenSkillReachLabel(highlightedAgentIds.size)
-    : selectedUnit
-      ? "status" in selectedUnit
-        ? gardenAgentStatusLabel(selectedUnit.status)
-        : gardenWorkflowStatusLabel(selectedUnit.runStatus)
-      : null;
+    : selectedPath
+      ? gardenGroundLabel(selectedPaint)
+      : selectedUnit
+        ? "status" in selectedUnit
+          ? gardenAgentStatusLabel(selectedUnit.status)
+          : gardenWorkflowStatusLabel(selectedUnit.runStatus)
+        : null;
 
   return (
     <div className="garden-view relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -263,6 +347,45 @@ export const GardenView: React.FC<GardenViewProps> = ({
             {item.label}
           </span>
         ))}
+        {changes.paint.size > 0 && (
+          <>
+            <span className="h-3 w-px bg-wardian-border" aria-hidden="true" />
+            {/* The baseline is named rather than assumed: the ground uses a
+                workspace-level baseline while the Changes pane may be showing an
+                agent-scoped one, and the two must not differ silently. */}
+            <span className="font-bold text-primary" title={gardenChangeBaselineLabel(changes.baseline)}>
+              Ground
+            </span>
+            {GARDEN_CHANGE_LEGEND.map((item) => (
+              <span key={item.kind} className="inline-flex items-center gap-1 text-muted-neutral">
+                <span
+                  className="h-1.5 w-1.5 rounded-sm"
+                  style={{ backgroundColor: item.colorVar }}
+                  aria-hidden="true"
+                />
+                {item.label}
+              </span>
+            ))}
+            <span className="text-muted-neutral">{gardenChangeBaselineLabel(changes.baseline)}</span>
+            {/* Area is a share of the parent folder, not a file size, and it
+                reads as size unless it is said out loud — a loose file at a
+                repository root is a peer of `src/` and is drawn as one. */}
+            <span className="text-muted-neutral" title={GARDEN_AREA_NOTE}>
+              Area = share of folder
+            </span>
+          </>
+        )}
+        {coordinatingDistricts > 0 && (
+          <>
+            <span className="h-3 w-px bg-wardian-border" aria-hidden="true" />
+            {/* An arrangement that encodes a claim nobody can read is no better
+                than one that encodes nothing, so the map says what its middle
+                means — and only when some district is actually claiming it. */}
+            <span className="text-muted-neutral" title={GARDEN_CENTRALITY_NOTE}>
+              Centre = coordinates others
+            </span>
+          </>
+        )}
       </section>
       <div
         id="garden-selection-summary"
@@ -281,12 +404,19 @@ export const GardenView: React.FC<GardenViewProps> = ({
         workflowUnits={workflowUnits}
         selectedKey={activeSelectionKey}
         highlightedAgentIds={highlightedAgentIds}
+        terrainCells={terrain.cells}
+        terrainDistricts={layout.districts}
+        terrainPaint={changes.paint}
+        highlightedPaths={highlightedPaths}
+        onSelectPath={handleSelectPath}
+        onOpenPath={openPath}
+        onViewportChange={setViewport}
         onSelect={(ref) => {
           const key = unitKey(ref);
           setSelectedKey(key);
-          // Skills are not placed, so there is no position for the scene to
-          // remember and nothing for `visit` to keep from drifting.
-          if (ref.kind !== "skill") visitUnit(key);
+          // Skills and ground are not placed, so there is no position for the
+          // scene to remember and nothing for `visit` to keep from drifting.
+          if (ref.kind !== "skill" && ref.kind !== "path") visitUnit(key);
           if (ref.kind === "agent") {
             onSelectionChange(new Set([ref.id]));
           }

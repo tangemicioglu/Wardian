@@ -19,6 +19,7 @@ import {
   type GardenScene,
 } from "./gardenScene";
 import { layoutGarden, type LayoutEntity } from "./gardenLayout";
+import { DISTRICT_GROUND_MARGIN, districtFootprint, MIN_GROUND_RADIUS } from "./terrain";
 
 const now = 1_700_000_000_000;
 
@@ -80,7 +81,23 @@ describe("layoutGarden", () => {
     expect(new Set(result.units.map((unit) => unit.key)).size).toBe(entities.length);
   });
 
-  it("separates districts in world space", () => {
+  it("separates districts by the room their ground will need", () => {
+    // Stated as the invariant rather than as a distance, because the distance is
+    // derived: the lattice reserves each district's drawn footprint and leaves
+    // `DISTRICT_GROUND_MARGIN` between them. A literal here would only record
+    // whatever the arithmetic currently produces.
+    const result = layoutGarden({ entities, scene: createScene(), now });
+    const footprintOf = (districtId: string) =>
+      districtFootprint(result.districtExtents.get(districtId) ?? 0);
+    const hardware = result.districtOrigins.get("team:hw")!;
+    const web = result.districtOrigins.get("team:web")!;
+    const between = Math.hypot(hardware.x - web.x, hardware.y - web.y);
+    expect(between - footprintOf("team:hw") - footprintOf("team:web")).toBeGreaterThanOrEqual(
+      DISTRICT_GROUND_MARGIN,
+    );
+  });
+
+  it("keeps two districts' members in visibly different places", () => {
     const result = layoutGarden({ entities, scene: createScene(), now });
     const centroid = (districtId: string) => {
       const members = result.units.filter((unit) => unit.districtId === districtId);
@@ -91,7 +108,9 @@ describe("layoutGarden", () => {
     };
     const hardware = centroid("team:hw");
     const web = centroid("team:web");
-    expect(Math.hypot(hardware.x - web.x, hardware.y - web.y)).toBeGreaterThan(300);
+    expect(Math.hypot(hardware.x - web.x, hardware.y - web.y)).toBeGreaterThan(
+      MIN_GROUND_RADIUS,
+    );
   });
 
   it("leaves no overlapping units", () => {

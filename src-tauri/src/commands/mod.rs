@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_reach;
 pub mod artifacts;
 pub mod browser;
 pub mod chat;
@@ -24,6 +25,7 @@ pub mod workbench;
 pub mod workflow;
 
 pub use agent::*;
+pub use agent_reach::*;
 pub use artifacts::*;
 pub use browser::*;
 pub use chat::*;

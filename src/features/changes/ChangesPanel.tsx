@@ -12,13 +12,20 @@ import type {
   ChangeReviewReviewedPath,
   ChangeReviewSummary,
   ChangeReviewWatermark,
-  FilesComparisonBaseline,
-  FilesSurfaceStateV2,
 } from "../../types";
 import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { fileResourceKey } from "../files/fileResourceKey";
 import { normalizeExplorerPathForCompare } from "../explorer/pathUtils";
+import {
+  CHANGE_BASELINE_OPTIONS,
+  DEFAULT_CHANGE_REVIEW_BASELINE,
+  baselineForFile,
+  changeBaselineLabel,
+  changeSurfaceState,
+  isChangeReviewBaseline,
+  pathForWorkspace,
+} from "./changeSurface";
 
 interface ExplorerChangedEvent {
   root_path: string;
@@ -32,16 +39,6 @@ type ChangesPanelProps = {
   turn_revision: number;
   navigation?: WorkbenchNavigationService | null;
 };
-
-const BASELINE_OPTIONS: readonly { value: ChangeReviewBaseline; label: string }[] = [
-  { value: "last_effective_turn", label: "Last turn" },
-  { value: "conversation_start", label: "This conversation" },
-  { value: "branch_point", label: "This branch" },
-  { value: "head", label: "Last commit" },
-  { value: "unreviewed", label: "I last looked" },
-];
-
-const DEFAULT_CHANGE_REVIEW_BASELINE: ChangeReviewBaseline = "last_effective_turn";
 
 const CHANGE_KIND_PRESENTATION: Record<ChangeReviewFileEntry["change_kind"], {
   label: string;
@@ -89,10 +86,6 @@ function changeEvidenceLabel(entry: ChangeReviewFileEntry): string {
     : "detected from workspace changes";
 }
 
-function isChangeReviewBaseline(value: unknown): value is ChangeReviewBaseline {
-  return BASELINE_OPTIONS.some((option) => option.value === value);
-}
-
 function baselineFromPrefs(prefs: unknown): ChangeReviewBaseline {
   if (typeof prefs !== "object" || prefs === null) return DEFAULT_CHANGE_REVIEW_BASELINE;
   const candidate = prefs as { schema?: unknown; baseline?: unknown };
@@ -105,53 +98,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function pathForWorkspace(workspace: string, path: string): string {
-  if (/^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/") || path.startsWith("\\\\")) {
-    return path;
-  }
-  return `${workspace.replace(/[\\/]+$/g, "")}/${path.replace(/^[\\/]+/g, "")}`;
-}
-
 function sameWorkspacePath(left: string, right: string): boolean {
   return normalizeExplorerPathForCompare(left) === normalizeExplorerPathForCompare(right);
-}
-
-/**
- * Builds the comparison baseline for a change-review entry.
- *
- * `old_path` is used when present so a renamed file is compared against the name
- * it had at the baseline. Added and untracked files are marked `absent` rather
- * than pointed at a revision that does not contain them.
- */
-function baselineForFile(
-  entry: ChangeReviewFileEntry,
-  baselineRef: string | null,
-  workspace: string,
-  label: string,
-): FilesComparisonBaseline {
-  return {
-    kind: "git_revision",
-    revision: baselineRef ?? "HEAD",
-    cwd: workspace,
-    path: entry.old_path ?? entry.path,
-    label,
-    absent: entry.change_kind === "added" || entry.change_kind === "untracked",
-  };
-}
-
-/** Opens a change-review diff in the workbench with its comparison already open. */
-function changeSurfaceState(baseline: FilesComparisonBaseline): FilesSurfaceStateV2 {
-  return {
-    resource_kind: "file",
-    transient_preview: false,
-    presentation: "editor",
-    comparison_open: true,
-    comparison_layout_preference: "auto",
-    comparison_baseline: baseline,
-    review_drawer_open: false,
-    selected_version_id: null,
-    optional_checkpoint_id: null,
-  };
 }
 
 export function ChangesPanel({
@@ -173,6 +121,15 @@ export function ChangesPanel({
   const [summary, setSummary] = useState<ChangeReviewSummary | null>(null);
   const [gitAvailable, setGitAvailable] = useState(true);
   const [headRef, setHeadRef] = useState<string | null>(null);
+  /**
+   * Repository root the summary's paths resolve against.
+   *
+   * Distinct from `workspace`, which is where the *agent* works. Git reports
+   * every path relative to the repository root regardless of the directory it
+   * ran in, so an agent scoped to a subdirectory would otherwise open diffs at
+   * paths that do not exist.
+   */
+  const [pathRoot, setPathRoot] = useState<string | null>(null);
   const [openedPath, setOpenedPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -226,6 +183,7 @@ export function ChangesPanel({
       setSummary(response.summary);
       setGitAvailable(response.git_available);
       setHeadRef(response.head_ref);
+      setPathRoot(response.workspace_root ?? workspace);
     } catch (reason) {
       if (generation === requestGeneration.current) setError(errorMessage(reason));
     } finally {
@@ -326,10 +284,7 @@ export function ChangesPanel({
     }).catch(() => undefined);
   }, [headRef, selectedAgentId, summary, workspace]);
 
-  const baselineLabel = useMemo(
-    () => BASELINE_OPTIONS.find((option) => option.value === baseline)?.label ?? "Baseline",
-    [baseline],
-  );
+  const baselineLabel = useMemo(() => changeBaselineLabel(baseline), [baseline]);
 
   const openFile = useCallback((entry: ChangeReviewFileEntry) => {
     if (!workspace) return;
@@ -341,12 +296,16 @@ export function ChangesPanel({
       setOpenError("Binary content is listed but not rendered.");
       return;
     }
+    // Paths resolve against the repository, not the agent's directory. The
+    // watermark below still keys on `workspace`, because "what has this agent
+    // seen" is a question about the agent, not about the repository.
+    const root = pathRoot ?? workspace;
     try {
       const surfaceId = workbenchNavigation.open({
         surface_type: "files",
-        resource_key: fileResourceKey(pathForWorkspace(workspace, entry.path)),
+        resource_key: fileResourceKey(pathForWorkspace(root, entry.path)),
         state: changeSurfaceState(
-          baselineForFile(entry, summary?.baseline_ref ?? null, workspace, baselineLabel),
+          baselineForFile(entry, summary?.baseline_ref ?? null, root, baselineLabel),
         ),
       });
       workbenchNavigation.pin_transient(surfaceId);
@@ -357,7 +316,7 @@ export function ChangesPanel({
     } catch (error) {
       setOpenError(`Unable to open the comparison: ${errorMessage(error)}`);
     }
-  }, [baselineLabel, reviewPathOnExpand, summary?.baseline_ref, workbenchNavigation, workspace]);
+  }, [baselineLabel, pathRoot, reviewPathOnExpand, summary?.baseline_ref, workbenchNavigation, workspace]);
 
   const handleBaselineChange = useCallback((nextBaseline: ChangeReviewBaseline) => {
     if (nextBaseline === baseline) return;
@@ -388,7 +347,7 @@ export function ChangesPanel({
               if (isChangeReviewBaseline(nextBaseline)) handleBaselineChange(nextBaseline);
             }}
           >
-            {BASELINE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {CHANGE_BASELINE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
       </header>

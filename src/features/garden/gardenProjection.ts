@@ -1,4 +1,5 @@
 import type { AgentGraphProjection, CommEdgeState } from "../graph/graphProjection";
+import type { AgentConfig, AgentReachEntry } from "../../types";
 import type { AgentTeam } from "../../layout/watchlist/types";
 import type {
   GardenAgentUnit,
@@ -6,11 +7,12 @@ import type {
   GardenWorkflowRunStatus,
   GardenWorkflowUnit,
 } from "./garden.types";
-import { agentRef, entityKey, workflowRef } from "./entityRef";
+import { agentRef, entityKey, normalizeEntityPath, workflowRef } from "./entityRef";
 import { emitAgentFacets, emitWorkflowFacets } from "./facets";
 import {
   buildDistrictAffinity,
   districtId,
+  reachTier,
   resolveAgentDistrict,
   resolveEntityDistrict,
 } from "./districts";
@@ -19,6 +21,7 @@ import { buildSkillCrowns, crownExtent, type GardenSkillGlyph } from "./skillGly
 import { interactionWeight, personalizedPageRank } from "./metric";
 import { layoutGarden, type LayoutEntity } from "./gardenLayout";
 import type { GardenScene } from "./gardenScene";
+import { groundRadiusFor, quantizeAnchor, type TerrainDistrict } from "./terrain";
 
 export interface GardenWorkflowInput {
   id: string;
@@ -72,7 +75,74 @@ export interface GardenProjectionInput {
   workflows: readonly GardenWorkflowInput[];
   skills?: readonly GardenSkillInput[];
   scene: GardenScene;
+  /** Workspace roots each agent has written under; see `useGardenReach`. */
+  reach?: readonly AgentReachEntry[];
   now?: number;
+}
+
+/**
+ * Workspace roots the roster works in, sorted and de-duplicated.
+ *
+ * Derived from the agents rather than from a computed layout, and the direction
+ * is the point: reach is a layout *input*, so reading roots off the layout's
+ * districts would close a loop — roots would depend on a layout that depended on
+ * the reach those roots produced. The same `git_worktree_folder ?? folder` value
+ * `computeGardenLayout` districts on, so the two cannot disagree about what a
+ * root is.
+ */
+export function agentWorkspaceRoots(agents: readonly AgentConfig[]): string[] {
+  const roots = new Set<string>();
+  for (const agent of agents) {
+    const root =
+      normalizeEntityPath(agent.git_worktree_folder) ?? normalizeEntityPath(agent.folder);
+    if (root) roots.add(root);
+  }
+  return [...roots].sort();
+}
+
+/**
+ * Reach tier per district: how many *other* districts its agents write into.
+ *
+ * A root can belong to more than one district — a team district and the
+ * workspace district of an untamed agent in the same repository both claim it —
+ * so a write counts toward every district that holds the root, minus the writer's
+ * own. That is the honest reading: the write really did land in territory those
+ * districts occupy.
+ */
+export function districtReachTiers(
+  reach: readonly AgentReachEntry[],
+  districtByAgentId: ReadonlyMap<string, string>,
+  rootsByDistrict: ReadonlyMap<string, ReadonlySet<string>>,
+): Map<string, number> {
+  const districtsByRoot = new Map<string, Set<string>>();
+  for (const [district, roots] of rootsByDistrict) {
+    for (const root of roots) {
+      const existing = districtsByRoot.get(root);
+      if (existing) existing.add(district);
+      else districtsByRoot.set(root, new Set([district]));
+    }
+  }
+
+  const reachedByDistrict = new Map<string, Set<string>>();
+  for (const entry of reach) {
+    const home = districtByAgentId.get(entry.agent_id);
+    if (!home) continue;
+    for (const rawRoot of entry.roots) {
+      const root = normalizeEntityPath(rawRoot);
+      if (!root) continue;
+      for (const district of districtsByRoot.get(root) ?? []) {
+        if (district === home) continue;
+        const existing = reachedByDistrict.get(home);
+        if (existing) existing.add(district);
+        else reachedByDistrict.set(home, new Set([district]));
+      }
+    }
+  }
+
+  return new Map([...reachedByDistrict].map(([district, reached]) => [
+    district,
+    reachTier(reached.size),
+  ]));
 }
 
 export interface UnitPlacement {
@@ -104,6 +174,24 @@ export interface GardenProjectionResult {
   stalePinKeys: string[];
   /** entityKey -> where it sits, so a drag can become a district-relative pin. */
   placement: Map<string, UnitPlacement>;
+  /**
+   * districtId -> the territory it occupies, plus the workspace roots its
+   * agents work in.
+   *
+   * Published so terrain can be drawn beneath the units without re-deriving
+   * district membership. Roots come from the same `git_worktree_folder ??
+   * folder` value `resolveAgentDistrict` partitions on, so ground membership
+   * and district membership cannot disagree.
+   */
+  districts: Map<string, TerrainDistrict>;
+  /**
+   * districtId -> reach tier, for districts that reach past their own territory.
+   *
+   * Published so the view can say that centrality means something on this map.
+   * An arrangement that encodes a claim nobody can read is not an improvement
+   * over one that encodes nothing.
+   */
+  reachTiers: Map<string, number>;
 }
 
 /**
@@ -151,11 +239,27 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
   );
 
   const districtByAgentId = new Map<string, string>();
+  // districtId -> the workspace roots its agents actually operate in. A team
+  // district spanning several repositories keeps all of them: that overlap is
+  // the thing the malleable-garden spec asked Garden to make visible rather
+  // than nest away.
+  const rootsByDistrict = new Map<string, Set<string>>();
+  // Which root each agent works in, so the ground can be laid out under the
+  // agents rather than beside them. Agents only: a workflow has no workspace.
+  const rootByUnitKey = new Map<string, string>();
   for (const node of input.projection.nodes) {
     const ref = agentRef(node.id);
     const teamIds = teamsByAgent.get(node.id);
     const district = districtId(resolveAgentDistrict(node.agent, { teamIds }));
     districtByAgentId.set(node.id, district);
+    const root =
+      normalizeEntityPath(node.agent.git_worktree_folder) ?? normalizeEntityPath(node.agent.folder);
+    if (root) {
+      const existing = rootsByDistrict.get(district);
+      if (existing) existing.add(root);
+      else rootsByDistrict.set(district, new Set([root]));
+      rootByUnitKey.set(entityKey(ref), root);
+    }
     const crown = crowns.get(node.id) ?? [];
     entities.push({
       ref,
@@ -222,10 +326,70 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
     })),
   );
 
-  const result = layoutGarden({ entities, scene: input.scene, ppr, now: input.now });
+  const reachTiers = districtReachTiers(input.reach ?? [], districtByAgentId, rootsByDistrict);
+  const result = layoutGarden({
+    entities,
+    scene: input.scene,
+    ppr,
+    reachTiers,
+    now: input.now,
+  });
+
+  // Ground is sized against the free space around each district, measured over
+  // *every* district and not only the ones carrying terrain: a neighbour with
+  // no workspace still holds units that the ground must not be drawn over.
+  const origins = [...result.districtOrigins.entries()];
+
+  // Where each root's agents settled, district-relative, so a district spanning
+  // several repositories can put each one's ground under the agents that work
+  // in it. Positions only enter as an *ordering* of cells that already exist —
+  // they can no more change a rect than the change set can.
+  const anchorTotals = new Map<string, Map<string, { x: number; y: number; count: number }>>();
+  for (const unit of result.units) {
+    const root = rootByUnitKey.get(unit.key);
+    if (!root) continue;
+    const origin = result.districtOrigins.get(unit.districtId) ?? { x: 0, y: 0 };
+    let byRoot = anchorTotals.get(unit.districtId);
+    if (!byRoot) {
+      byRoot = new Map();
+      anchorTotals.set(unit.districtId, byRoot);
+    }
+    const total = byRoot.get(root) ?? { x: 0, y: 0, count: 0 };
+    total.x += unit.position.x - origin.x;
+    total.y += unit.position.y - origin.y;
+    total.count += 1;
+    byRoot.set(root, total);
+  }
+
+  const territory = new Map<string, TerrainDistrict>();
+  for (const [district, roots] of rootsByDistrict) {
+    const origin = result.districtOrigins.get(district) ?? { x: 0, y: 0 };
+    let nearest = Number.POSITIVE_INFINITY;
+    for (const [other, point] of origins) {
+      if (other === district) continue;
+      nearest = Math.min(nearest, Math.hypot(point.x - origin.x, point.y - origin.y));
+    }
+    const totals = anchorTotals.get(district);
+    const anchors = totals
+      ? new Map(
+          [...totals].map(([root, total]) => [
+            root,
+            quantizeAnchor({ x: total.x / total.count, y: total.y / total.count }),
+          ]),
+        )
+      : undefined;
+    territory.set(district, {
+      roots: [...roots].sort(),
+      anchors,
+      origin,
+      radius: groundRadiusFor(result.districtExtents.get(district) ?? 0, nearest),
+    });
+  }
 
   return {
     positions: new Map(result.units.map((unit) => [unit.key, unit.position])),
+    districts: territory,
+    reachTiers,
     crowns,
     scene: result.scene,
     stalePinKeys: result.stalePinKeys,
@@ -267,6 +431,7 @@ export function gardenLayoutSignature(
   teams: readonly AgentTeam[],
   workflows: readonly GardenWorkflowInput[],
   skills: readonly GardenSkillInput[] = [],
+  reach: readonly AgentReachEntry[] = [],
 ): string {
   const agents = [...projection.nodes]
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -329,7 +494,17 @@ export function gardenLayoutSignature(
     .sort()
     .join(";");
 
-  return [agents, teamKey, workflowKey, edgeKey, skillKey].join("#");
+  // Reach seats districts, so it belongs here — and it is safe to include for
+  // the same reason it is safe to lay out on: it is history, fetched once, and
+  // it changes only when an agent writes somewhere it never had. Digested at
+  // full resolution rather than as tiers because the tier is derived from
+  // district membership, which this digest cannot see.
+  const reachKey = [...reach]
+    .map((entry) => `${entry.agent_id}:${[...entry.roots].sort().join(",")}`)
+    .sort()
+    .join(";");
+
+  return [agents, teamKey, workflowKey, edgeKey, skillKey, reachKey].join("#");
 }
 
 /** Attach live display fields to computed positions. */
