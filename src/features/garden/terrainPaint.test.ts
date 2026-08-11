@@ -121,6 +121,13 @@ describe("joinWorkspacePath", () => {
   it("rejects an empty path rather than returning the root", () => {
     expect(joinWorkspacePath(ROOT, "   ")).toBeNull();
   });
+
+  it("resolves a traversal out of the workspace instead of carrying the text", () => {
+    // Concatenating leaves `d:/work/repo/../other/a.ts`, which still *begins*
+    // with the root, so the prefix test in `isUnderPath` reads it as contained.
+    expect(joinWorkspacePath(ROOT, "../other/a.ts")).toBe("d:/work/other/a.ts");
+    expect(joinWorkspacePath(ROOT, "src/../../other/a.ts")).toBe("d:/work/other/a.ts");
+  });
 });
 
 describe("buildTerrainPaint", () => {
@@ -231,6 +238,17 @@ describe("buildTerrainPaint", () => {
       ]),
     ]);
     expect(paint.get("d:/work/repo/src")?.agentIds).toEqual(["a1", "a2"]);
+  });
+
+  it("does not credit this root with churn from a path that escaped it", () => {
+    // The end of the traversal chain: an unresolved `..` passes containment, so
+    // `ancestorChain` climbs from the escaped path back through the root and the
+    // root's own churn absorbs work done in a sibling repository.
+    const paint = buildTerrainPaint([
+      changeSet([entry({ path: "../other/a.ts", insertions: 500, deletions: 0 })]),
+    ]);
+    expect(paint.get("d:/work/repo")).toBeUndefined();
+    expect(paint.get("d:/work/other/a.ts")).toBeDefined();
   });
 
   it("handles an empty change set and a zero-churn one", () => {

@@ -146,6 +146,51 @@ describe("useGardenReach", () => {
     expect(invokeMock).toHaveBeenCalledTimes(3);
   });
 
+  it("does not lend the previous roster's reach to a roster that has none", async () => {
+    // State lags the roster by a render even on a cache hit, because effects run
+    // after paint. Returning the entries alone meant the new roster laid out on
+    // the old one's evidence for that render — long enough to seat a district
+    // that no longer exists, and then move it again when the answer arrived.
+    const pending = deferred<AgentReachResponse>();
+    invokeMock.mockResolvedValueOnce(response([{ agent_id: "a1", roots: ["d:/work/papers"] }]));
+    const other = [agent("b1", "D:/other")];
+
+    const { result, rerender } = renderHook(({ roster }) => useGardenReach(true, roster), {
+      initialProps: { roster: AGENTS },
+    });
+    await waitFor(() => expect(result.current).toHaveLength(1));
+
+    invokeMock.mockImplementationOnce(() => pending.promise as Promise<never>);
+    rerender({ roster: other });
+    // Synchronous on purpose: the defect is the render itself, not the answer.
+    expect(result.current).toEqual([]);
+
+    pending.resolve(response([{ agent_id: "b1", roots: ["d:/work/app"] }]));
+    await waitFor(() => expect(result.current).toHaveLength(1));
+    expect(result.current[0].agent_id).toBe("b1");
+  });
+
+  it("keeps the cache bounded as rosters churn", async () => {
+    // The key holds the whole roster, so an unbounded map grows one entry per
+    // distinct roster for the life of the session.
+    invokeMock.mockResolvedValue(response([]));
+    const { rerender } = renderHook(({ roster }) => useGardenReach(true, roster), {
+      initialProps: { roster: AGENTS },
+    });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+
+    for (let index = 0; index < 20; index += 1) {
+      rerender({ roster: [agent(`x${index}`, `D:/work/w${index}`)] });
+      await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(index + 2));
+    }
+
+    // The first roster was evicted, so returning to it costs a read rather than
+    // being served from a cache that never forgets.
+    const before = invokeMock.mock.calls.length;
+    rerender({ roster: AGENTS });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(before + 1));
+  });
+
   it("stays quiet while disabled, so a hidden Garden costs nothing", () => {
     renderHook(() => useGardenReach(false, AGENTS));
     expect(invokeMock).not.toHaveBeenCalled();

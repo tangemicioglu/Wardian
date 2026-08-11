@@ -88,6 +88,16 @@ fn path_identity(path: &str) -> String {
 ///     latter as rooted would compare a relative path against workspace roots;
 ///   - `/x` — a POSIX root, which must survive normalization rather than being
 ///     trimmed to the empty string and then discarded as an unusable root.
+///
+/// Drive-letter syntax is read the same way on every platform, which is
+/// deliberate and is a stated limitation rather than an oversight. On POSIX,
+/// `C:notes.md` and `C:/notes.md` are legal *filenames*, so this reading loses
+/// them: the first is dropped as drive-relative, and the second is taken as
+/// rooted and then matches no POSIX root. Both lose a write rather than invent
+/// one, so the error is under-attribution — a district seated where it already
+/// was. Making the rule target-aware would have to thread the platform through
+/// containment and root construction as well, which is a large change to buy
+/// back a benign bias on filenames that imitate Windows drive specs.
 fn split_root(path: &str) -> (&str, &str) {
     let bytes = path.as_bytes();
     if let Some(rest) = path.strip_prefix("//") {

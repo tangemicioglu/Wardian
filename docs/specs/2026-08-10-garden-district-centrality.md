@@ -203,10 +203,24 @@ seats districts, so that is not a cosmetic mismatch: it moves the map on evidenc
 that does not exist.
 
 Three shapes have to be told apart for this to hold, and each was wrong before:
-a UNC root is two segments; `D:x` is drive-*relative* and must be joined, unlike
-`D:/x`; and a POSIX `/` must survive normalization rather than trimming to the
-empty string and being discarded as unusable. `..` clamps at the root, matching
-what the filesystem would have done.
+a UNC root is two segments; `D:x` is drive-*relative* and is **dropped** rather
+than joined, unlike `D:/x`; and a POSIX `/` must survive normalization rather
+than trimming to the empty string and being discarded as unusable. `..` clamps
+at the root, matching what the filesystem would have done.
+
+Dropping is the point for `D:x`. Joining it onto the workspace fabricates a child
+literally named `D:x`, which can then match a root and credit a district with a
+write that never happened under it. Only the process's per-drive current
+directory can say where such a path points, and reach has no access to it, so the
+record names nowhere resolvable.
+
+Drive-letter syntax is read identically on every platform. On POSIX both `C:x`
+and `C:/x` are legal filenames, so this reading loses them — the first dropped,
+the second treated as rooted and matching no POSIX root. Both directions lose a
+write rather than invent one, so the failure is under-attribution, which seats a
+district where it already was. That bias is accepted rather than corrected:
+making the rule target-aware means threading the platform through containment and
+root construction too.
 
 Resolution stays lexical rather than canonicalizing on disk. These paths come
 from turn records that may name files since deleted or volumes no longer

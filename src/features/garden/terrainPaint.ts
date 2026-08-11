@@ -25,7 +25,7 @@ import type {
   ChangeReviewEvidence,
   ChangeReviewFileEntry,
 } from "../../types";
-import { isUnderPath, normalizeEntityPath, parentPath } from "./entityRef";
+import { isUnderPath, lexicalNormalizePath, normalizeEntityPath, parentPath } from "./entityRef";
 
 /**
  * The aggregate kind of a cell.
@@ -234,6 +234,11 @@ function emptyAccumulator(): Accumulator {
  * the type does not forbid an absolute path and one root's entry must never be
  * joined onto another's. An entry that already looks absolute is taken as it
  * stands, matching `pathForWorkspace` in the Changes pane.
+ *
+ * Joined first, then resolved lexically, so `..` is applied against the
+ * workspace it escapes from. Without that step the dot segments survive into
+ * `isUnderPath`, which is a prefix test and reads an escaping path as contained
+ * — so a write in a sibling repository painted this root's ancestors.
  */
 export function joinWorkspacePath(root: string, path: string): string | null {
   const trimmed = path.trim();
@@ -242,7 +247,7 @@ export function joinWorkspacePath(root: string, path: string): string | null {
     /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith("/") || trimmed.startsWith("\\\\")
       ? trimmed
       : `${root.replace(/[\\/]+$/g, "")}/${trimmed.replace(/^[\\/]+/g, "")}`;
-  return normalizeEntityPath(absolute);
+  return normalizeEntityPath(lexicalNormalizePath(absolute));
 }
 
 /** The path itself and every ancestor up to and including `root`. */

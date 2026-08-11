@@ -114,6 +114,15 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
   // invalidation, so an unreadable path costs one call rather than one per
   // frontier evaluation forever.
   const failed = useRef(new Set<string>());
+  // Directories the filesystem changed while their listing was in flight.
+  //
+  // A read that started before the change commits a snapshot that predates it,
+  // and the watcher's own refresh is dropped — `staleListings` cannot see a
+  // listing that has not arrived, and `requestListings` skips anything already
+  // in flight. Neither is wrong on its own; together they lose the event, and
+  // nothing retries because the next attempt only comes from another write.
+  // Marking the path here and requeueing once the read settles closes that.
+  const dirty = useRef(new Set<string>());
 
   // The live listing map, for the watcher. Reading it from a ref rather than
   // depending on it keeps a single subscription across every ingestion, instead
@@ -163,16 +172,31 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
       }
       return next.size === current.size ? current : next;
     });
+    // The failure and dirty sets are pruned with them. A failure outliving its
+    // root is not merely stale: `failed` suppresses the frontier request, and
+    // the only thing that clears an entry is an `explorer-changed` event naming
+    // that exact path — which cannot arrive, because the watcher went away with
+    // the root. A root that failed once and then left would come back as an
+    // unexpandable square for the rest of the session.
+    for (const path of failed.current) {
+      if (!rootsRef.current.some((root) => isUnderPath(root, path))) failed.current.delete(path);
+    }
+    for (const path of dirty.current) {
+      if (!rootsRef.current.some((root) => isUnderPath(root, path))) dirty.current.delete(path);
+    }
     // `rootKey` is the content of `roots`; the array identity changes on every
     // layout pass and would make this run constantly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, rootKey]);
 
-  const requestListings = useCallback(async (paths: readonly string[]) => {
+  const requestListings = useCallback(async function request(paths: readonly string[]) {
     const wanted = paths.filter(
       (path) => !inFlight.current.has(path) && !failed.current.has(path),
     );
     if (wanted.length === 0) return;
+    // Starting the read answers whatever was pending for these paths; anything
+    // marked after this point happened during the read and must be requeued.
+    for (const path of wanted) dirty.current.delete(path);
     for (const path of wanted) inFlight.current.add(path);
     setPending(new Set(inFlight.current));
 
@@ -208,6 +232,14 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
       for (const path of unreadable) next.delete(path);
       return next;
     });
+
+    // Changed while it was being read, so what just committed is already behind
+    // the filesystem. One requeue per mark, and the mark is cleared on entry, so
+    // a directory under continuous writes re-reads rather than recursing.
+    const changedDuringRead = wanted.filter(
+      (path) => dirty.current.delete(path) && !failed.current.has(path),
+    );
+    if (changedDuringRead.length > 0) void request(changedDuringRead);
   }, []);
 
   // Watch every root and refresh the listings a change actually invalidates.
@@ -229,6 +261,13 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
       // Retry only what this event touched. Clearing every failure would make
       // one unreadable folder cost a call on every write anywhere in the repo.
       for (const path of changed) failed.current.delete(path);
+      // A directory being read right now cannot be refreshed by this event, and
+      // the event does not survive on its own. Mark it so the read requeues.
+      for (const path of inFlight.current) {
+        if (changed.some((changedPath) => isUnderPath(path, changedPath))) {
+          dirty.current.add(path);
+        }
+      }
       const stale = staleListings(listingsRef.current, changedRoot, changed);
       if (stale.length > 0) void requestListings(stale);
     });

@@ -9,6 +9,7 @@ import {
   folderRef,
   fromFileResourceKey,
   isUnderPath,
+  lexicalNormalizePath,
   parentPath,
   fromGardenUnitKey,
   libraryEntryRef,
@@ -226,5 +227,37 @@ describe("isUnderPath and parentPath", () => {
       }
       expect(cursor).toBeNull();
     }
+  });
+});
+
+describe("lexicalNormalizePath", () => {
+  it("resolves dot segments so containment cannot be fooled by text", () => {
+    // `isUnderPath` is a prefix test, so an unresolved `..` reads as contained:
+    // `d:/repo/../other/a.ts` starts with `d:/repo/` and would paint this root's
+    // ancestors with churn from a sibling repository.
+    expect(lexicalNormalizePath("d:/repo/../other/a.ts")).toBe("d:/other/a.ts");
+    expect(isUnderPath("d:/repo", lexicalNormalizePath("d:/repo/../other/a.ts"))).toBe(false);
+  });
+
+  it("drops the segments a filesystem would have", () => {
+    expect(lexicalNormalizePath("d:/repo/./src/nested/../a.ts")).toBe("d:/repo/src/a.ts");
+    expect(lexicalNormalizePath("d:/repo//src///a.ts")).toBe("d:/repo/src/a.ts");
+  });
+
+  it("clamps at each root shape rather than climbing above it", () => {
+    expect(lexicalNormalizePath("d:/../../x.txt")).toBe("d:/x.txt");
+    expect(lexicalNormalizePath("/../../x.txt")).toBe("/x.txt");
+    expect(lexicalNormalizePath("//server/share/../../x.txt")).toBe("//server/share/x.txt");
+  });
+
+  it("keeps a leading `..` on a rootless path, which still has somewhere to go", () => {
+    // A relative path has nothing to clamp against, and swallowing the marker
+    // would make an escaping path land inside whatever it is joined onto.
+    expect(lexicalNormalizePath("../other/a.ts")).toBe("../other/a.ts");
+    expect(lexicalNormalizePath("a/../../b")).toBe("../b");
+  });
+
+  it("accepts backslashes, since one arrives from git and one from the OS", () => {
+    expect(lexicalNormalizePath("d:\\repo\\..\\other\\a.ts")).toBe("d:/other/a.ts");
   });
 });

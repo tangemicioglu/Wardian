@@ -325,6 +325,105 @@ describe("useGardenTerrain", () => {
     expect(result.current.cells.length).toBeGreaterThan(0);
   });
 
+  it("re-reads a folder the filesystem changed while its listing was in flight", async () => {
+    // Two guards that are each right alone and lose the event together:
+    // `staleListings` cannot name a listing that has not arrived, and
+    // `requestListings` skips a path already in flight. The read then commits a
+    // snapshot older than the change, and nothing retries — the next attempt
+    // would only come from another write to the same folder.
+    type ExplorerChanged = (event: {
+      payload: { root_path: string; changed_paths: string[] };
+    }) => void;
+    const watcher: { emit: ExplorerChanged | null } = { emit: null };
+    listenMock.mockImplementation(async (_event: string, handler: unknown) => {
+      watcher.emit = handler as ExplorerChanged;
+      return () => {};
+    });
+
+    const releases: Array<(nodes: unknown) => void> = [];
+    invokeMock.mockImplementation(
+      (command: string) =>
+        command === "get_directory_tree"
+          ? new Promise((resolve) => {
+              releases.push(resolve);
+            })
+          : (Promise.resolve(undefined) as Promise<unknown>),
+    );
+
+    const { result } = renderHook(() =>
+      useGardenTerrain({ enabled: true, districts: DISTRICTS, viewport: VIEWPORT }),
+    );
+
+    const listedRepo = () =>
+      invokeMock.mock.calls.filter(
+        ([command, args]) =>
+          command === "get_directory_tree" &&
+          (args as unknown as { path?: string } | undefined)?.path === "d:/work/repo",
+      ).length;
+    await waitFor(() => expect(listedRepo()).toBe(1));
+    await waitFor(() => expect(watcher.emit).not.toBeNull());
+
+    // The change lands mid-read, naming a file inside the folder being listed.
+    watcher.emit?.({
+      payload: {
+        root_path: "D:\\work\\repo",
+        changed_paths: ["D:\\work\\repo\\a.ts"],
+      },
+    });
+
+    await act(async () => {
+      releases[0]?.(directoryTree("a.ts"));
+    });
+
+    await waitFor(() => expect(listedRepo()).toBe(2));
+    await act(async () => {
+      releases[1]?.(directoryTree("a.ts", "b.ts"));
+    });
+    await waitFor(() => expect(result.current.cells.length).toBe(3));
+  });
+
+  it("retries a root that failed before it left the roster and came back", async () => {
+    // `failed` suppresses the frontier request and is cleared only by an
+    // `explorer-changed` event naming that exact path — which cannot arrive once
+    // the root leaves, because its watcher goes with it. The root returned as a
+    // square that could never expand again.
+    let failNext = true;
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "get_directory_tree") return undefined;
+      if (failNext) throw new Error("unreadable");
+      return directoryTree("a.ts", "b.ts");
+    });
+
+    const { result, rerender } = renderHook(
+      ({ districts }) => useGardenTerrain({ enabled: true, districts, viewport: VIEWPORT }),
+      { initialProps: { districts: DISTRICTS } },
+    );
+
+    const listedRepo = () =>
+      invokeMock.mock.calls.filter(
+        ([command, args]) =>
+          command === "get_directory_tree" &&
+          (args as unknown as { path?: string } | undefined)?.path === "d:/work/repo",
+      ).length;
+    await waitFor(() => expect(listedRepo()).toBe(1));
+
+    const replaced = new Map<string, TerrainDistrict>([
+      [
+        "workspace:d:/work/other",
+        { roots: ["d:/work/other"], origin: { x: 0, y: 0 }, radius: 400 },
+      ],
+    ]);
+    rerender({ districts: replaced });
+    await waitFor(() => expect(result.current.cells.map((cell) => cell.path)).toEqual([
+      "d:/work/other",
+    ]));
+
+    failNext = false;
+    rerender({ districts: DISTRICTS });
+    await waitFor(() => expect(listedRepo()).toBe(2));
+    await waitFor(() => expect(result.current.cells.length).toBe(3));
+  });
+
   it("draws nothing and watches nothing while disabled", () => {
     const { result } = renderHook(() =>
       useGardenTerrain({ enabled: false, districts: DISTRICTS, viewport: VIEWPORT }),
