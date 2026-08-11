@@ -171,11 +171,18 @@ describe("withTurnChangeSummaries", () => {
       derivePresentedChatRows([
         userMessage("user-1", 1),
         editCall("edit-1", 2, "src/a.ts", "one", "ONE"),
-        userMessage("user-2", 3),
+        event({ id: "assistant-1", kind: "message", role: "assistant", text: "Done.", sequence: 3 }),
+        userMessage("user-2", 4),
       ]),
     );
 
     const kinds = rows.map((row) => (row.kind === "event" ? `event:${row.event.id}` : row.kind));
-    expect(kinds).toEqual(["event:user-1", "event:edit-1", "turn_change_summary", "event:user-2"]);
+    expect(kinds).toEqual([
+      "event:user-1",
+      "event:edit-1",
+      "event:assistant-1",
+      "turn_change_summary",
+      "event:user-2",
+    ]);
   });
 });

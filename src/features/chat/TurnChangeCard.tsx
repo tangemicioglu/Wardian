@@ -147,12 +147,7 @@ export function TurnChangeCard({
     hasCounts && countedFiles.length < files.length
       ? `across ${countedFiles.length} of ${files.length} files`
       : null;
-  // Without a user message to split on there is no turn, so the card must not
-  // imply one; it names the span it actually covers.
-  const fileLabel =
-    row.scope === "whole_history"
-      ? `${files.length} changed ${files.length === 1 ? "file" : "files"} in this transcript`
-      : `${files.length} changed ${files.length === 1 ? "file" : "files"}`;
+  const fileLabel = `${files.length} changed ${files.length === 1 ? "file" : "files"}`;
 
   return (
     <article
@@ -181,14 +176,6 @@ export function TurnChangeCard({
                 className="text-[11px]"
                 coverage={countCoverage ?? undefined}
               />
-            ) : null}
-            {countCoverage ? (
-              <span
-                className="font-normal text-[10px] text-muted-neutral"
-                title={`${files.length - countedFiles.length} of these files reported no line counts.`}
-              >
-                in {countedFiles.length} of {files.length}
-              </span>
             ) : null}
           </span>
           {!expanded && scopes.length > 0 ? (
@@ -222,10 +209,6 @@ export function TurnChangeCard({
           ))}
         </ul>
       )}
-
-      <p className="border-t border-wardian-light px-2 py-1 text-[10px] leading-4 text-muted-neutral">
-        Reported by the agent, not a working-tree diff.
-      </p>
     </article>
   );
 }
