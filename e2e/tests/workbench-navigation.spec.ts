@@ -657,6 +657,51 @@ test("keeps the top tab strip stable when its empty chrome drags the window", as
   expect(after?.height).toBe(36);
 });
 
+test("compresses crowded tabs and opens the overflow tab switcher", async ({ page }, testInfo) => {
+  const agents = Array.from({ length: 8 }, (_, index): WorkbenchAgentFixture => ({
+    ...ALPHA_AGENT,
+    session_id: `crowded-agent-${index}`,
+    session_name: `Crowded Agent With A Very Long Name ${index}`,
+  }));
+  const surfaces = agents.map((agent) => makeWorkbenchSurface(
+    `${agent.session_id}-surface`,
+    "agent-session",
+    { resource_key: agent.session_id },
+  ));
+  await bootWorkbench(page, makeWorkbenchDocument({ surfaces }), agents);
+  await page.setViewportSize({ width: 900, height: 720 });
+
+  const group = workbenchGroup(page, "group-1");
+  const tabs = group.getByRole("tab");
+  await expect(tabs).toHaveCount(surfaces.length);
+  const widths = await tabs.evaluateAll((elements) => elements.map((element) => (
+    Math.round(element.getBoundingClientRect().width)
+  )));
+  expect(Math.max(...widths)).toBeLessThan(192);
+  const compressedLabelCount = await tabs.locator(".wardian-workbench-tab-label").evaluateAll((labels) => (
+    labels.filter((label) => label.clientWidth > 0 && label.scrollWidth > label.clientWidth).length
+  ));
+  expect(compressedLabelCount).toBeGreaterThan(0);
+
+  const overflow = group.locator(".dv-tabs-overflow-dropdown-default");
+  await expect(overflow).toBeVisible();
+  await expect(overflow.locator(":scope > span")).toBeHidden();
+  await overflow.click();
+  const overflowList = page.locator(".dv-tabs-overflow-container");
+  await expect(overflowList).toBeVisible();
+  const screenshotPath = process.env.WARDIAN_TAB_OVERFLOW_SCREENSHOT;
+  if (screenshotPath) {
+    await page.screenshot({ path: screenshotPath, animations: "disabled" });
+    await testInfo.attach("tab-overflow-switcher", {
+      path: screenshotPath,
+      contentType: "image/png",
+    });
+  }
+  await overflowList.getByText("Crowded Agent With A Very Long Name 7", { exact: true }).click();
+  await expect(surfaceTab(page, "agent-session", "crowded-agent-7"))
+    .toHaveAttribute("aria-selected", "true");
+});
+
 test("keeps the first tab clear of collapsed macOS traffic-light chrome", async ({ browser }, testInfo) => {
   const context = await browser.newContext({
     userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
