@@ -275,6 +275,32 @@ test.describe("Agent Spawn Form", () => {
     await expect(input).toHaveValue("C:/projects/test");
   });
 
+  test("shows provider-specific advanced configuration", async () => {
+    await page.locator('[data-testid="spawn-provider"]').selectOption("codex");
+    await page.getByRole("button", { name: "Advanced Settings" }).click();
+
+    await page.getByLabel("Sandbox Mode").selectOption("workspace-write");
+    await page.getByLabel("Approval Policy").selectOption("never");
+    await page.getByLabel("Profile").fill("review");
+    await page.getByLabel("Search").check();
+    await page.getByLabel("Ephemeral").check();
+
+    await expect(page.getByText("Headless delivery", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Skip Git check")).toBeChecked();
+    await expect(page.getByLabel("Ephemeral")).toBeChecked();
+
+    await page.getByTestId("advanced-settings-content").screenshot({
+      path: path.join(
+        "e2e",
+        "screenshots",
+        "provider-advanced-configuration",
+        "2026-08-13",
+        "codex-advanced-settings.png",
+      ),
+      animations: "disabled",
+    });
+  });
+
   test("grid is empty before any agent is spawned", async () => {
     await openSurface(page, "agents-overview");
     const overview = surfacePanel(page, "agents-overview");

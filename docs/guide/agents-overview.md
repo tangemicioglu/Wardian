@@ -81,6 +81,27 @@ Auto adds columns only when the pane can support their preferred working width a
 - Roster selection and Agents focus are separate. Roster selection targets tools; Agents focus chooses the agent shown in Single mode.
 - Grid is not a global navigation destination. It is an Agents mode retained for multi-agent compatibility and control.
 
+## Configure Provider Launch Options
+
+Open an agent's configuration and expand **Advanced Settings** to override
+options for that provider. Wardian shows only options consumed by the selected
+provider. Switching providers replaces the provider-specific configuration so
+Claude, Gemini, Codex, Antigravity, and OpenCode flags do not leak into one
+another.
+
+Options marked **Headless** apply to background deliveries and workflow runs
+that use the agent profile. They do not alter the provider's interactive
+terminal. Wardian owns structured output flags for those runs so provider JSON
+or stream formats cannot break delivery parsing.
+
+Codex sandbox and approval values inherit the provider-wide defaults under
+**Settings > Agent Runtime > Codex** unless the agent has an explicit override.
+Gemini's sandbox option requires Docker or Podman on the machine running the
+provider CLI. If neither is available, Gemini rejects the launch before it can
+begin a session.
+Use **Custom Arguments** for a current provider flag that Wardian does not model;
+custom arguments are passed only to the selected provider.
+
 ## Related Guides
 
 - [Workbench](./workbench.md)

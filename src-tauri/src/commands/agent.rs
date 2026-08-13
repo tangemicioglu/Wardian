@@ -6766,6 +6766,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             provider: "opencode".to_string(),
             provider_config: ProviderConfig::OpenCode(OpenCodeProviderConfig {
                 agent: Some("build".to_string()),
+                auto: Some(true),
                 port: Some(4096),
             }),
             resume_session: Some("ses_old".to_string()),
@@ -6778,6 +6779,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert_eq!(clone.provider, "opencode");
         let opencode = clone.opencode_config();
         assert_eq!(opencode.agent.as_deref(), Some("build"));
+        assert_eq!(opencode.auto, Some(true));
         assert_eq!(opencode.port, None);
         assert!(matches!(clone.provider_config, ProviderConfig::OpenCode(_)));
     }

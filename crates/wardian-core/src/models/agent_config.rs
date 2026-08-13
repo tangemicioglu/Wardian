@@ -78,6 +78,8 @@ pub struct ClaudeProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disallowed_tools: Option<Vec<String>>,
@@ -85,6 +87,8 @@ pub struct ClaudeProviderConfig {
     pub append_system_prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_config: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict_mcp_config: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -98,6 +102,8 @@ pub struct GeminiProviderConfig {
     pub approval_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_policy: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental_acp: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,6 +149,10 @@ pub struct AntigravityProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dangerously_skip_permissions: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub print_timeout: Option<String>,
     /// Conversations deliberately detached by Wardian's Clear action. These
     /// must never be recovered from Antigravity's workspace cache.
@@ -155,6 +165,8 @@ pub struct AntigravityProviderConfig {
 pub struct OpenCodeProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
 }
@@ -489,6 +501,7 @@ impl AgentConfigCompat {
                 yolo: self.yolo,
                 approval_mode: self.approval_mode.clone(),
                 policy: self.policy.clone(),
+                admin_policy: None,
                 experimental_acp: self.experimental_acp,
                 allowed_mcp_server_names: self.allowed_mcp_server_names.clone(),
                 extensions: self.extensions.clone(),
@@ -509,25 +522,30 @@ impl AgentConfigCompat {
             "antigravity" => ProviderConfig::Antigravity(AntigravityProviderConfig::default()),
             "opencode" => ProviderConfig::OpenCode(OpenCodeProviderConfig {
                 agent: self.opencode_agent.clone(),
+                auto: None,
                 port: self.opencode_port,
             }),
             "mock" => ProviderConfig::Mock(MockProviderConfig::default()),
             "claude" => ProviderConfig::Claude(ClaudeProviderConfig {
                 permission_mode: self.permission_mode.clone(),
                 max_turns: self.max_turns,
+                tools: None,
                 allowed_tools: self.allowed_tools.clone(),
                 disallowed_tools: self.disallowed_tools.clone(),
                 append_system_prompt: self.append_system_prompt.clone(),
                 mcp_config: self.mcp_config.clone(),
+                strict_mcp_config: None,
                 reasoning_effort: None,
             }),
             "" if self.provider.trim().is_empty() => ProviderConfig::Claude(ClaudeProviderConfig {
                 permission_mode: self.permission_mode.clone(),
                 max_turns: self.max_turns,
+                tools: None,
                 allowed_tools: self.allowed_tools.clone(),
                 disallowed_tools: self.disallowed_tools.clone(),
                 append_system_prompt: self.append_system_prompt.clone(),
                 mcp_config: self.mcp_config.clone(),
+                strict_mcp_config: None,
                 reasoning_effort: None,
             }),
             "" => ProviderConfig::default_for_provider(&self.provider),
@@ -1115,6 +1133,41 @@ mod tests {
     }
 
     #[test]
+    fn new_provider_advanced_fields_roundtrip() {
+        let cases = [
+            serde_json::json!({
+                "provider": "claude",
+                "provider_config": {
+                    "type": "claude",
+                    "tools": ["Read", "Edit"],
+                    "strict_mcp_config": true
+                }
+            }),
+            serde_json::json!({
+                "provider": "gemini",
+                "provider_config": {
+                    "type": "gemini",
+                    "admin_policy": ["managed-policy"]
+                }
+            }),
+            serde_json::json!({
+                "provider": "opencode",
+                "provider_config": {
+                    "type": "opencode",
+                    "auto": true
+                }
+            }),
+        ];
+
+        for value in cases {
+            let config: AgentConfig = serde_json::from_value(value.clone()).unwrap();
+            let serialized = serde_json::to_value(config).unwrap();
+            assert_eq!(serialized["provider"], value["provider"]);
+            assert_eq!(serialized["provider_config"], value["provider_config"]);
+        }
+    }
+
+    #[test]
     fn new_nested_provider_config_serializes_without_legacy_provider_fields() {
         let config = AgentConfig {
             provider: "codex".into(),
@@ -1292,6 +1345,8 @@ mod tests {
             provider_config: ProviderConfig::Antigravity(AntigravityProviderConfig {
                 sandbox: Some(true),
                 dangerously_skip_permissions: Some(true),
+                mode: Some("plan".into()),
+                agent: Some("reviewer".into()),
                 print_timeout: Some("2m".into()),
                 ..Default::default()
             }),
@@ -1306,6 +1361,8 @@ mod tests {
             value["provider_config"]["dangerously_skip_permissions"],
             true
         );
+        assert_eq!(value["provider_config"]["mode"], "plan");
+        assert_eq!(value["provider_config"]["agent"], "reviewer");
         assert_eq!(value["provider_config"]["print_timeout"], "2m");
 
         let deserialized: AgentConfig = serde_json::from_value(value).unwrap();
@@ -1323,6 +1380,14 @@ mod tests {
         assert_eq!(
             deserialized.antigravity_config().print_timeout.as_deref(),
             Some("2m")
+        );
+        assert_eq!(
+            deserialized.antigravity_config().mode.as_deref(),
+            Some("plan")
+        );
+        assert_eq!(
+            deserialized.antigravity_config().agent.as_deref(),
+            Some("reviewer")
         );
     }
 

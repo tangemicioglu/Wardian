@@ -7,7 +7,7 @@ use wardian_core::models::AgentSessionPersistence;
 
 const SHELL_SETTINGS_FILE: &str = "settings/shell.json";
 const CODEX_SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
-const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-failure", "on-request", "never"];
+const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never"];
 const DEFAULT_PROVIDER_VALUES: &[&str] = &[
     "auto",
     "claude",
@@ -1461,6 +1461,28 @@ mod tests {
                 trust_workspaces: false,
             }
         );
+    }
+
+    #[test]
+    fn shell_settings_normalizes_removed_codex_approval_policy() {
+        let temp_dir = tempdir().expect("temp dir");
+        let path = temp_dir.path().join("shell_settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "schema_version": 2,
+              "overrides": {
+                "codex_runtime_policy": {
+                  "approval_policy": "on-failure"
+                }
+              }
+            }"#,
+        )
+        .expect("write settings");
+
+        let loaded = load_shell_settings_from_path(&path).expect("load settings");
+
+        assert_eq!(loaded.codex_runtime_policy, CodexRuntimePolicy::default());
     }
 
     #[test]

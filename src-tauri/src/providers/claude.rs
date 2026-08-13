@@ -269,16 +269,18 @@ impl AgentProvider for ClaudeProvider {
         }
 
         // Claude-specific parameters
-        if let Some(ref mode) = claude.permission_mode {
-            if !mode.trim().is_empty() {
-                args.push("--permission-mode".into());
-                args.push(mode.clone());
-            }
+        if let Some(mode) = claude
+            .permission_mode
+            .as_deref()
+            .and_then(normalize_claude_permission_mode)
+        {
+            args.push("--permission-mode".into());
+            args.push(mode.to_string());
         }
-        if let Some(turns) = claude.max_turns {
-            if turns > 0 {
-                args.push("--max-turns".into());
-                args.push(turns.to_string());
+        if let Some(ref tools) = claude.tools {
+            if !tools.is_empty() {
+                args.push("--tools".into());
+                args.push(tools.join(","));
             }
         }
         if let Some(ref tools) = claude.allowed_tools {
@@ -304,6 +306,9 @@ impl AgentProvider for ClaudeProvider {
                 args.push("--mcp-config".into());
                 args.push(path.clone());
             }
+        }
+        if claude.strict_mcp_config.unwrap_or(false) {
+            args.push("--strict-mcp-config".into());
         }
 
         // Custom args (shell-parsed) - users can supply additional flags here
@@ -384,6 +389,18 @@ impl AgentProvider for ClaudeProvider {
 
     fn get_instruction_filename(&self) -> &str {
         "CLAUDE.md"
+    }
+}
+
+fn normalize_claude_permission_mode(mode: &str) -> Option<&str> {
+    match mode.trim() {
+        "manual" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions" => {
+            Some(mode.trim())
+        }
+        // Wardian used these non-provider values before Claude exposed its current modes.
+        "default" => Some("manual"),
+        "auto-accept" => Some("acceptEdits"),
+        _ => None,
     }
 }
 
@@ -613,19 +630,30 @@ SET dp0=%~dp0
         });
         let args = p.get_spawn_args(&config, false);
         assert!(args.contains(&"--permission-mode".to_string()));
-        assert!(args.contains(&"auto-accept".to_string()));
+        assert!(args.contains(&"acceptEdits".to_string()));
     }
 
     #[test]
-    fn spawn_args_max_turns() {
+    fn legacy_default_permission_mode_maps_to_manual() {
+        let p = make_provider();
+        let config = make_claude_config(ClaudeProviderConfig {
+            permission_mode: Some("default".into()),
+            ..Default::default()
+        });
+        let args = p.get_spawn_args(&config, false);
+        assert!(args.contains(&"manual".to_string()));
+        assert!(!args.contains(&"default".to_string()));
+    }
+
+    #[test]
+    fn interactive_spawn_omits_print_only_max_turns() {
         let p = make_provider();
         let config = make_claude_config(ClaudeProviderConfig {
             max_turns: Some(10),
             ..Default::default()
         });
         let args = p.get_spawn_args(&config, false);
-        assert!(args.contains(&"--max-turns".to_string()));
-        assert!(args.contains(&"10".to_string()));
+        assert!(!args.contains(&"--max-turns".to_string()));
     }
 
     #[test]
@@ -668,12 +696,17 @@ SET dp0=%~dp0
     fn spawn_args_mcp_config() {
         let p = make_provider();
         let config = make_claude_config(ClaudeProviderConfig {
+            tools: Some(vec!["Read".into(), "Edit".into()]),
             mcp_config: Some("/path/to/mcp.json".into()),
+            strict_mcp_config: Some(true),
             ..Default::default()
         });
         let args = p.get_spawn_args(&config, false);
         assert!(args.contains(&"--mcp-config".to_string()));
         assert!(args.contains(&"/path/to/mcp.json".to_string()));
+        assert!(args.contains(&"--tools".to_string()));
+        assert!(args.contains(&"Read,Edit".to_string()));
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
     }
 
     #[test]

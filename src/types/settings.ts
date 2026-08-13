@@ -6,7 +6,7 @@ export interface ShellOption {
 }
 
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
-export type CodexApprovalPolicy = 'untrusted' | 'on-failure' | 'on-request' | 'never';
+export type CodexApprovalPolicy = 'untrusted' | 'on-request' | 'never';
 export type DefaultProviderSetting = 'auto' | 'claude' | 'codex' | 'gemini' | 'antigravity' | 'opencode';
 export type ConversationLoggingSetting = 'enabled' | 'disabled';
 export type AppThemeSetting = 'dark' | 'light' | 'system';

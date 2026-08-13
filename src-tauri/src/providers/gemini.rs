@@ -136,14 +136,14 @@ impl AgentProvider for GeminiProvider {
         if gemini.sandbox.unwrap_or(false) {
             args.push("--sandbox".into());
         }
-        if gemini.yolo.unwrap_or(false) {
-            args.push("--yolo".into());
-        }
-        if let Some(ref approval) = gemini.approval_mode {
-            if !approval.trim().is_empty() {
-                args.push("--approval-mode".into());
-                args.push(approval.clone());
-            }
+        let approval_mode = gemini
+            .approval_mode
+            .as_deref()
+            .and_then(normalize_gemini_approval_mode)
+            .or_else(|| gemini.yolo.unwrap_or(false).then_some("yolo"));
+        if let Some(approval) = approval_mode {
+            args.push("--approval-mode".into());
+            args.push(approval.to_string());
         }
         if let Some(ref policy) = gemini.policy {
             if !policy.is_empty() {
@@ -151,8 +151,11 @@ impl AgentProvider for GeminiProvider {
                 args.push(policy.join(","));
             }
         }
-        if gemini.experimental_acp.unwrap_or(false) {
-            args.push("--experimental-acp".into());
+        if let Some(ref policy) = gemini.admin_policy {
+            if !policy.is_empty() {
+                args.push("--admin-policy".into());
+                args.push(policy.join(","));
+            }
         }
         if let Some(ref servers) = gemini.allowed_mcp_server_names {
             for s in servers {
@@ -168,10 +171,6 @@ impl AgentProvider for GeminiProvider {
         }
         if gemini.screen_reader.unwrap_or(false) {
             args.push("--screen-reader".into());
-        }
-        if let Some(ref format) = gemini.output_format {
-            args.push("--output-format".into());
-            args.push(format.clone());
         }
 
         // Custom args (shell-parsed)
@@ -253,6 +252,13 @@ impl AgentProvider for GeminiProvider {
 
     fn get_instruction_filename(&self) -> &str {
         "GEMINI.md"
+    }
+}
+
+fn normalize_gemini_approval_mode(mode: &str) -> Option<&str> {
+    match mode.trim() {
+        "default" | "auto_edit" | "yolo" | "plan" => Some(mode.trim()),
+        _ => None,
     }
 }
 
@@ -371,7 +377,7 @@ SET dp0=%~dp0
     }
 
     #[test]
-    fn spawn_args_sandbox_and_yolo() {
+    fn spawn_args_sandbox_and_legacy_yolo_use_current_approval_flag() {
         let p = make_provider();
         let config = make_gemini_config(GeminiProviderConfig {
             sandbox: Some(true),
@@ -380,7 +386,9 @@ SET dp0=%~dp0
         });
         let args = p.get_spawn_args(&config, false);
         assert!(args.contains(&"--sandbox".to_string()));
-        assert!(args.contains(&"--yolo".to_string()));
+        assert!(args.contains(&"--approval-mode".to_string()));
+        assert!(args.contains(&"yolo".to_string()));
+        assert!(!args.contains(&"--yolo".to_string()));
     }
 
     #[test]
@@ -470,12 +478,12 @@ SET dp0=%~dp0
     fn spawn_args_approval_mode() {
         let p = make_provider();
         let config = make_gemini_config(GeminiProviderConfig {
-            approval_mode: Some("auto".into()),
+            approval_mode: Some("auto_edit".into()),
             ..Default::default()
         });
         let args = p.get_spawn_args(&config, false);
         assert!(args.contains(&"--approval-mode".to_string()));
-        assert!(args.contains(&"auto".to_string()));
+        assert!(args.contains(&"auto_edit".to_string()));
     }
 
     #[test]
@@ -494,12 +502,15 @@ SET dp0=%~dp0
         let p = make_provider();
         let config = make_gemini_config(GeminiProviderConfig {
             policy: Some(vec!["policy1".into(), "policy2".into()]),
+            admin_policy: Some(vec!["admin1".into(), "admin2".into()]),
             ..Default::default()
         });
         let args = p.get_spawn_args(&config, false);
         assert!(args.contains(&"--policy".to_string()));
         let idx = args.iter().position(|a| a == "--policy").unwrap();
         assert_eq!(args[idx + 1], "policy1,policy2");
+        let admin_idx = args.iter().position(|a| a == "--admin-policy").unwrap();
+        assert_eq!(args[admin_idx + 1], "admin1,admin2");
     }
 
     #[test]
@@ -545,7 +556,7 @@ SET dp0=%~dp0
     }
 
     #[test]
-    fn spawn_args_screen_reader_and_output_format() {
+    fn interactive_spawn_uses_screen_reader_but_omits_managed_output_format() {
         let p = make_provider();
         let config = make_gemini_config(GeminiProviderConfig {
             screen_reader: Some(true),
@@ -554,8 +565,7 @@ SET dp0=%~dp0
         });
         let args = p.get_spawn_args(&config, false);
         assert!(args.contains(&"--screen-reader".to_string()));
-        assert!(args.contains(&"--output-format".to_string()));
-        assert!(args.contains(&"json".to_string()));
+        assert!(!args.contains(&"--output-format".to_string()));
     }
 
     #[test]

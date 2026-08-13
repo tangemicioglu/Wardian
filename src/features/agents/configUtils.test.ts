@@ -141,6 +141,22 @@ describe("provider config utilities", () => {
         });
     });
 
+    it("normalizes removed nested provider values", () => {
+        const claude = normalizeAgentConfig({
+            ...baseConfig,
+            provider: "claude",
+            provider_config: { type: "claude", permission_mode: "default" } as AgentConfig["provider_config"],
+        });
+        const codex = normalizeAgentConfig({
+            ...baseConfig,
+            provider: "codex",
+            provider_config: { type: "codex", approval_policy: "on-failure" } as AgentConfig["provider_config"],
+        });
+
+        expect(providerConfigFor(claude)).toMatchObject({ permission_mode: "manual" });
+        expect(providerConfigFor(codex)).toMatchObject({ approval_policy: "on-request" });
+    });
+
     it("resets mismatched provider_config to selected provider default", () => {
         const normalized = normalizeAgentConfig({
             ...baseConfig,
