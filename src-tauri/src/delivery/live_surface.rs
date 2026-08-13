@@ -272,6 +272,39 @@ pub async fn submit_live_surface_prompt(
             }
         }
     } else {
+        // Antigravity creates its durable provider-owned user step while it
+        // finishes drawing the initial compose prompt. Capture the watch
+        // cursor first so that real receipt remains observable after the
+        // terminal is ready to accept the queued payload.
+        if requires_provider_turn_receipt && provider == "antigravity" {
+            turn_start_cursor = match crate::control::provider_turn_start_cursor(
+                state,
+                &request.session_id,
+            )
+            .await
+            {
+                Ok(cursor) => Some(cursor),
+                Err(message) => {
+                    return Err(record_failed_live_surface_attempt(
+                        state,
+                        &request,
+                        &interaction_id,
+                        Some(LiveSurfaceTarget {
+                            name: name.clone(),
+                            provider: provider.clone(),
+                        }),
+                        FailedLiveSurfaceAttempt {
+                            runtime_state: request.runtime_state,
+                            error_code: "turn_start_watch_unavailable",
+                            message,
+                            delivery_phase: Some("turn_start_cursor_failed".to_string()),
+                            retry_safe: true,
+                        },
+                    )
+                    .await);
+                }
+            };
+        }
         if let Err(message) =
             crate::control::wait_for_terminal_ready_for_delivery_service(state, &request.session_id)
                 .await
@@ -294,8 +327,8 @@ pub async fn submit_live_surface_prompt(
             )
             .await);
         }
-        turn_start_cursor = if requires_provider_turn_receipt {
-            match crate::control::provider_turn_start_cursor(state, &request.session_id).await {
+        if requires_provider_turn_receipt && turn_start_cursor.is_none() {
+            turn_start_cursor = match crate::control::provider_turn_start_cursor(state, &request.session_id).await {
                 Ok(cursor) => Some(cursor),
                 Err(message) => {
                     return Err(record_failed_live_surface_attempt(
@@ -316,10 +349,8 @@ pub async fn submit_live_surface_prompt(
                     )
                     .await);
                 }
-            }
-        } else {
-            None
-        };
+            };
+        }
         let wait_session_id = request.session_id.clone();
         let payload_session_id = request.session_id.clone();
         let payload_interaction_id = interaction_id.clone();

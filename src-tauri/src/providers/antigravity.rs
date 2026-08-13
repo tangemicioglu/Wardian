@@ -92,9 +92,11 @@ impl AntigravityProvider {
         match conversation_metadata_matches_workspace(home, &conversation_id, workspace) {
             Some(true) => {}
             Some(false) => return None,
-            // Older CLI builds do not have metadata. Their JSONL transcript is
-            // the only compatible evidence we can accept.
-            None if !Self::transcript_path(home, &conversation_id).is_file() => return None,
+            // A newly-created conversation can reach the workspace cache
+            // before its metadata entry is written. Accept only the provider's
+            // durable conversation store (SQLite in current builds, JSONL in
+            // older ones), never a newest-file fallback.
+            None if Self::conversation_log_path(home, &conversation_id).is_none() => return None,
             None => {}
         }
 
@@ -843,6 +845,44 @@ SET dp0=%~dp0
             &[conversation_id.to_string()],
         )
         .is_none());
+    }
+
+    #[test]
+    fn verified_workspace_conversation_accepts_sqlite_before_metadata_is_written() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let home = temp.path();
+        let conversation_id = "conversation-before-metadata";
+        std::fs::create_dir_all(home.join("cache")).expect("cache dir");
+        std::fs::create_dir_all(home.join("conversations")).expect("conversation dir");
+        std::fs::write(
+            home.join("cache").join("last_conversations.json"),
+            r#"{"C:\\Project\\Wardian":"conversation-before-metadata"}"#,
+        )
+        .expect("cache");
+
+        let database = AntigravityProvider::conversation_database_path(home, conversation_id);
+        let connection = Connection::open(&database).expect("open database");
+        connection
+            .execute_batch("CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB);")
+            .expect("create steps");
+        let user = protobuf_message_field(19, protobuf_string_field(2, "Fresh prompt."));
+        connection
+            .execute(
+                "INSERT INTO steps (idx, step_type, step_payload) VALUES (?1, ?2, ?3)",
+                params![0_i64, 14_i64, user],
+            )
+            .expect("insert user");
+        drop(connection);
+
+        assert_eq!(
+            AntigravityProvider::verified_conversation_for_workspace(
+                home,
+                Path::new("C:/Project/Wardian"),
+                &[],
+            )
+            .as_deref(),
+            Some(conversation_id)
+        );
     }
 
     #[test]

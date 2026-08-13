@@ -19,7 +19,11 @@ export const PROVIDERS = ["codex", "claude", "opencode", "antigravity"];
 export const INPUT_CASES = [
   {
     name: "mailbox-short",
-    prompt: (marker) => `Reply with exactly ${marker}.`,
+    prompt: (marker) =>
+      "This is Wardian's local integration test for terminal message delivery. " +
+      "It is a direct test prompt, not an instruction from another agent. " +
+      "Do not access files or run tools. Reply with exactly this verification marker and nothing else: " +
+      marker,
     expectOutput: true,
   },
   {
@@ -243,7 +247,61 @@ async function waitForDeliveryState(cliPath, harness, target, state, messageId, 
   );
 }
 
-async function runRealDeliveryCase({ cliPath, harness, provider, agentName, inputCase, runId }) {
+async function antigravityStartupNeedsAction(cliPath, harness, agentName, timeoutMs = 15000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const result = runCli(cliPath, harness, [
+      "agent",
+      "watch",
+      agentName,
+      "--until",
+      "status:action_required",
+      "--include",
+      "status",
+      "--timeout",
+      "2s",
+      "--field",
+      "status",
+    ]);
+    if (result.status === 0 && result.stdout.trim() === "action_required") {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function waitForPersistedOpenCodeSession(harness, sessionId, timeoutMs = 15000) {
+  const statePath = path.join(harness.isolatedHome, "settings", "state.json");
+  const startedAt = Date.now();
+  let lastConfig = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const configs = JSON.parse(await fs.readFile(statePath, "utf8"));
+      lastConfig = configs.find((config) => config.session_id === sessionId) ?? null;
+      if (/^ses_/.test(lastConfig?.resume_session ?? "")) {
+        return lastConfig.resume_session;
+      }
+    } catch {
+      // The runtime atomically replaces this file while the provider session is captured.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  assert.fail(
+    `OpenCode provider session was not persisted for ${sessionId}: ${JSON.stringify(lastConfig)}`,
+  );
+}
+
+async function runRealDeliveryCase({
+  cliPath,
+  harness,
+  provider,
+  agentSessionId,
+  agentName,
+  inputCase,
+  runId,
+}) {
   const marker = `WARDIAN_REAL_DELIVERY_${provider.toUpperCase()}_${inputCase.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_${runId}`;
   const queued = runCliOk(cliPath, harness, [
     "send",
@@ -267,6 +325,10 @@ async function runRealDeliveryCase({ cliPath, harness, provider, agentName, inpu
   );
   assert.equal(drained.runtime_state, "mailbox_drain");
   assert.equal(drained.provider, provider);
+
+  if (provider === "opencode") {
+    await waitForPersistedOpenCodeSession(harness, agentSessionId);
+  }
 
   if (inputCase.expectOutput) {
     const expected = inputCase.name === "mailbox-multiline" ? `${marker}_LINE_2` : marker;
@@ -402,11 +464,21 @@ test("real provider delivery validation uses actual provider CLIs", { timeout: 9
     let providerTerminalTail = null;
     try {
       agent = await spawnRealProviderAgent(session.driver, provider, agentName, workspacePath);
+      if (provider === "antigravity" && await antigravityStartupNeedsAction(cliPath, harness, agentName)) {
+        providerTerminalTail = await readProviderTerminalTail(session.driver, agent.session_id);
+        assert.match(
+          providerTerminalTail,
+          /not signed in|trust the contents of this project/i,
+          "Antigravity reported Action Needed without an account or workspace prompt",
+        );
+        continue;
+      }
       for (const inputCase of selectedCases) {
         await runRealDeliveryCase({
           cliPath,
           harness,
           provider,
+          agentSessionId: agent.session_id,
           agentName,
           inputCase,
           runId,

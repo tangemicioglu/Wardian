@@ -1082,7 +1082,7 @@ fn new_agent_identity_plan(provider_name: &str) -> NewAgentIdentityPlan {
         wardian_session_id: uuid::Uuid::new_v4().to_string(),
         fresh_provider_session_id: provider_uses_manual_session_id(provider_name)
             .then(|| uuid::Uuid::new_v4().to_string()),
-        bootstrap_provider_session: matches!(provider_name, "codex" | "opencode"),
+        bootstrap_provider_session: provider_name == "codex",
     }
 }
 
@@ -1091,7 +1091,7 @@ fn ensure_provider_available_before_session_bootstrap(provider_name: &str) -> Re
 }
 
 fn provider_needs_obtain_session_id_on_clear(provider_name: &str) -> bool {
-    matches!(provider_name, "codex" | "opencode")
+    provider_name == "codex"
 }
 
 fn provider_allows_deferred_session_identity(provider_name: &str) -> bool {
@@ -6986,10 +6986,10 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[test]
-    fn opencode_uses_a_distinct_wardian_id_and_exact_bootstrap() {
+    fn opencode_defers_its_provider_identity_until_the_first_prompt() {
         let identity = super::new_agent_identity_plan("opencode");
         assert!(uuid::Uuid::parse_str(&identity.wardian_session_id).is_ok());
-        assert!(identity.bootstrap_provider_session);
+        assert!(!identity.bootstrap_provider_session);
         assert!(identity.fresh_provider_session_id.is_none());
     }
 
@@ -7041,7 +7041,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert!(!provider_needs_obtain_session_id_on_clear("gemini"));
         assert!(!provider_needs_obtain_session_id_on_clear("claude"));
         assert!(provider_needs_obtain_session_id_on_clear("codex"));
-        assert!(provider_needs_obtain_session_id_on_clear("opencode"));
+        assert!(!provider_needs_obtain_session_id_on_clear("opencode"));
         assert!(!provider_needs_obtain_session_id_on_clear("antigravity"));
     }
 

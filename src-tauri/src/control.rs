@@ -2498,23 +2498,28 @@ async fn wait_for_terminal_ready_for_control_send(
     if info.provider == "opencode" {
         wait_for_opencode_terminal_ready(state, &info.uuid, 15_000).await
     } else if info.provider == "codex" {
-        wait_for_terminal_output(state, &info.uuid, 15_000, codex_output_has_ready_prompt).await
+        wait_for_terminal_output(state, &info.uuid, 15_000, |output| {
+            provider_output_has_ready_prompt("codex", output)
+        })
+        .await
     } else if info.provider == "claude" {
         if current_agent_status_is_idle(state, &info.uuid).await? {
             Ok(())
         } else {
-            wait_for_terminal_output(state, &info.uuid, 15_000, claude_output_has_ready_prompt)
-                .await
+            wait_for_terminal_output(state, &info.uuid, 15_000, |output| {
+                provider_output_has_ready_prompt("claude", output)
+            })
+            .await
         }
     } else if info.provider == "gemini" {
-        wait_for_terminal_output(state, &info.uuid, 15_000, gemini_output_has_ready_prompt).await
+        wait_for_terminal_output(state, &info.uuid, 15_000, |output| {
+            provider_output_has_ready_prompt("gemini", output)
+        })
+        .await
     } else if info.provider == "antigravity" {
-        wait_for_terminal_output(
-            state,
-            &info.uuid,
-            15_000,
-            antigravity_output_has_ready_prompt,
-        )
+        wait_for_terminal_output(state, &info.uuid, 15_000, |output| {
+            provider_output_has_ready_prompt("antigravity", output)
+        })
         .await
     } else if provider_input_has_known_not_ready_state(state, &info.uuid).await {
         Err(format!("Agent {} provider input is not ready", info.uuid))
@@ -2555,14 +2560,9 @@ async fn provider_input_current_state(
 }
 
 async fn provider_input_blocks_mailbox_drain(state: &AppState, session_id: &str) -> bool {
-    matches!(
-        provider_input_current_state(state, session_id).await,
-        Some(
-            ProviderInputReadiness::Busy
-                | ProviderInputReadiness::ActionRequired
-                | ProviderInputReadiness::Unavailable
-        )
-    )
+    provider_input_current_state(state, session_id)
+        .await
+        .is_some_and(|input_state| input_state != ProviderInputReadiness::Ready)
 }
 
 async fn record_provider_ready_evidence(
@@ -2586,6 +2586,14 @@ async fn record_provider_ready_evidence(
             Some(evidence),
         )
         .await;
+}
+
+/// Records startup readiness only after the provider has rendered its own
+/// interactive prompt. This is deliberately separate from an `Idle` status:
+/// a newly spawned process is not safe to receive mailbox input merely because
+/// Wardian has not yet observed it doing work.
+pub(crate) async fn record_provider_ready_prompt(state: &AppState, session_id: &str) {
+    record_provider_ready_evidence(state, session_id, ProviderReadyEvidence::PromptDetected).await;
 }
 
 async fn current_agent_status_is_idle(state: &AppState, session_id: &str) -> Result<bool, String> {
@@ -2855,6 +2863,43 @@ pub(crate) fn antigravity_output_has_ready_prompt(output: &str) -> bool {
         }
     }
     false
+}
+
+pub(crate) fn provider_output_has_ready_prompt(provider: &str, output: &str) -> bool {
+    match provider {
+        "codex" => codex_output_has_ready_prompt(output),
+        "claude" => claude_output_has_ready_prompt(output),
+        "gemini" => gemini_output_has_ready_prompt(output),
+        "antigravity" => antigravity_output_has_ready_prompt(output),
+        _ => false,
+    }
+}
+
+/// Startup has no previously submitted turn, so a provider's compose marker
+/// cannot be stale. Full-screen CLIs render that marker with cursor controls
+/// which do not preserve a useful last line in the raw ConPTY stream; use this
+/// only while the initial compose prompt is still unresolved.
+pub(crate) fn provider_output_has_startup_ready_prompt(provider: &str, output: &str) -> bool {
+    let cleaned = strip_ansi_controls(output).replace('\r', "\n");
+    match provider {
+        "codex" => !codex_output_has_workspace_trust_prompt(&cleaned) && cleaned.contains('›'),
+        "claude" => cleaned.contains('❯'),
+        "gemini" => {
+            !gemini_output_has_api_key_prompt(&cleaned)
+                && cleaned.contains("Type your message or @path/to/file")
+        }
+        "antigravity" => antigravity_output_has_ready_prompt(&cleaned),
+        _ => false,
+    }
+}
+
+/// Provider startup can require an explicit account or workspace decision
+/// before a compose prompt exists. Keep that state visible and prevent queued
+/// delivery from being mistaken for a prompt the provider can receive.
+pub(crate) fn provider_output_requires_startup_action(provider: &str, output: &str) -> bool {
+    let cleaned = strip_ansi_controls(output).to_ascii_lowercase();
+    matches!(provider, "antigravity")
+        && cleaned.contains("do you trust the contents of this project?")
 }
 
 fn antigravity_ready_prompt_footer_line(line: &str) -> bool {
@@ -5394,6 +5439,30 @@ mod tests {
             "\r\n› Explain this codebase\r\n\r\n  gpt-5.5 high · Context 100% left · C:\\projects\\sample\r\n"
         ));
         assert!(!codex_output_has_ready_prompt("Booting MCP server"));
+    }
+
+    #[test]
+    fn startup_ready_prompt_accepts_a_full_screen_codex_compose_marker() {
+        assert!(provider_output_has_startup_ready_prompt(
+            "codex",
+            "\u{1b}[1;1H\u{1b}[J\u{1b}[13;1H\u{1b}[1m›\u{1b}[22m Write tests for @filename\u{1b}[?25h",
+        ));
+    }
+
+    #[test]
+    fn antigravity_startup_trust_prompt_requires_action() {
+        assert!(provider_output_requires_startup_action(
+            "antigravity",
+            "Do you trust the contents of this project?",
+        ));
+        assert!(!provider_output_requires_startup_action(
+            "antigravity",
+            "Welcome to the Antigravity CLI. You are currently not signed in.",
+        ));
+        assert!(!provider_output_requires_startup_action(
+            "codex",
+            "Do you trust the contents of this project?",
+        ));
     }
 
     #[test]

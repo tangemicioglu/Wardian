@@ -13,6 +13,57 @@ pub(crate) fn claude_project_dir_name(workspace: &str) -> String {
         .collect()
 }
 
+/// Finds the new Claude transcript whose provider-owned title identifies this
+/// Wardian runtime. Claude Code may allocate a different session UUID than the
+/// one requested at interactive launch, so filename-only lookup is not enough.
+pub(crate) fn discover_claude_log_for_session_name(
+    project_dir: &std::path::Path,
+    session_name: &str,
+) -> Option<(std::path::PathBuf, String)> {
+    let mut candidates = std::fs::read_dir(project_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().and_then(|value| value.to_str()) == Some("jsonl"))
+                .then_some(path)
+        })
+        .filter_map(|path| {
+            let file = std::fs::File::open(&path).ok()?;
+            let reader = std::io::BufReader::new(file);
+            let mut session_id = None;
+            for line in std::io::BufRead::lines(reader).take(32) {
+                let parsed: serde_json::Value = serde_json::from_str(&line.ok()?).ok()?;
+                let matches_name = parsed
+                    .get("customTitle")
+                    .or_else(|| parsed.get("agentName"))
+                    .and_then(|value| value.as_str())
+                    == Some(session_name);
+                if matches_name {
+                    session_id = parsed
+                        .get("sessionId")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                        .or_else(|| {
+                            path.file_stem()
+                                .and_then(|value| value.to_str())
+                                .map(str::to_string)
+                        });
+                    break;
+                }
+            }
+            session_id.map(|session_id| {
+                let modified = std::fs::metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                (path, session_id, modified)
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(_, _, modified)| *modified);
+    candidates.pop().map(|(path, session_id, _)| (path, session_id))
+}
+
 pub(crate) fn claude_is_real_user_query(line: &serde_json::Value) -> bool {
     classify_claude_user_event(line) == ClaudeUserEventKind::RealQuery
 }
@@ -196,6 +247,22 @@ mod tests {
             &event,
             "expected-session"
         ));
+    }
+
+    #[test]
+    fn discovers_new_log_by_provider_owned_agent_name() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let path = root.path().join("provider-session.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"custom-title\",\"customTitle\":\"Wardian test\",\"sessionId\":\"provider-session\"}\n",
+        )
+        .expect("log");
+
+        assert_eq!(
+            discover_claude_log_for_session_name(root.path(), "Wardian test"),
+            Some((path, "provider-session".to_string()))
+        );
     }
 
     #[test]
