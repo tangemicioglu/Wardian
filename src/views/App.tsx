@@ -208,6 +208,15 @@ type NativeWindowResizePayload = {
   height?: number;
 };
 
+type WorkflowInboxUpdate = {
+  workflow_id: string;
+  run_instance_id: string;
+  workflow_name: string;
+  status: "awaiting_approval" | "completed" | "failed";
+  error?: string;
+  summary?: string;
+};
+
 type NativeWindowCssSize = {
   width: string;
   height: string;
@@ -372,6 +381,7 @@ function AppBody() {
   const appendAgentEvent = useQueueStore((s) => s.appendAgentEvent);
   const flushAgentCompletion = useQueueStore((s) => s.flushAgentCompletion);
   const addActionNeeded = useQueueStore((s) => s.addActionNeeded);
+  const addWorkflowCompletion = useQueueStore((s) => s.addWorkflowCompletion);
   const loadQueueItems = useQueueStore((s) => s.loadItems);
   const loadQueuePreferences = useQueueStore((s) => s.loadPreferences);
 
@@ -965,6 +975,26 @@ function AppBody() {
       window.clearInterval(inboxPoll);
     };
   }, [loadQueueItems, loadQueuePreferences, loadWatchlistState]);
+
+  useEffect(() => {
+    const unlistenWorkflowInbox = listen<WorkflowInboxUpdate>("workflow-inbox-updated", (event) => {
+      const update = event.payload;
+      if (update.status === "awaiting_approval") {
+        void loadQueueItems();
+        return;
+      }
+      addWorkflowCompletion({
+        workflow_id: update.workflow_id,
+        run_instance_id: update.run_instance_id,
+        status: update.status,
+        error: update.error,
+        summary: update.summary,
+      }, update.workflow_name);
+    });
+    return () => {
+      unlistenWorkflowInbox.then((cleanup) => cleanup());
+    };
+  }, [addWorkflowCompletion, loadQueueItems]);
 
   async function sendCommand(sessionId: string, cmd: string) {
     try {

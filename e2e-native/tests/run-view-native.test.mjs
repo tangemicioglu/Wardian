@@ -8,6 +8,9 @@ import {
   ensureNativeAppBuilt,
   prepareIsolatedHome,
   startNativeSession,
+  startTauriEventCapture,
+  stopTauriEventCapture,
+  waitForTauriEvent,
   waitForAppShell,
 } from "../lib/harness.mjs";
 
@@ -235,11 +238,15 @@ edges:
     return;
   }
 
-  t.after(async () => {
-    await session.close();
-  });
-
   await waitForAppShell(session.driver, 20000);
+  const inboxEvents = await startTauriEventCapture(session.driver, "workflow-inbox-updated");
+  t.after(async () => {
+    try {
+      await stopTauriEventCapture(session.driver, inboxEvents);
+    } finally {
+      await session.close();
+    }
+  });
   const run = await invokeTauri(session.driver, "workflow_run", {
     path: workflowPath,
     provider: "mock",
@@ -249,6 +256,14 @@ edges:
   });
 
   await waitForWorkflowStatus(run.run_dir, "awaiting_approval");
+  const awaitingApproval = await waitForTauriEvent(
+    session.driver,
+    inboxEvents,
+    (payload) => payload?.workflow_id === blueprintId
+      && payload?.run_instance_id === run.run_id
+      && payload?.status === "awaiting_approval",
+  );
+  assert.equal(awaitingApproval.workflow_name, "Native Approval Run");
   const approvalStartedAt = Date.now();
   const approvalArgs = {
     blueprintId,
@@ -280,6 +295,14 @@ edges:
 
   const completedState = await waitForWorkflowStatus(run.run_dir, "completed");
   assert.equal(completedState.nodes["delayed-step"], "completed");
+  const completedInboxEvent = await waitForTauriEvent(
+    session.driver,
+    inboxEvents,
+    (payload) => payload?.workflow_id === blueprintId
+      && payload?.run_instance_id === run.run_id
+      && payload?.status === "completed",
+  );
+  assert.equal(completedInboxEvent.workflow_name, "Native Approval Run");
   const events = readFileSync(path.join(run.run_dir, "events.jsonl"), "utf8")
     .trim()
     .split("\n")

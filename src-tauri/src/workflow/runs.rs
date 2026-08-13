@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tauri::Emitter;
 use wardian_core::engine::event::{Event, EventKind};
 use wardian_core::engine::store::{append_event, read_checkpoint, read_events, write_checkpoint};
 use wardian_core::engine::{Engine, RunStatus};
@@ -28,6 +29,61 @@ pub struct WorkflowRunInvocation {
     pub bindings: HashMap<String, String>,
     #[serde(default)]
     pub assignments: WorkflowAssignments,
+}
+
+/// A durable workflow-state change that the Inbox can project immediately.
+///
+/// The event is emitted only after a checkpoint has been written, so the
+/// Inbox can always reload an approval gate from the run log instead of
+/// maintaining a second workflow lifecycle.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WorkflowInboxUpdate {
+    pub workflow_id: String,
+    pub run_instance_id: String,
+    pub workflow_name: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub summary: Option<String>,
+}
+
+pub const WORKFLOW_INBOX_UPDATED_EVENT: &str = "workflow-inbox-updated";
+
+pub fn workflow_inbox_update(
+    blueprint: &Blueprint,
+    run_root: &Path,
+) -> Option<WorkflowInboxUpdate> {
+    let state = read_checkpoint(run_root).ok().flatten()?;
+    let (status, error) = match state.status {
+        RunStatus::AwaitingApproval => ("awaiting_approval", None),
+        RunStatus::Completed => ("completed", None),
+        RunStatus::Failed => ("failed", state.failure),
+        RunStatus::Running => return None,
+    };
+
+    let summary = read_events(run_root).ok().and_then(|events| {
+        events.into_iter().rev().find_map(|event| match event.kind {
+            EventKind::NodeCompleted { output, .. } => output
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string),
+            _ => None,
+        })
+    });
+
+    Some(WorkflowInboxUpdate {
+        workflow_id: state.blueprint_id,
+        run_instance_id: state.run_id,
+        workflow_name: blueprint.name.clone(),
+        status: status.to_string(),
+        error,
+        summary,
+    })
+}
+
+pub fn emit_workflow_inbox_update(app: &tauri::AppHandle, blueprint: &Blueprint, run_root: &Path) {
+    if let Some(update) = workflow_inbox_update(blueprint, run_root) {
+        let _ = app.emit(WORKFLOW_INBOX_UPDATED_EVENT, update);
+    }
 }
 
 /// Scan `<runs_dir>/<id>/<run>/state.json` for runs still marked Running.
@@ -702,6 +758,54 @@ edges:
 
         let interrupted = scan_interrupted_runs(dir.path());
         assert_eq!(interrupted, vec![("wf".to_string(), "run-1".to_string())]);
+    }
+
+    #[test]
+    fn workflow_inbox_update_projects_approval_and_terminal_state_from_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_root = dir.path().join("wf").join("run-1");
+        let blueprint = wardian_core::workflow::parse::parse_str(INVOKER_BLUEPRINT).unwrap();
+        let mut state = RunState::new("run-1", "invoker");
+        state.status = RunStatus::AwaitingApproval;
+        write_checkpoint(&run_root, &state).unwrap();
+
+        let approval = workflow_inbox_update(&blueprint, &run_root).unwrap();
+        assert_eq!(approval.status, "awaiting_approval");
+        assert_eq!(approval.workflow_name, "Invoker");
+        assert_eq!(approval.summary, None);
+
+        append_event(
+            &run_root,
+            &Event::new(
+                state.next_seq,
+                EventKind::NodeCompleted {
+                    node: "analyze".to_string(),
+                    output: serde_json::json!({ "text": "Workflow result" }),
+                },
+            ),
+        )
+        .unwrap();
+        state.status = RunStatus::Completed;
+        write_checkpoint(&run_root, &state).unwrap();
+
+        let completed = workflow_inbox_update(&blueprint, &run_root).unwrap();
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.summary.as_deref(), Some("Workflow result"));
+    }
+
+    #[test]
+    fn workflow_inbox_update_includes_terminal_failure_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_root = dir.path().join("wf").join("run-1");
+        let blueprint = wardian_core::workflow::parse::parse_str(INVOKER_BLUEPRINT).unwrap();
+        let mut state = RunState::new("run-1", "invoker");
+        state.status = RunStatus::Failed;
+        state.failure = Some("approval rejected".to_string());
+        write_checkpoint(&run_root, &state).unwrap();
+
+        let update = workflow_inbox_update(&blueprint, &run_root).unwrap();
+        assert_eq!(update.status, "failed");
+        assert_eq!(update.error.as_deref(), Some("approval rejected"));
     }
 
     #[test]

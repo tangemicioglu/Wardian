@@ -39,7 +39,13 @@ interface QueueState {
   ) => void;
   trackWorkflowNodeOutput: (event: WorkflowTelemetryEvent) => void;
   addWorkflowCompletion: (
-    payload: { workflow_id: string; run_instance_id?: string; status: "completed" | "failed"; error?: string },
+    payload: {
+      workflow_id: string;
+      run_instance_id?: string;
+      status: "completed" | "failed";
+      error?: string;
+      summary?: string;
+    },
     workflowName?: string,
   ) => void;
   dismissItem: (id: string) => void;
@@ -351,8 +357,14 @@ export const useQueueStore = create<QueueState>((set, get) => ({
 
   addWorkflowCompletion(payload, workflowName) {
     const { workflow_id, run_instance_id, status, error } = payload;
+    const existing = get().items.find(
+      (item) => item.type === "workflow_completed"
+        && item.workflow_id === workflow_id
+        && item.workflow_run_id === run_instance_id,
+    );
+    if (existing) return;
     const trackedOutput = get()._workflowLastOutput[workflow_id];
-    const summary = trackedOutput ? boundSummary(trackedOutput) : undefined;
+    const summary = payload.summary?.trim() || trackedOutput?.trim();
     const item: QueueItem = {
       id: crypto.randomUUID(),
       type: "workflow_completed",
@@ -363,11 +375,18 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       workflow_name: workflowName ?? workflow_id,
       status,
       error,
-      summary,
+      summary: summary ? boundSummary(summary) : undefined,
     };
 
     set((s) => {
-      const next = [item, ...s.items];
+      const next = [
+        item,
+        ...s.items.filter((existingItem) => !(
+          existingItem.workflow_approval
+          && existingItem.workflow_approval.blueprint_id === workflow_id
+          && existingItem.workflow_approval.run_id === run_instance_id
+        )),
+      ];
       persistItems(next, s._readNotificationIds);
       notifyForItem(item, s.preferences);
       return {

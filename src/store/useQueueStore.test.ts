@@ -366,6 +366,37 @@ describe("useQueueStore - workflow completion", () => {
     expect(items[0].error).toBe("Timeout");
   });
 
+  it("projects a durable workflow summary once per run and removes its approval card", () => {
+    useQueueStore.setState({
+      items: [{
+        id: "workflow-approval:wf-1:run-1:approve",
+        type: "approval_request",
+        timestamp: Date.now(),
+        read: false,
+        workflow_approval: {
+          blueprint_id: "wf-1",
+          blueprint_path: "/workflows/wf-1.md",
+          run_id: "run-1",
+          node: "approve",
+        },
+      }],
+    });
+
+    const completion = {
+      workflow_id: "wf-1",
+      run_instance_id: "run-1",
+      status: "completed" as const,
+      summary: "Durable workflow result",
+    };
+    useQueueStore.getState().addWorkflowCompletion(completion, "My Workflow");
+    useQueueStore.getState().addWorkflowCompletion(completion, "My Workflow");
+
+    const { items } = useQueueStore.getState();
+    expect(items).toHaveLength(1);
+    expect(items[0].summary).toBe("Durable workflow result");
+    expect(items[0].workflow_approval).toBeUndefined();
+  });
+
   it("trackWorkflowNodeOutput stores last completed-node output", () => {
     useQueueStore.getState().trackWorkflowNodeOutput({
       workflow_id: "wf-1",

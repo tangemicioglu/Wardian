@@ -359,7 +359,10 @@ async fn workflow_run_impl(
     )
     .await;
     let blueprint_for_run = blueprint.clone();
+    let blueprint_for_inbox = blueprint.clone();
     let run_root_for_run = run_root.clone();
+    let run_root_for_inbox = run_root.clone();
+    let app_for_inbox = app.clone();
     let run_state = runs::prepare_new_run_with_assignments(
         &blueprint,
         &run_id,
@@ -387,6 +390,7 @@ async fn workflow_run_impl(
         {
             crate::utils::logging::log_debug(&format!("[workflow] run failed: {error}"));
         }
+        runs::emit_workflow_inbox_update(&app_for_inbox, &blueprint_for_inbox, &run_root_for_inbox);
     });
 
     Ok(WorkflowRunResponse::started(
@@ -465,6 +469,9 @@ pub async fn workflow_resume(
     )
     .await;
     let owner_id = format!("{}/{}", blueprint.id, run_id);
+    let app_for_inbox = app.clone();
+    let blueprint_for_inbox = blueprint.clone();
+    let run_root_for_inbox = run_root.clone();
 
     tokio::spawn(async move {
         let _headless_execution =
@@ -493,6 +500,7 @@ pub async fn workflow_resume(
         {
             crate::utils::logging::log_debug(&format!("[workflow] resume failed: {error}"));
         }
+        runs::emit_workflow_inbox_update(&app_for_inbox, &blueprint_for_inbox, &run_root_for_inbox);
     });
 
     Ok(serde_json::json!({ "ok": true, "run_id": run_id }))
@@ -557,6 +565,9 @@ pub async fn workflow_approve(
         )
         .map_err(|error| error.to_string())?;
         let owner_id = format!("{}/{}", blueprint.id, run_id);
+        let app_for_inbox = app.clone();
+        let blueprint_for_inbox = blueprint.clone();
+        let run_root_for_inbox = run_root.clone();
 
         tokio::spawn(async move {
             let _headless_execution = headless_execution;
@@ -578,13 +589,21 @@ pub async fn workflow_approve(
                     "[workflow] approved run failed: {error}"
                 ));
             }
+            runs::emit_workflow_inbox_update(
+                &app_for_inbox,
+                &blueprint_for_inbox,
+                &run_root_for_inbox,
+            );
         });
 
         Ok(serde_json::json!({ "ok": true }))
     } else {
         wardian_core::engine::Engine::reject_approval(&blueprint, &run_root, &node, &actor, note)
             .await
-            .map(|_| serde_json::json!({ "ok": true }))
+            .map(|_| {
+                runs::emit_workflow_inbox_update(&app, &blueprint, &run_root);
+                serde_json::json!({ "ok": true })
+            })
             .map_err(|error| error.to_string())
     }
 }
