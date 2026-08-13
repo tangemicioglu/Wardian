@@ -275,10 +275,17 @@ test.describe("Inbox", () => {
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeHidden();
   });
 
-  test("reconciles a terminal workflow run that predates the Inbox listener", async ({ page }) => {
+  test("reconciles completed and failed workflow runs that predate the Inbox listener", async ({ page }) => {
     await page.addInitScript(() => {
       (window as Window & { __WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__?: Array<Record<string, unknown>> })
         .__WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__ = [{
+          workflow_id: "completed-scheduled-workflow",
+          run_instance_id: "run-completed-before-inbox",
+          workflow_name: "Completed scheduled workflow",
+          status: "completed",
+          summary: "The scheduled workflow finished before Inbox opened.",
+          updated_at: new Date().toISOString(),
+        }, {
           workflow_id: "missing-scheduled-workflow",
           run_instance_id: "run-before-inbox",
           workflow_name: "Missing scheduled workflow",
@@ -292,6 +299,8 @@ test.describe("Inbox", () => {
     await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
     await openSurface(page, "inbox");
 
+    await expect(page.getByText("Completed scheduled workflow", { exact: true })).toBeVisible();
+    await expect(page.getByText("The scheduled workflow finished before Inbox opened.", { exact: true })).toBeVisible();
     await expect(page.getByText("Missing scheduled workflow", { exact: true })).toBeVisible();
     await expect(page.getByText("The scheduled workflow blueprint was removed.", { exact: true })).toBeVisible();
 

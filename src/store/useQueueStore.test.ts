@@ -465,13 +465,20 @@ describe("useQueueStore - persistence", () => {
     expect(useQueueStore.getState().items[0].id).toBe("new");
   });
 
-  it("reconciles a terminal workflow run that completed before the Inbox listener registered", async () => {
+  it("reconciles completed and failed workflow runs that predate the Inbox listener", async () => {
     mockInvoke.mockImplementation((command) => {
       if (command === "load_queue_items") return Promise.resolve([]);
       if (command === "list_workflow_inbox_terminal_runs") {
         return Promise.resolve([{
           workflow_id: "scheduled-release",
-          run_instance_id: "run-before-startup",
+          run_instance_id: "run-completed-before-startup",
+          workflow_name: "Scheduled Release",
+          status: "completed",
+          summary: "Release completed before Inbox opened.",
+          updated_at: new Date().toISOString(),
+        }, {
+          workflow_id: "scheduled-release",
+          run_instance_id: "run-failed-before-startup",
           workflow_name: "Scheduled Release",
           status: "failed",
           error: "blueprint could not be resolved",
@@ -487,7 +494,14 @@ describe("useQueueStore - persistence", () => {
       expect.objectContaining({
         type: "workflow_completed",
         workflow_id: "scheduled-release",
-        workflow_run_id: "run-before-startup",
+        workflow_run_id: "run-completed-before-startup",
+        status: "completed",
+        summary: "Release completed before Inbox opened.",
+      }),
+      expect.objectContaining({
+        type: "workflow_completed",
+        workflow_id: "scheduled-release",
+        workflow_run_id: "run-failed-before-startup",
         status: "failed",
         error: "blueprint could not be resolved",
       }),
@@ -495,7 +509,8 @@ describe("useQueueStore - persistence", () => {
     await vi.waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("save_queue_items", expect.objectContaining({
         items: expect.arrayContaining([
-          expect.objectContaining({ workflow_run_id: "run-before-startup" }),
+          expect.objectContaining({ workflow_run_id: "run-completed-before-startup" }),
+          expect.objectContaining({ workflow_run_id: "run-failed-before-startup" }),
         ]),
       }));
     });
