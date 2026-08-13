@@ -6,6 +6,7 @@ import {
   defaultTerminalFontSize,
   LINUX_TERMINAL_FONT_FAMILY,
   MACOS_TERMINAL_FONT_FAMILY,
+  normalizeCodexRuntimePolicy,
   normalizeWorkbenchNewTabAction,
   WINDOWS_TERMINAL_FONT_FAMILY,
   useSettingsStore,
@@ -192,6 +193,15 @@ describe('Codex runtime defaults', () => {
       full_auto: false,
       trust_workspaces: false,
     });
+  });
+
+  it('normalizes the removed on-failure approval policy', () => {
+    expect(normalizeCodexRuntimePolicy({
+      ...DEFAULT_CODEX_RUNTIME_POLICY,
+      approval_policy: 'on-failure',
+    } as unknown as Parameters<typeof normalizeCodexRuntimePolicy>[0])).toEqual(
+      DEFAULT_CODEX_RUNTIME_POLICY,
+    );
   });
 
   it('saves Codex workspace trust only when explicitly enabled', async () => {

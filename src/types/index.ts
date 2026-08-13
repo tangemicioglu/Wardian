@@ -74,12 +74,14 @@ export interface ProviderReadiness {
 export interface ClaudeProviderConfig {
     type: "claude";
     reasoning_effort?: string;
-    permission_mode?: "default" | "plan" | "auto-accept";
+    permission_mode?: "manual" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions";
     max_turns?: number;
+    tools?: string[];
     allowed_tools?: string[];
     disallowed_tools?: string[];
     append_system_prompt?: string;
     mcp_config?: string;
+    strict_mcp_config?: boolean;
 }
 
 export interface GeminiProviderConfig {
@@ -88,6 +90,7 @@ export interface GeminiProviderConfig {
     yolo?: boolean;
     approval_mode?: "default" | "auto_edit" | "yolo" | "plan" | string;
     policy?: string[];
+    admin_policy?: string[];
     experimental_acp?: boolean;
     allowed_mcp_server_names?: string[];
     extensions?: string[];
@@ -99,7 +102,7 @@ export interface CodexProviderConfig {
     type: "codex";
     reasoning_effort?: string;
     sandbox_mode?: "read-only" | "workspace-write" | "danger-full-access";
-    approval_policy?: "untrusted" | "on-failure" | "on-request" | "never";
+    approval_policy?: "untrusted" | "on-request" | "never";
     profile?: string;
     full_auto?: boolean;
     search?: boolean;
@@ -113,12 +116,15 @@ export interface AntigravityProviderConfig {
     reasoning_effort?: string;
     sandbox?: boolean;
     dangerously_skip_permissions?: boolean;
+    mode?: "accept-edits" | "plan";
+    agent?: string;
     print_timeout?: string;
 }
 
 export interface OpenCodeProviderConfig {
     type: "opencode";
     agent?: string;
+    auto?: boolean;
     port?: number;
 }
 
@@ -185,7 +191,7 @@ export interface AgentConfig {
     conversation_logging?: "default" | "enabled" | "disabled";
 
     // Claude-specific fields
-    permission_mode?: "default" | "plan" | "auto-accept";
+    permission_mode?: ClaudeProviderConfig["permission_mode"] | "default" | "auto-accept";
     max_turns?: number;
     allowed_tools?: string[];
     disallowed_tools?: string[];
@@ -194,7 +200,7 @@ export interface AgentConfig {
 
     // Codex-specific fields
     codex_sandbox_mode?: "read-only" | "workspace-write" | "danger-full-access";
-    codex_approval_policy?: "untrusted" | "on-failure" | "on-request" | "never";
+    codex_approval_policy?: "untrusted" | "on-request" | "never";
     codex_profile?: string;
     codex_full_auto?: boolean;
     codex_search?: boolean;

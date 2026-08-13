@@ -407,6 +407,24 @@ impl AgentProvider for AntigravityProvider {
         if antigravity.dangerously_skip_permissions.unwrap_or(false) {
             args.push("--dangerously-skip-permissions".to_string());
         }
+        if let Some(mode) = antigravity
+            .mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|mode| matches!(*mode, "accept-edits" | "plan"))
+        {
+            args.push("--mode".to_string());
+            args.push(mode.to_string());
+        }
+        if let Some(agent) = antigravity
+            .agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|agent| !agent.is_empty())
+        {
+            args.push("--agent".to_string());
+            args.push(agent.to_string());
+        }
         if let Some(model) = config
             .model
             .as_deref()
@@ -589,6 +607,8 @@ SET dp0=%~dp0
                 reasoning_effort: Some("high".into()),
                 sandbox: Some(true),
                 dangerously_skip_permissions: Some(true),
+                mode: Some("plan".into()),
+                agent: Some("reviewer".into()),
                 ..Default::default()
             })
         };
@@ -606,6 +626,10 @@ SET dp0=%~dp0
                 "user",
                 "--sandbox",
                 "--dangerously-skip-permissions",
+                "--mode",
+                "plan",
+                "--agent",
+                "reviewer",
                 "--model",
                 "pro",
                 "--effort",

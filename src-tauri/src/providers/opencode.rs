@@ -177,6 +177,9 @@ impl AgentProvider for OpenCodeProvider {
             args.push("--agent".into());
             args.push(agent.clone());
         }
+        if opencode.auto.unwrap_or(false) {
+            args.push("--auto".into());
+        }
 
         if is_resume {
             if let Some(session_id) = config
@@ -265,6 +268,7 @@ mod tests {
             resume_session: Some("ses_123".into()),
             ..make_opencode_config(OpenCodeProviderConfig {
                 agent: Some("build".into()),
+                auto: Some(true),
                 ..Default::default()
             })
         };
@@ -276,6 +280,7 @@ mod tests {
         assert!(args.contains(&"openai/gpt-5".to_string()));
         assert!(args.contains(&"--agent".to_string()));
         assert!(args.contains(&"build".to_string()));
+        assert!(args.contains(&"--auto".to_string()));
         assert!(args.contains(&"--session".to_string()));
         assert!(args.contains(&"ses_123".to_string()));
     }

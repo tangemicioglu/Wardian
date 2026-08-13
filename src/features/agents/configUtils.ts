@@ -49,10 +49,28 @@ function providerConfigMatches(
   return Boolean(config && config.type === provider);
 }
 
+function normalizeKnownProviderConfig(config: ProviderConfig): ProviderConfig {
+  if (config.type === "claude") {
+    const permissionMode = config.permission_mode as string | undefined;
+    return {
+      ...config,
+      permission_mode: permissionMode === "auto-accept"
+        ? "acceptEdits"
+        : permissionMode === "default"
+          ? "manual"
+          : config.permission_mode,
+    };
+  }
+  if (config.type === "codex" && (config.approval_policy as string | undefined) === "on-failure") {
+    return { ...config, approval_policy: "on-request" };
+  }
+  return config;
+}
+
 export function providerConfigFor(config: Partial<AgentConfig>, provider = config.provider): ProviderConfig {
   const providerName = normalizeProviderName(provider);
   if (providerConfigMatches(providerName, config.provider_config)) {
-    return config.provider_config as ProviderConfig;
+    return normalizeKnownProviderConfig(config.provider_config as ProviderConfig);
   }
   return defaultProviderConfig(providerName);
 }
@@ -108,7 +126,11 @@ function legacyProviderConfig(config: AgentConfig, provider: ProviderName): Prov
     default: {
       const claude: ClaudeProviderConfig = {
         type: "claude",
-        permission_mode: config.permission_mode,
+        permission_mode: config.permission_mode === "auto-accept"
+          ? "acceptEdits"
+          : config.permission_mode === "default"
+            ? "manual"
+            : config.permission_mode,
         max_turns: config.max_turns,
         allowed_tools: config.allowed_tools,
         disallowed_tools: config.disallowed_tools,
@@ -137,7 +159,7 @@ export function normalizeAgentConfig(config: AgentConfig): AgentConfig {
   }
 
   const provider_config = providerConfigMatches(provider, config.provider_config)
-    ? config.provider_config
+    ? normalizeKnownProviderConfig(config.provider_config)
     : legacyProviderConfig(config, provider);
   return {
     ...config,

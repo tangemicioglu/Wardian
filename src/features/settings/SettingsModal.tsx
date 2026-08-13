@@ -1107,7 +1107,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
               className={optionClass}
             >
               <option value="on-request">On request</option>
-              <option value="on-failure">On failure</option>
               <option value="untrusted">Untrusted</option>
               <option value="never">Never</option>
             </select>

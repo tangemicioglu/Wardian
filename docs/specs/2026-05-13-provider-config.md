@@ -48,7 +48,7 @@ Provider examples:
 ```
 
 ```json
-{ "provider": "gemini", "provider_config": { "type": "gemini", "sandbox": true, "approval_mode": "auto_edit", "output_format": "json" } }
+{ "provider": "gemini", "provider_config": { "type": "gemini", "sandbox": true, "approval_mode": "auto_edit", "policy": ["<absolute-workspace-path>/gemini-policy.toml"] } }
 ```
 
 ```json

@@ -51,7 +51,13 @@ describe("AdvancedSettings", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Advanced Settings" }));
     fireEvent.click(screen.getByLabelText("Sandbox"));
-    fireEvent.change(screen.getByLabelText("Print Timeout"), {
+    fireEvent.change(screen.getByLabelText("Agent Mode"), {
+      target: { value: "plan" },
+    });
+    fireEvent.change(screen.getByLabelText("Antigravity Agent"), {
+      target: { value: "reviewer" },
+    });
+    fireEvent.change(screen.getByLabelText("Print Timeout (Headless)"), {
       target: { value: "90s" },
     });
 
@@ -60,6 +66,14 @@ describe("AdvancedSettings", () => {
       sandbox: true,
     });
     expect(updateField).toHaveBeenNthCalledWith(2, "provider_config", {
+      type: "antigravity",
+      mode: "plan",
+    });
+    expect(updateField).toHaveBeenNthCalledWith(3, "provider_config", {
+      type: "antigravity",
+      agent: "reviewer",
+    });
+    expect(updateField).toHaveBeenNthCalledWith(4, "provider_config", {
       type: "antigravity",
       print_timeout: "90s",
     });
@@ -101,7 +115,55 @@ describe("AdvancedSettings", () => {
     expect(screen.getByLabelText("Permission Mode")).toBeInTheDocument();
     expect(screen.queryByLabelText("Sandbox Mode")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("OpenCode Agent")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Print Timeout")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Print Timeout (Headless)")).not.toBeInTheDocument();
+  });
+
+  it("shows only current interactive provider options", () => {
+    const updateField = vi.fn();
+    const { rerender } = render(
+      <AdvancedSettings
+        config={{ provider: "claude", provider_config: { type: "claude" } }}
+        updateField={updateField}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Advanced Settings" }));
+    const permissionMode = screen.getByLabelText("Permission Mode");
+    expect(permissionMode).toHaveTextContent("Accept edits");
+    expect(permissionMode).not.toHaveTextContent("Auto Accept");
+    fireEvent.change(permissionMode, { target: { value: "acceptEdits" } });
+    expect(updateField).toHaveBeenCalledWith("provider_config", {
+      type: "claude",
+      permission_mode: "acceptEdits",
+    });
+
+    rerender(
+      <AdvancedSettings
+        config={{ provider: "gemini", provider_config: { type: "gemini" } }}
+        updateField={updateField}
+      />,
+    );
+    expect(screen.queryByText("Exp. ACP")).not.toBeInTheDocument();
+    expect(screen.queryByText("Output Format")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("YOLO")).not.toBeInTheDocument();
+  });
+
+  it("hides unsupported shared controls and exposes OpenCode auto-approval", () => {
+    const updateField = vi.fn();
+    render(
+      <AdvancedSettings
+        config={{ provider: "opencode", provider_config: { type: "opencode" } }}
+        updateField={updateField}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Advanced Settings" }));
+    expect(screen.queryByText("Include Directories")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Auto-approve (dangerous)"));
+    expect(updateField).toHaveBeenCalledWith("provider_config", {
+      type: "opencode",
+      auto: true,
+    });
   });
 
   it("edits regular session persistence from advanced settings", () => {

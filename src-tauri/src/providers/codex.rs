@@ -347,12 +347,17 @@ fn effective_codex_runtime_policy(
         .sandbox_mode
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .filter(|value| {
+            matches!(
+                *value,
+                "read-only" | "workspace-write" | "danger-full-access"
+            )
+        });
     let explicit_approval = config
         .approval_policy
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .filter(|value| matches!(*value, "untrusted" | "on-request" | "never"));
     let explicit_policy = explicit_sandbox.is_some() || explicit_approval.is_some();
     let full_auto = config.full_auto.unwrap_or({
         if explicit_policy {
@@ -811,6 +816,19 @@ mod tests {
 
         assert!(!effective.full_auto);
         assert_eq!(effective.sandbox_mode, "workspace-write");
+        assert_eq!(effective.approval_policy, "on-request");
+    }
+
+    #[test]
+    fn removed_on_failure_policy_falls_back_to_global_default() {
+        let policy = CodexRuntimePolicy::default();
+        let config = CodexProviderConfig {
+            approval_policy: Some("on-failure".into()),
+            ..Default::default()
+        };
+
+        let effective = effective_codex_runtime_policy(&config, &policy);
+
         assert_eq!(effective.approval_policy, "on-request");
     }
 

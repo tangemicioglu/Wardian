@@ -60,7 +60,7 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
       </div>
 
       {showAdvanced && (
-        <div className="flex flex-col gap-4 pt-2">
+        <div data-testid="advanced-settings-content" className="flex flex-col gap-4 pt-2">
           <div>
               <label htmlFor="regular-session-resume" className="block text-[10px] font-bold text-muted-neutral mb-1">Regular Session Resume</label>
               <select
@@ -124,23 +124,17 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
               <h4 className="text-[10px] font-bold text-muted-neutral tracking-wide mb-1 border-b border-wardian-border pb-1">Provider Parameters</h4>
 
               <div className="grid grid-cols-2 gap-2 mb-1">
+                  {(provider === 'claude' || provider === 'gemini' || provider === 'opencode') && (
                   <label className="flex items-center gap-2 text-xs text-muted-neutral">
                       <input type="checkbox" checked={config.debug || false} onChange={e => updateField("debug", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
                       Debug Mode
                   </label>
+                  )}
                   {provider === 'gemini' && providerConfig.type === 'gemini' && (
                     <>
                       <label className="flex items-center gap-2 text-xs text-muted-neutral">
                           <input type="checkbox" checked={providerConfig.sandbox || false} onChange={e => updateProviderConfigField("sandbox", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
                           Sandbox
-                      </label>
-                      <label className="flex items-center gap-2 text-xs text-muted-neutral">
-                          <input type="checkbox" checked={providerConfig.yolo || false} onChange={e => updateProviderConfigField("yolo", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
-                          YOLO
-                      </label>
-                      <label className="flex items-center gap-2 text-xs text-muted-neutral">
-                          <input type="checkbox" checked={providerConfig.experimental_acp || false} onChange={e => updateProviderConfigField("experimental_acp", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
-                          Exp. ACP
                       </label>
                       <label className="flex items-center gap-2 text-xs text-muted-neutral">
                           <input type="checkbox" checked={providerConfig.screen_reader || false} onChange={e => updateProviderConfigField("screen_reader", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
@@ -160,8 +154,15 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                       </label>
                     </>
                   )}
+                  {provider === 'opencode' && providerConfig.type === 'opencode' && (
+                    <label className="flex items-center gap-2 text-xs text-muted-neutral">
+                        <input type="checkbox" checked={providerConfig.auto || false} onChange={e => updateProviderConfigField("auto", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
+                        Auto-approve (dangerous)
+                    </label>
+                  )}
               </div>
 
+              {provider !== 'opencode' && provider !== 'mock' && (
               <ListEditor 
                 label="Include Directories" 
                 values={config.include_directories} 
@@ -174,6 +175,7 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                   updateField("system_include_directories", newList?.length ? newList : undefined);
                 }}
               />
+              )}
 
               {provider === 'claude' && providerConfig.type === 'claude' && (
                 <>
@@ -186,15 +188,19 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                       onChange={(e) => updateProviderConfigField("permission_mode", e.target.value || undefined)}
                       >
                           <option value="">(None - Inherit Default)</option>
-                          <option value="default">Default</option>
+                          <option value="manual">Manual</option>
+                          <option value="acceptEdits">Accept edits</option>
                           <option value="plan">Plan</option>
-                          <option value="auto-accept">Auto Accept</option>
+                          <option value="auto">Auto</option>
+                          <option value="dontAsk">Don't ask</option>
+                          <option value="bypassPermissions">Bypass permissions</option>
                       </select>
                   </div>
 
                   <div>
-                      <label className="block text-[10px] font-bold text-muted-neutral mb-1">Max Turns</label>
+                      <label htmlFor="claude-max-turns" className="block text-[10px] font-bold text-muted-neutral mb-1">Max Turns (Headless)</label>
                       <input
+                      id="claude-max-turns"
                       type="number"
                       min="0"
                       className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-1.5 text-xs text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
@@ -205,7 +211,14 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                   </div>
 
                   <ListEditor
-                    label="Allowed Tools"
+                    label="Available Tools"
+                    values={providerConfig.tools}
+                    placeholder="e.g. Read, Edit, Bash"
+                    onChange={(vals: string[]) => updateProviderConfigField("tools", vals)}
+                  />
+
+                  <ListEditor
+                    label="Tools Allowed Without Prompt"
                     values={providerConfig.allowed_tools}
                     placeholder="e.g. Read, Write, Bash"
                     onChange={(vals: string[]) => updateProviderConfigField("allowed_tools", vals)}
@@ -226,6 +239,15 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                       value={providerConfig.mcp_config || ""}
                       onChange={(e) => updateProviderConfigField("mcp_config", e.target.value || undefined)}
                       />
+                      <label className="mt-2 flex items-center gap-2 text-xs text-muted-neutral">
+                        <input
+                          type="checkbox"
+                          checked={providerConfig.strict_mcp_config || false}
+                          onChange={e => updateProviderConfigField("strict_mcp_config", e.target.checked)}
+                          className="accent-[var(--color-wardian-accent)]"
+                        />
+                        Use only this MCP config
+                      </label>
                   </div>
 
                   <div>
@@ -265,6 +287,13 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                   />
 
                   <ListEditor
+                    label="Admin Policies"
+                    values={providerConfig.admin_policy}
+                    placeholder="e.g. organization-policy.toml"
+                    onChange={(vals: string[]) => updateProviderConfigField("admin_policy", vals)}
+                  />
+
+                  <ListEditor
                     label="Allowed MCP Servers"
                     values={providerConfig.allowed_mcp_server_names}
                     placeholder="e.g. sqlite-mcp"
@@ -278,19 +307,6 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                     onChange={(vals: string[]) => updateProviderConfigField("extensions", vals)}
                   />
 
-                  <div>
-                      <label className="block text-[10px] font-bold text-muted-neutral mb-1">Output Format</label>
-                      <select
-                      className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-1.5 text-xs text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
-                      value={providerConfig.output_format || ""}
-                      onChange={(e) => updateProviderConfigField("output_format", (e.target.value as "text" | "json" | "stream-json") || undefined)}
-                      >
-                          <option value="">(None - Inherit Default)</option>
-                          <option value="text">Text</option>
-                          <option value="json">JSON</option>
-                          <option value="stream-json">Stream JSON</option>
-                      </select>
-                  </div>
                 </>
               )}
 
@@ -312,23 +328,24 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                   </div>
 
                   <div>
-                      <label className="block text-[10px] font-bold text-muted-neutral mb-1">Approval Policy</label>
+                      <label htmlFor="codex-approval-policy" className="block text-[10px] font-bold text-muted-neutral mb-1">Approval Policy</label>
                       <select
+                      id="codex-approval-policy"
                       className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-1.5 text-xs text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
                       value={providerConfig.approval_policy || ""}
                       onChange={(e) => updateProviderConfigField("approval_policy", (e.target.value as AgentConfig["codex_approval_policy"]) || undefined)}
                       >
                           <option value="">(None - Inherit Default)</option>
                           <option value="untrusted">untrusted</option>
-                          <option value="on-failure">on-failure</option>
                           <option value="on-request">on-request</option>
                           <option value="never">never</option>
                       </select>
                   </div>
 
                   <div>
-                      <label className="block text-[10px] font-bold text-muted-neutral mb-1">Profile</label>
+                      <label htmlFor="codex-profile" className="block text-[10px] font-bold text-muted-neutral mb-1">Profile</label>
                       <input
+                      id="codex-profile"
                       className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-1.5 text-xs text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
                       placeholder="e.g. wardian"
                       value={providerConfig.profile || ""}
@@ -339,31 +356,60 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                   <div className="grid grid-cols-2 gap-2 mb-1">
                     <label className="flex items-center gap-2 text-xs text-muted-neutral">
                         <input type="checkbox" checked={providerConfig.full_auto || false} onChange={e => updateProviderConfigField("full_auto", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
-                        Full Auto
+                        Bypass approvals and sandbox
                     </label>
                     <label className="flex items-center gap-2 text-xs text-muted-neutral">
                         <input type="checkbox" checked={providerConfig.search || false} onChange={e => updateProviderConfigField("search", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
                         Search
                     </label>
-                    <label className="flex items-center gap-2 text-xs text-muted-neutral">
-                        <input type="checkbox" checked={providerConfig.skip_git_repo_check ?? true} onChange={e => updateProviderConfigField("skip_git_repo_check", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
-                        Skip Git Check
-                    </label>
-                    <label className="flex items-center gap-2 text-xs text-muted-neutral">
-                        <input type="checkbox" checked={providerConfig.ephemeral || false} onChange={e => updateProviderConfigField("ephemeral", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
-                        Ephemeral
-                    </label>
+                  </div>
+                  <div>
+                    <p className="mb-2 text-[10px] font-bold text-muted-neutral">Headless delivery</p>
+                    <div className="grid grid-cols-2 gap-2 mb-1">
+                      <label className="flex items-center gap-2 text-xs text-muted-neutral">
+                          <input type="checkbox" checked={providerConfig.skip_git_repo_check ?? true} onChange={e => updateProviderConfigField("skip_git_repo_check", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
+                          Skip Git check
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-muted-neutral">
+                          <input type="checkbox" checked={providerConfig.ephemeral || false} onChange={e => updateProviderConfigField("ephemeral", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
+                          Ephemeral
+                      </label>
+                    </div>
                   </div>
                 </>
               )}
 
               {provider === 'antigravity' && providerConfig.type === 'antigravity' && (
-                <div>
+                <>
+                  <div>
+                    <label htmlFor="antigravity-mode" className="block text-[10px] font-bold text-muted-neutral mb-1">Agent Mode</label>
+                    <select
+                      id="antigravity-mode"
+                      className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-1.5 text-xs text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
+                      value={providerConfig.mode || ""}
+                      onChange={(e) => updateProviderConfigField("mode", e.target.value || undefined)}
+                    >
+                      <option value="">(None - Inherit Default)</option>
+                      <option value="accept-edits">Accept edits</option>
+                      <option value="plan">Plan</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="antigravity-agent" className="block text-[10px] font-bold text-muted-neutral mb-1">Antigravity Agent</label>
+                    <input
+                      id="antigravity-agent"
+                      className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-1.5 text-xs text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
+                      placeholder="e.g. build"
+                      value={providerConfig.agent || ""}
+                      onChange={(e) => updateProviderConfigField("agent", e.target.value || undefined)}
+                    />
+                  </div>
+                  <div>
                     <label
                       htmlFor="antigravity-print-timeout"
                       className="block text-[10px] font-bold text-muted-neutral mb-1"
                     >
-                      Print Timeout
+                      Print Timeout (Headless)
                     </label>
                     <input
                     id="antigravity-print-timeout"
@@ -372,7 +418,8 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                     value={providerConfig.print_timeout || ""}
                     onChange={(e) => updateProviderConfigField("print_timeout", e.target.value || undefined)}
                     />
-                </div>
+                  </div>
+                </>
               )}
 
               {provider === 'opencode' && providerConfig.type === 'opencode' && (

@@ -238,6 +238,11 @@ pub(crate) fn headless_provider_args(
                 );
                 let spawn_args = strip_flag_value_pairs(spawn_args, "--output-format");
                 provider_args.extend(spawn_args);
+                if let Some(max_turns) = config.claude_config().max_turns.filter(|turns| *turns > 0)
+                {
+                    provider_args.push("--max-turns".to_string());
+                    provider_args.push(max_turns.to_string());
+                }
             }
             provider_args.push("--print".to_string());
             provider_args.push("--output-format".to_string());
