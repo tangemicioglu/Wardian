@@ -374,6 +374,16 @@ fn codex_status_log_session(config: &AgentConfig) -> Option<String> {
     Some(candidate)
 }
 
+fn claude_status_log_session(config: &AgentConfig) -> String {
+    config
+        .resume_session
+        .as_deref()
+        .or(config.fresh_provider_session_id.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(config.session_id.as_str())
+        .to_string()
+}
+
 fn should_cleanup_stale_session_processes_before_spawn(is_restored: bool) -> bool {
     !is_restored
 }
@@ -1202,6 +1212,7 @@ pub async fn spawn_agent(
         let watcher_app = app.clone();
         let watcher_provider = provider.clone();
         let watcher_session = config.session_id.clone();
+        let watcher_log_session = claude_status_log_session(&config);
         let watcher_current_status = current_status.clone();
         let watcher_log_path = log_path.clone();
         let watcher_folder = expected_folder.clone();
@@ -1231,7 +1242,7 @@ pub async fn spawn_agent(
                                 .join(".claude")
                                 .join("projects")
                                 .join(claude_project_dir_name(&watcher_folder))
-                                .join(format!("{}.jsonl", watcher_session));
+                                .join(format!("{}.jsonl", watcher_log_session));
                             if candidate.exists() {
                                 *lock = Some(candidate);
                             }
@@ -1747,6 +1758,28 @@ mod tests {
         assert_eq!(
             config.codex_config().cleared_provider_sessions,
             vec!["provider-session-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn claude_status_log_session_prefers_the_provider_identity() {
+        let config = AgentConfig {
+            provider: "claude".to_string(),
+            session_id: "wardian-session".to_string(),
+            resume_session: Some("provider-session".to_string()),
+            fresh_provider_session_id: Some("fresh-provider-session".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(claude_status_log_session(&config), "provider-session");
+
+        let fresh_config = AgentConfig {
+            resume_session: None,
+            ..config
+        };
+        assert_eq!(
+            claude_status_log_session(&fresh_config),
+            "fresh-provider-session"
         );
     }
 
