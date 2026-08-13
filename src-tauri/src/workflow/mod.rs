@@ -151,13 +151,19 @@ impl LiveStepExecutor {
                 .await;
         }
 
+        let session_id = if resolved.session_id.trim().is_empty() {
+            temporary_provider_session_id(&self.owner_id, node)
+        } else {
+            resolved.session_id
+        };
+
         self.runner
             .run(AgentRunSpec {
                 node: node.to_string(),
                 provider: resolved.provider,
                 cwd: resolved.cwd,
                 prompt,
-                session_id: resolved.session_id,
+                session_id,
                 agent_session_id: None,
                 resume_session: resolved.resume_session,
                 config_override: resolved.config,
@@ -190,7 +196,12 @@ impl LiveStepExecutor {
                         provider: provider.clone(),
                         cwd,
                         prompt,
-                        session_id: String::new(),
+                        // Temporary providers are workflow-owned sessions, not
+                        // anonymous processes. The identity lets the provider
+                        // habitat project its workspace link to this role's
+                        // resolved project/folder while keeping it distinct
+                        // from registered agents and their conversations.
+                        session_id: temporary_provider_session_id(&self.owner_id, node),
                         agent_session_id: None,
                         resume_session: None,
                         config_override: None,
@@ -423,6 +434,14 @@ fn prompt_for_agent_task(prompt: String, output_schema: Option<&str>) -> String 
 fn fresh_background_session_id(owner_id: &str, node: &str) -> String {
     format!(
         "workflow-bg-{}-{}",
+        sanitize_session_component(owner_id),
+        sanitize_session_component(node)
+    )
+}
+
+fn temporary_provider_session_id(owner_id: &str, node: &str) -> String {
+    format!(
+        "workflow-temp-{}-{}",
         sanitize_session_component(owner_id),
         sanitize_session_component(node)
     )
@@ -840,6 +859,103 @@ mod tests {
         assert_eq!(out.0["ok"], true);
         assert_eq!(headless.calls(), vec!["plan".to_string()]);
         assert_eq!(live.calls(), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn temporary_provider_uses_a_workflow_owned_session_for_its_workspace() {
+        struct TemporaryProviderSpecRunner;
+
+        impl AgentRunner for TemporaryProviderSpecRunner {
+            fn run(
+                &self,
+                spec: AgentRunSpec,
+            ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async move {
+                    assert_eq!(spec.provider, "codex");
+                    assert_eq!(spec.cwd, PathBuf::from("/workflow-project"));
+                    assert!(
+                        spec.session_id.starts_with("workflow-temp-scheduled-42-review"),
+                        "temporary provider needs its own workflow session so the habitat maps workspace to the project folder"
+                    );
+                    assert!(spec.agent_session_id.is_none());
+                    assert!(spec.resume_session.is_none());
+                    assert!(spec.config_override.is_none());
+                    assert!(spec.lease_owner.is_none());
+                    Ok("{\"ok\":true}".to_string())
+                })
+            }
+        }
+
+        let assignments = WorkflowAssignments::from([(
+            "Reviewer".to_string(),
+            WorkflowRoleAssignment::TemporaryProvider {
+                provider: "codex".to_string(),
+                workspace: Some("/workflow-project".to_string()),
+            },
+        )]);
+        let exec = LiveStepExecutor::new_with_assignments_and_live_runner(
+            Arc::new(TemporaryProviderSpecRunner),
+            None,
+            PathBuf::from("/run-log"),
+            "mock".into(),
+            HashMap::new(),
+            assignments,
+            HashMap::new(),
+        )
+        .with_owner_id("scheduled-42".to_string());
+
+        let output = exec
+            .run_agent_task(AgentTaskRequest {
+                node: "review".to_string(),
+                agent: "role:Reviewer".to_string(),
+                prompt: "review the project".to_string(),
+                output_schema: None,
+            })
+            .await
+            .expect("temporary provider workflow task");
+
+        assert_eq!(output.0["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn legacy_provider_binding_uses_a_workflow_owned_session() {
+        struct LegacyProviderSpecRunner;
+
+        impl AgentRunner for LegacyProviderSpecRunner {
+            fn run(
+                &self,
+                spec: AgentRunSpec,
+            ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async move {
+                    assert_eq!(spec.provider, "codex");
+                    assert_eq!(spec.cwd, PathBuf::from("/workflow-project"));
+                    assert!(spec.session_id.starts_with("workflow-temp-manual-9-plan"));
+                    Ok("{\"ok\":true}".to_string())
+                })
+            }
+        }
+
+        let bindings = HashMap::from([("Planner".to_string(), "codex".to_string())]);
+        let exec = LiveStepExecutor::new(
+            Arc::new(LegacyProviderSpecRunner),
+            PathBuf::from("/workflow-project"),
+            "mock".into(),
+            bindings,
+            HashMap::new(),
+        )
+        .with_owner_id("manual-9".to_string());
+
+        let output = exec
+            .run_agent_task(AgentTaskRequest {
+                node: "plan".to_string(),
+                agent: "role:Planner".to_string(),
+                prompt: "plan the project".to_string(),
+                output_schema: None,
+            })
+            .await
+            .expect("legacy provider workflow task");
+
+        assert_eq!(output.0["ok"], true);
     }
 
     #[tokio::test]
