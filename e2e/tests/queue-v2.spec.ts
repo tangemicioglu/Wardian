@@ -50,6 +50,13 @@ async function installQueueV2IpcMock(page: Page) {
     ];
     let queuePreferences = {};
     let workflowApprovals: Array<Record<string, unknown>> = [];
+    let workflowTerminalRuns: Array<Record<string, unknown>> = Array.isArray(
+      (window as Window & { __WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__?: unknown })
+        .__WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__,
+    )
+      ? (window as Window & { __WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__: Array<Record<string, unknown>> })
+        .__WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__
+      : [];
     const submittedPrompts: Array<{ sessionId: string; prompt: string }> = [];
     let callbackId = 1;
     const callbacks = new Map<number, unknown>();
@@ -159,6 +166,7 @@ async function installQueueV2IpcMock(page: Page) {
           }];
         }
         if (command === "list_workflow_inbox_approvals") return workflowApprovals;
+        if (command === "list_workflow_inbox_terminal_runs") return workflowTerminalRuns;
         if (command === "save_queue_items") {
           queueItems = args?.items as QueueItem[];
           return null;
@@ -265,5 +273,32 @@ test.describe("Inbox", () => {
     await expect(page.getByText("Workflow completed", { exact: true })).toBeVisible();
     await expect(page.getByText("Release workflow completed successfully.", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeHidden();
+  });
+
+  test("reconciles a terminal workflow run that predates the Inbox listener", async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as Window & { __WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__?: Array<Record<string, unknown>> })
+        .__WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__ = [{
+          workflow_id: "missing-scheduled-workflow",
+          run_instance_id: "run-before-inbox",
+          workflow_name: "Missing scheduled workflow",
+          status: "failed",
+          error: "The scheduled workflow blueprint was removed.",
+          updated_at: new Date().toISOString(),
+        }];
+    });
+    await installQueueV2IpcMock(page);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+    await openSurface(page, "inbox");
+
+    await expect(page.getByText("Missing scheduled workflow", { exact: true })).toBeVisible();
+    await expect(page.getByText("The scheduled workflow blueprint was removed.", { exact: true })).toBeVisible();
+
+    if (process.env.WARDIAN_WORKFLOW_INBOX_RECONCILIATION_SCREENSHOT) {
+      await page
+        .locator('[data-testid="surface-panel"][data-surface-type="inbox"]')
+        .screenshot({ path: process.env.WARDIAN_WORKFLOW_INBOX_RECONCILIATION_SCREENSHOT, animations: "disabled" });
+    }
   });
 });

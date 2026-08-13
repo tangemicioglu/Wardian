@@ -79,10 +79,15 @@ async fn fire_request(app: &AppHandle, req: &FireRequest) {
         Ok(resolved) => resolved,
         Err(message) => {
             mark_error(&req.schedule_id, &message);
-            if let Err(error) = record_schedule_launch_failure(req, &message) {
-                crate::utils::logging::log_debug(&format!(
-                    "[workflow] scheduler could not write failed run artifact: {error}"
-                ));
+            match record_schedule_launch_failure(req, &message) {
+                Ok(run_root) => {
+                    runs::emit_workflow_inbox_update_with_name(app, &req.name, &run_root)
+                }
+                Err(error) => {
+                    crate::utils::logging::log_debug(&format!(
+                        "[workflow] scheduler could not write failed run artifact: {error}"
+                    ));
+                }
             }
             return;
         }
@@ -684,6 +689,10 @@ edges:
             Some(EventKind::RunFailed { error })
                 if error == "parse failed: io error: The system cannot find the file specified."
         ));
+
+        let update = runs::workflow_inbox_update_with_name(&req.blueprint_id, &run_root).unwrap();
+        assert_eq!(update.status, "failed");
+        assert_eq!(update.workflow_name, "missing-workflow");
     }
 
     #[test]

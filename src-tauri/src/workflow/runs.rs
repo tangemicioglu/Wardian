@@ -44,12 +44,20 @@ pub struct WorkflowInboxUpdate {
     pub status: String,
     pub error: Option<String>,
     pub summary: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 pub const WORKFLOW_INBOX_UPDATED_EVENT: &str = "workflow-inbox-updated";
 
 pub fn workflow_inbox_update(
     blueprint: &Blueprint,
+    run_root: &Path,
+) -> Option<WorkflowInboxUpdate> {
+    workflow_inbox_update_with_name(&blueprint.name, run_root)
+}
+
+pub fn workflow_inbox_update_with_name(
+    workflow_name: &str,
     run_root: &Path,
 ) -> Option<WorkflowInboxUpdate> {
     let state = read_checkpoint(run_root).ok().flatten()?;
@@ -60,28 +68,37 @@ pub fn workflow_inbox_update(
         RunStatus::Running => return None,
     };
 
-    let summary = read_events(run_root).ok().and_then(|events| {
-        events.into_iter().rev().find_map(|event| match event.kind {
-            EventKind::NodeCompleted { output, .. } => output
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .map(ToString::to_string),
-            _ => None,
-        })
+    let events = read_events(run_root).unwrap_or_default();
+    let summary = events.iter().rev().find_map(|event| match &event.kind {
+        EventKind::NodeCompleted { output, .. } => output
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string),
+        _ => None,
     });
+    let updated_at = events.last().map(|event| event.ts.clone());
 
     Some(WorkflowInboxUpdate {
         workflow_id: state.blueprint_id,
         run_instance_id: state.run_id,
-        workflow_name: blueprint.name.clone(),
+        workflow_name: workflow_name.to_string(),
         status: status.to_string(),
         error,
         summary,
+        updated_at,
     })
 }
 
 pub fn emit_workflow_inbox_update(app: &tauri::AppHandle, blueprint: &Blueprint, run_root: &Path) {
-    if let Some(update) = workflow_inbox_update(blueprint, run_root) {
+    emit_workflow_inbox_update_with_name(app, &blueprint.name, run_root);
+}
+
+pub fn emit_workflow_inbox_update_with_name(
+    app: &tauri::AppHandle,
+    workflow_name: &str,
+    run_root: &Path,
+) {
+    if let Some(update) = workflow_inbox_update_with_name(workflow_name, run_root) {
         let _ = app.emit(WORKFLOW_INBOX_UPDATED_EVENT, update);
     }
 }

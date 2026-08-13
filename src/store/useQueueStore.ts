@@ -135,6 +135,16 @@ interface WorkflowInboxApprovalDto {
   created_at?: string;
 }
 
+interface WorkflowInboxTerminalDto {
+  workflow_id: string;
+  run_instance_id: string;
+  workflow_name: string;
+  status: "completed" | "failed";
+  error?: string;
+  summary?: string;
+  updated_at?: string;
+}
+
 async function loadWorkflowApprovalItems(): Promise<QueueItem[]> {
   try {
     const approvals = await invoke<WorkflowInboxApprovalDto[]>("list_workflow_inbox_approvals");
@@ -161,6 +171,31 @@ async function loadWorkflowApprovalItems(): Promise<QueueItem[]> {
   } catch {
     return [];
   }
+}
+
+async function loadWorkflowTerminalItems(): Promise<QueueItem[]> {
+  try {
+    const terminalRuns = await invoke<WorkflowInboxTerminalDto[]>("list_workflow_inbox_terminal_runs");
+    return terminalRuns.map((run) => ({
+      id: `workflow-completion:${run.workflow_id}:${run.run_instance_id}`,
+      type: "workflow_completed",
+      timestamp: run.updated_at ? Date.parse(run.updated_at) || Date.now() : Date.now(),
+      read: false,
+      workflow_id: run.workflow_id,
+      workflow_run_id: run.run_instance_id,
+      workflow_name: run.workflow_name,
+      status: run.status,
+      error: run.error,
+      summary: run.summary ? boundSummary(run.summary) : undefined,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function workflowRunKey(item: QueueItem): string | undefined {
+  if (item.type !== "workflow_completed" || !item.workflow_id || !item.workflow_run_id) return undefined;
+  return `${item.workflow_id}:${item.workflow_run_id}`;
 }
 
 function notifyForItem(item: QueueItem, preferences: QueuePreferences) {
@@ -210,13 +245,24 @@ export const useQueueStore = create<QueueState>((set, get) => ({
           .map((item) => item.inbox_notification_id!),
       );
       const legacyItems = persistedItems.filter((item) => !item.inbox_notification_id && !item.workflow_approval);
-      const [notifications, workflowApprovals] = await Promise.all([
+      const [notifications, workflowApprovals, workflowTerminals] = await Promise.all([
         loadInboxNotificationItems(readNotificationIds),
         loadWorkflowApprovalItems(),
+        loadWorkflowTerminalItems(),
       ]);
-      const items = [...notifications, ...workflowApprovals, ...legacyItems]
+      const persistedWorkflowRuns = new Set(
+        legacyItems.map(workflowRunKey).filter((key): key is string => key !== undefined),
+      );
+      const reconciledTerminals = workflowTerminals.filter((item) => {
+        const key = workflowRunKey(item);
+        return !key || !persistedWorkflowRuns.has(key);
+      });
+      const items = [...notifications, ...workflowApprovals, ...reconciledTerminals, ...legacyItems]
         .sort((left, right) => right.timestamp - left.timestamp);
       set({ items, _readNotificationIds: [...readNotificationIds] });
+      if (reconciledTerminals.length > 0) {
+        persistItems(items, [...readNotificationIds]);
+      }
     } catch {
       // First run or unavailable: leave items empty.
     }

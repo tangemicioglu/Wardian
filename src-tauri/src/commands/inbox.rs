@@ -1,4 +1,4 @@
-use crate::state::AppState;
+use crate::{state::AppState, workflow::runs};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use wardian_core::control::{
@@ -31,6 +31,37 @@ pub struct WorkflowInboxApprovalDto {
     pub title: String,
     pub prompt: String,
     pub created_at: Option<String>,
+}
+
+/// Terminal workflow runs are durable Inbox evidence. The frontend uses this
+/// reconciliation query at startup, while `workflow-inbox-updated` remains the
+/// low-latency path for a currently open window.
+#[tauri::command]
+pub fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
+    let mut updates = Vec::new();
+    for run in crate::commands::workflow::workflow_list_runs()? {
+        let Some(run_root) = run.get("path").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(workflow_id) = run.get("blueprint_id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let workflow_name = run
+            .get("blueprint_path")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|path| wardian_core::workflow::parse_file(std::path::Path::new(path)).ok())
+            .map(|blueprint| blueprint.name)
+            .unwrap_or_else(|| workflow_id.to_string());
+        let Some(update) =
+            runs::workflow_inbox_update_with_name(&workflow_name, std::path::Path::new(run_root))
+        else {
+            continue;
+        };
+        if matches!(update.status.as_str(), "completed" | "failed") {
+            updates.push(update);
+        }
+    }
+    Ok(updates)
 }
 
 #[tauri::command]
@@ -187,5 +218,76 @@ fn notification_error(error: &'static str) -> String {
         "invalid_choice" => "That approval choice is not available".to_string(),
         "persistence_failed" => "Could not persist approval decision".to_string(),
         _ => "Could not resolve Inbox approval".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wardian_core::engine::{
+        store::{append_event, write_checkpoint},
+        Event, EventKind, RunState, RunStatus,
+    };
+
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous_home: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(home: &std::path::Path) -> Self {
+            let guard = Self {
+                _lock: crate::utils::wardian_test_env_lock(),
+                previous_home: std::env::var_os("WARDIAN_HOME"),
+            };
+            std::env::set_var("WARDIAN_HOME", home);
+            guard
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.previous_home.take() {
+                Some(value) => std::env::set_var("WARDIAN_HOME", value),
+                None => std::env::remove_var("WARDIAN_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_run_query_includes_a_missing_scheduled_blueprint_with_id_fallback() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set(home.path());
+        let run_root = home
+            .path()
+            .join("logs")
+            .join("workflows")
+            .join("missing-scheduled-workflow")
+            .join("run-1");
+        let mut state = RunState::new("run-1", "missing-scheduled-workflow");
+        state.status = RunStatus::Failed;
+        state.failure = Some("workflow blueprint was removed".to_string());
+        write_checkpoint(&run_root, &state).unwrap();
+        append_event(
+            &run_root,
+            &Event::new(
+                0,
+                EventKind::RunFailed {
+                    error: "workflow blueprint was removed".to_string(),
+                },
+            ),
+        )
+        .unwrap();
+
+        let updates = list_workflow_inbox_terminal_runs().unwrap();
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].workflow_id, "missing-scheduled-workflow");
+        assert_eq!(updates[0].workflow_name, "missing-scheduled-workflow");
+        assert_eq!(updates[0].status, "failed");
+        assert_eq!(
+            updates[0].error.as_deref(),
+            Some("workflow blueprint was removed")
+        );
     }
 }
