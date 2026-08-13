@@ -572,7 +572,7 @@ pub(crate) fn apply_agent_event_with_policy(
     current_status: &std::sync::Arc<std::sync::Mutex<String>>,
     policy: ProviderStatusEventPolicy,
 ) {
-    let provider_turn_started = matches!(&event, AgentEvent::UserQuery);
+    let provider_turn_started = policy.confirms_turn_started(&event);
     match &event {
         AgentEvent::UserQuery => {
             if let Ok(mut count) = query_count.lock() {
@@ -605,6 +605,15 @@ pub(crate) enum ProviderStatusEventPolicy {
 }
 
 impl ProviderStatusEventPolicy {
+    /// Claude's interactive stream does not echo the typed user message. Its
+    /// first assistant stream event is the provider-owned confirmation that
+    /// the submitted turn has begun.
+    fn confirms_turn_started(self, event: &AgentEvent) -> bool {
+        matches!(event, AgentEvent::UserQuery)
+            || (matches!(event, AgentEvent::Generating)
+                && matches!(self, Self::PreserveActionRequiredUntilTurnCompleted))
+    }
+
     fn preserves_action_required(self) -> bool {
         matches!(
             self,
@@ -1833,6 +1842,16 @@ mod tests {
             ),
             Some("Idle")
         );
+    }
+
+    #[test]
+    fn claude_generating_event_confirms_a_provider_turn_start() {
+        assert!(
+            ProviderStatusEventPolicy::PreserveActionRequiredUntilTurnCompleted
+                .confirms_turn_started(&AgentEvent::Generating)
+        );
+        assert!(!ProviderStatusEventPolicy::Normal.confirms_turn_started(&AgentEvent::Generating));
+        assert!(ProviderStatusEventPolicy::Normal.confirms_turn_started(&AgentEvent::UserQuery));
     }
 
     #[tokio::test]

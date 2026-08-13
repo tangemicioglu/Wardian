@@ -304,6 +304,7 @@ pub async fn run_remote_agent_action(
                     origin: None,
                     runtime_state: "live_pty_available",
                     mark_prompt_started: true,
+                    require_provider_turn_receipt: false,
                     payload_sent_detail: None,
                     delivery_message_id: None,
                 },

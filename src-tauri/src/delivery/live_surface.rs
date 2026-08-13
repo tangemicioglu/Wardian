@@ -21,6 +21,10 @@ pub struct LiveSurfacePromptRequest {
     pub origin: Option<MessageOrigin>,
     pub runtime_state: &'static str,
     pub mark_prompt_started: bool,
+    /// Automated delivery waits for provider-confirmed turn start so it can
+    /// safely decide whether a queued message may be retried. A direct human
+    /// terminal submission is complete once the native PTY has flushed it.
+    pub require_provider_turn_receipt: bool,
     pub payload_sent_detail: Option<DeliveryDetail>,
     pub delivery_message_id: Option<String>,
 }
@@ -58,6 +62,7 @@ impl LiveSurfacePromptRequest {
             origin: None,
             runtime_state: "live_pty_available",
             mark_prompt_started: true,
+            require_provider_turn_receipt: false,
             payload_sent_detail: None,
             delivery_message_id: None,
         }
@@ -232,7 +237,8 @@ pub async fn submit_live_surface_prompt(
         .payload_sent_detail
         .clone()
         .or_else(|| automatic_payload_started_detail(&request, &interaction_id, &name, &provider));
-    let requires_provider_turn_receipt = native_write_receipts
+    let requires_provider_turn_receipt = request.require_provider_turn_receipt
+        && native_write_receipts
         && matches!(
             request.input_mode,
             MessageInputMode::Message | MessageInputMode::Command
@@ -631,6 +637,7 @@ mod tests {
         assert_eq!(request.queue_policy, QueuePolicy::LiveOnly);
         assert_eq!(request.runtime_state, "live_pty_available");
         assert!(request.mark_prompt_started);
+        assert!(!request.require_provider_turn_receipt);
     }
 
     #[test]
