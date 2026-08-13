@@ -13,7 +13,7 @@ use wardian_core::control::ProviderInputReadiness;
 use wardian_core::models::{AgentConfig, AgentEvent, ProviderConfig};
 
 use super::claude::{
-    claude_permission_hook_matches_session, claude_project_dir_name,
+    claude_log_paths, claude_permission_hook_matches_session, claude_project_dir_name,
     discover_claude_log_for_session_name,
 };
 use super::codex::{codex_provider_session_is_excluded, codex_session_file_path};
@@ -558,6 +558,21 @@ pub async fn spawn_agent(
     )?;
     let provider_cwd =
         interactive_provider_cwd(&config.provider, &cwd, habitat_root.as_deref(), None);
+    let fresh_claude_log_paths =
+        if config.provider == "claude" && config.fresh_provider_session_id.is_some() {
+            dirs::home_dir()
+                .map(|home| {
+                    claude_log_paths(
+                        &home
+                            .join(".claude")
+                            .join("projects")
+                            .join(claude_project_dir_name(&expected_folder)),
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
 
     if config.provider == "claude" {
         if let Some(hook) = claude_hook.as_ref() {
@@ -1296,6 +1311,7 @@ pub async fn spawn_agent(
         let watcher_current_status = current_status.clone();
         let watcher_log_path = log_path.clone();
         let watcher_folder = expected_folder.clone();
+        let watcher_fresh_claude_log_paths = fresh_claude_log_paths;
         let watcher_watch_state = watch_state.clone();
         let watcher_skip_existing_log = is_restored;
         let hook_event_log = claude_hook.as_ref().map(|hook| hook.event_log_path.clone());
@@ -1323,14 +1339,18 @@ pub async fn spawn_agent(
                                 .join(".claude")
                                 .join("projects")
                                 .join(claude_project_dir_name(&watcher_folder));
-                            let candidate = project_dir.join(format!("{}.jsonl", watcher_log_session));
-                            if candidate.exists() {
+                            let candidate =
+                                project_dir.join(format!("{}.jsonl", watcher_log_session));
+                            if candidate.exists()
+                                && !watcher_fresh_claude_log_paths.contains(&candidate)
+                            {
                                 *lock = Some(candidate);
                             } else if watcher_can_capture_fresh_identity {
                                 if let Some((path, provider_session_id)) =
                                     discover_claude_log_for_session_name(
                                         &project_dir,
                                         &watcher_session_name,
+                                        &watcher_fresh_claude_log_paths,
                                     )
                                 {
                                     if let Ok(mut cfg) = watcher_config.lock() {

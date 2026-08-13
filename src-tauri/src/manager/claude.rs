@@ -1,4 +1,4 @@
-use crate::providers::claude::{classify_claude_user_event, ClaudeUserEventKind};
+use crate::providers::claude::{ClaudeUserEventKind, classify_claude_user_event};
 
 /// Converts a workspace absolute path into Claude Code's project directory name.
 /// Claude replaces each of `:`, `\`, `/`, `.` with `-`.
@@ -19,14 +19,16 @@ pub(crate) fn claude_project_dir_name(workspace: &str) -> String {
 pub(crate) fn discover_claude_log_for_session_name(
     project_dir: &std::path::Path,
     session_name: &str,
+    ignored_paths: &std::collections::HashSet<std::path::PathBuf>,
 ) -> Option<(std::path::PathBuf, String)> {
     let mut candidates = std::fs::read_dir(project_dir)
         .ok()?
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
-            (path.extension().and_then(|value| value.to_str()) == Some("jsonl"))
-                .then_some(path)
+            (path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+                && !ignored_paths.contains(&path))
+            .then_some(path)
         })
         .filter_map(|path| {
             let file = std::fs::File::open(&path).ok()?;
@@ -61,7 +63,26 @@ pub(crate) fn discover_claude_log_for_session_name(
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|(_, _, modified)| *modified);
-    candidates.pop().map(|(path, session_id, _)| (path, session_id))
+    candidates
+        .pop()
+        .map(|(path, session_id, _)| (path, session_id))
+}
+
+/// Records the Claude logs that existed before a fresh launch. A fresh
+/// conversation must never adopt a paused conversation solely because the
+/// provider has not written its new transcript yet.
+pub(crate) fn claude_log_paths(
+    project_dir: &std::path::Path,
+) -> std::collections::HashSet<std::path::PathBuf> {
+    std::fs::read_dir(project_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            (path.extension().and_then(|value| value.to_str()) == Some("jsonl")).then_some(path)
+        })
+        .collect()
 }
 
 pub(crate) fn claude_is_real_user_query(line: &serde_json::Value) -> bool {
@@ -260,8 +281,36 @@ mod tests {
         .expect("log");
 
         assert_eq!(
-            discover_claude_log_for_session_name(root.path(), "Wardian test"),
+            discover_claude_log_for_session_name(
+                root.path(),
+                "Wardian test",
+                &std::collections::HashSet::new(),
+            ),
             Some((path, "provider-session".to_string()))
+        );
+    }
+
+    #[test]
+    fn fresh_discovery_ignores_logs_that_existed_before_launch() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let stale_path = root.path().join("paused-provider-session.jsonl");
+        std::fs::write(
+            &stale_path,
+            "{\"type\":\"custom-title\",\"customTitle\":\"Wardian test\",\"sessionId\":\"paused-provider-session\"}\n",
+        )
+        .expect("stale log");
+        let ignored = claude_log_paths(root.path());
+
+        let fresh_path = root.path().join("fresh-provider-session.jsonl");
+        std::fs::write(
+            &fresh_path,
+            "{\"type\":\"custom-title\",\"customTitle\":\"Wardian test\",\"sessionId\":\"fresh-provider-session\"}\n",
+        )
+        .expect("fresh log");
+
+        assert_eq!(
+            discover_claude_log_for_session_name(root.path(), "Wardian test", &ignored),
+            Some((fresh_path, "fresh-provider-session".to_string()))
         );
     }
 
