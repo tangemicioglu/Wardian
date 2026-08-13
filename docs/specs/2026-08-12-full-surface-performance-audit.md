@@ -112,7 +112,9 @@ npm run perf:workbench
 Use `--audit --output <absolute-path-inside-WARDIAN_HOME>` while diagnosing a
 failing candidate. That mode records all observations without converting a
 failed gate into an early exit. `--reuse-build` and `--reuse-bundle` are local
-iteration aids; the committed baseline must come from a complete build.
+iteration aids; the committed baseline must come from a complete build. Use
+`--screenshot <absolute-path-inside-WARDIAN_HOME>` to capture the final
+54-agent Agents view for PR evidence without changing the benchmark fixture.
 
 ## Acceptance
 

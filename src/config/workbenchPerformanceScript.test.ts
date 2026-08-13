@@ -143,5 +143,7 @@ describe("workbench performance script", () => {
     expect(source).toContain('samplesByInteraction["settings category"]');
     expect(source).toContain('samplesByInteraction["sidebar panel"]');
     expect(source).toContain("load_shell_settings: {");
+    expect(source).toContain('command === "list_provider_model_catalog"');
+    expect(source).toContain("--screenshot requires an absolute path inside the isolated WARDIAN_HOME");
   });
 });

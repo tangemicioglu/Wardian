@@ -556,6 +556,13 @@ function browserFixture(fixture) {
         return { outcome: "saved", durable_revision: args.document.revision, durable_token: `perf-${args.document.revision}`, request_id: args.request_id };
       }
       if (command === "list_agents") return clone(fixture.agents);
+      if (command === "list_provider_model_catalog") return {
+        provider: args.provider ?? "mock",
+        version: "performance-fixture",
+        source: "provider_aliases",
+        refresh_error: null,
+        models: [],
+      };
       if (command === "get_browser_session") {
         return args.browserId === browserSummary.browser_id ? clone(browserSummary) : null;
       }
@@ -1027,7 +1034,7 @@ async function measureHeavySurfaceActivation(page, surfaceId) {
   }, surfaceId);
 }
 
-async function measureRuntime(fixture, runtimeOutDir) {
+async function measureRuntime(fixture, runtimeOutDir, screenshotPath = null) {
   const [{ chromium }, { preview }] = await Promise.all([
     import("@playwright/test"),
     import("vite"),
@@ -1143,6 +1150,11 @@ async function measureRuntime(fixture, runtimeOutDir) {
         webgl_peak: runtime.webgl_peak,
       };
     });
+    if (screenshotPath) {
+      await measureTabActivation(page, "perf-overview");
+      await page.getByTestId("agent-grid").waitFor();
+      await page.screenshot({ path: screenshotPath, animations: "disabled" });
+    }
     await page.close();
     if (errors.length > 0) throw new Error(`Production workbench emitted browser errors: ${JSON.stringify(errors)}`);
     if (observed.react_commits.length === 0) {
@@ -1272,6 +1284,16 @@ async function main() {
   if (errors.length > 0) throw new Error(`Invalid performance fixture:\n${errors.join("\n")}`);
   await fs.mkdir(home, { recursive: true });
   const seedFile = await seedHome(home, fixture);
+  const screenshotIndex = process.argv.indexOf("--screenshot");
+  const rawScreenshot = screenshotIndex === -1 ? null : process.argv[screenshotIndex + 1];
+  if (screenshotIndex !== -1 && (!rawScreenshot || !path.isAbsolute(rawScreenshot))) {
+    throw new Error("--screenshot requires an absolute path inside the isolated WARDIAN_HOME");
+  }
+  const screenshotPath = rawScreenshot ? canonicalize(rawScreenshot) : null;
+  if (screenshotPath) {
+    assertInsideHome(home, screenshotPath);
+    await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+  }
   // Bundle comparison and the benchmark-only production build both control
   // Vite compile-time flags. Keep them serialized before serving static output.
   const reuseBuild = process.argv.includes("--reuse-build");
@@ -1282,7 +1304,7 @@ async function main() {
   const runtimeOutDir = reuseBuild
     ? path.join(home, "runtime-build")
     : await buildProductionRuntime(home, fixture);
-  const runtime = await measureRuntime(fixture, runtimeOutDir);
+  const runtime = await measureRuntime(fixture, runtimeOutDir, screenshotPath);
   const baseline = {
     schema_version: 1,
     measured_at: new Date().toISOString(),
