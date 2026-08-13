@@ -57,7 +57,7 @@ describe("workbench performance script", () => {
         groups: Record<string, { surface_ids: string[] }>;
         surfaces: Record<string, { surface_type: string }>;
       };
-      agents: Array<{ session_id: string }>;
+      agents: Array<{ session_id: string; is_off: boolean }>;
       terminal_presentations: Array<{ mode: "owner" | "mirror"; session_id: string }>;
     };
     const surfaces = Object.values(fixture.workbench.surfaces);
@@ -69,10 +69,14 @@ describe("workbench performance script", () => {
     expect(Object.keys(fixture.workbench.groups)).toHaveLength(4);
     expect(surfaces).toHaveLength(20);
     expect(new Set(referencedSurfaceIds).size).toBe(20);
-    expect(fixture.agents).toHaveLength(20);
-    expect(new Set(fixture.agents.map((agent) => agent.session_id)).size).toBe(20);
+    expect(fixture.agents).toHaveLength(54);
+    expect(new Set(fixture.agents.map((agent) => agent.session_id)).size).toBe(54);
+    expect(fixture.agents.filter((agent) => agent.is_off)).toHaveLength(20);
     expect([...new Set(surfaces.map((surface) => surface.surface_type))]).toEqual(
-      expect.arrayContaining(["agents-overview", "graph", "garden", "inbox", "library", "workflows"]),
+      expect.arrayContaining([
+        "new-tab", "agents-overview", "dashboard", "inbox", "graph", "garden",
+        "library", "workflows", "agent-session", "browser", "files",
+      ]),
     );
     expect(fixture.terminal_presentations.filter((entry) => entry.mode === "owner")).toHaveLength(1);
     expect(fixture.terminal_presentations.filter((entry) => entry.mode === "mirror")).toHaveLength(3);
@@ -111,13 +115,16 @@ describe("workbench performance script", () => {
     expect(output.self_test).toBe("passed");
     expect(output.gates).toEqual({
       restore_p95_ms: { limit: 1500, unit: "ms" },
-      tab_switch_p95_ms: { limit: 100, unit: "ms" },
-      group_focus_p95_ms: { limit: 75, unit: "ms" },
+      surface_first_activation_p95_ms: { limit: 500, unit: "ms" },
+      tab_switch_p95_ms: { limit: 250, unit: "ms" },
+      group_focus_p95_ms: { limit: 175, unit: "ms" },
       terminal_output_commit_p95_ms: { limit: 50, unit: "ms" },
       stream_gap_count: { limit: 0, unit: "gaps" },
       overview_settle_p95_ms: { limit: 300, unit: "ms" },
       heavy_surface_resume_p95_ms: { limit: 500, unit: "ms" },
-      react_commit_max_ms: { limit: 50, unit: "ms" },
+      full_roster_telemetry_p95_ms: { limit: 100, unit: "ms" },
+      surface_interaction_p95_ms: { limit: 300, unit: "ms" },
+      react_commit_max_ms: { limit: 80, unit: "ms" },
       bundle_delta_gzip_bytes: { limit: 250 * 1024, unit: "bytes" },
       xterm_renderer_peak: { limit: 24, unit: "renderers" },
       webgl_context_peak: { limit: 12, unit: "contexts" },
@@ -133,5 +140,17 @@ describe("workbench performance script", () => {
     expect(source).toContain("runtime.terminal_burst_started_at = performance.now()");
     expect(source).toContain("waitForHeavyRendererReleased");
     expect(source).toContain("runtime.webgl_live = liveWebglContexts.size");
+    expect(source).toContain('samplesByInteraction["settings category"]');
+    expect(source).toContain('samplesByInteraction["sidebar panel"]');
+    expect(source).toContain("function resolveOutputPath(home, args = process.argv)");
+    expect(source).toContain('path.join(home, "workbench-performance-baseline.json")');
+    expect(source).toContain("full_roster_telemetry_rendered_generation === generation");
+    expect(source).toContain('getAttribute("aria-pressed") === "true"');
+    expect(source).toContain('data-layout-revision');
+    expect(source).toContain('data-search-query')
+    expect(source).toContain('data-browser-url')
+    expect(source).toContain("load_shell_settings: {");
+    expect(source).toContain('command === "list_provider_model_catalog"');
+    expect(source).toContain("--screenshot requires an absolute path inside the isolated WARDIAN_HOME");
   });
 });

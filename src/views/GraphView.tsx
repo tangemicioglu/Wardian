@@ -372,6 +372,7 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
             <div className="graph-empty-state">No agents in graph scope</div>
           ) : (
             <GraphCanvas
+              layoutRevision={layoutNonce}
               projection={projection}
               resetSignal={resetSignal}
               onSelectAgent={selectAgent}

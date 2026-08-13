@@ -16,6 +16,7 @@ const EDGE_REASON_COLORS: Record<GraphRelationshipReason, string> = {
 interface GraphCanvasProps {
   projection: AgentGraphProjection;
   resetSignal?: number;
+  layoutRevision?: number;
   onSelectAgent: (agentId: string) => void;
   onOpenAgent: (agentId: string) => void;
   onContextMenu: (agentId: string, x: number, y: number) => void;
@@ -48,6 +49,7 @@ interface SigmaEdgePayload {
 export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   projection,
   resetSignal = 0,
+  layoutRevision = 0,
   onSelectAgent,
   onOpenAgent,
   onContextMenu,
@@ -333,7 +335,12 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
 
   return (
     <div className="graph-canvas-frame">
-      <div ref={containerRef} data-testid="graph-canvas" className="graph-canvas">
+      <div
+        ref={containerRef}
+        className="graph-canvas"
+        data-layout-revision={layoutRevision}
+        data-testid="graph-canvas"
+      >
         <EdgeActivityOverlay sigma={sigmaInstance} commEdges={projection.commEdges} />
       </div>
       {connectLine && (

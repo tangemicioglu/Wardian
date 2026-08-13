@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "measured_at": "2026-07-11T21:34:47.193Z",
+  "measured_at": "2026-08-13T03:35:38.535Z",
   "environment": {
     "platform": "win32",
     "arch": "x64",
@@ -14,111 +14,893 @@
     "fixture": "settings/workbench-performance-fixture.json",
     "groups": 4,
     "tabs": 20,
-    "agents": 20,
+    "agents": 54,
+    "live_scale_reference": {
+      "total": 54,
+      "idle": 33,
+      "off": 20,
+      "processing": 1
+    },
+    "surface_types": [
+      "agent-session",
+      "agents-overview",
+      "dashboard",
+      "inbox",
+      "library",
+      "workflows",
+      "graph",
+      "garden",
+      "new-tab",
+      "browser",
+      "files"
+    ],
     "owner": 1,
     "mirrors": 3
   },
   "bundle": {
-    "base_gzip_bytes": 711930,
-    "candidate_gzip_bytes": 804747,
-    "production_delta_gzip_bytes": 92817
+    "base_gzip_bytes": 4542541,
+    "candidate_gzip_bytes": 4542692,
+    "production_delta_gzip_bytes": 151
   },
   "runtime": {
     "startup_restore_ms": {
       "samples": [
-        460,
-        481.47,
-        492.4,
-        507.84,
-        537.63
+        474.37,
+        502.55,
+        526.25,
+        529.54,
+        532.78
       ],
-      "median": 492.4,
-      "p95": 537.63,
-      "max": 537.63
+      "median": 526.25,
+      "p95": 532.78,
+      "max": 532.78
+    },
+    "surface_first_activation_ms": {
+      "samples": [
+        44.4,
+        44.8,
+        45.7,
+        46.3,
+        46.4,
+        50,
+        62,
+        62.3,
+        63,
+        76.5,
+        77.7,
+        78.9,
+        78.9,
+        80,
+        80.1,
+        80.3,
+        84.9,
+        94.2,
+        128.9,
+        172.7
+      ],
+      "median": 76.5,
+      "p95": 128.9,
+      "max": 172.7
+    },
+    "surface_first_activation_by_surface_type_ms": {
+      "agent-session": {
+        "samples": [
+          44.4,
+          44.8,
+          45.7,
+          50,
+          78.9,
+          80,
+          80.1,
+          80.3,
+          84.9,
+          94.2
+        ],
+        "median": 78.9,
+        "p95": 94.2,
+        "max": 94.2
+      },
+      "agents-overview": {
+        "samples": [
+          78.9
+        ],
+        "median": 78.9,
+        "p95": 78.9,
+        "max": 78.9
+      },
+      "dashboard": {
+        "samples": [
+          63
+        ],
+        "median": 63,
+        "p95": 63,
+        "max": 63
+      },
+      "inbox": {
+        "samples": [
+          77.7
+        ],
+        "median": 77.7,
+        "p95": 77.7,
+        "max": 77.7
+      },
+      "library": {
+        "samples": [
+          46.3
+        ],
+        "median": 46.3,
+        "p95": 46.3,
+        "max": 46.3
+      },
+      "workflows": {
+        "samples": [
+          62.3
+        ],
+        "median": 62.3,
+        "p95": 62.3,
+        "max": 62.3
+      },
+      "graph": {
+        "samples": [
+          172.7
+        ],
+        "median": 172.7,
+        "p95": 172.7,
+        "max": 172.7
+      },
+      "garden": {
+        "samples": [
+          128.9
+        ],
+        "median": 128.9,
+        "p95": 128.9,
+        "max": 128.9
+      },
+      "new-tab": {
+        "samples": [
+          76.5
+        ],
+        "median": 76.5,
+        "p95": 76.5,
+        "max": 76.5
+      },
+      "browser": {
+        "samples": [
+          46.4
+        ],
+        "median": 46.4,
+        "p95": 46.4,
+        "max": 46.4
+      },
+      "files": {
+        "samples": [
+          62
+        ],
+        "median": 62,
+        "p95": 62,
+        "max": 62
+      }
     },
     "tab_switch_ms": {
       "samples": [
-        27.7,
-        28.7,
-        29,
-        29.4,
-        29.7,
-        29.8,
-        30.7,
-        30.7,
-        30.8,
-        31,
-        31.7,
-        32.2,
-        34.8,
-        46.7,
-        48.7,
-        50.6,
-        64.4,
-        64.5,
-        64.7,
-        117.1
+        76.5,
+        77.5,
+        77.8,
+        78.7,
+        88.1,
+        93.4,
+        125.7,
+        127.8,
+        128.4,
+        129,
+        143.7,
+        144,
+        144.4,
+        145.5,
+        146.4,
+        150.6,
+        175.1,
+        179.7,
+        194.6,
+        226.2
       ],
-      "median": 31,
-      "p95": 64.7,
-      "max": 117.1
+      "median": 129,
+      "p95": 194.6,
+      "max": 226.2
+    },
+    "tab_switch_by_surface_type_ms": {
+      "agent-session": {
+        "samples": [
+          125.7,
+          127.8,
+          128.4,
+          143.7,
+          144,
+          145.5,
+          150.6,
+          175.1,
+          179.7,
+          194.6
+        ],
+        "median": 144,
+        "p95": 194.6,
+        "max": 194.6
+      },
+      "agents-overview": {
+        "samples": [
+          146.4
+        ],
+        "median": 146.4,
+        "p95": 146.4,
+        "max": 146.4
+      },
+      "dashboard": {
+        "samples": [
+          144.4
+        ],
+        "median": 144.4,
+        "p95": 144.4,
+        "max": 144.4
+      },
+      "inbox": {
+        "samples": [
+          88.1
+        ],
+        "median": 88.1,
+        "p95": 88.1,
+        "max": 88.1
+      },
+      "library": {
+        "samples": [
+          76.5
+        ],
+        "median": 76.5,
+        "p95": 76.5,
+        "max": 76.5
+      },
+      "workflows": {
+        "samples": [
+          93.4
+        ],
+        "median": 93.4,
+        "p95": 93.4,
+        "max": 93.4
+      },
+      "graph": {
+        "samples": [
+          226.2
+        ],
+        "median": 226.2,
+        "p95": 226.2,
+        "max": 226.2
+      },
+      "garden": {
+        "samples": [
+          129
+        ],
+        "median": 129,
+        "p95": 129,
+        "max": 129
+      },
+      "new-tab": {
+        "samples": [
+          78.7
+        ],
+        "median": 78.7,
+        "p95": 78.7,
+        "max": 78.7
+      },
+      "browser": {
+        "samples": [
+          77.8
+        ],
+        "median": 77.8,
+        "p95": 77.8,
+        "max": 77.8
+      },
+      "files": {
+        "samples": [
+          77.5
+        ],
+        "median": 77.5,
+        "p95": 77.5,
+        "max": 77.5
+      }
+    },
+    "tab_switch_react_commit_by_surface_type_ms": {
+      "agent-session": {
+        "samples": [
+          14.9,
+          15,
+          16,
+          16.1,
+          17.6,
+          17.8,
+          18.3,
+          18.3,
+          18.4,
+          19.3
+        ],
+        "median": 17.6,
+        "p95": 19.3,
+        "max": 19.3
+      },
+      "agents-overview": {
+        "samples": [
+          32.4
+        ],
+        "median": 32.4,
+        "p95": 32.4,
+        "max": 32.4
+      },
+      "dashboard": {
+        "samples": [
+          21.3
+        ],
+        "median": 21.3,
+        "p95": 21.3,
+        "max": 21.3
+      },
+      "inbox": {
+        "samples": [
+          14.4
+        ],
+        "median": 14.4,
+        "p95": 14.4,
+        "max": 14.4
+      },
+      "library": {
+        "samples": [
+          15.8
+        ],
+        "median": 15.8,
+        "p95": 15.8,
+        "max": 15.8
+      },
+      "workflows": {
+        "samples": [
+          16.9
+        ],
+        "median": 16.9,
+        "p95": 16.9,
+        "max": 16.9
+      },
+      "graph": {
+        "samples": [
+          19.6
+        ],
+        "median": 19.6,
+        "p95": 19.6,
+        "max": 19.6
+      },
+      "garden": {
+        "samples": [
+          15.8
+        ],
+        "median": 15.8,
+        "p95": 15.8,
+        "max": 15.8
+      },
+      "new-tab": {
+        "samples": [
+          15.9
+        ],
+        "median": 15.9,
+        "p95": 15.9,
+        "max": 15.9
+      },
+      "browser": {
+        "samples": [
+          13.3
+        ],
+        "median": 13.3,
+        "p95": 13.3,
+        "max": 13.3
+      },
+      "files": {
+        "samples": [
+          16.8
+        ],
+        "median": 16.8,
+        "p95": 16.8,
+        "max": 16.8
+      }
     },
     "group_focus_ms": {
       "samples": [
-        29.1,
-        30.1,
-        30.3,
-        40.6
+        59.2,
+        68.7,
+        71.7,
+        76.5,
+        76.5,
+        77.1,
+        77.3,
+        77.4,
+        77.5,
+        77.5,
+        79.2,
+        108.9,
+        109.9,
+        110.5,
+        111,
+        112.1,
+        126.2,
+        141.8,
+        159,
+        176.3
       ],
-      "median": 30.1,
-      "p95": 40.6,
-      "max": 40.6
+      "median": 77.5,
+      "p95": 159,
+      "max": 176.3
+    },
+    "full_roster_telemetry_ms": {
+      "samples": [
+        47.5,
+        47.6,
+        48.3,
+        48.7,
+        49,
+        49,
+        49,
+        49.4,
+        53.8,
+        62.4
+      ],
+      "median": 49,
+      "p95": 62.4,
+      "max": 62.4
+    },
+    "full_roster_telemetry_react_commit_ms": {
+      "samples": [
+        15.1,
+        15.3,
+        15.4,
+        15.6,
+        15.6,
+        15.8,
+        17.2,
+        17.5,
+        18.8,
+        18.9
+      ],
+      "median": 15.6,
+      "p95": 18.9,
+      "max": 18.9
     },
     "terminal_output_commit_ms": {
       "samples": [
-        1.4,
-        1.4,
-        1.7,
-        1.8,
-        2.1,
-        2.3,
         2.8,
-        3.4,
-        12.8,
-        13.5
+        3.5,
+        3.7,
+        4.1,
+        4.2,
+        4.4,
+        5.2,
+        5.5,
+        20.6,
+        22.3
       ],
-      "median": 2.1,
-      "p95": 13.5,
-      "max": 13.5
+      "median": 4.2,
+      "p95": 22.3,
+      "max": 22.3
     },
     "stream_gap_count": 0,
     "overview_settle_ms": {
       "samples": [
-        202.21,
-        213.56,
-        215.07,
-        215.99,
-        216.04,
-        216.35
+        227.67,
+        230.14,
+        230.99,
+        231.56,
+        233.79,
+        245.37
       ],
-      "median": 215.07,
-      "p95": 216.35,
-      "max": 216.35
+      "median": 230.99,
+      "p95": 245.37,
+      "max": 245.37
     },
     "heavy_surface_resume_ms": {
       "samples": [
-        46.6,
-        48.2,
-        63.8,
-        79.8
+        144.6,
+        167.4,
+        177.5,
+        195.1
       ],
-      "median": 48.2,
-      "p95": 79.8,
-      "max": 79.8
+      "median": 167.4,
+      "p95": 195.1,
+      "max": 195.1
     },
-    "react_commit_max_ms": 20.3,
+    "surface_interaction_ms": {
+      "samples": [
+        46.6,
+        46.9,
+        47.2,
+        49.1,
+        50,
+        50.8,
+        62.6,
+        64.6,
+        79.4,
+        80.8,
+        80.9,
+        81.4,
+        81.5,
+        81.5,
+        81.7,
+        82.5,
+        82.8,
+        88.8,
+        91,
+        93.2,
+        94.8,
+        95.4,
+        96.8,
+        97.5,
+        97.6,
+        98.3,
+        107.3,
+        113.9,
+        114.7,
+        116.1,
+        116.3,
+        116.3,
+        120.5,
+        124.8,
+        126.4,
+        126.4,
+        128.8,
+        135.1,
+        136.4,
+        143.1,
+        146.5,
+        148.7,
+        152.5,
+        160.2,
+        160.7,
+        164.8,
+        167.4,
+        168.4,
+        179.7,
+        191.5,
+        199.5,
+        203.5,
+        211.4,
+        215.7,
+        248.9,
+        265.6
+      ],
+      "median": 113.9,
+      "p95": 215.7,
+      "max": 265.6
+    },
+    "surface_interaction_by_name_ms": {
+      "new tab command palette": {
+        "samples": [
+          152.5,
+          199.5,
+          215.7
+        ],
+        "median": 199.5,
+        "p95": 215.7,
+        "max": 215.7
+      },
+      "roster filter": {
+        "samples": [
+          91,
+          94.8,
+          126.4
+        ],
+        "median": 94.8,
+        "p95": 126.4,
+        "max": 126.4
+      },
+      "settings open": {
+        "samples": [
+          126.4,
+          143.1,
+          168.4
+        ],
+        "median": 143.1,
+        "p95": 168.4,
+        "max": 168.4
+      },
+      "settings category": {
+        "samples": [
+          80.8,
+          81.4,
+          81.5,
+          81.5,
+          81.7,
+          82.5,
+          95.4,
+          96.8,
+          97.5,
+          97.6,
+          98.3
+        ],
+        "median": 82.5,
+        "p95": 98.3,
+        "max": 98.3
+      },
+      "sidebar panel": {
+        "samples": [
+          116.1,
+          116.3,
+          120.5,
+          128.8,
+          146.5,
+          160.2
+        ],
+        "median": 120.5,
+        "p95": 160.2,
+        "max": 160.2
+      },
+      "agents filter": {
+        "samples": [
+          113.9,
+          135.1,
+          265.6
+        ],
+        "median": 135.1,
+        "p95": 265.6,
+        "max": 265.6
+      },
+      "agents mode": {
+        "samples": [
+          167.4,
+          203.5,
+          211.4
+        ],
+        "median": 203.5,
+        "p95": 211.4,
+        "max": 211.4
+      },
+      "dashboard selection": {
+        "samples": [
+          164.8,
+          179.7,
+          248.9
+        ],
+        "median": 179.7,
+        "p95": 248.9,
+        "max": 248.9
+      },
+      "inbox filter": {
+        "samples": [
+          93.2,
+          116.3,
+          124.8
+        ],
+        "median": 116.3,
+        "p95": 124.8,
+        "max": 124.8
+      },
+      "graph layout": {
+        "samples": [
+          62.6,
+          80.9,
+          148.7
+        ],
+        "median": 80.9,
+        "p95": 148.7,
+        "max": 148.7
+      },
+      "garden context menu": {
+        "samples": [
+          46.9,
+          64.6,
+          79.4
+        ],
+        "median": 64.6,
+        "p95": 79.4,
+        "max": 79.4
+      },
+      "library search": {
+        "samples": [
+          47.2,
+          50.8,
+          107.3
+        ],
+        "median": 50.8,
+        "p95": 107.3,
+        "max": 107.3
+      },
+      "workflows node library": {
+        "samples": [
+          82.8,
+          88.8,
+          136.4
+        ],
+        "median": 88.8,
+        "p95": 136.4,
+        "max": 136.4
+      },
+      "browser address": {
+        "samples": [
+          46.6,
+          49.1,
+          50
+        ],
+        "median": 49.1,
+        "p95": 50,
+        "max": 50
+      },
+      "files source editor": {
+        "samples": [
+          114.7,
+          160.7,
+          191.5
+        ],
+        "median": 160.7,
+        "p95": 191.5,
+        "max": 191.5
+      }
+    },
+    "surface_interaction_react_commit_by_name_ms": {
+      "new tab command palette": {
+        "samples": [
+          18.3,
+          18.6,
+          19.4
+        ],
+        "median": 18.6,
+        "p95": 19.4,
+        "max": 19.4
+      },
+      "roster filter": {
+        "samples": [
+          14.8,
+          14.9,
+          15.5
+        ],
+        "median": 14.9,
+        "p95": 15.5,
+        "max": 15.5
+      },
+      "settings open": {
+        "samples": [
+          17.1,
+          17.5,
+          18.2
+        ],
+        "median": 17.5,
+        "p95": 18.2,
+        "max": 18.2
+      },
+      "settings category": {
+        "samples": [
+          0.5,
+          0.5,
+          0.5,
+          0.6,
+          0.6,
+          0.6,
+          0.8,
+          0.9,
+          0.9,
+          1,
+          1.4
+        ],
+        "median": 0.6,
+        "p95": 1.4,
+        "max": 1.4
+      },
+      "sidebar panel": {
+        "samples": [
+          16,
+          17.2,
+          17.3,
+          17.5,
+          18.3,
+          19.6
+        ],
+        "median": 17.3,
+        "p95": 19.6,
+        "max": 19.6
+      },
+      "agents filter": {
+        "samples": [
+          16,
+          16.8,
+          20.5
+        ],
+        "median": 16.8,
+        "p95": 20.5,
+        "max": 20.5
+      },
+      "agents mode": {
+        "samples": [
+          15.8,
+          16.9,
+          17.2
+        ],
+        "median": 16.9,
+        "p95": 17.2,
+        "max": 17.2
+      },
+      "dashboard selection": {
+        "samples": [
+          18.5,
+          19.5,
+          20.6
+        ],
+        "median": 19.5,
+        "p95": 20.6,
+        "max": 20.6
+      },
+      "inbox filter": {
+        "samples": [
+          0.5,
+          0.5,
+          0.6
+        ],
+        "median": 0.5,
+        "p95": 0.6,
+        "max": 0.6
+      },
+      "graph layout": {
+        "samples": [
+          2.7,
+          3.3,
+          15.8
+        ],
+        "median": 3.3,
+        "p95": 15.8,
+        "max": 15.8
+      },
+      "garden context menu": {
+        "samples": [
+          0.4,
+          0.5,
+          1.1
+        ],
+        "median": 0.5,
+        "p95": 1.1,
+        "max": 1.1
+      },
+      "library search": {
+        "samples": [
+          0.1,
+          0.2,
+          15.6
+        ],
+        "median": 0.2,
+        "p95": 15.6,
+        "max": 15.6
+      },
+      "workflows node library": {
+        "samples": [
+          1.3,
+          1.8,
+          16.2
+        ],
+        "median": 1.8,
+        "p95": 16.2,
+        "max": 16.2
+      },
+      "browser address": {
+        "samples": [
+          0,
+          0,
+          0.1
+        ],
+        "median": 0,
+        "p95": 0.1,
+        "max": 0.1
+      },
+      "files source editor": {
+        "samples": [
+          18.4,
+          18.7,
+          19.2
+        ],
+        "median": 18.7,
+        "p95": 19.2,
+        "max": 19.2
+      }
+    },
+    "react_commit_max_ms": 67.8,
     "renderer_peaks": {
-      "xterm": 13,
+      "xterm": 4,
       "webgl": 3
     }
   },
@@ -128,31 +910,39 @@
     "checks": [
       {
         "metric": "restore_p95_ms",
-        "observed": 537.63,
+        "observed": 532.78,
         "operator": "<=",
         "limit": 1500,
         "unit": "ms",
         "passed": true
       },
       {
-        "metric": "tab_switch_p95_ms",
-        "observed": 64.7,
+        "metric": "surface_first_activation_p95_ms",
+        "observed": 128.9,
         "operator": "<=",
-        "limit": 100,
+        "limit": 500,
+        "unit": "ms",
+        "passed": true
+      },
+      {
+        "metric": "tab_switch_p95_ms",
+        "observed": 194.6,
+        "operator": "<=",
+        "limit": 250,
         "unit": "ms",
         "passed": true
       },
       {
         "metric": "group_focus_p95_ms",
-        "observed": 40.6,
+        "observed": 159,
         "operator": "<=",
-        "limit": 75,
+        "limit": 175,
         "unit": "ms",
         "passed": true
       },
       {
         "metric": "terminal_output_commit_p95_ms",
-        "observed": 13.5,
+        "observed": 22.3,
         "operator": "<=",
         "limit": 50,
         "unit": "ms",
@@ -168,7 +958,7 @@
       },
       {
         "metric": "overview_settle_p95_ms",
-        "observed": 216.35,
+        "observed": 245.37,
         "operator": "<=",
         "limit": 300,
         "unit": "ms",
@@ -176,23 +966,39 @@
       },
       {
         "metric": "heavy_surface_resume_p95_ms",
-        "observed": 79.8,
+        "observed": 195.1,
         "operator": "<=",
         "limit": 500,
         "unit": "ms",
         "passed": true
       },
       {
-        "metric": "react_commit_max_ms",
-        "observed": 20.3,
+        "metric": "full_roster_telemetry_p95_ms",
+        "observed": 62.4,
         "operator": "<=",
-        "limit": 50,
+        "limit": 100,
+        "unit": "ms",
+        "passed": true
+      },
+      {
+        "metric": "surface_interaction_p95_ms",
+        "observed": 215.7,
+        "operator": "<=",
+        "limit": 300,
+        "unit": "ms",
+        "passed": true
+      },
+      {
+        "metric": "react_commit_max_ms",
+        "observed": 67.8,
+        "operator": "<=",
+        "limit": 80,
         "unit": "ms",
         "passed": true
       },
       {
         "metric": "bundle_delta_gzip_bytes",
-        "observed": 92817,
+        "observed": 151,
         "operator": "<=",
         "limit": 256000,
         "unit": "bytes",
@@ -200,7 +1006,7 @@
       },
       {
         "metric": "xterm_renderer_peak",
-        "observed": 13,
+        "observed": 4,
         "operator": "<=",
         "limit": 24,
         "unit": "renderers",

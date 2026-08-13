@@ -189,6 +189,24 @@ describe("core view surface definitions", () => {
     expect(screen.getByTestId("heavy-renderer")).toBeInTheDocument();
   });
 
+  it("does not allocate an expensive renderer for a surface restored hidden", () => {
+    const { rerender } = render(
+      <SuspendedSurfaceRenderer visibility="hidden">
+        <div data-testid="heavy-renderer" />
+      </SuspendedSurfaceRenderer>,
+    );
+
+    expect(screen.queryByTestId("heavy-renderer")).not.toBeInTheDocument();
+
+    rerender(
+      <SuspendedSurfaceRenderer visibility="visible">
+        <div data-testid="heavy-renderer" />
+      </SuspendedSurfaceRenderer>,
+    );
+
+    expect(screen.getByTestId("heavy-renderer")).toBeInTheDocument();
+  });
+
   it("releases only the expensive renderer while preserving logical view state", () => {
     vi.useFakeTimers();
 

@@ -525,8 +525,15 @@
 
 /* Grid Adjustments for Dashboard vs Grid */
 .dashboard-agent-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 85px;
   min-height: 80px;
   box-shadow: var(--shadow-wardian-card);
+}
+
+.agents-overview-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 280px;
 }
 
 .grid-agent-card {
@@ -568,6 +575,8 @@
 
 /* ── Watchlist Agent Row ──────────────────────────────── */
 .watchlist-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 42px;
   display: grid;
   grid-template-columns: auto 1fr auto auto;
   align-items: center;
