@@ -1,4 +1,4 @@
-import { type PropsWithChildren, type ReactNode, useEffect, useState } from "react";
+import { memo, type PropsWithChildren, type ReactNode, useEffect, useState } from "react";
 
 import {
   DashboardView,
@@ -16,6 +16,7 @@ import {
   type GraphSurfaceState,
   type SurfaceVisibility,
 } from "./coreSurfaceMetadata";
+import { keepHiddenSurfaceSnapshot } from "./hiddenSurfaceMemo";
 
 export * from "./coreSurfaceMetadata";
 
@@ -52,16 +53,16 @@ export type SuspendedSurfaceRendererProps = {
 };
 
 /**
- * Retains the logical surface host while releasing a heavy renderer after a
- * bounded hidden grace period. The Dockview panel must remain mounted and
- * feed its canonical visibility into this component for the grace to apply.
+ * Retains the logical surface host while releasing a previously visible heavy
+ * renderer after a bounded hidden grace period. A surface restored hidden does
+ * not allocate the renderer until its first reveal.
  */
 export function SuspendedSurfaceRenderer({
   visibility,
   hidden_grace_ms = HEAVY_SURFACE_HIDDEN_GRACE_MS,
   children,
 }: SuspendedSurfaceRendererProps) {
-  const [rendererMounted, setRendererMounted] = useState(true);
+  const [rendererMounted, setRendererMounted] = useState(visibility === "visible");
 
   useEffect(() => {
     if (visibility === "visible") {
@@ -133,7 +134,7 @@ export interface GraphSurfaceProps
   on_state_change: (state: GraphSurfaceState) => void;
 }
 
-export function GraphSurface({
+export const GraphSurface = memo(function GraphSurface({
   surface_id,
   state: _state,
   on_state_change,
@@ -157,7 +158,7 @@ export function GraphSurface({
       </SuspendedSurfaceRenderer>
     </SurfaceFrame>
   );
-}
+}, keepHiddenSurfaceSnapshot);
 
 export interface GardenSurfaceProps
   extends Omit<GardenViewProps,
@@ -167,7 +168,7 @@ export interface GardenSurfaceProps
   on_state_change: (state: GardenSurfaceState) => void;
 }
 
-export function GardenSurface({
+export const GardenSurface = memo(function GardenSurface({
   surface_id,
   state: _state,
   on_state_change,
@@ -191,4 +192,4 @@ export function GardenSurface({
       </SuspendedSurfaceRenderer>
     </SurfaceFrame>
   );
-}
+}, keepHiddenSurfaceSnapshot);

@@ -746,7 +746,7 @@ describe('AgentsOverviewView maximize behavior', () => {
     expect(screen.getByTestId('chat-agent-1')).toHaveValue('Long prompt draft');
   });
 
-  it('preserves a hidden agent chat mode override while another agent is maximized', () => {
+  it('suspends a hidden chat while preserving its mode override across maximize', () => {
     useSettingsStore.getState().setGridCardDisplayMode('terminal');
 
     const { rerender } = renderGrid(null, agents);
@@ -756,7 +756,10 @@ describe('AgentsOverviewView maximize behavior', () => {
 
     rerender(<AgentsOverviewView {...gridProps('agent-2', agents)} />);
 
-    expect(screen.getByTestId('chat-agent-1')).not.toBeVisible();
+    expect(screen.queryByTestId('chat-agent-1')).not.toBeInTheDocument();
+    expect(document.querySelector(
+      '[data-agent-chat-state="suspended"][data-agent-chat-session-id="agent-1"]',
+    )).toBeInTheDocument();
     expect(screen.getByTestId('terminal-agent-2')).toBeInTheDocument();
 
     rerender(<AgentsOverviewView {...gridProps(null, agents)} />);

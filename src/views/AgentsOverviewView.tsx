@@ -474,7 +474,7 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
             onMouseEnter={() => onMouseEnterCard(agentId)}
             onDragStart={(e) => e.preventDefault()}
             onMouseUp={() => onMouseUp()}
-            className={`bg-[var(--color-wardian-card)] overflow-hidden flex flex-col shadow-lg relative min-w-0 ${isAgentMaximized ? 'h-full w-full rounded-none border-none transition-none z-10' : 'transition-colors rounded-[var(--density-card-radius)] border border-wardian-border ' + (isSelected || draggedAgentId === agentId || dragOverAgentId === agentId ? 'ring-1 ring-[var(--color-wardian-accent)]/50 shadow-wardian-accent z-10' : '')} ${draggedAgentId === agentId && !isAgentMaximized ? 'opacity-50 scale-[0.98]' : ''}`}
+            className={`agents-overview-card bg-[var(--color-wardian-card)] overflow-hidden flex flex-col shadow-lg relative min-w-0 ${isAgentMaximized ? 'h-full w-full rounded-none border-none transition-none z-10' : 'transition-colors rounded-[var(--density-card-radius)] border border-wardian-border ' + (isSelected || draggedAgentId === agentId || dragOverAgentId === agentId ? 'ring-1 ring-[var(--color-wardian-accent)]/50 shadow-wardian-accent z-10' : '')} ${draggedAgentId === agentId && !isAgentMaximized ? 'opacity-50 scale-[0.98]' : ''}`}
           >
             <div
               data-testid={`agent-card-header-${agentId}`}
@@ -540,7 +540,7 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
                 className="absolute inset-4 select-text"
                 onClick={(e) => e.stopPropagation()}
               >
-                {cardMode === 'chat' ? (
+                {cardMode === 'chat' && isAgentRendererResident ? (
                   <AgentChatView
                     autoFocusComposer={composerFocusAgentId === agentId}
                     draft={chatDrafts[agentId] ?? ""}
@@ -559,7 +559,7 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
                       setChatDrafts((current) => ({ ...current, [agentId]: value }));
                     }}
                   />
-                ) : (
+                ) : cardMode === 'terminal' ? (
                   <AgentTerminalSlot
                     presentationId={`${surfaceId}:agent:${agentId}`}
                     sessionId={agentId}
@@ -571,6 +571,13 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
                 renderState={isAgentRendererResident ? "mounted" : "suspended"}
                     onTerminalFocus={onTerminalFocus}
                     onTitleChange={handleTitleChange}
+                  />
+                ) : (
+                  <div
+                    aria-hidden="true"
+                    className="h-full w-full"
+                    data-agent-chat-session-id={agentId}
+                    data-agent-chat-state="suspended"
                   />
                 )}
               </div>

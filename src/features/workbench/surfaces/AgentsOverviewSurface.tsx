@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { memo, useMemo, useRef } from "react";
 
 import type {
   AgentConfig,
@@ -11,6 +11,7 @@ import {
   AgentsOverviewView,
   type AgentsOverviewViewProps,
 } from "../../../views/AgentsOverviewView";
+import { keepHiddenSurfaceSnapshot } from "./hiddenSurfaceMemo";
 
 type ManagedViewProps =
   | "filteredAgents"
@@ -103,7 +104,7 @@ export function revealAgentInOverviewState(
 }
 
 /** Adapts persisted workbench state to the existing multi-agent view boundary. */
-export function AgentsOverviewSurface({
+export const AgentsOverviewSurface = memo(function AgentsOverviewSurface({
   surface_id,
   state,
   agents,
@@ -183,6 +184,7 @@ export function AgentsOverviewSurface({
             <button
               aria-pressed={state.mode === candidate}
               className="rounded px-2 py-1 text-xs text-muted-neutral transition-colors hover:text-primary aria-pressed:bg-[var(--color-wardian-accent)]/10 aria-pressed:text-[var(--color-wardian-accent)]"
+              data-testid={`agents-overview-mode-${candidate}`}
               key={candidate}
               onClick={() => updateMode(candidate)}
               type="button"
@@ -217,4 +219,4 @@ export function AgentsOverviewSurface({
       </div>
     </section>
   );
-}
+}, keepHiddenSurfaceSnapshot);

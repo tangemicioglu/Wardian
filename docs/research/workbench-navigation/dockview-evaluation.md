@@ -47,32 +47,48 @@ The repository source is the deterministic
 fixture. The profiler stages that fixture inside the isolated home as
 `settings/workbench-performance-fixture.json`; this staged relative path is what
 the machine-readable baseline records, not a second input. The fixture contains
-20 persisted tabs in four groups, 20 mock agents, one terminal owner, and three
-mirrors of the same runtime. It includes Agents Overview, Graph, Garden, Queue,
-Library, and Workflows. The profiler builds and serves Wardian's canonical
-production output rather than the Phase 0 proof route. It measures five fresh
-restores, 20 tab activations, four group focus changes, ten ordered terminal
-bursts, six Overview resizes, and four heavy-surface resume cycles. React
-commits, live xterm renderers, live WebGL contexts, and stream sequence gaps are
-instrumented in page. The gzip bundle delta compares the canonical production
-build with the frozen pre-cutover base recorded in the machine-readable
-baseline. The historical base remains stable after the legacy flag-off path is
-deleted. No observed result is supplied by the fixture or defaulted when
-instrumentation is absent.
+20 persisted tabs in four groups, 54 mock agents, one terminal owner, and three
+mirrors of the same runtime. Its 33 idle, 20 off, and one processing agents
+mirror the read-only live-habitat count captured for the 2026-08-12 audit.
+Every registered surface type is present: New Tab, Agents, Dashboard, Inbox,
+Graph, Garden, Library, Workflows, Agent Session, Browser, and Files.
+
+The profiler builds and serves Wardian's canonical production output rather
+than the Phase 0 proof route. It measures five fresh restores; first activation
+and steady switching for every surface; 20 group-focus changes; ten ordered
+terminal bursts; ten full-roster telemetry updates; six Agents resizes; four
+heavy-surface resume cycles; three repetitions of each surface-specific
+interaction; all six left-sidebar panes; and Settings open/close plus all
+eleven categories. React commits, live xterm renderers, live WebGL contexts,
+and stream sequence gaps are instrumented in page. The gzip bundle delta
+compares the candidate with the frozen origin/main build used to start the
+audit. No observed result is supplied by the fixture or defaulted when
+instrumentation is absent. The full workload and lifecycle decisions are
+specified in [Full-Surface Performance Audit](../../specs/2026-08-12-full-surface-performance-audit.md).
 
 | Production measure | Observed | Gate | Result |
 |---|---:|---:|---|
-| Startup restore p95 | 553.52 ms | 1,500 ms | Accept |
-| Tab switch p95 | 64.2 ms | 100 ms | Accept |
-| Group focus p95 | 31 ms | 75 ms | Accept |
-| Terminal output commit p95 | 13.4 ms | 50 ms | Accept |
+| Startup restore p95 | 532.78 ms | 1,500 ms | Accept |
+| First surface activation p95 | 128.9 ms | 500 ms | Accept |
+| Steady tab switch p95 | 194.6 ms | 250 ms | Accept |
+| Group focus p95 | 159 ms | 175 ms | Accept |
+| Terminal output commit p95 | 22.3 ms | 50 ms | Accept |
 | Terminal stream gaps | 0 | 0 | Accept |
-| Agents Overview settle p95 | 216.16 ms | 300 ms | Accept |
-| Graph/Garden resume p95 | 64.3 ms | 500 ms | Accept |
-| Maximum React commit | 22.4 ms | 50 ms | Accept |
-| Production bundle gzip delta | +90,342 bytes | +256,000 bytes (250 KiB) | Accept |
-| Peak live xterm renderers | 13 | 24 | Accept |
+| Full-roster telemetry p95 | 62.4 ms | 100 ms | Accept |
+| Agents Overview settle p95 | 245.37 ms | 300 ms | Accept |
+| Graph/Garden resume p95 | 195.1 ms | 500 ms | Accept |
+| Surface interaction p95 | 215.7 ms | 300 ms | Accept |
+| Maximum React commit | 67.8 ms | 80 ms | Accept |
+| Production bundle gzip delta | +151 bytes | +256,000 bytes (250 KiB) | Accept |
+| Peak live xterm renderers | 4 | 24 | Accept |
 | Peak live WebGL contexts | 3 | 12 | Accept |
+
+The first 54-agent diagnostic, before the lifecycle and viewport fixes,
+recorded 743.43 ms restore p95, 243.6 ms group-focus p95, 98.9 ms full-roster
+telemetry p95, and a 75.4 ms maximum React commit. The final run reduced those
+figures to 532.78 ms, 159 ms, 62.4 ms, and 67.8 ms respectively. First
+activation is reported separately from steady switching so hidden Graph and
+Garden renderers are not preallocated to make the switch metric look faster.
 
 The first complete production profiling run recorded 15 WebGL contexts against
 the limit of 12; every other gate passed. Its counter retained contexts whose

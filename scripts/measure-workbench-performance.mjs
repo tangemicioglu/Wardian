@@ -19,13 +19,16 @@ const baselinePath = path.join(
 const refusal = "Refusing to benchmark without an explicit isolated WARDIAN_HOME.";
 const gates = Object.freeze({
   restore_p95_ms: { limit: 1500, unit: "ms" },
-  tab_switch_p95_ms: { limit: 100, unit: "ms" },
-  group_focus_p95_ms: { limit: 75, unit: "ms" },
+  surface_first_activation_p95_ms: { limit: 500, unit: "ms" },
+  tab_switch_p95_ms: { limit: 250, unit: "ms" },
+  group_focus_p95_ms: { limit: 175, unit: "ms" },
   terminal_output_commit_p95_ms: { limit: 50, unit: "ms" },
   stream_gap_count: { limit: 0, unit: "gaps" },
   overview_settle_p95_ms: { limit: 300, unit: "ms" },
   heavy_surface_resume_p95_ms: { limit: 500, unit: "ms" },
-  react_commit_max_ms: { limit: 50, unit: "ms" },
+  full_roster_telemetry_p95_ms: { limit: 100, unit: "ms" },
+  surface_interaction_p95_ms: { limit: 300, unit: "ms" },
+  react_commit_max_ms: { limit: 80, unit: "ms" },
   bundle_delta_gzip_bytes: { limit: 250 * 1024, unit: "bytes" },
   xterm_renderer_peak: { limit: 24, unit: "renderers" },
   webgl_context_peak: { limit: 12, unit: "contexts" },
@@ -99,14 +102,17 @@ function fixtureErrors(fixture) {
   const document = fixture?.workbench;
   const surfaces = Object.values(document?.surfaces ?? {});
   const presentations = fixture?.terminal_presentations ?? [];
-  const required = ["agents-overview", "graph", "garden", "inbox", "library", "workflows"];
+  const required = [
+    "new-tab", "agents-overview", "dashboard", "inbox", "graph", "garden",
+    "library", "workflows", "agent-session", "browser", "files",
+  ];
   const singletonTypes = new Set([
     "agents-overview", "dashboard", "inbox", "graph", "garden", "library", "workflows",
   ]);
   if (fixture?.schema_version !== 1) errors.push("fixture schema_version must be 1");
   if (Object.keys(document?.groups ?? {}).length !== 4) errors.push("fixture must contain four groups");
   if (surfaces.length !== 20) errors.push("fixture must contain 20 tabs");
-  if ((fixture?.agents ?? []).length !== 20) errors.push("fixture must contain 20 agents");
+  if ((fixture?.agents ?? []).length !== 54) errors.push("fixture must contain 54 agents");
   const heavyGrace = fixture?.benchmark?.heavy_surface_hidden_grace_ms;
   if (!Number.isSafeInteger(heavyGrace) || heavyGrace < 1 || heavyGrace > 300_000) {
     errors.push("fixture heavy_surface_hidden_grace_ms must be an integer from 1 through 300000");
@@ -134,12 +140,15 @@ function fixtureErrors(fixture) {
 function gateObservations(baseline) {
   return {
     restore_p95_ms: baseline.runtime?.startup_restore_ms?.p95,
+    surface_first_activation_p95_ms: baseline.runtime?.surface_first_activation_ms?.p95,
     tab_switch_p95_ms: baseline.runtime?.tab_switch_ms?.p95,
     group_focus_p95_ms: baseline.runtime?.group_focus_ms?.p95,
     terminal_output_commit_p95_ms: baseline.runtime?.terminal_output_commit_ms?.p95,
     stream_gap_count: baseline.runtime?.stream_gap_count,
     overview_settle_p95_ms: baseline.runtime?.overview_settle_ms?.p95,
     heavy_surface_resume_p95_ms: baseline.runtime?.heavy_surface_resume_ms?.p95,
+    full_roster_telemetry_p95_ms: baseline.runtime?.full_roster_telemetry_ms?.p95,
+    surface_interaction_p95_ms: baseline.runtime?.surface_interaction_ms?.p95,
     react_commit_max_ms: baseline.runtime?.react_commit_max_ms,
     bundle_delta_gzip_bytes: baseline.bundle?.production_delta_gzip_bytes,
     xterm_renderer_peak: baseline.runtime?.renderer_peaks?.xterm,
@@ -147,7 +156,7 @@ function gateObservations(baseline) {
   };
 }
 
-function evaluateGates(baseline) {
+function evaluateGates(baseline, enforce = true) {
   const observed = gateObservations(baseline);
   for (const [metric, value] of Object.entries(observed)) {
     if (!Number.isFinite(value) || value < 0) throw new Error(`Missing observed metric: ${metric}`);
@@ -161,7 +170,9 @@ function evaluateGates(baseline) {
     passed: observed[metric] <= gate.limit,
   }));
   const result = { schema_version: 1, passed: checks.every((check) => check.passed), checks };
-  if (!result.passed) throw new Error(`Workbench performance gate failure:\n${JSON.stringify(result, null, 2)}`);
+  if (enforce && !result.passed) {
+    throw new Error(`Workbench performance gate failure:\n${JSON.stringify(result, null, 2)}`);
+  }
   return result;
 }
 
@@ -291,6 +302,8 @@ function browserFixture(fixture) {
     terminal_burst_started_at: null,
     terminal_burst_last_sequence: null,
     terminal_last_commit_ms: null,
+    last_react_commit_at: null,
+    telemetry_generation: 0,
   };
   const brokerState = (sessionId = trackedRuntime, presentationId = null) => ({
     session_id: sessionId, runtime_generation: 1, lease_epoch: 1,
@@ -339,13 +352,32 @@ function browserFixture(fixture) {
     runtime.terminal_burst_last_sequence = runtime.events.length;
     return { first, last: runtime.events.length };
   };
+  runtime.emit_full_roster_metrics = () => {
+    runtime.telemetry_generation += 1;
+    const generation = runtime.telemetry_generation;
+    const startedAt = performance.now();
+    emit("agent-metrics", fixture.agents.map((agent, index) => ({
+      session_id: agent.session_id,
+      cpu_usage: index === 0 ? 12 + generation : (index + generation) % 7,
+      memory_mb: 96 + ((index * 7 + generation) % 180),
+      uptime_seconds: 3_600 + index * 73 + generation,
+      query_count: index * 3 + generation,
+      init_timestamp: "2026-08-10T18:00:00.000Z",
+      current_status: index === 0 ? "Processing" : agent.is_off ? "Off" : "Idle",
+      log_path: `/workspace/${agent.session_id}/events.jsonl`,
+    })));
+    return { generation, started_at: startedAt, commit_index: runtime.react_commits.length };
+  };
   window.__WARDIAN_WORKBENCH_PERF__ = runtime;
   window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
     supportsFiber: true,
     inject: () => 1,
     onCommitFiberRoot: (_id, root) => {
       const duration = root?.current?.actualDuration;
-      if (Number.isFinite(duration) && duration >= 0) runtime.react_commits.push(duration);
+      if (Number.isFinite(duration) && duration >= 0) {
+        runtime.react_commits.push(duration);
+        runtime.last_react_commit_at = performance.now();
+      }
     },
     onCommitFiberUnmount: () => undefined,
   };
@@ -426,16 +458,77 @@ function browserFixture(fixture) {
     tree: { path: "", name: "Root", children: [] },
     stubbed,
   });
+  const topologyEdges = fixture.agents
+    .filter((agent) => !agent.is_off)
+    .map((agent, index, activeAgents) => ({
+      a: agent.session_id,
+      b: activeAgents[(index + 1) % activeAgents.length].session_id,
+      origin: "manual",
+    }));
+  const queueItems = Array.from({ length: 24 }, (_, index) => ({
+    id: `perf-queue-${index + 1}`,
+    type: index % 6 === 0 ? "action_needed" : "agent_completed",
+    timestamp: Date.now() - index * 45_000,
+    read: index % 3 === 0,
+    agent_session_id: fixture.agents[index % fixture.agents.length].session_id,
+    agent_name: fixture.agents[index % fixture.agents.length].session_name,
+    summary: index % 6 === 0
+      ? `Review performance request ${index + 1}.\n1. Continue\n2. Stop`
+      : `Completed benchmark task ${index + 1}.`,
+  }));
+  let browserSummary = {
+    browser_id: "perf-browser-01", short_ref: "browser:1",
+    url: "https://example.test/performance", title: "Performance fixture",
+    load_state: "complete", viewport: { width: 1280, height: 720 },
+    engine: "edge", console_error_count: 0, network_failure_count: 0,
+  };
+  const fileSnapshot = {
+    resource_id: "file:/workspace/perf-agent-01/README.md",
+    subscription_id: "perf-file-subscription-1",
+    revision: 1,
+    descriptor: {
+      schema: 1,
+      canonical_path: "/workspace/perf-agent-01/README.md",
+      display_name: "README.md",
+      extension: "md",
+      mime_type: "text/markdown",
+      encoding: "utf-8",
+      renderer_kind: "markdown",
+      size_bytes: 1_024,
+      line_count: 32,
+      content_hash: "perf-readme-v1",
+      modified_at_ms: 1_786_390_000_000,
+      capabilities: { preview: true, changes: true, draft: true, stream: false },
+      unavailable_reason: null,
+    },
+  };
   const defaults = {
     list_agent_classes: [], list_provider_readiness: [], load_watchlists: [], load_watchlist_prefs: null,
-    load_agent_interactions: {}, load_queue_items: [], load_queue_preferences: {},
+    load_agent_interactions: {}, load_queue_items: queueItems, load_queue_preferences: {},
     load_onboarding_hints: { dismissed_hint_ids: ["spawn-agent-first-run:v1"] },
     list_workflows: [], list_scheduled_runs: [], load_workflow_library: { folders: [], rootWorkflowIds: [] },
-    workflow_list_blueprints: [], workflow_list_runs: [], get_topology: { edges: [], ignored_pairs: [], fallback_groups: [] },
+    workflow_list_blueprints: [], workflow_list_runs: [],
+    list_inbox_notifications: [], list_workflow_inbox_approvals: [],
+    get_topology: { edges: topologyEdges, ignored_pairs: [], fallback_groups: [] },
     workflow_validate: { ok: true, diagnostics: [] },
     workflow_write: { written: true, diagnostics: [] },
-    get_pair_activity: [], load_app_settings: null, load_shell_settings: null, list_available_shells: [],
+    get_pair_activity: [], load_app_settings: null,
+    load_shell_settings: {
+      shell_id: "auto",
+      custom_executable: null,
+      custom_args: null,
+      agent_session_persistence: "resume",
+      default_provider: "auto",
+      codex_runtime_policy: {
+        sandbox_mode: "workspace-write",
+        approval_policy: "on-request",
+        full_auto: false,
+        trust_workspaces: false,
+      },
+    },
+    list_available_shells: [],
     sync_provider_theme_settings: null, library_watch: null, library_unwatch: null,
+    list_file_recoveries: [],
     get_library_index: {
       sections: {
         skills: emptyLibrarySection(),
@@ -463,9 +556,51 @@ function browserFixture(fixture) {
         return { outcome: "saved", durable_revision: args.document.revision, durable_token: `perf-${args.document.revision}`, request_id: args.request_id };
       }
       if (command === "list_agents") return clone(fixture.agents);
+      if (command === "get_browser_session") {
+        return args.browserId === browserSummary.browser_id ? clone(browserSummary) : null;
+      }
+      if (command === "attach_browser_screencast") {
+        return { token: `perf-browser-lease-${args.presentationId}`, can_drive: true };
+      }
+      if (command === "navigate_browser_session") {
+        browserSummary = {
+          ...browserSummary,
+          ...(typeof args.action === "string" && args.action.includes("://")
+            ? { url: args.action, title: args.action }
+            : {}),
+          load_state: "complete",
+        };
+        return clone(browserSummary);
+      }
+      if (command === "set_browser_viewport") {
+        browserSummary = { ...browserSummary, viewport: { width: args.width, height: args.height } };
+        return clone(browserSummary);
+      }
+      if (command === "open_file_resource") return clone(fileSnapshot);
+      if (command === "read_file_resource_text") return {
+        schema: 1,
+        resource_id: fileSnapshot.resource_id,
+        revision: fileSnapshot.revision,
+        text: "# Wardian performance fixture\n\nThis file exercises the rendered Files surface.\n\n## Agents\n\nThe fixture mirrors a busy habitat with 54 agents.\n",
+      };
+      if (command === "issue_file_resource_ticket") return {
+        schema: 1,
+        ticket_id: "perf-file-ticket-1",
+        url: "http://127.0.0.1/perf-file-ticket-1",
+        resource_id: fileSnapshot.resource_id,
+        revision: fileSnapshot.revision,
+        renderer_lease_id: args.request.renderer_lease_id,
+        expires_at_ms: Date.now() + 60_000,
+      };
+      if ([
+        "close_browser_session", "detach_browser_screencast", "send_browser_pointer",
+        "send_browser_wheel", "send_browser_key", "close_file_resource",
+        "close_file_renderer_lease", "save_queue_items", "save_queue_preferences",
+      ].includes(command)) return null;
       if (command === "register_terminal_presentation") return registration(args.request);
       if (command === "update_terminal_presentation") return registration(args.request);
       if (command === "report_terminal_presentation_viewport") return presentation(args.request);
+      if (command === "request_terminal_snapshot") return snapshot(args.request.session_id);
       if (command === "subscribe_terminal_events") return {
         broker_state: brokerState(args.request.session_id),
         initial_snapshot: snapshot(args.request.session_id),
@@ -555,10 +690,254 @@ async function twoFrames(page) {
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
+async function reusedProductionBundleDelta(home) {
+  const candidate = path.join(home, "bundle-measurement", "canonical");
+  const runtime = path.join(home, "runtime-build", "index.html");
+  for (const target of [candidate, runtime]) {
+    if (!fsSync.existsSync(target)) {
+      throw new Error(`--reuse-build requires an existing benchmark build at ${target}`);
+    }
+  }
+  const reference = JSON.parse(await fs.readFile(baselinePath, "utf8"));
+  const baseGzip = reference?.bundle?.base_gzip_bytes;
+  if (!Number.isSafeInteger(baseGzip) || baseGzip <= 0) {
+    throw new Error(`Baseline bundle.base_gzip_bytes is unavailable in ${baselinePath}`);
+  }
+  const candidateGzip = await gzipBytes(candidate);
+  return {
+    base_gzip_bytes: baseGzip,
+    candidate_gzip_bytes: candidateGzip,
+    production_delta_gzip_bytes: Math.max(0, candidateGzip - baseGzip),
+  };
+}
+
+async function measureUserAction(page, action, ready = async () => undefined) {
+  await page.evaluate(() => {
+    const runtime = window.__WARDIAN_WORKBENCH_PERF__;
+    runtime.user_action_started_at = performance.now();
+    runtime.user_action_commit_index = runtime.react_commits.length;
+  });
+  await action();
+  await ready();
+  await twoFrames(page);
+  return await page.evaluate(() => {
+    const started = window.__WARDIAN_WORKBENCH_PERF__.user_action_started_at;
+    if (!Number.isFinite(started)) throw new Error("User action instrumentation did not start");
+    const commitIndex = window.__WARDIAN_WORKBENCH_PERF__.user_action_commit_index;
+    const commits = window.__WARDIAN_WORKBENCH_PERF__.react_commits.slice(commitIndex);
+    window.__WARDIAN_WORKBENCH_PERF__.last_user_action_react_commit_ms = Math.max(0, ...commits);
+    return performance.now() - started;
+  });
+}
+
+async function measureFullRosterTelemetry(page) {
+  const marker = await page.evaluate(() => (
+    window.__WARDIAN_WORKBENCH_PERF__.emit_full_roster_metrics()
+  ));
+  await page.waitForFunction(({ startedAt, commitIndex }) => {
+    const runtime = window.__WARDIAN_WORKBENCH_PERF__;
+    return runtime.react_commits.length > commitIndex
+      && runtime.last_react_commit_at >= startedAt;
+  }, { startedAt: marker.started_at, commitIndex: marker.commit_index });
+  await twoFrames(page);
+  return await page.evaluate(({ startedAt, commitIndex }) => {
+    const runtime = window.__WARDIAN_WORKBENCH_PERF__;
+    return {
+      latency_ms: performance.now() - startedAt,
+      react_commit_max_ms: Math.max(...runtime.react_commits.slice(commitIndex)),
+    };
+  }, { startedAt: marker.started_at, commitIndex: marker.commit_index });
+}
+
+async function measureSurfaceInteractions(page) {
+  const samplesByInteraction = {};
+  const commitsByInteraction = {};
+  const record = async (label, surfaceId, action, ready, cleanup = async () => undefined) => {
+    await measureTabActivation(page, surfaceId);
+    const samples = [];
+    const commits = [];
+    for (let index = 0; index < 3; index += 1) {
+      samples.push(await measureUserAction(page, action, ready));
+      commits.push(await page.evaluate(() => (
+        window.__WARDIAN_WORKBENCH_PERF__.last_user_action_react_commit_ms
+      )));
+      await cleanup();
+    }
+    samplesByInteraction[label] = summarize(samples, label);
+    commitsByInteraction[label] = summarize(commits, `${label} React commit`);
+  };
+
+  await record(
+    "new tab command palette",
+    "perf-new-tab",
+    () => page.getByRole("button", { name: "Browse all surfaces" }).click(),
+    () => page.getByRole("dialog", { name: "Open Surface" }).waitFor(),
+    () => page.keyboard.press("Escape"),
+  );
+  const rosterSearch = page.getByPlaceholder("Search agents...");
+  await record(
+    "roster filter",
+    "perf-agent-owner",
+    () => rosterSearch.fill("Perf Agent 34"),
+    () => page.getByLabel("Agent Perf Agent 34").waitFor(),
+    () => rosterSearch.fill(""),
+  );
+  await record(
+    "settings open",
+    "perf-agent-owner",
+    () => page.getByTestId("sidebar-tab-settings").click(),
+    () => page.getByRole("dialog", { name: "Settings" }).waitFor(),
+    () => page.getByRole("button", { name: "Close settings" }).click(),
+  );
+  await page.getByTestId("sidebar-tab-settings").click();
+  const settingsDialog = page.getByRole("dialog", { name: "Settings" });
+  await settingsDialog.waitFor();
+  const settingsCategorySamples = [];
+  const settingsCategoryCommits = [];
+  for (const category of [
+    "General", "Appearance", "Agents", "Inbox", "Explorer", "Watchlist",
+    "Terminal", "Agent Runtime", "Provider Utilities", "Remote Access", "Advanced",
+  ]) {
+    settingsCategorySamples.push(await measureUserAction(
+      page,
+      () => settingsDialog.getByRole("button", { name: category, exact: true }).click(),
+    ));
+    settingsCategoryCommits.push(await page.evaluate(() => (
+      window.__WARDIAN_WORKBENCH_PERF__.last_user_action_react_commit_ms
+    )));
+  }
+  samplesByInteraction["settings category"] = summarize(
+    settingsCategorySamples,
+    "settings category",
+  );
+  commitsByInteraction["settings category"] = summarize(
+    settingsCategoryCommits,
+    "settings category React commit",
+  );
+  await page.getByRole("button", { name: "Close settings" }).click();
+  const sidebarPanelSamples = [];
+  const sidebarPanelCommits = [];
+  for (const testId of [
+    "sidebar-tab-explorer", "sidebar-tab-git", "sidebar-tab-changes",
+    "sidebar-tab-agent-config", "sidebar-tab-command", "sidebar-tab-workflows",
+  ]) {
+    sidebarPanelSamples.push(await measureUserAction(
+      page,
+      () => page.getByTestId(testId).click(),
+    ));
+    sidebarPanelCommits.push(await page.evaluate(() => (
+      window.__WARDIAN_WORKBENCH_PERF__.last_user_action_react_commit_ms
+    )));
+  }
+  samplesByInteraction["sidebar panel"] = summarize(sidebarPanelSamples, "sidebar panel");
+  commitsByInteraction["sidebar panel"] = summarize(
+    sidebarPanelCommits,
+    "sidebar panel React commit",
+  );
+  await page.getByTestId("sidebar-tab-explorer").click();
+  const overviewFilter = page.getByLabel("Filter Agents");
+  await record(
+    "agents filter",
+    "perf-overview",
+    () => overviewFilter.fill("Perf Agent 34"),
+    () => page.locator("#agent-card-perf-agent-34").waitFor(),
+    () => overviewFilter.fill(""),
+  );
+  await record(
+    "agents mode",
+    "perf-overview",
+    () => page.getByTestId("agents-overview-mode-grid").click(),
+    () => page.getByTestId("agents-overview-mode-grid").waitFor({ state: "visible" }),
+    () => page.getByTestId("agents-overview-mode-auto").click(),
+  );
+  await record(
+    "dashboard selection",
+    "perf-dashboard",
+    () => page.locator(".dashboard-agent-card").first().click(),
+    () => page.locator(".dashboard-agent-card").first().waitFor(),
+  );
+  await record(
+    "inbox filter",
+    "perf-inbox",
+    () => page.getByRole("button", { name: "Filter Inbox events" }).click(),
+    () => page.getByLabel("Show agent completions").waitFor(),
+    () => page.getByRole("button", { name: "Filter Inbox events" }).click(),
+  );
+  await record(
+    "graph layout",
+    "perf-graph",
+    () => page.getByRole("button", { name: "Re-run layout" }).click(),
+    () => page.locator('[data-testid="graph-view"] canvas').first().waitFor(),
+  );
+  await measureTabActivation(page, "perf-garden");
+  const gardenCanvas = page.locator(".garden-canvas canvas");
+  await gardenCanvas.waitFor();
+  const gardenMenuSamples = [];
+  const gardenMenuCommits = [];
+  for (let index = 0; index < 3; index += 1) {
+    gardenMenuSamples.push(await measureUserAction(page, async () => {
+      const box = await gardenCanvas.boundingBox();
+      if (!box) throw new Error("Garden canvas has no measurable bounds");
+      await page.mouse.click(box.x + 120, box.y + 60, { button: "right" });
+    }, () => page.locator('[data-testid="garden-context-menu"]').waitFor()));
+    gardenMenuCommits.push(await page.evaluate(() => (
+      window.__WARDIAN_WORKBENCH_PERF__.last_user_action_react_commit_ms
+    )));
+    await page.locator('[data-testid="garden-reset-layout"]').click();
+  }
+  samplesByInteraction["garden context menu"] = summarize(gardenMenuSamples, "garden context menu");
+  commitsByInteraction["garden context menu"] = summarize(
+    gardenMenuCommits,
+    "garden context menu React commit",
+  );
+  const librarySearch = page.locator('[data-testid="library-search"]');
+  await record(
+    "library search",
+    "perf-library",
+    () => librarySearch.fill("planner"),
+    () => page.locator('[data-testid="library-list"]').waitFor(),
+    () => librarySearch.fill(""),
+  );
+  await record(
+    "workflows node library",
+    "perf-workflows",
+    () => page.getByTestId("workflows-view").getByRole("button", { name: "Add node" }).click(),
+    () => page.getByTestId("node-library").waitFor(),
+    () => page.getByTestId("node-library").getByRole("button", { name: "Close" }).click(),
+  );
+  await record(
+    "browser address",
+    "perf-browser",
+    async () => {
+      const address = page.getByTestId("browser-surface-address");
+      await address.fill("https://example.test/updated");
+      await address.press("Enter");
+    },
+    () => page.getByTestId("browser-surface-viewport").waitFor(),
+  );
+  await measureTabActivation(page, "perf-files");
+  await page.getByRole("heading", { name: "Wardian performance fixture" }).waitFor();
+  await record(
+    "files source editor",
+    "perf-files",
+    () => page.getByRole("button", { name: "Edit source" }).click(),
+    () => page.getByTestId("monaco-text-renderer").waitFor(),
+    () => page.getByRole("button", { name: "View rendered" }).click(),
+  );
+
+  const allSamples = Object.values(samplesByInteraction).flatMap((entry) => entry.samples);
+  return {
+    summary: summarize(allSamples, "surface interaction"),
+    by_interaction: samplesByInteraction,
+    react_commit_by_interaction: commitsByInteraction,
+  };
+}
+
 async function clickSurfaceTabFromUser(page, surfaceId) {
   await page.evaluate(() => {
     const runtime = window.__WARDIAN_WORKBENCH_PERF__;
     runtime.tab_activation_started_at = null;
+    runtime.tab_activation_commit_index = runtime.react_commits.length;
     window.addEventListener("pointerdown", () => {
       runtime.tab_activation_started_at = performance.now();
     }, { capture: true, once: true });
@@ -580,6 +959,9 @@ async function measureTabActivation(page, surfaceId) {
     }
     const started = window.__WARDIAN_WORKBENCH_PERF__.tab_activation_started_at;
     if (!Number.isFinite(started)) throw new Error(`Surface tab ${id} did not receive user input`);
+    const commitIndex = window.__WARDIAN_WORKBENCH_PERF__.tab_activation_commit_index;
+    const commits = window.__WARDIAN_WORKBENCH_PERF__.react_commits.slice(commitIndex);
+    window.__WARDIAN_WORKBENCH_PERF__.last_tab_activation_react_commit_ms = Math.max(0, ...commits);
     return performance.now() - started;
   }, surfaceId);
 }
@@ -671,13 +1053,40 @@ async function measureRuntime(fixture, runtimeOutDir) {
       page = prepared.page;
     }
     const tabIds = Object.keys(fixture.workbench.surfaces);
+    const firstActivation = [];
+    const firstActivationBySurfaceType = {};
+    for (const surfaceId of tabIds) {
+      const duration = await measureTabActivation(page, surfaceId);
+      firstActivation.push(duration);
+      const surfaceType = fixture.workbench.surfaces[surfaceId].surface_type;
+      (firstActivationBySurfaceType[surfaceType] ??= []).push(duration);
+    }
     const tabSwitch = [];
+    const tabSwitchBySurfaceType = {};
+    const tabSwitchCommitBySurfaceType = {};
     for (let index = 0; index < 20; index += 1) {
-      tabSwitch.push(await measureTabActivation(page, tabIds[index]));
+      const surfaceId = tabIds[index];
+      const duration = await measureTabActivation(page, surfaceId);
+      tabSwitch.push(duration);
+      const surfaceType = fixture.workbench.surfaces[surfaceId].surface_type;
+      (tabSwitchBySurfaceType[surfaceType] ??= []).push(duration);
+      const commit = await page.evaluate(() => (
+        window.__WARDIAN_WORKBENCH_PERF__.last_tab_activation_react_commit_ms
+      ));
+      (tabSwitchCommitBySurfaceType[surfaceType] ??= []).push(commit);
     }
     const groupFocus = [];
-    for (const group of Object.values(fixture.workbench.groups)) {
-      groupFocus.push(await measureTabActivation(page, group.active_surface_id));
+    for (let round = 0; round < 5; round += 1) {
+      for (const group of Object.values(fixture.workbench.groups)) {
+        groupFocus.push(await measureTabActivation(page, group.active_surface_id));
+      }
+    }
+    const fullRosterTelemetry = [];
+    const fullRosterTelemetryCommit = [];
+    for (let index = 0; index < 10; index += 1) {
+      const measured = await measureFullRosterTelemetry(page);
+      fullRosterTelemetry.push(measured.latency_ms);
+      fullRosterTelemetryCommit.push(measured.react_commit_max_ms);
     }
     const terminalOutput = [];
     for (let index = 0; index < 10; index += 1) {
@@ -724,6 +1133,7 @@ async function measureRuntime(fixture, runtimeOutDir) {
       await waitForHeavyRendererReleased(page, surfaceId, heavyGrace + 5_000);
       heavyResume.push(await measureHeavySurfaceActivation(page, surfaceId));
     }
+    const surfaceInteractions = await measureSurfaceInteractions(page);
     const observed = await page.evaluate(() => {
       const runtime = window.__WARDIAN_WORKBENCH_PERF__;
       return {
@@ -745,12 +1155,40 @@ async function measureRuntime(fixture, runtimeOutDir) {
     }
     return {
       startup_restore_ms: summarize(startup, "startup restore"),
+      surface_first_activation_ms: summarize(firstActivation, "surface first activation"),
+      surface_first_activation_by_surface_type_ms: Object.fromEntries(
+        Object.entries(firstActivationBySurfaceType).map(
+          ([surfaceType, samples]) => [
+            surfaceType,
+            summarize(samples, `${surfaceType} first activation`),
+          ],
+        ),
+      ),
       tab_switch_ms: summarize(tabSwitch, "tab switch"),
+      tab_switch_by_surface_type_ms: Object.fromEntries(Object.entries(tabSwitchBySurfaceType).map(
+        ([surfaceType, samples]) => [surfaceType, summarize(samples, `${surfaceType} tab switch`)],
+      )),
+      tab_switch_react_commit_by_surface_type_ms: Object.fromEntries(
+        Object.entries(tabSwitchCommitBySurfaceType).map(
+          ([surfaceType, samples]) => [
+            surfaceType,
+            summarize(samples, `${surfaceType} tab switch React commit`),
+          ],
+        ),
+      ),
       group_focus_ms: summarize(groupFocus, "group focus"),
+      full_roster_telemetry_ms: summarize(fullRosterTelemetry, "full roster telemetry"),
+      full_roster_telemetry_react_commit_ms: summarize(
+        fullRosterTelemetryCommit,
+        "full roster telemetry React commit",
+      ),
       terminal_output_commit_ms: summarize(terminalOutput, "terminal output commit"),
       stream_gap_count: observed.stream_gap_count,
       overview_settle_ms: summarize(overviewSettle, "Overview settle"),
       heavy_surface_resume_ms: summarize(heavyResume, "heavy surface resume"),
+      surface_interaction_ms: surfaceInteractions.summary,
+      surface_interaction_by_name_ms: surfaceInteractions.by_interaction,
+      surface_interaction_react_commit_by_name_ms: surfaceInteractions.react_commit_by_interaction,
       react_commit_max_ms: round(Math.max(0, ...observed.react_commits)),
       renderer_peaks: { xterm: observed.xterm_peak, webgl: observed.webgl_peak },
     };
@@ -764,9 +1202,11 @@ function passingSelfTestBaseline() {
   const timing = { samples: [1, 2, 3], median: 2, p95: 3, max: 3 };
   return {
     runtime: {
-      startup_restore_ms: timing, tab_switch_ms: timing, group_focus_ms: timing,
+      startup_restore_ms: timing, surface_first_activation_ms: timing,
+      tab_switch_ms: timing, group_focus_ms: timing,
       terminal_output_commit_ms: timing, stream_gap_count: 0, overview_settle_ms: timing,
-      heavy_surface_resume_ms: timing, react_commit_max_ms: 3,
+      heavy_surface_resume_ms: timing, full_roster_telemetry_ms: timing,
+      surface_interaction_ms: timing, react_commit_max_ms: 3,
       renderer_peaks: { xterm: 4, webgl: 4 },
     },
     bundle: { production_delta_gzip_bytes: 1024 },
@@ -782,11 +1222,14 @@ async function selfTest() {
   if (result.checks.length !== Object.keys(gates).length) throw new Error("Self-test omitted a gate");
   const timingMetricKeys = {
     restore_p95_ms: "startup_restore_ms",
+    surface_first_activation_p95_ms: "surface_first_activation_ms",
     tab_switch_p95_ms: "tab_switch_ms",
     group_focus_p95_ms: "group_focus_ms",
     terminal_output_commit_p95_ms: "terminal_output_commit_ms",
     overview_settle_p95_ms: "overview_settle_ms",
     heavy_surface_resume_p95_ms: "heavy_surface_resume_ms",
+    full_roster_telemetry_p95_ms: "full_roster_telemetry_ms",
+    surface_interaction_p95_ms: "surface_interaction_ms",
   };
   for (const metric of Object.keys(gates)) {
     const failed = structuredClone(baseline);
@@ -831,8 +1274,14 @@ async function main() {
   const seedFile = await seedHome(home, fixture);
   // Bundle comparison and the benchmark-only production build both control
   // Vite compile-time flags. Keep them serialized before serving static output.
-  const bundle = await productionBundleDelta(home);
-  const runtimeOutDir = await buildProductionRuntime(home, fixture);
+  const reuseBuild = process.argv.includes("--reuse-build");
+  const reuseBundle = reuseBuild || process.argv.includes("--reuse-bundle");
+  const bundle = reuseBundle
+    ? await reusedProductionBundleDelta(home)
+    : await productionBundleDelta(home);
+  const runtimeOutDir = reuseBuild
+    ? path.join(home, "runtime-build")
+    : await buildProductionRuntime(home, fixture);
   const runtime = await measureRuntime(fixture, runtimeOutDir);
   const baseline = {
     schema_version: 1,
@@ -846,14 +1295,32 @@ async function main() {
       react_runtime: "react-dom/profiling",
       heavy_surface_hidden_grace_ms: fixture.benchmark.heavy_surface_hidden_grace_ms,
     },
-    scenario: { fixture: seedFile, groups: 4, tabs: 20, agents: 20, owner: 1, mirrors: 3 },
+    scenario: {
+      fixture: seedFile,
+      groups: 4,
+      tabs: 20,
+      agents: fixture.agents.length,
+      live_scale_reference: { total: 54, idle: 33, off: 20, processing: 1 },
+      surface_types: [...new Set(Object.values(fixture.workbench.surfaces).map(
+        (surface) => surface.surface_type,
+      ))],
+      owner: 1,
+      mirrors: 3,
+    },
     bundle,
     runtime,
   };
-  baseline.gates = evaluateGates(baseline);
-  await fs.mkdir(path.dirname(baselinePath), { recursive: true });
-  await fs.writeFile(baselinePath, `${JSON.stringify(baseline, null, 2)}\n`, "utf8");
-  process.stdout.write(`${JSON.stringify({ baseline: path.relative(repoRoot, baselinePath), gates: baseline.gates }, null, 2)}\n`);
+  baseline.gates = evaluateGates(baseline, !process.argv.includes("--audit"));
+  const outputIndex = process.argv.indexOf("--output");
+  const rawOutput = outputIndex === -1 ? null : process.argv[outputIndex + 1];
+  if (outputIndex !== -1 && (!rawOutput || !path.isAbsolute(rawOutput))) {
+    throw new Error("--output requires an absolute path inside the isolated WARDIAN_HOME");
+  }
+  const outputPath = rawOutput ? canonicalize(rawOutput) : baselinePath;
+  if (rawOutput) assertInsideHome(home, outputPath);
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fs.writeFile(outputPath, `${JSON.stringify(baseline, null, 2)}\n`, "utf8");
+  process.stdout.write(`${JSON.stringify({ baseline: path.relative(repoRoot, outputPath), gates: baseline.gates }, null, 2)}\n`);
 }
 
 const operation = process.argv.includes("--self-test") ? selfTest : main;

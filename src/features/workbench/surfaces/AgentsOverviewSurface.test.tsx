@@ -150,6 +150,7 @@ describe("AgentsOverviewSurface", () => {
     render(<AgentsOverviewSurface {...surfaceProps()} />);
 
     expect(screen.getByRole("group", { name: "Agents mode" })).toBeInTheDocument();
+    expect(screen.getByTestId("agents-overview-mode-auto")).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("searchbox", { name: "Filter Agents" })).toBeInTheDocument();
 
     expect(viewSpy).toHaveBeenLastCalledWith(expect.objectContaining({
