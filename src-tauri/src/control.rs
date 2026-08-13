@@ -7210,7 +7210,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mailbox_drain_can_complete_booting_provider_from_prompt_evidence() {
+    async fn mailbox_drain_waits_for_codex_prompt_evidence() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -7252,6 +7252,10 @@ mod tests {
         .await
         .unwrap();
         let message_id = queued[0].message_id.clone().unwrap();
+        assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
+        assert_eq!(queued[0].delivery_state, "queued");
+
+        record_provider_ready_prompt(&state, "agent-1").await;
 
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
             .await
@@ -7276,7 +7280,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mailbox_drain_can_complete_booting_claude_from_idle_status() {
+    async fn mailbox_drain_waits_for_claude_prompt_evidence() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "ClaudeOne", "Coder").await;
@@ -7313,6 +7317,10 @@ mod tests {
         .await
         .unwrap();
         let message_id = queued[0].message_id.clone().unwrap();
+        assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
+        assert_eq!(queued[0].delivery_state, "queued");
+
+        record_provider_ready_prompt(&state, "agent-1").await;
 
         let drained = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -7347,7 +7355,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mailbox_drain_can_complete_booting_gemini_from_prompt_evidence() {
+    async fn mailbox_drain_waits_for_gemini_prompt_evidence() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "GeminiOne", "Coder").await;
@@ -7387,6 +7395,10 @@ mod tests {
         .await
         .unwrap();
         let message_id = queued[0].message_id.clone().unwrap();
+        assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
+        assert_eq!(queued[0].delivery_state, "queued");
+
+        record_provider_ready_prompt(&state, "agent-1").await;
 
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
             .await
@@ -7410,7 +7422,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mailbox_drain_can_complete_booting_antigravity_from_prompt_evidence() {
+    async fn mailbox_drain_waits_for_antigravity_prompt_evidence() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "AntigravityOne", "Coder").await;
@@ -7450,6 +7462,10 @@ mod tests {
         .await
         .unwrap();
         let message_id = queued[0].message_id.clone().unwrap();
+        assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
+        assert_eq!(queued[0].delivery_state, "queued");
+
+        record_provider_ready_prompt(&state, "agent-1").await;
 
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
             .await
