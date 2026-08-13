@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 
 import type {
   AgentConfig,
@@ -37,6 +37,12 @@ const DEFAULT_STATE: AgentsOverviewSurfaceState = {
   focused_agent_id: null,
   search_query: "",
   status_filter: [],
+};
+
+const PERFORMANCE_TELEMETRY_MARKER_ENABLED = import.meta.env.VITE_WARDIAN_WORKBENCH_PERF === "1";
+
+type PerformanceTelemetryRuntime = {
+  note_full_roster_telemetry_rendered?: (generation: number) => void;
 };
 
 /** Restores both the canonical state and the pre-Task-11 preview shape safely. */
@@ -146,6 +152,21 @@ export const AgentsOverviewSurface = memo(function AgentsOverviewSurface({
     viewProps.telemetry,
     viewProps.terminalTitles,
   ]);
+
+  const telemetryGeneration = useMemo(() => {
+    if (!PERFORMANCE_TELEMETRY_MARKER_ENABLED || agents.length === 0) return null;
+    if (!agents.every((agent) => viewProps.telemetry[agent.session_id] !== undefined)) return null;
+    const generation = viewProps.telemetry[agents[0].session_id]?.query_count;
+    return Number.isSafeInteger(generation) ? generation : null;
+  }, [agents, viewProps.telemetry]);
+
+  useEffect(() => {
+    if (telemetryGeneration === null) return;
+    const runtime = (globalThis as typeof globalThis & {
+      __WARDIAN_WORKBENCH_PERF__?: PerformanceTelemetryRuntime;
+    }).__WARDIAN_WORKBENCH_PERF__;
+    runtime?.note_full_roster_telemetry_rendered?.(telemetryGeneration);
+  }, [telemetryGeneration]);
 
   const updateState = (patch: Partial<AgentsOverviewSurfaceState>) => {
     const next = { ...stateRef.current, ...patch };

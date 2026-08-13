@@ -244,7 +244,11 @@ export const LibraryList: React.FC = () => {
     };
 
     return (
-        <div data-testid="library-list-content" className="h-full flex flex-col min-h-0">
+        <div
+            className="h-full flex flex-col min-h-0"
+            data-search-query={searchQuery}
+            data-testid="library-list-content"
+        >
             <ListToolbar
                 kindLabel={kindLabel}
                 kindLabelPlural={kindLabelPlural}

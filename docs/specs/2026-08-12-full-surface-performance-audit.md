@@ -51,7 +51,9 @@ xterm/WebGL allocations.
 - Fail when an expected surface, interaction target, React commit, terminal
   acknowledgement, or browser error is missing.
 - Keep the fixture and all benchmark writes inside an explicit isolated
-  `WARDIAN_HOME`.
+  `WARDIAN_HOME`. The default result is
+  `WARDIAN_HOME/workbench-performance-baseline.json`; updating the checked-in
+  baseline is a separate, reviewed copy from that isolated result.
 - Compare bundle size with the frozen gzip size measured on the origin/main
   source used to start the audit.
 

@@ -142,6 +142,13 @@ describe("workbench performance script", () => {
     expect(source).toContain("runtime.webgl_live = liveWebglContexts.size");
     expect(source).toContain('samplesByInteraction["settings category"]');
     expect(source).toContain('samplesByInteraction["sidebar panel"]');
+    expect(source).toContain("function resolveOutputPath(home, args = process.argv)");
+    expect(source).toContain('path.join(home, "workbench-performance-baseline.json")');
+    expect(source).toContain("full_roster_telemetry_rendered_generation === generation");
+    expect(source).toContain('getAttribute("aria-pressed") === "true"');
+    expect(source).toContain('data-layout-revision');
+    expect(source).toContain('data-search-query')
+    expect(source).toContain('data-browser-url')
     expect(source).toContain("load_shell_settings: {");
     expect(source).toContain('command === "list_provider_model_catalog"');
     expect(source).toContain("--screenshot requires an absolute path inside the isolated WARDIAN_HOME");

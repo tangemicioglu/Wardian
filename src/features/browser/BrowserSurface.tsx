@@ -309,9 +309,15 @@ export function BrowserSurface({
       // read-only presentation must not be able to navigate it either.
       if (isReadOnly || missing || !lease) return;
       setActionError(null);
-      void navigateBrowserSession(resource_key, action, lease.token).catch((error: unknown) => {
-        setActionError(error instanceof Error ? error.message : String(error));
-      });
+      void navigateBrowserSession(resource_key, action, lease.token)
+        .then((nextSummary) => {
+          setSummary(nextSummary);
+          setMissing(false);
+          setResolved(true);
+        })
+        .catch((error: unknown) => {
+          setActionError(error instanceof Error ? error.message : String(error));
+        });
     },
     [isReadOnly, lease, missing, resource_key],
   );
@@ -522,6 +528,7 @@ export function BrowserSurface({
       <div
         className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--color-wardian-card-bg-muted)] outline-none"
         data-testid="browser-surface-viewport"
+        data-browser-url={summary?.url ?? ""}
         onKeyDown={(event) => handleKey(event, "keyDown")}
         onKeyUp={(event) => handleKey(event, "keyUp")}
         onPointerDown={(event) => handlePointer(event, "mousePressed")}

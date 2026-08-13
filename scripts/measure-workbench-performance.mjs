@@ -83,6 +83,19 @@ function assertInsideHome(home, candidate) {
   if (!inside(home, candidate)) throw new Error(`Refusing filesystem mutation outside ${home}: ${candidate}`);
 }
 
+function resolveOutputPath(home, args = process.argv) {
+  const outputIndex = args.indexOf("--output");
+  const rawOutput = outputIndex === -1 ? null : args[outputIndex + 1];
+  if (outputIndex !== -1 && (!rawOutput || !path.isAbsolute(rawOutput))) {
+    throw new Error("--output requires an absolute path inside the isolated WARDIAN_HOME");
+  }
+  const outputPath = rawOutput
+    ? canonicalize(rawOutput)
+    : path.join(home, "workbench-performance-baseline.json");
+  assertInsideHome(home, outputPath);
+  return outputPath;
+}
+
 function round(value) {
   return Number(value.toFixed(2));
 }
@@ -304,6 +317,9 @@ function browserFixture(fixture) {
     terminal_last_commit_ms: null,
     last_react_commit_at: null,
     telemetry_generation: 0,
+    full_roster_telemetry_rendered_generation: null,
+    full_roster_telemetry_rendered_commit_index: null,
+    full_roster_telemetry_rendered_commit_ms: null,
   };
   const brokerState = (sessionId = trackedRuntime, presentationId = null) => ({
     session_id: sessionId, runtime_generation: 1, lease_epoch: 1,
@@ -367,6 +383,11 @@ function browserFixture(fixture) {
       log_path: `/workspace/${agent.session_id}/events.jsonl`,
     })));
     return { generation, started_at: startedAt, commit_index: runtime.react_commits.length };
+  };
+  runtime.note_full_roster_telemetry_rendered = (generation) => {
+    runtime.full_roster_telemetry_rendered_generation = generation;
+    runtime.full_roster_telemetry_rendered_commit_index = runtime.react_commits.length;
+    runtime.full_roster_telemetry_rendered_commit_ms = runtime.react_commits.at(-1) ?? null;
   };
   window.__WARDIAN_WORKBENCH_PERF__ = runtime;
   window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
@@ -458,6 +479,43 @@ function browserFixture(fixture) {
     tree: { path: "", name: "Root", children: [] },
     stubbed,
   });
+  const benchmarkLibrarySkills = {
+    stubbed: false,
+    tree: {
+      path: "",
+      name: "Root",
+      children: [
+        {
+          path: "dev",
+          name: "dev",
+          children: [
+            {
+              kind: "skill",
+              path: "dev/planner",
+              entry_ref: "skills/dev/planner",
+              name: "planner",
+              description: "Plans benchmark work",
+              tags: ["benchmark"],
+              is_starred: false,
+              deployment_count: 0,
+              error: null,
+            },
+          ],
+        },
+        {
+          kind: "skill",
+          path: "reviewer",
+          entry_ref: "skills/reviewer",
+          name: "reviewer",
+          description: "Reviews benchmark work",
+          tags: ["benchmark"],
+          is_starred: false,
+          deployment_count: 0,
+          error: null,
+        },
+      ],
+    },
+  };
   const topologyEdges = fixture.agents
     .filter((agent) => !agent.is_off)
     .map((agent, index, activeAgents) => ({
@@ -531,7 +589,7 @@ function browserFixture(fixture) {
     list_file_recoveries: [],
     get_library_index: {
       sections: {
-        skills: emptyLibrarySection(),
+        skills: benchmarkLibrarySkills,
         prompts: emptyLibrarySection(),
         workflows: emptyLibrarySection(),
         classes: emptyLibrarySection(),
@@ -724,8 +782,8 @@ async function measureUserAction(page, action, ready = async () => undefined) {
     runtime.user_action_started_at = performance.now();
     runtime.user_action_commit_index = runtime.react_commits.length;
   });
-  await action();
-  await ready();
+  const marker = await action();
+  await ready(marker);
   await twoFrames(page);
   return await page.evaluate(() => {
     const started = window.__WARDIAN_WORKBENCH_PERF__.user_action_started_at;
@@ -738,22 +796,28 @@ async function measureUserAction(page, action, ready = async () => undefined) {
 }
 
 async function measureFullRosterTelemetry(page) {
+  await measureTabActivation(page, "perf-overview");
   const marker = await page.evaluate(() => (
     window.__WARDIAN_WORKBENCH_PERF__.emit_full_roster_metrics()
   ));
-  await page.waitForFunction(({ startedAt, commitIndex }) => {
-    const runtime = window.__WARDIAN_WORKBENCH_PERF__;
-    return runtime.react_commits.length > commitIndex
-      && runtime.last_react_commit_at >= startedAt;
-  }, { startedAt: marker.started_at, commitIndex: marker.commit_index });
+  try {
+    await page.waitForFunction(({ generation, commitIndex }) => {
+      const runtime = window.__WARDIAN_WORKBENCH_PERF__;
+      return runtime.full_roster_telemetry_rendered_generation === generation
+        && runtime.full_roster_telemetry_rendered_commit_index > commitIndex
+        && Number.isFinite(runtime.full_roster_telemetry_rendered_commit_ms);
+    }, { generation: marker.generation, commitIndex: marker.commit_index });
+  } catch (error) {
+    throw new Error(`Full-roster telemetry generation ${marker.generation} did not render: ${String(error)}`);
+  }
   await twoFrames(page);
-  return await page.evaluate(({ startedAt, commitIndex }) => {
+  return await page.evaluate(({ startedAt }) => {
     const runtime = window.__WARDIAN_WORKBENCH_PERF__;
     return {
       latency_ms: performance.now() - startedAt,
-      react_commit_max_ms: Math.max(...runtime.react_commits.slice(commitIndex)),
+      react_commit_max_ms: runtime.full_roster_telemetry_rendered_commit_ms,
     };
-  }, { startedAt: marker.started_at, commitIndex: marker.commit_index });
+  }, { startedAt: marker.started_at });
 }
 
 async function measureSurfaceInteractions(page) {
@@ -764,7 +828,11 @@ async function measureSurfaceInteractions(page) {
     const samples = [];
     const commits = [];
     for (let index = 0; index < 3; index += 1) {
-      samples.push(await measureUserAction(page, action, ready));
+      try {
+        samples.push(await measureUserAction(page, action, ready));
+      } catch (error) {
+        throw new Error(`Surface interaction ${label} did not reach its postcondition: ${String(error)}`);
+      }
       commits.push(await page.evaluate(() => (
         window.__WARDIAN_WORKBENCH_PERF__.last_user_action_react_commit_ms
       )));
@@ -854,14 +922,23 @@ async function measureSurfaceInteractions(page) {
     "agents mode",
     "perf-overview",
     () => page.getByTestId("agents-overview-mode-grid").click(),
-    () => page.getByTestId("agents-overview-mode-grid").waitFor({ state: "visible" }),
+    () => page.waitForFunction(() => (
+      document.querySelector('[data-testid="agents-overview-mode-grid"]')?.getAttribute("aria-pressed") === "true"
+    )),
     () => page.getByTestId("agents-overview-mode-auto").click(),
   );
   await record(
     "dashboard selection",
     "perf-dashboard",
-    () => page.locator(".dashboard-agent-card").first().click(),
-    () => page.locator(".dashboard-agent-card").first().waitFor(),
+    async () => {
+      const card = page.locator(".dashboard-agent-card").first();
+      const selected = await card.evaluate((element) => element.classList.contains("ring-1"));
+      await card.locator(".dashboard-agent-card__content").click({ modifiers: ["Control"] });
+      return selected;
+    },
+    (selectedBefore) => page.waitForFunction((wasSelected) => (
+      document.querySelector(".dashboard-agent-card")?.classList.contains("ring-1") !== wasSelected
+    ), selectedBefore),
   );
   await record(
     "inbox filter",
@@ -873,8 +950,15 @@ async function measureSurfaceInteractions(page) {
   await record(
     "graph layout",
     "perf-graph",
-    () => page.getByRole("button", { name: "Re-run layout" }).click(),
-    () => page.locator('[data-testid="graph-view"] canvas').first().waitFor(),
+    async () => {
+      const canvas = page.getByTestId("graph-canvas");
+      const revision = await canvas.getAttribute("data-layout-revision");
+      await page.getByRole("button", { name: "Re-run layout" }).click();
+      return revision;
+    },
+    (previousRevision) => page.waitForFunction((before) => (
+      document.querySelector('[data-testid="graph-canvas"]')?.getAttribute("data-layout-revision") !== before
+    ), previousRevision),
   );
   await measureTabActivation(page, "perf-garden");
   const gardenCanvas = page.locator(".garden-canvas canvas");
@@ -902,7 +986,13 @@ async function measureSurfaceInteractions(page) {
     "library search",
     "perf-library",
     () => librarySearch.fill("planner"),
-    () => page.locator('[data-testid="library-list"]').waitFor(),
+    async () => {
+      await page.getByTestId("library-list-content").waitFor();
+      await page.getByTestId("library-row-skills/dev/planner").waitFor();
+      await page.waitForFunction(() => (
+        document.querySelector('[data-testid="library-list-content"]')?.getAttribute("data-search-query") === "planner"
+      ));
+    },
     () => librarySearch.fill(""),
   );
   await record(
@@ -917,10 +1007,14 @@ async function measureSurfaceInteractions(page) {
     "perf-browser",
     async () => {
       const address = page.getByTestId("browser-surface-address");
-      await address.fill("https://example.test/updated");
+      const target = "https://example.test/updated";
+      await address.fill(target);
       await address.press("Enter");
+      return target;
     },
-    () => page.getByTestId("browser-surface-viewport").waitFor(),
+    (target) => page.waitForFunction((expectedUrl) => (
+      document.querySelector('[data-testid="browser-surface-viewport"]')?.getAttribute("data-browser-url") === expectedUrl
+    ), target),
   );
   await measureTabActivation(page, "perf-files");
   await page.getByRole("heading", { name: "Wardian performance fixture" }).waitFor();
@@ -1261,6 +1355,17 @@ async function selfTest() {
   delete missing.runtime.group_focus_ms;
   try { evaluateGates(missing); throw new Error("Missing observation did not fail closed"); }
   catch (error) { if (!String(error).includes("Missing observed metric")) throw error; }
+  const selfTestHome = path.join(repoRoot, ".tmp", "workbench-performance", "self-test");
+  const defaultOutput = resolveOutputPath(selfTestHome, ["node", "script"]);
+  if (!samePath(defaultOutput, path.join(selfTestHome, "workbench-performance-baseline.json"))) {
+    throw new Error("Default benchmark output escaped the isolated WARDIAN_HOME");
+  }
+  try {
+    resolveOutputPath(selfTestHome, ["node", "script", "--output", baselinePath]);
+    throw new Error("Committed baseline output did not fail closed");
+  } catch (error) {
+    if (!String(error).includes("Refusing filesystem mutation outside")) throw error;
+  }
   process.stdout.write(`${JSON.stringify({ self_test: "passed", fixture: fixture.scenario, gates }, null, 2)}\n`);
 }
 
@@ -1333,13 +1438,7 @@ async function main() {
     runtime,
   };
   baseline.gates = evaluateGates(baseline, !process.argv.includes("--audit"));
-  const outputIndex = process.argv.indexOf("--output");
-  const rawOutput = outputIndex === -1 ? null : process.argv[outputIndex + 1];
-  if (outputIndex !== -1 && (!rawOutput || !path.isAbsolute(rawOutput))) {
-    throw new Error("--output requires an absolute path inside the isolated WARDIAN_HOME");
-  }
-  const outputPath = rawOutput ? canonicalize(rawOutput) : baselinePath;
-  if (rawOutput) assertInsideHome(home, outputPath);
+  const outputPath = resolveOutputPath(home);
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, `${JSON.stringify(baseline, null, 2)}\n`, "utf8");
   process.stdout.write(`${JSON.stringify({ baseline: path.relative(repoRoot, outputPath), gates: baseline.gates }, null, 2)}\n`);
