@@ -242,6 +242,19 @@ function assertProviderArgs(testCase, phase, argv) {
   }
 }
 
+function assertFreshClaudeResumeArgs(argv, staleProviderSession) {
+  assertNoFlag(argv, "--resume");
+  assertFlag(argv, "--session-id");
+  const freshSessionId = argv[argv.indexOf("--session-id") + 1];
+  assert.ok(freshSessionId, `missing fresh Claude session id in ${JSON.stringify(argv)}`);
+  assert.notEqual(
+    freshSessionId,
+    staleProviderSession,
+    `fresh resume reused the paused Claude session in ${JSON.stringify(argv)}`,
+  );
+  return freshSessionId;
+}
+
 function providerCases(harness) {
   const mcpConfig = path.join(harness.isolatedHome, "native-mcp.json");
   writeFileSync(mcpConfig, '{"mcpServers":{}}\n', "utf8");
@@ -445,4 +458,41 @@ test("per-agent advanced config survives persistence and reaches native provider
     assertProviderArgs(testCase, "interactive", interactiveCapture.argv);
     await invokeTauri(session.driver, "pause_agent", { sessionId: agent.session_id });
   }
+
+  const freshClaude = await spawnOffAgent(session.driver, harness, {
+    id: "claude-fresh-resume",
+    provider: "claude",
+  });
+  spawnedSessionIds.push(freshClaude.session_id);
+
+  const staleProviderSession = "stale-claude-provider-session";
+  const freshClaudeConfig = (await invokeTauri(session.driver, "list_agents"))
+    .find((entry) => entry.session_id === freshClaude.session_id);
+  assert.ok(freshClaudeConfig, "fresh Claude agent missing after spawn");
+  await invokeTauri(session.driver, "update_agent_config", {
+    newConfig: {
+      ...freshClaudeConfig,
+      session_persistence: "fresh",
+      resume_session: staleProviderSession,
+    },
+  });
+
+  rmSync(capturePath(captureDir, "claude", "interactive", freshClaude.session_id), { force: true });
+  await invokeTauri(session.driver, "resume_agent", { sessionId: freshClaude.session_id });
+  const freshClaudeCapture = await waitForCapture(
+    captureDir,
+    "claude",
+    "interactive",
+    freshClaude.session_id,
+  );
+  const freshProviderSession = assertFreshClaudeResumeArgs(
+    freshClaudeCapture.argv,
+    staleProviderSession,
+  );
+
+  const resumedFreshClaude = (await invokeTauri(session.driver, "list_agents"))
+    .find((entry) => entry.session_id === freshClaude.session_id);
+  assert.equal(resumedFreshClaude.resume_session, freshProviderSession);
+  assert.notEqual(resumedFreshClaude.resume_session, staleProviderSession);
+  await invokeTauri(session.driver, "pause_agent", { sessionId: freshClaude.session_id });
 });
