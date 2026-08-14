@@ -185,6 +185,87 @@ test("renders chat attachment chips alongside a compact provider launch row", as
   await testInfo.attach("chat-attachments", { path, contentType: "image/png" });
 });
 
+test("renders copied feedback in an agent chat", async ({ page }, testInfo) => {
+  const overview = makeWorkbenchSurface("copy-feedback-evidence", "agents-overview", {
+    state: {
+      mode: "single",
+      focused_agent_id: "agent-alpha",
+      search_query: "",
+      status_filter: [],
+    },
+  });
+  const document = makeWorkbenchDocument({ revision: 4, surfaces: [overview] });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    localStorage.setItem("wardian-settings", JSON.stringify({
+      state: { gridCardDisplayMode: "chat" },
+      version: 2,
+    }));
+  });
+  await installWorkbenchIpcMock(page, {
+    agents: [{
+      ...agents[0],
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      provider_config: { type: "codex", reasoning_effort: "high" },
+    }],
+    load_result: {
+      source: "primary",
+      document,
+      notice: null,
+      durable_revision: document.revision,
+      durable_token: "copy-feedback-evidence-token-4",
+    },
+    responses: {
+      load_agent_chat_transcript: [{
+        id: "copy-feedback-message",
+        session_id: "agent-alpha",
+        provider: "mock",
+        kind: "message",
+        role: "assistant",
+        text: "Fresh chat state is ready for the next prompt.",
+        title: null,
+        status: null,
+        turn_id: null,
+        source: null,
+        command: null,
+        exit_code: null,
+        path: null,
+        language: null,
+        created_at: null,
+        sequence: 1,
+        metadata: {},
+      }],
+      "plugin:clipboard-manager|write_text": null,
+      list_provider_model_catalog: {
+        provider: "codex",
+        version: "codex-cli 0.146.0",
+        source: "live_catalog",
+        refresh_error: null,
+        models: [{
+          id: "gpt-5.6-sol",
+          display_name: "5.6 Terra",
+          effort_options: ["low", "high"],
+          default_effort: "high",
+          is_default: true,
+        }],
+      },
+    },
+  });
+
+  await page.goto("/");
+  const card = page.getByTestId("agent-card");
+  const copyButton = card.getByRole("button", { name: "Copy message" });
+  await expect(copyButton).toBeVisible();
+  await copyButton.click();
+  await expect(card.getByRole("button", { name: "Copy message copied" })).toBeVisible();
+
+  const path = process.env.WARDIAN_COPY_FEEDBACK_SCREENSHOT
+    ?? testInfo.outputPath("copy-feedback.png");
+  await card.screenshot({ path, animations: "disabled" });
+  await testInfo.attach("copy-feedback", { path, contentType: "image/png" });
+});
+
 test("renders a capture-ready new-tab surface launcher", async ({ page }, testInfo) => {
   const dashboard = makeWorkbenchSurface("dashboard-launcher-evidence", "dashboard");
   const document = makeWorkbenchDocument({ revision: 3, surfaces: [dashboard] });
