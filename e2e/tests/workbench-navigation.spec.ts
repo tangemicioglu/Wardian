@@ -694,6 +694,7 @@ test("compresses crowded file tabs and keeps the open-tab list available", async
 
   const tabList = group.getByRole("button", { name: "Show open tabs" });
   await expect(tabList).toBeVisible();
+  await expect(group.locator(".dv-tabs-overflow-dropdown-default")).toBeHidden();
   await tabList.click();
   const overflowList = page.getByRole("menu", { name: "Open tabs" });
   await expect(overflowList).toBeVisible();

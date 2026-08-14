@@ -205,10 +205,10 @@
   flex: 0 1 auto;
 }
 
-/* The built-in count is the number of currently clipped tabs. It changes as
- * closing one tab exposes another, which is a misleading and unstable
- * affordance. Keep the Obsidian-style switcher as a stable arrow instead. */
-.dockview-theme-wardian .dv-tabs-overflow-dropdown-default > span {
+/* Dockview only exposes this clipped-tab menu after overflow. Wardian's
+ * persistent open-tab chevron is available in every pane, so keep one stable
+ * tab-list affordance instead of rendering adjacent duplicate arrows. */
+.dockview-theme-wardian .dv-tabs-overflow-dropdown-default {
   display: none;
 }
 
