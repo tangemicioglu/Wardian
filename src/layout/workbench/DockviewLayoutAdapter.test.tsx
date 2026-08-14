@@ -1241,6 +1241,7 @@ describe("DockviewLayoutAdapter", () => {
     const onToggleZoom = vi.fn();
     const onSplitGroup = vi.fn();
     const onCloseGroup = vi.fn();
+    const onCommand = vi.fn(() => true);
     render(
       <DockviewLayoutAdapter
         document={makeTwoGroupDocument()}
@@ -1248,6 +1249,7 @@ describe("DockviewLayoutAdapter", () => {
         on_toggle_zoom={onToggleZoom}
         on_split_group={onSplitGroup}
         on_close_group={onCloseGroup}
+        on_command={onCommand}
       />,
     );
 
@@ -1255,19 +1257,32 @@ describe("DockviewLayoutAdapter", () => {
     const group = document.querySelector<HTMLElement>('[data-group-id="group-1"]');
     if (!group) throw new Error("expected first workbench group");
     expect(within(group).getAllByRole("button").map((button) => button.getAttribute("aria-label")))
-      .toEqual(["Open Surface", "Pane actions"]);
+      .toEqual(["Open Surface", "Show open tabs", "Pane actions"]);
 
     const tabs = group.querySelector(".dv-tabs-container");
     const afterTabs = group.querySelector(".dv-left-actions-container");
     const farEdge = group.querySelector(".dv-right-actions-container");
     expect(tabs).not.toBeNull();
     expect(afterTabs).toContainElement(within(group).getByRole("button", { name: "Open Surface" }));
+    expect(farEdge).toContainElement(within(group).getByRole("button", { name: "Show open tabs" }));
     expect(farEdge).toContainElement(within(group).getByRole("button", { name: "Pane actions" }));
     expect(group.querySelector(".dv-void-container")).toHaveAttribute("data-tauri-drag-region");
     expect(within(group).getByRole("button", { name: "Open Surface" }))
       .not.toHaveAttribute("data-tauri-drag-region");
     expect(within(group).getByRole("button", { name: "Pane actions" }))
       .not.toHaveAttribute("data-tauri-drag-region");
+
+    const tabList = within(group).getByRole("button", { name: "Show open tabs" });
+    fireEvent.click(tabList);
+    const tabsMenu = screen.getByRole("menu", { name: "Open tabs" });
+    const agentsItem = within(tabsMenu).getByRole("menuitem", { name: "Agents Overview" });
+    expect(agentsItem).toHaveAttribute("aria-current", "page");
+    fireEvent.click(agentsItem);
+    expect(onCommand).toHaveBeenCalledWith({
+      type: "set_active_surface",
+      group_id: "group-1",
+      surface_id: "surface-1",
+    });
 
     const paneActions = within(group).getByRole("button", { name: "Pane actions" });
     expect(paneActions).toHaveClass("wardian-compact-overflow-trigger");

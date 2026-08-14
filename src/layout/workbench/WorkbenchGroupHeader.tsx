@@ -8,7 +8,7 @@ import {
   type MouseEvent,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { Plus } from "lucide-react";
+import { ChevronDown, Plus } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { CompactOverflowButton } from "../../components/CompactOverflowButton";
@@ -20,9 +20,11 @@ export type WorkbenchPaneTarget = {
 };
 
 export type WorkbenchMenuItem = {
+  id?: string;
   label: string;
   on_select: () => void;
   danger?: boolean;
+  selected?: boolean;
 };
 
 export type WorkbenchContextMenuProps = {
@@ -109,10 +111,14 @@ export function WorkbenchContextMenu({
     >
       {items.map((item) => (
         <button
-          key={item.label}
+          key={item.id ?? item.label}
           type="button"
           role="menuitem"
-          className={item.danger ? "is-danger" : undefined}
+          className={[
+            item.danger ? "is-danger" : undefined,
+            item.selected ? "is-selected" : undefined,
+          ].filter(Boolean).join(" ") || undefined}
+          aria-current={item.selected ? "page" : undefined}
           onClick={(event) => {
             event.stopPropagation();
             item.on_select();
@@ -129,12 +135,15 @@ export function WorkbenchContextMenu({
 
 export type WorkbenchGroupHeaderProps = {
   group_id: string;
+  tabs?: readonly { surface_id: string; title: string }[];
+  active_surface_id?: string | null;
   pane_targets?: readonly WorkbenchPaneTarget[];
   is_zoomed?: boolean;
   on_toggle_zoom?: (groupId: string) => void;
   on_split_group?: (groupId: string, direction: "horizontal" | "vertical") => void;
   on_close_group?: (groupId: string) => void;
   on_join_group?: (sourceGroupId: string, targetGroupId: string) => void;
+  on_activate_surface?: (groupId: string, surfaceId: string) => void;
 };
 
 export type WorkbenchNewSurfaceActionProps = {
@@ -196,12 +205,15 @@ export function WorkbenchNewSurfaceAction({
 
 export function WorkbenchGroupHeader({
   group_id,
+  tabs = [],
+  active_surface_id = null,
   pane_targets = [],
   is_zoomed = false,
   on_toggle_zoom,
   on_split_group,
   on_close_group,
   on_join_group,
+  on_activate_surface,
 }: WorkbenchGroupHeaderProps) {
   const [menuState, setMenuState] = useState<{
     position: { x: number; y: number };
@@ -211,6 +223,18 @@ export function WorkbenchGroupHeader({
     event.stopPropagation();
     const bounds = event.currentTarget.getBoundingClientRect();
     setMenuState({
+      position: { x: bounds.right - 224, y: bounds.bottom + 2 },
+      invoker: event.currentTarget,
+    });
+  };
+  const [tabMenuState, setTabMenuState] = useState<{
+    position: { x: number; y: number };
+    invoker: HTMLButtonElement;
+  } | null>(null);
+  const openTabMenu = (event: MouseEvent<HTMLButtonElement>): void => {
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setTabMenuState({
       position: { x: bounds.right - 224, y: bounds.bottom + 2 },
       invoker: event.currentTarget,
     });
@@ -231,6 +255,19 @@ export function WorkbenchGroupHeader({
 
   return (
     <div className="wardian-workbench-group-actions">
+      {tabs.length > 0 ? (
+        <button
+          type="button"
+          className="wardian-workbench-header-action wardian-workbench-tab-list-trigger"
+          aria-label="Show open tabs"
+          aria-haspopup="menu"
+          aria-expanded={tabMenuState !== null}
+          title="Show open tabs"
+          onClick={openTabMenu}
+        >
+          <ChevronDown aria-hidden="true" size={16} strokeWidth={1.75} />
+        </button>
+      ) : null}
       <CompactOverflowButton
         className="wardian-workbench-header-action"
         aria-label="Pane actions"
@@ -239,6 +276,20 @@ export function WorkbenchGroupHeader({
         title="Pane actions"
         onClick={openMenu}
       />
+      {tabMenuState && (
+        <WorkbenchContextMenu
+          aria_label="Open tabs"
+          items={tabs.map((tab): WorkbenchMenuItem => ({
+            id: tab.surface_id,
+            label: tab.title,
+            selected: tab.surface_id === active_surface_id,
+            on_select: () => on_activate_surface?.(group_id, tab.surface_id),
+          }))}
+          position={tabMenuState.position}
+          return_focus={tabMenuState.invoker}
+          on_close={() => setTabMenuState(null)}
+        />
+      )}
       {menuState && (
         <WorkbenchContextMenu
           aria_label="Pane actions"

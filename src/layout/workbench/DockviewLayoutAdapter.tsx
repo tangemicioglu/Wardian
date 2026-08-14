@@ -120,6 +120,7 @@ type AdapterRuntime = Pick<
   on_pointer_drag_start: (identity: WorkbenchPointerDragIdentity) => void;
   on_pointer_drag_end: (identity: WorkbenchPointerDragIdentity) => void;
   on_move_surface: (surfaceId: string, targetGroupId: string) => void;
+  on_activate_surface: (groupId: string, surfaceId: string) => void;
   on_split_surface: (
     surfaceId: string,
     groupId: string,
@@ -649,15 +650,27 @@ function DockviewSurfaceTab({ params, api }: IDockviewPanelHeaderProps<Workbench
 
 function DockviewGroupActions({ group }: IDockviewHeaderActionsProps) {
   const runtime = useAdapterRuntime();
+  const workbenchGroup = runtime.document.groups[group.id];
+  const tabs = (workbenchGroup?.surface_ids ?? []).flatMap((surfaceId) => {
+    const surface = runtime.document.surfaces[surfaceId];
+    if (!surface) return [];
+    return [{
+      surface_id: surfaceId,
+      title: runtime.surface_title?.(surface) ?? surfaceTitle(surface),
+    }];
+  });
   return (
     <WorkbenchGroupHeader
       group_id={group.id}
+      tabs={tabs}
+      active_surface_id={workbenchGroup?.active_surface_id}
       pane_targets={workbenchPaneTargets(runtime.document.root, group.id)}
       is_zoomed={runtime.zoomed_group_id === group.id}
       on_toggle_zoom={runtime.on_toggle_zoom}
       on_split_group={runtime.on_split_group}
       on_close_group={runtime.on_close_group}
       on_join_group={runtime.on_join_group}
+      on_activate_surface={runtime.on_activate_surface}
     />
   );
 }
@@ -1168,6 +1181,9 @@ export function DockviewLayoutAdapter(props: DockviewLayoutAdapterProps) {
         group_id: targetGroupId,
         index: document.groups[targetGroupId]?.surface_ids.length ?? 0,
       });
+    },
+    on_activate_surface: (groupId, surfaceId) => {
+      emitCommand({ type: "set_active_surface", group_id: groupId, surface_id: surfaceId });
     },
     on_split_surface: (surfaceId, groupId, direction) => {
       props.on_surface_drop?.(
