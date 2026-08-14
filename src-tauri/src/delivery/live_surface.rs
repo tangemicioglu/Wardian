@@ -21,6 +21,10 @@ pub struct LiveSurfacePromptRequest {
     pub origin: Option<MessageOrigin>,
     pub runtime_state: &'static str,
     pub mark_prompt_started: bool,
+    /// Automated delivery waits for provider-confirmed turn start so it can
+    /// safely decide whether a queued message may be retried. A direct human
+    /// terminal submission is complete once the native PTY has flushed it.
+    pub require_provider_turn_receipt: bool,
     pub payload_sent_detail: Option<DeliveryDetail>,
     pub delivery_message_id: Option<String>,
 }
@@ -58,6 +62,7 @@ impl LiveSurfacePromptRequest {
             origin: None,
             runtime_state: "live_pty_available",
             mark_prompt_started: true,
+            require_provider_turn_receipt: false,
             payload_sent_detail: None,
             delivery_message_id: None,
         }
@@ -232,7 +237,8 @@ pub async fn submit_live_surface_prompt(
         .payload_sent_detail
         .clone()
         .or_else(|| automatic_payload_started_detail(&request, &interaction_id, &name, &provider));
-    let requires_provider_turn_receipt = native_write_receipts
+    let requires_provider_turn_receipt = request.require_provider_turn_receipt
+        && native_write_receipts
         && matches!(
             request.input_mode,
             MessageInputMode::Message | MessageInputMode::Command
@@ -266,6 +272,39 @@ pub async fn submit_live_surface_prompt(
             }
         }
     } else {
+        // Antigravity creates its durable provider-owned user step while it
+        // finishes drawing the initial compose prompt. Capture the watch
+        // cursor first so that real receipt remains observable after the
+        // terminal is ready to accept the queued payload.
+        if requires_provider_turn_receipt && provider == "antigravity" {
+            turn_start_cursor = match crate::control::provider_turn_start_cursor(
+                state,
+                &request.session_id,
+            )
+            .await
+            {
+                Ok(cursor) => Some(cursor),
+                Err(message) => {
+                    return Err(record_failed_live_surface_attempt(
+                        state,
+                        &request,
+                        &interaction_id,
+                        Some(LiveSurfaceTarget {
+                            name: name.clone(),
+                            provider: provider.clone(),
+                        }),
+                        FailedLiveSurfaceAttempt {
+                            runtime_state: request.runtime_state,
+                            error_code: "turn_start_watch_unavailable",
+                            message,
+                            delivery_phase: Some("turn_start_cursor_failed".to_string()),
+                            retry_safe: true,
+                        },
+                    )
+                    .await);
+                }
+            };
+        }
         if let Err(message) =
             crate::control::wait_for_terminal_ready_for_delivery_service(state, &request.session_id)
                 .await
@@ -288,8 +327,8 @@ pub async fn submit_live_surface_prompt(
             )
             .await);
         }
-        turn_start_cursor = if requires_provider_turn_receipt {
-            match crate::control::provider_turn_start_cursor(state, &request.session_id).await {
+        if requires_provider_turn_receipt && turn_start_cursor.is_none() {
+            turn_start_cursor = match crate::control::provider_turn_start_cursor(state, &request.session_id).await {
                 Ok(cursor) => Some(cursor),
                 Err(message) => {
                     return Err(record_failed_live_surface_attempt(
@@ -310,10 +349,8 @@ pub async fn submit_live_surface_prompt(
                     )
                     .await);
                 }
-            }
-        } else {
-            None
-        };
+            };
+        }
         let wait_session_id = request.session_id.clone();
         let payload_session_id = request.session_id.clone();
         let payload_interaction_id = interaction_id.clone();
@@ -631,6 +668,7 @@ mod tests {
         assert_eq!(request.queue_policy, QueuePolicy::LiveOnly);
         assert_eq!(request.runtime_state, "live_pty_available");
         assert!(request.mark_prompt_started);
+        assert!(!request.require_provider_turn_receipt);
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use super::codex::codex_bootstrap_workspace_key;
 use crate::utils::fs::*;
+use crate::utils::shell::build_program_launch;
 use chrono::TimeZone;
-use wardian_core::models::AgentConfig;
+use wardian_core::models::{AgentConfig, AgentProvider};
 pub(crate) fn opencode_status_from_title(title: &str) -> Option<&'static str> {
     let trimmed = title.trim();
     if trimmed.is_empty() {
@@ -54,6 +55,39 @@ pub(crate) fn opencode_database_path() -> Option<std::path::PathBuf> {
         .into_iter()
         .map(|dir| dir.join("opencode.db"))
         .find(|path| path.exists())
+}
+
+/// Reads OpenCode's own session registry to capture a session that its
+/// interactive TUI created for this workspace. Unlike `opencode run`, this
+/// does not submit a model prompt or consume provider quota.
+pub(crate) fn opencode_recent_session_for_workspace(
+    workspace: &std::path::Path,
+    created_after_ms: i64,
+) -> Option<String> {
+    let provider = crate::providers::opencode::OpenCodeProvider::new();
+    let (bin, initial_args) = provider.get_executable();
+    let mut args = initial_args;
+    args.extend(["session", "list", "--format", "json", "--max-count", "20"].map(str::to_string));
+    let launch = build_program_launch(&bin, &args).ok()?;
+    let output = std::process::Command::new(launch.executable)
+        .args(launch.args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sessions: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let expected = workspace.to_string_lossy().replace('/', "\\");
+    sessions.as_array()?.iter().find_map(|session| {
+        let directory = session
+            .get("directory")
+            .and_then(|value| value.as_str())?
+            .replace('/', "\\");
+        let created = session.get("created").and_then(|value| value.as_i64())?;
+        (directory.eq_ignore_ascii_case(&expected) && created >= created_after_ms)
+            .then(|| session.get("id").and_then(|value| value.as_str()).map(str::to_string))
+            .flatten()
+    })
 }
 
 pub(crate) fn opencode_last_assistant_text(session_id: &str) -> Result<Option<String>, String> {

@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import {
   createNativeHarness,
   ensureNativeAppBuilt,
+  invokeTauri,
   prepareIsolatedHome,
   startNativeSession,
   waitForAppShell,
@@ -19,7 +20,11 @@ export const PROVIDERS = ["codex", "claude", "opencode", "antigravity"];
 export const INPUT_CASES = [
   {
     name: "mailbox-short",
-    prompt: (marker) => `Reply with exactly ${marker}.`,
+    prompt: (marker) =>
+      "This is Wardian's local integration test for terminal message delivery. " +
+      "It is a direct test prompt, not an instruction from another agent. " +
+      "Do not access files or run tools. Reply with exactly this verification marker and nothing else: " +
+      marker,
     expectOutput: true,
   },
   {
@@ -41,6 +46,7 @@ const DEFAULT_PROVIDER_MODELS = {
 };
 
 const runRealDelivery = process.env.WARDIAN_E2E_REAL_DELIVERY === "1";
+const verifyFreshTranscript = process.env.WARDIAN_E2E_REAL_FRESH_TRANSCRIPT === "1";
 const allowPartialDelivery = process.env.WARDIAN_E2E_DELIVERY_ALLOW_PARTIAL === "1";
 const workspacePath = process.env.WARDIAN_E2E_REAL_WORKSPACE || process.cwd();
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
@@ -243,7 +249,61 @@ async function waitForDeliveryState(cliPath, harness, target, state, messageId, 
   );
 }
 
-async function runRealDeliveryCase({ cliPath, harness, provider, agentName, inputCase, runId }) {
+async function antigravityStartupNeedsAction(cliPath, harness, agentName, timeoutMs = 15000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const result = runCli(cliPath, harness, [
+      "agent",
+      "watch",
+      agentName,
+      "--until",
+      "status:action_required",
+      "--include",
+      "status",
+      "--timeout",
+      "2s",
+      "--field",
+      "status",
+    ]);
+    if (result.status === 0 && result.stdout.trim() === "action_required") {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function waitForPersistedOpenCodeSession(harness, sessionId, timeoutMs = 15000) {
+  const statePath = path.join(harness.isolatedHome, "settings", "state.json");
+  const startedAt = Date.now();
+  let lastConfig = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const configs = JSON.parse(await fs.readFile(statePath, "utf8"));
+      lastConfig = configs.find((config) => config.session_id === sessionId) ?? null;
+      if (/^ses_/.test(lastConfig?.resume_session ?? "")) {
+        return lastConfig.resume_session;
+      }
+    } catch {
+      // The runtime atomically replaces this file while the provider session is captured.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  assert.fail(
+    `OpenCode provider session was not persisted for ${sessionId}: ${JSON.stringify(lastConfig)}`,
+  );
+}
+
+async function runRealDeliveryCase({
+  cliPath,
+  harness,
+  provider,
+  agentSessionId,
+  agentName,
+  inputCase,
+  runId,
+}) {
   const marker = `WARDIAN_REAL_DELIVERY_${provider.toUpperCase()}_${inputCase.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_${runId}`;
   const queued = runCliOk(cliPath, harness, [
     "send",
@@ -268,6 +328,10 @@ async function runRealDeliveryCase({ cliPath, harness, provider, agentName, inpu
   assert.equal(drained.runtime_state, "mailbox_drain");
   assert.equal(drained.provider, provider);
 
+  if (provider === "opencode") {
+    await waitForPersistedOpenCodeSession(harness, agentSessionId);
+  }
+
   if (inputCase.expectOutput) {
     const expected = inputCase.name === "mailbox-multiline" ? `${marker}_LINE_2` : marker;
     const watched = runCliOk(cliPath, harness, [
@@ -290,6 +354,79 @@ async function runRealDeliveryCase({ cliPath, harness, provider, agentName, inpu
       `${provider} output did not include ${expected}: ${combinedOutput}`,
     );
   }
+
+  return { marker, expected: inputCase.name === "mailbox-multiline" ? `${marker}_LINE_2` : marker };
+}
+
+async function waitForFreshTranscript(driver, sessionId, freshMarker) {
+  return await driver.wait(async () => {
+    const events = await invokeTauri(driver, "load_agent_chat_transcript", { sessionId });
+    if (!Array.isArray(events)) return false;
+    const text = events.map((event) => event?.text ?? "").join("\n");
+    return text.includes(freshMarker) ? { events, text } : false;
+  }, 45_000, "fresh provider transcript never reached chat replay");
+}
+
+async function resumeFreshAndAssertTranscript({
+  driver,
+  cliPath,
+  harness,
+  provider,
+  agentSessionId,
+  agentName,
+  staleMarker,
+  runId,
+}) {
+  const existing = (await invokeTauri(driver, "list_agents"))
+    .find((entry) => entry.session_id === agentSessionId);
+  assert.ok(existing, `${provider} agent missing before fresh resume`);
+  const staleProviderSession = existing.resume_session;
+  assert.ok(staleProviderSession, `${provider} never captured its initial provider session`);
+
+  await invokeTauri(driver, "update_agent_config", {
+    newConfig: { ...existing, session_persistence: "fresh" },
+  });
+  await invokeTauri(driver, "pause_agent", { sessionId: agentSessionId });
+  await invokeTauri(driver, "resume_agent", { sessionId: agentSessionId });
+
+  const freshDelivery = await runRealDeliveryCase({
+    cliPath,
+    harness,
+    provider,
+    agentSessionId,
+    agentName,
+    inputCase: INPUT_CASES[0],
+    runId: `fresh-${runId}`,
+  });
+  const transcript = await waitForFreshTranscript(
+    driver,
+    agentSessionId,
+    freshDelivery.expected,
+  );
+  assert.equal(
+    transcript.text.includes(staleMarker),
+    false,
+    `${provider} fresh resume replayed the previous provider transcript: ${JSON.stringify(
+      transcript.events.filter((event) => (event?.text ?? "").includes(staleMarker)).map((event) => ({
+        text: event?.text,
+        source: event?.source,
+        metadata: event?.metadata,
+      })),
+    )}`,
+  );
+  assert.ok(
+    transcript.text.includes(freshDelivery.expected),
+    `${provider} fresh resume did not reload the new provider transcript: ${transcript.text}`,
+  );
+
+  const refreshed = (await invokeTauri(driver, "list_agents"))
+    .find((entry) => entry.session_id === agentSessionId);
+  assert.ok(refreshed, `${provider} agent missing after fresh resume`);
+  assert.notEqual(
+    refreshed.resume_session,
+    staleProviderSession,
+    `${provider} fresh resume retained its previous provider session identity`,
+  );
 }
 
 async function enableIsolatedCodexWorkspaceTrust(harness) {
@@ -402,13 +539,38 @@ test("real provider delivery validation uses actual provider CLIs", { timeout: 9
     let providerTerminalTail = null;
     try {
       agent = await spawnRealProviderAgent(session.driver, provider, agentName, workspacePath);
+      if (provider === "antigravity" && await antigravityStartupNeedsAction(cliPath, harness, agentName)) {
+        providerTerminalTail = await readProviderTerminalTail(session.driver, agent.session_id);
+        assert.match(
+          providerTerminalTail,
+          /not signed in|trust the contents of this project/i,
+          "Antigravity reported Action Needed without an account or workspace prompt",
+        );
+        continue;
+      }
+      const deliveredCases = [];
       for (const inputCase of selectedCases) {
-        await runRealDeliveryCase({
+        deliveredCases.push(await runRealDeliveryCase({
           cliPath,
           harness,
           provider,
+          agentSessionId: agent.session_id,
           agentName,
           inputCase,
+          runId,
+        }));
+      }
+      if (verifyFreshTranscript) {
+        const staleDelivery = deliveredCases.find((delivery) => delivery.expected);
+        assert.ok(staleDelivery, "fresh transcript validation requires an output delivery case");
+        await resumeFreshAndAssertTranscript({
+          driver: session.driver,
+          cliPath,
+          harness,
+          provider,
+          agentSessionId: agent.session_id,
+          agentName,
+          staleMarker: staleDelivery.expected,
           runId,
         });
       }

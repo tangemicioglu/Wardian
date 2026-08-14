@@ -1082,7 +1082,7 @@ fn new_agent_identity_plan(provider_name: &str) -> NewAgentIdentityPlan {
         wardian_session_id: uuid::Uuid::new_v4().to_string(),
         fresh_provider_session_id: provider_uses_manual_session_id(provider_name)
             .then(|| uuid::Uuid::new_v4().to_string()),
-        bootstrap_provider_session: matches!(provider_name, "codex" | "opencode"),
+        bootstrap_provider_session: provider_name == "codex",
     }
 }
 
@@ -1091,7 +1091,7 @@ fn ensure_provider_available_before_session_bootstrap(provider_name: &str) -> Re
 }
 
 fn provider_needs_obtain_session_id_on_clear(provider_name: &str) -> bool {
-    matches!(provider_name, "codex" | "opencode")
+    provider_name == "codex"
 }
 
 fn provider_allows_deferred_session_identity(provider_name: &str) -> bool {
@@ -1161,6 +1161,21 @@ struct ResumeRuntimeSnapshot {
     query_count: usize,
     log_path: Option<std::path::PathBuf>,
     current_status: String,
+}
+
+fn restore_runtime_state_after_resume(
+    new_active: &mut crate::state::ActiveAgent,
+    snapshot: &ResumeRuntimeSnapshot,
+    starts_fresh: bool,
+) {
+    if !starts_fresh {
+        restore_runtime_state_snapshot_after_resume(
+            new_active,
+            snapshot.query_count,
+            snapshot.init_timestamp.clone(),
+            snapshot.log_path.clone(),
+        );
+    }
 }
 
 fn capture_resume_runtime_snapshot(agent: &crate::state::ActiveAgent) -> ResumeRuntimeSnapshot {
@@ -2164,15 +2179,19 @@ fn prepare_resume_config(config: &mut AgentConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_resume_config_in_place(config: &mut AgentConfig) -> Result<(), String> {
-    manager::validate_config_for_launch(config)?;
-
+fn resolved_session_persistence(config: &AgentConfig) -> AgentSessionPersistence {
     let settings = crate::utils::load_shell_settings().unwrap_or_default();
-    let resolved_persistence = match config.session_persistence {
+    match config.session_persistence {
         AgentSessionPersistenceOverride::Default => settings.agent_session_persistence,
         AgentSessionPersistenceOverride::Fresh => AgentSessionPersistence::Fresh,
         AgentSessionPersistenceOverride::Resume => AgentSessionPersistence::Resume,
-    };
+    }
+}
+
+fn prepare_resume_config_in_place(config: &mut AgentConfig) -> Result<(), String> {
+    manager::validate_config_for_launch(config)?;
+
+    let resolved_persistence = resolved_session_persistence(config);
 
     config.fresh_provider_session_id = None;
     if resolved_persistence == AgentSessionPersistence::Fresh {
@@ -2931,7 +2950,21 @@ pub async fn resume_agent(
     manager::publish_agent_status(&app, &session_id, &staged_status_arc);
 
     let status_before_resume = snapshot.current_status.clone();
-    let mut config = snapshot.config;
+    let mut config = snapshot.config.clone();
+    let starts_fresh = resolved_session_persistence(&config) == AgentSessionPersistence::Fresh;
+    if starts_fresh {
+        if let Err(error) = archive_agent_lifecycle_boundary(
+            &state,
+            &session_id,
+            ConversationBoundaryReason::Clear,
+        )
+        .await
+        {
+            manager::log_debug(&format!(
+                "[WARDIAN] fresh resume conversation boundary failed for {session_id}: {error}"
+            ));
+        }
+    }
     if let Err(error) = prepare_resume_config_for_runtime(&mut config, snapshot.query_count) {
         restore_agent_status_after_failed_runtime_start(
             &state,
@@ -2955,8 +2988,10 @@ pub async fn resume_agent(
     let mut new_active = match manager::spawn_agent(
         app.clone(),
         config.clone(),
-        true,
-        snapshot.init_timestamp.clone(),
+        !starts_fresh,
+        (!starts_fresh)
+            .then_some(snapshot.init_timestamp.clone())
+            .flatten(),
     )
     .await
     {
@@ -2983,12 +3018,7 @@ pub async fn resume_agent(
         .await;
         return Err(error);
     }
-    restore_runtime_state_snapshot_after_resume(
-        &mut new_active,
-        snapshot.query_count,
-        snapshot.init_timestamp,
-        snapshot.log_path,
-    );
+    restore_runtime_state_after_resume(&mut new_active, &snapshot, starts_fresh);
     promote_fresh_provider_session_after_resume(&config.provider, &mut new_active);
 
     let new_status_arc = new_active.current_status.clone();
@@ -4179,14 +4209,14 @@ mod tests {
         replace_agent_status_incarnation, reserve_spawn_session_name,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
         resolve_requested_spawn_session_name, restore_agent_config_in_state,
-        restore_antigravity_workspace_conversation_from_home,
+        restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
         restore_runtime_state_snapshot_after_resume, strip_claude_embedded_stream_flags,
         take_agent_runtime_for_termination, terminal_cleared_payload, update_agent_fields_in_state,
         validate_assignable_worktree_for_agent, validate_deletable_agent_worktree,
         workspace_paths_match, worktree_deletion_is_already_complete, AgentOrderPlacement,
         AgentUpdateFields, AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
-        DeletedAgentReferenceCleanup, DiscoveredGitWorktree, GIT_WORKTREE_DISCOVERY_CONCURRENCY,
-        MAX_AGENT_DESCRIPTION_CHARS,
+        DeletedAgentReferenceCleanup, DiscoveredGitWorktree, ResumeRuntimeSnapshot,
+        GIT_WORKTREE_DISCOVERY_CONCURRENCY, MAX_AGENT_DESCRIPTION_CHARS,
     };
     use crate::providers::antigravity::AntigravityProvider;
     use crate::providers::GeminiProvider;
@@ -6969,10 +6999,10 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[test]
-    fn opencode_uses_a_distinct_wardian_id_and_exact_bootstrap() {
+    fn opencode_defers_its_provider_identity_until_the_first_prompt() {
         let identity = super::new_agent_identity_plan("opencode");
         assert!(uuid::Uuid::parse_str(&identity.wardian_session_id).is_ok());
-        assert!(identity.bootstrap_provider_session);
+        assert!(!identity.bootstrap_provider_session);
         assert!(identity.fresh_provider_session_id.is_none());
     }
 
@@ -7024,7 +7054,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert!(!provider_needs_obtain_session_id_on_clear("gemini"));
         assert!(!provider_needs_obtain_session_id_on_clear("claude"));
         assert!(provider_needs_obtain_session_id_on_clear("codex"));
-        assert!(provider_needs_obtain_session_id_on_clear("opencode"));
+        assert!(!provider_needs_obtain_session_id_on_clear("opencode"));
         assert!(!provider_needs_obtain_session_id_on_clear("antigravity"));
     }
 
@@ -8152,6 +8182,24 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert_eq!(config.resume_session, None);
         assert!(!config.is_off);
         std::env::remove_var("WARDIAN_HOME");
+    }
+
+    #[test]
+    fn fresh_resume_does_not_restore_paused_runtime_metadata() {
+        let mut new_active = make_test_agent();
+        let snapshot = ResumeRuntimeSnapshot {
+            config: AgentConfig::default(),
+            init_timestamp: Some("2026-04-12T17:00:00.000Z".to_string()),
+            query_count: 3,
+            log_path: Some(std::path::PathBuf::from("C:/tmp/old-session.jsonl")),
+            current_status: "Off".to_string(),
+        };
+
+        restore_runtime_state_after_resume(&mut new_active, &snapshot, true);
+
+        assert_eq!(*new_active.query_count.lock().unwrap(), 0);
+        assert_eq!(*new_active.init_timestamp.lock().unwrap(), None);
+        assert_eq!(*new_active.log_path.lock().unwrap(), None);
     }
 
     #[test]

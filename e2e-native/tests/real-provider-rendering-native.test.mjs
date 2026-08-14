@@ -1934,7 +1934,7 @@ test("real provider terminal rendering audit captures user-visible Wardian state
   let changedXdgStateHome = false;
 
   try {
-    if (!skipNativeBuild || runRealRendering) {
+    if (!skipNativeBuild) {
       process.env.VITE_WARDIAN_TERMINAL_DEBUG = "1";
       ensureNativeAppBuilt(harness);
     }

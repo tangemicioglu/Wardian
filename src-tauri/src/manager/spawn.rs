@@ -12,9 +12,14 @@ use tauri::{AppHandle, Emitter, Manager};
 use wardian_core::control::ProviderInputReadiness;
 use wardian_core::models::{AgentConfig, AgentEvent, ProviderConfig};
 
-use super::claude::{claude_permission_hook_matches_session, claude_project_dir_name};
+use super::claude::{
+    claude_log_paths, claude_permission_hook_matches_session, claude_project_dir_name,
+    discover_claude_log_for_session_name,
+};
 use super::codex::{codex_provider_session_is_excluded, codex_session_file_path};
-use super::opencode::{opencode_interactive_env, opencode_status_from_title};
+use super::opencode::{
+    opencode_interactive_env, opencode_recent_session_for_workspace, opencode_status_from_title,
+};
 use super::session_identity::{
     apply_provider_identity, expected_caller_owned_identity, ProviderIdentityOutcome,
 };
@@ -29,10 +34,10 @@ use crate::providers::gemini::gemini_status_from_title;
 
 const OUTPUT_READY_EMIT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
-/// Selects the verified Antigravity conversation used for log discovery and
-/// whether that conversation is new enough to persist as the resume identity.
-/// A pre-existing workspace mapping is valid chat/telemetry evidence, but is
-/// not promoted to a resume identity until the provider replaces it.
+/// Selects the verified Antigravity conversation created by this launch for
+/// log discovery and whether it should be persisted as the resume identity.
+/// A workspace mapping that existed before launch belongs to the prior
+/// provider conversation, so it must not be replayed by a fresh launch.
 /// Where the mock provider mirrors its event stream.
 ///
 /// Real providers are observed through a log they own, and the chat transcript
@@ -56,9 +61,9 @@ fn antigravity_watcher_conversation(
         return (existing, false);
     }
 
-    let capture_identity =
-        changed_workspace_conversation(workspace_before, discovered.as_deref()).is_some();
-    (discovered, capture_identity)
+    let conversation_id = changed_workspace_conversation(workspace_before, discovered.as_deref());
+    let capture_identity = conversation_id.is_some();
+    (conversation_id, capture_identity)
 }
 
 #[derive(Default)]
@@ -374,6 +379,16 @@ fn codex_status_log_session(config: &AgentConfig) -> Option<String> {
     Some(candidate)
 }
 
+fn claude_status_log_session(config: &AgentConfig) -> String {
+    config
+        .resume_session
+        .as_deref()
+        .or(config.fresh_provider_session_id.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(config.session_id.as_str())
+        .to_string()
+}
+
 fn should_cleanup_stale_session_processes_before_spawn(is_restored: bool) -> bool {
     !is_restored
 }
@@ -543,6 +558,21 @@ pub async fn spawn_agent(
     )?;
     let provider_cwd =
         interactive_provider_cwd(&config.provider, &cwd, habitat_root.as_deref(), None);
+    let fresh_claude_log_paths =
+        if config.provider == "claude" && config.fresh_provider_session_id.is_some() {
+            dirs::home_dir()
+                .map(|home| {
+                    claude_log_paths(
+                        &home
+                            .join(".claude")
+                            .join("projects")
+                            .join(claude_project_dir_name(&expected_folder)),
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
 
     if config.provider == "claude" {
         if let Some(hook) = claude_hook.as_ref() {
@@ -756,7 +786,10 @@ pub async fn spawn_agent(
     let query_count_clone = query_count.clone();
     let init_timestamp = std::sync::Arc::new(std::sync::Mutex::new(Some(born_to_save)));
     let init_timestamp_clone = init_timestamp.clone();
-    let current_status = std::sync::Arc::new(std::sync::Mutex::new("Idle".to_string()));
+    // A process can take several seconds to draw an interactive prompt. Until
+    // provider-owned output (or an OpenCode title) proves that prompt exists,
+    // accepting mailbox input races the provider's own startup sequence.
+    let current_status = std::sync::Arc::new(std::sync::Mutex::new("Starting".to_string()));
     let current_status_clone = current_status.clone();
     let watch_state = std::sync::Arc::new(std::sync::Mutex::new(AgentWatchState::new(
         config.session_id.clone(),
@@ -796,6 +829,7 @@ pub async fn spawn_agent(
         let mut opencode_chunks_logged = 0usize;
         let mut codex_terminal_theme_responder = CodexTerminalThemeProbeResponder::default();
         let mut antigravity_turn_completion_gate = AntigravityTurnCompletionGate::default();
+        let mut startup_prompt_pending = true;
         let mut pty_decoder = PtyUtf8Decoder::new();
         let output_ready_emit_gate =
             std::sync::Arc::new(std::sync::Mutex::new(OutputReadyEmitGate::default()));
@@ -878,6 +912,55 @@ pub async fn spawn_agent(
                         &buf[0..n],
                     );
                     let text = pty_decoder.decode_chunk(&buf[0..n]);
+                    let startup_output = if startup_prompt_pending {
+                        watch_state_clone
+                            .lock()
+                            .ok()
+                            .and_then(|watch_state| {
+                                watch_state
+                                    .snapshot_since(None, None)
+                                    .ok()
+                                    .map(|snapshot| snapshot.output.text)
+                            })
+                    } else {
+                        None
+                    };
+                    if startup_output.as_deref().is_some_and(|output| {
+                        crate::control::provider_output_has_startup_ready_prompt(
+                            &provider_name_for_pty,
+                            output,
+                        )
+                    }) {
+                        startup_prompt_pending = false;
+                        set_agent_status(&pty_app, &sid_for_pty, &current_status_clone, "Idle");
+                        let readiness_app = pty_app.clone();
+                        let readiness_session_id = sid_for_pty.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let state = readiness_app.state::<AppState>();
+                            crate::control::record_provider_ready_prompt(
+                                state.inner(),
+                                &readiness_session_id,
+                            )
+                            .await;
+                            crate::control::spawn_mailbox_drain_if_idle(
+                                &readiness_app,
+                                &readiness_session_id,
+                                "Idle",
+                            );
+                        });
+                    } else if startup_output.as_deref().is_some_and(|output| {
+                        crate::control::provider_output_requires_startup_action(
+                            &provider_name_for_pty,
+                            output,
+                        )
+                    }) {
+                        set_agent_status(
+                            &pty_app,
+                            &sid_for_pty,
+                            &current_status_clone,
+                            "Action Needed",
+                        );
+                    }
                     if let Ok(mut stamp) = last_output_at_clone.lock() {
                         *stamp = Some(std::time::SystemTime::now());
                     }
@@ -951,12 +1034,29 @@ pub async fn spawn_agent(
                         }
                         if provider_name_for_pty == "opencode" {
                             if let Some(next_status) = opencode_status_from_title(&title) {
+                                let was_idle = current_status_clone
+                                    .lock()
+                                    .map(|status| {
+                                        wardian_core::identity::normalize_status(&status) == "idle"
+                                    })
+                                    .unwrap_or(false);
                                 set_agent_status(
                                     &pty_emit_app,
                                     &sid_for_pty,
                                     &current_status_clone,
                                     next_status,
                                 );
+                                // OpenCode's TUI does not expose a separate
+                                // JSON acknowledgement in interactive mode;
+                                // its provider-owned title changes from
+                                // `OpenCode` to `OC | …` when it accepts a
+                                // submitted turn.
+                                if was_idle && next_status == "Processing..." {
+                                    super::emit_agent_turn_started(
+                                        &pty_emit_app,
+                                        &sid_for_pty,
+                                    );
+                                }
                             }
                         } else if provider_name_for_pty == "gemini" {
                             if let Some(next_status) = gemini_status_from_title(&title) {
@@ -1202,9 +1302,16 @@ pub async fn spawn_agent(
         let watcher_app = app.clone();
         let watcher_provider = provider.clone();
         let watcher_session = config.session_id.clone();
+        let watcher_log_session = claude_status_log_session(&config);
+        let watcher_can_capture_fresh_identity = config.fresh_provider_session_id.is_some();
+        let watcher_session_name = config.session_name.clone();
+        let watcher_config = config_lock.clone();
+        let watcher_query_count = query_count.clone();
+        let watcher_init_timestamp = init_timestamp.clone();
         let watcher_current_status = current_status.clone();
         let watcher_log_path = log_path.clone();
         let watcher_folder = expected_folder.clone();
+        let watcher_fresh_claude_log_paths = fresh_claude_log_paths;
         let watcher_watch_state = watch_state.clone();
         let watcher_skip_existing_log = is_restored;
         let hook_event_log = claude_hook.as_ref().map(|hook| hook.event_log_path.clone());
@@ -1223,22 +1330,44 @@ pub async fn spawn_agent(
                     break;
                 }
 
-                let path = {
+                let (path, captured_identity) = {
                     let mut lock = watcher_log_path.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut captured_identity = false;
                     if lock.is_none() {
                         if let Some(home) = dirs::home_dir() {
-                            let candidate = home
+                            let project_dir = home
                                 .join(".claude")
                                 .join("projects")
-                                .join(claude_project_dir_name(&watcher_folder))
-                                .join(format!("{}.jsonl", watcher_session));
-                            if candidate.exists() {
+                                .join(claude_project_dir_name(&watcher_folder));
+                            let candidate =
+                                project_dir.join(format!("{}.jsonl", watcher_log_session));
+                            if candidate.exists()
+                                && !watcher_fresh_claude_log_paths.contains(&candidate)
+                            {
                                 *lock = Some(candidate);
+                            } else if watcher_can_capture_fresh_identity {
+                                if let Some((path, provider_session_id)) =
+                                    discover_claude_log_for_session_name(
+                                        &project_dir,
+                                        &watcher_session_name,
+                                        &watcher_fresh_claude_log_paths,
+                                    )
+                                {
+                                    if let Ok(mut cfg) = watcher_config.lock() {
+                                        cfg.resume_session = Some(provider_session_id);
+                                        cfg.fresh_provider_session_id = None;
+                                        captured_identity = true;
+                                    }
+                                    *lock = Some(path);
+                                }
                             }
                         }
                     }
-                    lock.clone()
+                    (lock.clone(), captured_identity)
                 };
+                if captured_identity {
+                    persist_runtime_agent_configs(&watcher_app);
+                }
 
                 if let Some(path) = path {
                     if let Ok(mut out) = watcher_log_path.lock() {
@@ -1335,10 +1464,12 @@ pub async fn spawn_agent(
                                             AgentEvent::Init { .. } | AgentEvent::Unknown => {}
                                         }
                                     } else {
-                                        apply_agent_status_event_with_policy(
+                                        apply_agent_event_with_policy(
                                             &watcher_app,
                                             &watcher_session,
                                             event,
+                                            &watcher_query_count,
+                                            &watcher_init_timestamp,
                                             &watcher_current_status,
                                             pty_status_event_policy_for_provider("claude"),
                                         );
@@ -1651,6 +1782,39 @@ pub async fn spawn_agent(
         });
     }
 
+    // OpenCode creates a provider-owned session only once its interactive TUI
+    // begins a turn. Capture that local identity instead of bootstrapping it
+    // with an extra `opencode run` model request.
+    if config.provider == "opencode" && config.resume_session.is_none() {
+        let watcher_app = app.clone();
+        let watcher_config = config_lock.clone();
+        let watcher_current_status = current_status.clone();
+        let watcher_workspace = cwd.clone();
+        let started_after_ms = chrono::Utc::now().timestamp_millis();
+        std::thread::spawn(move || loop {
+            let current = watcher_current_status
+                .lock()
+                .map(|status| status.clone())
+                .unwrap_or_default();
+            if current == "Off" {
+                break;
+            }
+            if wardian_core::identity::normalize_status(&current) == "processing" {
+                if let Some(provider_session_id) =
+                    opencode_recent_session_for_workspace(&watcher_workspace, started_after_ms)
+                {
+                    if let Ok(mut cfg) = watcher_config.lock() {
+                        cfg.resume_session = Some(provider_session_id);
+                        cfg.fresh_provider_session_id = None;
+                    }
+                    persist_runtime_agent_configs(&watcher_app);
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        });
+    }
+
     // ── OpenCode log-file watcher ─────────────────────────────────────────
     {
         let mut cfg = config_lock.lock().unwrap();
@@ -1747,6 +1911,28 @@ mod tests {
         assert_eq!(
             config.codex_config().cleared_provider_sessions,
             vec!["provider-session-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn claude_status_log_session_prefers_the_provider_identity() {
+        let config = AgentConfig {
+            provider: "claude".to_string(),
+            session_id: "wardian-session".to_string(),
+            resume_session: Some("provider-session".to_string()),
+            fresh_provider_session_id: Some("fresh-provider-session".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(claude_status_log_session(&config), "provider-session");
+
+        let fresh_config = AgentConfig {
+            resume_session: None,
+            ..config
+        };
+        assert_eq!(
+            claude_status_log_session(&fresh_config),
+            "fresh-provider-session"
         );
     }
 
@@ -1923,14 +2109,14 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_preexisting_mapping_remains_available_for_log_discovery() {
+    fn antigravity_fresh_launch_ignores_preexisting_workspace_mapping() {
         let (conversation_id, capture_identity) = antigravity_watcher_conversation(
             None,
             Some("conversation-123"),
             Some("conversation-123".to_string()),
         );
 
-        assert_eq!(conversation_id.as_deref(), Some("conversation-123"));
+        assert_eq!(conversation_id, None);
         assert!(!capture_identity);
     }
 

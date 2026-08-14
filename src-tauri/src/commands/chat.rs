@@ -121,20 +121,14 @@ pub(crate) async fn agent_archive_capture_snapshot(
         .unwrap_or_else(|| config.folder.clone());
 
     // Chat may be requested before the provider watcher has performed its
-    // first discovery pass, or for an agent restored while off. Resolve the
-    // provider-owned workspace mapping here as well so rendering does not
-    // depend on watcher timing or on persisting a resume identity.
+    // first discovery pass, or for an agent restored while off. A persisted
+    // provider identity is authoritative for a resumed Antigravity session;
+    // do not fall back to the workspace's current mapping because it can
+    // belong to the conversation that a fresh launch deliberately replaced.
     if provider == "antigravity" && log_path.is_none() {
-        let resolved_workspace = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id);
-        let excluded = config.antigravity_config().cleared_conversations;
-        if let Some(path) = AntigravityProvider::antigravity_home().and_then(|home| {
-            AntigravityProvider::verified_conversation_for_workspace(
-                &home,
-                &resolved_workspace,
-                &excluded,
-            )
-            .and_then(|conversation_id| {
-                AntigravityProvider::conversation_log_path(&home, &conversation_id)
+        if let Some(path) = config.resume_session.as_deref().and_then(|conversation_id| {
+            AntigravityProvider::antigravity_home().and_then(|home| {
+                AntigravityProvider::conversation_log_path(&home, conversation_id)
             })
         }) {
             log_path = Some(path.clone());

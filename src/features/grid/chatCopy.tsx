@@ -1,6 +1,6 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Check, Copy } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type CopyState = "idle" | "copied" | "error";
 
@@ -17,15 +17,29 @@ async function writeClipboardText(value: string) {
 
 export function CopyIconButton({ label, value }: { label: string; value: string }) {
   const [state, setState] = useState<CopyState>("idle");
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleReset = (delay: number) => {
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+    resetTimer.current = setTimeout(() => {
+      resetTimer.current = null;
+      setState("idle");
+    }, delay);
+  };
+
+  useEffect(() => () => {
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+  }, []);
+
   const copy = async () => {
     if (!value) return;
     try {
       await writeClipboardText(value);
       setState("copied");
-      window.setTimeout(() => setState("idle"), 1400);
+      scheduleReset(1400);
     } catch {
       setState("error");
-      window.setTimeout(() => setState("idle"), 2200);
+      scheduleReset(2200);
     }
   };
 
