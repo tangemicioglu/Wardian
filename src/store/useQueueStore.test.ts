@@ -366,6 +366,37 @@ describe("useQueueStore - workflow completion", () => {
     expect(items[0].error).toBe("Timeout");
   });
 
+  it("projects a durable workflow summary once per run and removes its approval card", () => {
+    useQueueStore.setState({
+      items: [{
+        id: "workflow-approval:wf-1:run-1:approve",
+        type: "approval_request",
+        timestamp: Date.now(),
+        read: false,
+        workflow_approval: {
+          blueprint_id: "wf-1",
+          blueprint_path: "/workflows/wf-1.md",
+          run_id: "run-1",
+          node: "approve",
+        },
+      }],
+    });
+
+    const completion = {
+      workflow_id: "wf-1",
+      run_instance_id: "run-1",
+      status: "completed" as const,
+      summary: "Durable workflow result",
+    };
+    useQueueStore.getState().addWorkflowCompletion(completion, "My Workflow");
+    useQueueStore.getState().addWorkflowCompletion(completion, "My Workflow");
+
+    const { items } = useQueueStore.getState();
+    expect(items).toHaveLength(1);
+    expect(items[0].summary).toBe("Durable workflow result");
+    expect(items[0].workflow_approval).toBeUndefined();
+  });
+
   it("trackWorkflowNodeOutput stores last completed-node output", () => {
     useQueueStore.getState().trackWorkflowNodeOutput({
       workflow_id: "wf-1",
@@ -432,6 +463,81 @@ describe("useQueueStore - persistence", () => {
     await useQueueStore.getState().loadItems();
     expect(useQueueStore.getState().items).toHaveLength(1);
     expect(useQueueStore.getState().items[0].id).toBe("new");
+  });
+
+  it("reconciles completed and failed workflow runs that predate the Inbox listener", async () => {
+    mockInvoke.mockImplementation((command) => {
+      if (command === "load_queue_items") return Promise.resolve([]);
+      if (command === "list_workflow_inbox_terminal_runs") {
+        return Promise.resolve([{
+          workflow_id: "scheduled-release",
+          run_instance_id: "run-completed-before-startup",
+          workflow_name: "Scheduled Release",
+          status: "completed",
+          summary: "Release completed before Inbox opened.",
+          updated_at: new Date().toISOString(),
+        }, {
+          workflow_id: "scheduled-release",
+          run_instance_id: "run-failed-before-startup",
+          workflow_name: "Scheduled Release",
+          status: "failed",
+          error: "blueprint could not be resolved",
+          updated_at: new Date().toISOString(),
+        }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await useQueueStore.getState().loadItems();
+
+    expect(useQueueStore.getState().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "workflow_completed",
+        workflow_id: "scheduled-release",
+        workflow_run_id: "run-completed-before-startup",
+        status: "completed",
+        summary: "Release completed before Inbox opened.",
+      }),
+      expect.objectContaining({
+        type: "workflow_completed",
+        workflow_id: "scheduled-release",
+        workflow_run_id: "run-failed-before-startup",
+        status: "failed",
+        error: "blueprint could not be resolved",
+      }),
+    ]));
+    await vi.waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("save_queue_items", expect.objectContaining({
+        items: expect.arrayContaining([
+          expect.objectContaining({ workflow_run_id: "run-completed-before-startup" }),
+          expect.objectContaining({ workflow_run_id: "run-failed-before-startup" }),
+        ]),
+      }));
+    });
+  });
+
+  it("keeps a persisted workflow completion instead of duplicating its durable run", async () => {
+    const persisted = {
+      id: "existing-workflow-item",
+      type: "workflow_completed",
+      timestamp: Date.now(),
+      read: true,
+      workflow_id: "release",
+      workflow_run_id: "run-1",
+      workflow_name: "Release",
+      status: "completed",
+    };
+    mockInvoke.mockImplementation((command) => {
+      if (command === "load_queue_items") return Promise.resolve([persisted]);
+      if (command === "list_workflow_inbox_terminal_runs") {
+        return Promise.resolve([{ ...persisted, run_instance_id: "run-1", updated_at: new Date().toISOString() }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await useQueueStore.getState().loadItems();
+
+    expect(useQueueStore.getState().items).toEqual([persisted]);
   });
 
   it("keeps durable update notifications unread until their local acknowledgement is persisted", async () => {

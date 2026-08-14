@@ -45,9 +45,8 @@ pub struct ResolvedFire {
 /// find a blueprint nested in a library subfolder, not just one that sits
 /// flat in `library/workflows` with a filename matching its id.
 pub fn resolve_fire(req: &FireRequest) -> Result<ResolvedFire, String> {
-    let path = wardian_core::workflow::resolve_blueprint_path(&req.blueprint_id).ok_or_else(
-        || format!("could not resolve blueprint path for {}", req.blueprint_id),
-    )?;
+    let path = wardian_core::workflow::resolve_blueprint_path(&req.blueprint_id)
+        .ok_or_else(|| format!("could not resolve blueprint path for {}", req.blueprint_id))?;
     let blueprint =
         wardian_core::workflow::parse_file(&path).map_err(|err| format!("parse failed: {err}"))?;
     let run_id = wardian_core::engine::driver::new_run_id();
@@ -80,10 +79,15 @@ async fn fire_request(app: &AppHandle, req: &FireRequest) {
         Ok(resolved) => resolved,
         Err(message) => {
             mark_error(&req.schedule_id, &message);
-            if let Err(error) = record_schedule_launch_failure(req, &message) {
-                crate::utils::logging::log_debug(&format!(
-                    "[workflow] scheduler could not write failed run artifact: {error}"
-                ));
+            match record_schedule_launch_failure(req, &message) {
+                Ok(run_root) => {
+                    runs::emit_workflow_inbox_update_with_name(app, &req.name, &run_root)
+                }
+                Err(error) => {
+                    crate::utils::logging::log_debug(&format!(
+                        "[workflow] scheduler could not write failed run artifact: {error}"
+                    ));
+                }
             }
             return;
         }
@@ -108,6 +112,8 @@ async fn fire_request(app: &AppHandle, req: &FireRequest) {
     let app_for_emit = app.clone();
     let schedule_id = req.schedule_id.clone();
     let run_root = resolved.run_root.clone();
+    let run_root_for_inbox = resolved.run_root.clone();
+    let blueprint_for_inbox = resolved.blueprint.clone();
     tokio::spawn(async move {
         let result = match runs::prepare_new_scheduled_run_with_assignments(
             &resolved.blueprint,
@@ -146,6 +152,7 @@ async fn fire_request(app: &AppHandle, req: &FireRequest) {
                 mark_error(&schedule_id, &error);
             }
         };
+        runs::emit_workflow_inbox_update(&app_for_emit, &blueprint_for_inbox, &run_root_for_inbox);
         let _ = app_for_emit.emit("schedules-updated", ());
     });
 }
@@ -682,6 +689,10 @@ edges:
             Some(EventKind::RunFailed { error })
                 if error == "parse failed: io error: The system cannot find the file specified."
         ));
+
+        let update = runs::workflow_inbox_update_with_name(&req.blueprint_id, &run_root).unwrap();
+        assert_eq!(update.status, "failed");
+        assert_eq!(update.workflow_name, "missing-workflow");
     }
 
     #[test]

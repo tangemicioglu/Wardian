@@ -735,6 +735,7 @@ pub fn run() {
             commands::inbox::list_inbox_notifications,
             commands::inbox::resolve_inbox_notification,
             commands::inbox::list_workflow_inbox_approvals,
+            commands::inbox::list_workflow_inbox_terminal_runs,
             commands::topology::get_topology,
             commands::topology::add_topology_edge,
             commands::topology::remove_topology_edge,
