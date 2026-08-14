@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import {
   createNativeHarness,
   ensureNativeAppBuilt,
+  invokeTauri,
   prepareIsolatedHome,
   startNativeSession,
   waitForAppShell,
@@ -45,6 +46,7 @@ const DEFAULT_PROVIDER_MODELS = {
 };
 
 const runRealDelivery = process.env.WARDIAN_E2E_REAL_DELIVERY === "1";
+const verifyFreshTranscript = process.env.WARDIAN_E2E_REAL_FRESH_TRANSCRIPT === "1";
 const allowPartialDelivery = process.env.WARDIAN_E2E_DELIVERY_ALLOW_PARTIAL === "1";
 const workspacePath = process.env.WARDIAN_E2E_REAL_WORKSPACE || process.cwd();
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
@@ -352,6 +354,79 @@ async function runRealDeliveryCase({
       `${provider} output did not include ${expected}: ${combinedOutput}`,
     );
   }
+
+  return { marker, expected: inputCase.name === "mailbox-multiline" ? `${marker}_LINE_2` : marker };
+}
+
+async function waitForFreshTranscript(driver, sessionId, freshMarker) {
+  return await driver.wait(async () => {
+    const events = await invokeTauri(driver, "load_agent_chat_transcript", { sessionId });
+    if (!Array.isArray(events)) return false;
+    const text = events.map((event) => event?.text ?? "").join("\n");
+    return text.includes(freshMarker) ? { events, text } : false;
+  }, 45_000, "fresh provider transcript never reached chat replay");
+}
+
+async function resumeFreshAndAssertTranscript({
+  driver,
+  cliPath,
+  harness,
+  provider,
+  agentSessionId,
+  agentName,
+  staleMarker,
+  runId,
+}) {
+  const existing = (await invokeTauri(driver, "list_agents"))
+    .find((entry) => entry.session_id === agentSessionId);
+  assert.ok(existing, `${provider} agent missing before fresh resume`);
+  const staleProviderSession = existing.resume_session;
+  assert.ok(staleProviderSession, `${provider} never captured its initial provider session`);
+
+  await invokeTauri(driver, "update_agent_config", {
+    newConfig: { ...existing, session_persistence: "fresh" },
+  });
+  await invokeTauri(driver, "pause_agent", { sessionId: agentSessionId });
+  await invokeTauri(driver, "resume_agent", { sessionId: agentSessionId });
+
+  const freshDelivery = await runRealDeliveryCase({
+    cliPath,
+    harness,
+    provider,
+    agentSessionId,
+    agentName,
+    inputCase: INPUT_CASES[0],
+    runId: `fresh-${runId}`,
+  });
+  const transcript = await waitForFreshTranscript(
+    driver,
+    agentSessionId,
+    freshDelivery.expected,
+  );
+  assert.equal(
+    transcript.text.includes(staleMarker),
+    false,
+    `${provider} fresh resume replayed the previous provider transcript: ${JSON.stringify(
+      transcript.events.filter((event) => (event?.text ?? "").includes(staleMarker)).map((event) => ({
+        text: event?.text,
+        source: event?.source,
+        metadata: event?.metadata,
+      })),
+    )}`,
+  );
+  assert.ok(
+    transcript.text.includes(freshDelivery.expected),
+    `${provider} fresh resume did not reload the new provider transcript: ${transcript.text}`,
+  );
+
+  const refreshed = (await invokeTauri(driver, "list_agents"))
+    .find((entry) => entry.session_id === agentSessionId);
+  assert.ok(refreshed, `${provider} agent missing after fresh resume`);
+  assert.notEqual(
+    refreshed.resume_session,
+    staleProviderSession,
+    `${provider} fresh resume retained its previous provider session identity`,
+  );
 }
 
 async function enableIsolatedCodexWorkspaceTrust(harness) {
@@ -473,14 +548,29 @@ test("real provider delivery validation uses actual provider CLIs", { timeout: 9
         );
         continue;
       }
+      const deliveredCases = [];
       for (const inputCase of selectedCases) {
-        await runRealDeliveryCase({
+        deliveredCases.push(await runRealDeliveryCase({
           cliPath,
           harness,
           provider,
           agentSessionId: agent.session_id,
           agentName,
           inputCase,
+          runId,
+        }));
+      }
+      if (verifyFreshTranscript) {
+        const staleDelivery = deliveredCases.find((delivery) => delivery.expected);
+        assert.ok(staleDelivery, "fresh transcript validation requires an output delivery case");
+        await resumeFreshAndAssertTranscript({
+          driver: session.driver,
+          cliPath,
+          harness,
+          provider,
+          agentSessionId: agent.session_id,
+          agentName,
+          staleMarker: staleDelivery.expected,
           runId,
         });
       }

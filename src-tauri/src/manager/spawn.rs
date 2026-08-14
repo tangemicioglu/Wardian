@@ -34,10 +34,10 @@ use crate::providers::gemini::gemini_status_from_title;
 
 const OUTPUT_READY_EMIT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
-/// Selects the verified Antigravity conversation used for log discovery and
-/// whether that conversation is new enough to persist as the resume identity.
-/// A pre-existing workspace mapping is valid chat/telemetry evidence, but is
-/// not promoted to a resume identity until the provider replaces it.
+/// Selects the verified Antigravity conversation created by this launch for
+/// log discovery and whether it should be persisted as the resume identity.
+/// A workspace mapping that existed before launch belongs to the prior
+/// provider conversation, so it must not be replayed by a fresh launch.
 /// Where the mock provider mirrors its event stream.
 ///
 /// Real providers are observed through a log they own, and the chat transcript
@@ -61,9 +61,9 @@ fn antigravity_watcher_conversation(
         return (existing, false);
     }
 
-    let capture_identity =
-        changed_workspace_conversation(workspace_before, discovered.as_deref()).is_some();
-    (discovered, capture_identity)
+    let conversation_id = changed_workspace_conversation(workspace_before, discovered.as_deref());
+    let capture_identity = conversation_id.is_some();
+    (conversation_id, capture_identity)
 }
 
 #[derive(Default)]
@@ -2109,14 +2109,14 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_preexisting_mapping_remains_available_for_log_discovery() {
+    fn antigravity_fresh_launch_ignores_preexisting_workspace_mapping() {
         let (conversation_id, capture_identity) = antigravity_watcher_conversation(
             None,
             Some("conversation-123"),
             Some("conversation-123".to_string()),
         );
 
-        assert_eq!(conversation_id.as_deref(), Some("conversation-123"));
+        assert_eq!(conversation_id, None);
         assert!(!capture_identity);
     }
 

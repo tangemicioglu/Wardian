@@ -2952,6 +2952,19 @@ pub async fn resume_agent(
     let status_before_resume = snapshot.current_status.clone();
     let mut config = snapshot.config.clone();
     let starts_fresh = resolved_session_persistence(&config) == AgentSessionPersistence::Fresh;
+    if starts_fresh {
+        if let Err(error) = archive_agent_lifecycle_boundary(
+            &state,
+            &session_id,
+            ConversationBoundaryReason::Clear,
+        )
+        .await
+        {
+            manager::log_debug(&format!(
+                "[WARDIAN] fresh resume conversation boundary failed for {session_id}: {error}"
+            ));
+        }
+    }
     if let Err(error) = prepare_resume_config_for_runtime(&mut config, snapshot.query_count) {
         restore_agent_status_after_failed_runtime_start(
             &state,
