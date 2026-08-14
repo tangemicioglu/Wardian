@@ -657,18 +657,27 @@ test("keeps the top tab strip stable when its empty chrome drags the window", as
   expect(after?.height).toBe(36);
 });
 
-test("compresses crowded tabs and opens the overflow tab switcher", async ({ page }, testInfo) => {
-  const agents = Array.from({ length: 8 }, (_, index): WorkbenchAgentFixture => ({
-    ...ALPHA_AGENT,
-    session_id: `crowded-agent-${index}`,
-    session_name: `Crowded Agent With A Very Long Name ${index}`,
-  }));
-  const surfaces = agents.map((agent) => makeWorkbenchSurface(
-    `${agent.session_id}-surface`,
-    "agent-session",
-    { resource_key: agent.session_id },
+test("compresses crowded file tabs and keeps the open-tab list available", async ({ page }, testInfo) => {
+  const surfaces = Array.from({ length: 8 }, (_, index) => makeWorkbenchSurface(
+    `file-surface-${index}`,
+    "files",
+    {
+      resource_key: `file:C:/workspace/area-${index}/Important design document ${index}.md`,
+      state_schema_version: 2,
+      state: {
+        resource_kind: "file",
+        transient_preview: false,
+        presentation: "rendered",
+        comparison_open: false,
+        comparison_layout_preference: "auto",
+        comparison_baseline: null,
+        review_drawer_open: false,
+        selected_version_id: null,
+        optional_checkpoint_id: null,
+      },
+    },
   ));
-  await bootWorkbench(page, makeWorkbenchDocument({ surfaces }), agents);
+  await bootWorkbench(page, makeWorkbenchDocument({ surfaces }));
   await page.setViewportSize({ width: 900, height: 720 });
 
   const group = workbenchGroup(page, "group-1");
@@ -677,17 +686,16 @@ test("compresses crowded tabs and opens the overflow tab switcher", async ({ pag
   const widths = await tabs.evaluateAll((elements) => elements.map((element) => (
     Math.round(element.getBoundingClientRect().width)
   )));
-  expect(Math.max(...widths)).toBeLessThan(192);
+  expect(Math.max(...widths)).toBeLessThan(160);
   const compressedLabelCount = await tabs.locator(".wardian-workbench-tab-label").evaluateAll((labels) => (
     labels.filter((label) => label.clientWidth > 0 && label.scrollWidth > label.clientWidth).length
   ));
   expect(compressedLabelCount).toBeGreaterThan(0);
 
-  const overflow = group.locator(".dv-tabs-overflow-dropdown-default");
-  await expect(overflow).toBeVisible();
-  await expect(overflow.locator(":scope > span")).toBeHidden();
-  await overflow.click();
-  const overflowList = page.locator(".dv-tabs-overflow-container");
+  const tabList = group.getByRole("button", { name: "Show open tabs" });
+  await expect(tabList).toBeVisible();
+  await tabList.click();
+  const overflowList = page.getByRole("menu", { name: "Open tabs" });
   await expect(overflowList).toBeVisible();
   const screenshotPath = process.env.WARDIAN_TAB_OVERFLOW_SCREENSHOT;
   if (screenshotPath) {
@@ -697,8 +705,8 @@ test("compresses crowded tabs and opens the overflow tab switcher", async ({ pag
       contentType: "image/png",
     });
   }
-  await overflowList.getByText("Crowded Agent With A Very Long Name 7", { exact: true }).click();
-  await expect(surfaceTab(page, "agent-session", "crowded-agent-7"))
+  await overflowList.getByText("Important design document 7.md", { exact: true }).click();
+  await expect(surfaceTab(page, "files", "file:C:/workspace/area-7/Important design document 7.md"))
     .toHaveAttribute("aria-selected", "true");
 });
 
