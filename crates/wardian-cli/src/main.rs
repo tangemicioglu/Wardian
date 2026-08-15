@@ -7,6 +7,7 @@ mod graph;
 mod library;
 mod live;
 mod output;
+mod telemetry;
 mod watchlist;
 
 use std::{
@@ -63,6 +64,7 @@ fn run() -> i32 {
         Command::Workflow(args) => handle_workflow(args),
         Command::Team(args) => watchlist::handle_team(args),
         Command::Watchlist(args) => watchlist::handle_watchlist(args),
+        Command::Telemetry(args) => telemetry::handle_telemetry(args),
         Command::Graph(args) => graph::handle_graph(args),
         Command::Send(args) => handle_send(args),
         Command::Notify(args) => handle_notify(args),
