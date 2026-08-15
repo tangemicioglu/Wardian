@@ -1,6 +1,10 @@
 import { memo, type PropsWithChildren, type ReactNode, useEffect, useState } from "react";
 
 import {
+  AnalyticsView,
+  type AnalyticsViewProps,
+} from "../../../views/AnalyticsView";
+import {
   DashboardView,
   type DashboardViewProps,
 } from "../../../views/DashboardView";
@@ -10,6 +14,8 @@ import { InboxView, type InboxViewProps } from "../../../views/InboxView";
 import {
   CORE_VIEW_SURFACE_STATE_SCHEMA_VERSION,
   HEAVY_SURFACE_HIDDEN_GRACE_MS,
+  type AnalyticsSurfaceState,
+  type DashboardSurfaceState,
   type EmptyCoreViewSurfaceState,
   type CoreViewSurfaceType,
   type GardenSurfaceState,
@@ -95,10 +101,13 @@ type ManagedSurfaceProps<TState> = {
 };
 
 export interface DashboardSurfaceProps
-  extends DashboardViewProps, ManagedSurfaceProps<EmptyCoreViewSurfaceState> {}
+  extends DashboardViewProps, ManagedSurfaceProps<DashboardSurfaceState> {}
 
 export function DashboardSurface({
   surface_id,
+  // The Dashboard is a singleton surface, so its configuration is held by the
+  // app and mirrored here. The state contract exists so that the day it becomes
+  // multi-instance, each one already persists its own columns and window.
   state: _state,
   visibility = "visible",
   ...viewProps
@@ -106,6 +115,24 @@ export function DashboardSurface({
   return (
     <SurfaceFrame surface_id={surface_id} surface_type="dashboard" visibility={visibility}>
       <DashboardView {...viewProps} />
+    </SurfaceFrame>
+  );
+}
+
+export interface AnalyticsSurfaceProps
+  extends Omit<AnalyticsViewProps, "initial">, ManagedSurfaceProps<AnalyticsSurfaceState> {}
+
+export function AnalyticsSurface({
+  surface_id,
+  state,
+  visibility = "visible",
+  ...viewProps
+}: AnalyticsSurfaceProps) {
+  return (
+    <SurfaceFrame surface_id={surface_id} surface_type="analytics" visibility={visibility}>
+      {/* The surface state is the grid's opening question, which is how a
+          Dashboard drill-through arrives already scoped to one agent. */}
+      <AnalyticsView {...viewProps} initial={state} />
     </SurfaceFrame>
   );
 }

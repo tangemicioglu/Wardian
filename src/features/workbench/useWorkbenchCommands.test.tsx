@@ -250,6 +250,13 @@ describe("useWorkbenchCommands", () => {
       );
     }
 
-    expect(Object.keys(store.getState().document.surfaces)).toHaveLength(10);
+    // Dashboard reuses the fixture's existing instance rather than adding a
+    // second: it is a singleton, and its state restores even though the fixture
+    // carries an unrelated `label` key. The other core views in the fixture
+    // reject that key as corrupt state and are replaced instead, which is why
+    // this is nine surfaces rather than ten.
+    const surfaces = Object.values(store.getState().document.surfaces);
+    expect(surfaces.filter((entry) => entry.surface_type === "dashboard")).toHaveLength(1);
+    expect(surfaces).toHaveLength(9);
   });
 });

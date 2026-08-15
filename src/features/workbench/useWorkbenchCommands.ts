@@ -26,6 +26,7 @@ export type WorkbenchCommandId =
   | "workbench.open_agents"
   | "workbench.open_dashboard"
   | "workbench.open_inbox"
+  | "workbench.open_analytics"
   | "workbench.open_graph"
   | "workbench.open_garden"
   | "workbench.open_library"
@@ -81,6 +82,7 @@ export const WORKBENCH_COMMAND_ACTIONS: readonly WorkbenchCommandAction[] = Obje
   { command_id: "workbench.open_agents", title: "Open Agents", shortcut: "Mod+Alt+A" },
   { command_id: "workbench.open_dashboard", title: "Open Dashboard", shortcut: "Mod+Alt+D" },
   { command_id: "workbench.open_inbox", title: "Open Inbox", shortcut: "Mod+Alt+I" },
+  { command_id: "workbench.open_analytics", title: "Open Analytics", shortcut: "Mod+Alt+A" },
   { command_id: "workbench.open_graph", title: "Open Graph", shortcut: "Mod+Alt+G" },
   { command_id: "workbench.open_garden", title: "Open Garden", shortcut: "Mod+Alt+H" },
   { command_id: "workbench.open_library", title: "Open Library", shortcut: "Mod+Alt+B" },
@@ -158,6 +160,7 @@ function shortcutForEvent(event: KeyboardEvent): WorkbenchCommandId | null {
   if (primary && event.altKey && key === "a") return "workbench.open_agents";
   if (primary && event.altKey && key === "d") return "workbench.open_dashboard";
   if (primary && event.altKey && key === "i") return "workbench.open_inbox";
+  if (primary && event.altKey && key === "a") return "workbench.open_analytics";
   if (primary && event.altKey && key === "g") return "workbench.open_graph";
   if (primary && event.altKey && key === "h") return "workbench.open_garden";
   if (primary && event.altKey && key === "b") return "workbench.open_library";
@@ -344,6 +347,9 @@ export function useWorkbenchCommands(
         return true;
       case "workbench.open_inbox":
         current.navigation.open({ surface_type: "inbox" });
+        return true;
+      case "workbench.open_analytics":
+        current.navigation.open({ surface_type: "analytics" });
         return true;
       case "workbench.open_graph":
         current.navigation.open({ surface_type: "graph" });

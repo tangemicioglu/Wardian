@@ -41,7 +41,8 @@ describe("HomeSurface", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Choose a surface" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Available surfaces").querySelectorAll("button")).toHaveLength(7);
+    // Grows with the surface registry; Analytics is the eighth.
+    expect(screen.getByLabelText("Available surfaces").querySelectorAll("button")).toHaveLength(8);
     expect(screen.queryByRole("button", { name: /^File Editor/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Agents: Monitor active agents." }));
     expect(onSelectSurface).toHaveBeenCalledWith("agents-overview", "group-empty");

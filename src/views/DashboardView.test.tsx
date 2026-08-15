@@ -1,143 +1,412 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import type { ComponentProps } from 'react';
-import { describe, expect, it, vi } from 'vitest';
-import type { AgentConfig, AgentTelemetry } from '../types';
-import { DashboardView } from './DashboardView';
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 
-const agent = (overrides: Partial<AgentConfig> = {}): AgentConfig => ({
-  session_id: 'agent-1',
-  session_name: 'Coder One',
-  agent_class: 'Coder',
-  folder: 'C:/work/app',
-  is_off: false,
-  provider: 'mock',
-  ...overrides,
-});
+import { DashboardView, sortFleet } from "./DashboardView";
+import {
+  DASHBOARD_COLUMNS,
+  DASHBOARD_PREFS_VERSION,
+  DEFAULT_DASHBOARD_PREFS,
+  mergeDashboardPrefs,
+  trendMeasureFor,
+} from "../features/telemetry/dashboardColumns";
+import type { FleetRow } from "../features/telemetry/telemetryTypes";
 
-const telemetry = (overrides: Partial<AgentTelemetry> = {}): AgentTelemetry => ({
-  session_id: 'agent-1',
-  cpu_usage: 12.34,
-  memory_mb: 256.7,
-  uptime_seconds: 30,
-  query_count: 4,
-  init_timestamp: '2026-05-04T10:15:00Z',
-  current_status: 'Processing...',
-  log_path: null,
-  ...overrides,
-});
+const invokeMock = vi.mocked(invoke);
 
-const renderDashboard = (props: Partial<ComponentProps<typeof DashboardView>> = {}) => {
-  const defaults: ComponentProps<typeof DashboardView> = {
-    filteredAgents: [agent()],
-    telemetry: { 'agent-1': telemetry() },
-    terminalTitles: { 'agent-1': 'Running tests' },
-    currentThoughts: { 'agent-1': 'Validating changes' },
-    selectedAgentIds: new Set(),
-    offAgentIds: new Set(),
-    draggedAgentId: null,
-    dragOverAgentId: null,
-    onMouseEnterCard: vi.fn(),
-    onMouseUp: vi.fn(),
-    onMouseDown: vi.fn(),
-    onCardClick: vi.fn(),
-    onPause: vi.fn(),
-    onRestart: vi.fn(),
-    onDelete: vi.fn(),
-    onQuery: vi.fn(),
-    deriveCurrentThought: vi.fn(() => ({ thought: 'Derived thought', status: 'Processing...' })),
-    getStatusColorClass: vi.fn(() => 'bg-wardian-processing'),
+function row(overrides: Partial<FleetRow> = {}): FleetRow {
+  return {
+    key: "uuid-1",
+    label: "Wardian-Codex",
+    sublabel: "Coder",
+    tokens_per_hour: 120_000,
+    turns_per_hour: 18,
+    active_ms: 2_400_000,
+    turns: 18,
+    total_tokens: 120_000,
+    files_touched: 12,
+    lines_added: 340,
+    lines_removed: 90,
+    tokens_reported: true,
+    idle: false,
+    spark: [0, 3, 9, 1],
+    ...overrides,
   };
+}
 
-  const merged = { ...defaults, ...props };
-  render(<DashboardView {...merged} />);
-  return merged;
-};
+function respondWith(rows: FleetRow[] = [row()]) {
+  invokeMock.mockImplementation((command: string) => {
+    if (command === "telemetry_fleet") {
+      return Promise.resolve({
+        window: {
+          from: "2026-08-14T23:00:00.000Z",
+          to: "2026-08-15T00:00:00.000Z",
+          from_floored: false,
+        },
+        window_minutes: 60,
+        rows,
+        maxima: {
+          tokens_per_hour: 240_000,
+          turns_per_hour: 36,
+          turns: 36,
+          active_ms: 3_600_000,
+          total_tokens: 240_000,
+          files_touched: 24,
+          lines: 860,
+          spark: 9,
+        },
+        buckets: ["a", "b", "c", "d"],
+        trend_measure: "total_tokens",
+        grain: "minute5",
+      });
+    }
+    if (command === "telemetry_refresh") return Promise.resolve({ advanced: 1 });
+    return Promise.reject(new Error(`unexpected command ${command}`));
+  });
+}
 
-describe('DashboardView', () => {
-  it('renders active agent telemetry and derived status', () => {
-    const props = renderDashboard();
+beforeEach(() => {
+  invokeMock.mockReset();
+});
 
-    expect(screen.getByText('Coder One')).toBeInTheDocument();
-    expect(screen.getByText('Coder')).toBeInTheDocument();
-    expect(screen.getByText('12.3% CPU')).toBeInTheDocument();
-    expect(screen.getByText('257 MB')).toBeInTheDocument();
-    expect(screen.getByText('4')).toBeInTheDocument();
-    expect(screen.getByText('Processing')).toBeInTheDocument();
-    expect(screen.getByTitle('Activity: Derived thought')).toBeInTheDocument();
-    expect(props.deriveCurrentThought).toHaveBeenCalledWith(
-      'Running tests',
-      'Validating changes',
-      props.telemetry['agent-1'],
-      false,
+describe("DashboardView", () => {
+  it("reads one trailing window rather than a named horizon", async () => {
+    respondWith();
+    render(<DashboardView />);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("telemetry_fleet", {
+        windowMinutes: 1440,
+        measure: "active_ms",
+      });
+    });
+  });
+
+  it("shows totals by default rather than rates", async () => {
+    // Rates were the default and read badly at the windows people use: across a
+    // day, real work collapses into figures like "0.2/h" — true and useless.
+    respondWith();
+    render(<DashboardView />);
+
+    const line = (await screen.findByText("Wardian-Codex")).closest('[role="row"]') as HTMLElement;
+    expect(within(line).getByText("40m")).toBeInTheDocument();
+    expect(within(line).getByText("18")).toBeInTheDocument();
+    expect(within(line).queryByText(/\/h$/)).not.toBeInTheDocument();
+  });
+
+  it("offers the rate view as a column rather than removing it", async () => {
+    respondWith();
+    render(
+      <DashboardView
+        prefs={{
+          ...DEFAULT_DASHBOARD_PREFS,
+          columns: DEFAULT_DASHBOARD_PREFS.columns.map((column) =>
+            column.id === "tokens_per_hour" ? { ...column, visible: true } : column,
+          ),
+        }}
+      />,
     );
-    expect(props.getStatusColorClass).toHaveBeenCalledWith('Processing...');
+    expect(await screen.findByText("120.0k/h")).toBeInTheDocument();
   });
 
-  it('exposes card regions for pane-local responsive layout', () => {
-    renderDashboard();
+  it("reaches past a day, so earlier work is not hidden", async () => {
+    respondWith();
+    const onPrefsChange = vi.fn();
+    render(<DashboardView onPrefsChange={onPrefsChange} />);
+    await screen.findByText("Wardian-Codex");
 
-    const card = document.getElementById('agent-card-agent-1')!;
-    expect(card).toHaveClass('dashboard-agent-card');
-    expect(card.querySelector('.dashboard-agent-card__identity')).toBeInTheDocument();
-    expect(card.querySelector('.dashboard-agent-card__metadata')).toBeInTheDocument();
-    expect(card.querySelector('.dashboard-agent-card__actions')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "30 days" }));
+    expect(onPrefsChange).toHaveBeenCalledWith(
+      expect.objectContaining({ window_minutes: 43_200 }),
+    );
   });
 
-  it('omits off agents and shows the empty state when no agents are filtered in', () => {
-    renderDashboard({
-      filteredAgents: [agent({ session_id: 'off-1', session_name: 'Off Agent' })],
-      telemetry: {},
-      terminalTitles: {},
-      currentThoughts: {},
-      offAgentIds: new Set(['off-1']),
+  it("names agents rather than showing session ids", async () => {
+    respondWith();
+    render(<DashboardView />);
+    expect(await screen.findByText("Wardian-Codex")).toBeInTheDocument();
+    expect(screen.getByText("Coder")).toBeInTheDocument();
+    expect(screen.queryByText("uuid-1")).not.toBeInTheDocument();
+  });
+
+  it("lists agents that recorded nothing as available capacity", async () => {
+    // On a resource monitor an idle agent is spare capacity, which answers
+    // "where can I spend what's left" — not dead weight to hide.
+    respondWith([
+      row(),
+      row({
+        key: "uuid-2",
+        label: "White-Collar",
+        idle: true,
+        tokens_per_hour: 0,
+        turns_per_hour: 0,
+        total_tokens: 0,
+        active_ms: 0,
+        turns: 0,
+        files_touched: 0,
+        lines_added: 0,
+        lines_removed: 0,
+        spark: [0, 0, 0, 0],
+      }),
+    ]);
+    render(<DashboardView />);
+
+    expect(await screen.findByText("White-Collar")).toBeInTheDocument();
+    expect(screen.getByText(/Available capacity \(1\)/)).toBeInTheDocument();
+  });
+
+  it("re-reads when the window changes", async () => {
+    respondWith();
+    const onPrefsChange = vi.fn();
+    render(<DashboardView onPrefsChange={onPrefsChange} />);
+    await screen.findByText("Wardian-Codex");
+
+    await userEvent.click(screen.getByRole("button", { name: "6 hours" }));
+    expect(onPrefsChange).toHaveBeenCalledWith(
+      expect.objectContaining({ window_minutes: 360 }),
+    );
+  });
+
+  it("switches the trend to the measure behind the sorted column", async () => {
+    // The shape beside a row has to belong to the number being sorted, or the
+    // sparkline is decoration next to an unrelated figure.
+    respondWith();
+    const onPrefsChange = vi.fn();
+    render(<DashboardView onPrefsChange={onPrefsChange} />);
+    await screen.findByText("Wardian-Codex");
+
+    await userEvent.click(screen.getByRole("button", { name: "Sort by Turns" }));
+    expect(onPrefsChange).toHaveBeenCalledWith(
+      expect.objectContaining({ sort: { column_id: "turns", descending: true } }),
+    );
+  });
+
+  it("marks an agent with no token accounting instead of showing zero", async () => {
+    // Antigravity publishes none. A 0 would rank it the quietest agent rather
+    // than the unmeasured one.
+    respondWith([row({ tokens_per_hour: null, total_tokens: null, tokens_reported: false })]);
+    render(<DashboardView />);
+
+    const line = await screen.findByText("Wardian-Codex");
+    const rowEl = line.closest('[role="row"]') as HTMLElement;
+    expect(within(rowEl).getByText("—")).toBeInTheDocument();
+  });
+
+  it("scales bars against the fleet, not against the row", async () => {
+    // An agent that ran ten minutes and one that ran all week must not draw the
+    // same shape; the fleet is the denominator where no ceiling exists.
+    respondWith([row()]);
+    const { container } = render(<DashboardView />);
+    await screen.findByText("Wardian-Codex");
+
+    const bars = container.querySelectorAll('[role="row"] span[style*="width"]');
+    const widths = Array.from(bars).map((bar) => (bar as HTMLElement).style.width);
+    // 120k of a 240k fleet maximum is half, not full.
+    expect(widths).toContain("50%");
+  });
+
+  it("explains a column on demand rather than in a strip above the table", async () => {
+    // A monitor left open should not spend a line explaining itself.
+    respondWith();
+    render(<DashboardView />);
+    await screen.findByText("Wardian-Codex");
+
+    expect(screen.queryByText(/rates over the trailing/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sort by Active" })).toHaveAttribute(
+      "title",
+      expect.stringContaining("trailing 24 hours"),
+    );
+  });
+
+  it("lets columns be turned on and off", async () => {
+    respondWith();
+    const onPrefsChange = vi.fn();
+    render(<DashboardView onPrefsChange={onPrefsChange} />);
+    await screen.findByText("Wardian-Codex");
+
+    await userEvent.click(screen.getByRole("button", { name: /Columns/ }));
+    await userEvent.click(screen.getByLabelText("CPU"));
+
+    expect(onPrefsChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        columns: expect.arrayContaining([{ id: "cpu", visible: true }]),
+      }),
+    );
+  });
+
+  it("renders live state from agent state rather than the store", async () => {
+    // Instant columns come from the running app; every rate comes from the
+    // telemetry store. Keeping the joins apart is what lets one be called live.
+    respondWith();
+    render(
+      <DashboardView
+        prefs={{
+          ...DEFAULT_DASHBOARD_PREFS,
+          columns: DEFAULT_DASHBOARD_PREFS.columns.map((column) =>
+            column.id === "cpu" ? { ...column, visible: true } : column,
+          ),
+        }}
+        live={[{ session_id: "uuid-1", status: "Processing...", cpu_usage: 42 }]}
+      />,
+    );
+
+    expect(await screen.findByText("42%")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Processing" })).toBeInTheDocument();
+  });
+
+  it("surfaces a read failure rather than an empty habitat", async () => {
+    invokeMock.mockRejectedValue(new Error("database not initialized"));
+    render(<DashboardView />);
+    expect(await screen.findByText("database not initialized")).toBeInTheDocument();
+  });
+
+  it("ingests before re-reading when refreshed", async () => {
+    respondWith();
+    render(<DashboardView />);
+    await screen.findByText("Wardian-Codex");
+    invokeMock.mockClear();
+
+    await userEvent.click(screen.getByRole("button", { name: /Refresh/ }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("telemetry_refresh");
+      expect(invokeMock).toHaveBeenCalledWith("telemetry_fleet", expect.anything());
     });
-    expect(screen.queryByText('Off Agent')).not.toBeInTheDocument();
-
-    renderDashboard({ filteredAgents: [] });
-    expect(screen.getByText('No Active Instances')).toBeInTheDocument();
   });
 
-  it('keeps an off agent visible while its provider turn is headless', () => {
-    renderDashboard({
-      filteredAgents: [agent({ session_id: 'off-1', session_name: 'Headless Agent' })],
-      telemetry: { 'off-1': telemetry({ session_id: 'off-1', current_status: 'Headless' }) },
-      terminalTitles: {},
-      currentThoughts: {},
-      offAgentIds: new Set(['off-1']),
+  it("drills through to Analytics scoped to one agent", async () => {
+    const onOpenAnalytics = vi.fn();
+    respondWith();
+    render(<DashboardView onOpenAnalytics={onOpenAnalytics} />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Open Wardian-Codex in Analytics" }),
+    );
+    expect(onOpenAnalytics).toHaveBeenCalledWith("uuid-1");
+  });
+});
+
+describe("sortFleet", () => {
+  it("keeps idle agents below active ones in both directions", () => {
+    const rows = [
+      row({ key: "idle", label: "Idle", idle: true, turns_per_hour: 0 }),
+      row({ key: "busy", label: "Busy", turns_per_hour: 5 }),
+    ];
+    expect(sortFleet(rows, "turns_per_hour",true)[0].key).toBe("busy");
+    expect(sortFleet(rows, "turns_per_hour",false)[0].key).toBe("busy");
+  });
+
+  it("sorts an unreported rate as absent rather than as zero", () => {
+    const rows = [
+      row({ key: "none", label: "None", tokens_per_hour: null, tokens_reported: false }),
+      row({ key: "few", label: "Few", tokens_per_hour: 1 }),
+    ];
+    expect(sortFleet(rows, "tokens_per_hour",false)[0].key).toBe("few");
+    expect(sortFleet(rows, "tokens_per_hour",true)[0].key).toBe("few");
+  });
+
+  it("breaks ties by name so the order is stable", () => {
+    const rows = [
+      row({ key: "b", label: "Beta", turns_per_hour: 3 }),
+      row({ key: "a", label: "Alpha", turns_per_hour: 3 }),
+    ];
+    expect(sortFleet(rows, "turns_per_hour",true).map((entry) => entry.label)).toEqual([
+      "Alpha",
+      "Beta",
+    ]);
+  });
+});
+
+describe("dashboard preferences", () => {
+  it("takes column existence and order from the defaults, not the saved file", () => {
+    // The watchlist's merge rule. A column added in a later release must appear
+    // for existing users with no migration, and a stale file must not hide it.
+    const merged = mergeDashboardPrefs({
+      version: DASHBOARD_PREFS_VERSION,
+      columns: [{ id: "tokens", visible: false }],
+      window_minutes: 360,
+      sort: { column_id: "files", descending: false },
     });
 
-    expect(screen.getByText('Headless Agent')).toBeInTheDocument();
+    expect(merged.columns.map((column) => column.id)).toEqual(
+      DEFAULT_DASHBOARD_PREFS.columns.map((column) => column.id),
+    );
+    expect(merged.columns.find((column) => column.id === "tokens")?.visible).toBe(false);
+    expect(merged.window_minutes).toBe(360);
   });
 
-  it('routes card and control interactions to agent callbacks', async () => {
-    const user = userEvent.setup();
-    const props = renderDashboard();
+  it("drops preferences for a column id that no longer exists", () => {
+    const merged = mergeDashboardPrefs({
+      version: DASHBOARD_PREFS_VERSION,
+      columns: [{ id: "retired", visible: true }],
+      sort: { column_id: "retired", descending: true },
+    });
 
-    fireEvent.mouseEnter(document.getElementById('agent-card-agent-1')!);
-    expect(props.onMouseEnterCard).toHaveBeenCalledWith('agent-1');
-
-    await user.click(screen.getByText('Coder One'));
-    expect(props.onCardClick).toHaveBeenCalledWith(expect.any(Object), 'agent-1');
-
-    await user.click(screen.getByRole('button', { name: 'Pause' }));
-    expect(props.onPause).toHaveBeenCalledWith('agent-1');
-
-    await user.click(screen.getByRole('button', { name: 'Restart Session' }));
-    expect(props.onRestart).toHaveBeenCalledWith('agent-1');
-
-    await user.click(screen.getByRole('button', { name: 'Delete' }));
-    expect(props.onDelete).toHaveBeenCalledWith('agent-1');
+    expect(merged.columns.some((column) => column.id === "retired")).toBe(false);
+    // A sort naming a column that does not exist would leave the table unsorted.
+    expect(merged.sort).toEqual(DEFAULT_DASHBOARD_PREFS.sort);
   });
 
-  it('runs canned queries and resets the query select', () => {
-    const props = renderDashboard();
-    const querySelect = screen.getByRole('combobox');
+  it("discards column choices written against an older default set", () => {
+    // Verbatim from a real `settings/dashboard-prefs.json` written while rates
+    // were the default. Merging it visibility-wise kept Burn and Turns/hr on and
+    // Active and Tokens off, so the revised default reached only operators with
+    // no preferences file — that is, nobody who was already running.
+    const merged = mergeDashboardPrefs({
+      columns: [
+        { id: "state", visible: true },
+        { id: "agent", visible: true },
+        { id: "trend", visible: true },
+        { id: "active", visible: false },
+        { id: "turns", visible: true },
+        { id: "tokens", visible: false },
+        { id: "files", visible: true },
+        { id: "lines", visible: true },
+        { id: "burn", visible: true },
+        { id: "throughput", visible: true },
+        { id: "cpu", visible: false },
+        { id: "memory", visible: false },
+      ],
+      window_minutes: 10_080,
+      sort: { column_id: "burn", descending: true },
+    });
 
-    fireEvent.change(querySelect, { target: { value: 'Validate your recent changes and run tests.' } });
-
-    expect(props.onQuery).toHaveBeenCalledWith('agent-1', 'Validate your recent changes and run tests.');
-    expect(querySelect).toHaveValue('');
+    expect(merged.columns).toEqual(DEFAULT_DASHBOARD_PREFS.columns);
+    expect(merged.sort).toEqual(DEFAULT_DASHBOARD_PREFS.sort);
+    expect(merged.version).toBe(DASHBOARD_PREFS_VERSION);
+    // The window is an orthogonal choice and survives the reset.
+    expect(merged.window_minutes).toBe(10_080);
   });
 
+  it("keeps the registry and the default prefs in the same order", () => {
+    // The table draws in prefs order and the picker lists in registry order. When
+    // those drifted, switching a column on placed it somewhere other than where
+    // its checkbox sat.
+    expect(DEFAULT_DASHBOARD_PREFS.columns.map((column) => column.id)).toEqual(
+      DASHBOARD_COLUMNS.map((column) => column.id),
+    );
+  });
+
+  it("falls back to the defaults for anything malformed", () => {
+    expect(mergeDashboardPrefs(null)).toEqual(DEFAULT_DASHBOARD_PREFS);
+    expect(mergeDashboardPrefs({ sort: { column_id: "nope", descending: true } }).sort).toEqual(
+      DEFAULT_DASHBOARD_PREFS.sort,
+    );
+  });
+
+  it("clamps a window the backend would reject", () => {
+    expect(mergeDashboardPrefs({ window_minutes: 1 }).window_minutes).toBe(5);
+    expect(mergeDashboardPrefs({ window_minutes: 999_999 }).window_minutes).toBe(90 * 24 * 60);
+  });
+
+  it("maps each sortable column to the measure its trend should draw", () => {
+    expect(trendMeasureFor("turns_per_hour")).toBe("turns");
+    expect(trendMeasureFor("turns")).toBe("turns");
+    expect(trendMeasureFor("files")).toBe("files");
+    expect(trendMeasureFor("active")).toBe("active_ms");
+    // Tokens/hr and Tokens are the same quantity at different denominations.
+    expect(trendMeasureFor("tokens_per_hour")).toBe("total_tokens");
+    expect(trendMeasureFor("tokens")).toBe("total_tokens");
+  });
 });

@@ -56,6 +56,17 @@ describe("core view surface definitions", () => {
         command_id: "workbench.open.dashboard",
       },
       {
+        // Its own surface, not a mode of the Dashboard: the Dashboard answers
+        // "who did what lately" across measures, Analytics answers one measure
+        // across time. Suspends when hidden because the grid is a heavy read.
+        type: "analytics",
+        open_policy: "singleton",
+        render_policy: "suspend_when_hidden",
+        state_schema_version: CORE_VIEW_SURFACE_STATE_SCHEMA_VERSION,
+        max_state_bytes: CORE_VIEW_SURFACE_MAX_STATE_BYTES,
+        command_id: "workbench.open.analytics",
+      },
+      {
         type: "inbox",
         open_policy: "singleton",
         render_policy: "recreate_from_state",

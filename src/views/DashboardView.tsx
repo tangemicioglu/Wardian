@@ -1,175 +1,730 @@
-import React from "react";
-import { AgentConfig, AgentTelemetry } from "../types";
-import { getAgentActivityLabel, getAgentStatusLabel, getAgentStatusTextClass } from "../utils/statusUtils";
+import React, { useCallback, useMemo, useState } from "react";
+import { AlertTriangle, ArrowDown, ArrowUp, BarChart3, RefreshCw, SlidersHorizontal } from "lucide-react";
 
-export interface DashboardViewProps {
-  filteredAgents: AgentConfig[];
-  telemetry: Record<string, AgentTelemetry>;
-  terminalTitles: Record<string, string>;
-  currentThoughts: Record<string, string>;
-  selectedAgentIds: Set<string>;
-  offAgentIds: Set<string>;
-  draggedAgentId: string | null;
-  dragOverAgentId: string | null;
-  onMouseEnterCard: (id: string) => void;
-  onMouseUp: () => void;
-  onMouseDown: (id: string) => void;
-  onCardClick: (e: React.MouseEvent, id: string) => void;
-  onPause: (id: string) => void;
-  onRestart: (id: string) => void;
-  onDelete: (id: string) => void;
-  onQuery: (id: string, query: string) => void;
-  deriveCurrentThought: (title: string, thought: string, metrics: any, isOff: boolean) => { thought: string, status: string };
-  getStatusColorClass: (status: string) => string;
+import { useFleet } from "../features/telemetry/useFleet";
+import {
+  clampWindow,
+  columnValue,
+  DASHBOARD_COLUMNS,
+  DEFAULT_DASHBOARD_PREFS,
+  trendMeasureFor,
+  WINDOW_CHOICES,
+  type DashboardColumn,
+  type DashboardPrefs,
+} from "../features/telemetry/dashboardColumns";
+import {
+  cellIntensity,
+  formatCount,
+  formatDuration,
+  formatRate,
+  GRAIN_LABELS,
+  UNREPORTED,
+} from "../features/telemetry/telemetryFormat";
+import type { FleetRow, TelemetryFleetMaxima } from "../features/telemetry/telemetryTypes";
+
+/** Live agent state the instant columns read, supplied by the app shell. */
+export interface DashboardLiveAgent {
+  session_id: string;
+  status?: string | null;
+  cpu_usage?: number | null;
+  memory_mb?: number | null;
 }
 
+export interface DashboardViewProps {
+  prefs?: DashboardPrefs;
+  /** Called on every change; the app persists it with no save step. */
+  onPrefsChange?: (prefs: DashboardPrefs) => void;
+  live?: readonly DashboardLiveAgent[];
+  onOpenAgent?: (sessionId: string) => void;
+  onOpenAnalytics?: (sessionId?: string) => void;
+}
+
+/**
+ * The habitat as a process viewer.
+ *
+ * Every figure covers one trailing **window** and is paired with a visual scaled
+ * to the fleet, so a row can be read on its own or compared across the table
+ * without switching modes.
+ *
+ * Totals by default, rates on request. Rates were tried as the default and read
+ * badly at the windows people use: across a day, real work collapses into
+ * figures like `0.2/h`, true and meaningless. The visual treatment is what makes
+ * this legible, not the denomination.
+ *
+ * Consumption sits beside output, which is the runaway detector: an agent with
+ * the most tokens and no files touched is spinning, and sorting brings it to the
+ * top the way a process viewer does. There is deliberately no anomaly panel and
+ * no scoring model deciding what counts as wrong.
+ *
+ * Scaled visuals normalize against the busiest row in the *table*, never their
+ * own row. Only one provider publishes a rate limit, so most columns have no
+ * ceiling — on a fleet monitor the fleet is the denominator, and finding a
+ * runaway needs an outlier rather than an absolute maximum.
+ */
 export const DashboardView: React.FC<DashboardViewProps> = ({
-  filteredAgents,
-  telemetry,
-  terminalTitles,
-  currentThoughts,
-  selectedAgentIds,
-  offAgentIds,
-  draggedAgentId,
-  dragOverAgentId,
-  onMouseEnterCard,
-  onMouseUp,
-  onMouseDown,
-  onCardClick,
-  onPause,
-  onRestart,
-  onDelete,
-  onQuery,
-  deriveCurrentThought,
-  getStatusColorClass,
+  prefs = DEFAULT_DASHBOARD_PREFS,
+  onPrefsChange,
+  live,
+  onOpenAgent,
+  onOpenAnalytics,
 }) => {
+  const [refreshing, setRefreshing] = useState(false);
+  const [picking, setPicking] = useState(false);
+
+  const measure = trendMeasureFor(prefs.sort.column_id);
+  const { fleet, loading, error, refresh } = useFleet(prefs.window_minutes, measure);
+
+  const columns = useMemo(
+    () =>
+      prefs.columns
+        .filter((column) => column.visible)
+        .map((column) => DASHBOARD_COLUMNS.find((known) => known.id === column.id))
+        .filter((column): column is DashboardColumn => Boolean(column)),
+    [prefs.columns],
+  );
+
+  // Live state is merged here rather than server-side: it comes from the running
+  // app, while every rate comes from the telemetry store. Keeping the two joins
+  // apart is what lets an instant column be labelled as live.
+  const rows = useMemo(() => {
+    const liveById = new Map((live ?? []).map((agent) => [agent.session_id, agent]));
+    const merged = (fleet?.rows ?? []).map((row) => ({
+      ...row,
+      status: liveById.get(row.key)?.status ?? null,
+      cpu_usage: liveById.get(row.key)?.cpu_usage ?? null,
+      memory_mb: liveById.get(row.key)?.memory_mb ?? null,
+    }));
+    return sortFleet(merged, prefs.sort.column_id, prefs.sort.descending);
+  }, [fleet, live, prefs.sort]);
+
+  const maxima: TelemetryFleetMaxima | null = useMemo(() => {
+    if (!fleet) return null;
+    return {
+      ...fleet.maxima,
+      memory_mb: rows.reduce((highest, row) => Math.max(highest, row.memory_mb ?? 0), 0),
+    };
+  }, [fleet, rows]);
+
+  const active = rows.filter((row) => !row.idle);
+  const idle = rows.filter((row) => row.idle);
+
+  const update = useCallback(
+    (next: DashboardPrefs) => onPrefsChange?.(next),
+    [onPrefsChange],
+  );
+
+  const toggleSort = (columnId: string) =>
+    update({
+      ...prefs,
+      sort:
+        prefs.sort.column_id === columnId
+          ? { column_id: columnId, descending: !prefs.sort.descending }
+          : { column_id: columnId, descending: true },
+    });
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const template = columns.map((column) => column.width).join(" ") + " 32px";
+
   return (
-    <div className="dashboard-view flex-1 flex gap-4 min-h-full flex-col pb-[100px]">
-      {filteredAgents.map((agent: AgentConfig) => {
-        const agentId = agent.session_id.toString();
-        const isOff = offAgentIds.has(agentId);
-        const metrics = telemetry[agentId];
-        if (isOff && metrics?.current_status !== "Headless") return null;
-        const isSelected = selectedAgentIds.has(agentId);
+    // `min-h-0` rather than `min-h-full`: the surface frame is a fixed-height
+    // flex column, so a root that insists on being at least full height cannot
+    // yield, and the table below it shrinks and clips instead of scrolling.
+    <div className="dashboard-view flex-1 flex flex-col gap-3 min-h-0 pb-3">
+      {/*
+        Reserved for the cross-provider usage and limits control. Deliberately
+        empty rather than filled with a codex-only gauge: a component that exists
+        for one provider makes the surface's shape depend on which vendor the
+        habitat happens to run.
+      */}
+      <div className="dashboard-view__reserved" aria-hidden="true" />
 
-        const rawTitle = terminalTitles[agentId] || "";
-        
-        const { thought: currentThought, status: effectiveStatus } = deriveCurrentThought(
-          rawTitle,
-          currentThoughts[agentId],
-          metrics,
-          isOff
-        );
-
-        const statusColorClass = getStatusColorClass(effectiveStatus);
-
-        return (
-          <div
-            id={`agent-card-${agentId}`}
-            key={agentId}
-            onMouseEnter={() => onMouseEnterCard(agentId)}
-            onDragStart={(e) => e.preventDefault()}
-            onMouseUp={() => onMouseUp()}
-            className={`dashboard-agent-card bg-[var(--color-wardian-card)] overflow-hidden flex shadow-lg relative transition-all rounded-xl flex-col border w-full min-h-[85px] ${isSelected || draggedAgentId === agentId || dragOverAgentId === agentId ? 'border-[var(--color-wardian-accent)] ring-1 ring-[var(--color-wardian-accent)]/50 shadow-[0_0_15px_rgba(241,211,130,0.1)]' : 'border-wardian-border/50 hover:border-wardian-border-heavy'} ${draggedAgentId === agentId ? 'opacity-50 scale-[0.98]' : ''} ${dragOverAgentId === agentId ? 'translate-y-[-2px]' : ''}`}
-          >
-            <div 
-              className="dashboard-agent-card__content flex w-full h-full cursor-grab active:cursor-grabbing select-none"
-              onMouseDown={(e) => { if (e.button === 0) onMouseDown(agentId); }}
-              onClick={(e) => { e.stopPropagation(); onCardClick(e, agentId); }}
+      <header className="dashboard-view__controls flex items-center gap-2 flex-wrap">
+        <div
+          className="flex items-center rounded-lg border border-wardian-border/50 overflow-hidden"
+          role="group"
+          aria-label="Window"
+        >
+          {WINDOW_CHOICES.map((choice) => (
+            <button
+              key={choice.minutes}
+              type="button"
+              aria-pressed={prefs.window_minutes === choice.minutes}
+              onClick={() =>
+                update({ ...prefs, window_minutes: clampWindow(choice.minutes) })
+              }
+              className={`px-2.5 h-7 text-[11px] transition-colors ${
+                prefs.window_minutes === choice.minutes
+                  ? "bg-[var(--color-wardian-accent)]/15 text-[var(--color-wardian-accent)]"
+                  : "text-muted-neutral hover:text-primary hover:bg-wardian-card-bg-muted"
+              }`}
             >
-              <div className="dashboard-agent-card__identity flex flex-col justify-center p-3 bg-[var(--color-wardian-input-bg)] flex-shrink-0">
-                <div className="flex items-center gap-2.5 mb-0.5">
-                  <div className={`w-2.5 h-2.5 rounded-full transition-colors ${statusColorClass}`}></div>
-                  <h3 className="font-bold text-base text-primary truncate">{agent.session_name}</h3>
-                </div>
-                <span className="text-[10px] font-bold text-muted-neutral truncate tracking-wide">{agent.agent_class}</span>
-              </div>
+              {choice.label}
+            </button>
+          ))}
+        </div>
 
+        <div className="flex-1" />
 
-              <div className="dashboard-agent-card__metadata flex flex-1 items-center justify-start p-2 px-4 gap-8 no-scrollbar">
-                <div className="flex flex-col min-w-[120px]">
-                  <span className="label-small mb-0.5">Hardware</span>
-                  <div className="flex items-center gap-2 text-xs font-mono text-primary">
-                    <span className="text-wardian-processing bg-wardian-processing/10 px-1 py-0.5 rounded border border-wardian-processing/30">{metrics?.cpu_usage?.toFixed(1) || "0.0"}% CPU</span>
-                    <span className="text-wardian-processing bg-wardian-processing/10 px-1 py-0.5 rounded border border-wardian-processing/30">{metrics?.memory_mb?.toFixed(0) || "0"} MB</span>
-                  </div>
-                </div>
-                <div className="flex flex-col flex-1 min-w-[150px] max-w-[200px]">
-                  <span className="label-small mb-0.5">Workspace</span>
-                  <span className="text-xs font-mono text-muted-neutral truncate" title={agent.folder}>{agent.folder}</span>
-                </div>
-                <div className="flex flex-col min-w-[110px]">
-                  <span className="label-small mb-0.5">Born</span>
-                  <span className="text-[10px] font-mono text-muted-neutral">
-                    {metrics?.init_timestamp 
-                      ? new Date(metrics.init_timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) 
-                      : "—"}
-                  </span>
-                </div>
-                <div className="flex flex-col min-w-[60px]">
-                  <span className="label-small mb-0.5">Queries</span>
-                  <span className="text-xs font-bold text-[var(--color-wardian-accent)]">{metrics?.query_count || 0}</span>
-                </div>
-                <div className="flex flex-col flex-2 min-w-[200px]">
-                  <span className="label-small mb-0.5">Status</span>
-                  <span
-                    className={`text-xs truncate ${getAgentStatusTextClass(effectiveStatus)}`}
-                    title={`Activity: ${getAgentActivityLabel(effectiveStatus, currentThought, 80)}`}
-                  >
-                    {getAgentStatusLabel(effectiveStatus)}
-                  </span>
-                </div>
-              </div>
+        <button
+          type="button"
+          onClick={() => setPicking((open) => !open)}
+          aria-expanded={picking}
+          title="Choose columns"
+          className="h-7 px-2.5 flex items-center gap-1.5 rounded-lg border border-wardian-border/50 text-[11px] text-muted-neutral hover:text-primary hover:bg-wardian-card-bg-muted transition-colors"
+        >
+          <SlidersHorizontal className="w-3 h-3" />
+          Columns
+        </button>
 
-              <div className="dashboard-agent-card__actions flex flex-col justify-center p-2 bg-wardian-card-bg-muted">
-                <div className="grid grid-cols-2 gap-1.5 w-full">
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); onPause(agentId); }} 
-                    disabled={isOff}
-                    className={`h-7 flex items-center justify-center border text-[9px] rounded transition-colors ${
-                      isOff 
-                        ? 'bg-wardian-card-bg-muted/50 text-muted border-wardian-border/30 cursor-not-allowed'
-                        : 'bg-wardian-warning/10 text-wardian-warning border-wardian-warning/30 hover:bg-wardian-warning/20'
-                    }`}
-                  >Pause</button>
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); onRestart(agentId); }} 
-                    title="Restart the provider and continue this agent session."
-                    className="h-7 flex items-center justify-center bg-wardian-success/10 text-wardian-success border border-wardian-success/30 text-[9px] rounded hover:bg-wardian-success/20 transition-colors"
-                  >{isOff ? "Start Session" : "Restart Session"}</button>
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); onDelete(agentId); }} 
-                    className="h-7 flex items-center justify-center bg-wardian-error/10 text-wardian-error border border-wardian-error/30 text-[9px] rounded hover:bg-wardian-error/20 transition-colors"
-                  >Delete</button>
-                  <div className="relative h-7" onClick={(e) => e.stopPropagation()}>
-                    <select
-                      className="w-full h-full appearance-none bg-wardian-processing/10 hover:bg-wardian-processing/20 border border-wardian-processing/30 text-[9px] text-wardian-processing rounded transition-colors cursor-pointer focus:outline-none focus:ring-1 focus:ring-wardian-processing text-center px-1"
-                      style={{ textAlignLast: 'center' }}
-                      defaultValue=""
-                      onChange={(e) => { if (e.target.value) { onQuery(agentId, e.target.value); e.target.value = ""; } }}
-                    >
-                      <option value="" disabled>Query</option>
-                      <option value="Summarize what you have done so far." className="text-primary bg-wardian-card">Summarize</option>
-                      <option value="Learn the provided context and outline your approach." className="text-primary bg-wardian-card">Learn</option>
-                      <option value="Validate your recent changes and run tests." className="text-primary bg-wardian-card">Validate</option>
-                    </select>
-                    <div className="absolute inset-y-0 right-1.5 flex items-center pointer-events-none">
-                      <svg className="w-2.5 h-2.5 text-wardian-processing/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 9l-7 7-7-7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"></path></svg>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
+        {onOpenAnalytics && (
+          <button
+            type="button"
+            onClick={() => onOpenAnalytics()}
+            title="Open Analytics for historical totals"
+            className="h-7 px-2.5 flex items-center gap-1.5 rounded-lg border border-wardian-border/50 text-[11px] text-muted-neutral hover:text-primary hover:bg-wardian-card-bg-muted transition-colors"
+          >
+            <BarChart3 className="w-3 h-3" />
+            Analytics
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={() => void handleRefresh()}
+          disabled={refreshing}
+          title="Ingest every provider source now, then re-read"
+          className="h-7 px-2.5 flex items-center gap-1.5 rounded-lg border border-wardian-border/50 text-[11px] text-muted-neutral hover:text-primary hover:bg-wardian-card-bg-muted transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} />
+          {refreshing ? "Ingesting…" : "Refresh"}
+        </button>
+      </header>
+
+      {picking && <ColumnPicker prefs={prefs} onChange={update} />}
+
+      {error && (
+        <div className="dashboard-view__error flex items-start gap-2 rounded-lg border border-wardian-error/30 bg-wardian-error/10 p-3 text-xs text-wardian-error">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {loading && (
+        <div className="dashboard-view__loading h-40 flex items-center justify-center text-xs text-muted">
+          Reading the telemetry store…
+        </div>
+      )}
+
+      {!loading && maxima && rows.length > 0 && (
+        // The rows scroll, the header does not. A fleet outgrows one screen
+        // quickly, and a monitor whose column headings scroll away stops
+        // answering what a number means halfway down the list.
+        <div className="dashboard-view__table flex-1 min-h-0 overflow-y-auto rounded-xl border border-wardian-border/50 bg-[var(--color-wardian-card)]">
+          <div
+            role="row"
+            className="grid items-center gap-2 px-3 py-2 border-b border-wardian-border/40 sticky top-0 z-10 bg-[var(--color-wardian-card)]"
+            style={{ gridTemplateColumns: template }}
+          >
+            {columns.map((column) => (
+              <ColumnHeader
+                key={column.id}
+                column={column}
+                sort={prefs.sort}
+                windowMinutes={prefs.window_minutes}
+                grainLabel={fleet ? GRAIN_LABELS[fleet.grain] : null}
+                onSort={toggleSort}
+              />
+            ))}
+            <span />
           </div>
-        );
-      })}
 
-      {filteredAgents.length === 0 && (
-        <div className="col-span-full h-64 flex flex-col items-center justify-center text-muted border-2 border-dashed border-wardian-border rounded-xl w-full">
-          <svg className="w-12 h-12 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
-          <p className="text-sm font-bold tracking-normal">No Active Instances</p>
+          {active.map((row) => (
+            <FleetRowView
+              key={row.key}
+              row={row}
+              columns={columns}
+              maxima={maxima}
+              template={template}
+              sortedBy={prefs.sort.column_id}
+              onOpenAgent={onOpenAgent}
+              onOpenAnalytics={onOpenAnalytics}
+            />
+          ))}
+
+          {idle.length > 0 && (
+            <div className="px-3 pt-3 pb-1">
+              {/* Not dead weight: on a resource monitor an idle agent is spare
+                  capacity, which is the answer to "where can I spend what's left". */}
+              <span className="label-small">Available capacity ({idle.length})</span>
+            </div>
+          )}
+          {idle.map((row) => (
+            <FleetRowView
+              key={row.key}
+              row={row}
+              columns={columns}
+              maxima={maxima}
+              template={template}
+              sortedBy={prefs.sort.column_id}
+              onOpenAgent={onOpenAgent}
+              onOpenAnalytics={onOpenAnalytics}
+            />
+          ))}
+        </div>
+      )}
+
+      {!loading && rows.length === 0 && !error && (
+        <div className="dashboard-view__empty h-40 flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-wardian-border text-muted">
+          <p className="text-sm font-bold">No agents yet</p>
+          <p className="text-[11px]">Spawn an agent and its consumption appears here.</p>
         </div>
       )}
     </div>
   );
 };
+
+function ColumnHeader({
+  column,
+  sort,
+  windowMinutes,
+  grainLabel,
+  onSort,
+}: {
+  column: DashboardColumn;
+  sort: DashboardPrefs["sort"];
+  windowMinutes: number;
+  grainLabel: string | null;
+  onSort: (columnId: string) => void;
+}) {
+  // A total means something different for every window, so it says which one it
+  // covers. A rate does not change with the window and needs no qualifier.
+  // What a column means is available on demand rather than as a strip of prose
+  // above the table: a monitor left open should not spend a line explaining
+  // itself every time it is glanced at.
+  const title =
+    column.kind === "total"
+      ? `${column.hint} — over the trailing ${windowLabel(windowMinutes)}`
+      : column.kind === "instant"
+        ? `${column.hint} — live, not from the telemetry store`
+        : column.kind === "trend" && grainLabel
+          ? `${column.hint} — ${grainLabel} per column, over the trailing ${windowLabel(windowMinutes)}`
+          : column.hint;
+
+  if (!column.sortable) {
+    return (
+      <span className="label-small font-normal truncate" title={title}>
+        {column.label}
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(column.id)}
+      aria-label={`Sort by ${column.label}`}
+      aria-pressed={sort.column_id === column.id}
+      title={title}
+      className={`label-small font-normal flex items-center gap-1 transition-colors truncate ${
+        sort.column_id === column.id
+          ? "text-[var(--color-wardian-accent)]"
+          : "hover:text-primary"
+      }`}
+    >
+      {column.label}
+      {sort.column_id === column.id &&
+        (sort.descending ? (
+          <ArrowDown className="w-2.5 h-2.5 flex-shrink-0" />
+        ) : (
+          <ArrowUp className="w-2.5 h-2.5 flex-shrink-0" />
+        ))}
+    </button>
+  );
+}
+
+function FleetRowView({
+  row,
+  columns,
+  maxima,
+  template,
+  sortedBy,
+  onOpenAgent,
+  onOpenAnalytics,
+}: {
+  row: FleetRow;
+  columns: readonly DashboardColumn[];
+  maxima: TelemetryFleetMaxima;
+  template: string;
+  sortedBy: string;
+  onOpenAgent?: (sessionId: string) => void;
+  onOpenAnalytics?: (sessionId?: string) => void;
+}) {
+  return (
+    <div
+      role="row"
+      className={`dashboard-view__row grid items-center gap-2 px-3 py-1.5 border-b border-wardian-border/20 last:border-0 hover:bg-wardian-card-bg-muted transition-colors ${
+        row.idle ? "opacity-40" : ""
+      }`}
+      style={{ gridTemplateColumns: template }}
+    >
+      {columns.map((column) => (
+        <Cell
+          key={column.id}
+          column={column}
+          row={row}
+          maxima={maxima}
+          emphasised={sortedBy === column.id}
+          onOpenAgent={onOpenAgent}
+        />
+      ))}
+      <span className="flex justify-end">
+        {onOpenAnalytics && !row.idle && (
+          <button
+            type="button"
+            onClick={() => onOpenAnalytics(row.key)}
+            title={`Open ${row.label} in Analytics`}
+            aria-label={`Open ${row.label} in Analytics`}
+            className="text-muted-neutral hover:text-[var(--color-wardian-accent)] transition-colors"
+          >
+            <BarChart3 className="w-3 h-3" />
+          </button>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function Cell({
+  column,
+  row,
+  maxima,
+  emphasised,
+  onOpenAgent,
+}: {
+  column: DashboardColumn;
+  row: FleetRow;
+  maxima: TelemetryFleetMaxima;
+  emphasised: boolean;
+  onOpenAgent?: (sessionId: string) => void;
+}) {
+  if (column.id === "state") return <StatusDot status={row.status} idle={row.idle} />;
+
+  if (column.id === "agent") {
+    return (
+      <button
+        type="button"
+        disabled={!onOpenAgent}
+        onClick={() => onOpenAgent?.(row.key)}
+        className={`text-left min-w-0 ${onOpenAgent ? "hover:text-[var(--color-wardian-accent)]" : ""}`}
+      >
+        <span className="block text-xs text-primary truncate" title={row.label}>
+          {row.label}
+        </span>
+        {row.sublabel && (
+          <span className="block text-[9px] text-muted-neutral truncate">{row.sublabel}</span>
+        )}
+      </button>
+    );
+  }
+
+  if (column.id === "trend") {
+    return <Sparkline values={row.spark} max={maxima.spark} label={row.label} />;
+  }
+
+  if (column.id === "lines") {
+    return <DivergingLines row={row} max={maxima.lines} />;
+  }
+
+  const { value, max } = columnValue(row, column.id, maxima);
+  return (
+    <MeasureCell
+      value={value}
+      max={max}
+      format={(amount) => formatColumn(column.id, amount)}
+      emphasised={emphasised}
+    />
+  );
+}
+
+/**
+ * A figure with its bar.
+ *
+ * The number is absolute and the bar is relative, so a row can be read on its
+ * own or compared across the table without switching modes.
+ */
+export function MeasureCell({
+  value,
+  max,
+  format,
+  emphasised,
+}: {
+  value: number | null;
+  max: number;
+  format: (value: number) => string;
+  emphasised: boolean;
+}) {
+  if (value === null) {
+    // Unreported is not zero. A provider without token accounting has not burned
+    // nothing, and must not draw as the quietest agent in the fleet.
+    return <span className="text-xs font-mono text-muted-neutral">{UNREPORTED}</span>;
+  }
+
+  const fraction = max > 0 ? Math.min(1, value / max) : 0;
+  return (
+    <span className="flex flex-col gap-0.5 min-w-0">
+      <span
+        className={`text-xs font-mono tabular-nums truncate ${
+          emphasised ? "text-primary font-bold" : "text-primary"
+        }`}
+      >
+        {format(value)}
+      </span>
+      <span className="h-1 rounded-full bg-[var(--color-wardian-input-bg)] overflow-hidden">
+        <span
+          className="block h-full rounded-full bg-[var(--color-wardian-accent)]"
+          // A non-zero value always keeps a visible sliver: the distinction that
+          // must survive is "a little" against "nothing at all".
+          style={{ width: value > 0 ? `${Math.max(3, fraction * 100)}%` : "0%" }}
+        />
+      </span>
+    </span>
+  );
+}
+
+/** Lines added against removed, as one bar split about its centre. */
+function DivergingLines({ row, max }: { row: FleetRow; max: number }) {
+  const total = row.lines_added + row.lines_removed;
+  // Zero is reported, not missing. An agent that burned tokens and changed no
+  // lines is the runaway this surface exists to expose, and rendering that as a
+  // dash would claim the figure was never measured — the same "unreported
+  // against zero" confusion the nullable columns exist to prevent, inverted.
+  const share = max > 0 ? Math.min(1, total / max) : 0;
+  const addedShare = total > 0 ? row.lines_added / total : 0;
+
+  return (
+    <span className="flex flex-col gap-0.5 min-w-0">
+      <span className="text-xs font-mono tabular-nums truncate">
+        <span className="text-wardian-success">+{formatCount(row.lines_added)}</span>
+        <span className="text-muted-neutral"> / </span>
+        <span className="text-wardian-error">-{formatCount(row.lines_removed)}</span>
+      </span>
+      <span className="h-1 rounded-full bg-[var(--color-wardian-input-bg)] overflow-hidden flex">
+        <span
+          className="block h-full bg-wardian-success"
+          style={{ width: `${Math.max(0, share * addedShare * 100)}%` }}
+        />
+        <span
+          className="block h-full bg-wardian-error"
+          style={{ width: `${Math.max(0, share * (1 - addedShare) * 100)}%` }}
+        />
+      </span>
+    </span>
+  );
+}
+
+/**
+ * Live status.
+ *
+ * Colour means state and nothing else on this surface — a busy agent is a tall
+ * bar, never a red one — so this is the only coloured signal in a row.
+ */
+function StatusDot({ status, idle }: { status?: string | null; idle: boolean }) {
+  const tone = statusTone(status, idle);
+  return (
+    <span
+      className={`inline-block w-2 h-2 rounded-full ${tone.className}`}
+      role="img"
+      aria-label={tone.label}
+      title={tone.label}
+    />
+  );
+}
+
+function statusTone(status: string | null | undefined, idle: boolean) {
+  const text = (status ?? "").toLowerCase();
+  if (text.includes("error") || text.includes("failed")) {
+    return { className: "bg-wardian-error", label: "Error" };
+  }
+  if (text.includes("action") || text.includes("approval") || text.includes("needed")) {
+    return { className: "bg-wardian-warning", label: "Action required" };
+  }
+  if (text.includes("process") || text.includes("running") || text.includes("thinking")) {
+    return { className: "bg-wardian-info", label: "Processing" };
+  }
+  if (!status) {
+    return { className: "bg-wardian-text-muted/40", label: idle ? "Off" : "Unknown" };
+  }
+  return { className: "bg-wardian-success", label: "Idle" };
+}
+
+/** One row's trend across the window. */
+export function Sparkline({
+  values,
+  max,
+  label,
+}: {
+  values: readonly number[];
+  max: number;
+  label: string;
+}) {
+  if (values.length === 0) return <span className="h-5" aria-hidden="true" />;
+  const peak = values.reduce((highest, value) => Math.max(highest, value), 0);
+
+  return (
+    <span
+      className="dashboard-view__spark flex items-end gap-px h-5"
+      role="img"
+      aria-label={peak > 0 ? `${label}: trend across the window` : `${label}: nothing recorded`}
+    >
+      {values.map((value, index) => (
+        <span
+          key={index}
+          className={`flex-1 min-w-px rounded-t-[1px] ${
+            value > 0 ? "bg-[var(--color-wardian-accent)]" : "bg-wardian-border/30"
+          }`}
+          // Square-rooted, not linear. Token rates span orders of magnitude
+          // across a habitat, so a linear ratio against the busiest bucket
+          // flattens every ordinary one onto the floor and the sparkline
+          // degenerates into a dotted line with a single spike — the shape it
+          // exists to show is exactly what gets lost.
+          style={{ height: value > 0 ? `${Math.max(8, cellIntensity(value, max) * 100)}%` : "1px" }}
+        />
+      ))}
+    </span>
+  );
+}
+
+/** Visibility toggles, in the registry's order. */
+function ColumnPicker({
+  prefs,
+  onChange,
+}: {
+  prefs: DashboardPrefs;
+  onChange: (prefs: DashboardPrefs) => void;
+}) {
+  return (
+    <section className="dashboard-view__picker rounded-xl border border-wardian-border/50 bg-[var(--color-wardian-card)] p-3 flex flex-wrap gap-x-4 gap-y-2">
+      {DASHBOARD_COLUMNS.filter((column) => column.id !== "state" && column.id !== "agent").map(
+        (column) => {
+          const current = prefs.columns.find((entry) => entry.id === column.id);
+          return (
+            <label
+              key={column.id}
+              className="flex items-center gap-1.5 text-[11px] text-muted-neutral hover:text-primary cursor-pointer"
+              title={column.hint}
+            >
+              <input
+                type="checkbox"
+                checked={current?.visible ?? false}
+                onChange={(event) =>
+                  onChange({
+                    ...prefs,
+                    columns: prefs.columns.map((entry) =>
+                      entry.id === column.id
+                        ? { ...entry, visible: event.target.checked }
+                        : entry,
+                    ),
+                  })
+                }
+              />
+              {column.label || column.id}
+            </label>
+          );
+        },
+      )}
+    </section>
+  );
+}
+
+function formatColumn(columnId: string, value: number): string {
+  switch (columnId) {
+    case "tokens_per_hour":
+      return `${formatCount(Math.round(value))}/h`;
+    case "turns_per_hour":
+      return formatRate(value);
+    case "active":
+      return formatDuration(value);
+    case "cpu":
+      return `${value.toFixed(0)}%`;
+    case "memory":
+      return `${formatCount(Math.round(value))}MB`;
+    default:
+      return formatCount(value);
+  }
+}
+
+function windowLabel(minutes: number): string {
+  // Prefer the picker's own wording, so a header does not describe the window as
+  // "1 day" while the button that selected it says "24 hours".
+  const choice = WINDOW_CHOICES.find((option) => option.minutes === minutes);
+  if (choice) return choice.label;
+  if (minutes < 60) return `${minutes} min`;
+  if (minutes < 1440) {
+    const hours = minutes / 60;
+    return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} hour${hours === 1 ? "" : "s"}`;
+  }
+  const days = minutes / 1440;
+  return `${Number.isInteger(days) ? days : days.toFixed(1)} day${days === 1 ? "" : "s"}`;
+}
+
+/**
+ * Sort the fleet by a column.
+ *
+ * Idle agents always sink below active ones regardless of direction: they are
+ * listed as available capacity, and letting an ascending sort float fifty empty
+ * rows to the top would bury the answer.
+ *
+ * An unreported figure sorts as absent rather than as zero, so a provider with
+ * no token accounting never ranks as the quietest agent in the fleet.
+ */
+export function sortFleet(
+  rows: readonly FleetRow[],
+  columnId: string,
+  descending: boolean,
+): FleetRow[] {
+  const value = (row: FleetRow): number | null => {
+    switch (columnId) {
+      case "agent":
+        return null;
+      case "tokens_per_hour":
+        return row.tokens_per_hour;
+      case "turns_per_hour":
+        return row.turns_per_hour;
+      case "turns":
+        return row.turns;
+      case "files":
+        return row.files_touched;
+      case "lines":
+        return row.lines_added + row.lines_removed;
+      case "active":
+        return row.active_ms;
+      case "tokens":
+        return row.total_tokens;
+      case "cpu":
+        return row.cpu_usage ?? null;
+      case "memory":
+        return row.memory_mb ?? null;
+      default:
+        return null;
+    }
+  };
+
+  return [...rows].sort((left, right) => {
+    if (left.idle !== right.idle) return left.idle ? 1 : -1;
+    const a = value(left);
+    const b = value(right);
+    if (a === null && b === null) return left.label.localeCompare(right.label);
+    if (a === null) return 1;
+    if (b === null) return -1;
+    if (a === b) return left.label.localeCompare(right.label);
+    return descending ? b - a : a - b;
+  });
+}
