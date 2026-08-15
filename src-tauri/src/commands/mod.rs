@@ -17,6 +17,7 @@ pub mod library;
 pub mod patch;
 pub mod remote;
 pub mod settings;
+pub mod telemetry;
 pub mod terminal;
 pub mod terminal_session;
 pub mod topology;

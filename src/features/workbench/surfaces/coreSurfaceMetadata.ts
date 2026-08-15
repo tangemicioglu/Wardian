@@ -7,6 +7,11 @@ import type {
 } from "../../../types";
 import { useQueueStore } from "../../../store/useQueueStore";
 import type { GraphRelationshipReason } from "../../graph/graphProjection";
+import {
+  DEFAULT_DASHBOARD_PREFS,
+  mergeDashboardPrefs,
+  type DashboardPrefs,
+} from "../../telemetry/dashboardColumns";
 
 export const DEFAULT_HEAVY_SURFACE_HIDDEN_GRACE_MS = 30_000;
 export const MIN_HEAVY_SURFACE_HIDDEN_GRACE_MS = 1;
@@ -39,7 +44,7 @@ export const HEAVY_SURFACE_HIDDEN_GRACE_MS = resolveHeavySurfaceHiddenGraceMs(
 export const CORE_VIEW_SURFACE_STATE_SCHEMA_VERSION = 1;
 export const CORE_VIEW_SURFACE_MAX_STATE_BYTES = 4 * 1024;
 
-export type CoreViewSurfaceType = "dashboard" | "inbox" | "graph" | "garden";
+export type CoreViewSurfaceType = "dashboard" | "analytics" | "inbox" | "graph" | "garden";
 export type EmptyCoreViewSurfaceState = Readonly<Record<string, never>>;
 export type GraphSurfaceState = Readonly<{
   enabled_reasons: readonly GraphRelationshipReason[];
@@ -49,7 +54,38 @@ export type GraphSurfaceState = Readonly<{
   picker_search: string;
 }>;
 export type GardenSurfaceState = Readonly<{ selected_unit_key: string | null }>;
-export type CoreViewSurfaceState = EmptyCoreViewSurfaceState | GraphSurfaceState | GardenSurfaceState;
+/**
+ * What the Analytics grid is currently asking.
+ *
+ * Persisted so the surface survives a reload and so the Dashboard can open it
+ * already scoped to one agent, rather than dropping the reader on a default
+ * view they have to re-navigate.
+ */
+export type AnalyticsSurfaceState = Readonly<{
+  horizon: string;
+  dimension: string;
+  measure: string;
+  /** Session id to focus, when opened by drilling through from a row. */
+  focus_key: string | null;
+}>;
+/**
+ * How one Dashboard instance is configured.
+ *
+ * Per instance, so two Dashboards can watch different things — one on token
+ * volume, one on turn rate — which is the point of the workbench holding
+ * several. A new
+ * instance is seeded from the globally saved preferences rather than a cold
+ * default, so this is what the operator last used, not what shipped.
+ */
+export type DashboardSurfaceState = Readonly<{
+  prefs: DashboardPrefs;
+}>;
+export type CoreViewSurfaceState =
+  | EmptyCoreViewSurfaceState
+  | GraphSurfaceState
+  | GardenSurfaceState
+  | AnalyticsSurfaceState
+  | DashboardSurfaceState;
 export type SurfaceVisibility = "visible" | "hidden";
 
 const EMPTY_STATE: EmptyCoreViewSurfaceState = Object.freeze({});
@@ -154,11 +190,62 @@ function defineCoreViewSurface(
   };
 }
 
+export const DEFAULT_DASHBOARD_SURFACE_STATE: DashboardSurfaceState = Object.freeze({
+  prefs: DEFAULT_DASHBOARD_PREFS,
+});
+
+function restoreDashboardState(
+  value: unknown,
+  version: number,
+): SurfaceRestoreResult<DashboardSurfaceState> {
+  if (version !== CORE_VIEW_SURFACE_STATE_SCHEMA_VERSION) {
+    return { ok: false, error: `unsupported dashboard state version ${version}` };
+  }
+  if (!isRecord(value)) return { ok: false, error: "dashboard state must be an object" };
+  return { ok: true, state: coerceDashboardState(value) };
+}
+
+/**
+ * Best-effort shaping, used where a restore failure should not blank the table.
+ *
+ * Column preferences go through the same default-anchored merge the watchlist
+ * uses, so a column added after this state was written still appears, and a
+ * corrupt blob degrades to the defaults rather than rendering undefined.
+ */
+function coerceDashboardState(raw: unknown): DashboardSurfaceState {
+  const record = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+  return Object.freeze({ prefs: mergeDashboardPrefs(record.prefs) });
+}
+
+/** One Dashboard's configuration, from a persisted surface. */
+export function normalizeDashboardSurfaceState(
+  surface: Pick<WorkbenchSurfaceV1, "state">,
+): DashboardSurfaceState {
+  return coerceDashboardState(surface.state);
+}
+
+/**
+ * Whether this surface carries a configuration of its own.
+ *
+ * Restore is deliberately tolerant, so it answers with the defaults for a
+ * surface that has never been configured — which is indistinguishable from one
+ * genuinely configured to the defaults. This asks the narrower question the
+ * seeding rule needs: did anyone actually write preferences here? Without it a
+ * fresh Dashboard would render shipped defaults instead of what was last used.
+ */
+export function surfaceConfiguredDashboard(
+  surface: Pick<WorkbenchSurfaceV1, "state">,
+): boolean {
+  return isRecord(surface.state) && isRecord(surface.state.prefs);
+}
+
 export const DASHBOARD_SURFACE_DEFINITION = defineCoreViewSurface(
   "dashboard", "Dashboard", "recreate_from_state", {
-    default_state: () => EMPTY_STATE,
-    serialize_state: () => EMPTY_STATE,
-    restore_state: (value, version) => restoreEmptyState(value, version, "dashboard"),
+    // Carries its column and window configuration, so two Dashboards can watch
+    // different things and each survives a reload as the operator left it.
+    default_state: () => DEFAULT_DASHBOARD_SURFACE_STATE,
+    serialize_state: (state) => state,
+    restore_state: restoreDashboardState,
   },
 );
 
@@ -197,8 +284,58 @@ export const GARDEN_SURFACE_DEFINITION = defineCoreViewSurface(
     restore_state: restoreGardenState,
   },
 );
+export const DEFAULT_ANALYTICS_SURFACE_STATE: AnalyticsSurfaceState = Object.freeze({
+  horizon: "week",
+  dimension: "agent",
+  measure: "active_ms",
+  focus_key: null,
+});
+
+function restoreAnalyticsState(
+  value: unknown,
+  version: number,
+): SurfaceRestoreResult<AnalyticsSurfaceState> {
+  if (version !== CORE_VIEW_SURFACE_STATE_SCHEMA_VERSION) {
+    return { ok: false, error: `unsupported analytics state version ${version}` };
+  }
+  if (!isRecord(value)) return { ok: false, error: "analytics state must be an object" };
+  return { ok: true, state: coerceAnalyticsState(value) };
+}
+
+/** Best-effort shaping, used where a restore failure should not blank the grid. */
+function coerceAnalyticsState(raw: unknown): AnalyticsSurfaceState {
+  // Every field is validated by the command layer before it reaches SQL, so a
+  // restored value that is stale or nonsense degrades to an error message
+  // rather than a bad query. Shape is still checked here so a corrupt blob
+  // cannot make the surface render undefined.
+  const record = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+  const text = (value: unknown, fallback: string) =>
+    typeof value === "string" && value.length > 0 ? value : fallback;
+  return Object.freeze({
+    horizon: text(record.horizon, DEFAULT_ANALYTICS_SURFACE_STATE.horizon),
+    dimension: text(record.dimension, DEFAULT_ANALYTICS_SURFACE_STATE.dimension),
+    measure: text(record.measure, DEFAULT_ANALYTICS_SURFACE_STATE.measure),
+    focus_key: typeof record.focus_key === "string" ? record.focus_key : null,
+  });
+}
+
+/** The Analytics grid's opening question, from a persisted surface. */
+export function normalizeAnalyticsSurfaceState(
+  surface: Pick<WorkbenchSurfaceV1, "state">,
+): AnalyticsSurfaceState {
+  return coerceAnalyticsState(surface.state);
+}
+
+export const ANALYTICS_SURFACE_DEFINITION = defineCoreViewSurface(
+  "analytics", "Analytics", "suspend_when_hidden", {
+    default_state: () => DEFAULT_ANALYTICS_SURFACE_STATE,
+    serialize_state: (state) => state,
+    restore_state: restoreAnalyticsState,
+  },
+);
 export const CORE_VIEW_SURFACE_DEFINITIONS: readonly SurfaceDefinition[] = Object.freeze([
   DASHBOARD_SURFACE_DEFINITION,
+  ANALYTICS_SURFACE_DEFINITION,
   INBOX_SURFACE_DEFINITION,
   GRAPH_SURFACE_DEFINITION,
   GARDEN_SURFACE_DEFINITION,
@@ -209,6 +346,7 @@ export function normalizeCoreViewSurfaceState(
 ): CoreViewSurfaceState {
   if (surface.surface_type === "graph") return normalizeGraphSurfaceState(surface);
   if (surface.surface_type === "garden") return normalizeGardenSurfaceState(surface);
+  if (surface.surface_type === "analytics") return coerceAnalyticsState(surface.state);
   const definition = CORE_VIEW_SURFACE_DEFINITIONS.find(
     (candidate) => candidate.type === surface.surface_type,
   );

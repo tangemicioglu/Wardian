@@ -48,8 +48,8 @@ it as the complete map of Wardian's user-facing features.
 
 ### Run and Monitor Agents
 
-- [Agents Overview](./guide/agents-overview.md), [Grid](./guide/grid.md), and
-  [Dashboard](./guide/dashboard.md)
+- [Agents Overview](./guide/agents-overview.md), [Grid](./guide/grid.md),
+  [Dashboard](./guide/dashboard.md), and [Analytics](./guide/analytics.md)
 - [Graph](./guide/graph.md), [Watchlists](./guide/watchlists.md), and
   [Inbox](./guide/inbox.md)
 - [Class Management](./guide/class-management.md)

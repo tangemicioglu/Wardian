@@ -71,6 +71,7 @@ src-tauri/resources/bin/wardian*
 
 # Playwright
 e2e/test-results/
+test-results/
 e2e/playwright-report/
 e2e/screenshots/
 playwright-report/

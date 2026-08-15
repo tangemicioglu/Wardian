@@ -22,6 +22,11 @@ import {
   removeDeletedAgentsFromWatchlistState,
 } from "../layout/watchlist/watchlistUtils";
 import type { Watchlist, WatchlistPrefs, AgentInteractions, AgentTeam, WatchlistState, WatchlistEntry } from "../layout/watchlist/types";
+import {
+  DEFAULT_DASHBOARD_PREFS,
+  mergeDashboardPrefs,
+  type DashboardPrefs,
+} from "../features/telemetry/dashboardColumns";
 import { DEFAULT_WATCHLIST_PREFS } from "../layout/watchlist/types";
 
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -71,11 +76,15 @@ import { createWorkbenchNavigationService } from "../features/workbench/navigati
 import { SurfaceRecoveryPlaceholder } from "../features/workbench/SurfaceRecoveryPlaceholder";
 import { AgentSessionSurface } from "../features/workbench/surfaces/AgentSessionSurface";
 import {
+  AnalyticsSurface,
   DashboardSurface,
   GardenSurface,
   GraphSurface,
   InboxSurface,
+  normalizeAnalyticsSurfaceState,
+  normalizeDashboardSurfaceState,
   normalizeGardenSurfaceState,
+  surfaceConfiguredDashboard,
   normalizeGraphSurfaceState,
 } from "../features/workbench/surfaces/coreSurfaceDefinitions";
 import type { WorkbenchSurfaceRenderer } from "../layout/workbench/DockviewLayoutAdapter";
@@ -536,6 +545,7 @@ function AppBody() {
   const [watchlists, setWatchlists] = useState<Watchlist[]>([]);
   const [teams, setTeams] = useState<AgentTeam[]>([]);
   const [watchlistPrefs, setWatchlistPrefs] = useState<WatchlistPrefs>(DEFAULT_WATCHLIST_PREFS);
+  const [dashboardPrefs, setDashboardPrefs] = useState<DashboardPrefs>(DEFAULT_DASHBOARD_PREFS);
   const [agentInteractions, setAgentInteractions] = useState<AgentInteractions>({});
   const [changeReviewTurnRevision, setChangeReviewTurnRevision] = useState(0);
   const agentInteractionsRef = useRef<AgentInteractions>({});
@@ -681,6 +691,12 @@ function AppBody() {
       } catch { /* first run */ }
 
       try {
+        // Merged over the defaults, so a column added in a later release appears
+        // without a migration and a stale file cannot hide one.
+        setDashboardPrefs(mergeDashboardPrefs(await invoke("load_dashboard_prefs")));
+      } catch { /* first run */ }
+
+      try {
         const interactions = await invoke<AgentInteractions>("load_agent_interactions");
         if (interactions) {
           const preLoadUpdates = agentInteractionsRef.current;
@@ -720,6 +736,18 @@ function AppBody() {
     setWatchlistPrefs(prefs);
     try {
       await invoke("save_watchlist_prefs", { prefs });
+    } catch { /* non-critical */ }
+  }, []);
+
+  /**
+   * Written on every Dashboard change, with no save step — the same contract the
+   * watchlist uses. This is the seed a Dashboard starts from; a failed write
+   * costs the next session's layout, never the current one's.
+   */
+  const persistDashboardPrefs = useCallback(async (prefs: DashboardPrefs) => {
+    setDashboardPrefs(prefs);
+    try {
+      await invoke("save_dashboard_prefs", { prefs });
     } catch { /* non-critical */ }
   }, []);
 
@@ -1570,26 +1598,61 @@ function AppBody() {
       return (
         <DashboardSurface
           surface_id={surface.surface_id}
-          state={{}}
+          state={normalizeDashboardSurfaceState(restoredSurface)}
           visibility={visibility}
-          filteredAgents={filteredAgents}
-          telemetry={telemetry}
-          terminalTitles={terminalTitles}
-          currentThoughts={currentThoughts}
-          selectedAgentIds={selectedAgentIds}
-          offAgentIds={offAgentIds}
-          draggedAgentId={draggedAgentId}
-          dragOverAgentId={dragOverAgentId}
-          onMouseEnterCard={handleMouseEnterCard}
-          onMouseUp={handleMouseUp}
-          onMouseDown={handleMouseDown}
-          onCardClick={handleAgentCardClick}
-          onPause={onPause}
-          onRestart={onRestart}
-          onDelete={onDelete}
-          onQuery={sendCommand}
-          deriveCurrentThought={deriveCurrentThought}
-          getStatusColorClass={getStatusColorClass}
+          // Surface state first, global prefs as the seed. A Dashboard the
+          // workbench restored keeps its own configuration even when the global
+          // file is missing or failed to write; a freshly opened one inherits
+          // what was last used rather than a cold default.
+          prefs={
+            surfaceConfiguredDashboard(restoredSurface)
+              ? normalizeDashboardSurfaceState(restoredSurface).prefs
+              : dashboardPrefs
+          }
+          onPrefsChange={(prefs) => {
+            void persistDashboardPrefs(prefs);
+            // Mirrored into the surface so the workbench owns a copy too. Both
+            // writes happen on every change; neither is behind a save step.
+            workbenchPersistence.store.getState().apply_commands([{
+              type: "update_surface_state",
+              surface_id: surface.surface_id,
+              state_schema_version: 1,
+              state: { prefs },
+            }]);
+          }}
+          // The instant columns read live agent state; every rate comes from the
+          // telemetry store. Joining them here keeps that boundary explicit.
+          live={agents.map((agent) => ({
+            session_id: agent.session_id,
+            status: telemetry[agent.session_id]?.current_status ?? null,
+            cpu_usage: telemetry[agent.session_id]?.cpu_usage ?? null,
+            memory_mb: telemetry[agent.session_id]?.memory_mb ?? null,
+          }))}
+          onOpenAgent={(sessionId) => openAgentFromSurface(surface.surface_id, sessionId)}
+          onOpenAnalytics={(sessionId) =>
+            workbenchNavigation.open({
+              surface_type: "analytics",
+              // Carries the agent through, so the grid opens on that row
+              // instead of a default the reader has to navigate away from.
+              state: {
+                horizon: "week",
+                dimension: "agent",
+                measure: "active_ms",
+                focus_key: sessionId ?? null,
+              },
+            })
+          }
+        />
+      );
+    }
+
+    if (surface.surface_type === "analytics") {
+      return (
+        <AnalyticsSurface
+          surface_id={surface.surface_id}
+          state={normalizeAnalyticsSurfaceState(restoredSurface)}
+          visibility={visibility}
+          onOpenAgent={(sessionId) => openAgentFromSurface(surface.surface_id, sessionId)}
         />
       );
     }

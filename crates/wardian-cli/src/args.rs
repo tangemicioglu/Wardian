@@ -17,6 +17,7 @@ pub enum Command {
     Workflow(WorkflowArgs),
     Team(TeamArgs),
     Watchlist(WatchlistArgs),
+    Telemetry(TelemetryArgs),
     Graph(GraphArgs),
     Send(SendArgs),
     Notify(NotifyArgs),
@@ -509,6 +510,31 @@ pub enum WatchlistCommand {
     AddAgent { target: String, agent: String },
     RemoveAgent { target: String, agent: String },
     Delete { target: String },
+}
+
+// ---------------------------------------------------------------------------
+// wardian telemetry
+// ---------------------------------------------------------------------------
+
+/// Read the habitat telemetry store. Read-only: ingest belongs to the app,
+/// which owns the source cursors.
+#[derive(Debug, Args)]
+pub struct TelemetryArgs {
+    #[command(subcommand)]
+    pub command: TelemetryCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TelemetryCommand {
+    /// Aggregate measures over a horizon, plus a ranked breakdown.
+    Summary {
+        /// today, day (24h), week (7d), month (30d), or all.
+        #[arg(long, default_value = "week")]
+        horizon: String,
+        /// provider, agent, or model.
+        #[arg(long, default_value = "provider")]
+        dimension: String,
+    },
 }
 
 // ---------------------------------------------------------------------------

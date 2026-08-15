@@ -71,6 +71,7 @@ export type CoreSurfaceContribution = {
 export const CORE_SURFACE_CONTRIBUTIONS: readonly CoreSurfaceContribution[] = Object.freeze([
   { surface_type: "agents-overview", title: "Agents", description: "Monitor active agents.", group: "Core views" },
   { surface_type: "dashboard", title: "Dashboard", description: "Review habitat telemetry.", group: "Core views" },
+  { surface_type: "analytics", title: "Analytics", description: "Look up what agents did over a period.", group: "Core views" },
   { surface_type: "inbox", title: "Inbox", description: "Review updates and requests that need your input.", group: "Core views" },
   { surface_type: "graph", title: "Graph", description: "Explore agent relationships.", group: "Core views" },
   { surface_type: "garden", title: "Garden", description: "Explore the living habitat.", group: "Core views" },

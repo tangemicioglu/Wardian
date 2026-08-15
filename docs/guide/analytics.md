@@ -1,0 +1,46 @@
+# Analytics
+
+Analytics is a Workbench surface for looking up what your habitat actually did over a period. It draws a matrix: one row per agent, model, or provider, one column per time bucket, shaded by the measure you pick.
+
+Where [Dashboard](./dashboard.md) answers *is anything wrong right now*, Analytics answers *how much did X do between A and B*. A trailing window is a setting you leave alone; a horizon is a filter you change to answer a question. Keeping them on separate surfaces is deliberate.
+
+## When to Use It
+
+- Attribute token spend across providers or models over a week or a month.
+- Find when an agent was actually working, and when it was idle.
+- Compare agents on one measure without reading each one's terminal.
+- Check whether activity is spread out or concentrated in a few bursts.
+
+## Basic Workflow
+
+1. Open Analytics from `Ctrl+P` / `Cmd+P`, a pane's **+** button, or the empty-pane Home state. `Ctrl+Alt+Y` opens it directly.
+2. Choose what the **rows** are: agent, model, or provider.
+3. Choose the **measure**. Options are grouped as Work (active time, turns), Tokens, and Files.
+4. Choose the **horizon**: today, 24 hours, 7 days, 30 days, or all.
+5. Read the matrix. Hover any cell for its exact value and moment; click an agent row to open that agent.
+
+The bucket size follows the horizon, and the axis labels the start of each day rather than printing a run of bare hours.
+
+## Reading the Matrix
+
+**Shading is relative to the busiest cell** in the current view, on a square-rooted ramp so that quiet-but-not-empty periods stay visible next to a peak. The scale legend under the matrix says which end is which.
+
+**Row totals are not always the sum of the cells.** "Files touched" counts distinct files, so a file edited in two different buckets appears in both columns but counts once in the row total. Where that applies, the total carries a tooltip saying so.
+
+**Cache reads are excluded from token measures.** They run tens of times larger than fresh input and would swamp every other row, making the matrix a picture of caching rather than of work.
+
+**Active time is measured where a provider reports durations and inferred from gaps between events where it does not.** The two are kept apart internally and never blended into a single figure that implies more precision than exists.
+
+## Important Limits
+
+- Analytics reads telemetry derived from provider logs. Providers that publish no token accounting (gemini, antigravity) contribute no token figures.
+- History begins when telemetry ingest first read a provider's logs. Sessions whose logs have been deleted cannot be recovered.
+- The matrix is a lookup surface. For live state and a monitor you leave open, use [Dashboard](./dashboard.md).
+- For per-conversation detail, open the agent session rather than reading it off the axis.
+
+## Related Links
+
+- [Dashboard](./dashboard.md)
+- [Workbench](./workbench.md)
+- [Agents](./agents-overview.md)
+- [Wardian CLI](./cli.md) — `wardian telemetry summary` reads the same store from a shell

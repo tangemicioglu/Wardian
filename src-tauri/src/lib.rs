@@ -318,6 +318,10 @@ pub fn run() {
             manager::init_agent_classes(&app_handle);
 
             start_metrics_supervisor(app.handle().clone());
+            // Deliberately its own loop rather than work added to the metrics
+            // tick: that tick drives live status and readiness, and ingest reads
+            // whole log deltas while holding the state database's write lock.
+            state::telemetry_ingest::start_telemetry_ingest(app.handle().clone());
 
             if let Some(runs_dir) = wardian_core::paths::workflow_runs_dir() {
                 let interrupted = crate::workflow::runs::fail_interrupted_runs(&runs_dir);
@@ -617,6 +621,15 @@ pub fn run() {
             commands::file_recovery::get_file_recovery,
             commands::file_recovery::discard_file_recovery,
             commands::file_recovery::merge_file_recovery,
+            commands::telemetry::telemetry_overview,
+            commands::telemetry::telemetry_dashboard,
+            commands::telemetry::telemetry_fleet,
+            commands::telemetry::load_dashboard_prefs,
+            commands::telemetry::save_dashboard_prefs,
+            commands::telemetry::telemetry_matrix,
+            commands::telemetry::telemetry_series,
+            commands::telemetry::telemetry_activity,
+            commands::telemetry::telemetry_refresh,
             commands::terminal::send_input_to_agent,
             commands::terminal::submit_prompt_to_agent,
             commands::terminal::send_binary_input_to_agent,

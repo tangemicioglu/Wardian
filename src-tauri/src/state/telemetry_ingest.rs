@@ -1,0 +1,1078 @@
+//! Scheduled telemetry ingest.
+//!
+//! Phase 1 built a store that can advance a provider source; this is the thing
+//! that decides *which* sources exist and *when* to advance them. It runs on its
+//! own cadence, deliberately not on the 5s metrics tick: that tick is on the
+//! critical path for status and readiness, and ingest reads whole log deltas and
+//! holds the state database's write lock. Sharing the tick would trade a live
+//! status surface for a historical one.
+//!
+//! Discovery is separated from execution so the mapping from agents to sources
+//! can be tested without an app, a database, or a provider.
+
+use crate::manager::opencode::opencode_database_path;
+use crate::state::AppState;
+use crate::utils::fs::get_wardian_home;
+use tauri::Manager;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use wardian_core::telemetry::ingest::{ingest_source, IngestError};
+use wardian_core::telemetry::sources::opencode::sessions_in_directory;
+use wardian_core::telemetry::sources::{is_supported, uses_archive, SourceContext, SourceError};
+
+/// How often ingest runs while at least one agent is alive.
+///
+/// Well below the hour a rollup bucket covers, so the newest bucket is never
+/// more than a minute stale, and far above the cost of a delta read.
+const INGEST_INTERVAL_ACTIVE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How often ingest runs when nothing is running.
+///
+/// Sources cannot grow without an agent writing to them, so polling at the
+/// active cadence would spend its time confirming that files have not changed.
+/// It is not zero because an agent can write through a headless run this state
+/// does not observe.
+const INGEST_INTERVAL_IDLE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// A single ingest pass is abandoned after this long.
+///
+/// A first pass over a very large backlog is legitimately slow, so this is
+/// generous. It exists to stop a wedged source (a locked database that never
+/// releases) from holding the loop forever.
+const INGEST_PASS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How many bytes of provider log one pass will read before stopping.
+///
+/// An agent's whole history is hundreds of rollout files and can run to several
+/// gigabytes, which is far too much to read before the first Dashboard paint.
+/// Sources are visited newest first, so the horizons a reader is actually
+/// looking at are correct after the first pass and older history fills in over
+/// the following ones.
+const INGEST_BYTES_PER_PASS: u64 = 128 * 1024 * 1024;
+
+/// What an agent contributes to discovery.
+///
+/// Deliberately owned and inert rather than a handle to live state: discovery
+/// must not hold the agents lock while touching the filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentDescriptor {
+    pub session_id: String,
+    pub provider: String,
+    /// The provider's own session identifier (`resume_session`). Without it
+    /// there is nothing to look the source up by.
+    pub provider_session_id: Option<String>,
+    /// Directory this agent works in.
+    ///
+    /// Opencode stamps every session with the directory it ran in, which is the
+    /// only way to find sessions that predate the conversation archive or that
+    /// ran headless — the equivalent of the per-agent habitat the file-backed
+    /// providers get.
+    pub workspace: Option<String>,
+    pub is_off: bool,
+}
+
+/// A resolved, ingestable source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredSource {
+    pub session_id: String,
+    pub provider: String,
+    /// Every provider-native session this source should be read for.
+    ///
+    /// A file-backed source holds exactly one, because the file *is* the
+    /// session. A database source holds every session the agent has ever run,
+    /// because they all live in one file and are separated only by this list.
+    pub provider_session_ids: Vec<String>,
+    pub path: PathBuf,
+    /// Modified time as epoch milliseconds, used to read the newest history
+    /// first. Zero when the source has no filesystem identity to ask.
+    pub modified_ms: u64,
+}
+
+impl DiscoveredSource {
+    fn context(&self) -> SourceContext {
+        SourceContext::new(&self.session_id, &self.provider, &self.path)
+            .with_provider_session_ids(self.provider_session_ids.clone())
+    }
+}
+
+/// Where an agent's past sessions are looked up.
+///
+/// Behind a trait because the real implementation answers from this machine's
+/// filesystem and conversation archive, which would make every assertion about
+/// *which sessions belong to an agent* depend on what happens to exist here.
+pub trait SessionCatalog {
+    /// Every codex rollout file belonging to this agent, newest last.
+    fn codex_rollouts(&self, agent: &AgentDescriptor) -> Vec<PathBuf>;
+
+    /// Every Claude Code transcript belonging to this agent.
+    fn claude_transcripts(&self, agent: &AgentDescriptor) -> Vec<PathBuf>;
+
+    /// Every archived conversation turn file belonging to this agent.
+    ///
+    /// Used for providers with no native reader, where Wardian's own record of
+    /// what happened is the only record there is.
+    fn archive_turn_files(&self, agent: &AgentDescriptor) -> Vec<PathBuf>;
+
+    /// Opencode sessions this agent owns outright, from its own recorded ids.
+    ///
+    /// Higher confidence than a directory match: these came from the agent's own
+    /// live session or its conversation archive, so no other agent can claim
+    /// them.
+    fn opencode_sessions(&self, agent: &AgentDescriptor) -> Vec<String>;
+
+    /// Opencode sessions that merely ran in this agent's workspace.
+    ///
+    /// Weaker evidence, and deliberately separate: several agents can share one
+    /// directory, and a session that ran there belongs to exactly one of them.
+    fn opencode_sessions_in_workspace(&self, agent: &AgentDescriptor) -> Vec<String>;
+
+    /// The single database every opencode agent on this machine shares.
+    fn opencode_database(&self) -> Option<PathBuf>;
+}
+
+/// The catalog backed by this machine.
+pub struct MachineCatalog {
+    /// Session id to rollout path for the shared codex home, built once.
+    ///
+    /// Resolving a session id used to walk the whole `sessions` tree, which was
+    /// affordable when one agent meant one lookup and is not now that it means
+    /// one lookup per session the agent has ever run.
+    shared_codex: HashMap<String, PathBuf>,
+    /// Session id to transcript path for the shared claude home.
+    shared_claude: HashMap<String, PathBuf>,
+}
+
+impl Default for MachineCatalog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MachineCatalog {
+    pub fn new() -> Self {
+        let home = dirs::home_dir();
+        let shared_codex = home
+            .as_ref()
+            .map(|home| index_transcripts(&home.join(".codex").join("sessions")))
+            .unwrap_or_default();
+        let shared_claude = home
+            .as_ref()
+            .map(|home| index_transcripts(&home.join(".claude").join("projects")))
+            .unwrap_or_default();
+        Self {
+            shared_codex,
+            shared_claude,
+        }
+    }
+
+    /// Resolve an agent's sessions against a projected home first, then the
+    /// shared one.
+    fn resolve(
+        &self,
+        agent: &AgentDescriptor,
+        projected: &[&str],
+        shared: &HashMap<String, PathBuf>,
+    ) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        // Wardian can project a per-agent provider home. Everything under it
+        // belongs to this agent by construction, so no attribution guesswork is
+        // needed and sessions Wardian never observed are still found.
+        if let Some(home) = get_wardian_home() {
+            let mut root = home.join("agents").join(&agent.session_id).join("habitat");
+            for segment in projected {
+                root = root.join(segment);
+            }
+            paths.extend(index_transcripts(&root).into_values());
+        }
+
+        // Agents without a projected home write into the shared one, where a
+        // file is only attributable through a session id we recorded.
+        for id in known_session_ids(agent) {
+            if let Some(path) = shared.get(&id) {
+                paths.push(path.clone());
+            }
+        }
+
+        paths
+    }
+}
+
+impl SessionCatalog for MachineCatalog {
+    fn codex_rollouts(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
+        self.resolve(agent, &[".codex", "sessions"], &self.shared_codex)
+    }
+
+    fn claude_transcripts(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
+        self.resolve(agent, &[".claude", "projects"], &self.shared_claude)
+    }
+
+    fn archive_turn_files(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
+        let Some(home) = get_wardian_home() else {
+            return Vec::new();
+        };
+        let conversations = home
+            .join("agents")
+            .join(&agent.session_id)
+            .join("conversations");
+        let Ok(entries) = std::fs::read_dir(&conversations) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|entry| entry.path().join("turns.jsonl"))
+            .filter(|path| path.is_file())
+            .collect()
+    }
+
+    fn opencode_sessions(&self, agent: &AgentDescriptor) -> Vec<String> {
+        known_session_ids(agent).into_iter().collect()
+    }
+
+    fn opencode_sessions_in_workspace(&self, agent: &AgentDescriptor) -> Vec<String> {
+        // Sessions Wardian never archived are still someone's work. Opencode
+        // records the directory each ran in, so the workspace attributes them
+        // the way a projected habitat attributes a rollout file — but a
+        // directory is not exclusive, so discovery decides who ends up owning
+        // these.
+        let (Some(path), Some(workspace)) = (opencode_database_path(), agent.workspace.as_deref())
+        else {
+            return Vec::new();
+        };
+        sessions_in_directory(&path, workspace).unwrap_or_default()
+    }
+
+    fn opencode_database(&self) -> Option<PathBuf> {
+        opencode_database_path()
+    }
+}
+
+/// Every provider session this agent is known to have run.
+///
+/// The live `resume_session` is only the conversation open right now. An agent
+/// accumulates a new provider session every time it is restarted, and the
+/// conversation archive is the record of them, so reading only the live one
+/// reports the agent's newest conversation as its entire history.
+fn known_session_ids(agent: &AgentDescriptor) -> BTreeSet<String> {
+    let mut ids: BTreeSet<String> = archived_session_ids(&agent.session_id, &agent.provider);
+    if let Some(live) = agent
+        .provider_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        ids.insert(live.to_string());
+    }
+    ids
+}
+
+/// Session ids recorded by the conversation archive for one agent.
+fn archived_session_ids(agent_id: &str, provider: &str) -> BTreeSet<String> {
+    let Some(home) = get_wardian_home() else {
+        return BTreeSet::new();
+    };
+    let index = home
+        .join("agents")
+        .join(agent_id)
+        .join("conversations")
+        .join("index.jsonl");
+    let Ok(entries) = wardian_core::conversations::read_latest_index_entries(&index) else {
+        return BTreeSet::new();
+    };
+    entries
+        .into_iter()
+        .filter(|entry| entry.provider == provider)
+        .flat_map(|entry| entry.provider_session_ids)
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
+/// Map every transcript under a provider home to its session id.
+///
+/// Codex lays rollouts out as `sessions/<year>/<month>/<day>/rollout-<stamp>-<uuid>.jsonl`
+/// and claude uses `projects/<encoded-cwd>/<uuid>.jsonl`, but the depth is not
+/// load-bearing here: the walk takes whatever nesting it finds, so a layout
+/// change costs coverage rather than correctness.
+fn index_transcripts(root: &Path) -> HashMap<String, PathBuf> {
+    let mut found = HashMap::new();
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(path),
+                Ok(kind) if kind.is_file() => {
+                    if let Some(id) = transcript_session_id(&path) {
+                        found.insert(id, path);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    found
+}
+
+/// The session id a rollout filename ends with.
+///
+/// The uuid contains the same `-` the rest of the name is built from, so it is
+/// taken by length from the end rather than by splitting.
+fn transcript_session_id(path: &Path) -> Option<String> {
+    const UUID_LEN: usize = 36;
+    let name = path.file_name()?.to_str()?;
+    let stem = name.strip_suffix(".jsonl")?;
+    if stem.len() < UUID_LEN {
+        return None;
+    }
+    let id = &stem[stem.len() - UUID_LEN..];
+    id.chars()
+        .all(|c| c.is_ascii_hexdigit() || c == '-')
+        .then(|| id.to_string())
+}
+
+/// Resolve every agent that has an ingestable source right now.
+///
+/// An agent being off is not a reason to skip it. Its log still holds work that
+/// was never ingested — the app may have been closed for most of the session —
+/// and re-reading an unchanging file costs one cursor comparison. Skipping off
+/// agents would make history depend on whether Wardian happened to be running.
+pub fn discover_sources(agents: &[AgentDescriptor]) -> Vec<DiscoveredSource> {
+    discover_sources_with(agents, &MachineCatalog::new())
+}
+
+/// Discovery against an arbitrary catalog.
+///
+/// Sources are returned newest first so a caller that cannot afford to read
+/// everything in one pass reads the history that is being asked about.
+pub fn discover_sources_with(
+    agents: &[AgentDescriptor],
+    catalog: &dyn SessionCatalog,
+) -> Vec<DiscoveredSource> {
+    let mut sources = Vec::new();
+    // The opencode database is shared by every opencode agent, and one rollout
+    // can be reachable both through an agent's projected home and through its
+    // recorded session ids. Dedupe on the triple the store keys a source by.
+    let mut seen = HashSet::new();
+
+    // Opencode sessions are assigned to exactly one agent. A session's rows are
+    // stored under whichever agent's source read them, so letting two agents in
+    // one workspace both claim a session would file the same turns twice and
+    // credit one agent's work to its neighbour.
+    let owned_opencode = assign_opencode_sessions(agents, catalog);
+
+    for agent in agents {
+        if !is_supported(&agent.provider) {
+            continue;
+        }
+
+        let resolved: Vec<(PathBuf, Vec<String>)> = match agent.provider.as_str() {
+            // One file per session: the path carries the identity, so no id
+            // list is needed to select rows out of it.
+            "codex" => catalog
+                .codex_rollouts(agent)
+                .into_iter()
+                .map(|path| (path, Vec::new()))
+                .collect(),
+            "claude" => catalog
+                .claude_transcripts(agent)
+                .into_iter()
+                .map(|path| (path, Vec::new()))
+                .collect(),
+            // One database for every agent and every session it ever ran. It
+            // stays a single source with a single cursor, and the id list is
+            // what narrows it to this agent.
+            "opencode" => {
+                let ids = owned_opencode.get(&agent.session_id).cloned().unwrap_or_default();
+                match catalog.opencode_database() {
+                    Some(path) if !ids.is_empty() => vec![(path, ids)],
+                    _ => Vec::new(),
+                }
+            }
+            // No native reader: Wardian's own record of the conversation is the
+            // only record there is. One source per archived conversation, each
+            // with its own cursor.
+            provider if uses_archive(provider) => catalog
+                .archive_turn_files(agent)
+                .into_iter()
+                .map(|path| (path, Vec::new()))
+                .collect(),
+            _ => Vec::new(),
+        };
+
+        for (path, provider_session_ids) in resolved {
+            let key = (
+                agent.session_id.clone(),
+                agent.provider.clone(),
+                path.clone(),
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            let modified_ms = modified_epoch_ms(&path);
+            sources.push(DiscoveredSource {
+                session_id: agent.session_id.clone(),
+                provider: agent.provider.clone(),
+                provider_session_ids,
+                path,
+                modified_ms,
+            });
+        }
+    }
+
+    sources.sort_by(|left, right| {
+        right
+            .modified_ms
+            .cmp(&left.modified_ms)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    sources
+}
+
+/// Decide which agent owns each opencode session.
+///
+/// Two passes, because the two kinds of evidence are not equal. An agent's own
+/// recorded ids — its live session and its conversation archive — name sessions
+/// it definitely ran, so those are claimed first and can never be taken by a
+/// neighbour. A workspace match only says a session ran in the same directory,
+/// which several agents can share; those are handed out afterwards, and only to
+/// an agent nobody has already claimed them for.
+///
+/// A contested session goes to one agent rather than none: it is real work by
+/// one of them, and dropping it would lose history to protect an attribution
+/// that is already approximate. Ordering is by agent id so the choice is stable
+/// across passes rather than flipping with roster order.
+fn assign_opencode_sessions(
+    agents: &[AgentDescriptor],
+    catalog: &dyn SessionCatalog,
+) -> HashMap<String, Vec<String>> {
+    let mut owner: HashMap<String, String> = HashMap::new();
+    let mut opencode: Vec<&AgentDescriptor> = agents
+        .iter()
+        .filter(|agent| agent.provider == "opencode")
+        .collect();
+    opencode.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+
+    for agent in &opencode {
+        for id in catalog.opencode_sessions(agent) {
+            owner.insert(id, agent.session_id.clone());
+        }
+    }
+    for agent in &opencode {
+        for id in catalog.opencode_sessions_in_workspace(agent) {
+            owner.entry(id).or_insert_with(|| agent.session_id.clone());
+        }
+    }
+
+    let mut assigned: HashMap<String, Vec<String>> = HashMap::new();
+    for (session, agent_id) in owner {
+        assigned.entry(agent_id).or_default().push(session);
+    }
+    for sessions in assigned.values_mut() {
+        sessions.sort();
+    }
+    assigned
+}
+
+/// Last-modified time in epoch milliseconds, or zero when it cannot be read.
+fn modified_epoch_ms(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|delta| delta.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// What one pass over every source accomplished.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IngestPassReport {
+    pub sources: usize,
+    pub advanced: usize,
+    pub turns: usize,
+    pub edits: usize,
+    pub intervals: usize,
+    pub buckets_recomputed: usize,
+    /// Sources that were not readable this pass for an expected reason — busy or
+    /// not yet written. Counted rather than listed, because they are the steady
+    /// state for an idle agent and listing them would be noise every minute.
+    pub unavailable: usize,
+    /// Sources that failed for a reason worth seeing, as `provider/agent: why`.
+    pub failures: Vec<String>,
+    /// Sources left unread because the pass ran out of budget. Non-zero means a
+    /// backfill is still in progress, not that anything went wrong.
+    pub deferred: usize,
+}
+
+impl IngestPassReport {
+    /// Whether anything changed, and therefore whether a surface needs telling.
+    pub fn changed(&self) -> bool {
+        self.advanced > 0
+    }
+}
+
+/// Advance every discovered source once.
+///
+/// Blocking: this reads files and holds the state database's lock, so callers on
+/// an async runtime must run it under `spawn_blocking`.
+///
+/// One source failing never stops the pass. A locked opencode database or a
+/// rotated codex log is a normal transient condition, and letting it abort the
+/// pass would let one bad source starve every other agent's history.
+pub fn run_ingest_pass(sources: &[DiscoveredSource]) -> IngestPassReport {
+    let mut report = IngestPassReport {
+        sources: sources.len(),
+        ..Default::default()
+    };
+    let mut budget = INGEST_BYTES_PER_PASS;
+
+    for (index, source) in sources.iter().enumerate() {
+        // Budget is spent on bytes actually read, so a source already level with
+        // its file costs a cursor comparison and never consumes any. That is
+        // what lets the steady state still visit every source each pass while a
+        // first run over a large backlog is spread across several.
+        if budget == 0 {
+            report.deferred = sources.len() - index;
+            break;
+        }
+        let ctx = source.context();
+        // The ingest result is returned *through* `get_db_conn` rather than
+        // mapped into its boxed error type, so the error stays typed and an
+        // expected unavailability can still be told apart from a real fault.
+        let outcome = wardian_core::db::get_db_conn(|conn| Ok(ingest_source(conn, &ctx)));
+
+        match outcome {
+            Ok(Ok(outcome)) => {
+                if outcome.advanced() {
+                    report.advanced += 1;
+                }
+                // Only byte cursors measure bytes. A database cursor is a
+                // timestamp, so its difference is meaningless here and is
+                // charged nothing; the opencode source is one row-bounded read
+                // per agent rather than a backlog to work through.
+                if matches!(source.provider.as_str(), "codex" | "claude") {
+                    let read = outcome.cursor_after.saturating_sub(outcome.cursor_before);
+                    budget = budget.saturating_sub(read.max(0) as u64);
+                }
+                report.turns += outcome.turns;
+                report.edits += outcome.edits;
+                report.intervals += outcome.intervals;
+                report.buckets_recomputed += outcome.buckets_recomputed;
+            }
+            Ok(Err(error)) => {
+                if !is_reportable(&error) {
+                    report.unavailable += 1;
+                    continue;
+                }
+                report.failures.push(format!(
+                    "{}/{}: {error}",
+                    source.provider, source.session_id
+                ));
+            }
+            // The database itself is unavailable, so no later source will fare
+            // better this pass.
+            Err(error) => {
+                report
+                    .failures
+                    .push(format!("telemetry store unavailable: {error}"));
+                break;
+            }
+        }
+    }
+
+    report
+}
+
+/// Whether a source-level failure is worth logging at all.
+///
+/// A source that is merely busy or not yet present is the expected steady state
+/// for an agent that has not written anything, and logging it every minute would
+/// bury the failures that do mean something.
+pub fn failure_is_noteworthy(error: &SourceError) -> bool {
+    !matches!(error, SourceError::Busy(_) | SourceError::Unavailable(_))
+}
+
+/// Whether an ingest failure should be surfaced rather than counted.
+///
+/// Everything that is not a transient source condition is reportable, including
+/// store errors — a failing write is a defect, not weather.
+fn is_reportable(error: &IngestError) -> bool {
+    match error {
+        IngestError::Source(source) => failure_is_noteworthy(source),
+        IngestError::UnsupportedProvider(_) | IngestError::Store(_) => true,
+    }
+}
+
+/// Snapshot the agents currently known to the app.
+pub async fn agent_descriptors(state: &AppState) -> Vec<AgentDescriptor> {
+    let agents = state.agents.lock().await;
+    agents
+        .iter()
+        .map(|(session_id, agent)| {
+            let config = agent.config.lock().unwrap();
+            AgentDescriptor {
+                session_id: session_id.clone(),
+                provider: config.provider.clone(),
+                provider_session_id: config.resume_session.clone(),
+                workspace: Some(config.folder.clone()).filter(|folder| !folder.trim().is_empty()),
+                is_off: config.is_off,
+            }
+        })
+        .collect()
+}
+
+/// Run one full cycle: snapshot agents, resolve sources, advance them.
+pub async fn run_ingest_cycle(state: &AppState) -> IngestPassReport {
+    let agents = agent_descriptors(state).await;
+    tokio::task::spawn_blocking(move || {
+        let sources = discover_sources(&agents);
+        run_ingest_pass(&sources)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// How long to wait before resuming an unfinished backfill.
+///
+/// Long enough that the write lock is released and the UI stays responsive,
+/// short enough that a large history is caught up in minutes rather than days.
+const INGEST_INTERVAL_BACKFILL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Cadence for the next pass, given what the app is currently doing.
+///
+/// An unfinished backfill outranks both steady-state cadences: waiting a full
+/// interval between chunks would turn a bounded pass into a history that takes
+/// days to become true.
+fn next_interval(any_agent_live: bool, deferred: usize) -> std::time::Duration {
+    if deferred > 0 {
+        INGEST_INTERVAL_BACKFILL
+    } else if any_agent_live {
+        INGEST_INTERVAL_ACTIVE
+    } else {
+        INGEST_INTERVAL_IDLE
+    }
+}
+
+/// Start the background ingest loop.
+///
+/// The first pass is immediate rather than one interval away, so opening the app
+/// after a long headless stretch shows that work without a minute of blank
+/// Dashboard.
+pub fn start_telemetry_ingest(app_handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let state = app_handle.state::<AppState>();
+            let descriptors = agent_descriptors(&state).await;
+            let any_agent_live = descriptors.iter().any(|agent| !agent.is_off);
+
+            let pass = tokio::task::spawn_blocking(move || {
+                let sources = discover_sources(&descriptors);
+                run_ingest_pass(&sources)
+            });
+
+            let mut deferred = 0;
+            match tokio::time::timeout(INGEST_PASS_TIMEOUT, pass).await {
+                Ok(Ok(report)) => {
+                    for failure in &report.failures {
+                        crate::utils::logging::log_debug(&format!(
+                            "[Wardian] Telemetry ingest source failed: {failure}"
+                        ));
+                    }
+                    deferred = report.deferred;
+                    if deferred > 0 {
+                        crate::utils::logging::log_debug(&format!(
+                            "[Wardian] Telemetry backfill in progress: {deferred} sources remaining"
+                        ));
+                    }
+                    if report.changed() {
+                        use tauri::Emitter;
+                        let _ = app_handle.emit("telemetry-updated", ());
+                    }
+                }
+                Ok(Err(error)) => crate::utils::logging::log_debug(&format!(
+                    "[Wardian] Telemetry ingest pass panicked; continuing: {error}"
+                )),
+                Err(_) => crate::utils::logging::log_debug(&format!(
+                    "[Wardian] Telemetry ingest pass exceeded {}s; continuing",
+                    INGEST_PASS_TIMEOUT.as_secs()
+                )),
+            }
+
+            tokio::time::sleep(next_interval(any_agent_live, deferred)).await;
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent(session: &str, provider: &str, resume: Option<&str>) -> AgentDescriptor {
+        AgentDescriptor {
+            session_id: session.to_string(),
+            provider: provider.to_string(),
+            provider_session_id: resume.map(str::to_string),
+            workspace: None,
+            is_off: false,
+        }
+    }
+
+    /// Stands in for the machine: an agent owns one rollout per session it has
+    /// run, and every opencode agent shares one database the way they really do.
+    #[derive(Default)]
+    struct StubCatalog {
+        /// Agent id to the sessions it has ever run.
+        history: HashMap<String, Vec<String>>,
+    }
+
+    impl StubCatalog {
+        fn with(agent_id: &str, sessions: &[&str]) -> Self {
+            let mut history = HashMap::new();
+            history.insert(
+                agent_id.to_string(),
+                sessions.iter().map(|id| id.to_string()).collect(),
+            );
+            Self { history }
+        }
+
+        fn sessions(&self, agent: &AgentDescriptor) -> Vec<String> {
+            let mut ids: BTreeSet<String> = self
+                .history
+                .get(&agent.session_id)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            if let Some(live) = agent.provider_session_id.clone() {
+                if !live.trim().is_empty() {
+                    ids.insert(live);
+                }
+            }
+            ids.into_iter().collect()
+        }
+    }
+
+    impl SessionCatalog for StubCatalog {
+        fn codex_rollouts(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
+            self.sessions(agent)
+                .into_iter()
+                .map(|id| PathBuf::from(format!("/logs/{id}.jsonl")))
+                .collect()
+        }
+
+        fn claude_transcripts(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
+            self.sessions(agent)
+                .into_iter()
+                .map(|id| PathBuf::from(format!("/claude/{id}.jsonl")))
+                .collect()
+        }
+
+        fn opencode_sessions(&self, agent: &AgentDescriptor) -> Vec<String> {
+            self.sessions(agent)
+        }
+
+        fn opencode_sessions_in_workspace(&self, _agent: &AgentDescriptor) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn archive_turn_files(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
+            self.sessions(agent)
+                .into_iter()
+                .map(|id| PathBuf::from(format!("/archive/{id}/turns.jsonl")))
+                .collect()
+        }
+
+        fn opencode_database(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/data/opencode/opencode.db"))
+        }
+    }
+
+    #[test]
+    fn a_provider_wardian_does_not_recognise_is_not_discovered() {
+        let agents = vec![agent("a1", "mock", Some("ses_1"))];
+        assert!(discover_sources_with(&agents, &StubCatalog::default()).is_empty());
+    }
+
+    #[test]
+    fn antigravity_is_discovered_through_the_conversation_archive() {
+        // It publishes no token accounting and no parseable transcript, but
+        // Wardian watched its turns happen. Reporting those agents as having
+        // done nothing was a gap in the reader, not a fact about the agents.
+        let catalog = StubCatalog::with("a1", &["conv-1", "conv-2"]);
+        let sources = discover_sources_with(&[agent("a1", "antigravity", None)], &catalog);
+        assert_eq!(sources.len(), 2);
+        assert!(sources
+            .iter()
+            .all(|source| source.path.ends_with("turns.jsonl")));
+    }
+
+    #[test]
+    fn claude_agents_are_discovered() {
+        // Seven of this habitat's agents ran on claude and appeared to have
+        // done nothing at all, because the provider had no reader.
+        let catalog = StubCatalog::with("a1", &["ses-old"]);
+        let sources = discover_sources_with(&[agent("a1", "claude", Some("ses-live"))], &catalog);
+        assert_eq!(sources.len(), 2);
+        assert!(sources.iter().all(|source| source.provider == "claude"));
+    }
+
+    #[test]
+    fn every_codex_session_an_agent_ran_becomes_a_source() {
+        // The defect this pins: discovery used to resolve the agent's *live*
+        // session only, so an agent with a hundred past conversations reported
+        // its newest one as the whole of its history.
+        let catalog = StubCatalog::with("a1", &["ses-1", "ses-2", "ses-3"]);
+        let sources = discover_sources_with(&[agent("a1", "codex", Some("ses-4"))], &catalog);
+
+        assert_eq!(sources.len(), 4, "three archived sessions plus the live one");
+        let paths: HashSet<_> = sources.iter().map(|source| source.path.clone()).collect();
+        assert!(paths.contains(&PathBuf::from("/logs/ses-1.jsonl")));
+        assert!(paths.contains(&PathBuf::from("/logs/ses-4.jsonl")));
+    }
+
+    #[test]
+    fn an_opencode_agent_stays_one_source_carrying_every_session() {
+        // The database is one file with one cursor, so it must not fan out into
+        // a source per session; the id list is what narrows it to this agent.
+        let catalog = StubCatalog::with("a1", &["ses_old", "ses_older"]);
+        let sources = discover_sources_with(&[agent("a1", "opencode", Some("ses_live"))], &catalog);
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            sources[0].provider_session_ids,
+            vec![
+                "ses_live".to_string(),
+                "ses_old".to_string(),
+                "ses_older".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn an_opencode_agent_is_discovered_from_its_workspace_alone() {
+        // The real failure this closes: an opencode agent with no archived
+        // conversations and no live session resolved to nothing at all, so it
+        // reported no work despite having run. Opencode stamps every session
+        // with its directory, which attributes them without an id list.
+        let catalog = WorkspaceCatalog;
+        let mut agent = agent("a1", "opencode", None);
+        agent.workspace = Some("D:/Development/Wardian".to_string());
+
+        let sources = discover_sources_with(&[agent], &catalog);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].provider_session_ids, vec!["ses_by_directory"]);
+    }
+
+    /// Resolves sessions only by workspace, never by recorded id.
+    struct WorkspaceCatalog;
+
+    impl SessionCatalog for WorkspaceCatalog {
+        fn codex_rollouts(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn claude_transcripts(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn archive_turn_files(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn opencode_sessions(&self, _agent: &AgentDescriptor) -> Vec<String> {
+            Vec::new()
+        }
+        fn opencode_sessions_in_workspace(&self, agent: &AgentDescriptor) -> Vec<String> {
+            agent
+                .workspace
+                .as_ref()
+                .map(|_| vec!["ses_by_directory".to_string()])
+                .unwrap_or_default()
+        }
+        fn opencode_database(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/data/opencode/opencode.db"))
+        }
+    }
+
+    /// Two agents in one directory, where only one can prove ownership.
+    struct SharedWorkspaceCatalog;
+
+    impl SessionCatalog for SharedWorkspaceCatalog {
+        fn codex_rollouts(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn claude_transcripts(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn archive_turn_files(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn opencode_sessions(&self, agent: &AgentDescriptor) -> Vec<String> {
+            // Only "a2" has this session in its own archive.
+            if agent.session_id == "a2" {
+                vec!["ses_owned".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+        fn opencode_sessions_in_workspace(&self, _agent: &AgentDescriptor) -> Vec<String> {
+            vec!["ses_shared".to_string(), "ses_owned".to_string()]
+        }
+        fn opencode_database(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/data/opencode/opencode.db"))
+        }
+    }
+
+    #[test]
+    fn a_shared_workspace_does_not_give_two_agents_the_same_session() {
+        // Rows are stored under whichever agent's source read them, so letting
+        // both claim a session files the same turns twice and credits one
+        // agent's work to its neighbour.
+        let agents = vec![agent("a1", "opencode", None), agent("a2", "opencode", None)];
+        let sources = discover_sources_with(&agents, &SharedWorkspaceCatalog);
+
+        let mut claimed: Vec<String> = sources
+            .iter()
+            .flat_map(|source| source.provider_session_ids.clone())
+            .collect();
+        let total = claimed.len();
+        claimed.sort();
+        claimed.dedup();
+        assert_eq!(claimed.len(), total, "a session was claimed twice");
+        assert_eq!(total, 2, "both sessions are still attributed to someone");
+    }
+
+    #[test]
+    fn a_recorded_session_outranks_a_directory_match() {
+        // A workspace match only says a session ran in the same folder; an
+        // agent's own archive says that agent ran it.
+        let agents = vec![agent("a1", "opencode", None), agent("a2", "opencode", None)];
+        let sources = discover_sources_with(&agents, &SharedWorkspaceCatalog);
+        let owner = sources
+            .iter()
+            .find(|source| {
+                source
+                    .provider_session_ids
+                    .iter()
+                    .any(|id| id == "ses_owned")
+            })
+            .expect("someone owns it");
+        assert_eq!(owner.session_id, "a2");
+    }
+
+    #[test]
+    fn agents_sharing_one_database_are_all_discovered() {
+        // Every opencode agent on the machine reads the same file. Deduping on
+        // the path alone would silently ingest only the first agent's history.
+        let agents = vec![
+            agent("a1", "opencode", Some("ses_1")),
+            agent("a2", "opencode", Some("ses_2")),
+        ];
+        let sources = discover_sources_with(&agents, &StubCatalog::default());
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].path, sources[1].path);
+        assert_ne!(sources[0].session_id, sources[1].session_id);
+    }
+
+    #[test]
+    fn a_duplicated_agent_is_only_discovered_once() {
+        let duplicate = agent("a1", "codex", Some("ses-codex"));
+        let agents = vec![duplicate.clone(), duplicate];
+        assert_eq!(
+            discover_sources_with(&agents, &StubCatalog::default()).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn off_agents_are_still_discovered() {
+        // An agent's log holds work done while Wardian was closed. Filtering on
+        // `is_off` would make recorded history depend on whether the app
+        // happened to be running, which is exactly what this store exists to
+        // stop being true. `is_off` informs cadence only.
+        let mut off = agent("a1", "codex", Some("ses-codex"));
+        off.is_off = true;
+        let sources = discover_sources_with(&[off], &StubCatalog::default());
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].session_id, "a1");
+    }
+
+    #[test]
+    fn an_agent_that_has_never_run_resolves_to_nothing() {
+        // Not an error condition — an agent with no session yet simply has no
+        // telemetry to read.
+        for resume in [None, Some(""), Some("   ")] {
+            let empty = StubCatalog::default();
+            assert!(discover_sources_with(&[agent("a1", "codex", resume)], &empty).is_empty());
+            assert!(discover_sources_with(&[agent("a1", "opencode", resume)], &empty).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_rollout_filename_yields_its_session_id() {
+        assert_eq!(
+            transcript_session_id(Path::new(
+                "rollout-2026-08-11T01-45-38-019fef5a-e0ef-7011-bc3d-06581a3dfaac.jsonl"
+            ))
+            .as_deref(),
+            Some("019fef5a-e0ef-7011-bc3d-06581a3dfaac")
+        );
+        assert_eq!(transcript_session_id(Path::new("notes.txt")), None);
+        assert_eq!(transcript_session_id(Path::new("short.jsonl")), None);
+    }
+
+    #[test]
+    fn idle_and_active_cadences_differ() {
+        assert_eq!(next_interval(true, 0), INGEST_INTERVAL_ACTIVE);
+        assert_eq!(next_interval(false, 0), INGEST_INTERVAL_IDLE);
+        assert!(next_interval(false, 0) > next_interval(true, 0));
+    }
+
+    #[test]
+    fn an_unfinished_backfill_outranks_both_steady_cadences() {
+        // Waiting a full interval between bounded chunks would turn a large
+        // history into one that takes days to become true.
+        assert_eq!(next_interval(false, 12), INGEST_INTERVAL_BACKFILL);
+        assert!(next_interval(false, 12) < next_interval(true, 0));
+    }
+
+    #[test]
+    fn an_empty_pass_reports_no_change() {
+        let report = run_ingest_pass(&[]);
+        assert_eq!(report.sources, 0);
+        assert!(!report.changed());
+        assert!(report.failures.is_empty());
+    }
+
+    #[test]
+    fn busy_and_missing_sources_are_not_worth_logging() {
+        // These are the steady state for an agent that has written nothing, and
+        // logging them each minute would bury the failures that matter.
+        assert!(!failure_is_noteworthy(&SourceError::Busy("locked".into())));
+        assert!(!failure_is_noteworthy(&SourceError::Unavailable(
+            "not found".into()
+        )));
+        assert!(failure_is_noteworthy(&SourceError::Read(
+            "malformed record".into()
+        )));
+    }
+
+    #[test]
+    fn a_store_failure_is_always_reported() {
+        // A busy source is weather; a failing write is a defect. Counting the
+        // second one silently alongside the first would let the store fail on
+        // every pass without anything ever saying so.
+        assert!(is_reportable(&IngestError::Store("disk full".into())));
+        assert!(is_reportable(&IngestError::UnsupportedProvider(
+            "gemini".into()
+        )));
+        assert!(is_reportable(&IngestError::Source(SourceError::Read(
+            "malformed record".into()
+        ))));
+        assert!(!is_reportable(&IngestError::Source(SourceError::Busy(
+            "locked".into()
+        ))));
+    }
+}
