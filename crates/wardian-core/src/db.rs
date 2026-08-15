@@ -212,6 +212,8 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
     ] {
         ensure_column(conn, "agents", name, definition)?;
     }
+
+    crate::telemetry::run_telemetry_migrations(conn)?;
     Ok(())
 }
 

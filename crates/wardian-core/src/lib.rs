@@ -13,6 +13,7 @@ pub mod library;
 pub mod models;
 pub mod paths;
 pub mod schedule;
+pub mod telemetry;
 pub mod topology;
 pub mod workbench;
 pub mod workflow;
