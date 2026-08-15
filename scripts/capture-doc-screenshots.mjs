@@ -849,11 +849,20 @@ async function main() {
     await capture(page, "workflows/builder-canvas.png");
 
     await openWorkbenchSurface(page, "dashboard");
+    // The fleet table, not a per-agent card: the Dashboard is one row per
+    // agent now, so `#agent-card-*` no longer exists on this surface.
     await page.locator(
-      '[data-testid="surface-panel"][data-surface-type="dashboard"] #agent-card-docs-codex',
+      '[data-testid="surface-panel"][data-surface-type="dashboard"] .dashboard-view__table',
     ).waitFor({ timeout: 10_000 });
     await page.waitForTimeout(700);
     await capture(page, "dashboard/system-summary.png");
+
+    await openWorkbenchSurface(page, "analytics");
+    await page.locator(
+      '[data-testid="surface-panel"][data-surface-type="analytics"] .analytics-view__matrix',
+    ).waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(700);
+    await capture(page, "analytics/activity-matrix.png");
 
     if (browserErrors.length > 0) {
       throw new Error(`Browser errors were logged during screenshot capture:\n${browserErrors.join("\n")}`);
