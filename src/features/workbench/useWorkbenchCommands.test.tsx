@@ -9,6 +9,7 @@ import { makeSingleGroupDocument, makeSurface } from "./workbenchTestUtils";
 import { createWorkbenchStore, type WorkbenchStore } from "./useWorkbenchStore";
 import {
   useWorkbenchCommands,
+  WORKBENCH_COMMAND_ACTIONS,
   type WorkbenchCommandRouter,
 } from "./useWorkbenchCommands";
 import { createCoreWorkbenchSurfaceRegistry } from "./OpenSurfaceDialog";
@@ -235,6 +236,7 @@ describe("useWorkbenchCommands", () => {
       ["a", "agents-overview"],
       ["d", "dashboard"],
       ["i", "inbox"],
+      ["y", "analytics"],
       ["g", "graph"],
       ["h", "garden"],
       ["b", "library"],
@@ -254,9 +256,25 @@ describe("useWorkbenchCommands", () => {
     // second: it is a singleton, and its state restores even though the fixture
     // carries an unrelated `label` key. The other core views in the fixture
     // reject that key as corrupt state and are replaced instead, which is why
-    // this is nine surfaces rather than ten.
+    // this is ten surfaces rather than eleven.
     const surfaces = Object.values(store.getState().document.surfaces);
     expect(surfaces.filter((entry) => entry.surface_type === "dashboard")).toHaveLength(1);
-    expect(surfaces).toHaveLength(9);
+    expect(surfaces).toHaveLength(10);
+  });
+
+  it("gives every command a shortcut no other command already claims", () => {
+    // Analytics shipped bound to Mod+Alt+A, which Agents resolves first, so the
+    // branch below it could never be reached and the command was keyboard-dead.
+    // A collision is silent by construction: the loser simply never fires.
+    const claimed = new Map<string, string>();
+    for (const action of WORKBENCH_COMMAND_ACTIONS) {
+      if (action.shortcut === undefined) continue;
+      const incumbent = claimed.get(action.shortcut);
+      expect(
+        incumbent,
+        `${action.command_id} claims ${action.shortcut}, already held by ${incumbent}`,
+      ).toBeUndefined();
+      claimed.set(action.shortcut, action.command_id);
+    }
   });
 });

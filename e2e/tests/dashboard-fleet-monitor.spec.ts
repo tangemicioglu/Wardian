@@ -301,7 +301,7 @@ test.describe("Analytics matrix", () => {
       },
     });
     await page.goto("/");
-    await page.getByText("Open the Analytics surface.").click();
+    await page.getByText("Look up what agents did over a period.").click();
     await expect(page.getByText("KiCad-IPC-CLI")).toBeVisible({ timeout: 20_000 });
 
     // Dates on the columns that open a day, rather than a run of bare hours.

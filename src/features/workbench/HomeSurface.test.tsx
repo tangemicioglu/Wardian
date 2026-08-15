@@ -44,6 +44,12 @@ describe("HomeSurface", () => {
     // Grows with the surface registry; Analytics is the eighth.
     expect(screen.getByLabelText("Available surfaces").querySelectorAll("button")).toHaveLength(8);
     expect(screen.queryByRole("button", { name: /^File Editor/ })).not.toBeInTheDocument();
+    // A core surface describes itself. Analytics shipped without a registry
+    // entry and fell through to the `Open the ${title} surface.` fallback,
+    // which is the placeholder meant for third-party extensions.
+    expect(
+      screen.getByRole("button", { name: "Analytics: Look up what agents did over a period." }),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Agents: Monitor active agents." }));
     expect(onSelectSurface).toHaveBeenCalledWith("agents-overview", "group-empty");
     fireEvent.click(screen.getByRole("button", { name: "Browse all surfaces" }));
