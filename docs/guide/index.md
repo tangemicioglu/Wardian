@@ -18,7 +18,8 @@ automation, and extension. Take only the next step that helps the work at hand.
 
 - [Agents](./agents-overview.md): monitor agents in adaptive Auto, multi-card Grid, or focused Single mode.
 - [Grid](./grid.md): map the former Grid page to the current Agents Grid mode.
-- [Dashboard](./dashboard.md): compare live agent health and quick controls.
+- [Dashboard](./dashboard.md): watch the whole fleet over a trailing window and spot an agent behaving oddly.
+- [Analytics](./analytics.md): look up how much agents, models, or providers did over a chosen period.
 - [Graph](./graph.md): inspect team, workspace, and worktree relationships between agents.
 - [Garden](./garden.md): see agents, workflows, and skills laid out so that distance reflects what they share.
 - [Watchlists](./watchlists.md): group, select, sort, and monitor agents in the right roster.

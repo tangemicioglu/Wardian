@@ -90,5 +90,6 @@ Workbench shortcuts yield to text inputs and terminal-owned key combinations. Se
 - [Agents](./agents-overview.md)
 - [Watchlists](./watchlists.md)
 - [Dashboard](./dashboard.md)
+- [Analytics](./analytics.md)
 - [Inbox](./inbox.md)
 - [Command Panel](./command-panel.md)

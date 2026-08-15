@@ -225,6 +225,7 @@ Selecting an agent does not silently replace the active Workbench tab.
 | Focus left dock / right roster | `Ctrl+Alt+L` / `Ctrl+Alt+R` |
 | Focus Workbench | `Ctrl+0` |
 | Open Agents / Dashboard / Inbox | `Ctrl+Alt+A` / `Ctrl+Alt+D` / `Ctrl+Alt+I` |
+| Open Analytics | `Ctrl+Alt+Y` |
 | Open Graph / Garden / Library / Workflows | `Ctrl+Alt+G` / `Ctrl+Alt+H` / `Ctrl+Alt+B` / `Ctrl+Alt+W` |
 
 The recent tab switcher is pane-local: hold `Ctrl`, press `Tab` to preview recent tabs, then release `Ctrl` to open the selected tab. Workbench shortcuts do not intercept normal typing inside text fields or terminal-owned key combinations. `F6` pane traversal remains available for keyboard navigation.

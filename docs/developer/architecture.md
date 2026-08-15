@@ -12,7 +12,7 @@ invariants:
   library files own reusable prompts, skills, classes, and workflow blueprints;
   watchlist/team records own roster organization until a broader project-scope
   model exists.
-- **Surfaces are lenses, not state silos.** Agents, Dashboard, Graph,
+- **Surfaces are lenses, not state silos.** Agents, Dashboard, Analytics, Graph,
   Garden, Library, Workflows, Inbox, and future workbench contributions resolve
   and mutate canonical Wardian records through shared commands or file
   contracts. A surface owns bounded presentation state, not a private copy of

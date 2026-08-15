@@ -186,6 +186,8 @@ wardian library deployments <skills/path>
 wardian library orphans
 wardian library orphan delete --target class:Reviewer --skill old-planner
 wardian library restore-default classes/Reviewer
+wardian telemetry summary
+wardian telemetry summary --horizon month --dimension model
 wardian conversation list
 wardian conversation list --agent <agent-id-or-name>
 wardian conversation list --scope all
