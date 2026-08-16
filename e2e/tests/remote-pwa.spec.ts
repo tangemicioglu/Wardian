@@ -154,6 +154,82 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
             sequence: 2,
             metadata: {},
           },
+          {
+            id: "remote-tool-call-1",
+            session_id: "agent-1",
+            provider: "opencode",
+            kind: "tool_call",
+            role: null,
+            text: "Inspecting the focused workbench surface.",
+            title: "Read files",
+            status: "succeeded",
+            turn_id: "turn-1",
+            source: "provider_log",
+            command: "rg AgentChatView src/features/grid",
+            exit_code: 0,
+            path: null,
+            language: "shell",
+            created_at: "2099-05-21T08:00:01.000Z",
+            sequence: 3,
+            metadata: {},
+          },
+          {
+            id: "remote-tool-result-1",
+            session_id: "agent-1",
+            provider: "opencode",
+            kind: "tool_result",
+            role: null,
+            text: "AgentChatView.tsx",
+            title: "Output",
+            status: "succeeded",
+            turn_id: "turn-1",
+            source: "provider_log",
+            command: null,
+            exit_code: 0,
+            path: null,
+            language: "shell",
+            created_at: "2099-05-21T08:00:02.000Z",
+            sequence: 4,
+            metadata: {},
+          },
+          {
+            id: "remote-tool-call-2",
+            session_id: "agent-1",
+            provider: "opencode",
+            kind: "tool_call",
+            role: null,
+            text: "Running focused verification.",
+            title: "Run tests",
+            status: "succeeded",
+            turn_id: "turn-1",
+            source: "provider_log",
+            command: "npm run test -- AgentChatView.test.tsx",
+            exit_code: 0,
+            path: null,
+            language: "shell",
+            created_at: "2099-05-21T08:00:03.000Z",
+            sequence: 5,
+            metadata: {},
+          },
+          {
+            id: "remote-tool-result-2",
+            session_id: "agent-1",
+            provider: "opencode",
+            kind: "tool_result",
+            role: null,
+            text: "135 tests passed",
+            title: "Output",
+            status: "succeeded",
+            turn_id: "turn-1",
+            source: "provider_log",
+            command: null,
+            exit_code: 0,
+            path: null,
+            language: "shell",
+            created_at: "2099-05-21T08:00:04.000Z",
+            sequence: 6,
+            metadata: {},
+          },
         ],
       }),
     });
@@ -455,6 +531,12 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await page.getByRole("button", { name: "Chat", exact: true }).click();
   await expect(page.getByLabel("user message")).toHaveClass(/\bw-full\b/);
   await expect(page.getByLabel("assistant message")).toHaveClass(/\bw-full\b/);
+  await expect(page.getByTestId("chat-work-group")).toHaveAttribute("data-expanded", "false");
+  await captureFeatureScreenshot("chat-collapsed-work.png", page.locator('[data-testid="remote-agent-detail"]'));
+  await page.getByRole("button", { name: "Show all" }).click();
+  await expect(page.getByTestId("chat-work-group")).toHaveAttribute("data-expanded", "true");
+  await captureFeatureScreenshot("chat-expanded-work.png", page.locator('[data-testid="remote-agent-detail"]'));
+  await page.getByRole("button", { name: "Collapse" }).click();
   await captureFeatureScreenshot("chat-full-width.png", page.locator('[data-testid="remote-agent-detail"]'));
   await page.getByLabel("Prompt Remote Coder").fill("status please");
   await page.getByRole("button", { name: "Send prompt" }).click();

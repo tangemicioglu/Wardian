@@ -2122,7 +2122,8 @@ describe("RemoteMobileApp", () => {
     const group = await screen.findByText("Work log");
     const article = group.closest("article") as HTMLElement;
 
-    expect(article).toHaveTextContent("4 events - showing latest 2");
+    expect(article).toHaveTextContent("4 events");
+    expect(article).toHaveTextContent("shell_command");
     await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
 
     expect(article).toHaveTextContent("Get-ChildItem src/features/grid");
@@ -2282,6 +2283,7 @@ describe("RemoteMobileApp", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
 
     const group = (await screen.findByText("Work log")).closest("article") as HTMLElement;
+    await userEvent.click(within(group).getByRole("button", { name: "Show all" }));
     expect(group).toHaveTextContent("Changed files");
     expect(group).toHaveTextContent("src/remote.ts");
 

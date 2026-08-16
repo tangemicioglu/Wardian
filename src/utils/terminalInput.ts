@@ -6,12 +6,13 @@ import type { PromptDeliveryDetail } from "../types";
 export type ChatAttachment = {
   name: string;
   path: string;
+  image?: Image;
 };
 
 const IMAGE_ATTACHMENT_EXTENSION = /\.(bmp|gif|jpe?g|png|webp)$/i;
 
 export function isImageChatAttachment(attachment: ChatAttachment): boolean {
-  return IMAGE_ATTACHMENT_EXTENSION.test(attachment.name);
+  return Boolean(attachment.image) || IMAGE_ATTACHMENT_EXTENSION.test(attachment.name);
 }
 
 export function providerImagePasteKey(provider?: string, platform?: string): string {
@@ -25,7 +26,7 @@ export function promptWithChatAttachments(prompt: string, attachments: readonly 
   const body = prompt.trim() || "Please inspect the attached files.";
   if (attachments.length === 0) return body;
 
-  return `${body}\n\nAttached files:\n${attachments.map((attachment) => `- ${attachment.path}`).join("\n")}`;
+  return `${body}\n\nAttached files:\n${attachments.map((attachment) => `- ${attachment.path || attachment.name}`).join("\n")}`;
 }
 
 export async function stageChatImageAttachments(
@@ -37,7 +38,7 @@ export async function stageChatImageAttachments(
   for (const attachment of attachments) {
     if (!isImageChatAttachment(attachment)) continue;
 
-    const image = await Image.fromPath(attachment.path);
+    const image = attachment.image ?? (await Image.fromPath(attachment.path));
     await writeImage(image);
     await invoke("inject_session_input", {
       sessionId,

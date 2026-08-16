@@ -132,4 +132,21 @@ describe("terminalInput", () => {
       text: "\u001bv",
     });
   });
+
+  it("stages an in-memory clipboard image without resolving a filesystem path", async () => {
+    const clipboardImage = { rid: 2 } as never;
+    mockWriteImage.mockResolvedValue(undefined);
+    mockInvoke.mockResolvedValue(undefined);
+
+    await stageChatImageAttachments("agent-1", "codex", [
+      { name: "pasted-image-1.png", path: "", image: clipboardImage },
+    ]);
+
+    expect(mockImageFromPath).not.toHaveBeenCalled();
+    expect(mockWriteImage).toHaveBeenCalledWith(clipboardImage);
+    expect(mockInvoke).toHaveBeenCalledWith("inject_session_input", {
+      sessionId: "agent-1",
+      text: "\u0016",
+    });
+  });
 });
