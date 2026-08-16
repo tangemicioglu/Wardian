@@ -692,6 +692,17 @@ test("compresses crowded file tabs and keeps the open-tab list available", async
   ));
   expect(compressedLabelCount).toBeGreaterThan(0);
 
+  const hoveredTab = tabs.nth(1);
+  const closeAction = hoveredTab.locator("[data-tab-close]");
+  const beforeHover = await hoveredTab.boundingBox();
+  expect(beforeHover).not.toBeNull();
+  await hoveredTab.hover();
+  await expect(closeAction).toHaveCSS("opacity", "1");
+  await expect(closeAction).toHaveCSS("width", "18px");
+  const afterHover = await hoveredTab.boundingBox();
+  expect(afterHover).not.toBeNull();
+  expect(Math.abs(afterHover!.width - beforeHover!.width)).toBeLessThanOrEqual(1);
+
   const tabList = group.getByRole("button", { name: "Show open tabs" });
   await expect(tabList).toBeVisible();
   await expect(group.locator(".dv-tabs-overflow-dropdown-default")).toBeHidden();
