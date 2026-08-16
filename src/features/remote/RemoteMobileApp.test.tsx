@@ -2287,7 +2287,9 @@ describe("RemoteMobileApp", () => {
     expect(group).toHaveTextContent("Changed files");
     expect(group).toHaveTextContent("src/remote.ts");
 
-    await userEvent.click(within(group).getByRole("button", { name: "Copy changed file paths" }));
+    await userEvent.click(within(group).getByRole("button", { name: "Work log actions" }));
+    const workLogMenu = within(group).getByRole("menu", { name: "Work log actions" });
+    await userEvent.click(within(workLogMenu).getByRole("menuitem", { name: "Copy changed file paths" }));
     await waitFor(() => expect(clipboardWriteTextMock).toHaveBeenCalledWith("src/remote.ts"));
   });
 

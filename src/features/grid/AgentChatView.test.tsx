@@ -1457,7 +1457,16 @@ describe("AgentChatView", () => {
     fireEvent.click(within(activityArticle).getByRole("button", { name: "Copy activity output" }));
     await waitFor(() => expect(writeTextMock).toHaveBeenLastCalledWith("{\"ok\":true}"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy changed file paths" }));
+    fireEvent.click(within(activityArticle).getByRole("button", { name: "Activity actions" }));
+    const activityMenu = within(activityArticle).getByRole("menu", { name: "Activity actions" });
+    expect(within(activityMenu).getByRole("menuitem", { name: "Copy activity output" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(within(activityArticle).queryByRole("menu", { name: "Activity actions" })).not.toBeInTheDocument();
+
+    const changedFilesArticle = screen.getByText("Changed files").closest("article") as HTMLElement;
+    fireEvent.click(within(changedFilesArticle).getByRole("button", { name: "Activity actions" }));
+    const changedFilesMenu = within(changedFilesArticle).getByRole("menu", { name: "Activity actions" });
+    fireEvent.click(within(changedFilesMenu).getByRole("menuitem", { name: "Copy changed file paths" }));
     await waitFor(() => expect(writeTextMock).toHaveBeenLastCalledWith("src/features/grid/AgentChatView.tsx"));
   });
 

@@ -5,7 +5,7 @@ import type { AgentChatEvent, AgentChatRole } from "../../types";
 import { toActivityBlock, type ActivityBlockModel } from "../grid/activityBlocks";
 import { parseApprovalChoices } from "../grid/approvalChoices";
 import { CodePanel, renderHighlightedCode } from "../grid/chatCode";
-import { CopyIconButton } from "../grid/chatCopy";
+import { ChatRowActions } from "../grid/chatCopy";
 import { ChatMarkdown, type ChatMarkdownLinkHandling } from "../grid/markdown/ChatMarkdown";
 import {
   changedPathsFromEvents,
@@ -42,7 +42,7 @@ const ROLE_CLASSES: Record<AgentChatRole, string> = {
   assistant: "chat-message-assistant text-primary",
   system: "border-[var(--color-wardian-warning)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_92%)]",
   tool: "border-wardian-light bg-[var(--color-wardian-card-bg-muted)]",
-  user: "chat-message-user border-[var(--color-wardian-accent)] bg-[color-mix(in_srgb,var(--color-wardian-accent),transparent_90%)]",
+  user: "chat-message-user text-primary",
 };
 
 /**
@@ -110,24 +110,22 @@ export function MessageRow({
   const isUser = role === "user";
   const fullWidth = layout === "full_width";
   const isAssistant = role === "assistant";
-  const messageLayout = isAssistant ? "w-full max-w-[76ch] px-1 py-0.5 pr-8" : fullWidth ? "w-full" : "max-w-[92%]";
+  const messageLayout = isAssistant ? "w-full max-w-[76ch] px-1 py-0.5" : fullWidth ? "w-full" : "max-w-[92%]";
   const messageSurface = isAssistant
     ? ""
-    : "rounded-[var(--density-card-radius)] border px-3 py-2.5 pr-9 shadow-[0_1px_0_rgba(0,0,0,0.03)]";
+    : isUser
+      ? "px-2.5 py-1.5"
+      : "rounded-[var(--density-card-radius)] border px-3 py-2.5";
 
   return (
     <article
       aria-label={`${role} message`}
-      className={isAssistant || fullWidth ? "w-full" : `flex ${isUser ? "justify-end" : "justify-start"}`}
+      className={`chat-row relative ${isAssistant || fullWidth ? "w-full" : `flex ${isUser ? "justify-end" : "justify-start"}`}`}
     >
       <div
-        className={`group/message relative ${messageLayout} ${messageSurface} ${ROLE_CLASSES[role]}`}
+        className={`chat-message-content group/message relative ${messageLayout} ${messageSurface} ${ROLE_CLASSES[role]}`}
       >
-        {text ? (
-          <div className="absolute right-1.5 top-1.5">
-            <CopyIconButton label="Copy message" value={text} />
-          </div>
-        ) : null}
+        {text ? <ChatRowActions actions={[{ label: "Copy message", value: text }]} className="chat-row-actions--overlay" /> : null}
         {text ? (
           <ChatMarkdown linkHandling={linkHandling} source={text} />
         ) : (
@@ -239,10 +237,14 @@ export function ActivityRow({
     : entry && entry.merged_result_events.length > 0
       ? formatPresentedEntryForCopy(entry)
       : block.content;
+  const copyActions = [
+    { label: "Copy activity output", value: copyValue },
+    ...(changedPaths.length > 0 ? [{ label: "Copy changed file paths", value: changedPaths.join("\n") }] : []),
+  ];
 
   return (
     <article
-      className={`chat-activity-row border-l-2 bg-[var(--color-wardian-card-bg-muted)] px-2.5 py-1.5 ${
+      className={`chat-row chat-activity-row relative border-l-2 bg-[var(--color-wardian-card-bg-muted)] px-2.5 py-1.5 ${
         expanded ? "chat-activity-row-expanded" : "chat-activity-row-collapsed"
       } ${TONE_CLASSES[block.tone]}`}
       data-testid={isApproval ? "chat-activity-row-approval" : "chat-activity-row"}
@@ -269,7 +271,6 @@ export function ActivityRow({
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <CopyIconButton label="Copy activity output" value={copyValue} />
           {collapsedByDefault ? (
             <button
               type="button"
@@ -281,6 +282,7 @@ export function ActivityRow({
           ) : null}
         </div>
       </div>
+      <ChatRowActions actions={copyActions} className="chat-row-actions--overlay" label="Activity actions" />
       {isApproval ? (
         <div
           className={`mt-2 rounded border px-2 py-1 text-[11px] leading-4 text-muted-neutral ${
@@ -481,7 +483,7 @@ export function TerminalFallback({ event, block }: { event: AgentChatEvent; bloc
 
   return (
     <article
-      className="border-l-2 border-wardian-light bg-[color-mix(in_srgb,var(--color-wardian-card-bg-muted),transparent_28%)] px-3 py-2"
+      className="chat-row relative border-l-2 border-wardian-light bg-[color-mix(in_srgb,var(--color-wardian-card-bg-muted),transparent_28%)] px-3 py-2"
       data-testid="terminal-fallback-row"
     >
       <div className="flex items-center gap-3">
@@ -490,7 +492,6 @@ export function TerminalFallback({ event, block }: { event: AgentChatEvent; bloc
           <div className="truncate text-[11px] leading-4 text-muted-neutral">{subtitle}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <CopyIconButton label={isLaunch ? "Copy launch details" : "Copy terminal output"} value={block.content} />
           <button
             type="button"
             className="rounded border border-wardian-light px-2 py-1 text-[11px] font-semibold leading-4 text-muted-neutral hover:text-primary"
@@ -500,6 +501,11 @@ export function TerminalFallback({ event, block }: { event: AgentChatEvent; bloc
           </button>
         </div>
       </div>
+      <ChatRowActions
+        actions={[{ label: isLaunch ? "Copy launch details" : "Copy terminal output", value: block.content }]}
+        className="chat-row-actions--overlay"
+        label="Terminal actions"
+      />
       {preview && !expanded && !isLaunch ? (
         <div className="mt-1 truncate font-mono text-[11px] leading-4 text-muted-neutral">{preview}</div>
       ) : null}
@@ -530,7 +536,7 @@ export function WorkGroupRow({
 
   return (
     <article
-      className="chat-work-group border-l-2 border-wardian-light bg-[color-mix(in_srgb,var(--color-wardian-card-bg-muted),transparent_18%)] px-2.5 py-1.5"
+      className="chat-row chat-work-group relative border-l-2 border-wardian-light bg-[color-mix(in_srgb,var(--color-wardian-card-bg-muted),transparent_18%)] px-2.5 py-1.5"
       data-testid="chat-work-group"
       data-expanded={expanded ? "true" : "false"}
     >
@@ -553,7 +559,6 @@ export function WorkGroupRow({
           ) : null}
         </button>
         <div className="flex shrink-0 items-center gap-1.5">
-          <CopyIconButton label="Copy work log" value={copyValue} />
           <button
             type="button"
             aria-expanded={expanded}
@@ -566,6 +571,16 @@ export function WorkGroupRow({
           </button>
         </div>
       </div>
+      <ChatRowActions
+        actions={[
+          { label: "Copy work log", value: copyValue },
+          ...(row.changedPaths.length > 0
+            ? [{ label: "Copy changed file paths", value: row.changedPaths.join("\n") }]
+            : []),
+        ]}
+        className="chat-row-actions--overlay chat-row-actions--with-toggle"
+        label="Work log actions"
+      />
 
       {expanded ? (
         <>
@@ -607,7 +622,6 @@ export function ChangedFiles({ paths }: { paths: string[] }) {
   return (
     <div className="mt-2 flex flex-wrap items-center gap-1.5">
       <span className="text-[11px] font-semibold leading-4 text-muted-neutral">Changed files</span>
-      <CopyIconButton label="Copy changed file paths" value={paths.join("\n")} />
       {shown.map((path) => (
         <span
           className="max-w-[220px] truncate rounded border border-wardian-light bg-[var(--color-wardian-sidebar-primary)] px-1.5 py-0.5 font-mono text-[11px] leading-4 text-primary"

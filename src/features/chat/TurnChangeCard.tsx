@@ -1,7 +1,7 @@
 import { ChevronRight, FileDiff } from "lucide-react";
 import { useState } from "react";
 
-import { CopyIconButton } from "../grid/chatCopy";
+import { ChatRowActions } from "../grid/chatCopy";
 import type { TurnChangeFile, TurnChangeSummaryRow } from "./chatTurns";
 import {
   changedFileDirectory,
@@ -151,7 +151,7 @@ export function TurnChangeCard({
 
   return (
     <article
-      className="rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)]"
+      className="chat-row relative rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)]"
       data-testid="turn-change-card"
       data-expanded={expanded ? "true" : "false"}
     >
@@ -184,8 +184,12 @@ export function TurnChangeCard({
             </span>
           ) : null}
         </button>
-        <CopyIconButton label="Copy changed file paths" value={files.map((file) => file.path).join("\n")} />
       </div>
+      <ChatRowActions
+        actions={[{ label: "Copy changed file paths", value: files.map((file) => file.path).join("\n") }]}
+        className="chat-row-actions--overlay chat-row-actions--with-toggle"
+        label="Change summary actions"
+      />
 
       {!expanded ? (
         <ul className="border-t border-wardian-light" data-testid="turn-change-preview">
