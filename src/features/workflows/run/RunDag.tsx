@@ -97,6 +97,7 @@ function RunDagInner({ blueprint, currentStatuses, selectedNodeId, onSelectNode,
 
   return (
     <ReactFlow
+      className="wardian-workflow-run-dag"
       nodes={graph.nodes}
       edges={graph.edges}
       nodeTypes={nodeTypes}

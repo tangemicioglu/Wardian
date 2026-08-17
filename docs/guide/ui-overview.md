@@ -27,6 +27,14 @@ Wardian persists the layout and restores it after restart. Recently closed surfa
 
 See [Workbench](./workbench.md) for the complete tab, split, restore, safe-mode, and keyboard behavior.
 
+## Interaction cues
+
+Enabled buttons, links, tabs, menus, list rows, form choice controls, and
+other semantic actions use a pointer cursor when they can be activated.
+Disabled actions retain their disabled cursor state. Drag-first controls use a
+grab cursor, while terminal and editor areas keep a text cursor so the cursor
+also explains what kind of interaction is available.
+
 ## Left Rail: Auxiliary Control
 
 The left icon rail opens collapsible auxiliary panes:

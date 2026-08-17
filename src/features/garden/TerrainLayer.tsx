@@ -155,6 +155,12 @@ const TerrainCellShape: React.FC<{
         // Only the base rect listens. The tint, the highlight, and the label sit
         // on top of it, and a hit on any of them is a hit on this cell — so they
         // stay out of the hit graph rather than each adding a shape to it.
+        onMouseEnter={onSelectPath || onOpenPath ? (event) => {
+          event.target.getStage()?.container().style.setProperty("cursor", "pointer");
+        } : undefined}
+        onMouseLeave={onSelectPath || onOpenPath ? (event) => {
+          event.target.getStage()?.container().style.setProperty("cursor", "default");
+        } : undefined}
         onClick={onSelectPath ? () => onSelectPath(cell.path) : undefined}
         onTap={onSelectPath ? () => onSelectPath(cell.path) : undefined}
         onDblClick={onOpenPath ? () => onOpenPath(cell.path) : undefined}

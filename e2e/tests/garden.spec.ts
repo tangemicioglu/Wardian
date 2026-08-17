@@ -212,6 +212,9 @@ test.describe("Garden View", () => {
     // whole layout on each mouse event, so the map re-solved and slid under the
     // cursor while the user was still dragging.
     await page.mouse.move(startX, startY);
+    await expect(
+      surfacePanel(page, "garden").locator(".konvajs-content"),
+    ).toHaveCSS("cursor", "pointer");
     await page.mouse.down();
     await page.mouse.move(endX, endY, { steps: 8 });
     await page.mouse.up();

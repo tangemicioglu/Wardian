@@ -121,6 +121,9 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     graphRef.current = graph;
     rendererRef.current = renderer;
     setSigmaInstance(renderer);
+    const setCursor = (cursor: string) => {
+      container.style.setProperty("cursor", cursor);
+    };
 
     // Sigma's built-in wheel path animates coarse steps and drops nearby
     // same-direction events. Handle the native event before Sigma's captor so
@@ -151,6 +154,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       const original = event?.original ?? event?.originalEvent;
       const isShiftKey = original && "shiftKey" in original && original.shiftKey;
       if (!isShiftKey) return;
+      setCursor("grabbing");
       dragSourceRef.current = node;
       renderer.getCamera().disable();
       // Rubber-band feedback: without a visible line the gesture is
@@ -167,11 +171,14 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       const source = dragSourceRef.current;
       dragSourceRef.current = null;
       renderer.getCamera().enable();
+      setCursor("pointer");
       setConnectLine(null);
       if (source && node !== source) {
         handlersRef.current.onConnect?.(source, node);
       }
     });
+    renderer.on("upEdge", () => setCursor("pointer"));
+    renderer.on("upStage", () => setCursor("default"));
     renderer.on("clickNode", ({ node }: SigmaNodePayload) => {
       handlersRef.current.onSelectAgent(node);
     });
@@ -198,13 +205,18 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       setConnectLine((line) => (line ? { ...line, x2: point.x, y2: point.y } : line));
     });
     renderer.on("enterNode", ({ node, event }: SigmaPointerPayload) => {
+      setCursor("pointer");
       const graphNode = projectionRef.current.nodes.find((candidate) => candidate.id === node);
       if (!graphNode) return;
       const point = sigmaPointerPosition(event);
       setTooltip({ x: point.x, y: point.y, title: graphNode.label, detail: formatAgentStatusLabel(graphNode.status) });
     });
-    renderer.on("leaveNode", () => setTooltip(null));
+    renderer.on("leaveNode", () => {
+      setCursor("default");
+      setTooltip(null);
+    });
     renderer.on("enterEdge", ({ edge, event }: SigmaEdgePayload) => {
+      setCursor("pointer");
       const graphEdge = projectionRef.current.edges.find((candidate) => candidate.id === edge);
       if (!graphEdge) return;
       const point = sigmaPointerPosition(event);
@@ -214,7 +226,10 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
         title: graphEdge.reasons.map(formatRelationshipReason).join(", "),
       });
     });
-    renderer.on("leaveEdge", () => setTooltip(null));
+    renderer.on("leaveEdge", () => {
+      setCursor("default");
+      setTooltip(null);
+    });
 
     return () => {
       // Sigma creates three WebGL contexts (edges, nodes, hoverNodes) and its

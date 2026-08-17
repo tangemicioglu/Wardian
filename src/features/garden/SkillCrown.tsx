@@ -70,6 +70,12 @@ export const SkillCrown: React.FC<SkillCrownProps> = ({
             key={glyph.entryRef}
             x={positions[index].x}
             y={positions[index].y}
+            onMouseEnter={(event) => {
+              event.target.getStage()?.container().style.setProperty("cursor", "pointer");
+            }}
+            onMouseLeave={(event) => {
+              event.target.getStage()?.container().style.setProperty("cursor", "default");
+            }}
             onClick={(event) => {
               stop(event);
               onSelect(glyph);

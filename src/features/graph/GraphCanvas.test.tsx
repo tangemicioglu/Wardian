@@ -345,6 +345,16 @@ describe("GraphCanvas", () => {
       />,
     );
 
+    mocks.handlers.get("enterNode")?.({ node: "a", event: { x: 40, y: 50 } });
+    expect(screen.getByTestId("graph-canvas")).toHaveStyle({ cursor: "pointer" });
+    mocks.handlers.get("upNode")?.({ node: "a" });
+    mocks.handlers.get("mouseup")?.({});
+    expect(screen.getByTestId("graph-canvas")).toHaveStyle({ cursor: "pointer" });
+    mocks.handlers.get("upStage")?.({});
+    expect(screen.getByTestId("graph-canvas")).toHaveStyle({ cursor: "default" });
+    mocks.handlers.get("leaveNode")?.({});
+    expect(screen.getByTestId("graph-canvas")).toHaveStyle({ cursor: "default" });
+
     act(() => {
       mocks.handlers.get("enterNode")?.({ node: "a", event: { x: 11, y: 22 } });
     });
