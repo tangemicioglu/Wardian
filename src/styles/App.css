@@ -72,7 +72,6 @@
  */
 button:not(:disabled):not([aria-disabled="true"]),
 a[href]:not([aria-disabled="true"]),
-label,
 select:not(:disabled):not([aria-disabled="true"]),
 input[type="checkbox"]:not(:disabled):not([aria-disabled="true"]),
 input[type="radio"]:not(:disabled):not([aria-disabled="true"]),

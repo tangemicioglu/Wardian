@@ -26,8 +26,10 @@ terminal/editor regions continue to use their text or default cursor.
 ## Cursor contract
 
 The shared stylesheet applies `cursor: pointer` to enabled semantic controls:
-buttons, links, labels, form choice controls, disclosure summaries, and
+buttons, links, form choice controls, disclosure summaries, and
 interactive ARIA roles (`button`, `tab`, `menuitem`, `option`, `treeitem`,
 `radio`, `checkbox`, and `switch`). Existing component-specific cursors take
 precedence for drag handles and text-editing regions. Disabled controls remain
 outside the pointer selector so their existing disabled affordance is retained.
+Static labels are not included unless a component gives an enabled choice
+control its own explicit interactive cursor.

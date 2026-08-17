@@ -177,6 +177,8 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
         handlersRef.current.onConnect?.(source, node);
       }
     });
+    renderer.on("upEdge", () => setCursor("pointer"));
+    renderer.on("upStage", () => setCursor("default"));
     renderer.on("clickNode", ({ node }: SigmaNodePayload) => {
       handlersRef.current.onSelectAgent(node);
     });
@@ -195,7 +197,6 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     renderer.getMouseCaptor().on("mouseup", () => {
       renderer.getCamera().enable();
       dragSourceRef.current = null;
-      setCursor("default");
       setConnectLine(null);
     });
     renderer.getMouseCaptor().on("mousemovebody", (coords: { x?: number; y?: number }) => {

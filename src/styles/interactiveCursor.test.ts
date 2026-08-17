@@ -15,4 +15,8 @@ describe("interactive cursor contract", () => {
     expect(appCss).toContain('button:not(:disabled):not([aria-disabled="true"])');
     expect(appCss).toContain('[role="button"]:not([aria-disabled="true"])');
   });
+
+  it("does not make every label look actionable", () => {
+    expect(appCss).not.toMatch(/^label\s*,?$/m);
+  });
 });
