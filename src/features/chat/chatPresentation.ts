@@ -312,16 +312,6 @@ export function formatTimestamp(value: string): string {
 }
 
 /**
- * How many work entries a collapsed group shows.
- *
- * The group's remaining job is "what is happening now", plus a count and a way
- * to open the rest; the turn change card answers "what changed". Two keeps the
- * current step with one line of context, which is what fits a grid cell without
- * the log becoming the whole panel.
- */
-export const WORK_GROUP_PREVIEW_ENTRIES = 2;
-
-/**
  * Elapsed time across a work group, or null when the provider timestamped too
  * few of the events to measure it. Never estimated from event count.
  */

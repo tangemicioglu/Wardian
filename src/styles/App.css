@@ -755,6 +755,192 @@ summary,
 }
 
 /* ── Chat Activity Hints ─────────────────────────────── */
+.agent-chat-view {
+  container-name: wardian-chat;
+  container-type: inline-size;
+}
+
+.chat-transcript-list {
+  width: 100%;
+  max-width: 960px;
+  margin-inline: auto;
+}
+
+.chat-row {
+  position: relative;
+}
+
+.chat-message-user {
+  max-width: min(92%, 48ch);
+  border-inline-end: 2px solid var(--color-wardian-accent);
+  border-radius: 4px 0 0 4px;
+  background: color-mix(in srgb, var(--color-wardian-accent), transparent 94%);
+}
+
+.chat-row-actions {
+  position: relative;
+  z-index: 4;
+}
+
+.chat-row-actions--overlay {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.chat-row-actions--with-toggle {
+  right: 38px;
+}
+
+.chat-row-actions-direct {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+.chat-row:hover .chat-row-actions-direct,
+.chat-row:focus-within .chat-row-actions-direct {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-row:hover .chat-row-actions[data-has-secondary="true"] .chat-row-actions-menu-trigger,
+.chat-row:focus-within .chat-row-actions[data-has-secondary="true"] .chat-row-actions-menu-trigger {
+  display: inline-flex;
+}
+
+.chat-row-actions-menu-trigger {
+  display: none;
+}
+
+.chat-row-actions-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  min-width: 164px;
+}
+
+.chat-copy-menu-item {
+  min-height: 32px;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .chat-row-actions-direct {
+    display: none;
+  }
+
+  .chat-row-actions-menu-trigger {
+    display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .chat-row-actions--overlay {
+    top: 2px;
+    right: 4px;
+  }
+
+  .chat-row-actions--with-toggle {
+    right: 48px;
+  }
+
+  .chat-message-content {
+    padding-right: 2.75rem;
+  }
+
+  .chat-activity-row {
+    padding-right: 56px;
+  }
+}
+
+.chat-activity-row-collapsed,
+.chat-work-group[data-expanded="false"] {
+  background: color-mix(in srgb, var(--color-wardian-card-bg-muted), transparent 32%);
+}
+
+.chat-work-group-toggle {
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.chat-work-group-toggle:hover {
+  background: var(--color-wardian-card-bg-muted);
+}
+
+.chat-attachment-chip {
+  max-width: min(100%, 260px);
+}
+
+@container wardian-chat (max-width: 420px) {
+  .chat-transcript-scroll {
+    padding: 8px;
+  }
+
+  .chat-message-user {
+    max-width: 96%;
+  }
+
+  .chat-message-content {
+    padding-right: 2.75rem;
+  }
+
+  .chat-activity-detail {
+    display: none;
+  }
+
+  .chat-activity-row,
+  .chat-work-group {
+    padding-inline: 8px;
+  }
+
+  .chat-activity-row {
+    padding-right: 56px;
+  }
+
+  .chat-row-actions-direct {
+    display: none;
+  }
+
+  .chat-row-actions-menu-trigger {
+    display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .chat-row-actions--overlay {
+    top: 2px;
+    right: 4px;
+  }
+
+  .chat-row-actions--with-toggle {
+    right: 48px;
+  }
+
+  .chat-work-group-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .chat-activity-row-approval button {
+    min-height: 44px;
+  }
+
+  .chat-composer {
+    margin-inline: 8px;
+    margin-bottom: 8px;
+  }
+
+  .chat-attachment-chip {
+    min-height: 32px;
+  }
+}
+
+@container wardian-chat (min-width: 720px) {
+  .chat-message-assistant {
+    padding-inline: 2px;
+  }
+}
+
 @keyframes wardian-thinking-dot-2 {
   0%,
   32% {

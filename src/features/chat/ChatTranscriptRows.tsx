@@ -1,11 +1,11 @@
-import { Check } from "lucide-react";
+import { Check, ChevronRight } from "lucide-react";
 import { useState } from "react";
 
 import type { AgentChatEvent, AgentChatRole } from "../../types";
 import { toActivityBlock, type ActivityBlockModel } from "../grid/activityBlocks";
 import { parseApprovalChoices } from "../grid/approvalChoices";
 import { CodePanel, renderHighlightedCode } from "../grid/chatCode";
-import { CopyIconButton } from "../grid/chatCopy";
+import { ChatRowActions } from "../grid/chatCopy";
 import { ChatMarkdown, type ChatMarkdownLinkHandling } from "../grid/markdown/ChatMarkdown";
 import {
   changedPathsFromEvents,
@@ -31,7 +31,6 @@ import {
   withPatchContent,
   workGroupDurationLabel,
   workGroupTitleFromEntries,
-  WORK_GROUP_PREVIEW_ENTRIES,
   TONE_CLASSES,
   type ToolPresentation,
 } from "./chatPresentation";
@@ -40,10 +39,10 @@ import type { ChatTranscriptRowModel } from "./chatTurns";
 import { TurnChangeCard } from "./TurnChangeCard";
 
 const ROLE_CLASSES: Record<AgentChatRole, string> = {
-  assistant: "border-wardian-light bg-[var(--color-wardian-card)]",
+  assistant: "chat-message-assistant text-primary",
   system: "border-[var(--color-wardian-warning)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_92%)]",
   tool: "border-wardian-light bg-[var(--color-wardian-card-bg-muted)]",
-  user: "border-[var(--color-wardian-accent)] bg-[color-mix(in_srgb,var(--color-wardian-accent),transparent_90%)]",
+  user: "chat-message-user text-primary",
 };
 
 /**
@@ -110,22 +109,23 @@ export function MessageRow({
   const text = event.text?.trimEnd() || event.title || "";
   const isUser = role === "user";
   const fullWidth = layout === "full_width";
+  const isAssistant = role === "assistant";
+  const messageLayout = isAssistant ? "w-full max-w-[76ch] px-1 py-0.5" : fullWidth ? "w-full" : "max-w-[92%]";
+  const messageSurface = isAssistant
+    ? ""
+    : isUser
+      ? "px-2.5 py-1.5"
+      : "rounded-[var(--density-card-radius)] border px-3 py-2.5";
 
   return (
     <article
       aria-label={`${role} message`}
-      className={fullWidth ? "w-full" : `flex ${isUser ? "justify-end" : "justify-start"}`}
+      className={`chat-row relative ${isAssistant || fullWidth ? "w-full" : `flex ${isUser ? "justify-end" : "justify-start"}`}`}
     >
       <div
-        className={`group/message relative ${
-          fullWidth ? "w-full" : "max-w-[92%]"
-        } rounded-[var(--density-card-radius)] border px-3 py-2.5 pr-9 shadow-[0_1px_0_rgba(0,0,0,0.03)] ${ROLE_CLASSES[role]}`}
+        className={`chat-message-content group/message relative ${messageLayout} ${messageSurface} ${ROLE_CLASSES[role]}`}
       >
-        {text ? (
-          <div className="absolute right-1.5 top-1.5">
-            <CopyIconButton label="Copy message" value={text} />
-          </div>
-        ) : null}
+        {text ? <ChatRowActions actions={[{ label: "Copy message", value: text }]} className="chat-row-actions--overlay" /> : null}
         {text ? (
           <ChatMarkdown linkHandling={linkHandling} source={text} />
         ) : (
@@ -219,8 +219,6 @@ export function ActivityRow({
   onApprovalSubmit: (response: string) => void;
 }) {
   const block = withPatchContent(event, rawBlock);
-  const [expanded, setExpanded] = useState(!block.defaultCollapsed);
-  const visibleContent = expanded ? block.content : previewContent(block.content);
   const isApproval = block.kind === "approval" || block.tone === "warning";
   const approvalChoices = isApproval ? parseApprovalChoices(event.text ?? block.content) : [];
   const presentation = toolPresentation(event, block);
@@ -231,16 +229,26 @@ export function ActivityRow({
   // The panel names the file and counts the lines, so the path chips below it
   // would only repeat what the reader is already looking at.
   const changedPaths = structuredEdit ? [] : entry?.changed_paths ?? changedPathsFromEvents([event]);
+  const collapsedByDefault = shouldCollapseRoutineActivity(event, block, isApproval, structuredEdit, changedPaths);
+  const [expanded, setExpanded] = useState(!collapsedByDefault);
+  const visibleContent = expanded ? block.content : previewContent(block.content);
   const copyValue = structuredEdit
     ? structuredEditDiffText(structuredEdit)
     : entry && entry.merged_result_events.length > 0
       ? formatPresentedEntryForCopy(entry)
       : block.content;
+  const copyActions = [
+    { label: "Copy activity output", value: copyValue },
+    ...(changedPaths.length > 0 ? [{ label: "Copy changed file paths", value: changedPaths.join("\n") }] : []),
+  ];
 
   return (
     <article
-      className={`border-l-2 bg-[var(--color-wardian-card-bg-muted)] px-3 py-2 ${TONE_CLASSES[block.tone]}`}
+      className={`chat-row chat-activity-row relative border-l-2 bg-[var(--color-wardian-card-bg-muted)] px-2.5 py-1.5 ${
+        expanded ? "chat-activity-row-expanded" : "chat-activity-row-collapsed"
+      } ${TONE_CLASSES[block.tone]}`}
       data-testid={isApproval ? "chat-activity-row-approval" : "chat-activity-row"}
+      data-collapsed={expanded ? "false" : "true"}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
@@ -250,7 +258,7 @@ export function ActivityRow({
             </span>
             <div className="min-w-0">
               <div className="truncate text-[12px] font-semibold leading-5 text-primary">{presentation.title}</div>
-              <div className="truncate text-[11px] leading-4 text-muted-neutral">{details.join(" - ")}</div>
+              <div className="chat-activity-detail truncate text-[11px] leading-4 text-muted-neutral">{details.join(" - ")}</div>
             </div>
           </div>
           {event.command?.trim() ? (
@@ -263,8 +271,7 @@ export function ActivityRow({
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <CopyIconButton label="Copy activity output" value={copyValue} />
-          {block.defaultCollapsed ? (
+          {collapsedByDefault ? (
             <button
               type="button"
               className="rounded border border-wardian-light px-2 py-1 text-[11px] font-semibold leading-4 text-muted-neutral hover:text-primary"
@@ -275,6 +282,7 @@ export function ActivityRow({
           ) : null}
         </div>
       </div>
+      <ChatRowActions actions={copyActions} className="chat-row-actions--overlay" label="Activity actions" />
       {isApproval ? (
         <div
           className={`mt-2 rounded border px-2 py-1 text-[11px] leading-4 text-muted-neutral ${
@@ -330,6 +338,20 @@ export function ActivityRow({
       />
     </article>
   );
+}
+
+function shouldCollapseRoutineActivity(
+  event: AgentChatEvent,
+  block: ActivityBlockModel,
+  isApproval: boolean,
+  structuredEdit: StructuredEdit | null,
+  changedPaths: string[],
+): boolean {
+  if (block.defaultCollapsed) return true;
+  if (isApproval || event.kind === "error" || structuredEdit || changedPaths.length > 0) return false;
+  if (block.tone === "error" || block.tone === "warning") return false;
+  if (event.status === "running" || event.status === "processing") return false;
+  return event.kind === "tool_call" || event.kind === "tool_result";
 }
 
 export function ToolBody({
@@ -461,7 +483,7 @@ export function TerminalFallback({ event, block }: { event: AgentChatEvent; bloc
 
   return (
     <article
-      className="border-l-2 border-wardian-light bg-[color-mix(in_srgb,var(--color-wardian-card-bg-muted),transparent_28%)] px-3 py-2"
+      className="chat-row relative border-l-2 border-wardian-light bg-[color-mix(in_srgb,var(--color-wardian-card-bg-muted),transparent_28%)] px-3 py-2"
       data-testid="terminal-fallback-row"
     >
       <div className="flex items-center gap-3">
@@ -470,7 +492,6 @@ export function TerminalFallback({ event, block }: { event: AgentChatEvent; bloc
           <div className="truncate text-[11px] leading-4 text-muted-neutral">{subtitle}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <CopyIconButton label={isLaunch ? "Copy launch details" : "Copy terminal output"} value={block.content} />
           <button
             type="button"
             className="rounded border border-wardian-light px-2 py-1 text-[11px] font-semibold leading-4 text-muted-neutral hover:text-primary"
@@ -480,6 +501,11 @@ export function TerminalFallback({ event, block }: { event: AgentChatEvent; bloc
           </button>
         </div>
       </div>
+      <ChatRowActions
+        actions={[{ label: isLaunch ? "Copy launch details" : "Copy terminal output", value: block.content }]}
+        className="chat-row-actions--overlay"
+        label="Terminal actions"
+      />
       {preview && !expanded && !isLaunch ? (
         <div className="mt-1 truncate font-mono text-[11px] leading-4 text-muted-neutral">{preview}</div>
       ) : null}
@@ -502,47 +528,70 @@ export function WorkGroupRow({
   agentIsWorking: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const visibleEntries = expanded ? row.entries : row.entries.slice(-WORK_GROUP_PREVIEW_ENTRIES);
-  const hiddenCount = row.entries.length - visibleEntries.length;
+  const visibleEntries = expanded ? row.entries : [];
   const title = workGroupTitleFromEntries(row.entries);
   const duration = workGroupDurationLabel(row.entries);
+  const latestEntry = row.entries[row.entries.length - 1];
   const copyValue = formatPresentedWorkGroupForCopy(row);
 
   return (
     <article
-      className="border-l-2 border-wardian-light bg-[color-mix(in_srgb,var(--color-wardian-card-bg-muted),transparent_18%)] px-3 py-2"
+      className="chat-row chat-work-group relative border-l-2 border-wardian-light bg-[color-mix(in_srgb,var(--color-wardian-card-bg-muted),transparent_18%)] px-2.5 py-1.5"
       data-testid="chat-work-group"
+      data-expanded={expanded ? "true" : "false"}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-semibold leading-5 text-primary">{title}</div>
-          <div className="text-[11px] leading-4 text-muted-neutral">
-            {duration ? `Worked for ${duration} - ` : ""}
-            {row.entries.length} {row.entries.length === 1 ? "event" : "events"}
-            {hiddenCount > 0 ? ` - showing latest ${visibleEntries.length}` : ""}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <CopyIconButton label="Copy work log" value={copyValue} />
-          {row.entries.length > visibleEntries.length || expanded ? (
-            <button
-              type="button"
-              className="rounded border border-wardian-light px-2 py-1 text-[11px] font-semibold leading-4 text-muted-neutral hover:text-primary"
-              onClick={() => setExpanded((value) => !value)}
-            >
-              {expanded ? "Collapse" : "Show all"}
-            </button>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-wardian-processing)]" aria-hidden="true" />
+        <button
+          type="button"
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <span className="shrink-0 text-[11px] font-semibold leading-5 text-primary">{title}</span>
+          <span className="shrink-0 text-[11px] leading-5 text-muted-neutral">
+            {row.entries.length} {row.entries.length === 1 ? "event" : "events"}{duration ? ` · ${duration}` : ""}
+          </span>
+          {!expanded && latestEntry ? (
+            <span className="min-w-0 truncate text-[11px] leading-5 text-muted-neutral">
+              · {latestEntry.title}{latestEntry.summary ? ` · ${latestEntry.summary}` : ""}
+            </span>
           ) : null}
+        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            aria-expanded={expanded}
+            className="chat-work-group-toggle inline-flex h-7 w-7 items-center justify-center rounded border border-wardian-light text-muted-neutral hover:text-primary"
+            onClick={() => setExpanded((value) => !value)}
+            title={expanded ? "Collapse work log" : "Show all work"}
+          >
+            <ChevronRight aria-hidden="true" className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-90" : ""}`} />
+            <span className="sr-only">{expanded ? "Collapse" : "Show all"}</span>
+          </button>
         </div>
       </div>
+      <ChatRowActions
+        actions={[
+          { label: "Copy work log", value: copyValue },
+          ...(row.changedPaths.length > 0
+            ? [{ label: "Copy changed file paths", value: row.changedPaths.join("\n") }]
+            : []),
+        ]}
+        className="chat-row-actions--overlay chat-row-actions--with-toggle"
+        label="Work log actions"
+      />
 
-      {row.changedPaths.length > 0 ? <ChangedFiles paths={row.changedPaths} /> : null}
-
-      <div className="mt-2 space-y-1">
-        {visibleEntries.map((entry) => (
-          <WorkEntry agentIsWorking={agentIsWorking} entry={entry} key={entry.id} />
-        ))}
-      </div>
+      {expanded ? (
+        <>
+          {row.changedPaths.length > 0 ? <ChangedFiles paths={row.changedPaths} /> : null}
+          <div className="mt-2 space-y-1">
+            {visibleEntries.map((entry) => (
+              <WorkEntry agentIsWorking={agentIsWorking} entry={entry} key={entry.id} />
+            ))}
+          </div>
+        </>
+      ) : null}
     </article>
   );
 }
@@ -573,7 +622,6 @@ export function ChangedFiles({ paths }: { paths: string[] }) {
   return (
     <div className="mt-2 flex flex-wrap items-center gap-1.5">
       <span className="text-[11px] font-semibold leading-4 text-muted-neutral">Changed files</span>
-      <CopyIconButton label="Copy changed file paths" value={paths.join("\n")} />
       {shown.map((path) => (
         <span
           className="max-w-[220px] truncate rounded border border-wardian-light bg-[var(--color-wardian-sidebar-primary)] px-1.5 py-0.5 font-mono text-[11px] leading-4 text-primary"

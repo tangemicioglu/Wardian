@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Image } from "@tauri-apps/api/image";
 import { open } from "@tauri-apps/plugin-dialog";
-import { writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { readImage, writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -13,6 +13,7 @@ import type { WorkbenchNavigationService } from "../workbench/navigationService"
 import { AgentChatView } from "./AgentChatView";
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  readImage: vi.fn(),
   writeImage: vi.fn(),
   writeText: vi.fn(),
 }));
@@ -29,6 +30,7 @@ const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);
 const imageFromPathMock = vi.mocked(Image.fromPath);
 const openMock = vi.mocked(open);
+const readImageMock = vi.mocked(readImage);
 const writeImageMock = vi.mocked(writeImage);
 const writeTextMock = vi.mocked(writeText);
 
@@ -92,6 +94,7 @@ describe("AgentChatView", () => {
     listenMock.mockResolvedValue(() => {});
     imageFromPathMock.mockReset();
     openMock.mockReset();
+    readImageMock.mockReset();
     writeImageMock.mockReset();
     writeTextMock.mockReset();
   });
@@ -570,9 +573,10 @@ describe("AgentChatView", () => {
 
     const group = await screen.findByText("Work log");
     const article = group.closest("article") as HTMLElement;
-    // The collapsed group keeps the current step plus one line of context; the
-    // rest stays behind an explicit toggle rather than being dropped.
-    expect(article).toHaveTextContent("4 events - showing latest 2");
+    // The collapsed group keeps only a compact latest-step summary; the
+    // detailed work rail stays behind an explicit toggle.
+    expect(article).toHaveTextContent("4 events");
+    expect(article).toHaveTextContent("Search output");
     await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
     expect(article).toHaveTextContent("4 events");
     expect(within(article).getByText("Read file")).toBeInTheDocument();
@@ -645,7 +649,8 @@ describe("AgentChatView", () => {
     const group = await screen.findByText("Work log");
     const article = group.closest("article") as HTMLElement;
 
-    expect(article).toHaveTextContent("4 events - showing latest 2");
+    expect(article).toHaveTextContent("4 events");
+    expect(article).toHaveTextContent("Output");
     await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
 
     expect(within(article).getByText("git status --short --branch")).toBeInTheDocument();
@@ -1452,7 +1457,16 @@ describe("AgentChatView", () => {
     fireEvent.click(within(activityArticle).getByRole("button", { name: "Copy activity output" }));
     await waitFor(() => expect(writeTextMock).toHaveBeenLastCalledWith("{\"ok\":true}"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy changed file paths" }));
+    fireEvent.click(within(activityArticle).getByRole("button", { name: "Activity actions" }));
+    const activityMenu = within(activityArticle).getByRole("menu", { name: "Activity actions" });
+    expect(within(activityMenu).getByRole("menuitem", { name: "Copy activity output" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(within(activityArticle).queryByRole("menu", { name: "Activity actions" })).not.toBeInTheDocument();
+
+    const changedFilesArticle = screen.getByText("Changed files").closest("article") as HTMLElement;
+    fireEvent.click(within(changedFilesArticle).getByRole("button", { name: "Activity actions" }));
+    const changedFilesMenu = within(changedFilesArticle).getByRole("menu", { name: "Activity actions" });
+    fireEvent.click(within(changedFilesMenu).getByRole("menuitem", { name: "Copy changed file paths" }));
     await waitFor(() => expect(writeTextMock).toHaveBeenLastCalledWith("src/features/grid/AgentChatView.tsx"));
   });
 
@@ -1680,6 +1694,43 @@ describe("AgentChatView", () => {
 
     expect(await screen.findByText("dropped.txt")).toBeInTheDocument();
     expect(screen.getByText("pasted.md")).toBeInTheDocument();
+  });
+
+  it("captures a clipboard image without a filesystem path as an attachment", async () => {
+    const clipboardImage = { rid: 2 } as never;
+    readImageMock.mockResolvedValue(clipboardImage);
+    writeImageMock.mockResolvedValue(undefined);
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "inject_session_input") return Promise.resolve(undefined);
+      if (command === "submit_prompt_to_agent") return Promise.resolve(undefined);
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    render(<AgentChatView sessionId="agent-1" agent={{ session_name: "Alpha", agent_class: "Coder", provider: "codex" }} status="Idle" />);
+    await screen.findByText("No chat transcript yet");
+
+    const composer = screen.getByTestId("chat-composer");
+    const pastedImage = new File([new Uint8Array([1, 2, 3])], "Screenshot.png", { type: "image/png" });
+    fireEvent.paste(composer, {
+      clipboardData: {
+        files: [pastedImage],
+        items: [{ kind: "file", type: "image/png" }],
+        getData: () => "",
+      },
+    });
+
+    expect(await screen.findByText("pasted-image-1.png")).toBeInTheDocument();
+    expect(readImageMock).toHaveBeenCalledOnce();
+
+    fireEvent.change(screen.getByLabelText("Message agent"), { target: { value: "Review this screenshot." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(writeImageMock).toHaveBeenCalledWith(clipboardImage));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("submit_prompt_to_agent", {
+      sessionId: "agent-1",
+      prompt: "Review this screenshot.\n\nAttached files:\n- pasted-image-1.png",
+    }));
   });
 
   it("keeps the latest transcript rows anchored after sending a chat message", async () => {

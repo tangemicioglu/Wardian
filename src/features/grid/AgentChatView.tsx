@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FileText, Hand, Loader2, Plus, SendHorizontal, Square, X } from "lucide-react";
+import { readImage } from "@tauri-apps/plugin-clipboard-manager";
+import { FileText, Hand, Image as ImageIcon, Loader2, Plus, SendHorizontal, Square, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { AgentChatEvent, AgentConfig, AgentTelemetry } from "../../types";
@@ -359,7 +360,7 @@ export function AgentChatView({
   return (
     <section
       aria-label={`Chat transcript for ${agent?.session_name ?? sessionId}`}
-      className={`agent-chat-view flex h-full min-h-0 flex-col bg-wardian-bg text-primary ${isMaximized ? "text-[14px]" : "text-[13px]"} ${className}`}
+      className={`agent-chat-view chat-surface flex h-full min-h-0 flex-col bg-wardian-bg text-primary ${isMaximized ? "text-[14px]" : "text-[13px]"} ${className}`}
       data-theme-mode={theme}
       data-testid="agent-chat-view"
     >
@@ -372,7 +373,7 @@ export function AgentChatView({
         </div>
       ) : null}
       <div
-        className="min-h-0 flex-1 overflow-auto px-3 py-3"
+        className="chat-transcript-scroll min-h-0 flex-1 overflow-auto px-2.5 py-2.5"
         data-testid="agent-chat-scroll-region"
         onScroll={handleTranscriptScroll}
         ref={transcriptScrollRef}
@@ -381,12 +382,12 @@ export function AgentChatView({
         {loadState === "error" ? <ErrorState error={error} onRetry={() => setReloadKey((key) => key + 1)} /> : null}
         {loadState === "ready" && chatRows.length === 0 ? <EmptyState /> : null}
         {loadState === "ready" && chatRows.length > 0 ? (
-          <ol className="space-y-2" data-testid="agent-chat-transcript">
+          <ol className="chat-transcript-list space-y-1.5" data-testid="agent-chat-transcript">
             {hiddenOlderRowCount > 0 ? (
               <li>
                 <button
                   type="button"
-                  className="w-full rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] px-3 py-2 text-[12px] font-semibold leading-5 text-muted-neutral hover:text-primary"
+                  className="w-full rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] px-2.5 py-1.5 text-[11px] font-semibold leading-5 text-muted-neutral hover:text-primary"
                   onClick={handleLoadOlderRows}
                 >
                   Load {Math.min(CHAT_ROW_PAGE_SIZE, hiddenOlderRowCount)} earlier transcript rows
@@ -474,6 +475,7 @@ function ChatComposer({
   const composerRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const autoFocusConsumedRef = useRef(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const placeholder = disabledReason ?? (hasActionRequired ? "Respond to action required..." : "Message agent...");
   const canSubmit = (draft.trim().length > 0 || attachments.length > 0) && !disabledReason;
 
@@ -491,7 +493,10 @@ function ChatComposer({
       const added = paths
         .filter((path) => !knownPaths.has(path.toLocaleLowerCase()))
         .map((path) => ({ name: fileNameFromPath(path), path }));
-      if (added.length > 0) onAttachmentsChange([...attachments, ...added]);
+      if (added.length > 0) {
+        setAttachmentError(null);
+        onAttachmentsChange([...attachments, ...added]);
+      }
     } catch (error) {
       console.warn("Failed to choose chat attachments:", error);
     }
@@ -502,14 +507,43 @@ function ChatComposer({
     const added = paths
       .filter((path) => path.trim() && !knownPaths.has(path.toLocaleLowerCase()))
       .map((path) => ({ name: fileNameFromPath(path), path }));
-    if (added.length > 0) onAttachmentsChange([...attachments, ...added]);
+    if (added.length > 0) {
+      setAttachmentError(null);
+      onAttachmentsChange([...attachments, ...added]);
+    }
+  };
+
+  const captureClipboardImage = async () => {
+    try {
+      const image = await readImage();
+      const usedNames = new Set(attachments.map((attachment) => attachment.name));
+      let index = 1;
+      let name = `pasted-image-${index}.png`;
+      while (usedNames.has(name)) {
+        index += 1;
+        name = `pasted-image-${index}.png`;
+      }
+      setAttachmentError(null);
+      onAttachmentsChange([...attachments, { name, path: "", image }]);
+    } catch (error) {
+      console.warn("Failed to capture clipboard image:", error);
+      setAttachmentError("Could not capture that clipboard image. Use Attach files to choose an image instead.");
+    }
+  };
+
+  const dataTransferHasImage = (dataTransfer: DataTransfer): boolean => {
+    const files = Array.from(dataTransfer.files ?? []);
+    if (files.some((file) => file.type.toLowerCase().startsWith("image/"))) return true;
+    return Array.from(dataTransfer.items ?? []).some(
+      (item) => item.kind === "file" && item.type.toLowerCase().startsWith("image/"),
+    );
   };
 
   const pathsFromDataTransfer = (dataTransfer: DataTransfer): string[] => {
     const files = Array.from(dataTransfer.files) as Array<File & { path?: string }>;
     const filePaths = files.map((file) => file.path).filter((path): path is string => Boolean(path));
     if (filePaths.length > 0) return filePaths;
-    return dataTransfer.getData("text/uri-list")
+    return (typeof dataTransfer.getData === "function" ? dataTransfer.getData("text/uri-list") : "")
       .split(/\r?\n/)
       .filter((value) => value.startsWith("file://"))
       .map((value) => decodeURIComponent(value.replace(/^file:\/\//, "")));
@@ -560,7 +594,7 @@ function ChatComposer({
 
   return (
     <form
-      className="chat-composer mx-3 mb-3 rounded-2xl border border-wardian-light bg-[var(--color-wardian-input-bg)] px-3 pb-1.5 pt-2 shadow-sm"
+      className="chat-composer mx-2.5 mb-2.5 rounded-xl border border-wardian-light bg-[var(--color-wardian-input-bg)] px-3 pb-1 pt-1.5 shadow-sm"
       data-testid="chat-composer"
       ref={composerRef}
       onDragOver={(event) => {
@@ -581,6 +615,9 @@ function ChatComposer({
         if (paths.length > 0) {
           event.preventDefault();
           addAttachmentPaths(paths);
+        } else if (dataTransferHasImage(event.clipboardData)) {
+          event.preventDefault();
+          void captureClipboardImage();
         }
       }}
       onSubmit={(event) => {
@@ -592,23 +629,37 @@ function ChatComposer({
         <div className="mb-2 flex flex-wrap gap-1.5" aria-label="Attached files">
           {attachments.map((attachment) => (
             <span
-              className="inline-flex max-w-full items-center gap-1 rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] py-1 pl-2 pr-1 text-[11px] text-primary"
-              key={attachment.path}
-              title={attachment.path}
+              className="chat-attachment-chip inline-flex max-w-full items-center gap-1 rounded border border-wardian-light bg-[var(--color-wardian-card-bg-muted)] py-1 pl-2 pr-1 text-[11px] text-primary"
+              key={`${attachment.path || "clipboard-image"}:${attachment.name}`}
+              title={attachment.path || "Pasted image"}
             >
-              <FileText className="h-3 w-3 shrink-0 text-muted-neutral" aria-hidden="true" />
+              {attachment.image ? (
+                <ImageIcon className="h-3 w-3 shrink-0 text-muted-neutral" aria-hidden="true" />
+              ) : (
+                <FileText className="h-3 w-3 shrink-0 text-muted-neutral" aria-hidden="true" />
+              )}
               <span className="max-w-[20ch] truncate">{attachment.name}</span>
               <button
                 aria-label={`Remove ${attachment.name}`}
                 className="rounded p-0.5 text-muted-neutral hover:bg-[var(--color-wardian-card)] hover:text-primary"
                 disabled={Boolean(disabledReason) || isSubmitting}
-                onClick={() => onAttachmentsChange(attachments.filter((item) => item.path !== attachment.path))}
+                onClick={() => {
+                  const identity = `${attachment.path || "clipboard-image"}:${attachment.name}`;
+                  onAttachmentsChange(
+                    attachments.filter((item) => `${item.path || "clipboard-image"}:${item.name}` !== identity),
+                  );
+                }}
                 type="button"
               >
                 <X className="h-3 w-3" aria-hidden="true" />
               </button>
             </span>
           ))}
+        </div>
+      ) : null}
+      {attachmentError ? (
+        <div className="mb-1 text-[11px] leading-4 text-[var(--color-wardian-error)]" role="alert">
+          {attachmentError}
         </div>
       ) : null}
       <textarea
