@@ -59,16 +59,28 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
       id={unit.ref.id}
       name={AGENT_UNIT_NAME}
       draggable
+      onMouseEnter={(event) => {
+        event.target.getStage()?.container().style.setProperty("cursor", "pointer");
+      }}
+      onMouseLeave={(event) => {
+        event.target.getStage()?.container().style.setProperty("cursor", "default");
+      }}
       onClick={() => onSelect(unit.ref.id)}
       onTap={() => onSelect(unit.ref.id)}
       onDblClick={() => onOpen(unit.ref.id)}
       onDblTap={() => onOpen(unit.ref.id)}
+      onDragStart={(event) => {
+        event.target.getStage()?.container().style.setProperty("cursor", "grabbing");
+      }}
       // Committed on drag *end*, not on every move. A move-by-move commit
       // pinned the unit and re-ran the whole layout on each mouse event, so
       // the map re-solved and slid under the cursor while the user dragged.
       // Konva moves the node locally in the meantime, which is all the
       // feedback a drag needs.
-      onDragEnd={(e) => onDragEnd(unit.ref.id, e.target.x(), e.target.y())}
+      onDragEnd={(e) => {
+        e.target.getStage()?.container().style.setProperty("cursor", "pointer");
+        onDragEnd(unit.ref.id, e.target.x(), e.target.y());
+      }}
     >
       {/* Named so the canvas' single pulse animation can find it. The radius is
           mutated on the Konva node rather than through React, so a busy agent

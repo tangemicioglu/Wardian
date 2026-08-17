@@ -62,6 +62,37 @@
   --shadow-wardian-card: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
+/*
+ * Interactive cursor contract
+ *
+ * Keep cursor feedback attached to semantic controls instead of requiring
+ * every surface to remember a utility class. Drag-first surfaces may still
+ * override this with cursor-grab/cursor-grabbing, and text editors/terminals
+ * keep their text cursor.
+ */
+button:not(:disabled):not([aria-disabled="true"]),
+a[href]:not([aria-disabled="true"]),
+label,
+select:not(:disabled):not([aria-disabled="true"]),
+input[type="checkbox"]:not(:disabled):not([aria-disabled="true"]),
+input[type="radio"]:not(:disabled):not([aria-disabled="true"]),
+summary,
+[role="button"]:not([aria-disabled="true"]),
+[role="tab"]:not([aria-disabled="true"]),
+[role="menuitem"]:not([aria-disabled="true"]),
+[role="option"]:not([aria-disabled="true"]),
+[role="treeitem"]:not([aria-disabled="true"]),
+[role="radio"]:not([aria-disabled="true"]),
+[role="checkbox"]:not([aria-disabled="true"]),
+[role="switch"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+
+/* Run DAG nodes are selectable but deliberately not draggable. */
+.wardian-workflow-run-dag .react-flow__node {
+  cursor: pointer;
+}
+
 /* ── Custom Title Bar ────────────────────────────────── */
 .titlebar {
   height: var(--topbar-height);

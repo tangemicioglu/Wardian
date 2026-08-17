@@ -34,9 +34,21 @@ export const WorkflowUnit: React.FC<WorkflowUnitProps> = ({
       x={unit.position.x}
       y={unit.position.y}
       draggable
+      onMouseEnter={(event) => {
+        event.target.getStage()?.container().style.setProperty("cursor", "pointer");
+      }}
+      onMouseLeave={(event) => {
+        event.target.getStage()?.container().style.setProperty("cursor", "default");
+      }}
       onClick={() => onSelect(unit.ref.id)}
       onTap={() => onSelect(unit.ref.id)}
-      onDragEnd={(e) => onDragEnd(e.target.x(), e.target.y())}
+      onDragStart={(event) => {
+        event.target.getStage()?.container().style.setProperty("cursor", "grabbing");
+      }}
+      onDragEnd={(e) => {
+        e.target.getStage()?.container().style.setProperty("cursor", "pointer");
+        onDragEnd(e.target.x(), e.target.y());
+      }}
     >
       {/* Named so the canvas' single pulse animation can find it; see
           `useGardenPulse` for why this is not animated through React. */}
