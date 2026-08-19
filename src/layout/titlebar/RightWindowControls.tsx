@@ -22,6 +22,7 @@ export const RightWindowControls: React.FC<RightWindowControlsProps> = ({
     if (!appWindow) return;
     
     let unlisten: (() => void) | undefined;
+    let maximizedCheckFrame: number | null = null;
     
     const updateMaximized = async () => {
       const maximized = await appWindow.isMaximized();
@@ -30,14 +31,32 @@ export const RightWindowControls: React.FC<RightWindowControlsProps> = ({
 
     updateMaximized();
 
-    appWindow.onResized(() => {
-      updateMaximized();
-    }).then(u => {
+    const scheduleMaximizedCheck = () => {
+      if (maximizedCheckFrame !== null) return;
+      const run = () => {
+        maximizedCheckFrame = null;
+        void updateMaximized();
+      };
+      if (typeof window.requestAnimationFrame === "function") {
+        maximizedCheckFrame = window.requestAnimationFrame(run);
+      } else {
+        maximizedCheckFrame = window.setTimeout(run, 0);
+      }
+    };
+
+    appWindow.onResized(scheduleMaximizedCheck).then(u => {
       unlisten = u;
     });
 
     return () => {
       if (unlisten) unlisten();
+      if (maximizedCheckFrame !== null) {
+        if (typeof window.cancelAnimationFrame === "function") {
+          window.cancelAnimationFrame(maximizedCheckFrame);
+        } else {
+          window.clearTimeout(maximizedCheckFrame);
+        }
+      }
     };
   }, [appWindow]);
 
