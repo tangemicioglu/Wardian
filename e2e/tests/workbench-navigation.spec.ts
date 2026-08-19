@@ -686,6 +686,7 @@ test("compresses crowded file tabs and keeps the open-tab list available", async
   const widths = await tabs.evaluateAll((elements) => elements.map((element) => (
     Math.round(element.getBoundingClientRect().width)
   )));
+  expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1);
   expect(Math.max(...widths)).toBeLessThan(160);
   const compressedLabelCount = await tabs.locator(".wardian-workbench-tab-label").evaluateAll((labels) => (
     labels.filter((label) => label.clientWidth > 0 && label.scrollWidth > label.clientWidth).length

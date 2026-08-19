@@ -255,9 +255,11 @@
 }
 
 .dockview-theme-wardian .dv-tab {
+  /* Give every visible tab the same share of the strip; labels are the
+   * flexible content that yields when the pane becomes crowded. */
+  flex: 1 1 0;
   min-width: var(--wardian-workbench-tab-min-width);
   max-width: var(--wardian-workbench-tab-max-width);
-  flex-shrink: 1;
   border: 0;
   border-radius: 0.25rem 0.25rem 0 0;
   font-size: 0.75rem;

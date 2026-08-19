@@ -30,7 +30,7 @@ The **Agent Session** choice needs one selected agent in the right roster. For a
 
 Each pane has its own tab strip and active surface. Every tab includes a compact type icon shared with the surface chooser, so different tools and agent sessions remain recognizable when titles are truncated. Top-edge strips form the window chrome; strips in downward splits remain local. The **+** sits immediately after the tabs, while **…** remains at the far edge.
 
-Tabs keep a readable standard width while there is room, then their labels
+Tabs share the available strip equally while there is room, then their labels
 compress and ellipsize as a pane fills. The close affordance reserves its space
 without changing a tab's width when it appears, so the label gives up text
 before the tab jumps. When the compact minimum is reached, select the overflow
