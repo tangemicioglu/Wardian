@@ -18,7 +18,8 @@ the tab geometry.
 
 ## Verification
 
-- The Workbench browser regression measures all crowded tab widths and requires
+- The Workbench browser regression uses varied short filenames plus one
+  pathologically long filename, measures all crowded tab widths, and requires
   them to remain equal within one CSS pixel.
 - The same regression verifies label ellipsis, stable close-button geometry, and
   opening a tab through the tab-list menu.
