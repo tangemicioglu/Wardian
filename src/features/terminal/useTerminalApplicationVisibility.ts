@@ -31,14 +31,15 @@ export function useTerminalApplicationVisibility() {
 
     const publish = () => {
       const visible = document.visibilityState !== "hidden";
+      const isInitialPublication = !hasPublishedInitialVisibility;
+      hasPublishedInitialVisibility = true;
       if (!visible) {
         cancelResumeFrame();
         void setTerminalApplicationVisibility(false);
         return;
       }
 
-      if (!hasPublishedInitialVisibility) {
-        hasPublishedInitialVisibility = true;
+      if (isInitialPublication) {
         void setTerminalApplicationVisibility(true);
         return;
       }
