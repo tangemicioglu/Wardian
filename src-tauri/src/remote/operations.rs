@@ -1,9 +1,10 @@
 use crate::remote::models::{
-    RemoteAgentActionRequest, RemoteAgentSummary, RemoteTerminalSnapshot, RemoteWatchlistResponse,
+    RemoteAgentActionRequest, RemoteAgentSummary, RemoteInboxActionRequest, RemoteTerminalSnapshot,
+    RemoteWatchlistResponse,
 };
 use crate::state::AppState;
 use std::collections::HashMap;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use wardian_core::control::{InboxNotificationKind, InteractionStatus, MessageInputMode};
 use wardian_core::models::chat::AgentChatEvent;
 
@@ -171,6 +172,222 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
         )
     });
     items
+}
+
+fn persisted_queue_items() -> Vec<serde_json::Value> {
+    crate::utils::fs::get_wardian_home()
+        .and_then(|home| std::fs::read_to_string(home.join("queue").join("items.json")).ok())
+        .and_then(|data| serde_json::from_str::<Vec<serde_json::Value>>(&data).ok())
+        .unwrap_or_default()
+}
+
+fn save_persisted_queue_items(items: &[serde_json::Value]) -> Result<(), String> {
+    let home = crate::utils::fs::get_wardian_home().ok_or_else(|| "no wardian home".to_string())?;
+    std::fs::create_dir_all(home.join("queue")).map_err(|error| error.to_string())?;
+    let data = serde_json::to_string_pretty(items).map_err(|error| error.to_string())?;
+    std::fs::write(home.join("queue").join("items.json"), data).map_err(|error| error.to_string())
+}
+
+fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
+    item.get("inbox_notification_id").is_none() && item.get("workflow_approval").is_none()
+}
+
+fn notification_read_acknowledgement(notification_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": format!("notification-read:{notification_id}"),
+        "type": "agent_update",
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+        "read": true,
+        "inbox_notification_id": notification_id,
+    })
+}
+
+fn current_queue_item<'a>(
+    items: &'a [serde_json::Value],
+    item_id: &str,
+) -> Result<&'a serde_json::Value, String> {
+    items
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(item_id))
+        .ok_or_else(|| "inbox_item_not_found".to_string())
+}
+
+/// Applies a mobile Inbox mutation to the same persisted projection used by
+/// the desktop Inbox. The caller must authenticate and rate-limit the request.
+pub async fn apply_remote_inbox_action(
+    state: &AppState,
+    app: &AppHandle,
+    request: RemoteInboxActionRequest,
+) -> Result<(), String> {
+    let projected_items = remote_queue_items(state).await;
+    match request.action.as_str() {
+        "mark_read" => {
+            let item_id = request
+                .item_id
+                .as_deref()
+                .ok_or_else(|| "item_id_required".to_string())?;
+            let item = current_queue_item(&projected_items, item_id)?;
+            if item.get("workflow_approval").is_some() {
+                return Err("pending_approval_cannot_be_marked_read".to_string());
+            }
+            let mut persisted = persisted_queue_items();
+            if let Some(notification_id) = item
+                .get("inbox_notification_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                if !persisted.iter().any(|candidate| {
+                    candidate
+                        .get("inbox_notification_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(notification_id)
+                        && candidate.get("read").and_then(serde_json::Value::as_bool) == Some(true)
+                }) {
+                    persisted.push(notification_read_acknowledgement(notification_id));
+                }
+            } else if let Some(candidate) = persisted.iter_mut().find(|candidate| {
+                candidate.get("id").and_then(serde_json::Value::as_str) == Some(item_id)
+            }) {
+                candidate["read"] = serde_json::Value::Bool(true);
+            } else {
+                return Err("inbox_item_not_persisted".to_string());
+            }
+            save_persisted_queue_items(&persisted)?;
+        }
+        "mark_all_read" => {
+            let mut persisted = persisted_queue_items();
+            for item in persisted
+                .iter_mut()
+                .filter(|item| is_legacy_queue_item(item))
+            {
+                item["read"] = serde_json::Value::Bool(true);
+            }
+            let known_acknowledgements = persisted
+                .iter()
+                .filter(|item| item.get("read").and_then(serde_json::Value::as_bool) == Some(true))
+                .filter_map(|item| {
+                    item.get("inbox_notification_id")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .map(str::to_string)
+                .collect::<std::collections::HashSet<_>>();
+            for item in projected_items.iter().filter(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("agent_update")
+            }) {
+                if let Some(notification_id) = item
+                    .get("inbox_notification_id")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if !known_acknowledgements.contains(notification_id) {
+                        persisted.push(notification_read_acknowledgement(notification_id));
+                    }
+                }
+            }
+            save_persisted_queue_items(&persisted)?;
+        }
+        "clear_read" => {
+            let persisted = persisted_queue_items();
+            let next = persisted
+                .into_iter()
+                .filter(|item| {
+                    !(is_legacy_queue_item(item)
+                        && item.get("read").and_then(serde_json::Value::as_bool) == Some(true))
+                })
+                .collect::<Vec<_>>();
+            save_persisted_queue_items(&next)?;
+        }
+        "dismiss" => {
+            let item_id = request
+                .item_id
+                .as_deref()
+                .ok_or_else(|| "item_id_required".to_string())?;
+            let item = current_queue_item(&projected_items, item_id)?;
+            if item.get("workflow_approval").is_some()
+                || item.get("inbox_notification_id").is_some()
+            {
+                return Err("inbox_item_not_dismissible".to_string());
+            }
+            let persisted = persisted_queue_items();
+            let next = persisted
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.get("id").and_then(serde_json::Value::as_str) != Some(item_id)
+                })
+                .collect::<Vec<_>>();
+            save_persisted_queue_items(&next)?;
+        }
+        "resolve_approval" => {
+            let item_id = request
+                .item_id
+                .as_deref()
+                .ok_or_else(|| "item_id_required".to_string())?;
+            let choice = request
+                .choice
+                .as_deref()
+                .ok_or_else(|| "choice_required".to_string())?;
+            let item = current_queue_item(&projected_items, item_id)?;
+            let choices = item
+                .get("approval_choices")
+                .and_then(serde_json::Value::as_array)
+                .map(|choices| {
+                    choices
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if !choices.contains(&choice) {
+                return Err("invalid_choice".to_string());
+            }
+            if let Some(notification_id) = item
+                .get("inbox_notification_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                state
+                    .interactions
+                    .resolve_notification(notification_id, choice)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            } else if let Some(workflow_approval) = item.get("workflow_approval") {
+                crate::commands::workflow::approve_workflow_for_surface(
+                    state,
+                    app.clone(),
+                    workflow_approval
+                        .get("blueprint_id")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "workflow_blueprint_id_missing".to_string())?
+                        .to_string(),
+                    workflow_approval
+                        .get("run_id")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "workflow_run_id_missing".to_string())?
+                        .to_string(),
+                    workflow_approval
+                        .get("blueprint_path")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "workflow_blueprint_path_missing".to_string())?
+                        .to_string(),
+                    workflow_approval
+                        .get("node")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "workflow_node_missing".to_string())?
+                        .to_string(),
+                    choice == "Approve",
+                    "user".to_string(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
+            } else {
+                return Err("inbox_item_not_approval".to_string());
+            }
+        }
+        _ => return Err("unsupported_inbox_action".to_string()),
+    }
+    let _ = app.emit("inbox-updated", ());
+    Ok(())
 }
 
 fn queue_timestamp(value: &str) -> i64 {

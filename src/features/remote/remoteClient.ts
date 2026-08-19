@@ -123,6 +123,12 @@ export const remoteClient = {
     const result = await remoteJson<{ items: QueueItem[] }>("/remote/api/queue");
     return result.items;
   },
+  async runInboxAction(action: string, itemId?: string, choice?: string) {
+    await remoteJson<{ ok: true }>("/remote/api/queue/action", {
+      method: "POST",
+      body: JSON.stringify({ action, item_id: itemId, choice }),
+    });
+  },
   async loadAgentChat(sessionId: string) {
     const result = await remoteJson<{ events: AgentChatEvent[] }>(
       `/remote/api/agents/${encodeURIComponent(sessionId)}/chat`,

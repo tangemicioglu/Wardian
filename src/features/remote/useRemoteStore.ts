@@ -72,6 +72,7 @@ interface RemoteState {
   sending: boolean;
   load: () => Promise<void>;
   refresh: () => Promise<void>;
+  runInboxAction: (action: string, itemId?: string, choice?: string) => Promise<void>;
   disconnectStatusStream: () => void;
   setActiveWatchlistId: (id: string) => void;
   setActiveRemoteTab: (tab: ActiveRemoteTab) => void;
@@ -85,6 +86,7 @@ interface RemoteState {
   refreshActiveAgentChat: (options?: { background?: boolean }) => Promise<void>;
   loadOlderActiveAgentChat: () => Promise<void>;
   sendPromptToActiveAgent: (prompt: string, inputMode?: RemoteAgentInputMode) => Promise<void>;
+  sendPromptToAgent: (sessionId: string, prompt: string) => Promise<void>;
   runAgentAction: (action: string, target: string) => Promise<void>;
   runWorkflow: (workflowId: string) => Promise<void>;
 }
@@ -704,6 +706,12 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
       set({ status: statusFromError(error) });
     }
   },
+  async runInboxAction(action, itemId, choice) {
+    await remoteClient.runInboxAction(action, itemId, choice);
+    const requestSerial = ++queueRefreshRequestSerial;
+    const remoteQueueItems = await remoteClient.loadQueueItems();
+    if (requestSerial === queueRefreshRequestSerial) set({ remoteQueueItems });
+  },
   disconnectStatusStream() {
     closeStatusStream();
   },
@@ -922,6 +930,9 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
     } finally {
       set({ sending: false });
     }
+  },
+  async sendPromptToAgent(sessionId, prompt) {
+    await remoteClient.sendPrompt(sessionId, prompt);
   },
   async runAgentAction(action, target) {
     try {

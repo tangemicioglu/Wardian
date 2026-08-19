@@ -2,8 +2,8 @@ use crate::remote::models::{
     AuthChallengeRequest, AuthChallengeResponse, AuthSessionRequest, AuthSessionResponse,
     DeviceRecord, PairingSubmitRequest, PairingSubmitResponse, PendingPairingDecision,
     PendingPairingRequestRecord, RemoteAgentActionRequest, RemoteAuditRecord, RemoteGatewayConfig,
-    RemoteSessionRecord, RemoteWebSocketTicketRequest, RemoteWebSocketTicketResponse,
-    REMOTE_AUDIT_SCHEMA_VERSION,
+    RemoteInboxActionRequest, RemoteSessionRecord, RemoteWebSocketTicketRequest,
+    RemoteWebSocketTicketResponse, REMOTE_AUDIT_SCHEMA_VERSION,
 };
 use axum::{
     body::Body,
@@ -20,7 +20,7 @@ use base64::Engine;
 use p256::ecdsa::VerifyingKey;
 use p256::pkcs8::DecodePublicKey;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const REMOTE_SESSION_COOKIE_NAME: &str = "__Host-wardian_remote_session";
 const REMOTE_CSRF_HEADER_NAME: &str = "x-wardian-csrf";
@@ -98,6 +98,7 @@ fn remote_router(app: AppHandle, config: RemoteGatewayConfig) -> Router {
         .route("/remote/api/auth/session", post(create_auth_session))
         .route("/remote/api/agents", get(list_remote_agents))
         .route("/remote/api/queue", get(load_remote_queue))
+        .route("/remote/api/queue/action", post(run_inbox_action))
         .route("/remote/api/watchlists", get(load_remote_watchlists))
         .route("/remote/api/workflows", get(list_remote_workflows))
         .route(
@@ -608,6 +609,39 @@ async fn load_remote_queue(
         GatewayAuditEvent::accepted("roster_read", "load_queue"),
     );
     Ok(Json(serde_json::json!({ "items": items })))
+}
+
+async fn run_inbox_action(
+    State(ctx): State<RemoteGatewayContext>,
+    headers: HeaderMap,
+    Json(request): Json<RemoteInboxActionRequest>,
+) -> Result<Json<serde_json::Value>, RemoteGatewayError> {
+    let origin = require_audited_request_boundary(&ctx.config, &headers, true, "inbox_action")?;
+    let action = request.action.clone();
+    let target = request.item_id.clone().unwrap_or_else(|| "all".to_string());
+    let session =
+        require_audited_remote_session(&ctx, &headers, &origin, "inbox_action", &action).await?;
+    require_mutation_rate_limit(&ctx, &session, &origin, "inbox_action", &action).await?;
+    require_csrf_header(&session, &headers)?;
+    let state = ctx.app.state::<crate::state::AppState>();
+    if let Err(_error) =
+        crate::remote::operations::apply_remote_inbox_action(&state, &ctx.app, request).await
+    {
+        audit_gateway_event(
+            &session,
+            &origin,
+            GatewayAuditEvent::rejected("inbox_action", &action, "inbox_action_failed")
+                .target("inbox", &target),
+        );
+        return Err(RemoteGatewayError::bad_request("inbox_action_failed"));
+    }
+    audit_gateway_event(
+        &session,
+        &origin,
+        GatewayAuditEvent::accepted("inbox_action", &action).target("inbox", &target),
+    );
+    let _ = ctx.app.emit("inbox-updated", ());
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn load_remote_watchlists(

@@ -42,6 +42,12 @@ Inbox preferences persist under the active Wardian home.
 - Use **Approve** or **Reject** on a workflow approval card to resolve its waiting gate from Inbox. Wardian records the decision before it continues an approved workflow in the background.
 - Use **Mark all read**, **Clear read**, or the item trash control for reviewed, non-pending items.
 
+The mobile Inbox includes the same triage actions: choose an event filter, tap
+an item to acknowledge it, mark all eligible items read, clear reviewed legacy
+items, or dismiss an individual legacy item. Agent action choices and pending
+approval choices remain available on their cards. Use **Open agent** to jump to
+the related mobile agent session without leaving Inbox.
+
 An unresolved approval cannot be cleared or dismissed. When it expires, the agent must not treat the absence of a response as approval.
 
 ## Agent Notifications

@@ -5,10 +5,18 @@ import { RemoteInboxView } from "./RemoteInboxView";
 import { useRemoteStore } from "./useRemoteStore";
 
 const originalOpenAgent = useRemoteStore.getState().openAgent;
+const originalRunInboxAction = useRemoteStore.getState().runInboxAction;
+const originalSendPromptToAgent = useRemoteStore.getState().sendPromptToAgent;
 
 afterEach(() => {
   cleanup();
-  useRemoteStore.setState({ remoteQueueItems: [], openAgent: originalOpenAgent });
+  window.localStorage.clear();
+  useRemoteStore.setState({
+    remoteQueueItems: [],
+    openAgent: originalOpenAgent,
+    runInboxAction: originalRunInboxAction,
+    sendPromptToAgent: originalSendPromptToAgent,
+  });
 });
 
 describe("RemoteInboxView", () => {
@@ -44,5 +52,106 @@ describe("RemoteInboxView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open agent terminal" }));
     expect(openAgent).toHaveBeenCalledWith("agent-1");
+  });
+
+  it("filters events and exposes durable triage controls", () => {
+    const runInboxAction = vi.fn().mockResolvedValue(undefined);
+    useRemoteStore.setState({
+      runInboxAction,
+      remoteQueueItems: [
+        {
+          id: "unread-action",
+          type: "action_needed",
+          timestamp: Date.now(),
+          read: false,
+          agent_name: "Coder",
+          summary: "Choose an action",
+        },
+        {
+          id: "read-update",
+          type: "agent_update",
+          timestamp: Date.now(),
+          read: true,
+          agent_name: "Reviewer",
+          summary: "Reviewed the change",
+        },
+      ],
+    });
+
+    render(<RemoteInboxView />);
+
+    expect(screen.getByText("Coder")).toBeVisible();
+    expect(screen.getByText("Reviewer")).toBeVisible();
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter Inbox events" }), {
+      target: { value: "action_needed" },
+    });
+    expect(screen.getByText("Coder")).toBeVisible();
+    expect(screen.queryByText("Reviewer")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Mark all Inbox items read" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear read Inbox items" }));
+    expect(runInboxAction).toHaveBeenCalledWith("mark_all_read");
+    expect(runInboxAction).toHaveBeenCalledWith("clear_read");
+  });
+
+  it("answers provider choices and resolves approval choices", async () => {
+    const runInboxAction = vi.fn().mockResolvedValue(undefined);
+    const sendPromptToAgent = vi.fn().mockResolvedValue(undefined);
+    useRemoteStore.setState({
+      runInboxAction,
+      sendPromptToAgent,
+      remoteQueueItems: [
+        {
+          id: "action-1",
+          type: "action_needed",
+          timestamp: Date.now(),
+          read: false,
+          agent_session_id: "agent-1",
+          agent_name: "Coder",
+          summary: "Proceed?\n1. Yes\n2. No",
+        },
+        {
+          id: "approval-1",
+          type: "approval_request",
+          timestamp: Date.now(),
+          read: false,
+          notification_title: "Deploy",
+          summary: "Approve deployment?",
+          notification_status: "awaiting_reply",
+          approval_choices: ["Approve", "Reject"],
+          inbox_notification_id: "notification-1",
+        },
+      ],
+    });
+
+    render(<RemoteInboxView />);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Send action response 1: Yes" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(sendPromptToAgent).toHaveBeenCalledWith("agent-1", "1");
+    expect(runInboxAction).toHaveBeenCalledWith("mark_read", "action-1");
+    expect(runInboxAction).toHaveBeenCalledWith("resolve_approval", "approval-1", "Approve");
+  });
+
+  it("marks a card read and dismisses legacy items", async () => {
+    const runInboxAction = vi.fn().mockResolvedValue(undefined);
+    useRemoteStore.setState({
+      runInboxAction,
+      remoteQueueItems: [{
+        id: "legacy-1",
+        type: "agent_completed",
+        timestamp: Date.now(),
+        read: false,
+        agent_name: "Coder",
+        summary: "Finished",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(screen.getByRole("button", { name: "Clear item" }));
+
+    expect(runInboxAction).toHaveBeenCalledWith("mark_read", "legacy-1");
+    expect(runInboxAction).toHaveBeenCalledWith("dismiss", "legacy-1", undefined);
   });
 });
