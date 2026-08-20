@@ -68,7 +68,7 @@ describe("InboxView", () => {
       }],
     });
 
-    render(<InboxView onOpenAgent={onOpenAgent} onSendAgentPrompt={onSendAgentPrompt} />);
+    const { unmount } = render(<InboxView onOpenAgent={onOpenAgent} onSendAgentPrompt={onSendAgentPrompt} />);
 
     expect(screen.getByText("Action required")).toBeInTheDocument();
     expect(screen.getByTestId("queue-item-summary-item-action")).toHaveTextContent("Do you want to proceed? 1. Yes 2. No");
@@ -85,6 +85,13 @@ describe("InboxView", () => {
       provider_choice_sent: "1",
       read: true,
     });
+
+    unmount();
+    render(<InboxView onSendAgentPrompt={onSendAgentPrompt} />);
+    const choiceAfterRemount = screen.getByRole("button", { name: "Send action response 1: Yes" });
+    expect(choiceAfterRemount).toBeDisabled();
+    fireEvent.click(choiceAfterRemount);
+    expect(onSendAgentPrompt).toHaveBeenCalledTimes(1);
   });
 
   it("does not acknowledge a desktop Inbox choice when delivery fails", async () => {
