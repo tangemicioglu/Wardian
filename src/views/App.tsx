@@ -233,6 +233,8 @@ type NativeWindowCssSize = {
 
 let syntheticNativeResizeDepth = 0;
 let lastNativeResizePayloadAtMs = 0;
+let nativeResizeDispatchFrame: number | null = null;
+let pendingNativeResizeNotification: NativeWindowCssSize | null = null;
 
 function toCssPixelValue(value: number | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
@@ -249,14 +251,11 @@ function hasTauriGlobal() {
   return Boolean(tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__);
 }
 
-function setNativeWindowCssSize(size: NativeWindowCssSize) {
-  const root = document.documentElement;
-  const currentWidth = root.style.getPropertyValue(NATIVE_WINDOW_WIDTH_VAR);
-  const currentHeight = root.style.getPropertyValue(NATIVE_WINDOW_HEIGHT_VAR);
-  if (currentWidth === size.width && currentHeight === size.height) return;
-
-  root.style.setProperty(NATIVE_WINDOW_WIDTH_VAR, size.width);
-  root.style.setProperty(NATIVE_WINDOW_HEIGHT_VAR, size.height);
+function dispatchPendingNativeResizeNotification() {
+  nativeResizeDispatchFrame = null;
+  const size = pendingNativeResizeNotification;
+  pendingNativeResizeNotification = null;
+  if (!size) return;
 
   syntheticNativeResizeDepth += 1;
   try {
@@ -269,13 +268,51 @@ function setNativeWindowCssSize(size: NativeWindowCssSize) {
   }));
 }
 
+function scheduleNativeResizeNotification(size: NativeWindowCssSize) {
+  pendingNativeResizeNotification = size;
+  if (nativeResizeDispatchFrame !== null) return;
+
+  if (typeof window.requestAnimationFrame === "function") {
+    nativeResizeDispatchFrame = window.requestAnimationFrame(dispatchPendingNativeResizeNotification);
+  } else {
+    nativeResizeDispatchFrame = window.setTimeout(dispatchPendingNativeResizeNotification, 0);
+  }
+}
+
+function cancelPendingNativeResizeNotification() {
+  if (nativeResizeDispatchFrame === null) return;
+  if (typeof window.cancelAnimationFrame === "function") {
+    window.cancelAnimationFrame(nativeResizeDispatchFrame);
+  } else {
+    window.clearTimeout(nativeResizeDispatchFrame);
+  }
+  nativeResizeDispatchFrame = null;
+  pendingNativeResizeNotification = null;
+}
+
+function setNativeWindowCssSize(size: NativeWindowCssSize) {
+  const root = document.documentElement;
+  const currentWidth = root.style.getPropertyValue(NATIVE_WINDOW_WIDTH_VAR);
+  const currentHeight = root.style.getPropertyValue(NATIVE_WINDOW_HEIGHT_VAR);
+  if (currentWidth === size.width && currentHeight === size.height) return;
+
+  root.style.setProperty(NATIVE_WINDOW_WIDTH_VAR, size.width);
+  root.style.setProperty(NATIVE_WINDOW_HEIGHT_VAR, size.height);
+  scheduleNativeResizeNotification(size);
+}
+
 function applyNativeWindowSizeFromPayload(payload: NativeWindowResizePayload | undefined) {
   const width = toCssPixelValue(payload?.width);
   const height = toCssPixelValue(payload?.height);
+  if (width && height) {
+    // A valid native payload, including a transient minimized size, is
+    // authoritative. Do not let the outer-window fallback publish a second
+    // geometry while the native resize stream is settling.
+    lastNativeResizePayloadAtMs = Date.now();
+  }
   if (!width || !height) return false;
   if (width < MIN_NATIVE_WINDOW_WIDTH_PX || height < MIN_NATIVE_WINDOW_HEIGHT_PX) return false;
 
-  lastNativeResizePayloadAtMs = Date.now();
   setNativeWindowCssSize({ width: toCssPixelLength(width), height: toCssPixelLength(height) });
   return true;
 }
@@ -429,6 +466,7 @@ function AppBody() {
       if (outerPollId !== undefined) {
         window.clearInterval(outerPollId);
       }
+      cancelPendingNativeResizeNotification();
       lastNativeResizePayloadAtMs = 0;
       document.documentElement.style.removeProperty(NATIVE_WINDOW_WIDTH_VAR);
       document.documentElement.style.removeProperty(NATIVE_WINDOW_HEIGHT_VAR);

@@ -16,8 +16,46 @@ import { setTerminalApplicationVisibility } from "./terminalSessionClient";
  */
 export function useTerminalApplicationVisibility() {
   useEffect(() => {
+    let resumeFrame: number | null = null;
+    let hasPublishedInitialVisibility = false;
+
+    const cancelResumeFrame = () => {
+      if (resumeFrame === null) return;
+      if (typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(resumeFrame);
+      } else {
+        window.clearTimeout(resumeFrame);
+      }
+      resumeFrame = null;
+    };
+
     const publish = () => {
-      void setTerminalApplicationVisibility(document.visibilityState !== "hidden");
+      const visible = document.visibilityState !== "hidden";
+      const isInitialPublication = !hasPublishedInitialVisibility;
+      hasPublishedInitialVisibility = true;
+      if (!visible) {
+        cancelResumeFrame();
+        void setTerminalApplicationVisibility(false);
+        return;
+      }
+
+      if (isInitialPublication) {
+        void setTerminalApplicationVisibility(true);
+        return;
+      }
+
+      cancelResumeFrame();
+      const publishVisible = () => {
+        resumeFrame = null;
+        if (document.visibilityState === "visible") {
+          void setTerminalApplicationVisibility(true);
+        }
+      };
+      if (typeof window.requestAnimationFrame === "function") {
+        resumeFrame = window.requestAnimationFrame(publishVisible);
+      } else {
+        resumeFrame = window.setTimeout(publishVisible, 0);
+      }
     };
 
     document.addEventListener("visibilitychange", publish);
@@ -25,6 +63,7 @@ export function useTerminalApplicationVisibility() {
 
     return () => {
       document.removeEventListener("visibilitychange", publish);
+      cancelResumeFrame();
     };
   }, []);
 }

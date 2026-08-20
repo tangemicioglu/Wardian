@@ -1544,6 +1544,36 @@ describe("Native window layout bridge", () => {
     window.removeEventListener("wardian-native-window-resized", wardianResizeEventSpy);
   });
 
+  it("coalesces native resize notifications that arrive in one layout turn", async () => {
+    setupDefaultMocks(sampleAgents, defaultClasses);
+    (window as { __TAURI__?: unknown }).__TAURI__ = {};
+    const resizeListeners: Array<(event: { payload: { width: number; height: number } }) => void> = [];
+    const wardianResizeEventSpy = vi.fn();
+    window.addEventListener("wardian-native-window-resized", wardianResizeEventSpy);
+
+    mockGetCurrentWindow.mockReturnValue({
+      onResized: vi.fn((listener) => {
+        resizeListeners.push(listener as (event: { payload: { width: number; height: number } }) => void);
+        return Promise.resolve(vi.fn());
+      }),
+    } as unknown as ReturnType<typeof getCurrentWindow>);
+
+    render(<App />);
+    await screen.findByTestId("app-shell");
+    await waitFor(() => expect(resizeListeners).toHaveLength(1));
+
+    act(() => {
+      resizeListeners[0]({ payload: { width: 980, height: 680 } });
+      resizeListeners[0]({ payload: { width: 1200, height: 760 } });
+    });
+
+    await waitFor(() => expect(wardianResizeEventSpy).toHaveBeenCalledTimes(1));
+    expect(document.documentElement.style.getPropertyValue("--wardian-native-window-width")).toBe("1200px");
+    expect(document.documentElement.style.getPropertyValue("--wardian-native-window-height")).toBe("760px");
+
+    window.removeEventListener("wardian-native-window-resized", wardianResizeEventSpy);
+  });
+
   it("uses Tauri outer dimensions when the WebView inner viewport stays stale", async () => {
     setupDefaultMocks(sampleAgents, defaultClasses);
     (window as { __TAURI__?: unknown }).__TAURI__ = {};
