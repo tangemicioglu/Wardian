@@ -105,7 +105,7 @@ pub async fn submit_live_surface_prompt(
     app: Option<&AppHandle>,
     state: &AppState,
     request: LiveSurfacePromptRequest,
-) -> Result<LiveSurfacePromptResult, LiveSurfaceDeliveryError> {
+) -> Result<LiveSurfacePromptResult, Box<LiveSurfaceDeliveryError>> {
     let delivery_lock = state.delivery_lock_for(&request.session_id).await;
     let _delivery_guard = delivery_lock.lock().await;
 
@@ -547,7 +547,7 @@ async fn record_terminal_delivery_error(
     name: &str,
     provider: &str,
     error: TerminalDeliveryError,
-) -> LiveSurfaceDeliveryError {
+) -> Box<LiveSurfaceDeliveryError> {
     record_failed_live_surface_attempt(
         state,
         request,
@@ -573,7 +573,7 @@ async fn record_failed_live_surface_attempt(
     interaction_id: &str,
     target: Option<LiveSurfaceTarget>,
     failure: FailedLiveSurfaceAttempt,
-) -> LiveSurfaceDeliveryError {
+) -> Box<LiveSurfaceDeliveryError> {
     let target = target.unwrap_or_else(|| LiveSurfaceTarget {
         name: request.session_id.clone(),
         provider: "unknown".to_string(),
@@ -634,11 +634,11 @@ async fn record_failed_live_surface_attempt(
         Ok(_) => failure.message,
         Err(persist_error) => format!("{}; {persist_error}", failure.message),
     };
-    LiveSurfaceDeliveryError {
+    Box::new(LiveSurfaceDeliveryError {
         message,
         detail: Some(detail),
         retry_safe: failure.retry_safe,
-    }
+    })
 }
 
 fn redacted_live_prompt_body_ref(prompt: &str) -> InteractionBodyRef {
