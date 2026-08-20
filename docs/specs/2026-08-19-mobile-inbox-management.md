@@ -42,10 +42,16 @@ the desktop app.
   lock, and replace `queue/items.json` atomically so concurrent triage cannot
   lose an acknowledgement or expose a partial file. Desktop full-snapshot
   saves merge against the last desktop load so a remote dismissal or read
-  acknowledgement cannot be overwritten by a stale snapshot.
+  acknowledgement cannot be overwritten by a stale snapshot. If no desktop
+  load baseline exists yet, the latest persisted projection is authoritative;
+  the untrusted snapshot must not resurrect an item dismissed remotely.
 - Header actions show in-flight state and mutation failures. A successful
   mutation followed by a failed refresh preserves the success and exposes a
   retryable Inbox refresh error instead of reporting the mutation as failed.
+- Provider choices treat delivery and Inbox acknowledgement as separate
+  operations. Once the provider accepts a choice, the choice controls remain
+  disabled; a failed acknowledgement reports that the response was sent and
+  offers a retry for Inbox status without sending the provider choice again.
 - Pending workflow and manual approvals remain unread and actionable until
   their approval choice is resolved; navigation does not implicitly mark them
   read.
@@ -53,9 +59,11 @@ the desktop app.
 ## Verification
 
 - Focused React tests cover filtering, read/clear controls, provider choices,
-  approval actions, and agent navigation.
+  approval actions, agent navigation, and provider-send acknowledgement
+  recovery without duplicate sends.
 - Rust tests cover the persistence rules for legacy items and notification read
   acknowledgements, including concurrent queue mutations, stale desktop
-  snapshot merging, pending-approval guards, and atomic writes.
+  snapshot merging, baseline-less remote dismissal preservation,
+  pending-approval guards, and atomic writes.
 - Remote PWA coverage exercises the mobile Inbox controls against mocked remote
   endpoints.

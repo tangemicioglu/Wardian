@@ -134,6 +134,39 @@ describe("RemoteInboxView", () => {
     expect(runInboxAction).toHaveBeenCalledWith("resolve_approval", "approval-1", "Approve");
   });
 
+  it("does not resend a provider choice when Inbox acknowledgement fails", async () => {
+    const runInboxAction = vi.fn()
+      .mockRejectedValueOnce(new Error("Remote request failed: 503"))
+      .mockResolvedValue(undefined);
+    const sendPromptToAgent = vi.fn().mockResolvedValue(undefined);
+    useRemoteStore.setState({
+      runInboxAction,
+      sendPromptToAgent,
+      remoteQueueItems: [{
+        id: "action-1",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "agent-1",
+        agent_name: "Coder",
+        summary: "Proceed?\n1. Yes",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+
+    const choice = screen.getByRole("button", { name: "Send action response 1: Yes" });
+    fireEvent.click(choice);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry Inbox status" })).toBeVisible());
+    expect(sendPromptToAgent).toHaveBeenCalledTimes(1);
+    expect(runInboxAction).toHaveBeenCalledWith("mark_read", "action-1");
+    expect(choice).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry Inbox status" }));
+    await waitFor(() => expect(runInboxAction).toHaveBeenCalledTimes(2));
+    expect(sendPromptToAgent).toHaveBeenCalledTimes(1);
+  });
+
   it("does not mark a pending manual approval read while navigating", () => {
     const runInboxAction = vi.fn().mockResolvedValue(undefined);
     const openAgent = vi.fn().mockResolvedValue(undefined);

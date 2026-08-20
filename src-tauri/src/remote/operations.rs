@@ -861,6 +861,29 @@ mod tests {
         assert_eq!(items[0]["read"], true);
     }
 
+    #[tokio::test]
+    async fn baseline_less_desktop_save_does_not_resurrect_remote_dismissal() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        let initial = vec![serde_json::json!({ "id": "dismissed", "read": false })];
+        crate::utils::queue::save_items(&initial).expect("initial queue");
+        let state = AppState::new();
+
+        {
+            let _queue_guard = state.queue_io_lock.lock().await;
+            crate::utils::queue::save_items(&[]).expect("remote dismissal");
+        }
+
+        let latest = crate::utils::queue::load_items();
+        let desktop_snapshot = initial;
+        let merged = crate::utils::queue::merge_desktop_snapshot(None, &desktop_snapshot, &latest);
+        crate::utils::queue::save_items(&merged).expect("desktop queue update");
+
+        assert!(crate::utils::queue::load_items().is_empty());
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+    }
+
     #[test]
     fn pending_approval_guard_covers_workflow_and_manual_approvals() {
         assert!(is_pending_approval(&serde_json::json!({

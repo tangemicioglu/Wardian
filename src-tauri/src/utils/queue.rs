@@ -28,7 +28,10 @@ pub fn merge_desktop_snapshot(
     latest: &[Value],
 ) -> Vec<Value> {
     let Some(base) = base else {
-        return merge_latest_and_incoming(incoming, latest);
+        // Without the load snapshot we cannot distinguish a new desktop item
+        // from an item that was removed remotely. Keep the latest persisted
+        // projection authoritative until the desktop establishes a baseline.
+        return latest.to_vec();
     };
     let base_ids = base.iter().filter_map(item_id).collect::<HashSet<_>>();
     let incoming_by_id = incoming
@@ -63,35 +66,6 @@ pub fn merge_desktop_snapshot(
             merged.push(incoming_item.clone());
         }
     }
-    merged
-}
-
-fn merge_latest_and_incoming(incoming: &[Value], latest: &[Value]) -> Vec<Value> {
-    let incoming_by_id = incoming
-        .iter()
-        .filter_map(|item| item_id(item).map(|id| (id, item)))
-        .collect::<std::collections::HashMap<_, _>>();
-    let latest_ids = latest.iter().filter_map(item_id).collect::<HashSet<_>>();
-    let mut merged = latest
-        .iter()
-        .map(|latest_item| {
-            let Some(id) = item_id(latest_item) else {
-                return latest_item.clone();
-            };
-            let Some(incoming_item) = incoming_by_id.get(id) else {
-                return latest_item.clone();
-            };
-            let mut item = (*incoming_item).clone();
-            if latest_item.get("read").and_then(Value::as_bool) == Some(true) {
-                item["read"] = Value::Bool(true);
-            }
-            item
-        })
-        .collect::<Vec<_>>();
-    merged.extend(incoming.iter().filter_map(|item| {
-        let id = item_id(item)?;
-        (!latest_ids.contains(id)).then(|| item.clone())
-    }));
     merged
 }
 
