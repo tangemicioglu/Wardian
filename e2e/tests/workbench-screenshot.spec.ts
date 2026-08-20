@@ -255,8 +255,9 @@ test("renders copied feedback in an agent chat", async ({ page }, testInfo) => {
 
   await page.goto("/");
   const card = page.getByTestId("agent-card");
+  const messageRow = card.locator('[aria-label="assistant message"]');
   const copyButton = card.getByRole("button", { name: "Copy message" });
-  await card.hover();
+  await messageRow.hover();
   await expect(copyButton).toBeVisible();
   await copyButton.click();
   await expect(card.getByRole("button", { name: "Copy message copied" })).toBeVisible();

@@ -1375,6 +1375,16 @@ select option {
   }
 }
 
+/* Hover-revealed chat actions must not let their transparent wrapper block the row. */
+.chat-row-actions--overlay {
+  pointer-events: none;
+}
+
+.chat-row-actions--overlay .chat-row-actions-menu-trigger,
+.chat-row-actions--overlay .chat-row-actions-menu {
+  pointer-events: auto;
+}
+
 /* Workflow chrome uses the pane as its responsive boundary. */
 .workflows-body {
   position: relative;
