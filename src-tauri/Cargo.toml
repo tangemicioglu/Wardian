@@ -90,5 +90,6 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWi
 
 [dev-dependencies]
 anyhow = "1"
+tauri = { version = "=2.11.2", features = ["test"] }
 
 # Optimize Disk Space for Debug Builds

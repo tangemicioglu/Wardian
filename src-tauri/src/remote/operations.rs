@@ -835,6 +835,32 @@ mod tests {
         assert_eq!(items[1]["read"], true);
     }
 
+    #[tokio::test]
+    async fn desktop_save_without_load_baseline_preserves_remote_triage() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        let initial = vec![serde_json::json!({ "id": "first", "read": false })];
+        crate::utils::queue::save_items(&initial).expect("initial queue");
+        let state = AppState::new();
+
+        {
+            let _queue_guard = state.queue_io_lock.lock().await;
+            let mut remote_items = crate::utils::queue::load_items();
+            remote_items[0]["read"] = serde_json::Value::Bool(true);
+            crate::utils::queue::save_items(&remote_items).expect("remote queue update");
+        }
+
+        let latest = crate::utils::queue::load_items();
+        let desktop_snapshot = vec![serde_json::json!({ "id": "first", "read": false })];
+        let merged = crate::utils::queue::merge_desktop_snapshot(None, &desktop_snapshot, &latest);
+        crate::utils::queue::save_items(&merged).expect("desktop queue update");
+
+        let items = crate::utils::queue::load_items();
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+        assert_eq!(items[0]["read"], true);
+    }
+
     #[test]
     fn pending_approval_guard_covers_workflow_and_manual_approvals() {
         assert!(is_pending_approval(&serde_json::json!({
