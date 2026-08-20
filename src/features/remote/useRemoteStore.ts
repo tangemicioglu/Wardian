@@ -47,6 +47,7 @@ interface RemoteState {
   agents: RemoteAgentSummary[];
   workflows: RemoteWorkflowSummary[];
   remoteQueueItems: QueueItem[];
+  remoteQueueError: string;
   watchlists: Watchlist[];
   teams: AgentTeam[];
   watchlistPrefs: WatchlistPrefs;
@@ -72,6 +73,7 @@ interface RemoteState {
   sending: boolean;
   load: () => Promise<void>;
   refresh: () => Promise<void>;
+  refreshInbox: () => Promise<void>;
   runInboxAction: (action: string, itemId?: string, choice?: string) => Promise<void>;
   disconnectStatusStream: () => void;
   setActiveWatchlistId: (id: string) => void;
@@ -98,6 +100,8 @@ type RemoteGet = () => RemoteState;
 
 const statusFromError = (error: unknown): RemoteStatus =>
   error instanceof RemoteRequestError && error.status === 401 ? "session_expired" : "unreachable";
+
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 const REMOTE_ACTIVE_WATCHLIST_STORAGE_KEY = "wardian.remote.activeWatchlistId";
 const REMOTE_AGENT_DEFAULT_VIEW_STORAGE_KEY = "wardian.remote.agentDefaultViewMode";
@@ -270,6 +274,20 @@ let chatRefreshRequestSerial = 0;
 let queueRefreshRequestSerial = 0;
 let suppressNextStatusStreamReconnect = false;
 
+const refreshRemoteQueue = async (set: RemoteSet) => {
+  const requestSerial = ++queueRefreshRequestSerial;
+  try {
+    const remoteQueueItems = await remoteClient.loadQueueItems();
+    if (requestSerial === queueRefreshRequestSerial) {
+      set({ remoteQueueItems, remoteQueueError: "" });
+    }
+  } catch (error) {
+    if (requestSerial === queueRefreshRequestSerial) {
+      set({ remoteQueueError: errorMessage(error) });
+    }
+  }
+};
+
 const clearBackgroundChatRefresh = () => {
   if (backgroundChatRefreshTimer !== null) {
     window.clearTimeout(backgroundChatRefreshTimer);
@@ -388,13 +406,7 @@ const ensureStatusStream = async (set: RemoteSet, get: RemoteGet) => {
               chatError: "",
             }),
       }));
-      const requestSerial = ++queueRefreshRequestSerial;
-      void remoteClient.loadQueueItems().then(
-        (remoteQueueItems) => {
-          if (requestSerial === queueRefreshRequestSerial) set({ remoteQueueItems });
-        },
-        () => undefined,
-      );
+      void refreshRemoteQueue(set);
       if (activeAgent) {
         const nextRefreshKey = activeAgentRefreshKey(activeAgent);
         const refreshKeyChanged = nextRefreshKey !== lastActiveAgentRefreshKey;
@@ -618,6 +630,7 @@ const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
       agents,
       workflows,
       ...(queueRequestSerial === queueRefreshRequestSerial ? { remoteQueueItems } : {}),
+      remoteQueueError: "",
       activeAgentViewModesById: pruneActiveAgentViewModes(state.activeAgentViewModesById, liveAgentIds),
       watchlists: watchlistState.watchlists,
       teams: watchlistState.teams,
@@ -650,6 +663,7 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
   agents: [],
   workflows: [],
   remoteQueueItems: [],
+  remoteQueueError: "",
   watchlists: [],
   teams: [],
   watchlistPrefs: DEFAULT_WATCHLIST_PREFS,
@@ -706,11 +720,12 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
       set({ status: statusFromError(error) });
     }
   },
+  async refreshInbox() {
+    await refreshRemoteQueue(set);
+  },
   async runInboxAction(action, itemId, choice) {
     await remoteClient.runInboxAction(action, itemId, choice);
-    const requestSerial = ++queueRefreshRequestSerial;
-    const remoteQueueItems = await remoteClient.loadQueueItems();
-    if (requestSerial === queueRefreshRequestSerial) set({ remoteQueueItems });
+    await refreshRemoteQueue(set);
   },
   disconnectStatusStream() {
     closeStatusStream();

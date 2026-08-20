@@ -157,14 +157,30 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
 
 export const RemoteInboxView: React.FC = () => {
   const items = useRemoteStore((state) => state.remoteQueueItems);
+  const remoteQueueError = useRemoteStore((state) => state.remoteQueueError);
   const openAgent = useRemoteStore((state) => state.openAgent);
+  const refreshInbox = useRemoteStore((state) => state.refreshInbox);
   const runInboxAction = useRemoteStore((state) => state.runInboxAction);
   const sendPromptToAgent = useRemoteStore((state) => state.sendPromptToAgent);
   const [filter, setFilter] = useState<RemoteInboxFilter>(storedFilter);
+  const [headerAction, setHeaderAction] = useState<"mark_all_read" | "clear_read" | null>(null);
+  const [headerActionError, setHeaderActionError] = useState<string | null>(null);
   const visibleItems = useMemo(() => items.filter((item) => matchesFilter(item, filter)), [filter, items]);
   const unreadCount = items.filter((item) => !item.read).length;
   const readCount = items.filter((item) => item.read).length;
   const filterLabel = filterOptions.find((option) => option.value === filter)?.label ?? "All events";
+
+  const runHeaderAction = async (action: "mark_all_read" | "clear_read") => {
+    setHeaderAction(action);
+    setHeaderActionError(null);
+    try {
+      await runInboxAction(action);
+    } catch (error) {
+      setHeaderActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setHeaderAction(null);
+    }
+  };
 
   const updateFilter = (value: RemoteInboxFilter) => {
     setFilter(value);
@@ -188,9 +204,10 @@ export const RemoteInboxView: React.FC = () => {
             </select>
             <X className="pointer-events-none absolute right-2 h-3 w-3 text-muted-neutral" aria-hidden="true" />
           </div>
-          <button type="button" aria-label="Mark all Inbox items read" disabled={unreadCount === 0} onClick={() => void runInboxAction("mark_all_read")} className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40"><CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />Mark all read</button>
-          <button type="button" aria-label="Clear read Inbox items" disabled={readCount === 0} onClick={() => void runInboxAction("clear_read")} className="h-8 rounded-md px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40">Clear read</button>
+          <button type="button" aria-label="Mark all Inbox items read" disabled={headerAction !== null || unreadCount === 0} onClick={() => void runHeaderAction("mark_all_read")} className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40"><CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />{headerAction === "mark_all_read" ? "Marking…" : "Mark all read"}</button>
+          <button type="button" aria-label="Clear read Inbox items" disabled={headerAction !== null || readCount === 0} onClick={() => void runHeaderAction("clear_read")} className="h-8 rounded-md px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40">{headerAction === "clear_read" ? "Clearing…" : "Clear read"}</button>
         </div>
+        {(headerActionError || remoteQueueError) && <div role="alert" className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-wardian-error)]"><span>{headerActionError ?? `Inbox updated, but refresh failed: ${remoteQueueError}`}</span>{remoteQueueError && !headerActionError && <button type="button" onClick={() => void refreshInbox()} className="font-semibold underline">Retry refresh</button>}</div>}
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
         {visibleItems.length === 0 ? (

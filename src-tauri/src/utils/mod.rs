@@ -9,6 +9,7 @@ pub mod onboarding;
 pub mod process;
 pub mod pty_buffer;
 pub mod pty_decode;
+pub mod queue;
 pub mod shell;
 pub mod terminal_input;
 

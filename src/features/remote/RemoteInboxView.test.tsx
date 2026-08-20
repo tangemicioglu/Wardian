@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { QueueItem } from "../../types";
 import { RemoteInboxView } from "./RemoteInboxView";
@@ -54,7 +54,7 @@ describe("RemoteInboxView", () => {
     expect(openAgent).toHaveBeenCalledWith("agent-1");
   });
 
-  it("filters events and exposes durable triage controls", () => {
+  it("filters events and exposes durable triage controls", async () => {
     const runInboxAction = vi.fn().mockResolvedValue(undefined);
     useRemoteStore.setState({
       runInboxAction,
@@ -89,9 +89,10 @@ describe("RemoteInboxView", () => {
     expect(screen.queryByText("Reviewer")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Mark all Inbox items read" }));
+    await waitFor(() => expect(runInboxAction).toHaveBeenCalledWith("mark_all_read"));
     fireEvent.click(screen.getByRole("button", { name: "Clear read Inbox items" }));
+    await waitFor(() => expect(runInboxAction).toHaveBeenCalledWith("clear_read"));
     expect(runInboxAction).toHaveBeenCalledWith("mark_all_read");
-    expect(runInboxAction).toHaveBeenCalledWith("clear_read");
   });
 
   it("answers provider choices and resolves approval choices", async () => {
@@ -131,6 +132,32 @@ describe("RemoteInboxView", () => {
     expect(sendPromptToAgent).toHaveBeenCalledWith("agent-1", "1");
     expect(runInboxAction).toHaveBeenCalledWith("mark_read", "action-1");
     expect(runInboxAction).toHaveBeenCalledWith("resolve_approval", "approval-1", "Approve");
+  });
+
+  it("shows header action failures and disables both actions while pending", async () => {
+    const runInboxAction = vi.fn().mockRejectedValue(new Error("Remote request failed: 503"));
+    useRemoteStore.setState({
+      runInboxAction,
+      remoteQueueItems: [{
+        id: "unread-1",
+        type: "agent_update",
+        timestamp: Date.now(),
+        read: false,
+        agent_name: "Coder",
+        summary: "Needs attention",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+
+    const markAll = screen.getByRole("button", { name: "Mark all Inbox items read" });
+    const clearRead = screen.getByRole("button", { name: "Clear read Inbox items" });
+    fireEvent.click(markAll);
+
+    expect(markAll).toBeDisabled();
+    expect(clearRead).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Remote request failed: 503"));
+    expect(markAll).not.toBeDisabled();
   });
 
   it("marks a card read and dismisses legacy items", async () => {

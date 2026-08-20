@@ -38,12 +38,18 @@ the desktop app.
 - After a successful action, refresh the projection. This avoids stale mobile
   state when the desktop is open at the same time and keeps workflow/notification
   lifecycle changes authoritative on the backend.
+- Serialize desktop and remote queue mutations behind one async-aware app
+  lock, and replace `queue/items.json` atomically so concurrent triage cannot
+  lose an acknowledgement or expose a partial file.
+- Header actions show in-flight state and mutation failures. A successful
+  mutation followed by a failed refresh preserves the success and exposes a
+  retryable Inbox refresh error instead of reporting the mutation as failed.
 
 ## Verification
 
 - Focused React tests cover filtering, read/clear controls, provider choices,
   approval actions, and agent navigation.
 - Rust tests cover the persistence rules for legacy items and notification read
-  acknowledgements.
+  acknowledgements, including concurrent queue mutations and atomic writes.
 - Remote PWA coverage exercises the mobile Inbox controls against mocked remote
   endpoints.

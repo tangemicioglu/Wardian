@@ -175,17 +175,11 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
 }
 
 fn persisted_queue_items() -> Vec<serde_json::Value> {
-    crate::utils::fs::get_wardian_home()
-        .and_then(|home| std::fs::read_to_string(home.join("queue").join("items.json")).ok())
-        .and_then(|data| serde_json::from_str::<Vec<serde_json::Value>>(&data).ok())
-        .unwrap_or_default()
+    crate::utils::queue::load_items()
 }
 
 fn save_persisted_queue_items(items: &[serde_json::Value]) -> Result<(), String> {
-    let home = crate::utils::fs::get_wardian_home().ok_or_else(|| "no wardian home".to_string())?;
-    std::fs::create_dir_all(home.join("queue")).map_err(|error| error.to_string())?;
-    let data = serde_json::to_string_pretty(items).map_err(|error| error.to_string())?;
-    std::fs::write(home.join("queue").join("items.json"), data).map_err(|error| error.to_string())
+    crate::utils::queue::save_items(items)
 }
 
 fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
@@ -219,6 +213,7 @@ pub async fn apply_remote_inbox_action(
     app: &AppHandle,
     request: RemoteInboxActionRequest,
 ) -> Result<(), String> {
+    let _queue_guard = state.queue_io_lock.lock().await;
     let projected_items = remote_queue_items(state).await;
     match request.action.as_str() {
         "mark_read" => {
@@ -745,6 +740,48 @@ mod tests {
         unsafe { std::env::remove_var("WARDIAN_HOME") };
 
         assert_eq!(items[0]["id"], "desktop-inbox-1");
+    }
+
+    #[tokio::test]
+    async fn concurrent_queue_mutations_preserve_both_updates_and_valid_json() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        crate::utils::queue::save_items(&[
+            serde_json::json!({ "id": "first", "read": false }),
+            serde_json::json!({ "id": "second", "read": false }),
+        ])
+        .expect("initial queue");
+
+        let state = Arc::new(AppState::new());
+        let start = Arc::new(tokio::sync::Barrier::new(2));
+        let first_state = Arc::clone(&state);
+        let first_start = Arc::clone(&start);
+        let first = tokio::spawn(async move {
+            first_start.wait().await;
+            let _queue_guard = first_state.queue_io_lock.lock().await;
+            let mut items = persisted_queue_items();
+            tokio::task::yield_now().await;
+            items[0]["read"] = serde_json::Value::Bool(true);
+            save_persisted_queue_items(&items).expect("first queue update");
+        });
+        let second_state = Arc::clone(&state);
+        let second_start = Arc::clone(&start);
+        let second = tokio::spawn(async move {
+            second_start.wait().await;
+            let _queue_guard = second_state.queue_io_lock.lock().await;
+            let mut items = persisted_queue_items();
+            tokio::task::yield_now().await;
+            items[1]["read"] = serde_json::Value::Bool(true);
+            save_persisted_queue_items(&items).expect("second queue update");
+        });
+        first.await.expect("first task");
+        second.await.expect("second task");
+
+        let items = persisted_queue_items();
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+        assert_eq!(items[0]["read"], true);
+        assert_eq!(items[1]["read"], true);
     }
 
     #[tokio::test]
