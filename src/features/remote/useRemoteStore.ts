@@ -73,7 +73,7 @@ interface RemoteState {
   sending: boolean;
   load: () => Promise<void>;
   refresh: () => Promise<void>;
-  refreshInbox: () => Promise<void>;
+  refreshInbox: () => Promise<boolean>;
   runInboxAction: (action: string, itemId?: string, choice?: string) => Promise<void>;
   disconnectStatusStream: () => void;
   setActiveWatchlistId: (id: string) => void;
@@ -274,17 +274,20 @@ let chatRefreshRequestSerial = 0;
 let queueRefreshRequestSerial = 0;
 let suppressNextStatusStreamReconnect = false;
 
-const refreshRemoteQueue = async (set: RemoteSet) => {
+const refreshRemoteQueue = async (set: RemoteSet): Promise<boolean> => {
   const requestSerial = ++queueRefreshRequestSerial;
   try {
     const remoteQueueItems = await remoteClient.loadQueueItems();
     if (requestSerial === queueRefreshRequestSerial) {
       set({ remoteQueueItems, remoteQueueError: "" });
+      return true;
     }
+    return false;
   } catch (error) {
     if (requestSerial === queueRefreshRequestSerial) {
       set({ remoteQueueError: errorMessage(error) });
     }
+    return false;
   }
 };
 
@@ -721,7 +724,7 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
     }
   },
   async refreshInbox() {
-    await refreshRemoteQueue(set);
+    return refreshRemoteQueue(set);
   },
   async runInboxAction(action, itemId, choice) {
     await remoteClient.runInboxAction(action, itemId, choice);

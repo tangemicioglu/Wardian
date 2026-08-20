@@ -59,8 +59,9 @@ the desktop app.
   remains disabled and explicitly reports uncertain delivery instead of
   silently retrying a consequential choice.
 - Clear-read operates only on the legacy completion projection. Durable
-  notification acknowledgements remain visible as canonical history, so the
-  mobile control is disabled when no legacy read items are clearable.
+  notification acknowledgements and read **Action needed** prompts remain
+  visible as canonical history, so the mobile control is disabled when no
+  legacy completion items are clearable.
 - A provider-choice item with pending or unresolved delivery cannot be
   dismissed; its recovery marker must survive until delivery is confirmed and
   the Inbox acknowledgement is complete.

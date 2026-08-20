@@ -5,15 +5,12 @@ import { extractQueueContent, extractTerminalQueueContent } from "../utils/statu
 import { WorkflowTelemetryEvent } from "../types/workflow";
 import { DEFAULT_QUEUE_PREFERENCES, normalizeQueuePreferences, normalizeQueueSoundVolume } from "../features/queue/queueFilters";
 import { dispatchQueueNotification } from "../features/queue/queueNotifications";
+import { isClearableLegacyCompletion, providerChoiceAcknowledgementUnresolved } from "../features/queue/queueTriage";
 
 export const QUEUE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days - future settings hook-in point
 const SUMMARY_MAX_CHARS = 500;
 const DEDUP_WINDOW_MS = 1_000;
 let persistQueue: Promise<void> = Promise.resolve();
-
-function providerChoiceAcknowledgementUnresolved(item: QueueItem) {
-  return Boolean(item.provider_choice_pending || (item.provider_choice_sent && !item.read));
-}
 
 function readProtected(item: QueueItem) {
   return Boolean(
@@ -492,7 +489,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
 
   clearRead() {
     set((s) => {
-      const next = s.items.filter((i) => !(i.read && !providerChoiceAcknowledgementUnresolved(i)));
+      const next = s.items.filter((i) => !(i.read && isClearableLegacyCompletion(i)));
       persistItems(next, s._readNotificationIds);
       return { items: next };
     });

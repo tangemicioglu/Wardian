@@ -7,6 +7,7 @@ import { useRemoteStore } from "./useRemoteStore";
 const originalOpenAgent = useRemoteStore.getState().openAgent;
 const originalRunInboxAction = useRemoteStore.getState().runInboxAction;
 const originalSendPromptToAgent = useRemoteStore.getState().sendPromptToAgent;
+const originalRefreshInbox = useRemoteStore.getState().refreshInbox;
 
 afterEach(() => {
   cleanup();
@@ -16,6 +17,7 @@ afterEach(() => {
     openAgent: originalOpenAgent,
     runInboxAction: originalRunInboxAction,
     sendPromptToAgent: originalSendPromptToAgent,
+    refreshInbox: originalRefreshInbox,
   });
 });
 
@@ -69,7 +71,7 @@ describe("RemoteInboxView", () => {
         },
         {
           id: "read-update",
-          type: "agent_update",
+          type: "agent_completed",
           timestamp: Date.now(),
           read: true,
           agent_name: "Reviewer",
@@ -168,6 +170,33 @@ describe("RemoteInboxView", () => {
     expect(sendPromptToAgent).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the provider choice disabled when uncertain delivery cannot be refreshed", async () => {
+    const sendPromptToAgent = vi.fn().mockRejectedValue(new Error("Remote request failed: timeout"));
+    const refreshInbox = vi.fn().mockResolvedValue(false);
+    useRemoteStore.setState({
+      refreshInbox,
+      sendPromptToAgent,
+      remoteQueueItems: [{
+        id: "action-1",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "agent-1",
+        agent_name: "Coder",
+        summary: "Proceed?\n1. Yes",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+
+    const choice = screen.getByRole("button", { name: "Send action response 1: Yes" });
+    fireEvent.click(choice);
+    await waitFor(() => expect(refreshInbox).toHaveBeenCalledTimes(1));
+
+    expect(choice).toBeDisabled();
+    expect(screen.getByText("Response delivery is uncertain. Check the agent before retrying.")).toBeVisible();
+  });
+
   it("keeps a server-recorded provider choice disabled after remount", () => {
     const sendPromptToAgent = vi.fn().mockResolvedValue(undefined);
     useRemoteStore.setState({
@@ -227,6 +256,23 @@ describe("RemoteInboxView", () => {
         inbox_notification_id: "1",
         agent_name: "Coder",
         summary: "Finished",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+
+    expect(screen.getByRole("button", { name: "Clear read Inbox items" })).toBeDisabled();
+  });
+
+  it("keeps read action-needed prompts out of Clear read", () => {
+    useRemoteStore.setState({
+      remoteQueueItems: [{
+        id: "read-action",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: true,
+        agent_name: "Coder",
+        summary: "Choose an action",
       }],
     });
 

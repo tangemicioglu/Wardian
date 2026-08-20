@@ -68,8 +68,8 @@ the latest persisted projection authoritative. This prevents a stale desktop
 snapshot from resurrecting an item dismissed from another surface.
 
 **Clear read** removes only read legacy completion items. Durable notification
-history remains visible, and the control is disabled when there are no legacy
-items to clear.
+history and read **Action needed** prompts remain visible, and the control is
+disabled when there are no completion items to clear.
 
 ## Agent Notifications
 

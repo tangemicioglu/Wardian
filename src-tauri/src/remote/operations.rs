@@ -186,6 +186,14 @@ fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
     item.get("inbox_notification_id").is_none() && item.get("workflow_approval").is_none()
 }
 
+fn is_clearable_legacy_completion(item: &serde_json::Value) -> bool {
+    is_legacy_queue_item(item)
+        && matches!(
+            item.get("type").and_then(serde_json::Value::as_str),
+            Some("agent_completed" | "workflow_completed")
+        )
+}
+
 fn is_pending_approval(item: &serde_json::Value) -> bool {
     item.get("workflow_approval").is_some()
         || (item.get("type").and_then(serde_json::Value::as_str) == Some("approval_request")
@@ -301,8 +309,7 @@ pub async fn apply_remote_inbox_action(
             let next = persisted
                 .into_iter()
                 .filter(|item| {
-                    !(is_legacy_queue_item(item)
-                        && !provider_choice_acknowledgement_unresolved(item)
+                    !(is_clearable_legacy_completion(item)
                         && item.get("read").and_then(serde_json::Value::as_bool) == Some(true))
                 })
                 .collect::<Vec<_>>();
@@ -1015,6 +1022,26 @@ mod tests {
         assert!(!is_pending_approval(&serde_json::json!({
             "type": "approval_request",
             "notification_status": "completed"
+        })));
+    }
+
+    #[test]
+    fn clear_read_only_targets_legacy_completion_items() {
+        assert!(is_clearable_legacy_completion(&serde_json::json!({
+            "type": "agent_completed"
+        })));
+        assert!(is_clearable_legacy_completion(&serde_json::json!({
+            "type": "workflow_completed"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "action_needed"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "agent_update"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "agent_completed",
+            "inbox_notification_id": "notice-1"
         })));
     }
 

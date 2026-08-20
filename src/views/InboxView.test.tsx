@@ -102,6 +102,54 @@ describe("InboxView", () => {
     expect(screen.queryByRole("button", { name: /send action response/i })).not.toBeInTheDocument();
   });
 
+  it("does not replay a provider choice while delivery recovery is unresolved", () => {
+    const onSendAgentPrompt = vi.fn(async () => undefined);
+    useQueueStore.setState({
+      items: [{
+        id: "item-action-pending",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "sess-1",
+        agent_name: "My Coder",
+        summary: "Proceed?\n1. Yes",
+        provider_choice_pending: "1",
+      }],
+    });
+
+    render(<InboxView onSendAgentPrompt={onSendAgentPrompt} />);
+
+    const choice = screen.getByRole("button", { name: "Send action response 1: Yes" });
+    expect(choice).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Response delivery is uncertain");
+    expect(screen.queryByRole("button", { name: /clear item/i })).not.toBeInTheDocument();
+    fireEvent.click(choice);
+    expect(onSendAgentPrompt).not.toHaveBeenCalled();
+  });
+
+  it("does not replay a provider choice already acknowledged by the shared Inbox", () => {
+    const onSendAgentPrompt = vi.fn(async () => undefined);
+    useQueueStore.setState({
+      items: [{
+        id: "item-action-sent",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: true,
+        agent_session_id: "sess-1",
+        agent_name: "My Coder",
+        summary: "Proceed?\n1. Yes",
+        provider_choice_sent: "1",
+      }],
+    });
+
+    render(<InboxView onSendAgentPrompt={onSendAgentPrompt} />);
+
+    const choice = screen.getByRole("button", { name: "Send action response 1: Yes" });
+    expect(choice).toBeDisabled();
+    fireEvent.click(choice);
+    expect(onSendAgentPrompt).not.toHaveBeenCalled();
+  });
+
   it("filters visible queue items by event type", () => {
     useQueueStore.setState((state) => ({
       preferences: {
@@ -440,6 +488,24 @@ describe("InboxView", () => {
 
     expect(screen.queryByText("Read Agent")).not.toBeInTheDocument();
     expect(screen.getByText("Unread Workflow")).toBeInTheDocument();
+  });
+
+  it("keeps read action-needed prompts when clearing read completions", () => {
+    useQueueStore.setState({
+      items: [{
+        id: "read-action",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: true,
+        agent_name: "Read Action",
+        summary: "Choose an action.",
+      }],
+    });
+
+    render(<InboxView />);
+
+    expect(screen.getByRole("button", { name: /clear read/i })).toBeDisabled();
+    expect(screen.getByText("Read Action")).toBeInTheDocument();
   });
 
   it("keeps queue cards from shrinking when the list overflows", () => {

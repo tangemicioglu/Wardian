@@ -749,7 +749,7 @@ describe("useQueueStore - item management", () => {
     expect(mockInvoke).toHaveBeenCalledWith("save_queue_items", expect.anything());
   });
 
-  it("preserves a durable update acknowledgement after clearing the displayed card", async () => {
+  it("keeps durable update history visible after clearing read completions", async () => {
     useQueueStore.setState({
       items: [{
         id: "notification:notice-1",
@@ -768,7 +768,10 @@ describe("useQueueStore - item management", () => {
         items: [expect.objectContaining({ inbox_notification_id: "notice-1", read: true })],
       });
     });
-    expect(useQueueStore.getState().items).toEqual([]);
+    expect(useQueueStore.getState().items).toEqual([expect.objectContaining({
+      inbox_notification_id: "notice-1",
+      read: true,
+    })]);
     expect(useQueueStore.getState()._readNotificationIds).toEqual(["notice-1"]);
   });
 });
