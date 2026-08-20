@@ -188,6 +188,7 @@ fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
 
 fn is_clearable_legacy_completion(item: &serde_json::Value) -> bool {
     is_legacy_queue_item(item)
+        && !provider_choice_acknowledgement_unresolved(item)
         && matches!(
             item.get("type").and_then(serde_json::Value::as_str),
             Some("agent_completed" | "workflow_completed")
@@ -1067,6 +1068,16 @@ mod tests {
         assert!(!is_clearable_legacy_completion(&serde_json::json!({
             "type": "agent_completed",
             "inbox_notification_id": "notice-1"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "workflow_completed",
+            "read": true,
+            "provider_choice_pending": "1"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "agent_completed",
+            "read": false,
+            "provider_choice_sent": "1"
         })));
     }
 

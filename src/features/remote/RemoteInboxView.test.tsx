@@ -318,6 +318,24 @@ describe("RemoteInboxView", () => {
     expect(screen.getByRole("button", { name: "Clear read Inbox items" })).toBeDisabled();
   });
 
+  it("keeps a read pending provider choice out of Clear read", () => {
+    useRemoteStore.setState({
+      remoteQueueItems: [{
+        id: "read-pending-completion",
+        type: "workflow_completed",
+        timestamp: Date.now(),
+        read: true,
+        agent_name: "Coder",
+        summary: "Choose an action",
+        provider_choice_pending: "1",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+
+    expect(screen.getByRole("button", { name: "Clear read Inbox items" })).toBeDisabled();
+  });
+
   it("does not mark a pending manual approval read while navigating", () => {
     const runInboxAction = vi.fn().mockResolvedValue(undefined);
     const openAgent = vi.fn().mockResolvedValue(undefined);

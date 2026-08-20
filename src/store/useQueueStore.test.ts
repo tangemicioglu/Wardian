@@ -683,6 +683,22 @@ describe("useQueueStore - item management", () => {
     expect(useQueueStore.getState().items).toHaveLength(1);
   });
 
+  it("does not clear a read pending provider choice", () => {
+    useQueueStore.setState({
+      items: [{
+        id: "workflow-completed:pending-choice",
+        type: "workflow_completed",
+        timestamp: Date.now(),
+        read: true,
+        provider_choice_pending: "1",
+      }],
+    });
+
+    useQueueStore.getState().clearRead();
+
+    expect(useQueueStore.getState().items).toHaveLength(1);
+  });
+
   it("serializes queue persistence so markAllRead cannot be overwritten by an older save", async () => {
     resetStore();
     const saves: Array<{

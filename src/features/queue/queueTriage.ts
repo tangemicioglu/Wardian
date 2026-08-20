@@ -11,5 +11,6 @@ export function providerChoiceRecorded(item: QueueItem) {
 export function isClearableLegacyCompletion(item: QueueItem) {
   return !item.inbox_notification_id
     && !item.workflow_approval
+    && !providerChoiceAcknowledgementUnresolved(item)
     && (item.type === "agent_completed" || item.type === "workflow_completed");
 }
