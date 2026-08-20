@@ -45,7 +45,9 @@ Inbox preferences persist under the active Wardian home.
 When you choose a provider response, Wardian first sends the response to the
 agent and then acknowledges the Inbox card. If the response is sent but the
 acknowledgement fails, the card says **Response sent** and offers **Retry Inbox
-status**. Retrying the status does not send the provider response again.
+status**. Retrying the status does not send the provider response again. The
+sent choice is recorded with the Inbox item, so reloading the mobile Inbox also
+keeps that response disabled and exposes the status retry.
 
 The mobile Inbox includes the same triage actions: choose an event filter, tap
 an item to acknowledge it, mark all eligible items read, clear reviewed legacy

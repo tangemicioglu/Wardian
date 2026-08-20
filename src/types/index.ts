@@ -316,6 +316,7 @@ export interface QueueItem {
     error?: string;
     // shared
     summary?: string;
+    provider_choice_sent?: string;
     // durable user-facing notification fields
     inbox_notification_id?: string;
     notification_status?: "completed" | "awaiting_reply" | "expired";

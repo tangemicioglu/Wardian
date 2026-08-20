@@ -129,7 +129,7 @@ describe("RemoteInboxView", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Send action response 1: Yes" }));
     await fireEvent.click(screen.getByRole("button", { name: "Approve" }));
-    expect(sendPromptToAgent).toHaveBeenCalledWith("agent-1", "1");
+    expect(sendPromptToAgent).toHaveBeenCalledWith("agent-1", "1", "action-1");
     expect(runInboxAction).toHaveBeenCalledWith("mark_read", "action-1");
     expect(runInboxAction).toHaveBeenCalledWith("resolve_approval", "approval-1", "Approve");
   });
@@ -158,6 +158,7 @@ describe("RemoteInboxView", () => {
     const choice = screen.getByRole("button", { name: "Send action response 1: Yes" });
     fireEvent.click(choice);
     await waitFor(() => expect(screen.getByRole("button", { name: "Retry Inbox status" })).toBeVisible());
+    expect(sendPromptToAgent).toHaveBeenCalledWith("agent-1", "1", "action-1");
     expect(sendPromptToAgent).toHaveBeenCalledTimes(1);
     expect(runInboxAction).toHaveBeenCalledWith("mark_read", "action-1");
     expect(choice).toBeDisabled();
@@ -165,6 +166,31 @@ describe("RemoteInboxView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry Inbox status" }));
     await waitFor(() => expect(runInboxAction).toHaveBeenCalledTimes(2));
     expect(sendPromptToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a server-recorded provider choice disabled after remount", () => {
+    const sendPromptToAgent = vi.fn().mockResolvedValue(undefined);
+    useRemoteStore.setState({
+      sendPromptToAgent,
+      remoteQueueItems: [{
+        id: "action-1",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "agent-1",
+        agent_name: "Coder",
+        summary: "Proceed?\n1. Yes",
+        provider_choice_sent: "1",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+
+    const choice = screen.getByRole("button", { name: "Send action response 1: Yes" });
+    expect(choice).toBeDisabled();
+    fireEvent.click(choice);
+    expect(sendPromptToAgent).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Retry Inbox status" })).toBeVisible();
   });
 
   it("does not mark a pending manual approval read while navigating", () => {

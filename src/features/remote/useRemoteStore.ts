@@ -88,7 +88,7 @@ interface RemoteState {
   refreshActiveAgentChat: (options?: { background?: boolean }) => Promise<void>;
   loadOlderActiveAgentChat: () => Promise<void>;
   sendPromptToActiveAgent: (prompt: string, inputMode?: RemoteAgentInputMode) => Promise<void>;
-  sendPromptToAgent: (sessionId: string, prompt: string) => Promise<void>;
+  sendPromptToAgent: (sessionId: string, prompt: string, inboxItemId?: string) => Promise<void>;
   runAgentAction: (action: string, target: string) => Promise<void>;
   runWorkflow: (workflowId: string) => Promise<void>;
 }
@@ -946,8 +946,8 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
       set({ sending: false });
     }
   },
-  async sendPromptToAgent(sessionId, prompt) {
-    await remoteClient.sendPrompt(sessionId, prompt);
+  async sendPromptToAgent(sessionId, prompt, inboxItemId) {
+    await remoteClient.sendPrompt(sessionId, prompt, "message", inboxItemId);
   },
   async runAgentAction(action, target) {
     try {

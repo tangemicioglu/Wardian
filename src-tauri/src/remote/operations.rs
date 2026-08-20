@@ -512,27 +512,21 @@ pub async fn run_remote_agent_action(
     match request.action.as_str() {
         "send_prompt" => {
             let state = app.state::<AppState>();
-            crate::delivery::submit_live_surface_prompt(
-                Some(app),
+            let prompt = request.prompt.unwrap_or_default();
+            let _queue_guard = if request.inbox_item_id.is_some() {
+                Some(state.queue_io_lock.lock().await)
+            } else {
+                None
+            };
+            send_remote_prompt_with_idempotency(
+                app,
                 &state,
-                crate::delivery::LiveSurfacePromptRequest {
-                    session_id: request.target,
-                    prompt: request.prompt.unwrap_or_default(),
-                    interaction_id: None,
-                    input_mode: request.input_mode.unwrap_or_default(),
-                    queue_policy: wardian_core::control::QueuePolicy::LiveOnly,
-                    approval_action: None,
-                    origin: None,
-                    runtime_state: "live_pty_available",
-                    mark_prompt_started: true,
-                    require_provider_turn_receipt: false,
-                    payload_sent_detail: None,
-                    delivery_message_id: None,
-                },
+                &request.target,
+                &prompt,
+                request.input_mode.unwrap_or_default(),
+                request.inbox_item_id.as_deref(),
             )
             .await
-            .map_err(|error| error.to_string())
-            .map(|_| ())
         }
         "pause" => {
             let state = app.state::<AppState>();
@@ -553,6 +547,97 @@ pub async fn run_remote_agent_action(
         }
         _ => Err("unsupported_remote_agent_action".to_string()),
     }
+}
+
+async fn send_remote_prompt_with_idempotency(
+    app: &AppHandle,
+    state: &AppState,
+    target: &str,
+    prompt: &str,
+    input_mode: MessageInputMode,
+    inbox_item_id: Option<&str>,
+) -> Result<(), String> {
+    if let Some(item_id) = inbox_item_id {
+        let mut persisted = crate::utils::queue::load_items();
+        let index = persisted
+            .iter()
+            .position(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(item_id))
+            .ok_or_else(|| "inbox_item_not_found".to_string())?;
+        let item = &persisted[index];
+        if item
+            .get("agent_session_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(target)
+        {
+            return Err("inbox_item_agent_mismatch".to_string());
+        }
+        if item.get("type").and_then(serde_json::Value::as_str) != Some("action_needed") {
+            return Err("inbox_item_not_provider_action".to_string());
+        }
+        if let Some(sent_choice) = item
+            .get("provider_choice_sent")
+            .and_then(serde_json::Value::as_str)
+        {
+            return if sent_choice == prompt {
+                Ok(())
+            } else {
+                Err("provider_choice_already_sent".to_string())
+            };
+        }
+        persisted[index]["provider_choice_sent"] = serde_json::Value::String(prompt.to_string());
+        crate::utils::queue::save_items(&persisted)?;
+        let result = crate::delivery::submit_live_surface_prompt(
+            Some(app),
+            state,
+            crate::delivery::LiveSurfacePromptRequest {
+                session_id: target.to_string(),
+                prompt: prompt.to_string(),
+                interaction_id: None,
+                input_mode,
+                queue_policy: wardian_core::control::QueuePolicy::LiveOnly,
+                approval_action: None,
+                origin: None,
+                runtime_state: "live_pty_available",
+                mark_prompt_started: true,
+                require_provider_turn_receipt: false,
+                payload_sent_detail: None,
+                delivery_message_id: None,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string());
+        if result.is_err() {
+            if let Some(item) = persisted.get_mut(index) {
+                item.as_object_mut()
+                    .expect("queue item object")
+                    .remove("provider_choice_sent");
+            }
+            let _ = crate::utils::queue::save_items(&persisted);
+        }
+        return result.map(|_| ());
+    }
+
+    crate::delivery::submit_live_surface_prompt(
+        Some(app),
+        state,
+        crate::delivery::LiveSurfacePromptRequest {
+            session_id: target.to_string(),
+            prompt: prompt.to_string(),
+            interaction_id: None,
+            input_mode,
+            queue_policy: wardian_core::control::QueuePolicy::LiveOnly,
+            approval_action: None,
+            origin: None,
+            runtime_state: "live_pty_available",
+            mark_prompt_started: true,
+            require_provider_turn_receipt: false,
+            payload_sent_detail: None,
+            delivery_message_id: None,
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())
+    .map(|_| ())
 }
 
 #[cfg(test)]
@@ -799,7 +884,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         let initial = vec![
-            serde_json::json!({ "id": "first", "read": false }),
+            serde_json::json!({ "id": "first", "read": false, "provider_choice_sent": "1" }),
             serde_json::json!({ "id": "second", "read": false }),
         ];
         crate::utils::queue::save_items(&initial).expect("initial queue");
@@ -833,6 +918,7 @@ mod tests {
         unsafe { std::env::remove_var("WARDIAN_HOME") };
         assert_eq!(items[0]["read"], true);
         assert_eq!(items[1]["read"], true);
+        assert_eq!(items[0]["provider_choice_sent"], "1");
     }
 
     #[tokio::test]
@@ -1110,6 +1196,7 @@ mod tests {
             target: "agent-1".to_string(),
             prompt: None,
             input_mode: None,
+            inbox_item_id: None,
         };
 
         assert_eq!(
@@ -1125,6 +1212,7 @@ mod tests {
             target: "agent-1".to_string(),
             prompt: Some("/status".to_string()),
             input_mode: Some(wardian_core::control::MessageInputMode::Command),
+            inbox_item_id: None,
         };
 
         validate_remote_agent_action(&request).expect("command mode should be accepted");
@@ -1137,6 +1225,7 @@ mod tests {
             target: "agent-1".to_string(),
             prompt: Some("1".to_string()),
             input_mode: Some(wardian_core::control::MessageInputMode::ApprovalAction),
+            inbox_item_id: None,
         };
 
         assert_eq!(
@@ -1152,6 +1241,7 @@ mod tests {
             target: "agent-1".to_string(),
             prompt: None,
             input_mode: None,
+            inbox_item_id: None,
         };
 
         assert_eq!(

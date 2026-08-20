@@ -48,7 +48,7 @@ interface RemoteInboxCardProps {
   item: QueueItem;
   onAction: (action: string, itemId?: string, choice?: string) => Promise<void>;
   onOpenAgent: (sessionId: string) => void;
-  onSendAgentPrompt: (sessionId: string, prompt: string) => Promise<void>;
+  onSendAgentPrompt: (sessionId: string, prompt: string, inboxItemId: string) => Promise<void>;
 }
 
 function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: RemoteInboxCardProps) {
@@ -69,6 +69,8 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
   const actionChoices = item.type === "action_needed" ? parseQueueActionChoices(bodyText) : [];
   const approvalChoices = isApprovalRequest && isPendingApproval ? item.approval_choices ?? [] : [];
   const canDismiss = !item.inbox_notification_id && !item.workflow_approval;
+  const providerChoiceSent = item.provider_choice_sent ?? sentChoice;
+  const providerChoiceNeedsAcknowledgement = providerChoiceSent !== null && !item.read;
 
   const runAction = async (action: string, choice?: string) => {
     setActionError(null);
@@ -88,7 +90,7 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
     setAcknowledgementError(null);
     setIsSending(true);
     try {
-      await onSendAgentPrompt(item.agent_session_id, choice.value);
+      await onSendAgentPrompt(item.agent_session_id, choice.value, item.id);
       setSentChoice(choice.value);
       try {
         await onAction("mark_read", item.id);
@@ -160,7 +162,7 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
             <div className="mt-3 flex flex-wrap items-center gap-2" onClick={(event) => event.stopPropagation()}>
               {canOpenAgent && item.agent_session_id && <button type="button" aria-label="Open agent terminal" title="Open agent terminal" onClick={() => { if (!isPendingApproval) void onAction("mark_read", item.id).catch(() => undefined); onOpenAgent(item.agent_session_id!); }} className="inline-flex h-7 items-center gap-1 rounded-md border border-wardian-border bg-wardian-card-bg-muted px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:text-bright-neutral"><Terminal className="h-3.5 w-3.5" aria-hidden="true" />Open agent</button>}
               {actionChoices.length > 0 && <div className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Action choices">
-                {actionChoices.map((choice) => <button key={`${choice.value}-${choice.label}`} type="button" aria-label={`Send action response ${choice.value}: ${choice.label}`} title={`Send ${choice.label}`} disabled={isSending || sentChoice !== null} onClick={() => void handleActionChoice(choice)} className="inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-md border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 text-[11px] font-semibold text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-50"><span className="shrink-0 font-mono text-[var(--color-wardian-warning)]">{choice.value}</span><span className="min-w-0 truncate">{choice.label}</span></button>)}
+                {actionChoices.map((choice) => <button key={`${choice.value}-${choice.label}`} type="button" aria-label={`Send action response ${choice.value}: ${choice.label}`} title={`Send ${choice.label}`} disabled={isSending || providerChoiceSent !== null} onClick={() => void handleActionChoice(choice)} className="inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-md border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 text-[11px] font-semibold text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-50"><span className="shrink-0 font-mono text-[var(--color-wardian-warning)]">{choice.value}</span><span className="min-w-0 truncate">{choice.label}</span></button>)}
               </div>}
               {approvalChoices.length > 0 && <div className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Approval choices">
                 {approvalChoices.map((choice) => <button key={choice} type="button" disabled={isSending} onClick={() => void runAction("resolve_approval", choice)} className="inline-flex h-7 max-w-[220px] cursor-pointer items-center rounded-md border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 text-[11px] font-semibold text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-50">{choice}</button>)}
@@ -168,7 +170,7 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
             </div>
           )}
           {actionError && <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">{actionError}</p>}
-          {acknowledgementError && <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">Response sent, but Inbox status could not be updated: {acknowledgementError} <button type="button" disabled={isSending} onClick={(event) => { event.stopPropagation(); void retryAcknowledgement(); }} className="font-semibold underline disabled:cursor-not-allowed disabled:opacity-50">Retry Inbox status</button></p>}
+          {providerChoiceNeedsAcknowledgement && <p role={acknowledgementError ? "alert" : "status"} className="mt-2 text-[11px] text-[var(--color-wardian-error)]">Response sent{acknowledgementError ? `, but Inbox status could not be updated: ${acknowledgementError}` : ". Inbox status may need updating."} <button type="button" disabled={isSending} onClick={(event) => { event.stopPropagation(); void retryAcknowledgement(); }} className="font-semibold underline disabled:cursor-not-allowed disabled:opacity-50">Retry Inbox status</button></p>}
         </div>
         {canDismiss && <button type="button" aria-label="Clear item" title="Clear item" onClick={(event) => { event.stopPropagation(); void runAction("dismiss"); }} className="shrink-0 rounded p-1 text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted hover:text-bright-neutral"><Trash2 className="h-3.5 w-3.5" aria-hidden="true" /></button>}
       </div>

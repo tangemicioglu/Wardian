@@ -53,6 +53,9 @@ pub fn merge_desktop_snapshot(
             if latest_item.get("read").and_then(Value::as_bool) == Some(true) {
                 item["read"] = Value::Bool(true);
             }
+            if let Some(provider_choice_sent) = latest_item.get("provider_choice_sent") {
+                item["provider_choice_sent"] = provider_choice_sent.clone();
+            }
             merged.push(item);
         }
     }

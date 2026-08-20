@@ -279,6 +279,7 @@ pub struct RemoteAgentActionRequest {
     pub target: String,
     pub prompt: Option<String>,
     pub input_mode: Option<MessageInputMode>,
+    pub inbox_item_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
