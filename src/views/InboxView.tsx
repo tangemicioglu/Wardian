@@ -238,7 +238,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
                   aria-label="Open agent terminal"
                   title="Open agent terminal"
                   onClick={() => {
-                    markRead(item.id);
+                    if (canAcknowledge) markRead(item.id);
                     onOpenAgent?.(item.agent_session_id!);
                   }}
                   className="inline-flex h-7 items-center gap-1 rounded-md border border-wardian-border bg-wardian-card-bg-muted px-2 text-[11px] font-semibold text-muted-neutral hover:text-bright-neutral transition-colors"

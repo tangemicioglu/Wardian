@@ -161,6 +161,29 @@ describe("InboxView", () => {
     expect(onSendAgentPrompt).not.toHaveBeenCalled();
   });
 
+  it("does not mark an uncertain provider choice read when opening the agent", () => {
+    const onOpenAgent = vi.fn();
+    useQueueStore.setState({
+      items: [{
+        id: "item-action-open-pending",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "sess-1",
+        agent_name: "My Coder",
+        summary: "Proceed?\n1. Yes",
+        provider_choice_pending: "1",
+      }],
+    });
+
+    render(<InboxView onOpenAgent={onOpenAgent} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open agent terminal" }));
+
+    expect(onOpenAgent).toHaveBeenCalledWith("sess-1");
+    expect(useQueueStore.getState().items[0].read).toBe(false);
+  });
+
   it("does not replay a provider choice already acknowledged by the shared Inbox", () => {
     const onSendAgentPrompt = vi.fn(async () => undefined);
     useQueueStore.setState({
