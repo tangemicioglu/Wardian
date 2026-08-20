@@ -141,8 +141,10 @@ describe("RemoteInboxView", () => {
       .mockRejectedValueOnce(new Error("Remote request failed: 503"))
       .mockResolvedValue(undefined);
     const sendPromptToAgent = vi.fn().mockResolvedValue(undefined);
+    const refreshInbox = vi.fn().mockResolvedValue(true);
     useRemoteStore.setState({
       runInboxAction,
+      refreshInbox,
       sendPromptToAgent,
       remoteQueueItems: [{
         id: "action-1",
@@ -167,6 +169,51 @@ describe("RemoteInboxView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Retry Inbox status" }));
     await waitFor(() => expect(runInboxAction).toHaveBeenCalledTimes(2));
+    expect(sendPromptToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a durably sent choice disabled after acknowledgement failure and remount", async () => {
+    const runInboxAction = vi.fn().mockRejectedValue(new Error("Remote request failed: 503"));
+    const sendPromptToAgent = vi.fn().mockResolvedValue(undefined);
+    const refreshInbox = vi.fn().mockImplementation(async () => {
+      useRemoteStore.setState({
+        remoteQueueItems: [{
+          id: "action-1",
+          type: "action_needed",
+          timestamp: Date.now(),
+          read: false,
+          agent_session_id: "agent-1",
+          agent_name: "Coder",
+          summary: "Proceed?\n1. Yes",
+          provider_choice_sent: "1",
+        }],
+      });
+      return true;
+    });
+    useRemoteStore.setState({
+      runInboxAction,
+      refreshInbox,
+      sendPromptToAgent,
+      remoteQueueItems: [{
+        id: "action-1",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "agent-1",
+        agent_name: "Coder",
+        summary: "Proceed?\n1. Yes",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+    fireEvent.click(screen.getByRole("button", { name: "Send action response 1: Yes" }));
+    await waitFor(() => expect(refreshInbox).toHaveBeenCalledTimes(1));
+
+    cleanup();
+    render(<RemoteInboxView />);
+    const choice = screen.getByRole("button", { name: "Send action response 1: Yes" });
+    expect(choice).toBeDisabled();
+    fireEvent.click(choice);
     expect(sendPromptToAgent).toHaveBeenCalledTimes(1);
   });
 

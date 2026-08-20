@@ -104,6 +104,8 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRef
         await onAction("mark_read", item.id);
       } catch (cause) {
         setAcknowledgementError(cause instanceof Error ? cause.message : String(cause));
+        // Refresh the server projection so a remount sees the durable sent marker.
+        void onRefreshInbox().catch(() => undefined);
       }
     } catch (cause) {
       setDeliveryUncertain(true);
