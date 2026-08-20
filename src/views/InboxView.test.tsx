@@ -79,7 +79,34 @@ describe("InboxView", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Send action response 1: Yes" }));
     });
-    expect(onSendAgentPrompt).toHaveBeenCalledWith("sess-1", "1");
+    expect(onSendAgentPrompt).toHaveBeenCalledWith("sess-1", "1", "item-action");
+    expect(screen.getByRole("button", { name: "Send action response 1: Yes" })).toBeDisabled();
+    expect(useQueueStore.getState().items[0]).toMatchObject({
+      provider_choice_sent: "1",
+      read: true,
+    });
+  });
+
+  it("does not acknowledge a desktop Inbox choice when delivery fails", async () => {
+    const onSendAgentPrompt = vi.fn().mockRejectedValue(new Error("provider unavailable"));
+    useQueueStore.setState({
+      items: [{
+        id: "item-action-failed",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "sess-1",
+        agent_name: "My Coder",
+        summary: "Proceed?\n1. Yes",
+      }],
+    });
+
+    render(<InboxView onSendAgentPrompt={onSendAgentPrompt} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send action response 1: Yes" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("provider unavailable");
+    expect(useQueueStore.getState().items[0]).toMatchObject({ read: false });
+    expect(useQueueStore.getState().items[0].provider_choice_sent).toBeUndefined();
   });
 
   it("does not render action buttons when the provider did not expose explicit choices", () => {

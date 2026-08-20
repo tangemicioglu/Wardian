@@ -58,6 +58,7 @@ interface QueueState {
     workflowName?: string,
   ) => void;
   dismissItem: (id: string) => void;
+  recordProviderChoiceSent: (id: string, choice: string) => void;
   markRead: (id: string) => void;
   markAllRead: () => void;
   clearRead: () => void;
@@ -456,6 +457,16 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       const item = s.items.find((candidate) => candidate.id === id);
       if (item && readProtected(item)) return {};
       const next = s.items.filter((i) => i.id !== id);
+      persistItems(next, s._readNotificationIds);
+      return { items: next };
+    });
+  },
+
+  recordProviderChoiceSent(id, choice) {
+    set((s) => {
+      const next = s.items.map((item) => (
+        item.id === id ? { ...item, provider_choice_sent: choice } : item
+      ));
       persistItems(next, s._readNotificationIds);
       return { items: next };
     });

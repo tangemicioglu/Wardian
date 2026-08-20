@@ -62,6 +62,20 @@ export async function submitInputToAgent(
   return invoke<PromptDeliveryDetail>("submit_prompt_to_agent", { sessionId, prompt: input });
 }
 
+export async function submitInboxProviderChoice(
+  sessionId: string,
+  input: string,
+  inboxItemId: string,
+): Promise<void> {
+  if (!sessionId || !input.trim() || !inboxItemId) return;
+
+  await invoke("submit_inbox_provider_choice", {
+    sessionId,
+    prompt: input,
+    inboxItemId,
+  });
+}
+
 export async function submitInputToAgents(
   sessionIds: Iterable<string>,
   input: string,

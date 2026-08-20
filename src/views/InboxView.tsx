@@ -98,11 +98,12 @@ function QueueItemIcon({ item }: { item: QueueItem }) {
 interface QueueCardProps {
   item: QueueItem;
   onOpenAgent?: (sessionId: string) => void;
-  onSendAgentPrompt?: (sessionId: string, prompt: string) => Promise<void> | void;
+  onSendAgentPrompt?: (sessionId: string, prompt: string, itemId: string) => Promise<void> | void;
 }
 
 function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const dismissItem = useQueueStore((s) => s.dismissItem);
+  const recordProviderChoiceSent = useQueueStore((s) => s.recordProviderChoiceSent);
   const markRead = useQueueStore((s) => s.markRead);
   const resolveApprovalRequest = useQueueStore((s) => s.resolveApprovalRequest);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -132,7 +133,8 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
     setActionError(null);
     setIsSending(true);
     try {
-      await onSendAgentPrompt(item.agent_session_id, choice.value);
+      await onSendAgentPrompt(item.agent_session_id, choice.value, item.id);
+      recordProviderChoiceSent(item.id, choice.value);
       markRead(item.id);
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
@@ -376,7 +378,7 @@ function QueueControls({ hasItems, hasReadItems, markAllRead, clearRead }: Queue
 
 export interface InboxViewProps {
   onOpenAgent?: (sessionId: string) => void;
-  onSendAgentPrompt?: (sessionId: string, prompt: string) => Promise<void> | void;
+  onSendAgentPrompt?: (sessionId: string, prompt: string, itemId: string) => Promise<void> | void;
 }
 
 export function InboxView({ onOpenAgent, onSendAgentPrompt }: InboxViewProps) {
