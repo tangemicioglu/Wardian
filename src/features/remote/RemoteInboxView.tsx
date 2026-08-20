@@ -195,17 +195,17 @@ export const RemoteInboxView: React.FC = () => {
           <h1 className="truncate text-base font-semibold text-primary">Inbox</h1>
           {unreadCount > 0 && <span className="rounded-full bg-[var(--color-wardian-accent)]/15 px-2 py-0.5 text-[10px] font-semibold text-primary">{unreadCount} unread</span>}
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-3 flex flex-nowrap items-center gap-1 overflow-x-auto">
           <label className="sr-only" htmlFor="remote-inbox-filter">Filter Inbox events</label>
           <div className="relative inline-flex items-center">
             <Filter className="pointer-events-none absolute left-2 h-3.5 w-3.5 text-muted-neutral" aria-hidden="true" />
-            <select id="remote-inbox-filter" aria-label="Filter Inbox events" value={filter} onChange={(event) => updateFilter(event.target.value as RemoteInboxFilter)} className="h-8 appearance-none rounded-md border border-wardian-border bg-wardian-card-bg-muted pl-7 pr-7 text-[11px] font-semibold text-primary">
+            <select id="remote-inbox-filter" aria-label="Filter Inbox events" value={filter} onChange={(event) => updateFilter(event.target.value as RemoteInboxFilter)} className="h-8 w-32 appearance-none rounded-md border border-wardian-border bg-wardian-card-bg-muted pl-7 pr-7 text-[11px] font-semibold text-primary">
               {filterOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
             <X className="pointer-events-none absolute right-2 h-3 w-3 text-muted-neutral" aria-hidden="true" />
           </div>
-          <button type="button" aria-label="Mark all Inbox items read" disabled={headerAction !== null || unreadCount === 0} onClick={() => void runHeaderAction("mark_all_read")} className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40"><CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />{headerAction === "mark_all_read" ? "Marking…" : "Mark all read"}</button>
-          <button type="button" aria-label="Clear read Inbox items" disabled={headerAction !== null || readCount === 0} onClick={() => void runHeaderAction("clear_read")} className="h-8 rounded-md px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40">{headerAction === "clear_read" ? "Clearing…" : "Clear read"}</button>
+          <button type="button" aria-label="Mark all Inbox items read" disabled={headerAction !== null || unreadCount === 0} onClick={() => void runHeaderAction("mark_all_read")} className="inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40"><CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />{headerAction === "mark_all_read" ? "Marking…" : "Mark all read"}</button>
+          <button type="button" aria-label="Clear read Inbox items" disabled={headerAction !== null || readCount === 0} onClick={() => void runHeaderAction("clear_read")} className="h-8 shrink-0 whitespace-nowrap rounded-md px-1.5 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40">{headerAction === "clear_read" ? "Clearing…" : "Clear read"}</button>
         </div>
         {(headerActionError || remoteQueueError) && <div role="alert" className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-wardian-error)]"><span>{headerActionError ?? `Inbox updated, but refresh failed: ${remoteQueueError}`}</span>{remoteQueueError && !headerActionError && <button type="button" onClick={() => void refreshInbox()} className="font-semibold underline">Retry refresh</button>}</div>}
       </header>
