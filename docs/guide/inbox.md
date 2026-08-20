@@ -49,6 +49,11 @@ status**. Retrying the status does not send the provider response again. The
 sent choice is recorded with the Inbox item, so reloading the mobile Inbox also
 keeps that response disabled and exposes the status retry.
 
+If the host cannot confirm whether the provider received the choice, the card
+shows **Response delivery is uncertain** and keeps the choice disabled. Check
+the agent session before taking any further action; Wardian does not resend a
+potentially consequential response automatically.
+
 The mobile Inbox includes the same triage actions: choose an event filter, tap
 an item to acknowledge it, mark all eligible items read, clear reviewed legacy
 items, or dismiss an individual legacy item. Agent action choices and pending
@@ -60,6 +65,10 @@ An unresolved approval cannot be cleared or dismissed. When it expires, the agen
 If the desktop Inbox saves before its load baseline is available, Wardian keeps
 the latest persisted projection authoritative. This prevents a stale desktop
 snapshot from resurrecting an item dismissed from another surface.
+
+**Clear read** removes only read legacy completion items. Durable notification
+history remains visible, and the control is disabled when there are no legacy
+items to clear.
 
 ## Agent Notifications
 

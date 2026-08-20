@@ -52,9 +52,15 @@ the desktop app.
   operations. Once the provider accepts a choice, the choice controls remain
   disabled; a failed acknowledgement reports that the response was sent and
   offers a retry for Inbox status without sending the provider choice again.
-  The server records the sent choice on the queue item before dispatch and
-  treats a repeat request for the same Inbox item and choice as an idempotent
-  success, so the protection survives a mobile reload.
+  The server records a pending delivery on the queue item before dispatch,
+  waits for the native/provider delivery boundary, then records the sent
+  choice and treats a repeat request for the same Inbox item and choice as an
+  idempotent success. If recovery cannot establish delivery, the mobile card
+  remains disabled and explicitly reports uncertain delivery instead of
+  silently retrying a consequential choice.
+- Clear-read operates only on the legacy completion projection. Durable
+  notification acknowledgements remain visible as canonical history, so the
+  mobile control is disabled when no legacy read items are clearable.
 - Pending workflow and manual approvals remain unread and actionable until
   their approval choice is resolved; navigation does not implicitly mark them
   read.
@@ -64,7 +70,7 @@ the desktop app.
 - Focused React tests cover filtering, read/clear controls, provider choices,
   approval actions, agent navigation, and provider-send acknowledgement
   recovery without duplicate sends, including a remount with a server-recorded
-  choice.
+  choice, uncertain delivery recovery, and clear-read affordance state.
 - Rust tests cover the persistence rules for legacy items and notification read
   acknowledgements, including concurrent queue mutations, stale desktop
   snapshot merging, baseline-less remote dismissal preservation,

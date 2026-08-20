@@ -56,6 +56,9 @@ pub fn merge_desktop_snapshot(
             if let Some(provider_choice_sent) = latest_item.get("provider_choice_sent") {
                 item["provider_choice_sent"] = provider_choice_sent.clone();
             }
+            if let Some(provider_choice_pending) = latest_item.get("provider_choice_pending") {
+                item["provider_choice_pending"] = provider_choice_pending.clone();
+            }
             merged.push(item);
         }
     }

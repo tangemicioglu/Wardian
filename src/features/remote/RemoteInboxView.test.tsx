@@ -193,6 +193,47 @@ describe("RemoteInboxView", () => {
     expect(screen.getByRole("button", { name: "Retry Inbox status" })).toBeVisible();
   });
 
+  it("shows an uncertain state for a provider choice pending delivery confirmation", () => {
+    const sendPromptToAgent = vi.fn().mockResolvedValue(undefined);
+    useRemoteStore.setState({
+      sendPromptToAgent,
+      remoteQueueItems: [{
+        id: "action-1",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "agent-1",
+        agent_name: "Coder",
+        summary: "Proceed?\n1. Yes",
+        provider_choice_pending: "1",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+
+    expect(screen.getByRole("button", { name: "Send action response 1: Yes" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Response delivery is uncertain");
+    expect(sendPromptToAgent).not.toHaveBeenCalled();
+  });
+
+  it("disables clear read when only durable notifications are read", () => {
+    useRemoteStore.setState({
+      remoteQueueItems: [{
+        id: "notification:1",
+        type: "agent_update",
+        timestamp: Date.now(),
+        read: true,
+        inbox_notification_id: "1",
+        agent_name: "Coder",
+        summary: "Finished",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+
+    expect(screen.getByRole("button", { name: "Clear read Inbox items" })).toBeDisabled();
+  });
+
   it("does not mark a pending manual approval read while navigating", () => {
     const runInboxAction = vi.fn().mockResolvedValue(undefined);
     const openAgent = vi.fn().mockResolvedValue(undefined);

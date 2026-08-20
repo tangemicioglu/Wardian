@@ -574,6 +574,16 @@ async fn send_remote_prompt_with_idempotency(
         if item.get("type").and_then(serde_json::Value::as_str) != Some("action_needed") {
             return Err("inbox_item_not_provider_action".to_string());
         }
+        if let Some(pending_choice) = item
+            .get("provider_choice_pending")
+            .and_then(serde_json::Value::as_str)
+        {
+            return if pending_choice == prompt {
+                Err("provider_choice_delivery_uncertain".to_string())
+            } else {
+                Err("provider_choice_already_sent".to_string())
+            };
+        }
         if let Some(sent_choice) = item
             .get("provider_choice_sent")
             .and_then(serde_json::Value::as_str)
@@ -584,7 +594,7 @@ async fn send_remote_prompt_with_idempotency(
                 Err("provider_choice_already_sent".to_string())
             };
         }
-        persisted[index]["provider_choice_sent"] = serde_json::Value::String(prompt.to_string());
+        persisted[index]["provider_choice_pending"] = serde_json::Value::String(prompt.to_string());
         crate::utils::queue::save_items(&persisted)?;
         let result = crate::delivery::submit_live_surface_prompt(
             Some(app),
@@ -599,22 +609,35 @@ async fn send_remote_prompt_with_idempotency(
                 origin: None,
                 runtime_state: "live_pty_available",
                 mark_prompt_started: true,
-                require_provider_turn_receipt: false,
+                require_provider_turn_receipt: true,
                 payload_sent_detail: None,
                 delivery_message_id: None,
             },
         )
-        .await
-        .map_err(|error| error.to_string());
-        if result.is_err() {
-            if let Some(item) = persisted.get_mut(index) {
-                item.as_object_mut()
+        .await;
+        return match result {
+            Ok(_) => {
+                persisted[index]["provider_choice_sent"] =
+                    serde_json::Value::String(prompt.to_string());
+                persisted[index]
+                    .as_object_mut()
                     .expect("queue item object")
-                    .remove("provider_choice_sent");
+                    .remove("provider_choice_pending");
+                crate::utils::queue::save_items(&persisted)?;
+                Ok(())
             }
-            let _ = crate::utils::queue::save_items(&persisted);
-        }
-        return result.map(|_| ());
+            Err(error) => {
+                if error.retry_safe {
+                    if let Some(item) = persisted.get_mut(index) {
+                        item.as_object_mut()
+                            .expect("queue item object")
+                            .remove("provider_choice_pending");
+                    }
+                    let _ = crate::utils::queue::save_items(&persisted);
+                }
+                Err(error.to_string())
+            }
+        };
     }
 
     crate::delivery::submit_live_surface_prompt(

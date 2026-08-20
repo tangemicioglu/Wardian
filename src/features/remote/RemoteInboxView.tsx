@@ -49,14 +49,16 @@ interface RemoteInboxCardProps {
   onAction: (action: string, itemId?: string, choice?: string) => Promise<void>;
   onOpenAgent: (sessionId: string) => void;
   onSendAgentPrompt: (sessionId: string, prompt: string, inboxItemId: string) => Promise<void>;
+  onRefreshInbox: () => Promise<void>;
 }
 
-function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: RemoteInboxCardProps) {
+function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRefreshInbox }: RemoteInboxCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [sentChoice, setSentChoice] = useState<string | null>(null);
   const [acknowledgementError, setAcknowledgementError] = useState<string | null>(null);
+  const [deliveryUncertain, setDeliveryUncertain] = useState(false);
   const title = item.notification_title ?? item.agent_name ?? item.workflow_name ?? "Unknown";
   const bodyText = item.status === "failed" && item.error ? item.error : item.summary;
   const Icon = queueItemIsAgentEvent(item) ? Bot : GitBranch;
@@ -70,7 +72,9 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
   const approvalChoices = isApprovalRequest && isPendingApproval ? item.approval_choices ?? [] : [];
   const canDismiss = !item.inbox_notification_id && !item.workflow_approval;
   const providerChoiceSent = item.provider_choice_sent ?? sentChoice;
-  const providerChoiceNeedsAcknowledgement = providerChoiceSent !== null && !item.read;
+  const providerChoicePending = item.provider_choice_pending ?? null;
+  const providerChoiceUncertain = providerChoicePending !== null || deliveryUncertain;
+  const providerChoiceNeedsAcknowledgement = !providerChoiceUncertain && providerChoiceSent !== null && !item.read;
 
   const runAction = async (action: string, choice?: string) => {
     setActionError(null);
@@ -98,6 +102,13 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
         setAcknowledgementError(cause instanceof Error ? cause.message : String(cause));
       }
     } catch (cause) {
+      setDeliveryUncertain(true);
+      try {
+        await onRefreshInbox();
+        setDeliveryUncertain(false);
+      } catch {
+        // Keep the local guard if the recovery refresh is unavailable.
+      }
       setActionError(`Could not send this response: ${cause instanceof Error ? cause.message : String(cause)}`);
     } finally {
       setIsSending(false);
@@ -122,7 +133,7 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
         item.read ? "border-wardian-border bg-wardian-card-bg-muted" : "border-[var(--color-wardian-accent)]/30 bg-wardian-card-bg"
       }`}
       onClick={() => {
-        if (!isPendingApproval) void onAction("mark_read", item.id).catch(() => undefined);
+        if (!isPendingApproval && !providerChoiceUncertain) void onAction("mark_read", item.id).catch(() => undefined);
       }}
     >
       <div className={`absolute left-0 top-0 h-full w-1 ${classes.accent}`} />
@@ -160,9 +171,9 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
           )}
           {(canOpenAgent || actionChoices.length > 0 || approvalChoices.length > 0) && (
             <div className="mt-3 flex flex-wrap items-center gap-2" onClick={(event) => event.stopPropagation()}>
-              {canOpenAgent && item.agent_session_id && <button type="button" aria-label="Open agent terminal" title="Open agent terminal" onClick={() => { if (!isPendingApproval) void onAction("mark_read", item.id).catch(() => undefined); onOpenAgent(item.agent_session_id!); }} className="inline-flex h-7 items-center gap-1 rounded-md border border-wardian-border bg-wardian-card-bg-muted px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:text-bright-neutral"><Terminal className="h-3.5 w-3.5" aria-hidden="true" />Open agent</button>}
+              {canOpenAgent && item.agent_session_id && <button type="button" aria-label="Open agent terminal" title="Open agent terminal" onClick={() => { if (!isPendingApproval && !providerChoiceUncertain) void onAction("mark_read", item.id).catch(() => undefined); onOpenAgent(item.agent_session_id!); }} className="inline-flex h-7 items-center gap-1 rounded-md border border-wardian-border bg-wardian-card-bg-muted px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:text-bright-neutral"><Terminal className="h-3.5 w-3.5" aria-hidden="true" />Open agent</button>}
               {actionChoices.length > 0 && <div className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Action choices">
-                {actionChoices.map((choice) => <button key={`${choice.value}-${choice.label}`} type="button" aria-label={`Send action response ${choice.value}: ${choice.label}`} title={`Send ${choice.label}`} disabled={isSending || providerChoiceSent !== null} onClick={() => void handleActionChoice(choice)} className="inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-md border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 text-[11px] font-semibold text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-50"><span className="shrink-0 font-mono text-[var(--color-wardian-warning)]">{choice.value}</span><span className="min-w-0 truncate">{choice.label}</span></button>)}
+                {actionChoices.map((choice) => <button key={`${choice.value}-${choice.label}`} type="button" aria-label={`Send action response ${choice.value}: ${choice.label}`} title={`Send ${choice.label}`} disabled={isSending || providerChoiceSent !== null || providerChoicePending !== null || deliveryUncertain} onClick={() => void handleActionChoice(choice)} className="inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-md border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 text-[11px] font-semibold text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-50"><span className="shrink-0 font-mono text-[var(--color-wardian-warning)]">{choice.value}</span><span className="min-w-0 truncate">{choice.label}</span></button>)}
               </div>}
               {approvalChoices.length > 0 && <div className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Approval choices">
                 {approvalChoices.map((choice) => <button key={choice} type="button" disabled={isSending} onClick={() => void runAction("resolve_approval", choice)} className="inline-flex h-7 max-w-[220px] cursor-pointer items-center rounded-md border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 text-[11px] font-semibold text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-50">{choice}</button>)}
@@ -170,6 +181,7 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
             </div>
           )}
           {actionError && <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">{actionError}</p>}
+          {providerChoiceUncertain && <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">Response delivery is uncertain. Check the agent before retrying.</p>}
           {providerChoiceNeedsAcknowledgement && <p role={acknowledgementError ? "alert" : "status"} className="mt-2 text-[11px] text-[var(--color-wardian-error)]">Response sent{acknowledgementError ? `, but Inbox status could not be updated: ${acknowledgementError}` : ". Inbox status may need updating."} <button type="button" disabled={isSending} onClick={(event) => { event.stopPropagation(); void retryAcknowledgement(); }} className="font-semibold underline disabled:cursor-not-allowed disabled:opacity-50">Retry Inbox status</button></p>}
         </div>
         {canDismiss && <button type="button" aria-label="Clear item" title="Clear item" onClick={(event) => { event.stopPropagation(); void runAction("dismiss"); }} className="shrink-0 rounded p-1 text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted hover:text-bright-neutral"><Trash2 className="h-3.5 w-3.5" aria-hidden="true" /></button>}
@@ -190,7 +202,7 @@ export const RemoteInboxView: React.FC = () => {
   const [headerActionError, setHeaderActionError] = useState<string | null>(null);
   const visibleItems = useMemo(() => items.filter((item) => matchesFilter(item, filter)), [filter, items]);
   const unreadCount = items.filter((item) => !item.read).length;
-  const readCount = items.filter((item) => item.read).length;
+  const clearableReadCount = items.filter((item) => item.read && !item.inbox_notification_id && !item.workflow_approval).length;
   const filterLabel = filterOptions.find((option) => option.value === filter)?.label ?? "All events";
 
   const runHeaderAction = async (action: "mark_all_read" | "clear_read") => {
@@ -228,7 +240,7 @@ export const RemoteInboxView: React.FC = () => {
             <X className="pointer-events-none absolute right-2 h-3 w-3 text-muted-neutral" aria-hidden="true" />
           </div>
           <button type="button" aria-label="Mark all Inbox items read" disabled={headerAction !== null || unreadCount === 0} onClick={() => void runHeaderAction("mark_all_read")} className="inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40"><CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />{headerAction === "mark_all_read" ? "Marking…" : "Mark all read"}</button>
-          <button type="button" aria-label="Clear read Inbox items" disabled={headerAction !== null || readCount === 0} onClick={() => void runHeaderAction("clear_read")} className="h-8 shrink-0 whitespace-nowrap rounded-md px-1.5 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40">{headerAction === "clear_read" ? "Clearing…" : "Clear read"}</button>
+          <button type="button" aria-label="Clear read Inbox items" disabled={headerAction !== null || clearableReadCount === 0} onClick={() => void runHeaderAction("clear_read")} className="h-8 shrink-0 whitespace-nowrap rounded-md px-1.5 text-[11px] font-semibold text-muted-neutral transition-colors hover:bg-wardian-card-bg-muted disabled:cursor-not-allowed disabled:opacity-40">{headerAction === "clear_read" ? "Clearing…" : "Clear read"}</button>
         </div>
         {(headerActionError || remoteQueueError) && <div role="alert" className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-wardian-error)]"><span>{headerActionError ?? `Inbox updated, but refresh failed: ${remoteQueueError}`}</span>{remoteQueueError && !headerActionError && <button type="button" onClick={() => void refreshInbox()} className="font-semibold underline">Retry refresh</button>}</div>}
       </header>
@@ -240,7 +252,7 @@ export const RemoteInboxView: React.FC = () => {
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            {visibleItems.map((item) => <RemoteInboxCard key={item.id} item={item} onAction={runInboxAction} onOpenAgent={(sessionId) => void openAgent(sessionId)} onSendAgentPrompt={sendPromptToAgent} />)}
+            {visibleItems.map((item) => <RemoteInboxCard key={item.id} item={item} onAction={runInboxAction} onOpenAgent={(sessionId) => void openAgent(sessionId)} onSendAgentPrompt={sendPromptToAgent} onRefreshInbox={refreshInbox} />)}
           </div>
         )}
       </div>
