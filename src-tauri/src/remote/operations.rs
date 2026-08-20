@@ -611,6 +611,9 @@ async fn send_remote_prompt_with_idempotency(
                 Err("provider_choice_already_sent".to_string())
             };
         }
+        // Record the choice before touching the provider. A restart between this
+        // write and the native dispatch must recover as explicitly uncertain,
+        // never as an absent choice that can be replayed blindly.
         persisted[index]["provider_choice_pending"] = serde_json::Value::String(prompt.to_string());
         crate::utils::queue::save_items(&persisted)?;
         let result = crate::delivery::submit_live_surface_prompt(
@@ -874,6 +877,28 @@ mod tests {
         unsafe { std::env::remove_var("WARDIAN_HOME") };
 
         assert_eq!(items[0]["id"], "desktop-inbox-1");
+    }
+
+    #[tokio::test]
+    async fn pending_provider_choice_survives_reload_as_uncertain() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        crate::utils::queue::save_items(&[serde_json::json!({
+            "id": "action-1",
+            "type": "action_needed",
+            "read": false,
+            "agent_session_id": "agent-1",
+            "summary": "Proceed?\n1. Yes",
+            "provider_choice_pending": "1",
+        })])
+        .expect("pending queue");
+
+        let items = remote_queue_items(&AppState::new()).await;
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+
+        assert_eq!(items[0]["provider_choice_pending"], "1");
+        assert!(provider_choice_acknowledgement_unresolved(&items[0]));
     }
 
     #[tokio::test]
