@@ -201,7 +201,7 @@ describe("RemoteInboxView", () => {
         id: "action-1",
         type: "action_needed",
         timestamp: Date.now(),
-        read: false,
+        read: true,
         agent_session_id: "agent-1",
         agent_name: "Coder",
         summary: "Proceed?\n1. Yes",

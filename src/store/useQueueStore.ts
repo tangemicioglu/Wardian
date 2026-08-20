@@ -11,6 +11,18 @@ const SUMMARY_MAX_CHARS = 500;
 const DEDUP_WINDOW_MS = 1_000;
 let persistQueue: Promise<void> = Promise.resolve();
 
+function providerChoiceAcknowledgementUnresolved(item: QueueItem) {
+  return Boolean(item.provider_choice_pending || (item.provider_choice_sent && !item.read));
+}
+
+function readProtected(item: QueueItem) {
+  return Boolean(
+    item.workflow_approval
+      || (item.type === "approval_request" && item.notification_status === "awaiting_reply")
+      || providerChoiceAcknowledgementUnresolved(item),
+  );
+}
+
 interface QueueState {
   items: QueueItem[];
   preferences: QueuePreferences;
@@ -444,6 +456,8 @@ export const useQueueStore = create<QueueState>((set, get) => ({
 
   dismissItem(id) {
     set((s) => {
+      const item = s.items.find((candidate) => candidate.id === id);
+      if (item && readProtected(item)) return {};
       const next = s.items.filter((i) => i.id !== id);
       persistItems(next, s._readNotificationIds);
       return { items: next };
@@ -464,7 +478,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
 
   markAllRead() {
     set((s) => {
-      const next = s.items.map((i) => (i.workflow_approval ? i : { ...i, read: true }));
+      const next = s.items.map((i) => (readProtected(i) ? i : { ...i, read: true }));
       const readNotificationIds = [...new Set([
         ...s._readNotificationIds,
         ...next
@@ -478,7 +492,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
 
   clearRead() {
     set((s) => {
-      const next = s.items.filter((i) => !i.read);
+      const next = s.items.filter((i) => !(i.read && !providerChoiceAcknowledgementUnresolved(i)));
       persistItems(next, s._readNotificationIds);
       return { items: next };
     });

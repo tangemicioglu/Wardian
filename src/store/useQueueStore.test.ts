@@ -661,6 +661,28 @@ describe("useQueueStore - item management", () => {
     expect(useQueueStore.getState().items[0].read).toBe(false);
   });
 
+  it("preserves unresolved provider choices through bulk read, clear, and dismiss", () => {
+    useQueueStore.setState({
+      items: [{
+        id: "action-needed:1",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        provider_choice_pending: "1",
+      }],
+    });
+
+    useQueueStore.getState().markAllRead();
+    expect(useQueueStore.getState().items[0].read).toBe(false);
+
+    useQueueStore.setState({ items: [{ ...useQueueStore.getState().items[0], read: true }] });
+    useQueueStore.getState().clearRead();
+    expect(useQueueStore.getState().items).toHaveLength(1);
+
+    useQueueStore.getState().dismissItem("action-needed:1");
+    expect(useQueueStore.getState().items).toHaveLength(1);
+  });
+
   it("serializes queue persistence so markAllRead cannot be overwritten by an older save", async () => {
     resetStore();
     const saves: Array<{

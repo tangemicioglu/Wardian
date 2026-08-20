@@ -267,7 +267,9 @@ pub async fn apply_remote_inbox_action(
             let mut persisted = persisted_queue_items();
             for item in persisted
                 .iter_mut()
-                .filter(|item| is_legacy_queue_item(item))
+                .filter(|item| {
+                    is_legacy_queue_item(item) && !provider_choice_acknowledgement_unresolved(item)
+                })
             {
                 item["read"] = serde_json::Value::Bool(true);
             }
@@ -300,6 +302,7 @@ pub async fn apply_remote_inbox_action(
                 .into_iter()
                 .filter(|item| {
                     !(is_legacy_queue_item(item)
+                        && !provider_choice_acknowledgement_unresolved(item)
                         && item.get("read").and_then(serde_json::Value::as_bool) == Some(true))
                 })
                 .collect::<Vec<_>>();

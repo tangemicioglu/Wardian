@@ -205,7 +205,10 @@ export const RemoteInboxView: React.FC = () => {
   const [headerActionError, setHeaderActionError] = useState<string | null>(null);
   const visibleItems = useMemo(() => items.filter((item) => matchesFilter(item, filter)), [filter, items]);
   const unreadCount = items.filter((item) => !item.read).length;
-  const clearableReadCount = items.filter((item) => item.read && !item.inbox_notification_id && !item.workflow_approval).length;
+  const clearableReadCount = items.filter((item) => item.read
+    && !item.inbox_notification_id
+    && !item.workflow_approval
+    && !item.provider_choice_pending).length;
   const filterLabel = filterOptions.find((option) => option.value === filter)?.label ?? "All events";
 
   const runHeaderAction = async (action: "mark_all_read" | "clear_read") => {
