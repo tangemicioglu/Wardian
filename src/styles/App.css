@@ -780,6 +780,15 @@ summary,
 .chat-row-actions {
   position: relative;
   z-index: 4;
+  pointer-events: none;
+}
+
+.chat-row-actions > * {
+  pointer-events: none;
+}
+
+.chat-row-actions button {
+  pointer-events: auto;
 }
 
 .chat-row-actions--overlay {

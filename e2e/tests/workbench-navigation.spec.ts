@@ -658,11 +658,24 @@ test("keeps the top tab strip stable when its empty chrome drags the window", as
 });
 
 test("compresses crowded file tabs and keeps the open-tab list available", async ({ page }, testInfo) => {
-  const surfaces = Array.from({ length: 8 }, (_, index) => makeWorkbenchSurface(
+  // Keep one filename pathologically long and the rest deliberately short and
+  // varied. This makes a regression to content-driven tab sizing observable
+  // while the visible tabs remain above the compact minimum width.
+  const fileNames = [
+    "README.md",
+    "todo.md",
+    "graph.md",
+    "notes.md",
+    "guide.md",
+    "tests.md",
+    "status.md",
+    "application-design-review-notes-with-a-pathologically-long-filename-that-must-not-widen-the-tab.md",
+  ] as const;
+  const surfaces = fileNames.map((fileName, index) => makeWorkbenchSurface(
     `file-surface-${index}`,
     "files",
     {
-      resource_key: `file:C:/workspace/area-${index}/Important design document ${index}.md`,
+      resource_key: `file:C:/workspace/area-${index}/${fileName}`,
       state_schema_version: 2,
       state: {
         resource_kind: "file",
@@ -678,19 +691,30 @@ test("compresses crowded file tabs and keeps the open-tab list available", async
     },
   ));
   await bootWorkbench(page, makeWorkbenchDocument({ surfaces }));
-  await page.setViewportSize({ width: 900, height: 720 });
+  await page.setViewportSize({ width: 1600, height: 720 });
 
   const group = workbenchGroup(page, "group-1");
   const tabs = group.getByRole("tab");
   await expect(tabs).toHaveCount(surfaces.length);
-  const widths = await tabs.evaluateAll((elements) => elements.map((element) => (
+  await waitForStableBoundingBoxes(page, [group]);
+  const wideWidths = await tabs.evaluateAll((elements) => elements.map((element) => (
     Math.round(element.getBoundingClientRect().width)
   )));
-  expect(Math.max(...widths)).toBeLessThan(160);
+  expect(Math.min(...wideWidths)).toBeGreaterThan(72);
+  expect(Math.max(...wideWidths)).toBeLessThan(192);
+  expect(Math.max(...wideWidths) - Math.min(...wideWidths)).toBeLessThanOrEqual(1);
   const compressedLabelCount = await tabs.locator(".wardian-workbench-tab-label").evaluateAll((labels) => (
     labels.filter((label) => label.clientWidth > 0 && label.scrollWidth > label.clientWidth).length
   ));
   expect(compressedLabelCount).toBeGreaterThan(0);
+
+  await page.setViewportSize({ width: 900, height: 720 });
+  await waitForStableBoundingBoxes(page, [group]);
+  const crowdedWidths = await tabs.evaluateAll((elements) => elements.map((element) => (
+    Math.round(element.getBoundingClientRect().width)
+  )));
+  expect(Math.min(...crowdedWidths)).toBeGreaterThanOrEqual(72);
+  expect(Math.max(...crowdedWidths)).toBeLessThan(160);
 
   const hoveredTab = tabs.nth(1);
   const closeAction = hoveredTab.locator("[data-tab-close]");
@@ -717,8 +741,8 @@ test("compresses crowded file tabs and keeps the open-tab list available", async
       contentType: "image/png",
     });
   }
-  await overflowList.getByText("Important design document 7.md", { exact: true }).click();
-  await expect(surfaceTab(page, "files", "file:C:/workspace/area-7/Important design document 7.md"))
+  await overflowList.getByText(fileNames[7], { exact: true }).click();
+  await expect(surfaceTab(page, "files", `file:C:/workspace/area-7/${fileNames[7]}`))
     .toHaveAttribute("aria-selected", "true");
 });
 
