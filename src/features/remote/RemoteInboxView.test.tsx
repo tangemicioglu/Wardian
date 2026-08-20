@@ -14,6 +14,7 @@ afterEach(() => {
   window.localStorage.clear();
   useRemoteStore.setState({
     remoteQueueItems: [],
+    providerChoiceSentByItem: {},
     openAgent: originalOpenAgent,
     runInboxAction: originalRunInboxAction,
     sendPromptToAgent: originalSendPromptToAgent,
@@ -175,21 +176,9 @@ describe("RemoteInboxView", () => {
   it("keeps a durably sent choice disabled after acknowledgement failure and remount", async () => {
     const runInboxAction = vi.fn().mockRejectedValue(new Error("Remote request failed: 503"));
     const sendPromptToAgent = vi.fn().mockResolvedValue(undefined);
-    const refreshInbox = vi.fn().mockImplementation(async () => {
-      useRemoteStore.setState({
-        remoteQueueItems: [{
-          id: "action-1",
-          type: "action_needed",
-          timestamp: Date.now(),
-          read: false,
-          agent_session_id: "agent-1",
-          agent_name: "Coder",
-          summary: "Proceed?\n1. Yes",
-          provider_choice_sent: "1",
-        }],
-      });
-      return true;
-    });
+    let resolveRefresh!: (value: boolean) => void;
+    const refreshPromise = new Promise<boolean>((resolve) => { resolveRefresh = resolve; });
+    const refreshInbox = vi.fn().mockReturnValue(refreshPromise);
     useRemoteStore.setState({
       runInboxAction,
       refreshInbox,
@@ -215,6 +204,7 @@ describe("RemoteInboxView", () => {
     expect(choice).toBeDisabled();
     fireEvent.click(choice);
     expect(sendPromptToAgent).toHaveBeenCalledTimes(1);
+    resolveRefresh(true);
   });
 
   it("keeps the provider choice disabled when uncertain delivery cannot be refreshed", async () => {
