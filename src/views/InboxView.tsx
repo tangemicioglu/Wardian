@@ -6,6 +6,7 @@ import { DocsLink } from "../components/DocsLink";
 import { QUEUE_EVENT_LABELS, QUEUE_EVENT_TYPES, queueItemIsVisible } from "../features/queue/queueFilters";
 import { parseQueueActionChoices, type QueueActionChoice } from "../features/queue/actionChoices";
 import { QUEUE_TONE_CLASSES, queueItemIsAgentEvent, queueItemLabel, queueItemTone } from "../features/queue/queuePresentation";
+import { isClearableLegacyCompletion, providerChoiceAcknowledgementUnresolved, providerChoiceRecorded } from "../features/queue/queueTriage";
 
 const INITIAL_QUEUE_RENDER_LIMIT = 80;
 const QUEUE_RENDER_CHUNK_SIZE = 80;
@@ -118,10 +119,12 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const canOpenAgent = Boolean(item.agent_session_id && onOpenAgent);
   const actionChoices = isActionNeeded ? parseQueueActionChoices(bodyText) : [];
   const canUseActionChoices = Boolean(item.agent_session_id && onSendAgentPrompt && actionChoices.length > 0);
+  const providerChoiceUncertain = providerChoiceAcknowledgementUnresolved(item);
+  const providerChoiceAlreadyRecorded = providerChoiceRecorded(item);
   const approvalChoices = isApprovalRequest && (item.workflow_approval || item.notification_status === "awaiting_reply")
     ? item.approval_choices ?? []
     : [];
-  const canAcknowledge = !item.workflow_approval;
+  const canAcknowledge = !item.workflow_approval && !providerChoiceUncertain;
 
   const handleActionChoice = async (choice: QueueActionChoice) => {
     if (!item.agent_session_id || !onSendAgentPrompt) return;
@@ -250,7 +253,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
                       type="button"
                       aria-label={`Send action response ${choice.value}: ${choice.label}`}
                       title={`Send ${choice.label}`}
-                      disabled={isSending}
+                      disabled={isSending || providerChoiceAlreadyRecorded}
                       onClick={() => void handleActionChoice(choice)}
                       className="inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-md border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 text-[11px] font-semibold text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -278,9 +281,10 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
             </div>
           )}
           {actionError ? <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">{actionError}</p> : null}
+          {providerChoiceUncertain && <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">Response delivery is uncertain. Check the agent before retrying.</p>}
         </div>
 
-        {!item.inbox_notification_id && !item.workflow_approval && <button
+        {!item.inbox_notification_id && !item.workflow_approval && !providerChoiceUncertain && <button
           type="button"
           aria-label="Clear item"
           title="Clear item"
@@ -380,7 +384,7 @@ export function InboxView({ onOpenAgent, onSendAgentPrompt }: InboxViewProps) {
   const preferences = useQueueStore((s) => s.preferences);
   const markAllRead = useQueueStore((s) => s.markAllRead);
   const clearRead = useQueueStore((s) => s.clearRead);
-  const hasReadItems = items.some((item) => item.read);
+  const hasReadItems = items.some((item) => item.read && isClearableLegacyCompletion(item));
   const visibleItems = useMemo(
     () => items.filter((item) => queueItemIsVisible(item, preferences)),
     [items, preferences],

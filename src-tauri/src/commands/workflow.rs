@@ -525,6 +525,42 @@ pub async fn workflow_approve(
     bindings: Option<HashMap<String, String>>,
     assignments: Option<WorkflowAssignments>,
 ) -> Result<serde_json::Value, String> {
+    approve_workflow_for_surface(
+        &state,
+        app,
+        blueprint_id,
+        run_id,
+        blueprint_path,
+        node,
+        granted,
+        actor,
+        note,
+        provider,
+        workspace,
+        bindings,
+        assignments,
+    )
+    .await
+}
+
+/// Shared approval implementation for the desktop command and authenticated
+/// remote Inbox actions.
+#[allow(clippy::too_many_arguments)]
+pub async fn approve_workflow_for_surface(
+    state: &AppState,
+    app: AppHandle,
+    blueprint_id: String,
+    run_id: String,
+    blueprint_path: String,
+    node: String,
+    granted: bool,
+    actor: String,
+    note: Option<String>,
+    provider: Option<String>,
+    workspace: Option<String>,
+    bindings: Option<HashMap<String, String>>,
+    assignments: Option<WorkflowAssignments>,
+) -> Result<serde_json::Value, String> {
     let blueprint = parse_blueprint_for_run(&blueprint_id, &blueprint_path)?;
     let run_root =
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
@@ -551,7 +587,7 @@ pub async fn workflow_approve(
             InvocationKind::Manual,
         );
         let agent_catalog = runs::agent_catalog_from_state_with_assignments(
-            &state,
+            state,
             &bindings,
             &assignments,
             &workspace,

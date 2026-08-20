@@ -2,8 +2,8 @@ use crate::remote::models::{
     AuthChallengeRequest, AuthChallengeResponse, AuthSessionRequest, AuthSessionResponse,
     DeviceRecord, PairingSubmitRequest, PairingSubmitResponse, PendingPairingDecision,
     PendingPairingRequestRecord, RemoteAgentActionRequest, RemoteAuditRecord, RemoteGatewayConfig,
-    RemoteSessionRecord, RemoteWebSocketTicketRequest, RemoteWebSocketTicketResponse,
-    REMOTE_AUDIT_SCHEMA_VERSION,
+    RemoteInboxActionRequest, RemoteSessionRecord, RemoteWebSocketTicketRequest,
+    RemoteWebSocketTicketResponse, REMOTE_AUDIT_SCHEMA_VERSION,
 };
 use axum::{
     body::Body,
@@ -20,7 +20,7 @@ use base64::Engine;
 use p256::ecdsa::VerifyingKey;
 use p256::pkcs8::DecodePublicKey;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const REMOTE_SESSION_COOKIE_NAME: &str = "__Host-wardian_remote_session";
 const REMOTE_CSRF_HEADER_NAME: &str = "x-wardian-csrf";
@@ -98,6 +98,7 @@ fn remote_router(app: AppHandle, config: RemoteGatewayConfig) -> Router {
         .route("/remote/api/auth/session", post(create_auth_session))
         .route("/remote/api/agents", get(list_remote_agents))
         .route("/remote/api/queue", get(load_remote_queue))
+        .route("/remote/api/queue/action", post(run_inbox_action))
         .route("/remote/api/watchlists", get(load_remote_watchlists))
         .route("/remote/api/workflows", get(list_remote_workflows))
         .route(
@@ -119,10 +120,18 @@ fn remote_router(app: AppHandle, config: RemoteGatewayConfig) -> Router {
         .with_state(RemoteGatewayContext { app, config })
 }
 
-#[derive(Clone)]
-pub(super) struct RemoteGatewayContext {
-    pub(super) app: AppHandle,
+pub(super) struct RemoteGatewayContext<R: Runtime = tauri::Wry> {
+    pub(super) app: AppHandle<R>,
     pub(super) config: RemoteGatewayConfig,
+}
+
+impl<R: Runtime> Clone for RemoteGatewayContext<R> {
+    fn clone(&self) -> Self {
+        Self {
+            app: self.app.clone(),
+            config: self.config.clone(),
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -610,6 +619,35 @@ async fn load_remote_queue(
     Ok(Json(serde_json::json!({ "items": items })))
 }
 
+async fn run_inbox_action(
+    State(ctx): State<RemoteGatewayContext>,
+    headers: HeaderMap,
+    Json(request): Json<RemoteInboxActionRequest>,
+) -> Result<Json<serde_json::Value>, RemoteGatewayError> {
+    let action = request.action.clone();
+    let target = request.item_id.clone().unwrap_or_else(|| "all".to_string());
+    let (origin, session) = authorize_inbox_action(&ctx, &headers, &action).await?;
+    let state = ctx.app.state::<crate::state::AppState>();
+    if let Err(_error) =
+        crate::remote::operations::apply_remote_inbox_action(&state, &ctx.app, request).await
+    {
+        audit_gateway_event(
+            &session,
+            &origin,
+            GatewayAuditEvent::rejected("inbox_action", &action, "inbox_action_failed")
+                .target("inbox", &target),
+        );
+        return Err(RemoteGatewayError::bad_request("inbox_action_failed"));
+    }
+    audit_gateway_event(
+        &session,
+        &origin,
+        GatewayAuditEvent::accepted("inbox_action", &action).target("inbox", &target),
+    );
+    let _ = ctx.app.emit("inbox-updated", ());
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 async fn load_remote_watchlists(
     State(ctx): State<RemoteGatewayContext>,
     headers: HeaderMap,
@@ -1059,8 +1097,8 @@ fn require_audited_request_boundary(
     }
 }
 
-async fn require_audited_remote_session(
-    ctx: &RemoteGatewayContext,
+async fn require_audited_remote_session<R: Runtime>(
+    ctx: &RemoteGatewayContext<R>,
     headers: &HeaderMap,
     origin: &str,
     event_type: &str,
@@ -1119,8 +1157,8 @@ fn validate_remote_stream(stream: &str) -> Result<&'static str, &'static str> {
     }
 }
 
-async fn require_remote_session(
-    ctx: &RemoteGatewayContext,
+async fn require_remote_session<R: Runtime>(
+    ctx: &RemoteGatewayContext<R>,
     headers: &HeaderMap,
 ) -> Result<RemoteSessionRecord, RemoteGatewayError> {
     let session_id = remote_session_cookie_value(headers)?;
@@ -1137,8 +1175,8 @@ async fn require_remote_session(
     Ok(session.clone())
 }
 
-async fn require_mutation_rate_limit(
-    ctx: &RemoteGatewayContext,
+async fn require_mutation_rate_limit<R: Runtime>(
+    ctx: &RemoteGatewayContext<R>,
     session: &RemoteSessionRecord,
     origin: &str,
     event_type: &str,
@@ -1164,6 +1202,19 @@ async fn require_mutation_rate_limit(
             Err(RemoteGatewayError::too_many_requests("rate_limited"))
         }
     }
+}
+
+async fn authorize_inbox_action<R: Runtime>(
+    ctx: &RemoteGatewayContext<R>,
+    headers: &HeaderMap,
+    action: &str,
+) -> Result<(String, RemoteSessionRecord), RemoteGatewayError> {
+    let origin = require_audited_request_boundary(&ctx.config, headers, true, "inbox_action")?;
+    let session =
+        require_audited_remote_session(ctx, headers, &origin, "inbox_action", action).await?;
+    require_mutation_rate_limit(ctx, &session, &origin, "inbox_action", action).await?;
+    require_csrf_header(&session, headers)?;
+    Ok((origin, session))
 }
 
 fn remote_session_cookie_value(headers: &HeaderMap) -> Result<String, RemoteGatewayError> {
@@ -1499,7 +1550,9 @@ mod tests {
         RemoteGatewayConfig, RemoteSessionRecord, REMOTE_AUDIT_SCHEMA_VERSION,
         REMOTE_SETTINGS_SCHEMA_VERSION,
     };
+    use crate::state::AppState;
     use axum::http::{header, HeaderMap, HeaderValue};
+    use tauri::Manager;
 
     fn config() -> RemoteGatewayConfig {
         RemoteGatewayConfig {
@@ -1734,6 +1787,61 @@ mod tests {
         assert!(!remote_session_is_active(&state, &session_id).await);
     }
 
+    #[tokio::test]
+    async fn inbox_action_authorization_enforces_origin_session_and_csrf_boundary() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        crate::remote::storage::save_remote_config_at(temp.path(), &config())
+            .expect("remote config");
+
+        let app = tauri::test::mock_app();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let session = {
+            let mut runtime = state.remote_runtime.lock().await;
+            crate::remote::auth::create_session(
+                &mut runtime,
+                "device-1",
+                chrono::Utc::now().timestamp_millis(),
+            )
+        };
+        let ctx = RemoteGatewayContext {
+            app: app.handle().clone(),
+            config: config(),
+        };
+
+        let authorized = authorize_inbox_action(&ctx, &action_headers(&session), "mark_read")
+            .await
+            .expect("authorized inbox action");
+        assert_eq!(authorized.1.session_id, session.session_id);
+
+        let mut missing_session = action_headers(&session);
+        missing_session.remove(header::COOKIE);
+        let error = authorize_inbox_action(&ctx, &missing_session, "mark_all_read")
+            .await
+            .expect_err("missing session rejected");
+        assert_eq!(error.code, "missing_session_cookie");
+
+        let mut invalid_origin = action_headers(&session);
+        invalid_origin.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://evil.example"),
+        );
+        let error = authorize_inbox_action(&ctx, &invalid_origin, "mark_all_read")
+            .await
+            .expect_err("invalid origin rejected");
+        assert_eq!(error.code, "origin_forbidden");
+
+        let mut missing_csrf = action_headers(&session);
+        missing_csrf.remove(REMOTE_CSRF_HEADER_NAME);
+        let error = authorize_inbox_action(&ctx, &missing_csrf, "mark_all_read")
+            .await
+            .expect_err("missing csrf rejected");
+        assert_eq!(error.code, "csrf_failed");
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+    }
+
     #[test]
     fn status_stream_client_messages_do_not_request_immediate_snapshot() {
         assert_eq!(
@@ -1781,6 +1889,32 @@ mod tests {
         assert!(value.contains("HttpOnly"));
         assert!(value.contains("SameSite=Strict"));
         assert!(!value.contains("Domain="));
+    }
+
+    fn action_headers(session: &RemoteSessionRecord) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_static("wardian.tailnet.ts.net"),
+        );
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://wardian.tailnet.ts.net"),
+        );
+        headers.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!(
+                "{REMOTE_SESSION_COOKIE_NAME}={}",
+                session.session_id
+            ))
+            .expect("cookie header"),
+        );
+        headers.insert(
+            REMOTE_CSRF_HEADER_NAME,
+            HeaderValue::from_str(&session.csrf_nonce).expect("csrf header"),
+        );
+        headers
     }
 
     #[test]

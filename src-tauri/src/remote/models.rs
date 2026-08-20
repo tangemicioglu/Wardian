@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use wardian_core::control::MessageInputMode;
 use std::collections::{HashMap, VecDeque};
+use wardian_core::control::MessageInputMode;
 
 pub const REMOTE_SETTINGS_SCHEMA_VERSION: u8 = 1;
 pub const REMOTE_AUDIT_SCHEMA_VERSION: u8 = 1;
@@ -279,6 +279,14 @@ pub struct RemoteAgentActionRequest {
     pub target: String,
     pub prompt: Option<String>,
     pub input_mode: Option<MessageInputMode>,
+    pub inbox_item_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteInboxActionRequest {
+    pub action: String,
+    pub item_id: Option<String>,
+    pub choice: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

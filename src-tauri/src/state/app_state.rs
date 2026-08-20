@@ -33,6 +33,12 @@ pub struct AppState {
     // disk CAS lock, keeping the async command boundary ordered without a
     // synchronous mutex held across an await.
     pub workbench_io_lock: Mutex<()>,
+    // Serializes queue read-modify-write mutations shared by the desktop and
+    // remote Inbox surfaces.
+    pub queue_io_lock: Mutex<()>,
+    // Snapshot returned by the desktop queue load, used to merge a later
+    // desktop save with remote mutations that happened in between.
+    pub queue_loaded_snapshot: Mutex<Option<Vec<serde_json::Value>>>,
     // Map of session_id to ActiveAgent
     pub agents: Mutex<HashMap<String, ActiveAgent>>,
     pub system_metrics: Arc<Mutex<sysinfo::System>>,
@@ -319,6 +325,8 @@ impl Default for AppState {
         sys.refresh_all();
         Self {
             workbench_io_lock: Mutex::new(()),
+            queue_io_lock: Mutex::new(()),
+            queue_loaded_snapshot: Mutex::new(None),
             agents: Mutex::new(HashMap::new()),
             system_metrics: Arc::new(Mutex::new(sys)),
             agent_order: Mutex::new(Vec::new()),
@@ -370,6 +378,8 @@ mod tests {
         let state = AppState::new();
         assert!(state.agent_order.blocking_lock().is_empty());
         assert!(state.workbench_io_lock.try_lock().is_ok());
+        assert!(state.queue_io_lock.try_lock().is_ok());
+        assert!(state.queue_loaded_snapshot.try_lock().is_ok());
         assert!(state
             .terminal_sessions
             .subscribe_wakeups()

@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::Path;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, State};
+
+use crate::state::AppState;
 
 #[tauri::command]
 pub async fn load_watchlists(_app: AppHandle) -> Result<serde_json::Value, String> {
@@ -472,29 +474,27 @@ pub async fn save_agent_interactions(
 }
 
 #[tauri::command]
-pub async fn load_queue_items(_app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    if let Some(home) = crate::utils::fs::get_wardian_home() {
-        let path = home.join("queue/items.json");
-        if let Ok(data) = std::fs::read_to_string(&path) {
-            let parsed: serde_json::Value =
-                serde_json::from_str(&data).unwrap_or_else(|_| serde_json::json!([]));
-            return Ok(parsed);
-        }
-    }
-    Ok(serde_json::json!([]))
+pub async fn load_queue_items(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let _queue_guard = state.queue_io_lock.lock().await;
+    let items = crate::utils::queue::load_items();
+    *state.queue_loaded_snapshot.lock().await = Some(items.clone());
+    Ok(serde_json::json!(items))
 }
 
 #[tauri::command]
 pub async fn save_queue_items(
     items: serde_json::Value,
-    _app: tauri::AppHandle,
+    state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let home = crate::utils::fs::get_wardian_home()
-        .ok_or_else(|| "Could not find home directory".to_string())?;
-    let _ = std::fs::create_dir_all(home.join("queue"));
-    let path = home.join("queue/items.json");
-    let json = serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())?;
+    let persisted = items
+        .as_array()
+        .ok_or_else(|| "queue items must be an array".to_string())?;
+    let _queue_guard = state.queue_io_lock.lock().await;
+    let latest = crate::utils::queue::load_items();
+    let base = state.queue_loaded_snapshot.lock().await.clone();
+    let merged = crate::utils::queue::merge_desktop_snapshot(base.as_deref(), persisted, &latest);
+    crate::utils::queue::save_items(&merged)?;
+    *state.queue_loaded_snapshot.lock().await = Some(merged);
     Ok(())
 }
 

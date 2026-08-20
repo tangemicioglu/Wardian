@@ -42,7 +42,34 @@ Inbox preferences persist under the active Wardian home.
 - Use **Approve** or **Reject** on a workflow approval card to resolve its waiting gate from Inbox. Wardian records the decision before it continues an approved workflow in the background.
 - Use **Mark all read**, **Clear read**, or the item trash control for reviewed, non-pending items.
 
+When you choose a provider response, Wardian first sends the response to the
+agent and then acknowledges the Inbox card. If the response is sent but the
+acknowledgement fails, the card says **Response sent** and offers **Retry Inbox
+status**. Retrying the status does not send the provider response again. The
+sent choice is recorded with the Inbox item, so reloading the mobile Inbox also
+keeps that response disabled and exposes the status retry.
+
+If the host cannot confirm whether the provider received the choice, the card
+shows **Response delivery is uncertain** and keeps the choice disabled. Check
+the agent session before taking any further action; Wardian does not resend a
+potentially consequential response automatically, and the item cannot be
+dismissed while its recovery state is unresolved.
+
+The mobile Inbox includes the same triage actions: choose an event filter, tap
+an item to acknowledge it, mark all eligible items read, clear reviewed legacy
+items, or dismiss an individual legacy item. Agent action choices and pending
+approval choices remain available on their cards. Use **Open agent** to jump to
+the related mobile agent session without leaving Inbox.
+
 An unresolved approval cannot be cleared or dismissed. When it expires, the agent must not treat the absence of a response as approval.
+
+If the desktop Inbox saves before its load baseline is available, Wardian keeps
+the latest persisted projection authoritative. This prevents a stale desktop
+snapshot from resurrecting an item dismissed from another surface.
+
+**Clear read** removes only read legacy completion items. Durable notification
+history and read **Action needed** prompts remain visible, and the control is
+disabled when there are no completion items to clear.
 
 ## Agent Notifications
 

@@ -661,6 +661,28 @@ describe("useQueueStore - item management", () => {
     expect(useQueueStore.getState().items[0].read).toBe(false);
   });
 
+  it("preserves unresolved provider choices through bulk read, clear, and dismiss", () => {
+    useQueueStore.setState({
+      items: [{
+        id: "action-needed:1",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        provider_choice_pending: "1",
+      }],
+    });
+
+    useQueueStore.getState().markAllRead();
+    expect(useQueueStore.getState().items[0].read).toBe(false);
+
+    useQueueStore.setState({ items: [{ ...useQueueStore.getState().items[0], read: true }] });
+    useQueueStore.getState().clearRead();
+    expect(useQueueStore.getState().items).toHaveLength(1);
+
+    useQueueStore.getState().dismissItem("action-needed:1");
+    expect(useQueueStore.getState().items).toHaveLength(1);
+  });
+
   it("serializes queue persistence so markAllRead cannot be overwritten by an older save", async () => {
     resetStore();
     const saves: Array<{
@@ -727,7 +749,7 @@ describe("useQueueStore - item management", () => {
     expect(mockInvoke).toHaveBeenCalledWith("save_queue_items", expect.anything());
   });
 
-  it("preserves a durable update acknowledgement after clearing the displayed card", async () => {
+  it("keeps durable update history visible after clearing read completions", async () => {
     useQueueStore.setState({
       items: [{
         id: "notification:notice-1",
@@ -746,7 +768,10 @@ describe("useQueueStore - item management", () => {
         items: [expect.objectContaining({ inbox_notification_id: "notice-1", read: true })],
       });
     });
-    expect(useQueueStore.getState().items).toEqual([]);
+    expect(useQueueStore.getState().items).toEqual([expect.objectContaining({
+      inbox_notification_id: "notice-1",
+      read: true,
+    })]);
     expect(useQueueStore.getState()._readNotificationIds).toEqual(["notice-1"]);
   });
 });

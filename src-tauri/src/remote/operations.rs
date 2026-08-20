@@ -1,9 +1,10 @@
 use crate::remote::models::{
-    RemoteAgentActionRequest, RemoteAgentSummary, RemoteTerminalSnapshot, RemoteWatchlistResponse,
+    RemoteAgentActionRequest, RemoteAgentSummary, RemoteInboxActionRequest, RemoteTerminalSnapshot,
+    RemoteWatchlistResponse,
 };
 use crate::state::AppState;
 use std::collections::HashMap;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use wardian_core::control::{InboxNotificationKind, InteractionStatus, MessageInputMode};
 use wardian_core::models::chat::AgentChatEvent;
 
@@ -173,6 +174,243 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
     items
 }
 
+fn persisted_queue_items() -> Vec<serde_json::Value> {
+    crate::utils::queue::load_items()
+}
+
+fn save_persisted_queue_items(items: &[serde_json::Value]) -> Result<(), String> {
+    crate::utils::queue::save_items(items)
+}
+
+fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
+    item.get("inbox_notification_id").is_none() && item.get("workflow_approval").is_none()
+}
+
+fn is_clearable_legacy_completion(item: &serde_json::Value) -> bool {
+    is_legacy_queue_item(item)
+        && matches!(
+            item.get("type").and_then(serde_json::Value::as_str),
+            Some("agent_completed" | "workflow_completed")
+        )
+}
+
+fn is_pending_approval(item: &serde_json::Value) -> bool {
+    item.get("workflow_approval").is_some()
+        || (item.get("type").and_then(serde_json::Value::as_str) == Some("approval_request")
+            && item
+                .get("notification_status")
+                .and_then(serde_json::Value::as_str)
+                == Some("awaiting_reply"))
+}
+
+fn provider_choice_acknowledgement_unresolved(item: &serde_json::Value) -> bool {
+    item.get("provider_choice_pending").is_some()
+        || (item.get("provider_choice_sent").is_some()
+            && item.get("read").and_then(serde_json::Value::as_bool) != Some(true))
+}
+
+fn notification_read_acknowledgement(notification_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": format!("notification-read:{notification_id}"),
+        "type": "agent_update",
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+        "read": true,
+        "inbox_notification_id": notification_id,
+    })
+}
+
+fn current_queue_item<'a>(
+    items: &'a [serde_json::Value],
+    item_id: &str,
+) -> Result<&'a serde_json::Value, String> {
+    items
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(item_id))
+        .ok_or_else(|| "inbox_item_not_found".to_string())
+}
+
+/// Applies a mobile Inbox mutation to the same persisted projection used by
+/// the desktop Inbox. The caller must authenticate and rate-limit the request.
+pub async fn apply_remote_inbox_action(
+    state: &AppState,
+    app: &AppHandle,
+    request: RemoteInboxActionRequest,
+) -> Result<(), String> {
+    let _queue_guard = state.queue_io_lock.lock().await;
+    let projected_items = remote_queue_items(state).await;
+    match request.action.as_str() {
+        "mark_read" => {
+            let item_id = request
+                .item_id
+                .as_deref()
+                .ok_or_else(|| "item_id_required".to_string())?;
+            let item = current_queue_item(&projected_items, item_id)?;
+            if is_pending_approval(item) {
+                return Err("pending_approval_cannot_be_marked_read".to_string());
+            }
+            let mut persisted = persisted_queue_items();
+            if let Some(notification_id) = item
+                .get("inbox_notification_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                if !persisted.iter().any(|candidate| {
+                    candidate
+                        .get("inbox_notification_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(notification_id)
+                        && candidate.get("read").and_then(serde_json::Value::as_bool) == Some(true)
+                }) {
+                    persisted.push(notification_read_acknowledgement(notification_id));
+                }
+            } else if let Some(candidate) = persisted.iter_mut().find(|candidate| {
+                candidate.get("id").and_then(serde_json::Value::as_str) == Some(item_id)
+            }) {
+                candidate["read"] = serde_json::Value::Bool(true);
+            } else {
+                return Err("inbox_item_not_persisted".to_string());
+            }
+            save_persisted_queue_items(&persisted)?;
+        }
+        "mark_all_read" => {
+            let mut persisted = persisted_queue_items();
+            for item in persisted
+                .iter_mut()
+                .filter(|item| {
+                    is_legacy_queue_item(item) && !provider_choice_acknowledgement_unresolved(item)
+                })
+            {
+                item["read"] = serde_json::Value::Bool(true);
+            }
+            let known_acknowledgements = persisted
+                .iter()
+                .filter(|item| item.get("read").and_then(serde_json::Value::as_bool) == Some(true))
+                .filter_map(|item| {
+                    item.get("inbox_notification_id")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .map(str::to_string)
+                .collect::<std::collections::HashSet<_>>();
+            for item in projected_items.iter().filter(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("agent_update")
+            }) {
+                if let Some(notification_id) = item
+                    .get("inbox_notification_id")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if !known_acknowledgements.contains(notification_id) {
+                        persisted.push(notification_read_acknowledgement(notification_id));
+                    }
+                }
+            }
+            save_persisted_queue_items(&persisted)?;
+        }
+        "clear_read" => {
+            let persisted = persisted_queue_items();
+            let next = persisted
+                .into_iter()
+                .filter(|item| {
+                    !(is_clearable_legacy_completion(item)
+                        && item.get("read").and_then(serde_json::Value::as_bool) == Some(true))
+                })
+                .collect::<Vec<_>>();
+            save_persisted_queue_items(&next)?;
+        }
+        "dismiss" => {
+            let item_id = request
+                .item_id
+                .as_deref()
+                .ok_or_else(|| "item_id_required".to_string())?;
+            let item = current_queue_item(&projected_items, item_id)?;
+            if item.get("workflow_approval").is_some()
+                || item.get("inbox_notification_id").is_some()
+                || provider_choice_acknowledgement_unresolved(item)
+            {
+                return Err("inbox_item_not_dismissible".to_string());
+            }
+            let persisted = persisted_queue_items();
+            let next = persisted
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.get("id").and_then(serde_json::Value::as_str) != Some(item_id)
+                })
+                .collect::<Vec<_>>();
+            save_persisted_queue_items(&next)?;
+        }
+        "resolve_approval" => {
+            let item_id = request
+                .item_id
+                .as_deref()
+                .ok_or_else(|| "item_id_required".to_string())?;
+            let choice = request
+                .choice
+                .as_deref()
+                .ok_or_else(|| "choice_required".to_string())?;
+            let item = current_queue_item(&projected_items, item_id)?;
+            let choices = item
+                .get("approval_choices")
+                .and_then(serde_json::Value::as_array)
+                .map(|choices| {
+                    choices
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if !choices.contains(&choice) {
+                return Err("invalid_choice".to_string());
+            }
+            if let Some(notification_id) = item
+                .get("inbox_notification_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                state
+                    .interactions
+                    .resolve_notification(notification_id, choice)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            } else if let Some(workflow_approval) = item.get("workflow_approval") {
+                crate::commands::workflow::approve_workflow_for_surface(
+                    state,
+                    app.clone(),
+                    workflow_approval
+                        .get("blueprint_id")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "workflow_blueprint_id_missing".to_string())?
+                        .to_string(),
+                    workflow_approval
+                        .get("run_id")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "workflow_run_id_missing".to_string())?
+                        .to_string(),
+                    workflow_approval
+                        .get("blueprint_path")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "workflow_blueprint_path_missing".to_string())?
+                        .to_string(),
+                    workflow_approval
+                        .get("node")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "workflow_node_missing".to_string())?
+                        .to_string(),
+                    choice == "Approve",
+                    "user".to_string(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
+            } else {
+                return Err("inbox_item_not_approval".to_string());
+            }
+        }
+        _ => return Err("unsupported_inbox_action".to_string()),
+    }
+    let _ = app.emit("inbox-updated", ());
+    Ok(())
+}
+
 fn queue_timestamp(value: &str) -> i64 {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|timestamp| timestamp.timestamp_millis())
@@ -291,27 +529,21 @@ pub async fn run_remote_agent_action(
     match request.action.as_str() {
         "send_prompt" => {
             let state = app.state::<AppState>();
-            crate::delivery::submit_live_surface_prompt(
-                Some(app),
+            let prompt = request.prompt.unwrap_or_default();
+            let _queue_guard = if request.inbox_item_id.is_some() {
+                Some(state.queue_io_lock.lock().await)
+            } else {
+                None
+            };
+            send_remote_prompt_with_idempotency(
+                app,
                 &state,
-                crate::delivery::LiveSurfacePromptRequest {
-                    session_id: request.target,
-                    prompt: request.prompt.unwrap_or_default(),
-                    interaction_id: None,
-                    input_mode: request.input_mode.unwrap_or_default(),
-                    queue_policy: wardian_core::control::QueuePolicy::LiveOnly,
-                    approval_action: None,
-                    origin: None,
-                    runtime_state: "live_pty_available",
-                    mark_prompt_started: true,
-                    require_provider_turn_receipt: false,
-                    payload_sent_detail: None,
-                    delivery_message_id: None,
-                },
+                &request.target,
+                &prompt,
+                request.input_mode.unwrap_or_default(),
+                request.inbox_item_id.as_deref(),
             )
             .await
-            .map_err(|error| error.to_string())
-            .map(|_| ())
         }
         "pause" => {
             let state = app.state::<AppState>();
@@ -332,6 +564,120 @@ pub async fn run_remote_agent_action(
         }
         _ => Err("unsupported_remote_agent_action".to_string()),
     }
+}
+
+async fn send_remote_prompt_with_idempotency(
+    app: &AppHandle,
+    state: &AppState,
+    target: &str,
+    prompt: &str,
+    input_mode: MessageInputMode,
+    inbox_item_id: Option<&str>,
+) -> Result<(), String> {
+    if let Some(item_id) = inbox_item_id {
+        let mut persisted = crate::utils::queue::load_items();
+        let index = persisted
+            .iter()
+            .position(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(item_id))
+            .ok_or_else(|| "inbox_item_not_found".to_string())?;
+        let item = &persisted[index];
+        if item
+            .get("agent_session_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(target)
+        {
+            return Err("inbox_item_agent_mismatch".to_string());
+        }
+        if item.get("type").and_then(serde_json::Value::as_str) != Some("action_needed") {
+            return Err("inbox_item_not_provider_action".to_string());
+        }
+        if let Some(pending_choice) = item
+            .get("provider_choice_pending")
+            .and_then(serde_json::Value::as_str)
+        {
+            return if pending_choice == prompt {
+                Err("provider_choice_delivery_uncertain".to_string())
+            } else {
+                Err("provider_choice_already_sent".to_string())
+            };
+        }
+        if let Some(sent_choice) = item
+            .get("provider_choice_sent")
+            .and_then(serde_json::Value::as_str)
+        {
+            return if sent_choice == prompt {
+                Ok(())
+            } else {
+                Err("provider_choice_already_sent".to_string())
+            };
+        }
+        persisted[index]["provider_choice_pending"] = serde_json::Value::String(prompt.to_string());
+        crate::utils::queue::save_items(&persisted)?;
+        let result = crate::delivery::submit_live_surface_prompt(
+            Some(app),
+            state,
+            crate::delivery::LiveSurfacePromptRequest {
+                session_id: target.to_string(),
+                prompt: prompt.to_string(),
+                interaction_id: None,
+                input_mode,
+                queue_policy: wardian_core::control::QueuePolicy::LiveOnly,
+                approval_action: None,
+                origin: None,
+                runtime_state: "live_pty_available",
+                mark_prompt_started: true,
+                require_provider_turn_receipt: true,
+                payload_sent_detail: None,
+                delivery_message_id: None,
+            },
+        )
+        .await;
+        return match result {
+            Ok(_) => {
+                persisted[index]["provider_choice_sent"] =
+                    serde_json::Value::String(prompt.to_string());
+                persisted[index]
+                    .as_object_mut()
+                    .expect("queue item object")
+                    .remove("provider_choice_pending");
+                crate::utils::queue::save_items(&persisted)?;
+                Ok(())
+            }
+            Err(error) => {
+                if error.retry_safe {
+                    if let Some(item) = persisted.get_mut(index) {
+                        item.as_object_mut()
+                            .expect("queue item object")
+                            .remove("provider_choice_pending");
+                    }
+                    let _ = crate::utils::queue::save_items(&persisted);
+                }
+                Err(error.to_string())
+            }
+        };
+    }
+
+    crate::delivery::submit_live_surface_prompt(
+        Some(app),
+        state,
+        crate::delivery::LiveSurfacePromptRequest {
+            session_id: target.to_string(),
+            prompt: prompt.to_string(),
+            interaction_id: None,
+            input_mode,
+            queue_policy: wardian_core::control::QueuePolicy::LiveOnly,
+            approval_action: None,
+            origin: None,
+            runtime_state: "live_pty_available",
+            mark_prompt_started: true,
+            require_provider_turn_receipt: false,
+            payload_sent_detail: None,
+            delivery_message_id: None,
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())
+    .map(|_| ())
 }
 
 #[cfg(test)]
@@ -531,6 +877,175 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_queue_mutations_preserve_both_updates_and_valid_json() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        crate::utils::queue::save_items(&[
+            serde_json::json!({ "id": "first", "read": false }),
+            serde_json::json!({ "id": "second", "read": false }),
+        ])
+        .expect("initial queue");
+
+        let state = Arc::new(AppState::new());
+        let start = Arc::new(tokio::sync::Barrier::new(2));
+        let first_state = Arc::clone(&state);
+        let first_start = Arc::clone(&start);
+        let first = tokio::spawn(async move {
+            first_start.wait().await;
+            let _queue_guard = first_state.queue_io_lock.lock().await;
+            let mut items = persisted_queue_items();
+            tokio::task::yield_now().await;
+            items[0]["read"] = serde_json::Value::Bool(true);
+            save_persisted_queue_items(&items).expect("first queue update");
+        });
+        let second_state = Arc::clone(&state);
+        let second_start = Arc::clone(&start);
+        let second = tokio::spawn(async move {
+            second_start.wait().await;
+            let _queue_guard = second_state.queue_io_lock.lock().await;
+            let mut items = persisted_queue_items();
+            tokio::task::yield_now().await;
+            items[1]["read"] = serde_json::Value::Bool(true);
+            save_persisted_queue_items(&items).expect("second queue update");
+        });
+        first.await.expect("first task");
+        second.await.expect("second task");
+
+        let items = persisted_queue_items();
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+        assert_eq!(items[0]["read"], true);
+        assert_eq!(items[1]["read"], true);
+    }
+
+    #[tokio::test]
+    async fn desktop_snapshot_merge_preserves_remote_triage() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        let initial = vec![
+            serde_json::json!({ "id": "first", "read": false, "provider_choice_sent": "1" }),
+            serde_json::json!({ "id": "second", "read": false }),
+        ];
+        crate::utils::queue::save_items(&initial).expect("initial queue");
+        let state = AppState::new();
+        *state.queue_loaded_snapshot.lock().await = Some(initial.clone());
+
+        {
+            let _queue_guard = state.queue_io_lock.lock().await;
+            let mut remote_items = crate::utils::queue::load_items();
+            remote_items[0]["read"] = serde_json::Value::Bool(true);
+            crate::utils::queue::save_items(&remote_items).expect("remote queue update");
+        }
+
+        {
+            let _queue_guard = state.queue_io_lock.lock().await;
+            let latest = crate::utils::queue::load_items();
+            let base = state.queue_loaded_snapshot.lock().await.clone();
+            let desktop_snapshot = vec![
+                serde_json::json!({ "id": "first", "read": false }),
+                serde_json::json!({ "id": "second", "read": true }),
+            ];
+            let merged = crate::utils::queue::merge_desktop_snapshot(
+                base.as_deref(),
+                &desktop_snapshot,
+                &latest,
+            );
+            crate::utils::queue::save_items(&merged).expect("merged queue update");
+        }
+
+        let items = crate::utils::queue::load_items();
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+        assert_eq!(items[0]["read"], true);
+        assert_eq!(items[1]["read"], true);
+        assert_eq!(items[0]["provider_choice_sent"], "1");
+    }
+
+    #[tokio::test]
+    async fn desktop_save_without_load_baseline_preserves_remote_triage() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        let initial = vec![serde_json::json!({ "id": "first", "read": false })];
+        crate::utils::queue::save_items(&initial).expect("initial queue");
+        let state = AppState::new();
+
+        {
+            let _queue_guard = state.queue_io_lock.lock().await;
+            let mut remote_items = crate::utils::queue::load_items();
+            remote_items[0]["read"] = serde_json::Value::Bool(true);
+            crate::utils::queue::save_items(&remote_items).expect("remote queue update");
+        }
+
+        let latest = crate::utils::queue::load_items();
+        let desktop_snapshot = vec![serde_json::json!({ "id": "first", "read": false })];
+        let merged = crate::utils::queue::merge_desktop_snapshot(None, &desktop_snapshot, &latest);
+        crate::utils::queue::save_items(&merged).expect("desktop queue update");
+
+        let items = crate::utils::queue::load_items();
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+        assert_eq!(items[0]["read"], true);
+    }
+
+    #[tokio::test]
+    async fn baseline_less_desktop_save_does_not_resurrect_remote_dismissal() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        let initial = vec![serde_json::json!({ "id": "dismissed", "read": false })];
+        crate::utils::queue::save_items(&initial).expect("initial queue");
+        let state = AppState::new();
+
+        {
+            let _queue_guard = state.queue_io_lock.lock().await;
+            crate::utils::queue::save_items(&[]).expect("remote dismissal");
+        }
+
+        let latest = crate::utils::queue::load_items();
+        let desktop_snapshot = initial;
+        let merged = crate::utils::queue::merge_desktop_snapshot(None, &desktop_snapshot, &latest);
+        crate::utils::queue::save_items(&merged).expect("desktop queue update");
+
+        assert!(crate::utils::queue::load_items().is_empty());
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+    }
+
+    #[test]
+    fn pending_approval_guard_covers_workflow_and_manual_approvals() {
+        assert!(is_pending_approval(&serde_json::json!({
+            "workflow_approval": { "run_id": "run-1" }
+        })));
+        assert!(is_pending_approval(&serde_json::json!({
+            "type": "approval_request",
+            "notification_status": "awaiting_reply"
+        })));
+        assert!(!is_pending_approval(&serde_json::json!({
+            "type": "approval_request",
+            "notification_status": "completed"
+        })));
+    }
+
+    #[test]
+    fn clear_read_only_targets_legacy_completion_items() {
+        assert!(is_clearable_legacy_completion(&serde_json::json!({
+            "type": "agent_completed"
+        })));
+        assert!(is_clearable_legacy_completion(&serde_json::json!({
+            "type": "workflow_completed"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "action_needed"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "agent_update"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "agent_completed",
+            "inbox_notification_id": "notice-1"
+        })));
+    }
+
+    #[tokio::test]
     async fn remote_queue_items_projects_live_inbox_notifications() {
         let _guard = crate::utils::wardian_test_env_lock();
         let temp = tempfile::tempdir().expect("temp home");
@@ -595,6 +1110,28 @@ mod tests {
                 && event.role == Some(wardian_core::models::chat::AgentChatRole::Assistant)
                 && event.text.as_deref() == Some("Use the shared chat transcript model.")
         }));
+    }
+
+    #[test]
+    fn unresolved_provider_choice_cannot_be_dismissed() {
+        assert!(provider_choice_acknowledgement_unresolved(
+            &serde_json::json!({
+                "provider_choice_pending": "1",
+                "read": false
+            })
+        ));
+        assert!(provider_choice_acknowledgement_unresolved(
+            &serde_json::json!({
+                "provider_choice_sent": "1",
+                "read": false
+            })
+        ));
+        assert!(!provider_choice_acknowledgement_unresolved(
+            &serde_json::json!({
+                "provider_choice_sent": "1",
+                "read": true
+            })
+        ));
     }
 
     #[test]
@@ -741,6 +1278,7 @@ mod tests {
             target: "agent-1".to_string(),
             prompt: None,
             input_mode: None,
+            inbox_item_id: None,
         };
 
         assert_eq!(
@@ -756,6 +1294,7 @@ mod tests {
             target: "agent-1".to_string(),
             prompt: Some("/status".to_string()),
             input_mode: Some(wardian_core::control::MessageInputMode::Command),
+            inbox_item_id: None,
         };
 
         validate_remote_agent_action(&request).expect("command mode should be accepted");
@@ -768,6 +1307,7 @@ mod tests {
             target: "agent-1".to_string(),
             prompt: Some("1".to_string()),
             input_mode: Some(wardian_core::control::MessageInputMode::ApprovalAction),
+            inbox_item_id: None,
         };
 
         assert_eq!(
@@ -783,6 +1323,7 @@ mod tests {
             target: "agent-1".to_string(),
             prompt: None,
             input_mode: None,
+            inbox_item_id: None,
         };
 
         assert_eq!(

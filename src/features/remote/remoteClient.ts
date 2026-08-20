@@ -123,6 +123,12 @@ export const remoteClient = {
     const result = await remoteJson<{ items: QueueItem[] }>("/remote/api/queue");
     return result.items;
   },
+  async runInboxAction(action: string, itemId?: string, choice?: string) {
+    await remoteJson<{ ok: true }>("/remote/api/queue/action", {
+      method: "POST",
+      body: JSON.stringify({ action, item_id: itemId, choice }),
+    });
+  },
   async loadAgentChat(sessionId: string) {
     const result = await remoteJson<{ events: AgentChatEvent[] }>(
       `/remote/api/agents/${encodeURIComponent(sessionId)}/chat`,
@@ -146,11 +152,11 @@ export const remoteClient = {
     );
     return result.snapshot;
   },
-  async sendPrompt(target: string, prompt: string, inputMode: RemoteAgentInputMode = "message") {
+  async sendPrompt(target: string, prompt: string, inputMode: RemoteAgentInputMode = "message", inboxItemId?: string) {
     const request: RemoteAgentActionRequest =
       inputMode === "command"
-        ? { action: "send_prompt", target, prompt, input_mode: "command" }
-        : { action: "send_prompt", target, prompt };
+        ? { action: "send_prompt", target, prompt, input_mode: "command", ...(inboxItemId ? { inbox_item_id: inboxItemId } : {}) }
+        : { action: "send_prompt", target, prompt, ...(inboxItemId ? { inbox_item_id: inboxItemId } : {}) };
     await remoteJson<{ ok: true }>("/remote/api/agents/action", {
       method: "POST",
       body: JSON.stringify(request),

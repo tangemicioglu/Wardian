@@ -258,6 +258,7 @@ export interface RemoteAgentActionRequest {
   target: string;
   prompt?: string;
   input_mode?: RemoteAgentInputMode;
+  inbox_item_id?: string;
 }
 
 export interface RemoteWorkflowSummary {
