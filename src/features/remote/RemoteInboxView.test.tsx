@@ -134,6 +134,34 @@ describe("RemoteInboxView", () => {
     expect(runInboxAction).toHaveBeenCalledWith("resolve_approval", "approval-1", "Approve");
   });
 
+  it("does not mark a pending manual approval read while navigating", () => {
+    const runInboxAction = vi.fn().mockResolvedValue(undefined);
+    const openAgent = vi.fn().mockResolvedValue(undefined);
+    useRemoteStore.setState({
+      runInboxAction,
+      openAgent,
+      remoteQueueItems: [{
+        id: "approval-1",
+        type: "approval_request",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "agent-1",
+        notification_title: "Deploy",
+        summary: "Approve deployment?",
+        notification_status: "awaiting_reply",
+        approval_choices: ["Approve", "Reject"],
+        inbox_notification_id: "notification-1",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+    fireEvent.click(screen.getByText("Approve deployment?"));
+    fireEvent.click(screen.getByRole("button", { name: "Open agent terminal" }));
+
+    expect(openAgent).toHaveBeenCalledWith("agent-1");
+    expect(runInboxAction).not.toHaveBeenCalledWith("mark_read", "approval-1");
+  });
+
   it("shows header action failures and disables both actions while pending", async () => {
     const runInboxAction = vi.fn().mockRejectedValue(new Error("Remote request failed: 503"));
     useRemoteStore.setState({

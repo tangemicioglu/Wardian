@@ -476,7 +476,9 @@ pub async fn save_agent_interactions(
 #[tauri::command]
 pub async fn load_queue_items(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let _queue_guard = state.queue_io_lock.lock().await;
-    Ok(serde_json::json!(crate::utils::queue::load_items()))
+    let items = crate::utils::queue::load_items();
+    *state.queue_loaded_snapshot.lock().await = Some(items.clone());
+    Ok(serde_json::json!(items))
 }
 
 #[tauri::command]
@@ -488,7 +490,12 @@ pub async fn save_queue_items(
         .as_array()
         .ok_or_else(|| "queue items must be an array".to_string())?;
     let _queue_guard = state.queue_io_lock.lock().await;
-    crate::utils::queue::save_items(persisted)
+    let latest = crate::utils::queue::load_items();
+    let base = state.queue_loaded_snapshot.lock().await.clone();
+    let merged = crate::utils::queue::merge_desktop_snapshot(base.as_deref(), persisted, &latest);
+    crate::utils::queue::save_items(&merged)?;
+    *state.queue_loaded_snapshot.lock().await = Some(merged);
+    Ok(())
 }
 
 #[tauri::command]

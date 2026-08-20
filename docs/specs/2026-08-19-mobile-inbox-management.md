@@ -40,16 +40,22 @@ the desktop app.
   lifecycle changes authoritative on the backend.
 - Serialize desktop and remote queue mutations behind one async-aware app
   lock, and replace `queue/items.json` atomically so concurrent triage cannot
-  lose an acknowledgement or expose a partial file.
+  lose an acknowledgement or expose a partial file. Desktop full-snapshot
+  saves merge against the last desktop load so a remote dismissal or read
+  acknowledgement cannot be overwritten by a stale snapshot.
 - Header actions show in-flight state and mutation failures. A successful
   mutation followed by a failed refresh preserves the success and exposes a
   retryable Inbox refresh error instead of reporting the mutation as failed.
+- Pending workflow and manual approvals remain unread and actionable until
+  their approval choice is resolved; navigation does not implicitly mark them
+  read.
 
 ## Verification
 
 - Focused React tests cover filtering, read/clear controls, provider choices,
   approval actions, and agent navigation.
 - Rust tests cover the persistence rules for legacy items and notification read
-  acknowledgements, including concurrent queue mutations and atomic writes.
+  acknowledgements, including concurrent queue mutations, stale desktop
+  snapshot merging, pending-approval guards, and atomic writes.
 - Remote PWA coverage exercises the mobile Inbox controls against mocked remote
   endpoints.

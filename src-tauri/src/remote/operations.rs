@@ -186,6 +186,15 @@ fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
     item.get("inbox_notification_id").is_none() && item.get("workflow_approval").is_none()
 }
 
+fn is_pending_approval(item: &serde_json::Value) -> bool {
+    item.get("workflow_approval").is_some()
+        || (item.get("type").and_then(serde_json::Value::as_str) == Some("approval_request")
+            && item
+                .get("notification_status")
+                .and_then(serde_json::Value::as_str)
+                == Some("awaiting_reply"))
+}
+
 fn notification_read_acknowledgement(notification_id: &str) -> serde_json::Value {
     serde_json::json!({
         "id": format!("notification-read:{notification_id}"),
@@ -222,7 +231,7 @@ pub async fn apply_remote_inbox_action(
                 .as_deref()
                 .ok_or_else(|| "item_id_required".to_string())?;
             let item = current_queue_item(&projected_items, item_id)?;
-            if item.get("workflow_approval").is_some() {
+            if is_pending_approval(item) {
                 return Err("pending_approval_cannot_be_marked_read".to_string());
             }
             let mut persisted = persisted_queue_items();
@@ -782,6 +791,63 @@ mod tests {
         unsafe { std::env::remove_var("WARDIAN_HOME") };
         assert_eq!(items[0]["read"], true);
         assert_eq!(items[1]["read"], true);
+    }
+
+    #[tokio::test]
+    async fn desktop_snapshot_merge_preserves_remote_triage() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        let initial = vec![
+            serde_json::json!({ "id": "first", "read": false }),
+            serde_json::json!({ "id": "second", "read": false }),
+        ];
+        crate::utils::queue::save_items(&initial).expect("initial queue");
+        let state = AppState::new();
+        *state.queue_loaded_snapshot.lock().await = Some(initial.clone());
+
+        {
+            let _queue_guard = state.queue_io_lock.lock().await;
+            let mut remote_items = crate::utils::queue::load_items();
+            remote_items[0]["read"] = serde_json::Value::Bool(true);
+            crate::utils::queue::save_items(&remote_items).expect("remote queue update");
+        }
+
+        {
+            let _queue_guard = state.queue_io_lock.lock().await;
+            let latest = crate::utils::queue::load_items();
+            let base = state.queue_loaded_snapshot.lock().await.clone();
+            let desktop_snapshot = vec![
+                serde_json::json!({ "id": "first", "read": false }),
+                serde_json::json!({ "id": "second", "read": true }),
+            ];
+            let merged = crate::utils::queue::merge_desktop_snapshot(
+                base.as_deref(),
+                &desktop_snapshot,
+                &latest,
+            );
+            crate::utils::queue::save_items(&merged).expect("merged queue update");
+        }
+
+        let items = crate::utils::queue::load_items();
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+        assert_eq!(items[0]["read"], true);
+        assert_eq!(items[1]["read"], true);
+    }
+
+    #[test]
+    fn pending_approval_guard_covers_workflow_and_manual_approvals() {
+        assert!(is_pending_approval(&serde_json::json!({
+            "workflow_approval": { "run_id": "run-1" }
+        })));
+        assert!(is_pending_approval(&serde_json::json!({
+            "type": "approval_request",
+            "notification_status": "awaiting_reply"
+        })));
+        assert!(!is_pending_approval(&serde_json::json!({
+            "type": "approval_request",
+            "notification_status": "completed"
+        })));
     }
 
     #[tokio::test]

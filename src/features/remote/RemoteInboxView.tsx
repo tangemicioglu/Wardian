@@ -100,7 +100,7 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
         item.read ? "border-wardian-border bg-wardian-card-bg-muted" : "border-[var(--color-wardian-accent)]/30 bg-wardian-card-bg"
       }`}
       onClick={() => {
-        if (!item.workflow_approval) void onAction("mark_read", item.id).catch(() => undefined);
+        if (!isPendingApproval) void onAction("mark_read", item.id).catch(() => undefined);
       }}
     >
       <div className={`absolute left-0 top-0 h-full w-1 ${classes.accent}`} />
@@ -138,7 +138,7 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt }: Rem
           )}
           {(canOpenAgent || actionChoices.length > 0 || approvalChoices.length > 0) && (
             <div className="mt-3 flex flex-wrap items-center gap-2" onClick={(event) => event.stopPropagation()}>
-              {canOpenAgent && item.agent_session_id && <button type="button" aria-label="Open agent terminal" title="Open agent terminal" onClick={() => { void onAction("mark_read", item.id).catch(() => undefined); onOpenAgent(item.agent_session_id!); }} className="inline-flex h-7 items-center gap-1 rounded-md border border-wardian-border bg-wardian-card-bg-muted px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:text-bright-neutral"><Terminal className="h-3.5 w-3.5" aria-hidden="true" />Open agent</button>}
+              {canOpenAgent && item.agent_session_id && <button type="button" aria-label="Open agent terminal" title="Open agent terminal" onClick={() => { if (!isPendingApproval) void onAction("mark_read", item.id).catch(() => undefined); onOpenAgent(item.agent_session_id!); }} className="inline-flex h-7 items-center gap-1 rounded-md border border-wardian-border bg-wardian-card-bg-muted px-2 text-[11px] font-semibold text-muted-neutral transition-colors hover:text-bright-neutral"><Terminal className="h-3.5 w-3.5" aria-hidden="true" />Open agent</button>}
               {actionChoices.length > 0 && <div className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Action choices">
                 {actionChoices.map((choice) => <button key={`${choice.value}-${choice.label}`} type="button" aria-label={`Send action response ${choice.value}: ${choice.label}`} title={`Send ${choice.label}`} disabled={isSending} onClick={() => void handleActionChoice(choice)} className="inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-md border border-[color-mix(in_srgb,var(--color-wardian-warning),transparent_35%)] bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_88%)] px-2 text-[11px] font-semibold text-primary transition-colors hover:bg-[color-mix(in_srgb,var(--color-wardian-warning),transparent_80%)] disabled:cursor-not-allowed disabled:opacity-50"><span className="shrink-0 font-mono text-[var(--color-wardian-warning)]">{choice.value}</span><span className="min-w-0 truncate">{choice.label}</span></button>)}
               </div>}
