@@ -70,11 +70,14 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRef
   const canOpenAgent = Boolean(item.agent_session_id);
   const actionChoices = item.type === "action_needed" ? parseQueueActionChoices(bodyText) : [];
   const approvalChoices = isApprovalRequest && isPendingApproval ? item.approval_choices ?? [] : [];
-  const canDismiss = !item.inbox_notification_id && !item.workflow_approval;
   const providerChoiceSent = item.provider_choice_sent ?? sentChoice;
   const providerChoicePending = item.provider_choice_pending ?? null;
   const providerChoiceUncertain = providerChoicePending !== null || deliveryUncertain;
   const providerChoiceNeedsAcknowledgement = !providerChoiceUncertain && providerChoiceSent !== null && !item.read;
+  const canDismiss = !item.inbox_notification_id
+    && !item.workflow_approval
+    && !providerChoiceUncertain
+    && !(providerChoiceSent !== null && !item.read);
 
   const runAction = async (action: string, choice?: string) => {
     setActionError(null);

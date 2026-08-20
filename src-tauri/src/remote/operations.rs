@@ -195,6 +195,12 @@ fn is_pending_approval(item: &serde_json::Value) -> bool {
                 == Some("awaiting_reply"))
 }
 
+fn provider_choice_acknowledgement_unresolved(item: &serde_json::Value) -> bool {
+    item.get("provider_choice_pending").is_some()
+        || (item.get("provider_choice_sent").is_some()
+            && item.get("read").and_then(serde_json::Value::as_bool) != Some(true))
+}
+
 fn notification_read_acknowledgement(notification_id: &str) -> serde_json::Value {
     serde_json::json!({
         "id": format!("notification-read:{notification_id}"),
@@ -307,6 +313,7 @@ pub async fn apply_remote_inbox_action(
             let item = current_queue_item(&projected_items, item_id)?;
             if item.get("workflow_approval").is_some()
                 || item.get("inbox_notification_id").is_some()
+                || provider_choice_acknowledgement_unresolved(item)
             {
                 return Err("inbox_item_not_dismissible".to_string());
             }
@@ -1073,6 +1080,28 @@ mod tests {
                 && event.role == Some(wardian_core::models::chat::AgentChatRole::Assistant)
                 && event.text.as_deref() == Some("Use the shared chat transcript model.")
         }));
+    }
+
+    #[test]
+    fn unresolved_provider_choice_cannot_be_dismissed() {
+        assert!(provider_choice_acknowledgement_unresolved(
+            &serde_json::json!({
+                "provider_choice_pending": "1",
+                "read": false
+            })
+        ));
+        assert!(provider_choice_acknowledgement_unresolved(
+            &serde_json::json!({
+                "provider_choice_sent": "1",
+                "read": false
+            })
+        ));
+        assert!(!provider_choice_acknowledgement_unresolved(
+            &serde_json::json!({
+                "provider_choice_sent": "1",
+                "read": true
+            })
+        ));
     }
 
     #[test]

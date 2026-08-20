@@ -61,6 +61,9 @@ the desktop app.
 - Clear-read operates only on the legacy completion projection. Durable
   notification acknowledgements remain visible as canonical history, so the
   mobile control is disabled when no legacy read items are clearable.
+- A provider-choice item with pending or unresolved delivery cannot be
+  dismissed; its recovery marker must survive until delivery is confirmed and
+  the Inbox acknowledgement is complete.
 - Pending workflow and manual approvals remain unread and actionable until
   their approval choice is resolved; navigation does not implicitly mark them
   read.

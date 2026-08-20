@@ -52,7 +52,8 @@ keeps that response disabled and exposes the status retry.
 If the host cannot confirm whether the provider received the choice, the card
 shows **Response delivery is uncertain** and keeps the choice disabled. Check
 the agent session before taking any further action; Wardian does not resend a
-potentially consequential response automatically.
+potentially consequential response automatically, and the item cannot be
+dismissed while its recovery state is unresolved.
 
 The mobile Inbox includes the same triage actions: choose an event filter, tap
 an item to acknowledge it, mark all eligible items read, clear reviewed legacy

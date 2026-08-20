@@ -213,6 +213,7 @@ describe("RemoteInboxView", () => {
 
     expect(screen.getByRole("button", { name: "Send action response 1: Yes" })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent("Response delivery is uncertain");
+    expect(screen.queryByRole("button", { name: "Clear item" })).not.toBeInTheDocument();
     expect(sendPromptToAgent).not.toHaveBeenCalled();
   });
 
