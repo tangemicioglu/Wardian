@@ -6,7 +6,7 @@ import { DocsLink } from "../components/DocsLink";
 import { QUEUE_EVENT_LABELS, QUEUE_EVENT_TYPES, queueItemIsVisible } from "../features/queue/queueFilters";
 import { parseQueueActionChoices, type QueueActionChoice } from "../features/queue/actionChoices";
 import { QUEUE_TONE_CLASSES, queueItemIsAgentEvent, queueItemLabel, queueItemTone } from "../features/queue/queuePresentation";
-import { isClearableLegacyCompletion, providerChoiceAcknowledgementUnresolved, providerChoiceRecorded } from "../features/queue/queueTriage";
+import { isClearableLegacyCompletion, providerChoiceRecorded } from "../features/queue/queueTriage";
 
 const INITIAL_QUEUE_RENDER_LIMIT = 80;
 const QUEUE_RENDER_CHUNK_SIZE = 80;
@@ -120,7 +120,8 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const canOpenAgent = Boolean(item.agent_session_id && onOpenAgent);
   const actionChoices = isActionNeeded ? parseQueueActionChoices(bodyText) : [];
   const canUseActionChoices = Boolean(item.agent_session_id && onSendAgentPrompt && actionChoices.length > 0);
-  const providerChoiceUncertain = providerChoiceAcknowledgementUnresolved(item);
+  const providerChoiceUncertain = Boolean(item.provider_choice_pending);
+  const providerChoiceNeedsAcknowledgement = Boolean(item.provider_choice_sent && !item.read);
   const providerChoiceAlreadyRecorded = providerChoiceRecorded(item);
   const approvalChoices = isApprovalRequest && (item.workflow_approval || item.notification_status === "awaiting_reply")
     ? item.approval_choices ?? []
@@ -284,9 +285,12 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
           )}
           {actionError ? <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">{actionError}</p> : null}
           {providerChoiceUncertain && <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">Response delivery is uncertain. Check the agent before retrying.</p>}
+          {providerChoiceNeedsAcknowledgement && <p role="status" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">
+            Response sent. Inbox status may need updating. <button type="button" onClick={(event) => { event.stopPropagation(); markRead(item.id); }} className="font-semibold underline">Retry Inbox status</button>
+          </p>}
         </div>
 
-        {!item.inbox_notification_id && !item.workflow_approval && !providerChoiceUncertain && <button
+        {!item.inbox_notification_id && !item.workflow_approval && !providerChoiceUncertain && !providerChoiceNeedsAcknowledgement && <button
           type="button"
           aria-label="Clear item"
           title="Clear item"

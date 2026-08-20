@@ -230,6 +230,16 @@ fn current_queue_item<'a>(
         .ok_or_else(|| "inbox_item_not_found".to_string())
 }
 
+fn validate_remote_mark_read(item: &serde_json::Value) -> Result<(), String> {
+    if is_pending_approval(item) {
+        return Err("pending_approval_cannot_be_marked_read".to_string());
+    }
+    if item.get("provider_choice_pending").is_some() {
+        return Err("provider_choice_delivery_uncertain_cannot_be_marked_read".to_string());
+    }
+    Ok(())
+}
+
 /// Applies a mobile Inbox mutation to the same persisted projection used by
 /// the desktop Inbox. The caller must authenticate and rate-limit the request.
 pub async fn apply_remote_inbox_action(
@@ -246,9 +256,7 @@ pub async fn apply_remote_inbox_action(
                 .as_deref()
                 .ok_or_else(|| "item_id_required".to_string())?;
             let item = current_queue_item(&projected_items, item_id)?;
-            if is_pending_approval(item) {
-                return Err("pending_approval_cannot_be_marked_read".to_string());
-            }
+            validate_remote_mark_read(item)?;
             let mut persisted = persisted_queue_items();
             if let Some(notification_id) = item
                 .get("inbox_notification_id")
@@ -1049,6 +1057,24 @@ mod tests {
             "type": "approval_request",
             "notification_status": "completed"
         })));
+    }
+
+    #[test]
+    fn remote_mark_read_guard_rejects_pending_provider_choice() {
+        let error = validate_remote_mark_read(&serde_json::json!({
+            "type": "action_needed",
+            "read": false,
+            "provider_choice_pending": "1"
+        }))
+        .expect_err("pending provider choice must remain unread");
+        assert_eq!(error, "provider_choice_delivery_uncertain_cannot_be_marked_read");
+
+        assert!(validate_remote_mark_read(&serde_json::json!({
+            "type": "action_needed",
+            "read": false,
+            "provider_choice_sent": "1"
+        }))
+        .is_ok());
     }
 
     #[test]

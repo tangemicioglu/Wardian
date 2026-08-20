@@ -184,6 +184,31 @@ describe("InboxView", () => {
     expect(useQueueStore.getState().items[0].read).toBe(false);
   });
 
+  it("recovers a sent provider choice acknowledgement without replaying it", () => {
+    const onSendAgentPrompt = vi.fn();
+    useQueueStore.setState({
+      items: [{
+        id: "item-action-sent-unread",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "sess-1",
+        agent_name: "My Coder",
+        summary: "Proceed?\n1. Yes",
+        provider_choice_sent: "1",
+      }],
+    });
+
+    render(<InboxView onSendAgentPrompt={onSendAgentPrompt} />);
+
+    expect(screen.getByText("Response sent. Inbox status may need updating.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send action response 1: Yes" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry Inbox status" }));
+
+    expect(useQueueStore.getState().items[0].read).toBe(true);
+    expect(onSendAgentPrompt).not.toHaveBeenCalled();
+  });
+
   it("does not replay a provider choice already acknowledged by the shared Inbox", () => {
     const onSendAgentPrompt = vi.fn(async () => undefined);
     useQueueStore.setState({
