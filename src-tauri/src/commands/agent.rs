@@ -2798,31 +2798,42 @@ async fn remove_agent(
             .ok_or_else(|| format!("Agent with session ID {} not found", session_id))?;
         validate_stopped_agent_removal(agent, expected_name)?;
     }
-    {
+    let (previous_state_snapshot, deletion_state_snapshot) = {
         let agents = state.agents.lock().await;
+        let order = state.agent_order.lock().await;
         if !agents.contains_key(&session_id) {
             return Err(format!("Agent with session ID {} not found", session_id));
         }
+        let previous = manager::state_configs_snapshot(&agents, &order);
+        let deletion = previous
+            .iter()
+            .filter(|config| config.session_id != session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        (previous, deletion)
+    };
+    lifecycle_heartbeat.ensure_active("remove")?;
+    if let Err(error) = manager::try_save_state_snapshot(&deletion_state_snapshot) {
+        return Err(format!("Failed to persist agent deletion: {error}"));
     }
     if let Err(error) = wardian_core::db::delete_agent(&session_id) {
-        return Err(format!("Failed to delete agent state: {error}"));
+        let rollback_error = manager::try_save_state_snapshot(&previous_state_snapshot)
+            .err()
+            .map(|rollback| format!("; state snapshot rollback failed: {rollback}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "Failed to delete agent state: {error}{rollback_error}"
+        ));
     }
-    let (agent, state_snapshot, remaining_agent_ids) = {
+    let (agent, remaining_agent_ids) = {
         let mut agents = state.agents.lock().await;
         let mut order = state.agent_order.lock().await;
-        lifecycle_heartbeat.ensure_active("remove")?;
         let agent = detach_agent_for_kill(&mut agents, &mut order, &session_id);
-        let state_snapshot = agent
-            .is_some()
-            .then(|| manager::state_configs_snapshot(&agents, &order));
         let remaining_agent_ids = agent
             .is_some()
             .then(|| agents.keys().cloned().collect::<BTreeSet<_>>());
-        (agent, state_snapshot, remaining_agent_ids)
+        (agent, remaining_agent_ids)
     };
-    if let Some(snapshot) = state_snapshot {
-        manager::save_state_snapshot(&app, &snapshot);
-    }
     if agent.is_some() {
         state.remove_agent_delivery_state(&session_id).await;
     }
@@ -2841,7 +2852,6 @@ async fn remove_agent(
     #[allow(unused_mut)]
     if let Some(mut agent) = agent {
         if let Some(runtime_generation) = agent.runtime_generation {
-            lifecycle_heartbeat.ensure_active("remove")?;
             if let Err(error) = state
                 .terminal_sessions
                 .terminate_and_remove_runtime(&session_id, runtime_generation)
@@ -2852,7 +2862,6 @@ async fn remove_agent(
                 ));
             }
         }
-        lifecycle_heartbeat.ensure_active("remove")?;
         let agent_workspace = agent
             .config
             .lock()
@@ -2861,8 +2870,9 @@ async fn remove_agent(
             .filter(|folder| !folder.trim().is_empty());
         manager::terminate_active_agent_process(&mut agent);
 
-        // Phase 2: Durable state was deleted before detaching the live agent.
-        lifecycle_heartbeat.ensure_active("remove")?;
+        // Durable state was deleted before detaching the live agent. Post-commit
+        // cleanup is best-effort so a lease heartbeat cannot leave the roster
+        // diverging from the two durable stores after the commit.
         let _ = app.emit("agents-updated", ());
 
         // Cleanup: remove persisted references and the agent's private directory.
