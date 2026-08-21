@@ -21,6 +21,10 @@ pub struct LiveSurfacePromptRequest {
     pub origin: Option<MessageOrigin>,
     pub runtime_state: &'static str,
     pub mark_prompt_started: bool,
+    /// A mailbox dispatcher can reserve provider readiness under the per-target
+    /// delivery lock. That reservation is deliberately Busy by the time this
+    /// function runs, so it replaces the ordinary readiness wait.
+    pub provider_ready_reserved: bool,
     /// Automated delivery waits for provider-confirmed turn start so it can
     /// safely decide whether a queued message may be retried. A direct human
     /// terminal submission is complete once the native PTY has flushed it.
@@ -62,6 +66,7 @@ impl LiveSurfacePromptRequest {
             origin: None,
             runtime_state: "live_pty_available",
             mark_prompt_started: true,
+            provider_ready_reserved: false,
             require_provider_turn_receipt: false,
             payload_sent_detail: None,
             delivery_message_id: None,
@@ -305,27 +310,31 @@ pub async fn submit_live_surface_prompt(
                 }
             };
         }
-        if let Err(message) =
-            crate::control::wait_for_terminal_ready_for_delivery_service(state, &request.session_id)
-                .await
-        {
-            return Err(record_failed_live_surface_attempt(
+        if !request.provider_ready_reserved {
+            if let Err(message) = crate::control::wait_for_terminal_ready_for_delivery_service(
                 state,
-                &request,
-                &interaction_id,
-                Some(LiveSurfaceTarget {
-                    name: name.clone(),
-                    provider: provider.clone(),
-                }),
-                FailedLiveSurfaceAttempt {
-                    runtime_state: request.runtime_state,
-                    error_code: "not_input_ready",
-                    message,
-                    delivery_phase: Some("terminal_ready_wait_failed".to_string()),
-                    retry_safe: true,
-                },
+                &request.session_id,
             )
-            .await);
+            .await
+            {
+                return Err(record_failed_live_surface_attempt(
+                    state,
+                    &request,
+                    &interaction_id,
+                    Some(LiveSurfaceTarget {
+                        name: name.clone(),
+                        provider: provider.clone(),
+                    }),
+                    FailedLiveSurfaceAttempt {
+                        runtime_state: request.runtime_state,
+                        error_code: "not_input_ready",
+                        message,
+                        delivery_phase: Some("terminal_ready_wait_failed".to_string()),
+                        retry_safe: true,
+                    },
+                )
+                .await);
+            }
         }
         if requires_provider_turn_receipt && turn_start_cursor.is_none() {
             turn_start_cursor = match crate::control::provider_turn_start_cursor(state, &request.session_id).await {

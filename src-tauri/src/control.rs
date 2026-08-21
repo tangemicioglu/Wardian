@@ -1541,6 +1541,18 @@ async fn deliver_message_to_target_with_headless_timeout(
                 },
                 QueuePolicy::MailboxOnly => unreachable!("handled above"),
             }
+        } else if queue_if_busy_message_requires_ready_observation(
+            input_mode,
+            queue_policy,
+            &info.status,
+        ) {
+            // `queue-if-busy` must not make an optimistic terminal write from an
+            // idle snapshot: an agent can begin a provider turn before its
+            // status update reaches this router. Persist first and wait for a
+            // later ready observation instead.
+            DeliveryRoute::Mailbox {
+                runtime_state: "queue_if_busy",
+            }
         } else {
             decide_delivery_route(&info.status, input_mode, queue_policy, approval_action)
         };
@@ -1570,7 +1582,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                 )
                 .await;
                 record_delivery_attempt(state, &detail).await;
-                if let Some(app) = app {
+                if let Some(app) = app.filter(|_| detail.runtime_state != "queue_if_busy") {
                     spawn_mailbox_drain_if_idle(app, &queued_uuid, &queued_status);
                 }
                 delivery.push(detail);
@@ -1604,6 +1616,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                         origin: origin.cloned(),
                         runtime_state: "live_pty_available",
                         mark_prompt_started: true,
+                        provider_ready_reserved: false,
                         require_provider_turn_receipt: true,
                         payload_sent_detail: None,
                         delivery_message_id: None,
@@ -1897,6 +1910,20 @@ async fn enqueue_mailbox_delivery(
     origin: Option<&MessageOrigin>,
     runtime_state: &str,
 ) -> Result<DeliveryDetail, ControlError> {
+    let requires_ready_observation = runtime_state == "queue_if_busy";
+    // The mailbox dispatcher uses this same lock before taking a record. Hold
+    // it across the durable enqueue and readiness reservation so a concurrent
+    // idle observation cannot submit a freshly queued message from the stale
+    // snapshot that caused it to be queued.
+    let delivery_lock = if requires_ready_observation {
+        Some(state.delivery_lock_for(&info.uuid).await)
+    } else {
+        None
+    };
+    let _delivery_guard = match delivery_lock.as_ref() {
+        Some(lock) => Some(lock.lock().await),
+        None => None,
+    };
     let record = {
         let mut mailbox = state.mailbox.lock().await;
         let record = mailbox.enqueue(MailboxMessageDraft {
@@ -1916,6 +1943,9 @@ async fn enqueue_mailbox_delivery(
         }
         record
     };
+    if requires_ready_observation {
+        reserve_provider_input_for_queued_delivery(state, &info.uuid).await;
+    }
 
     Ok(DeliveryDetail {
         uuid: info.uuid,
@@ -1932,6 +1962,27 @@ async fn enqueue_mailbox_delivery(
         profile: None,
         error: None,
     })
+}
+
+fn queue_if_busy_message_requires_ready_observation(
+    input_mode: MessageInputMode,
+    queue_policy: QueuePolicy,
+    status: &str,
+) -> bool {
+    input_mode == MessageInputMode::Message
+        && queue_policy == QueuePolicy::QueueIfBusy
+        && normalize_status(status) == "idle"
+        && !status_uses_headless_delivery(status)
+}
+
+/// Prevents a mailbox item from being dispatched based on a ready observation
+/// that predated its durable enqueue. A later provider-ready observation is
+/// required to release this reservation.
+async fn reserve_provider_input_for_queued_delivery(state: &AppState, session_id: &str) {
+    state
+        .interactions
+        .start_provider_input_generation(session_id, ProviderInputReadiness::Busy, None)
+        .await;
 }
 
 enum HeadlessMessageDelivery {
@@ -4577,6 +4628,12 @@ async fn drain_next_mailbox_message_for_idle_agent(
     state: &AppState,
     session_id: &str,
 ) -> Result<Option<DeliveryDetail>, ControlError> {
+    // Queue producers take this lock while they persist a queue-if-busy item
+    // and reserve provider readiness. Taking it before the idle checks keeps
+    // two simultaneous readiness notifications from taking two records for
+    // the same provider input surface.
+    let delivery_lock = state.delivery_lock_for(session_id).await;
+    let delivery_guard = delivery_lock.lock().await;
     let info = delivery_target_infos(state, &[session_id.to_string()])
         .await?
         .into_iter()
@@ -4588,6 +4645,10 @@ async fn drain_next_mailbox_message_for_idle_agent(
     if provider_input_blocks_mailbox_drain(state, session_id).await {
         return Ok(None);
     }
+    let provider_was_ready = matches!(
+        provider_input_current_state(state, session_id).await,
+        Some(ProviderInputReadiness::Ready)
+    );
     if active_conversation_lease_for_delivery(&info) {
         return Ok(None);
     }
@@ -4621,6 +4682,12 @@ async fn drain_next_mailbox_message_for_idle_agent(
         return Err(ControlError::request_failed(error));
     }
 
+    // Reserve the target before releasing the dispatcher lock and touching the
+    // terminal. The next mailbox dispatcher will observe Busy and leave later
+    // FIFO records pending until the provider reports ready again.
+    mark_delivered_agents_prompt_started(app, state, &[session_id.to_string()]).await;
+    drop(delivery_guard);
+
     let target_uuid = info.uuid.clone();
     let submit_started = DeliveryDetail {
         uuid: info.uuid.clone(),
@@ -4649,7 +4716,10 @@ async fn drain_next_mailbox_message_for_idle_agent(
             approval_action: record.approval_action.clone(),
             origin: record.origin.clone(),
             runtime_state: "mailbox_drain",
-            mark_prompt_started: true,
+            // The reservation above already moved provider input to Busy and
+            // updated the visible agent lifecycle before terminal submission.
+            mark_prompt_started: false,
+            provider_ready_reserved: true,
             require_provider_turn_receipt: true,
             payload_sent_detail: Some(submit_started),
             delivery_message_id: Some(record.id.clone()),
@@ -4675,10 +4745,7 @@ async fn drain_next_mailbox_message_for_idle_agent(
                     .error
                     .as_ref()
                     .is_some_and(|error| error.code == "no_input_channel")
-            }) && matches!(
-                provider_input_current_state(state, session_id).await,
-                Some(ProviderInputReadiness::Ready)
-            );
+            }) && provider_was_ready;
             let retry_safe = error.retry_safe && !missing_ready_input_channel;
             if retry_safe {
                 let requeued = state.mailbox.lock().await.mark_pending(&record.id);
@@ -5571,7 +5638,7 @@ mod tests {
             "hello",
             None,
             MessageInputMode::Message,
-            QueuePolicy::QueueIfBusy,
+            QueuePolicy::LiveOnly,
             None,
             None,
             false,
@@ -5606,7 +5673,7 @@ mod tests {
             "hello",
             None,
             MessageInputMode::Message,
-            QueuePolicy::QueueIfBusy,
+            QueuePolicy::LiveOnly,
             None,
             None,
             false,
@@ -5635,6 +5702,154 @@ mod tests {
 
         assert_eq!(delivery[0].delivery_state, "provider_accepted");
         assert_eq!(delivery[0].delivery_phase.as_deref(), Some("turn_started"));
+    }
+
+    #[tokio::test]
+    async fn queue_if_busy_does_not_write_to_a_target_with_a_stale_idle_snapshot() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        // The provider has begun a turn, but the route snapshot has not yet
+        // observed its busy status. This is the race reported in #889.
+        crate::manager::record_agent_turn_started_for_watch(&state, "agent-1").await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        install_test_terminal_runtime_with_write_receipts(&state, "agent-1", tx).await;
+
+        let delivery = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "do not interrupt the current turn",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        );
+        tokio::pin!(delivery);
+
+        tokio::select! {
+            request = rx.recv() => panic!(
+                "queue-if-busy wrote {:?} to a target whose current turn had not completed",
+                request.expect("terminal write request").bytes,
+            ),
+            result = &mut delivery => {
+                let delivery = result.expect("queue-if-busy must durably queue the message");
+                assert_eq!(delivery[0].delivery_state, "queued");
+                assert_eq!(delivery[0].runtime_state, "queue_if_busy");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_queue_if_busy_delivery_dispatches_only_one_message_per_ready_turn() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        install_test_terminal_runtime_with_write_receipts(&state, "agent-1", tx).await;
+
+        let (first, second) = tokio::join!(
+            deliver_message_to_target(
+                None,
+                &state,
+                "CoderOne",
+                "first queued message",
+                None,
+                MessageInputMode::Message,
+                QueuePolicy::QueueIfBusy,
+                None,
+                None,
+                false,
+            ),
+            deliver_message_to_target(
+                None,
+                &state,
+                "CoderOne",
+                "second queued message",
+                None,
+                MessageInputMode::Message,
+                QueuePolicy::QueueIfBusy,
+                None,
+                None,
+                false,
+            )
+        );
+        for delivery in [first.expect("first queue"), second.expect("second queue")] {
+            assert_eq!(delivery[0].delivery_state, "queued");
+            assert!(matches!(
+                delivery[0].runtime_state.as_str(),
+                "queue_if_busy" | "provider_input_not_ready"
+            ));
+        }
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            provider_input_current_state(&state, "agent-1").await,
+            Some(ProviderInputReadiness::Busy)
+        );
+
+        // This provider event is newer than the queue reservations. Both
+        // dispatchers may wake, but the per-target lock and dispatch
+        // reservation allow only one terminal submission for this ready turn.
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        let drains = async {
+            tokio::join!(
+                drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1"),
+                drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1"),
+            )
+        };
+        tokio::pin!(drains);
+
+        let payload = tokio::select! {
+            request = rx.recv() => request.expect("mailbox payload request"),
+            result = &mut drains => panic!("mailbox drain completed before payload write: {result:?}"),
+        };
+        let first_payload = b"\x1b[200~first queued message\x1b[201~".to_vec();
+        let second_payload = b"\x1b[200~second queued message\x1b[201~".to_vec();
+        assert!(payload.bytes == first_payload || payload.bytes == second_payload);
+        payload.completion.send(Ok(())).expect("payload receipt");
+
+        let submit = tokio::select! {
+            request = rx.recv() => request.expect("mailbox submit request"),
+            result = &mut drains => panic!("mailbox drain completed before submit write: {result:?}"),
+        };
+        assert_eq!(submit.bytes, b"\r".to_vec());
+        submit.completion.send(Ok(())).expect("submit receipt");
+        crate::manager::record_agent_turn_started_for_watch(&state, "agent-1").await;
+
+        let (first, second) = drains.await;
+        let results = [first.expect("first drain"), second.expect("second drain")];
+        let dispatched = results.iter().flatten().count();
+        assert_eq!(dispatched, 1, "concurrent drain results: {results:?}");
+        assert!(rx.try_recv().is_err());
+        let queued = state.mailbox.lock().await.list_for_target("agent-1");
+        assert_eq!(
+            queued
+                .iter()
+                .filter(|record| {
+                    record.status == wardian_core::control::MailboxMessageStatus::Pending
+                })
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -7080,6 +7295,8 @@ mod tests {
             let agent = agents.get("agent-1").unwrap();
             *agent.current_status.lock().unwrap() = "Idle".to_string();
         }
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
 
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
             .await

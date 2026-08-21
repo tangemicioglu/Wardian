@@ -430,6 +430,7 @@ fn workflow_live_surface_prompt_request(
         origin: None,
         runtime_state: "workflow_live_agent",
         mark_prompt_started: true,
+        provider_ready_reserved: false,
         require_provider_turn_receipt: true,
         payload_sent_detail: None,
         delivery_message_id: None,
