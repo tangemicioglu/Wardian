@@ -1525,7 +1525,9 @@ async fn deliver_message_to_target_with_headless_timeout(
     let mut queued = 0usize;
     let mut failures = Vec::new();
     let mut delivery = Vec::with_capacity(session_ids.len());
-    for info in target_infos {
+    for initial_info in target_infos {
+        let _target_lifecycle_guard = state.lock_agent_lifecycle(&initial_info.uuid).await;
+        let info = delivery_target_info(state, &initial_info.uuid).await?;
         let outbound_message = message_with_origin(
             state,
             message,
@@ -6136,13 +6138,19 @@ mod tests {
             None,
             None,
             false,
-        )
-        .await
-        .expect("queue while lifecycle transition owns the gate");
+        );
+        tokio::pin!(delivery);
+        tokio::select! {
+            _ = &mut delivery => panic!("delivery must wait for the lifecycle transition"),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+        drop(lifecycle_guard);
+        let delivery = delivery
+            .await
+            .expect("queue after lifecycle transition releases the gate");
 
         assert_eq!(delivery[0].delivery_state, "queued");
         assert_eq!(delivery[0].runtime_state, "conversation_leased");
-        drop(lifecycle_guard);
     }
 
     #[tokio::test]
