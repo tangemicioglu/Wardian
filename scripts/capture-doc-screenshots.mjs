@@ -44,6 +44,108 @@ const agents = [
   },
 ];
 
+/**
+ * The telemetry *store*, which is a different thing from the `telemetry`
+ * fixture below.
+ *
+ * That one is live per-agent process metrics, pushed over `agent-metrics`. This
+ * is what `telemetry_fleet` and `telemetry_matrix` answer — the recorded history
+ * the Dashboard and Analytics are built on. Neither was mocked, so both surfaces
+ * sat on "Reading the telemetry store…" forever and their captures could never
+ * have succeeded even once the surface-name bug below was fixed.
+ *
+ * Shaped to match the three docs agents so the screenshots are internally
+ * consistent: `docs-designer` runs on gemini, which publishes no token
+ * accounting, and therefore reads as unmeasured rather than as zero.
+ */
+const TELEMETRY_BUCKETS = Array.from({ length: 24 }, (_, index) =>
+  new Date(Date.UTC(2026, 4, 12, 0, index * 30)).toISOString(),
+);
+
+function docsSpark(peak, at) {
+  return TELEMETRY_BUCKETS.map((_, index) =>
+    index === at ? peak : Math.round(peak * (0.08 + ((index * 7) % 5) * 0.11)),
+  );
+}
+
+const telemetryFleet = {
+  window: { from: "2026-05-12T00:00:00.000Z", to: "2026-05-12T12:00:00.000Z", from_floored: false },
+  window_minutes: 1440,
+  rows: [
+    {
+      key: "docs-codex", label: "Docs-Codex", sublabel: "Coder",
+      tokens_per_hour: 184_000, turns_per_hour: 21, active_ms: 4_520_000, turns: 63,
+      total_tokens: 552_000, files_touched: 18, lines_added: 1_284, lines_removed: 396,
+      tokens_reported: true, idle: false, spark: docsSpark(184_000, 17),
+    },
+    {
+      key: "docs-reviewer", label: "Docs-Reviewer", sublabel: "Reviewer",
+      tokens_per_hour: 96_500, turns_per_hour: 12, active_ms: 2_180_000, turns: 34,
+      total_tokens: 289_500, files_touched: 9, lines_added: 412, lines_removed: 118,
+      tokens_reported: true, idle: false, spark: docsSpark(96_500, 11),
+    },
+    {
+      // Gemini publishes no token accounting at all.
+      key: "docs-designer", label: "Docs-Designer", sublabel: "Designer",
+      tokens_per_hour: null, turns_per_hour: 6, active_ms: 940_000, turns: 17,
+      total_tokens: null, files_touched: 4, lines_added: 96, lines_removed: 31,
+      tokens_reported: false, idle: false, spark: TELEMETRY_BUCKETS.map(() => 0),
+    },
+  ],
+  maxima: {
+    tokens_per_hour: 184_000, turns_per_hour: 21, turns: 63, active_ms: 4_520_000,
+    total_tokens: 552_000, files_touched: 18, lines: 1_680, spark: 184_000,
+  },
+  buckets: TELEMETRY_BUCKETS,
+  trend_measure: "total_tokens",
+  grain: "minute15",
+  habitat: {
+    provider: "all", roster_agent_count: 3, active_agent_count: 3,
+    active_ms: 7_640_000, turns: 114, total_tokens: 841_500, files_touched: 28,
+    lines_added: 1_792, lines_removed: 545, tokens_reported: true,
+    spark: docsSpark(281_000, 17), idle: false,
+  },
+  providers: [
+    {
+      provider: "codex", roster_agent_count: 1, active_agent_count: 1,
+      active_ms: 4_520_000, turns: 63, total_tokens: 552_000, files_touched: 18,
+      lines_added: 1_284, lines_removed: 396, tokens_reported: true,
+      spark: docsSpark(184_000, 17), idle: false,
+    },
+    {
+      provider: "claude", roster_agent_count: 1, active_agent_count: 1,
+      active_ms: 2_180_000, turns: 34, total_tokens: 289_500, files_touched: 9,
+      lines_added: 412, lines_removed: 118, tokens_reported: true,
+      spark: docsSpark(96_500, 11), idle: false,
+    },
+    {
+      provider: "gemini", roster_agent_count: 1, active_agent_count: 1,
+      active_ms: 940_000, turns: 17, total_tokens: null, files_touched: 4,
+      lines_added: 96, lines_removed: 31, tokens_reported: false,
+      spark: TELEMETRY_BUCKETS.map(() => 0), idle: false,
+    },
+  ],
+  provider_maxima: {
+    tokens_per_hour: 184_000, turns_per_hour: 21, turns: 63, active_ms: 4_520_000,
+    total_tokens: 552_000, files_touched: 18, lines: 1_680, spark: 184_000,
+  },
+};
+
+const telemetryMatrix = {
+  dimension: "agent",
+  measure: "active_ms",
+  grain: "hour",
+  window: telemetryFleet.window,
+  buckets: TELEMETRY_BUCKETS,
+  rows: [
+    { key: "docs-codex", label: "Docs-Codex", sublabel: "Coder", cells: docsSpark(3_600_000, 17), total: 4_520_000 },
+    { key: "docs-reviewer", label: "Docs-Reviewer", sublabel: "Reviewer", cells: docsSpark(1_800_000, 11), total: 2_180_000 },
+    { key: "docs-designer", label: "Docs-Designer", sublabel: "Designer", cells: docsSpark(900_000, 6), total: 940_000 },
+  ],
+  max_cell: 3_600_000,
+  cells_are_not_additive: false,
+};
+
 const agentClasses = [
   { name: "Coder", description: "Implementation and verification work", is_default: true },
   { name: "Reviewer", description: "Patch review and risk analysis", is_default: true },
@@ -386,7 +488,47 @@ async function ensureDir(filePath) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
 }
 
+/**
+ * Every capture this run is expected to produce, in the order it produces them.
+ *
+ * The list exists so a failure can say what it *skipped*. This script is a long
+ * linear sequence, and a step that times out halfway through silently abandons
+ * everything after it — which is how the Dashboard screenshot stayed stale for
+ * releases without anyone noticing. Failing loudly is not enough on its own;
+ * the operator has to be told which images are now untrustworthy.
+ */
+const EXPECTED_CAPTURES = [
+  "terminal/clickable-links.png",
+  "grid/app-shell.png",
+  "grid/active-agent-state.png",
+  "workbench-navigation/command-palette.png",
+  "watchlists/agent-roster.png",
+  "spawn-agent/spawn-form.png",
+  "command-panel/broadcast-prompt.png",
+  "settings/runtime-settings.png",
+  "explorer/workspace-tree.png",
+  "source-control/status-panel.png",
+  "queue/queue-view.png",
+  "queue/completed-result.png",
+  "library/library-view.png",
+  "workflows/builder-canvas.png",
+  "dashboard/system-summary.png",
+  "analytics/activity-matrix.png",
+];
+
+const captured = new Set();
+
+/** What `EXPECTED_CAPTURES` lists that this run never produced. */
+function missedCaptures() {
+  return EXPECTED_CAPTURES.filter((relativePath) => !captured.has(relativePath));
+}
+
 async function capture(page, relativePath, locator) {
+  if (!EXPECTED_CAPTURES.includes(relativePath)) {
+    // Keeps the manifest honest: a capture added to the sequence and not to the
+    // list would never be reported as skipped.
+    throw new Error(`${relativePath} is captured but missing from EXPECTED_CAPTURES`);
+  }
   if (await page.getByText("Fatal UI Rendering Error").isVisible().catch(() => false)) {
     throw new Error(`Refusing to capture ${relativePath}: app is showing the error boundary`);
   }
@@ -399,6 +541,7 @@ async function capture(page, relativePath, locator) {
     await assertShellHasNoHorizontalOverlap(page, relativePath);
     await page.screenshot({ path: filePath, animations: "disabled" });
   }
+  captured.add(relativePath);
   console.log(`captured ${path.relative(root, filePath)}`);
 }
 
@@ -466,7 +609,7 @@ async function assertShellHasNoHorizontalOverlap(page, relativePath) {
 
 async function installTauriDocsMock(page, options = {}) {
   const effectiveTerminalOutput = options.terminalOutput ?? terminalOutput;
-  await page.addInitScript(({ agents, agentClasses, telemetry, terminalOutput, libraryTree, libraryIndex, workflows, queueItems, repoRoot, directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds, workbenchDocument }) => {
+  await page.addInitScript(({ agents, agentClasses, telemetry, telemetryFleet, telemetryMatrix, terminalOutput, libraryTree, libraryIndex, workflows, queueItems, repoRoot, directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds, workbenchDocument }) => {
     const fixedNow = 1778590800000;
     const RealDate = Date;
 
@@ -577,6 +720,13 @@ async function installTauriDocsMock(page, options = {}) {
           };
         }
         if (command === "load_queue_items") return queueItems;
+        // The telemetry store. Without these the Dashboard and Analytics never
+        // leave their loading state, so their captures cannot succeed.
+        if (command === "telemetry_fleet") return telemetryFleet;
+        if (command === "telemetry_matrix") return telemetryMatrix;
+        if (command === "telemetry_refresh") return { sources: 3, advanced: 0, turns: 0, edits: 0, intervals: 0, buckets_recomputed: 0, unavailable: 0, failures: [] };
+        if (command === "load_dashboard_prefs") return null;
+        if (command === "save_dashboard_prefs") return null;
         if (command === "get_explorer_root") return repoRoot;
         if (command === "get_directory_tree") return directoryTree[args.path] || [];
         if (command === "read_file_preview") {
@@ -709,7 +859,7 @@ async function installTauriDocsMock(page, options = {}) {
         data: { type: "progress", content: "Capturing screenshots" },
       });
     }, 600);
-  }, { agents, agentClasses, telemetry, terminalOutput: effectiveTerminalOutput, libraryTree, libraryIndex, workflows, queueItems, repoRoot, directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds, workbenchDocument });
+  }, { agents, agentClasses, telemetry, telemetryFleet, telemetryMatrix, terminalOutput: effectiveTerminalOutput, libraryTree, libraryIndex, workflows, queueItems, repoRoot, directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds, workbenchDocument });
 }
 
 function collectPageDiagnostics(page, browserErrors) {
@@ -827,7 +977,10 @@ async function main() {
     await page.waitForTimeout(700);
     await capture(page, "source-control/status-panel.png", page.locator("aside").filter({ hasText: "Source Control" }).first());
 
-    await openWorkbenchSurface(page, "queue");
+    // `inbox`, not `queue`. The surface was renamed and this call was not,
+    // so every capture below it silently stopped running. The image paths keep
+    // the `queue/` prefix because the guides link to them by that name.
+    await openWorkbenchSurface(page, "inbox");
     await page.getByText("Workflow completed").waitFor({ timeout: 10_000 });
     await page.waitForTimeout(700);
     await capture(page, "queue/queue-view.png", page.locator("main"));
@@ -875,7 +1028,33 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+/** One capture path per line, indented, for a console list. */
+function listCaptures(paths) {
+  return paths.map((relativePath) => `  ${relativePath}`).join("\n");
+}
+
+main()
+  .then(() => {
+    const missed = missedCaptures();
+    if (missed.length > 0) {
+      // Reachable only if the sequence returns without throwing while still
+      // skipping something — a conditional step, or a manifest that drifted.
+      console.error(
+        `\nRun finished but ${missed.length} capture(s) never ran:\n${listCaptures(missed)}`,
+      );
+      process.exit(1);
+    }
+  })
+  .catch((error) => {
+    console.error(error);
+    const missed = missedCaptures();
+    if (missed.length > 0) {
+      // The point of naming them: these files are still on disk from an earlier
+      // run, so they look current and are not. That is how the Dashboard
+      // screenshot stayed stale for releases.
+      console.error(
+        `\n${missed.length} capture(s) were never reached and are now stale on disk:\n${listCaptures(missed)}`,
+      );
+    }
+    process.exit(1);
+  });

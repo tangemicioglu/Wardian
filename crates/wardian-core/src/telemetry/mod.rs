@@ -38,7 +38,7 @@ pub use activity::{ACTIVE_GAP_THRESHOLD_MS, ACTIVE_SINGLETON_MS};
 pub use horizon::{resolve_horizon, Horizon, HorizonWindow};
 pub use identity::{content_key, file_fingerprint};
 pub use ingest::{ingest_source, IngestError, IngestOutcome};
-pub use matrix::{matrix, Grain, Matrix, MatrixRow, Measure};
+pub use matrix::{matrix, totals_at, Grain, Matrix, MatrixRow, Measure};
 pub use models::{
     ActiveTime, ActivityMethod, BreakdownRow, Cursor, CursorKind, EditFact, EditOp, IntervalFact,
     LimitObservation, ParsedFacts, RollupRow, SourceCarry, SourceKind, TelemetrySummary,

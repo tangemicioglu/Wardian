@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { useCoalescedRead } from "./useCoalescedRead";
 import type {
   TelemetryDimension,
   TelemetryHorizon,
@@ -57,7 +58,7 @@ export function useTelemetryMatrix(query: TelemetryQuery, enabled = true): Telem
   const key = queryKey(query);
   const { horizon, dimension, measure } = query;
 
-  const read = useCallback(async () => {
+  const perform = useCallback(async () => {
     const request = (requestRef.current += 1);
     try {
       const matrix = await invoke<TelemetryMatrix>("telemetry_matrix", {
@@ -74,6 +75,10 @@ export function useTelemetryMatrix(query: TelemetryQuery, enabled = true): Telem
     }
   }, [horizon, dimension, measure]);
 
+  // Analytics is woken the same three ways the Dashboard is, and pays the same
+  // duplicate read on refresh without this.
+  const read = useCoalescedRead(key, perform);
+
   const refresh = useCallback(async () => {
     try {
       await invoke<TelemetryRefreshReport>("telemetry_refresh");
@@ -82,8 +87,11 @@ export function useTelemetryMatrix(query: TelemetryQuery, enabled = true): Telem
       // ingested so far, and showing that beats showing an error.
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-    await read();
-  }, [read]);
+    // `perform`, not `read`: this one must observe the ingest that just ran. A
+    // coalesced read could join a request issued before the ingest committed,
+    // and Refresh would render pre-refresh figures.
+    await perform();
+  }, [perform]);
 
   useEffect(() => {
     if (!enabled) return;

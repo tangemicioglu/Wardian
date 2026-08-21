@@ -1,7 +1,8 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 import { DashboardView, sortFleet } from "./DashboardView";
 import {
@@ -11,7 +12,7 @@ import {
   mergeDashboardPrefs,
   trendMeasureFor,
 } from "../features/telemetry/dashboardColumns";
-import type { FleetRow } from "../features/telemetry/telemetryTypes";
+import type { FleetProviderRow, FleetRow } from "../features/telemetry/telemetryTypes";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -35,10 +36,29 @@ function row(overrides: Partial<FleetRow> = {}): FleetRow {
   };
 }
 
-function respondWith(rows: FleetRow[] = [row()]) {
-  invokeMock.mockImplementation((command: string) => {
-    if (command === "telemetry_fleet") {
-      return Promise.resolve({
+function providerCard(overrides: Partial<FleetProviderRow> = {}): FleetProviderRow {
+  return {
+    provider: "codex",
+    roster_agent_count: 3,
+    active_agent_count: 1,
+    active_ms: 2_400_000,
+    turns: 18,
+    total_tokens: 120_000,
+    files_touched: 12,
+    lines_added: 340,
+    lines_removed: 90,
+    tokens_reported: true,
+    spark: [0, 3, 9, 1],
+    idle: false,
+    ...overrides,
+  };
+}
+
+function payload(
+  rows: FleetRow[] = [row()],
+  strip: { habitat?: Partial<FleetProviderRow>; providers?: FleetProviderRow[] } = {},
+) {
+  return {
         window: {
           from: "2026-08-14T23:00:00.000Z",
           to: "2026-08-15T00:00:00.000Z",
@@ -59,8 +79,32 @@ function respondWith(rows: FleetRow[] = [row()]) {
         buckets: ["a", "b", "c", "d"],
         trend_measure: "total_tokens",
         grain: "minute5",
-      });
-    }
+        habitat: providerCard({
+          provider: "all",
+          roster_agent_count: 4,
+          active_agent_count: 2,
+          ...strip.habitat,
+        }),
+        providers: strip.providers ?? [providerCard()],
+        provider_maxima: {
+          tokens_per_hour: 240_000,
+          turns_per_hour: 36,
+          turns: 36,
+          active_ms: 3_600_000,
+          total_tokens: 240_000,
+          files_touched: 24,
+          lines: 860,
+      spark: 9,
+    },
+  };
+}
+
+function respondWith(
+  rows: FleetRow[] = [row()],
+  strip: { habitat?: Partial<FleetProviderRow>; providers?: FleetProviderRow[] } = {},
+) {
+  invokeMock.mockImplementation((command: string) => {
+    if (command === "telemetry_fleet") return Promise.resolve(payload(rows, strip));
     if (command === "telemetry_refresh") return Promise.resolve({ advanced: 1 });
     return Promise.reject(new Error(`unexpected command ${command}`));
   });
@@ -68,6 +112,111 @@ function respondWith(rows: FleetRow[] = [row()]) {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  vi.mocked(listen).mockReset();
+  vi.mocked(listen).mockImplementation(() => Promise.resolve(() => {}));
+});
+
+describe("DashboardView layout", () => {
+  it("puts the window control above the strip it governs, not between strip and table", async () => {
+    // The window scopes every figure on both the strip and the table. Sitting
+    // between them, it read as governing only the table — which invites reading
+    // the strip's numbers as all-time.
+    respondWith();
+    render(<DashboardView />);
+    await waitFor(() =>
+      expect(screen.getByRole("group", { name: "Activity by provider" })).toBeInTheDocument(),
+    );
+
+    const window = screen.getByRole("group", { name: "Window" });
+    const strip = screen.getByRole("group", { name: "Activity by provider" });
+
+    // DOCUMENT_POSITION_FOLLOWING: the strip comes after the window control.
+    expect(window.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  it("keeps the column picker beside the table it configures", async () => {
+    // Columns affects only the table. The button rides in the header above the
+    // strip, so the panel it opens is what says which element it belongs to.
+    respondWith();
+    render(<DashboardView />);
+    await waitFor(() => expect(screen.getByText("Wardian-Codex")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: /Columns/ }));
+
+    const strip = screen.getByRole("group", { name: "Activity by provider" });
+    const picker = document.querySelector(".dashboard-view__picker");
+    expect(picker).not.toBeNull();
+    expect(strip.compareDocumentPosition(picker!) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+});
+
+describe("DashboardView refresh", () => {
+  it("shows figures from after the ingest, not from a read already in flight", async () => {
+    // Reads are coalesced so a backstop poll and a `telemetry-updated` event
+    // landing together cost one read rather than two. Refresh must not join
+    // that: a read already in flight queried the store *before* the ingest it
+    // is waiting on committed, so joining it renders pre-refresh figures and
+    // does not correct until the next poll.
+    //
+    // The overlap has to be real for this to test anything. An earlier version
+    // clicked Refresh with nothing in flight, which cannot reproduce the bug —
+    // it passed against the broken hook.
+    let notify: (() => void) | undefined;
+    vi.mocked(listen).mockImplementation((event, handler) => {
+      if (event === "telemetry-updated") {
+        notify = () => handler({ event, id: 0, payload: undefined });
+      }
+      return Promise.resolve(() => {});
+    });
+
+    let ingested = false;
+    let reads = 0;
+    let releasePoll: (() => void) | undefined;
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "telemetry_refresh") {
+        ingested = true;
+        return Promise.resolve({ advanced: 1 });
+      }
+      if (command === "telemetry_fleet") {
+        reads += 1;
+        // Captured when the read is *issued*, which is what makes the held-open
+        // second read a genuine pre-ingest snapshot.
+        const answer = payload([row({ label: ingested ? "After-Ingest" : "Before-Ingest" })]);
+        if (reads === 2) {
+          return new Promise((resolve) => {
+            releasePoll = () => resolve(answer);
+          });
+        }
+        return Promise.resolve(answer);
+      }
+      if (command === "load_dashboard_prefs") return Promise.resolve(null);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<DashboardView />);
+    await waitFor(() => expect(screen.getByText("Before-Ingest")).toBeInTheDocument());
+    await waitFor(() => expect(notify).toBeDefined());
+
+    // The poll fires and its read is left open across the ingest below.
+    await act(async () => {
+      notify?.();
+    });
+    await waitFor(() => expect(reads).toBe(2));
+
+    await userEvent.click(screen.getByRole("button", { name: /Refresh/ }));
+
+    // The held-open read now answers with what the store held before the
+    // ingest. It must not be what the surface settles on.
+    await act(async () => {
+      releasePoll?.();
+    });
+
+    await waitFor(() => expect(screen.getByText("After-Ingest")).toBeInTheDocument());
+    expect(reads).toBe(3);
+  });
 });
 
 describe("DashboardView", () => {

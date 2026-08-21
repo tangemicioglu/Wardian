@@ -61,6 +61,32 @@ function fleet() {
     spark: Array.from({ length: 12 }, () => 0),
   });
 
+  const card = (
+    provider: string,
+    roster: number,
+    active: number,
+    turns: number,
+    tokens: number | null,
+    files: number,
+    added: number,
+    removed: number,
+    peak: number,
+    peakAt: number,
+  ) => ({
+    provider,
+    roster_agent_count: roster,
+    active_agent_count: active,
+    active_ms: turns * 90_000,
+    turns,
+    total_tokens: tokens,
+    files_touched: files,
+    lines_added: added,
+    lines_removed: removed,
+    tokens_reported: tokens !== null,
+    spark: spark(peak, peakAt),
+    idle: turns === 0,
+  });
+
   return {
     window: {
       from: "2026-08-14T23:00:00.000Z",
@@ -97,6 +123,27 @@ function fleet() {
     ),
     trend_measure: "total_tokens",
     grain: "minute5",
+    // The strip. `All` is not a provider and carries distinct counts, so its
+    // agent and file figures are smaller than the sum of the cards.
+    habitat: card("all", 10, 7, 137, 1_022_500, 39, 1_493, 364, 486_000, 9),
+    providers: [
+      card("codex", 4, 3, 71, 746_900, 23, 923, 279, 486_000, 9),
+      card("claude", 3, 2, 39, 244_500, 10, 439, 61, 212_400, 6),
+      card("antigravity", 2, 1, 14, null, 5, 132, 24, 14, 5),
+      card("opencode", 1, 1, 13, 31_100, 4, 8, 3, 31_100, 3),
+      // Configured and untouched this window: still listed, dimmed, last.
+      card("gemini", 1, 0, 0, 0, 0, 0, 0, 0, 0),
+    ],
+    provider_maxima: {
+      tokens_per_hour: 486_000,
+      turns_per_hour: 71,
+      turns: 71,
+      active_ms: 6_390_000,
+      total_tokens: 746_900,
+      files_touched: 23,
+      lines: 1_202,
+      spark: 486_000,
+    },
   };
 }
 
@@ -186,6 +233,92 @@ test.describe("Dashboard fleet monitor", () => {
 
     await page.screenshot({
       path: path.join(SHOTS, "fleet-columns.png"),
+      fullPage: false,
+    });
+  });
+});
+
+test.describe("Dashboard provider strip", () => {
+  test("leads with the habitat, then providers by how often they are configured", async ({
+    page,
+  }) => {
+    await openDashboard(page);
+
+    const strip = page.getByRole("group", { name: "Activity by provider" });
+    await expect(strip).toBeVisible();
+
+    const names = await strip.locator("h3").allTextContents();
+    expect(names).toEqual(["All", "Codex", "Claude", "Antigravity", "OpenCode", "Gemini"]);
+
+    // `All` is a distinct count, not the sum of the cards: the providers list 7
+    // active agents between them, and only 7 agents exist because none of them
+    // ran on two providers this window.
+    await expect(strip.getByText("7 active").first()).toBeVisible();
+
+    await page.screenshot({
+      path: path.join(SHOTS, "provider-strip.png"),
+      fullPage: false,
+    });
+  });
+
+  test("shows an unmeasured provider as unreported and a silent one as dimmed", async ({
+    page,
+  }) => {
+    await openDashboard(page);
+
+    const strip = page.getByRole("group", { name: "Activity by provider" });
+
+    // Antigravity publishes no token accounting. It must not draw as the
+    // thriftiest provider in the habitat.
+    const antigravity = strip.getByRole("region", { name: /Antigravity/ });
+    await expect(antigravity.getByText("—")).toBeVisible();
+
+    // Gemini is configured and did nothing. Still listed — a provider you are
+    // not using is the answer to "where can I spend what is left".
+    const gemini = strip.getByRole("region", { name: /Gemini/ });
+    await expect(gemini).toBeVisible();
+    await expect(gemini).toHaveClass(/opacity-40/);
+  });
+
+  test("scrolls horizontally rather than growing the strip's height", async ({ page }) => {
+    // Narrow enough that six cards cannot fit. At the default width they do,
+    // and the overflow this test exists to prove never happens — the earlier
+    // version of it asserted `scrollWidth >= clientWidth`, which is true of any
+    // element that does not overflow at all.
+    await page.setViewportSize({ width: 900, height: 900 });
+    await openDashboard(page);
+
+    const strip = page.getByRole("group", { name: "Activity by provider" });
+    const before = await strip.evaluate((node) => ({
+      scrollWidth: node.scrollWidth,
+      clientWidth: node.clientWidth,
+      height: node.clientHeight,
+      overflowX: getComputedStyle(node).overflowX,
+      flexWrap: getComputedStyle(node).flexWrap,
+    }));
+
+    expect(before.overflowX).toBe("auto");
+    // Wrapping would make the strip's height depend on how many providers a
+    // habitat runs, which is the vendor-contingent layout this space was held
+    // empty to avoid.
+    expect(before.flexWrap).toBe("nowrap");
+    expect(before.scrollWidth).toBeGreaterThan(before.clientWidth);
+
+    // The last card is reachable only if the strip really scrolls, and reaching
+    // it must not have made the strip taller.
+    const last = strip.getByRole("region", { name: /Gemini/ });
+    await last.scrollIntoViewIfNeeded();
+    await expect(last).toBeVisible();
+
+    const after = await strip.evaluate((node) => ({
+      scrollLeft: node.scrollLeft,
+      height: node.clientHeight,
+    }));
+    expect(after.scrollLeft).toBeGreaterThan(0);
+    expect(after.height).toBe(before.height);
+
+    await page.screenshot({
+      path: path.join(SHOTS, "provider-strip-scrolled.png"),
       fullPage: false,
     });
   });

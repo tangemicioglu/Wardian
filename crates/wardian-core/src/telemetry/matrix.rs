@@ -30,7 +30,7 @@ use std::collections::HashMap;
 /// Cost is deliberately absent: only opencode reports it, so a column blank for
 /// most of the habitat would invite comparing agents on a figure most of them
 /// cannot produce.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Measure {
     /// Wall-clock time the agent was working, from the real activity spans.
@@ -649,6 +649,115 @@ fn collect_cells(conn: &Connection, sql: &str, window: &HorizonWindow) -> rusqli
     Ok(cells)
 }
 
+/// Window-wide totals for several measures at once, with no time axis.
+///
+/// For a caller that wants figures but not a shape. [`matrix_at`] answers both,
+/// and the axis is the expensive half: on a real 1.2 GB store over a trailing 30
+/// days, six provider grids cost 734 ms against 234 ms for the same six totals,
+/// because the cells query buckets every fact while the totals query is a plain
+/// `GROUP BY` over an indexed range.
+///
+/// Measures sharing a fact table are answered in **one** query rather than one
+/// each, which is most of the remaining difference. `ActiveMs` always gets its
+/// own: it is clamped to the window rather than filtered by it, so its `WHERE`
+/// cannot be shared.
+///
+/// The aggregates come from [`Measure::fact_expr`], the same place [`matrix_at`]
+/// gets them. A surface reading totals here and cells there must not be able to
+/// quote two different answers for one window.
+pub fn totals_at(
+    conn: &Connection,
+    window: &HorizonWindow,
+    dimension: Dimension,
+    measures: &[Measure],
+) -> rusqlite::Result<HashMap<Measure, HashMap<String, i64>>> {
+    let mut answers: HashMap<Measure, HashMap<String, i64>> = HashMap::new();
+
+    // Grouped by source, in a stable order, so the emitted SQL does not depend
+    // on hash iteration order and a query plan stays reproducible.
+    for source in [
+        MeasureSource::Turns,
+        MeasureSource::Edits,
+        MeasureSource::Activity,
+    ] {
+        let batch: Vec<Measure> = measures
+            .iter()
+            .copied()
+            .filter(|measure| measure.source() == source)
+            .collect();
+        if batch.is_empty() {
+            continue;
+        }
+
+        // Two combinations refuse to batch and fall back to answering one at a
+        // time: active time is clamped rather than filtered, and a model view of
+        // it has to come from the rollup because activity facts carry no model.
+        if source == MeasureSource::Activity {
+            for measure in batch {
+                let needs_rollup = dimension == Dimension::Model;
+                answers.insert(
+                    measure,
+                    row_totals(conn, window, dimension, measure, needs_rollup)?
+                        .into_iter()
+                        .collect(),
+                );
+            }
+            continue;
+        }
+
+        let table = source.table();
+        let time = source.time_column();
+        let needs_join = dimension == Dimension::Model && source == MeasureSource::Edits;
+        let (alias, join, column) = if needs_join {
+            ("e", EDIT_MODEL_JOIN, format!("e.{time}"))
+        } else {
+            ("", "", time.to_string())
+        };
+        let key = fact_key(dimension, source);
+        let exprs: Vec<String> = batch
+            .iter()
+            .map(|measure| {
+                if needs_join {
+                    measure.fact_expr().replace("path", "e.path")
+                } else {
+                    measure.fact_expr().to_string()
+                }
+            })
+            .collect();
+        let sql = format!(
+            "SELECT {key}, {}
+             FROM {table} {alias} {join}
+             WHERE {column} >= ?1 AND {column} < ?2
+             GROUP BY {key}",
+            exprs.join(", ")
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![window.from, window.to], |row| {
+            let key: String = row.get(0)?;
+            let values: Vec<i64> = (1..=batch.len())
+                .map(|column| row.get::<_, i64>(column))
+                .collect::<rusqlite::Result<_>>()?;
+            Ok((key, values))
+        })?;
+
+        for row in rows {
+            let (key, values) = row?;
+            for (measure, value) in batch.iter().zip(values) {
+                answers.entry(*measure).or_default().insert(key.clone(), value);
+            }
+        }
+
+        // A measure that matched no rows still has an answer: an empty map,
+        // which reads as "nothing in this window" rather than as "never asked".
+        for measure in batch {
+            answers.entry(measure).or_default();
+        }
+    }
+
+    Ok(answers)
+}
+
 /// Window-wide totals per row.
 ///
 /// Computed separately from the cells rather than by summing them, because for
@@ -733,6 +842,79 @@ mod tests {
         let ctx = SourceContext::new("agent-1", "codex", &fixture());
         ingest_source(&conn, &ctx).unwrap();
         conn
+    }
+
+    const EVERY_MEASURE: [Measure; 11] = [
+        Measure::ActiveMs,
+        Measure::Turns,
+        Measure::FreshTokens,
+        Measure::CachedTokens,
+        Measure::OutputTokens,
+        Measure::ReasoningTokens,
+        Measure::TotalTokens,
+        Measure::Files,
+        Measure::LinesAdded,
+        Measure::LinesRemoved,
+        Measure::LinesChanged,
+    ];
+
+    #[test]
+    fn batched_totals_agree_with_the_matrix_they_skip_the_axis_for() {
+        // The whole point of `totals_at` is to be cheaper, not different. A
+        // surface reading totals here and cells from `matrix_at` must never be
+        // able to quote two answers for one window, so this pins every measure
+        // against the function it is an optimisation of.
+        let conn = ingested();
+        let window = window();
+
+        for dimension in [Dimension::Agent, Dimension::Provider, Dimension::Model] {
+            let batched = totals_at(&conn, &window, dimension, &EVERY_MEASURE).unwrap();
+
+            for measure in EVERY_MEASURE {
+                let expected: HashMap<String, i64> =
+                    matrix_at(&conn, &window, dimension, measure, usize::MAX, None)
+                        .unwrap()
+                        .rows
+                        .into_iter()
+                        .map(|row| (row.key, row.total))
+                        .collect();
+                assert_eq!(
+                    batched[&measure], expected,
+                    "{dimension:?} / {measure:?} disagreed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_measure_with_no_rows_is_answered_as_empty_rather_than_missing() {
+        // "Nothing in this window" and "never asked" are different claims, and
+        // a caller indexing the map must not have to tell them apart.
+        let conn = Connection::open_in_memory().unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+
+        let batched = totals_at(&conn, &window(), Dimension::Provider, &EVERY_MEASURE).unwrap();
+        for measure in EVERY_MEASURE {
+            assert!(batched[&measure].is_empty(), "{measure:?} was missing");
+        }
+    }
+
+    #[test]
+    fn measures_sharing_a_fact_table_are_answered_together() {
+        // Batching is the optimisation; asking for one measure per table must
+        // still return every one of them, or the saving comes from dropping
+        // answers rather than from dropping work.
+        let conn = ingested();
+        let batched = totals_at(
+            &conn,
+            &window(),
+            Dimension::Provider,
+            &[Measure::Turns, Measure::TotalTokens, Measure::Files],
+        )
+        .unwrap();
+
+        assert_eq!(batched.len(), 3);
+        assert!(batched[&Measure::Turns].values().any(|total| *total > 0));
     }
 
     /// A two-hour window containing the fixture, resolving to 5-minute columns.
