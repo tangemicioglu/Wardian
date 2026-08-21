@@ -15,11 +15,11 @@ payload may already be present in the provider composer.
 
 For a live agent that appears idle, `queue-if-busy` now records the message in
 the durable mailbox before any terminal I/O. It then schedules one locked
-mailbox drain. That drain reads the current provider readiness: an already
-recorded busy turn leaves the record pending, while an actually ready target is
-eligible immediately. It does not require a second idle status transition.
-The fast path requires explicit ready evidence; an absent or unknown state
-remains pending until Wardian observes a provider-ready event.
+mailbox drain. That drain reads the current provider readiness, but it can only
+consume a ready observation recorded after the durable mailbox entry. An
+already recorded busy turn or an older ready observation leaves the record
+pending. The fast path also requires explicit ready evidence; an absent or
+unknown state remains pending until Wardian observes a provider-ready event.
 
 Mailbox dispatch takes the target delivery lock before selecting its next FIFO
 record. It reserves the next provider turn before releasing that lock and
@@ -38,6 +38,6 @@ headless keep their established queue behavior and release signals.
   in-progress provider turn.
 - **Positive:** Parallel agents share a durable FIFO and one target input
   reservation rather than racing terminal writes.
-- **Trade-off:** The first drain is still limited to the readiness state that
-  Wardian has observed; subsequent provider-ready events remain the release
-  mechanism for a target that is genuinely busy.
+- **Trade-off:** A message sent to an apparently idle target waits for one
+  causally newer ready observation. This avoids treating the stale idle
+  snapshot that selected the queue route as permission to write terminal input.

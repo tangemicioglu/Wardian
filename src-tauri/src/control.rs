@@ -2599,20 +2599,19 @@ async fn provider_input_current_state(
     (input.generation == current_generation).then_some(input.state)
 }
 
-async fn provider_input_is_ready_for_mailbox_drain(state: &AppState, session_id: &str) -> bool {
-    let Some(input) = state.interactions.provider_input_state(session_id).await else {
-        return false;
-    };
-    let Some(current_generation) = state
+async fn provider_input_ready_for_mailbox_drain(
+    state: &AppState,
+    session_id: &str,
+) -> Option<wardian_core::control::ProviderInputState> {
+    let input = state.interactions.provider_input_state(session_id).await?;
+    let current_generation = state
         .interactions
         .current_provider_input_generation(session_id)
-        .await
-    else {
-        return false;
-    };
-    input.generation == current_generation
+        .await?;
+    (input.generation == current_generation
         && input.state == ProviderInputReadiness::Ready
-        && input.ready_evidence.is_some()
+        && input.ready_evidence.is_some())
+    .then_some(input)
 }
 
 async fn record_provider_ready_evidence(
@@ -2629,7 +2628,7 @@ async fn record_provider_ready_evidence(
         .unwrap_or(0);
     state
         .interactions
-        .record_provider_input_state(
+        .record_fresh_provider_input_state(
             session_id,
             generation,
             ProviderInputReadiness::Ready,
@@ -4648,11 +4647,29 @@ async fn drain_next_mailbox_message_for_idle_agent(
     if info.status != "idle" {
         return Ok(None);
     }
-    if !provider_input_is_ready_for_mailbox_drain(state, session_id).await {
+    let Some(ready_input) = provider_input_ready_for_mailbox_drain(state, session_id).await else {
         return Ok(None);
-    }
+    };
     let provider_was_ready = true;
     if active_conversation_lease_for_delivery(&info) {
+        return Ok(None);
+    }
+
+    let pending_created_at = {
+        let mailbox = state.mailbox.lock().await;
+        mailbox
+            .list_for_target(session_id)
+            .into_iter()
+            .find(|record| record.status == wardian_core::control::MailboxMessageStatus::Pending)
+            .map(|record| record.created_at)
+    };
+    let Some(pending_created_at) = pending_created_at else {
+        return Ok(None);
+    };
+    // A queued idle message must never consume the Ready state that selected
+    // its route. The mailbox timestamp is durable, so restart recovery also
+    // waits for a provider-ready observation that occurred afterwards.
+    if ready_input.observed_at <= pending_created_at {
         return Ok(None);
     }
 
@@ -4663,6 +4680,13 @@ async fn drain_next_mailbox_message_for_idle_agent(
     let Some(record) = record else {
         return Ok(None);
     };
+    let still_ready = provider_input_ready_for_mailbox_drain(state, session_id)
+        .await
+        .is_some_and(|input| input.observed_at > record.created_at);
+    if !still_ready {
+        state.mailbox.lock().await.mark_pending(&record.id);
+        return Ok(None);
+    }
 
     let dispatch_persist_error = wardian_core::db::upsert_mailbox_message(&record)
         .err()
@@ -5754,7 +5778,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queue_if_busy_can_drain_an_already_idle_target_without_a_new_status_transition() {
+    async fn queue_if_busy_waits_for_a_ready_observation_newer_than_its_enqueue() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -5786,10 +5810,19 @@ mod tests {
         assert_eq!(queued[0].runtime_state, "queue_if_busy");
         assert_eq!(queued[0].delivery_state, "queued");
 
+        assert!(drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+            .await
+            .expect("drain succeeds")
+            .is_none());
+        assert!(rx.try_recv().is_err());
+
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
             .await
             .expect("drain succeeds")
-            .expect("already-ready target drains without another status transition");
+            .expect("newer ready observation drains the queue");
         assert_eq!(drained.delivery_state, "submit_sent_unconfirmed");
         assert_eq!(
             rx.recv().await.unwrap(),
@@ -5900,6 +5933,9 @@ mod tests {
         }
         assert!(rx.try_recv().is_err());
 
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
         // Both dispatchers see the same ready state, but the per-target lock
         // and dispatch reservation allow only one terminal submission.
         let drains = async {
@@ -5976,6 +6012,10 @@ mod tests {
             .await
             .expect("message queues");
         }
+
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
 
         let first_drain = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1");
         tokio::pin!(first_drain);
@@ -7634,6 +7674,7 @@ mod tests {
         assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
         assert_eq!(queued[0].delivery_state, "queued");
 
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         record_provider_ready_prompt(&state, "agent-1").await;
 
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
@@ -7777,6 +7818,7 @@ mod tests {
         assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
         assert_eq!(queued[0].delivery_state, "queued");
 
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         record_provider_ready_prompt(&state, "agent-1").await;
 
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
@@ -7844,6 +7886,7 @@ mod tests {
         assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
         assert_eq!(queued[0].delivery_state, "queued");
 
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         record_provider_ready_prompt(&state, "agent-1").await;
 
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")

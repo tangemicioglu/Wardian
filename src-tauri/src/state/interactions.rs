@@ -440,6 +440,42 @@ impl InteractionState {
             .await
     }
 
+    /// Records a newly observed provider state even when its readiness value
+    /// matches the previous record. Mailbox delivery uses `observed_at` as a
+    /// causal watermark, so a fresh provider-ready observation must not be
+    /// collapsed into an older identical one.
+    pub async fn record_fresh_provider_input_state(
+        &self,
+        session_id: &str,
+        generation: u64,
+        state: ProviderInputReadiness,
+        ready_evidence: Option<ProviderReadyEvidence>,
+    ) -> ProviderInputState {
+        let _observations = self.provider_status_observations.lock().await;
+        {
+            let mut generations = self.provider_generations.lock().await;
+            let current = generations
+                .entry(session_id.to_string())
+                .or_insert(generation);
+            if generation > *current {
+                *current = generation;
+            }
+        }
+        let record = ProviderInputState {
+            session_id: session_id.to_string(),
+            generation,
+            state,
+            ready_evidence,
+            observed_at: now_rfc3339_millis(),
+        };
+        self.provider_inputs
+            .lock()
+            .await
+            .insert(session_id.to_string(), record.clone());
+        let _ = wardian_core::db::upsert_provider_input_state(&record);
+        record
+    }
+
     async fn record_provider_input_state_inner(
         &self,
         session_id: &str,
