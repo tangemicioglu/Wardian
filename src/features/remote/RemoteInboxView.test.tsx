@@ -14,7 +14,7 @@ afterEach(() => {
   window.localStorage.clear();
   useRemoteStore.setState({
     remoteQueueItems: [],
-    providerChoiceSentByItem: {},
+    providerChoiceRecoveryByItem: {},
     openAgent: originalOpenAgent,
     runInboxAction: originalRunInboxAction,
     sendPromptToAgent: originalSendPromptToAgent,
@@ -197,6 +197,7 @@ describe("RemoteInboxView", () => {
     render(<RemoteInboxView />);
     fireEvent.click(screen.getByRole("button", { name: "Send action response 1: Yes" }));
     await waitFor(() => expect(refreshInbox).toHaveBeenCalledTimes(1));
+    expect(useRemoteStore.getState().providerChoiceRecoveryByItem["action-1"]).toBe("1");
 
     cleanup();
     render(<RemoteInboxView />);

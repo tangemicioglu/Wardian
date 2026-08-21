@@ -59,8 +59,8 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRef
   const [actionError, setActionError] = useState<string | null>(null);
   const [acknowledgementError, setAcknowledgementError] = useState<string | null>(null);
   const [deliveryUncertain, setDeliveryUncertain] = useState(false);
-  const providerChoiceSentByItem = useRemoteStore((state) => state.providerChoiceSentByItem[item.id]);
-  const recordProviderChoiceSent = useRemoteStore((state) => state.recordProviderChoiceSent);
+  const providerChoiceRecoveryByItem = useRemoteStore((state) => state.providerChoiceRecoveryByItem[item.id]);
+  const recordProviderChoiceRecovery = useRemoteStore((state) => state.recordProviderChoiceRecovery);
   const title = item.notification_title ?? item.agent_name ?? item.workflow_name ?? "Unknown";
   const bodyText = item.status === "failed" && item.error ? item.error : item.summary;
   const Icon = queueItemIsAgentEvent(item) ? Bot : GitBranch;
@@ -72,7 +72,7 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRef
   const canOpenAgent = Boolean(item.agent_session_id);
   const actionChoices = item.type === "action_needed" ? parseQueueActionChoices(bodyText) : [];
   const approvalChoices = isApprovalRequest && isPendingApproval ? item.approval_choices ?? [] : [];
-  const providerChoiceSent = item.provider_choice_sent ?? providerChoiceSentByItem ?? null;
+  const providerChoiceSent = item.provider_choice_sent ?? providerChoiceRecoveryByItem ?? null;
   const providerChoicePending = item.provider_choice_pending ?? null;
   const providerChoiceUncertain = providerChoicePending !== null || deliveryUncertain;
   const providerChoiceNeedsAcknowledgement = !providerChoiceUncertain && providerChoiceSent !== null && !item.read;
@@ -100,7 +100,8 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRef
     setIsSending(true);
     try {
       await onSendAgentPrompt(item.agent_session_id, choice.value, item.id);
-      recordProviderChoiceSent(item.id, choice.value);
+      // Keep a remount-surviving guard independent of the acknowledgement refresh.
+      recordProviderChoiceRecovery(item.id, choice.value);
       try {
         await onAction("mark_read", item.id);
       } catch (cause) {
