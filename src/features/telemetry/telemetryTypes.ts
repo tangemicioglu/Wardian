@@ -254,6 +254,39 @@ export interface TelemetryFleetMaxima {
   memory_mb?: number;
 }
 
+/**
+ * One provider's contribution over the Dashboard's trailing window.
+ *
+ * A card in the strip above the table, not a row in it. A provider has no
+ * status, no CPU, and is never "spinning", so the runaway detector the table
+ * exists for has no meaning at this granularity.
+ */
+export interface FleetProviderRow {
+  /** The provider's own name. `"all"` on the habitat card. */
+  provider: string;
+  /**
+   * Configured agents naming this provider, whatever they did in the window.
+   *
+   * The ordering key, and deliberately window-independent: ordering by
+   * in-window activity moves cards sideways whenever the window changes.
+   */
+  roster_agent_count: number;
+  /** Agents on this provider that recorded anything in the window. */
+  active_agent_count: number;
+  active_ms: number;
+  turns: number;
+  /** Billable tokens. `null` when the provider publishes no token accounting. */
+  total_tokens: number | null;
+  files_touched: number;
+  lines_added: number;
+  lines_removed: number;
+  tokens_reported: boolean;
+  /** The trend measure per bucket, aligned to `TelemetryFleet.buckets`. */
+  spark: number[];
+  /** Nothing recorded in the window. Still listed, dimmed. */
+  idle: boolean;
+}
+
 export interface TelemetryFleet {
   window: HorizonWindow;
   window_minutes: number;
@@ -262,6 +295,22 @@ export interface TelemetryFleet {
   buckets: string[];
   trend_measure: TelemetryMeasure;
   grain: TelemetryGrain;
+  /**
+   * The habitat as a whole, for the strip's leading card.
+   *
+   * Separate from `providers` rather than its first element, so nothing
+   * iterating providers can pick up the total by accident.
+   */
+  habitat: FleetProviderRow;
+  /** One card per provider, already in display order. */
+  providers: FleetProviderRow[];
+  /**
+   * The largest value across the provider cards, excluding the habitat.
+   *
+   * The habitat is their sum and dominates by construction, so scaling the
+   * provider cards against it would flatten every one onto the floor.
+   */
+  provider_maxima: TelemetryFleetMaxima;
 }
 
 /**

@@ -1,6 +1,8 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { AlertTriangle, ArrowDown, ArrowUp, BarChart3, RefreshCw, SlidersHorizontal } from "lucide-react";
 
+import { ProviderStrip } from "../features/telemetry/ProviderStrip";
+import { Sparkline } from "../features/telemetry/Sparkline";
 import { useFleet } from "../features/telemetry/useFleet";
 import {
   clampWindow,
@@ -13,7 +15,6 @@ import {
   type DashboardPrefs,
 } from "../features/telemetry/dashboardColumns";
 import {
-  cellIntensity,
   formatCount,
   formatDuration,
   formatRate,
@@ -139,12 +140,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     // yield, and the table below it shrinks and clips instead of scrolling.
     <div className="dashboard-view flex-1 flex flex-col gap-3 min-h-0 pb-3">
       {/*
-        Reserved for the cross-provider usage and limits control. Deliberately
-        empty rather than filled with a codex-only gauge: a component that exists
-        for one provider makes the surface's shape depend on which vendor the
-        habitat happens to run.
+        The space this held empty, now filled with the half of the question that
+        every provider can answer. Account limits are still absent, and for the
+        original reason: only codex publishes one, so a capacity gauge made the
+        surface's shape depend on which vendor the habitat happened to run.
+        Activity has no such dependency — a provider with no token accounting
+        still has turns, active time, files and lines.
       */}
-      <div className="dashboard-view__reserved" aria-hidden="true" />
+      {fleet && (
+        <ProviderStrip
+          habitat={fleet.habitat}
+          providers={fleet.providers}
+          maxima={fleet.provider_maxima}
+          trendMeasure={fleet.trend_measure}
+          grain={fleet.grain}
+        />
+      )}
 
       <header className="dashboard-view__controls flex items-center gap-2 flex-wrap">
         <div
@@ -563,43 +574,6 @@ function statusTone(status: string | null | undefined, idle: boolean) {
     return { className: "bg-wardian-text-muted/40", label: idle ? "Off" : "Unknown" };
   }
   return { className: "bg-wardian-success", label: "Idle" };
-}
-
-/** One row's trend across the window. */
-export function Sparkline({
-  values,
-  max,
-  label,
-}: {
-  values: readonly number[];
-  max: number;
-  label: string;
-}) {
-  if (values.length === 0) return <span className="h-5" aria-hidden="true" />;
-  const peak = values.reduce((highest, value) => Math.max(highest, value), 0);
-
-  return (
-    <span
-      className="dashboard-view__spark flex items-end gap-px h-5"
-      role="img"
-      aria-label={peak > 0 ? `${label}: trend across the window` : `${label}: nothing recorded`}
-    >
-      {values.map((value, index) => (
-        <span
-          key={index}
-          className={`flex-1 min-w-px rounded-t-[1px] ${
-            value > 0 ? "bg-[var(--color-wardian-accent)]" : "bg-wardian-border/30"
-          }`}
-          // Square-rooted, not linear. Token rates span orders of magnitude
-          // across a habitat, so a linear ratio against the busiest bucket
-          // flattens every ordinary one onto the floor and the sparkline
-          // degenerates into a dotted line with a single spike — the shape it
-          // exists to show is exactly what gets lost.
-          style={{ height: value > 0 ? `${Math.max(8, cellIntensity(value, max) * 100)}%` : "1px" }}
-        />
-      ))}
-    </span>
-  );
 }
 
 /** Visibility toggles, in the registry's order. */
