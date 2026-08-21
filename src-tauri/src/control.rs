@@ -2058,12 +2058,39 @@ async fn enqueue_mailbox_delivery(
             )
             .expect("newly enqueued mailbox record must exist");
         if let Err(error) = wardian_core::db::upsert_mailbox_message(&armed_record) {
-            mailbox.remove(&record.id);
             if let Err(rollback_error) = wardian_core::db::delete_mailbox_message(&record.id) {
-                return Err(ControlError::request_failed(format!(
-                    "failed to persist queued mailbox readiness watermark: {error}; failed to roll back the initial mailbox row: {rollback_error}"
-                )));
+                // The first write remains durable, so reporting a failed send
+                // would make a caller retry a message that recovery can later
+                // deliver. Keep the unarmed row in memory and report it as
+                // queued; recovery will arm it before a future Ready event.
+                crate::utils::logging::log_debug(&format!(
+                    "[Wardian] mailbox watermark write failed for {}; rollback is indeterminate: {error}; {rollback_error}",
+                    record.id
+                ));
+                let retained = mailbox
+                    .set_ready_after_observation(&record.id, None)
+                    .ok_or_else(|| {
+                        ControlError::request_failed(
+                            "mailbox row disappeared while recovering failed watermark arming",
+                        )
+                    })?;
+                return Ok(DeliveryDetail {
+                    uuid: info.uuid,
+                    name: info.name,
+                    provider: info.provider,
+                    runtime_state: runtime_state.to_string(),
+                    delivery_state: "queued".to_string(),
+                    input_mode,
+                    queue_policy,
+                    message_id: Some(retained.id),
+                    delivery_phase: Some("queued".to_string()),
+                    observed_state: None,
+                    reason: Some("target was not safe for live delivery".to_string()),
+                    profile: None,
+                    error: None,
+                });
             }
+            mailbox.remove(&record.id);
             return Err(ControlError::request_failed(format!(
                 "failed to persist queued mailbox readiness watermark: {error}"
             )));
