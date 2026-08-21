@@ -776,6 +776,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             let MessageOrigin::WardianAgent { session_id } = origin;
             validate_inbox_notification(&notification)?;
             let state = app.state::<AppState>();
+            let _origin_lifecycle_guard = state.lock_agent_lifecycle(&session_id).await;
             {
                 let agents = state.agents.lock().await;
                 if !agents.contains_key(&session_id) {

@@ -151,6 +151,7 @@ impl InteractionState {
         sender_session_id: String,
         payload: InboxNotificationPayload,
     ) -> Result<InteractionRecord, &'static str> {
+        let _mutation = self.mutation_lock.lock().await;
         let is_approval = matches!(payload.kind, InboxNotificationKind::Approval);
         let now = now_rfc3339_millis();
         let record = InteractionRecord {
@@ -238,8 +239,9 @@ impl InteractionState {
         notification_id: &str,
         choice: &str,
     ) -> Result<InboxNotificationDecision, &'static str> {
+        let _mutation = self.mutation_lock.lock().await;
         let current = self
-            .expire_notification_if_needed(notification_id)
+            .expire_notification_if_needed_locked(notification_id)
             .await
             .ok_or("not_found")?;
         if current.status == InteractionStatus::Expired {
@@ -317,6 +319,14 @@ impl InteractionState {
     }
 
     pub async fn expire_notification_if_needed(
+        &self,
+        notification_id: &str,
+    ) -> Option<InteractionRecord> {
+        let _mutation = self.mutation_lock.lock().await;
+        self.expire_notification_if_needed_locked(notification_id).await
+    }
+
+    async fn expire_notification_if_needed_locked(
         &self,
         notification_id: &str,
     ) -> Option<InteractionRecord> {
