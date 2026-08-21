@@ -2753,28 +2753,54 @@ pub async fn list_agent_metrics(state: State<'_, AppState>) -> Result<Vec<AgentT
     Ok(manager::get_all_metrics(&state).await)
 }
 
+/// Permanently removes an agent and its Wardian-owned history.
+///
+/// Without `force`, deletion refuses to remove an agent while its provider
+/// runtime is still attached. `force` explicitly permits terminating that
+/// provider, while the exact-name confirmation remains mandatory in either
+/// mode.
+pub async fn delete_agent(
+    session_id: String,
+    confirm_name: String,
+    force: bool,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    remove_agent(
+        session_id,
+        Some(confirm_name.as_str()),
+        state,
+        app,
+        !force,
+    )
+    .await
+}
+
+/// Internal desktop/remote compatibility alias for forced deletion.
+///
+/// The public CLI has one destructive operation (`agent delete`). Existing
+/// Tauri callers keep this IPC name while sharing the same exact-name
+/// confirmation and forced-removal implementation.
 #[tauri::command]
 pub async fn kill_agent(
     session_id: String,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    remove_agent(session_id, None, state, app, false).await
-}
-
-/// Permanently removes a stopped agent and its Wardian-owned history.
-///
-/// Unlike the legacy `kill_agent` lifecycle action, the explicit delete path
-/// refuses to remove an agent while its provider runtime is still attached.
-/// This keeps the destructive CLI verb from silently terminating a live
-/// provider process.
-pub async fn delete_agent(
-    session_id: String,
-    confirm_name: String,
-    state: State<'_, AppState>,
-    app: AppHandle,
-) -> Result<(), String> {
-    remove_agent(session_id, Some(confirm_name.as_str()), state, app, true).await
+    let confirm_name = {
+        let agents = state.agents.lock().await;
+        let agent = agents
+            .get(&session_id)
+            .ok_or_else(|| format!("Agent with session ID {} not found", session_id))?;
+        let name = agent
+            .config
+            .lock()
+            .map_err(|_| "agent config lock poisoned".to_string())?
+            .session_name
+            .clone();
+        name
+    };
+    delete_agent(session_id, confirm_name, true, state, app).await
 }
 
 async fn remove_agent(
@@ -2799,7 +2825,7 @@ async fn remove_agent(
         let agent = agents
             .get(&session_id)
             .ok_or_else(|| format!("Agent with session ID {} not found", session_id))?;
-        validate_stopped_agent_removal(agent, expected_name)?;
+        validate_agent_removal(agent, expected_name, require_stopped)?;
     }
     let (previous_state_snapshot, deletion_state_snapshot) = {
         let agents = state.agents.lock().await;
@@ -2952,9 +2978,10 @@ fn agent_has_running_process(agent: &ActiveAgent) -> bool {
         || !agent.background_processes.is_empty()
 }
 
-fn validate_stopped_agent_removal(
+fn validate_agent_removal(
     agent: &ActiveAgent,
     expected_name: Option<&str>,
+    require_stopped: bool,
 ) -> Result<(), String> {
     let current_name = agent
         .config
@@ -2968,9 +2995,9 @@ fn validate_stopped_agent_removal(
             ));
         }
     }
-    if agent_has_running_process(agent) {
+    if require_stopped && agent_has_running_process(agent) {
         return Err(format!(
-            "Cannot delete agent {} while its provider process is running; pause it first or use the legacy confirmed kill path",
+            "Cannot delete agent {} while its provider process is running; pause it first or pass --force when provider termination is intended",
             current_name
         ));
     }
@@ -4383,7 +4410,7 @@ mod tests {
         provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
         replace_agent_status_incarnation, release_spawn_name_reservation,
         reserve_spawn_session_name, reserve_rename_session_name,
-        validate_stopped_agent_removal,
+        validate_agent_removal,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
         resolve_requested_spawn_session_name, restore_agent_config_in_state,
         restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
@@ -7387,18 +7414,22 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             config.session_name = "DeleteMe".to_string();
         }
 
-        let error = validate_stopped_agent_removal(&active, Some("WrongName"))
+        let error = validate_agent_removal(&active, Some("WrongName"), true)
             .expect_err("stale confirmation must be rejected");
         assert!(error.contains("DeleteMe"));
 
         active.process_id = Some(1234);
-        let error = validate_stopped_agent_removal(&active, Some("DeleteMe"))
+        let error = validate_agent_removal(&active, Some("DeleteMe"), true)
             .expect_err("attached runtime must be rejected");
         assert!(error.contains("provider process is running"));
 
         active.process_id = None;
-        validate_stopped_agent_removal(&active, Some("DeleteMe"))
+        validate_agent_removal(&active, Some("DeleteMe"), true)
             .expect("exact confirmation must allow a stopped agent");
+
+        active.process_id = Some(1234);
+        validate_agent_removal(&active, Some("DeleteMe"), false)
+            .expect("exact confirmation must allow forced removal of a running agent");
     }
 
     #[tokio::test]

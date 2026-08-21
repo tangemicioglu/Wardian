@@ -15,10 +15,10 @@ Renaming uses `wardian agent rename <target> <new-name>` and updates the live
 identity without restarting the provider. The new name is immediately used by
 target resolution. The CLI exposes the safe reclass sequence as
 `wardian agent update … --class …` followed by `wardian agent restart …`.
-`wardian agent delete <target> --confirm <current-name>` is the explicit
-destructive path: it refuses an attached provider runtime and requires the
-operator to echo the exact current name. The older `agent kill --confirm`
-syntax remains a force-removal compatibility path.
+`wardian agent delete <target> --confirm <current-name>` is the only explicit
+destructive path. It requires the operator to echo the exact current name and
+refuses an attached provider runtime unless `--force` is supplied. `--force`
+controls provider termination; it does not weaken the confirmation contract.
 
 ## Rationale
 

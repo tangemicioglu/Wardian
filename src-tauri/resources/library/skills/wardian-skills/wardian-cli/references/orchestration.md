@@ -13,14 +13,15 @@ for the same `WARDIAN_HOME`:
 wardian agent pause reviewer-a1
 wardian agent resume reviewer-a1
 wardian agent restart reviewer-a1
-wardian agent kill reviewer-a1 --confirm
+wardian agent delete reviewer-a1 --confirm reviewer-a1
+wardian agent delete reviewer-a1 --confirm reviewer-a1 --force
 ```
 
 Pause only when it is safe to stop a provider turn. Restart replaces the
 provider process while preserving the Wardian agent, habitat, and saved session
-history. Kill is terminal for that agent: it removes its habitat and session
-history (but not project files), and requires `--confirm`; inspect the target
-and its outstanding work before using it.
+history. Delete is terminal for that agent: it removes its habitat and session
+history (but not project files), and always requires the exact current name.
+Use `--force` only when explicit provider termination is intended.
 
 ## Wait For A State Change
 

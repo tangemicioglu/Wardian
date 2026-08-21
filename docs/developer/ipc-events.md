@@ -10,7 +10,8 @@ The UI invokes these functions via `invoke("command_name", { args })`.
 
 - **`list_agents`**: Returns a list of all active/hibernating agent configurations.
 - **`spawn_agent`**: Spawns a new PTY session from an `AgentConfig`.
-- **`kill_agent`**: Terminates the PTY process and removes it from state.
+- **`kill_agent`**: Internal compatibility alias that force-deletes the owning
+  agent after the UI has confirmed the destructive action.
 - **`pause_agent`**: Suspends the PTY (killing the process but keeping the config).
 - **`resume_agent`**: Restarts a paused PTY session.
 - **`send_input_to_agent`**: Routes raw keystrokes to an agent's `stdin`.

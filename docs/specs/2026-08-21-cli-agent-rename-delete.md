@@ -10,10 +10,9 @@ Wardian exposes the existing live agent lifecycle through two CLI commands:
   control request succeeds. Names remain unique and use the existing agent
   name character rules.
 - `wardian agent delete <target> --confirm <current-name>` permanently removes
-  a stopped agent. The confirmation must exactly match the current name, and
-  deletion refuses while the provider runtime is attached. An operator must
-  pause the agent first; the legacy confirmed `agent kill` path remains
-  available when force-removal is intended.
+  an agent. The confirmation must exactly match the current name. Deletion
+  refuses while the provider runtime is attached unless `--force` is supplied;
+  force controls provider termination and does not weaken confirmation.
 
 Deletion cascades Wardian-owned state: the roster/database record, private
 agent habitat, delivery references, snapshots, and saved session history are
@@ -21,9 +20,8 @@ removed. It never removes project workspace files. This preserves the existing
 desktop Delete Agent ownership boundary and makes the history decision
 explicit rather than leaving an orphaned agent record.
 
-The existing `agent kill --confirm` command remains available for compatibility
-with the desktop lifecycle path. New automation should use `agent delete` when
-it wants the stopped-agent guard and exact-name confirmation.
+There is one destructive CLI lifecycle operation. New automation should use
+`agent delete`; `--force` is the explicit provider-termination option.
 
 ## Rationale
 

@@ -81,7 +81,6 @@ pub struct SendMessageDeliveryOptions<'a> {
 enum ControlOperation {
     AgentList,
     AgentDoctor,
-    AgentKill,
     AgentDelete,
     AgentRename,
     AgentRestart,
@@ -295,19 +294,7 @@ pub fn agent_doctor(target: &str) -> io::Result<AgentDoctorResponse> {
     serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))
 }
 
-pub fn agent_kill(target: &str) -> io::Result<()> {
-    let runtime = build_runtime()?;
-    timeout_block(
-        &runtime,
-        ControlOperation::AgentKill,
-        send_request(ControlRequest::AgentKill {
-            target: target.to_string(),
-        }),
-    )
-    .map(|_| ())
-}
-
-pub fn agent_delete(target: &str, confirm_name: &str) -> io::Result<()> {
+pub fn agent_delete(target: &str, confirm_name: &str, force: bool) -> io::Result<()> {
     let runtime = build_runtime()?;
     timeout_block(
         &runtime,
@@ -315,6 +302,7 @@ pub fn agent_delete(target: &str, confirm_name: &str) -> io::Result<()> {
         send_request(ControlRequest::AgentDelete {
             target: target.to_string(),
             confirm_name: confirm_name.to_string(),
+            force,
         }),
     )
     .map(|_| ())
@@ -1027,8 +1015,7 @@ fn operation_timeout(operation: &ControlOperation) -> Duration {
         | ControlOperation::ArtifactShow
         | ControlOperation::ArtifactReviewShow
         | ControlOperation::WatchlistsChanged => CONTROL_TIMEOUT,
-        ControlOperation::AgentKill
-        | ControlOperation::AgentDelete
+        ControlOperation::AgentDelete
         | ControlOperation::AgentRename
         | ControlOperation::AgentRestart
         | ControlOperation::AgentPause

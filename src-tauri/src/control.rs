@@ -383,23 +383,16 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 .map_err(browser_control_error)?,
         ),
 
-        ControlRequest::AgentKill { target } => {
-            let uuid = resolve_target_uuid(app, &target)
-                .await
-                .ok_or_else(|| ControlError::not_found(format!("agent not found: {target}")))?;
-            handle_agent_kill(app, uuid).await?;
-            ok_json(&OkResponse::new())
-        }
-
         ControlRequest::AgentDelete {
             target,
             confirm_name,
+            force,
         } => {
             let uuid = resolve_target_uuid(app, &target)
                 .await
                 .ok_or_else(|| ControlError::not_found(format!("agent not found: {target}")))?;
             let state = app.state::<AppState>();
-            crate::commands::agent::delete_agent(uuid, confirm_name, state, app.clone())
+            crate::commands::agent::delete_agent(uuid, confirm_name, force, state, app.clone())
                 .await
                 .map_err(ControlError::bad_request)?;
             ok_json(&OkResponse::new())
@@ -1266,13 +1259,6 @@ async fn live_agent_identity(
 // ---------------------------------------------------------------------------
 // Agent operation helpers
 // ---------------------------------------------------------------------------
-
-async fn handle_agent_kill(app: &AppHandle, session_id: String) -> std::io::Result<()> {
-    let state = app.state::<AppState>();
-    crate::commands::agent::kill_agent(session_id, state, app.clone())
-        .await
-        .map_err(std::io::Error::other)
-}
 
 async fn handle_agent_pause(app: &AppHandle, session_id: &str) -> std::io::Result<()> {
     let state = app.state::<AppState>();

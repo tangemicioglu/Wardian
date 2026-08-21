@@ -17,7 +17,7 @@ This page documents the current command surface registered in `src-tauri/src/lib
 - `spawn_agent`
 - `list_agents`
 - `list_agent_metrics`
-- `kill_agent`
+- `kill_agent` (internal compatibility alias for forced agent deletion)
 - `pause_agent`
 - `resume_agent`
 - `clear_agent_session`
