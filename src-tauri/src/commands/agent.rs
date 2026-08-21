@@ -2816,14 +2816,16 @@ async fn remove_agent(
     if let Err(error) = manager::try_save_state_snapshot(&deletion_state_snapshot) {
         return Err(format!("Failed to persist agent deletion: {error}"));
     }
-    if let Err(error) = wardian_core::db::delete_agent(&session_id) {
+    if let Err(error) = state
+        .interactions
+        .delete_agent_durable_state(&session_id)
+        .await
+    {
         let rollback_error = manager::try_save_state_snapshot(&previous_state_snapshot)
             .err()
             .map(|rollback| format!("; state snapshot rollback failed: {rollback}"))
             .unwrap_or_default();
-        return Err(format!(
-            "Failed to delete agent state: {error}{rollback_error}"
-        ));
+        return Err(format!("{error}{rollback_error}"));
     }
     let (agent, remaining_agent_ids) = {
         let mut agents = state.agents.lock().await;

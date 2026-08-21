@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tokio::sync::Mutex;
 use wardian_core::control::{
@@ -11,6 +11,7 @@ use wardian_core::control::{
 
 #[derive(Debug, Default)]
 pub struct InteractionState {
+    mutation_lock: Mutex<()>,
     records: Mutex<HashMap<String, InteractionRecord>>,
     replies: Mutex<HashMap<String, StructuredReply>>,
     provider_generations: Mutex<HashMap<String, u64>>,
@@ -41,6 +42,7 @@ impl InteractionState {
         target_session_id: String,
         body_ref: InteractionBodyRef,
     ) -> InteractionRecord {
+        let _mutation = self.mutation_lock.lock().await;
         let now = now_rfc3339_millis();
         let record = InteractionRecord {
             id,
@@ -69,6 +71,7 @@ impl InteractionState {
         target_session_ids: Vec<String>,
         body_ref: InteractionBodyRef,
     ) -> InteractionRecord {
+        let _mutation = self.mutation_lock.lock().await;
         let record = message_record(
             new_interaction_id(),
             sender_session_id,
@@ -89,6 +92,7 @@ impl InteractionState {
         target_session_ids: Vec<String>,
         body_ref: InteractionBodyRef,
     ) -> Result<InteractionRecord, String> {
+        let _mutation = self.mutation_lock.lock().await;
         let record = message_record(
             new_interaction_id(),
             sender_session_id,
@@ -114,6 +118,7 @@ impl InteractionState {
         interaction_id: &str,
         status: InteractionStatus,
     ) -> Result<InteractionRecord, String> {
+        let _mutation = self.mutation_lock.lock().await;
         let mut records = self.records.lock().await;
         let current = records
             .get(interaction_id)
@@ -571,6 +576,7 @@ impl InteractionState {
         status: ReplyStatus,
         body: &str,
     ) -> Result<StructuredReply, &'static str> {
+        let _mutation = self.mutation_lock.lock().await;
         let now = now_rfc3339_millis();
         let (structured_reply, completed_task, reply_record) = {
             let mut records = self.records.lock().await;
@@ -641,6 +647,7 @@ impl InteractionState {
         target_session_id: &str,
         body: &str,
     ) -> Result<StructuredReply, &'static str> {
+        let _mutation = self.mutation_lock.lock().await;
         let now = now_rfc3339_millis();
         let (structured_reply, failed_task, reply_record) = {
             let mut records = self.records.lock().await;
@@ -699,6 +706,51 @@ impl InteractionState {
 
     pub async fn structured_reply(&self, task_id: &str) -> Option<StructuredReply> {
         self.replies.lock().await.get(task_id).cloned()
+    }
+
+    /// Deletes an agent's durable interaction state and invalidates the live
+    /// task/reply cache under the same mutation gate used by reply completion.
+    /// A late provider reply therefore observes `not_found` instead of
+    /// recreating a task that was already deleted.
+    pub async fn delete_agent_durable_state(&self, session_id: &str) -> Result<(), String> {
+        let _mutation = self.mutation_lock.lock().await;
+        wardian_core::db::delete_agent(session_id)
+            .map_err(|error| format!("Failed to delete agent state: {error}"))?;
+
+        let mut records = self.records.lock().await;
+        let removed_ids = records
+            .iter()
+            .filter(|(_, record)| {
+                record.sender_session_id.as_deref() == Some(session_id)
+                    || record
+                        .target_session_ids
+                        .iter()
+                        .any(|target| target == session_id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<HashSet<_>>();
+        records.retain(|id, record| {
+            !removed_ids.contains(id)
+                && record.sender_session_id.as_deref() != Some(session_id)
+                && !record
+                    .target_session_ids
+                    .iter()
+                    .any(|target| target == session_id)
+        });
+        drop(records);
+
+        self.replies.lock().await.retain(|request_id, reply| {
+            !removed_ids.contains(request_id)
+                && reply.target_session_id != session_id
+                && reply.source_session_id.as_deref() != Some(session_id)
+        });
+        self.provider_status_observations
+            .lock()
+            .await
+            .remove(session_id);
+        self.provider_generations.lock().await.remove(session_id);
+        self.provider_inputs.lock().await.remove(session_id);
+        Ok(())
     }
 }
 
@@ -1367,5 +1419,44 @@ mod reply_tests {
             .await
             .unwrap_err();
         assert_eq!(late, "duplicate_reply");
+    }
+
+    #[tokio::test]
+    async fn deleting_agent_invalidates_cached_tasks_before_late_reply() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("WARDIAN_HOME");
+        unsafe { std::env::set_var("WARDIAN_HOME", home.path()) };
+        wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
+
+        let state = InteractionState::default();
+        let task = state
+            .create_task(
+                Some("agent-delete".to_string()),
+                "agent-target".to_string(),
+                InteractionBodyRef::Inline {
+                    body: "review".to_string(),
+                },
+            )
+            .await;
+
+        state
+            .delete_agent_durable_state("agent-delete")
+            .await
+            .unwrap();
+        assert!(state.interaction(&task.id).await.is_none());
+        assert!(state.structured_reply(&task.id).await.is_none());
+        assert_eq!(
+            state
+                .complete_task_with_reply(&task.id, Some("agent-target"), ReplyStatus::Done, "late")
+                .await
+                .unwrap_err(),
+            "not_found"
+        );
+
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("WARDIAN_HOME", value) },
+            None => unsafe { std::env::remove_var("WARDIAN_HOME") },
+        }
     }
 }
