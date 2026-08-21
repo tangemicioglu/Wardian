@@ -183,6 +183,13 @@ async function installQueueV2IpcMock(page: Page) {
           });
           return null;
         }
+        if (command === "submit_inbox_provider_choice") {
+          submittedPrompts.push({
+            sessionId: String(args?.sessionId ?? ""),
+            prompt: String(args?.prompt ?? ""),
+          });
+          return null;
+        }
         if (command === "load_onboarding_hints") return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         if (command === "dismiss_onboarding_hint") return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         if (command === "list_workflows") return [];
