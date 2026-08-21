@@ -4698,14 +4698,6 @@ pub(crate) fn spawn_mailbox_drain_after_restore(app: &AppHandle, session_id: &st
     });
 }
 
-pub(crate) async fn drain_mailbox_for_idle_agent_from_status_observation(
-    app: Option<&AppHandle>,
-    state: &AppState,
-    session_id: &str,
-) {
-    let _ = drain_next_mailbox_message_for_idle_agent(app, state, session_id).await;
-}
-
 async fn drain_next_mailbox_message_for_idle_agent(
     app: Option<&AppHandle>,
     state: &AppState,
@@ -5860,6 +5852,17 @@ mod tests {
                 assert_eq!(delivery[0].runtime_state, "queue_if_busy");
             }
         }
+
+        crate::manager::telemetry::apply_provider_status_observations(
+            &state,
+            &[crate::manager::telemetry::TelemetryProviderStatus {
+                session_id: "agent-1".to_string(),
+                generation: 0,
+                status: "Idle".to_string(),
+            }],
+        )
+        .await;
+        assert!(rx.try_recv().is_err(), "stale idle telemetry must not drain");
     }
 
     #[tokio::test]
@@ -7718,6 +7721,17 @@ mod tests {
                 assert_eq!(delivery[0].input_mode, MessageInputMode::Command);
             }
         }
+
+        crate::manager::telemetry::apply_provider_status_observations(
+            &state,
+            &[crate::manager::telemetry::TelemetryProviderStatus {
+                session_id: "command-agent".to_string(),
+                generation: 0,
+                status: "Idle".to_string(),
+            }],
+        )
+        .await;
+        assert!(rx.try_recv().is_err(), "stale idle telemetry must not drain");
     }
 
     #[test]

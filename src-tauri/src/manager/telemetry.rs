@@ -15,7 +15,7 @@ use super::opencode::{
     opencode_log_path_in, opencode_session_diff_path, opencode_should_fallback_to_idle,
 };
 use crate::providers::antigravity::AntigravityProvider;
-use wardian_core::control::{ProviderInputReadiness, ProviderReadyEvidence};
+use wardian_core::control::ProviderInputReadiness;
 
 const TELEMETRY_SLOW_PASS_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -409,10 +409,10 @@ struct TelemetryPassResult {
     provider_statuses: Vec<TelemetryProviderStatus>,
 }
 
-struct TelemetryProviderStatus {
-    session_id: String,
-    generation: u64,
-    status: String,
+pub(crate) struct TelemetryProviderStatus {
+    pub(crate) session_id: String,
+    pub(crate) generation: u64,
+    pub(crate) status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1424,42 +1424,22 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
     result.metrics
 }
 
-async fn apply_provider_status_observations(
+pub(crate) async fn apply_provider_status_observations(
     state: &AppState,
     observations: &[TelemetryProviderStatus],
 ) {
     for observation in observations {
         let readiness = provider_readiness_from_status(&observation.status);
-        let ready_evidence = (readiness == ProviderInputReadiness::Ready)
-            .then_some(ProviderReadyEvidence::ProviderEvent);
-        if readiness == ProviderInputReadiness::Ready {
-            state
-                .interactions
-                .record_fresh_provider_input_state(
-                    &observation.session_id,
-                    observation.generation,
-                    readiness,
-                    ready_evidence,
-                )
-                .await;
-        } else {
+        if readiness != ProviderInputReadiness::Ready {
             state
                 .interactions
                 .record_provider_input_state(
                     &observation.session_id,
                     observation.generation,
                     readiness,
-                    ready_evidence,
+                    None,
                 )
                 .await;
-        }
-        if readiness == ProviderInputReadiness::Ready {
-            crate::control::drain_mailbox_for_idle_agent_from_status_observation(
-                None,
-                state,
-                &observation.session_id,
-            )
-            .await;
         }
     }
 }

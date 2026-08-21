@@ -25,6 +25,12 @@ time—preserves the ordering even when two observations share a timestamp. The
 fast path also requires explicit ready evidence; an absent or unknown state
 remains pending until Wardian observes a provider-ready event.
 
+Telemetry polling does not manufacture that event. A repeated cached `Idle`
+sample may still update non-ready state, but it never advances the readiness
+sequence or drains a mailbox. Only the provider-status observation path, which
+carries a distinct status-observation sequence, or direct provider readiness
+evidence can release an armed record.
+
 Mailbox dispatch takes the target delivery lock before selecting its next FIFO
 record. It reserves the next provider turn before releasing that lock and
 submitting the terminal input. Concurrent readiness notifications can therefore

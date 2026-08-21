@@ -70,6 +70,9 @@ Delivery follows these rules:
   interaction delivery. A `queue-if-busy` mailbox record additionally stores
   a durable `ready_after_observation` watermark: it can drain only when an
   explicit Ready observation has a strictly greater sequence.
+- Repeated telemetry `Idle` samples are not Ready observations. They cannot
+  advance that sequence or drain a mailbox; release evidence comes from a
+  distinct provider-status observation or provider readiness signal.
 - Booting, busy, action-required, unavailable, or missing input-sender states keep delivery queued with a precise reason.
 - Readiness or status from an older generation cannot drain queued work for a newer runtime.
 - During startup recovery, legacy mailbox rows are durably armed with the
