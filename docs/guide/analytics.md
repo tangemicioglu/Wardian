@@ -4,6 +4,8 @@ Analytics is a Workbench surface for looking up what your habitat actually did o
 
 Where [Dashboard](./dashboard.md) answers *is anything wrong right now*, Analytics answers *how much did X do between A and B*. A trailing window is a setting you leave alone; a horizon is a filter you change to answer a question. Keeping them on separate surfaces is deliberate.
 
+![Wardian Analytics showing an agents-by-time matrix of active time, with the shading scale beneath it](../assets/screenshots/analytics/activity-matrix.png)
+
 ## When to Use It
 
 - Attribute token spend across providers or models over a week or a month.
