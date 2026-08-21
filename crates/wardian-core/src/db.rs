@@ -356,17 +356,27 @@ pub fn record_event(
 }
 
 pub fn delete_agent(session_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    get_db_conn(|conn| {
-        conn.execute(
-            "DELETE FROM events WHERE session_id = ?1",
-            params![session_id],
-        )?;
-        conn.execute(
-            "DELETE FROM agents WHERE session_id = ?1",
-            params![session_id],
-        )?;
-        Ok(())
-    })
+    let mut guard = DB_CONN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let conn = guard
+        .as_mut()
+        .ok_or("database not initialized")?;
+    delete_agent_with_conn(conn, session_id)?;
+    Ok(())
+}
+
+fn delete_agent_with_conn(conn: &mut Connection, session_id: &str) -> rusqlite::Result<()> {
+    let transaction = conn.transaction()?;
+    transaction.execute(
+        "DELETE FROM events WHERE session_id = ?1",
+        params![session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM agents WHERE session_id = ?1",
+        params![session_id],
+    )?;
+    transaction.commit()
 }
 
 pub fn get_agent_by_session_id_with_conn(
@@ -1264,6 +1274,46 @@ mod tests {
             )
             .unwrap();
         assert_eq!(event_count, 1);
+    }
+
+    #[test]
+    fn delete_agent_removes_agent_and_events_in_one_transaction() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        upsert_agent_with_conn(
+            &conn,
+            &AgentUpsert {
+                session_id: "agent-delete",
+                session_name: "DeleteMe",
+                description: "",
+                agent_class: "Coder",
+                provider: "mock",
+                workspace: None,
+                project: None,
+                is_off: true,
+                created_at: None,
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (session_id, event_type, payload) VALUES (?1, ?2, ?3)",
+            params!["agent-delete", "status_change", "Off"],
+        )
+        .unwrap();
+
+        delete_agent_with_conn(&mut conn, "agent-delete").unwrap();
+
+        assert!(get_agent_by_session_id_with_conn(&conn, "agent-delete")
+            .unwrap()
+            .is_none());
+        let event_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = ?1",
+                params!["agent-delete"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(event_count, 0);
     }
 }
 

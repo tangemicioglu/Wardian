@@ -2798,6 +2798,15 @@ async fn remove_agent(
             .ok_or_else(|| format!("Agent with session ID {} not found", session_id))?;
         validate_stopped_agent_removal(agent, expected_name)?;
     }
+    {
+        let agents = state.agents.lock().await;
+        if !agents.contains_key(&session_id) {
+            return Err(format!("Agent with session ID {} not found", session_id));
+        }
+    }
+    if let Err(error) = wardian_core::db::delete_agent(&session_id) {
+        return Err(format!("Failed to delete agent state: {error}"));
+    }
     let (agent, state_snapshot, remaining_agent_ids) = {
         let mut agents = state.agents.lock().await;
         let mut order = state.agent_order.lock().await;
@@ -2852,9 +2861,8 @@ async fn remove_agent(
             .filter(|folder| !folder.trim().is_empty());
         manager::terminate_active_agent_process(&mut agent);
 
-        // Phase 2: Remove from SQLite
+        // Phase 2: Durable state was deleted before detaching the live agent.
         lifecycle_heartbeat.ensure_active("remove")?;
-        let _ = wardian_core::db::delete_agent(&session_id);
         let _ = app.emit("agents-updated", ());
 
         // Cleanup: remove persisted references and the agent's private directory.
