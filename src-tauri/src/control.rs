@@ -6755,6 +6755,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn renamed_agent_is_immediately_resolvable_by_send_and_ask() {
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        state
+            .agents
+            .lock()
+            .await
+            .get_mut("agent-1")
+            .unwrap()
+            .config
+            .lock()
+            .unwrap()
+            .session_name = "RenamedCoder".to_string();
+
+        assert_eq!(
+            resolve_send_targets_scoped(&state, "RenamedCoder", None, false).await,
+            vec!["agent-1".to_string()]
+        );
+        assert_eq!(
+            resolve_target_uuid_in_state(&state, "RenamedCoder").await,
+            Some("agent-1".to_string())
+        );
+        assert_eq!(resolve_target_uuid_in_state(&state, "CoderOne").await, None);
+    }
+
+    #[tokio::test]
     async fn send_target_resolution_supports_all_class_uuid_and_name() {
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;

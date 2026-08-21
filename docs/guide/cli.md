@@ -213,8 +213,9 @@ it removes the agent, its habitat, and its session history, while leaving the
 project workspace files untouched. It requires `--confirm` deliberately for
 backward compatibility. Prefer `agent delete`, which requires the exact
 current agent name as `--confirm <current-agent-name>` and refuses to delete
-while the provider process is running; pause or kill the agent first. Rename
-is live and does not restart the provider. The new name resolves immediately
+while the provider process is running; pause it first. Use confirmed
+`agent kill` instead only when force removal is intended. Rename is live and
+does not restart the provider. The new name resolves immediately
 for `send` and `ask`. Agent-owned Wardian history is cascaded with deletion;
 project workspace files are never removed.
 

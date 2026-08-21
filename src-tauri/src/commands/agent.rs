@@ -1356,6 +1356,7 @@ fn insert_new_agent_order(
     }
 }
 
+#[derive(Debug)]
 struct SpawnNameReservation {
     session_name: String,
 }
@@ -1381,6 +1382,54 @@ async fn reserve_spawn_session_name(
 async fn release_spawn_name_reservation(state: &AppState, session_name: &str) {
     let mut reservations = state.agent_name_reservations.lock().await;
     reservations.remove(session_name);
+}
+
+/// Reserve a requested rename name using the same lock order as spawn-name
+/// reservation. The reservation closes the gap between checking the live
+/// roster and committing the rename while another spawn is in flight.
+async fn reserve_rename_session_name(
+    state: &AppState,
+    session_id: &str,
+    new_name: &str,
+) -> Result<Option<SpawnNameReservation>, String> {
+    let agents = state.agents.lock().await;
+    let current_name = agents
+        .get(session_id)
+        .ok_or_else(|| format!("Agent {} not found", session_id))?
+        .config
+        .lock()
+        .map_err(|_| "Agent configuration lock poisoned".to_string())?
+        .session_name
+        .clone();
+
+    if current_name == new_name {
+        return Ok(None);
+    }
+
+    if agents.values().any(|agent| {
+        agent
+            .config
+            .lock()
+            .map(|config| config.session_name == new_name && config.session_id != session_id)
+            .unwrap_or(false)
+    }) {
+        return Err(format!(
+            "An agent with the name '{}' already exists.",
+            new_name
+        ));
+    }
+
+    let mut reservations = state.agent_name_reservations.lock().await;
+    if reservations.contains(new_name) {
+        return Err(format!(
+            "An agent with the name '{}' already exists.",
+            new_name
+        ));
+    }
+    reservations.insert(new_name.to_string());
+    Ok(Some(SpawnNameReservation {
+        session_name: new_name.to_string(),
+    }))
 }
 
 fn normalize_workspace_record_path(path: &std::path::Path) -> String {
@@ -2305,14 +2354,6 @@ fn prepare_clear_config(config: &mut AgentConfig) -> Result<(), String> {
     Ok(())
 }
 
-async fn is_name_unique(state: &AppState, name: &str, exclude_session_id: Option<&str>) -> bool {
-    let agents = state.agents.lock().await;
-    !agents.values().any(|a| {
-        let config = a.config.lock().unwrap();
-        config.session_name == name && exclude_session_id.is_none_or(|id| config.session_id != id)
-    })
-}
-
 async fn is_session_id_available(state: &AppState, session_id: &str) -> bool {
     let agents = state.agents.lock().await;
     !agents.contains_key(session_id)
@@ -2755,29 +2796,7 @@ async fn remove_agent(
         let agent = agents
             .get(&session_id)
             .ok_or_else(|| format!("Agent with session ID {} not found", session_id))?;
-        if let Some(expected_name) = expected_name {
-            let current_name = agent
-                .config
-                .lock()
-                .map(|config| config.session_name.clone())
-                .unwrap_or_else(|_| session_id.clone());
-            if expected_name != current_name {
-                return Err(format!(
-                    "delete confirmation must exactly match the agent name `{current_name}`"
-                ));
-            }
-        }
-        if agent_has_running_process(agent) {
-            let name = agent
-                .config
-                .lock()
-                .map(|config| config.session_name.clone())
-                .unwrap_or_else(|_| session_id.clone());
-            return Err(format!(
-                "Cannot delete agent {} while its provider process is running; pause it first or use the legacy confirmed kill path",
-                name
-            ));
-        }
+        validate_stopped_agent_removal(agent, expected_name)?;
     }
     let (agent, state_snapshot, remaining_agent_ids) = {
         let mut agents = state.agents.lock().await;
@@ -2909,6 +2928,31 @@ fn agent_has_running_process(agent: &ActiveAgent) -> bool {
         || agent.process_id.is_some()
         || agent.child_process.is_some()
         || !agent.background_processes.is_empty()
+}
+
+fn validate_stopped_agent_removal(
+    agent: &ActiveAgent,
+    expected_name: Option<&str>,
+) -> Result<(), String> {
+    let current_name = agent
+        .config
+        .lock()
+        .map(|config| config.session_name.clone())
+        .unwrap_or_else(|_| "<unknown>".to_string());
+    if let Some(expected_name) = expected_name {
+        if expected_name != current_name {
+            return Err(format!(
+                "delete confirmation must exactly match the agent name `{current_name}`"
+            ));
+        }
+    }
+    if agent_has_running_process(agent) {
+        return Err(format!(
+            "Cannot delete agent {} while its provider process is running; pause it first or use the legacy confirmed kill path",
+            current_name
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -3500,12 +3544,7 @@ pub async fn rename_agent(
     }
 
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
-    if !is_name_unique(&state, &new_name, Some(&session_id)).await {
-        return Err(format!(
-            "An agent with the name '{}' already exists.",
-            new_name
-        ));
-    }
+    let rename_reservation = reserve_rename_session_name(&state, &session_id, &new_name).await?;
 
     let mut agents = state.agents.lock().await;
     let order = state.agent_order.lock().await;
@@ -3533,7 +3572,7 @@ pub async fn rename_agent(
 
         // Phase 2: Update agent metadata in SQLite
         let project = wardian_core::db::project_name_from_workspace(&workspace);
-        if let Err(error) = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
+        let persistence_error = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
             session_id: &sid,
             session_name: &name,
             description: &description,
@@ -3543,18 +3582,30 @@ pub async fn rename_agent(
             project: project.as_deref(),
             is_off,
             created_at: born.as_deref(),
-        }) {
+        })
+        .err()
+        .map(|error| error.to_string());
+        if let Some(error) = persistence_error {
             if let Some(agent) = agents.get_mut(&session_id) {
                 if let Ok(mut config) = agent.config.lock() {
                     config.session_name = previous_name;
                 }
             }
+            if let Some(reservation) = rename_reservation.as_ref() {
+                release_spawn_name_reservation(&state, &reservation.session_name).await;
+            }
             return Err(format!("Failed to persist agent rename: {error}"));
         }
         manager::save_state(&app, &agents, &order);
         let _ = app.emit("agents-updated", ());
+        if let Some(reservation) = rename_reservation.as_ref() {
+            release_spawn_name_reservation(&state, &reservation.session_name).await;
+        }
         Ok(())
     } else {
+        if let Some(reservation) = rename_reservation.as_ref() {
+            release_spawn_name_reservation(&state, &reservation.session_name).await;
+        }
         Err(format!("Agent {} not found", session_id))
     }
 }
@@ -4281,7 +4332,9 @@ mod tests {
         prepare_restored_config_for_spawn, prepare_resume_config,
         prepare_resume_config_for_runtime, promote_fresh_provider_session_after_resume,
         provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
-        replace_agent_status_incarnation, reserve_spawn_session_name,
+        replace_agent_status_incarnation, release_spawn_name_reservation,
+        reserve_spawn_session_name, reserve_rename_session_name,
+        validate_stopped_agent_removal,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
         resolve_requested_spawn_session_name, restore_agent_config_in_state,
         restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
@@ -5822,6 +5875,56 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert_eq!(second.session_name, "Coder-2");
     }
 
+    #[tokio::test]
+    async fn rename_rejects_a_name_reserved_by_an_in_flight_spawn() {
+        let state = AppState::new();
+        let agent = make_test_agent();
+        {
+            let mut config = agent.config.lock().unwrap();
+            config.session_id = "agent-1".to_string();
+            config.session_name = "CoderOne".to_string();
+        }
+        state.agents.lock().await.insert("agent-1".to_string(), agent);
+        state
+            .agent_name_reservations
+            .lock()
+            .await
+            .insert("ReservedName".to_string());
+
+        let error = reserve_rename_session_name(&state, "agent-1", "ReservedName")
+            .await
+            .expect_err("rename must not claim an in-flight spawn name");
+
+        assert!(error.contains("An agent with the name 'ReservedName' already exists"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_renames_claim_a_name_only_once() {
+        let state = AppState::new();
+        for (session_id, session_name) in [("agent-1", "CoderOne"), ("agent-2", "CoderTwo")] {
+            let agent = make_test_agent();
+            {
+                let mut config = agent.config.lock().unwrap();
+                config.session_id = session_id.to_string();
+                config.session_name = session_name.to_string();
+            }
+            state.agents.lock().await.insert(session_id.to_string(), agent);
+        }
+
+        let (first, second) = tokio::join!(
+            reserve_rename_session_name(&state, "agent-1", "SharedName"),
+            reserve_rename_session_name(&state, "agent-2", "SharedName"),
+        );
+
+        assert_eq!(first.is_ok(), !second.is_ok());
+        if let Ok(Some(reservation)) = first {
+            release_spawn_name_reservation(&state, &reservation.session_name).await;
+        }
+        if let Ok(Some(reservation)) = second {
+            release_spawn_name_reservation(&state, &reservation.session_name).await;
+        }
+    }
+
     #[test]
     fn normalize_spawn_folder_stores_forward_slash_absolute_paths() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -7225,6 +7328,28 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         active.runtime_generation = None;
         active.process_id = Some(1234);
         assert!(agent_has_running_process(&active));
+    }
+
+    #[test]
+    fn explicit_delete_requires_exact_name_and_a_stopped_runtime() {
+        let mut active = make_test_agent();
+        {
+            let mut config = active.config.lock().unwrap();
+            config.session_name = "DeleteMe".to_string();
+        }
+
+        let error = validate_stopped_agent_removal(&active, Some("WrongName"))
+            .expect_err("stale confirmation must be rejected");
+        assert!(error.contains("DeleteMe"));
+
+        active.process_id = Some(1234);
+        let error = validate_stopped_agent_removal(&active, Some("DeleteMe"))
+            .expect_err("attached runtime must be rejected");
+        assert!(error.contains("provider process is running"));
+
+        active.process_id = None;
+        validate_stopped_agent_removal(&active, Some("DeleteMe"))
+            .expect("exact confirmation must allow a stopped agent");
     }
 
     #[tokio::test]
