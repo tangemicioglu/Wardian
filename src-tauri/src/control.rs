@@ -2039,7 +2039,7 @@ fn queue_if_busy_message_requires_ready_observation(
     queue_policy: QueuePolicy,
     status: &str,
 ) -> bool {
-    input_mode == MessageInputMode::Message
+    matches!(input_mode, MessageInputMode::Message | MessageInputMode::Command)
         && queue_policy == QueuePolicy::QueueIfBusy
         && normalize_status(status) == "idle"
         && !status_uses_headless_delivery(status)
@@ -7644,7 +7644,7 @@ mod tests {
             "/goal test",
             None,
             MessageInputMode::Command,
-            QueuePolicy::QueueIfBusy,
+            QueuePolicy::LiveOnly,
             None,
             Some(&wardian_core::control::MessageOrigin::WardianAgent {
                 session_id: "source-1".to_string(),
@@ -7657,6 +7657,67 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap(), b"/goal test".to_vec());
         assert_eq!(rx.recv().await.unwrap(), b"\r".to_vec());
         assert_eq!(delivery[0].input_mode, MessageInputMode::Command);
+    }
+
+    #[test]
+    fn queue_if_busy_requires_fresh_ready_evidence_for_command_input() {
+        assert!(queue_if_busy_message_requires_ready_observation(
+            MessageInputMode::Command,
+            QueuePolicy::QueueIfBusy,
+            "Idle",
+        ));
+        assert!(!queue_if_busy_message_requires_ready_observation(
+            MessageInputMode::ApprovalAction,
+            QueuePolicy::QueueIfBusy,
+            "Idle",
+        ));
+    }
+
+    #[tokio::test]
+    async fn queue_if_busy_command_does_not_write_to_a_stale_idle_target() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "command-agent", "CommandCoder", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("command-agent").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        record_provider_ready_evidence(
+            &state,
+            "command-agent",
+            ProviderReadyEvidence::ProviderEvent,
+        )
+        .await;
+        crate::manager::record_agent_turn_started_for_watch(&state, "command-agent").await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        install_test_terminal_runtime_with_write_receipts(&state, "command-agent", tx).await;
+
+        let delivery = deliver_message_to_target(
+            None,
+            &state,
+            "CommandCoder",
+            "/goal should not interrupt",
+            None,
+            MessageInputMode::Command,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        );
+        tokio::pin!(delivery);
+        tokio::select! {
+            request = rx.recv() => panic!(
+                "queue-if-busy command wrote {:?} to a stale-idle target",
+                request.expect("terminal write request").bytes,
+            ),
+            result = &mut delivery => {
+                let delivery = result.expect("command should queue safely");
+                assert_eq!(delivery[0].delivery_state, "queued");
+                assert_eq!(delivery[0].input_mode, MessageInputMode::Command);
+            }
+        }
     }
 
     #[test]
