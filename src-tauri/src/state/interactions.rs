@@ -12,6 +12,7 @@ use wardian_core::control::{
 #[derive(Debug, Default)]
 pub struct InteractionState {
     mutation_lock: Mutex<()>,
+    deleted_sessions: Mutex<HashSet<String>>,
     records: Mutex<HashMap<String, InteractionRecord>>,
     replies: Mutex<HashMap<String, StructuredReply>>,
     provider_generations: Mutex<HashMap<String, u64>>,
@@ -392,7 +393,9 @@ impl InteractionState {
             reason,
             error,
         );
-        let _ = wardian_core::db::upsert_interaction_delivery_attempt(&attempt);
+        if !self.deleted_sessions.lock().await.contains(target_session_id) {
+            let _ = wardian_core::db::upsert_interaction_delivery_attempt(&attempt);
+        }
         attempt
     }
 
@@ -423,6 +426,9 @@ impl InteractionState {
             reason,
             error,
         );
+        if self.deleted_sessions.lock().await.contains(target_session_id) {
+            return Err(format!("agent has been deleted: {target_session_id}"));
+        }
         wardian_core::db::upsert_interaction_delivery_attempt(&attempt)
             .map_err(|error| format!("failed to persist delivery attempt: {error}"))?;
         if let Some(status) = Self::message_status_for_delivery_state(delivery_state) {
@@ -462,6 +468,9 @@ impl InteractionState {
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
         let _mutation = self.mutation_lock.lock().await;
+        if self.deleted_sessions.lock().await.contains(session_id) {
+            return provider_input_state_record(session_id, generation, state, ready_evidence);
+        }
         let _observations = self.provider_status_observations.lock().await;
         self.record_provider_input_state_inner(session_id, generation, state, ready_evidence)
             .await
@@ -474,6 +483,9 @@ impl InteractionState {
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
+        if self.deleted_sessions.lock().await.contains(session_id) {
+            return provider_input_state_record(session_id, generation, state, ready_evidence);
+        }
         {
             let mut generations = self.provider_generations.lock().await;
             let current = generations
@@ -511,6 +523,9 @@ impl InteractionState {
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
         let _mutation = self.mutation_lock.lock().await;
+        if self.deleted_sessions.lock().await.contains(session_id) {
+            return provider_input_state_record(session_id, generation, state, ready_evidence);
+        }
         let mut observations = self.provider_status_observations.lock().await;
         if matches!(
             observations.get(session_id).copied(),
@@ -538,6 +553,9 @@ impl InteractionState {
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
         let _mutation = self.mutation_lock.lock().await;
+        if self.deleted_sessions.lock().await.contains(session_id) {
+            return provider_input_state_record(session_id, 0, state, ready_evidence);
+        }
         let _observations = self.provider_status_observations.lock().await;
         let generation = {
             let mut generations = self.provider_generations.lock().await;
@@ -564,6 +582,11 @@ impl InteractionState {
             .remove(session_id);
         self.provider_generations.lock().await.remove(session_id);
         self.provider_inputs.lock().await.remove(session_id);
+    }
+
+    pub async fn clear_deleted_session(&self, session_id: &str) {
+        let _mutation = self.mutation_lock.lock().await;
+        self.deleted_sessions.lock().await.remove(session_id);
     }
 
     pub async fn hydrate_from_persistence(&self) {
@@ -740,6 +763,10 @@ impl InteractionState {
         let _mutation = self.mutation_lock.lock().await;
         wardian_core::db::delete_agent(session_id)
             .map_err(|error| format!("Failed to delete agent state: {error}"))?;
+        self.deleted_sessions
+            .lock()
+            .await
+            .insert(session_id.to_string());
 
         let mut records = self.records.lock().await;
         let mut removed_ids = records
@@ -792,6 +819,21 @@ impl InteractionState {
         self.provider_generations.lock().await.remove(session_id);
         self.provider_inputs.lock().await.remove(session_id);
         Ok(())
+    }
+}
+
+fn provider_input_state_record(
+    session_id: &str,
+    generation: u64,
+    state: ProviderInputReadiness,
+    ready_evidence: Option<ProviderReadyEvidence>,
+) -> ProviderInputState {
+    ProviderInputState {
+        session_id: session_id.to_string(),
+        generation,
+        state,
+        ready_evidence,
+        observed_at: now_rfc3339_millis(),
     }
 }
 
@@ -1585,6 +1627,71 @@ mod reply_tests {
         drop(mutation);
         delivery_write.await.unwrap();
         deletion.await.unwrap().unwrap();
+        assert!(wardian_core::db::list_interaction_delivery_attempts("interaction-delete")
+            .unwrap()
+            .iter()
+            .all(|attempt| attempt.target_session_id != "agent-delete"));
+
+        let provider_state = state
+            .record_provider_input_state(
+                "agent-delete",
+                2,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        assert_eq!(provider_state.session_id, "agent-delete");
+        state
+            .start_provider_input_generation(
+                "agent-delete",
+                ProviderInputReadiness::Booting,
+                None,
+            )
+            .await;
+        state
+            .record_provider_input_status_observation(
+                "agent-delete",
+                1,
+                3,
+                ProviderInputReadiness::Busy,
+                None,
+            )
+            .await;
+        let non_durable_attempt = state
+            .record_delivery_attempt(
+                "interaction-delete",
+                "agent-delete",
+                DeliveryTransportKind::LiveSurface,
+                2,
+                "deleted",
+                "failed",
+                None,
+                None,
+                Some("late callback".to_string()),
+                None,
+            )
+            .await;
+        assert_eq!(non_durable_attempt.target_session_id, "agent-delete");
+        assert!(state
+            .record_delivery_attempt_durable(
+                "interaction-delete",
+                "agent-delete",
+                DeliveryTransportKind::LiveSurface,
+                2,
+                "deleted",
+                "failed",
+                None,
+                None,
+                Some("late callback".to_string()),
+                None,
+            )
+            .await
+            .is_err());
+        assert!(state.provider_input_state("agent-delete").await.is_none());
+        assert!(wardian_core::db::list_provider_input_states()
+            .unwrap()
+            .iter()
+            .all(|record| record.session_id != "agent-delete"));
         assert!(wardian_core::db::list_interaction_delivery_attempts("interaction-delete")
             .unwrap()
             .iter()

@@ -2425,6 +2425,9 @@ async fn register_new_agent(
     agents.insert(session_id.clone(), active_agent);
     insert_new_agent_order(&mut order, &session_id, placement);
     manager::save_state(app, &agents, &order);
+    drop(order);
+    drop(agents);
+    state.interactions.clear_deleted_session(&session_id).await;
     let _ = app.emit("agents-updated", ());
 
     Ok(config)
