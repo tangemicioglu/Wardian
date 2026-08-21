@@ -2599,10 +2599,20 @@ async fn provider_input_current_state(
     (input.generation == current_generation).then_some(input.state)
 }
 
-async fn provider_input_blocks_mailbox_drain(state: &AppState, session_id: &str) -> bool {
-    provider_input_current_state(state, session_id)
+async fn provider_input_is_ready_for_mailbox_drain(state: &AppState, session_id: &str) -> bool {
+    let Some(input) = state.interactions.provider_input_state(session_id).await else {
+        return false;
+    };
+    let Some(current_generation) = state
+        .interactions
+        .current_provider_input_generation(session_id)
         .await
-        .is_some_and(|input_state| input_state != ProviderInputReadiness::Ready)
+    else {
+        return false;
+    };
+    input.generation == current_generation
+        && input.state == ProviderInputReadiness::Ready
+        && input.ready_evidence.is_some()
 }
 
 async fn record_provider_ready_evidence(
@@ -2970,6 +2980,13 @@ pub(crate) async fn mark_delivered_agents_prompt_started(
                         &agent.current_status,
                         "Processing...",
                     );
+                } else if let Ok(mut status) = agent.current_status.lock() {
+                    // Telemetry-triggered drains do not carry an AppHandle,
+                    // but they still own this provider turn. Keep the local
+                    // status non-idle until the provider later reports its
+                    // next state so another telemetry pass cannot take a
+                    // second FIFO record for the same ready observation.
+                    *status = "Processing...".to_string();
                 }
             }
         }
@@ -4631,13 +4648,10 @@ async fn drain_next_mailbox_message_for_idle_agent(
     if info.status != "idle" {
         return Ok(None);
     }
-    if provider_input_blocks_mailbox_drain(state, session_id).await {
+    if !provider_input_is_ready_for_mailbox_drain(state, session_id).await {
         return Ok(None);
     }
-    let provider_was_ready = matches!(
-        provider_input_current_state(state, session_id).await,
-        Some(ProviderInputReadiness::Ready)
-    );
+    let provider_was_ready = true;
     if active_conversation_lease_for_delivery(&info) {
         return Ok(None);
     }
@@ -5785,6 +5799,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queue_if_busy_does_not_drain_an_idle_target_without_ready_evidence() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        install_test_terminal_runtime(&state, "agent-1", tx).await;
+
+        deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "wait for a real prompt",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("message queues");
+        state
+            .interactions
+            .record_provider_input_state(
+                "agent-1",
+                0,
+                ProviderInputReadiness::Unknown,
+                None,
+            )
+            .await;
+
+        assert!(drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+            .await
+            .expect("drain check succeeds")
+            .is_none());
+        assert!(rx.try_recv().is_err());
+
+        state
+            .interactions
+            .clear_provider_input_state("agent-1")
+            .await;
+        assert!(drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+            .await
+            .expect("drain check succeeds")
+            .is_none());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn concurrent_queue_if_busy_delivery_dispatches_only_one_message_per_ready_turn() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
@@ -5874,6 +5942,76 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn telemetry_ready_observation_cannot_dispatch_twice_before_the_first_turn_starts() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        install_test_terminal_runtime_with_write_receipts(&state, "agent-1", tx).await;
+
+        for message in ["first queued message", "second queued message"] {
+            deliver_message_to_target(
+                None,
+                &state,
+                "CoderOne",
+                message,
+                None,
+                MessageInputMode::Message,
+                QueuePolicy::QueueIfBusy,
+                None,
+                None,
+                false,
+            )
+            .await
+            .expect("message queues");
+        }
+
+        let first_drain = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1");
+        tokio::pin!(first_drain);
+        let payload = tokio::select! {
+            request = rx.recv() => request.expect("first payload request"),
+            result = &mut first_drain => panic!("first drain completed before payload write: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                panic!("first drain did not write the payload")
+            }
+        };
+        assert_eq!(payload.bytes, b"\x1b[200~first queued message\x1b[201~".to_vec());
+
+        // This reproduces a telemetry ready observation that lands after the
+        // reservation but before the provider has emitted turn_started.
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        let second_drain = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1");
+        tokio::pin!(second_drain);
+        tokio::select! {
+            request = rx.recv() => panic!(
+                "same-turn telemetry observation submitted a second payload: {:?}",
+                request.expect("terminal request").bytes,
+            ),
+            result = &mut second_drain => assert!(result.expect("second drain succeeds").is_none()),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+        let queued = state.mailbox.lock().await.list_for_target("agent-1");
+        assert_eq!(
+            queued
+                .iter()
+                .filter(|record| record.status == wardian_core::control::MailboxMessageStatus::Pending)
+                .count(),
+            1
+        );
+        // Dropping the pending receipt cancels the first drain. This test is
+        // intentionally scoped to the reservation window before turn_started.
     }
 
     #[tokio::test]
@@ -8051,17 +8189,11 @@ mod tests {
 
         let attempt = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
             .await
-            .unwrap()
-            .expect("drain attempt");
+            .unwrap();
 
-        assert_eq!(attempt.runtime_state, "mailbox_drain");
-        assert_eq!(attempt.delivery_state, "failed");
-        assert_eq!(attempt.message_id.as_deref(), Some(message_id.as_str()));
-        assert_eq!(
-            attempt.error.as_ref().map(|error| error.code.as_str()),
-            Some("no_input_channel")
-        );
+        assert!(attempt.is_none());
         let records = state.mailbox.lock().await.list_for_target("agent-1");
+        assert_eq!(records[0].id, message_id);
         assert_eq!(
             records[0].status,
             crate::state::MailboxMessageStatus::Pending
@@ -8172,6 +8304,8 @@ mod tests {
             let agent = agents.get("agent-1").unwrap();
             *agent.current_status.lock().unwrap() = "Idle".to_string();
         }
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
 
         let drain = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1");
         tokio::pin!(drain);
@@ -8257,6 +8391,8 @@ mod tests {
             let agent = agents.get("agent-1").unwrap();
             *agent.current_status.lock().unwrap() = "Idle".to_string();
         }
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
 
         let attempt = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
             .await
