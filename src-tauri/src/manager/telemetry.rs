@@ -15,7 +15,7 @@ use super::opencode::{
     opencode_log_path_in, opencode_session_diff_path, opencode_should_fallback_to_idle,
 };
 use crate::providers::antigravity::AntigravityProvider;
-use wardian_core::control::ProviderInputReadiness;
+use wardian_core::control::{ProviderInputReadiness, ProviderReadyEvidence};
 
 const TELEMETRY_SLOW_PASS_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -413,6 +413,9 @@ pub(crate) struct TelemetryProviderStatus {
     pub(crate) session_id: String,
     pub(crate) generation: u64,
     pub(crate) status: String,
+    /// True only when this telemetry pass observed a non-idle status become
+    /// idle. Repeated cached idle samples must not manufacture readiness.
+    pub(crate) became_ready: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1376,10 +1379,15 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
             } else {
                 observed_status
             };
+            let provider_status = snap.current_status.lock().unwrap().clone();
+            let became_ready = wardian_core::identity::normalize_status(&status_before_log_work)
+                != "idle"
+                && wardian_core::identity::normalize_status(&provider_status) == "idle";
             provider_statuses.push(TelemetryProviderStatus {
                 session_id: snap.session_id.clone(),
                 generation: snap.provider_generation,
-                status: snap.current_status.lock().unwrap().clone(),
+                status: provider_status,
+                became_ready,
             });
 
             results.push(AgentTelemetry {
@@ -1430,7 +1438,25 @@ pub(crate) async fn apply_provider_status_observations(
 ) {
     for observation in observations {
         let readiness = provider_readiness_from_status(&observation.status);
-        if readiness != ProviderInputReadiness::Ready {
+        if readiness == ProviderInputReadiness::Ready && observation.became_ready {
+            let status_sequence = state.next_status_observation_sequence(&observation.session_id);
+            state
+                .interactions
+                .record_provider_input_status_observation(
+                    &observation.session_id,
+                    status_sequence,
+                    observation.generation,
+                    readiness,
+                    Some(ProviderReadyEvidence::ProviderEvent),
+                )
+                .await;
+            crate::control::drain_mailbox_for_idle_agent_from_status_observation(
+                None,
+                state,
+                &observation.session_id,
+            )
+            .await;
+        } else if readiness != ProviderInputReadiness::Ready {
             state
                 .interactions
                 .record_provider_input_state(

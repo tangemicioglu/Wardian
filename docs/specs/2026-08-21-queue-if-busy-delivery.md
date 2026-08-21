@@ -27,9 +27,10 @@ remains pending until Wardian observes a provider-ready event.
 
 Telemetry polling does not manufacture that event. A repeated cached `Idle`
 sample may still update non-ready state, but it never advances the readiness
-sequence or drains a mailbox. Only the provider-status observation path, which
-carries a distinct status-observation sequence, or direct provider readiness
-evidence can release an armed record.
+sequence or drains a mailbox. A telemetry-observed transition into `Idle` is
+different: Wardian assigns it a distinct status-observation sequence and may
+release one armed record. Direct provider readiness evidence can also release
+an armed record.
 
 Mailbox dispatch takes the target delivery lock before selecting its next FIFO
 record. It reserves the next provider turn before releasing that lock and

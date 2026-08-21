@@ -4686,6 +4686,14 @@ pub(crate) fn spawn_mailbox_drain_if_idle(
     });
 }
 
+pub(crate) async fn drain_mailbox_for_idle_agent_from_status_observation(
+    app: Option<&AppHandle>,
+    state: &AppState,
+    session_id: &str,
+) {
+    let _ = drain_next_mailbox_message_for_idle_agent(app, state, session_id).await;
+}
+
 /// Gives restored durable mailbox work one immediate, status-gated chance to
 /// drain. Later provider idle observations remain the normal delivery trigger;
 /// this does not poll or retry terminal input.
@@ -5859,6 +5867,7 @@ mod tests {
                 session_id: "agent-1".to_string(),
                 generation: 0,
                 status: "Idle".to_string(),
+                became_ready: false,
             }],
         )
         .await;
@@ -5917,6 +5926,107 @@ mod tests {
             b"\x1b[200~deliver without another status event\x1b[201~".to_vec()
         );
         assert_eq!(rx.recv().await.unwrap(), b"\r".to_vec());
+    }
+
+    #[tokio::test]
+    async fn telemetry_idle_transition_drains_once_without_replaying_cached_idle() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Processing...".to_string();
+        }
+        state
+            .interactions
+            .record_provider_input_state(
+                "agent-1",
+                0,
+                ProviderInputReadiness::Busy,
+                None,
+            )
+            .await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        install_test_terminal_runtime(&state, "agent-1", tx).await;
+
+        for message in ["first queued message", "second queued message"] {
+            let queued = deliver_message_to_target(
+                None,
+                &state,
+                "CoderOne",
+                message,
+                None,
+                MessageInputMode::Message,
+                QueuePolicy::QueueIfBusy,
+                None,
+                None,
+                false,
+            )
+            .await
+            .expect("message queues while the provider is processing");
+            assert_eq!(queued[0].delivery_state, "queued");
+        }
+
+        *state
+            .agents
+            .lock()
+            .await
+            .get("agent-1")
+            .unwrap()
+            .current_status
+            .lock()
+            .unwrap() = "Idle".to_string();
+        crate::manager::telemetry::apply_provider_status_observations(
+            &state,
+            &[crate::manager::telemetry::TelemetryProviderStatus {
+                session_id: "agent-1".to_string(),
+                generation: 0,
+                status: "Idle".to_string(),
+                became_ready: true,
+            }],
+        )
+        .await;
+        assert_eq!(
+            rx.recv().await.expect("one telemetry transition dispatches"),
+            b"\x1b[200~first queued message\x1b[201~".to_vec()
+        );
+        assert_eq!(rx.recv().await.expect("one telemetry transition submits"), b"\r".to_vec());
+
+        // The first drain reserves the target as processing. Reproduce a
+        // stale cached idle sample arriving before the provider reports its
+        // next real status: it must not manufacture another Ready event.
+        *state
+            .agents
+            .lock()
+            .await
+            .get("agent-1")
+            .unwrap()
+            .current_status
+            .lock()
+            .unwrap() = "Idle".to_string();
+        crate::manager::telemetry::apply_provider_status_observations(
+            &state,
+            &[crate::manager::telemetry::TelemetryProviderStatus {
+                session_id: "agent-1".to_string(),
+                generation: 0,
+                status: "Idle".to_string(),
+                became_ready: false,
+            }],
+        )
+        .await;
+        assert!(rx.try_recv().is_err(), "cached idle must not dispatch a second record");
+        let queued = state.mailbox.lock().await.list_for_target("agent-1");
+        assert_eq!(
+            queued
+                .iter()
+                .filter(|record| {
+                    record.status == wardian_core::control::MailboxMessageStatus::Pending
+                })
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -7728,6 +7838,7 @@ mod tests {
                 session_id: "command-agent".to_string(),
                 generation: 0,
                 status: "Idle".to_string(),
+                became_ready: false,
             }],
         )
         .await;
