@@ -2058,7 +2058,12 @@ async fn enqueue_mailbox_delivery(
             )
             .expect("newly enqueued mailbox record must exist");
         if let Err(error) = wardian_core::db::upsert_mailbox_message(&armed_record) {
-            mailbox.set_ready_after_observation(&record.id, None);
+            mailbox.remove(&record.id);
+            if let Err(rollback_error) = wardian_core::db::delete_mailbox_message(&record.id) {
+                return Err(ControlError::request_failed(format!(
+                    "failed to persist queued mailbox readiness watermark: {error}; failed to roll back the initial mailbox row: {rollback_error}"
+                )));
+            }
             return Err(ControlError::request_failed(format!(
                 "failed to persist queued mailbox readiness watermark: {error}"
             )));
