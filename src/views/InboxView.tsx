@@ -6,7 +6,7 @@ import { DocsLink } from "../components/DocsLink";
 import { QUEUE_EVENT_LABELS, QUEUE_EVENT_TYPES, queueItemIsVisible } from "../features/queue/queueFilters";
 import { parseQueueActionChoices, type QueueActionChoice } from "../features/queue/actionChoices";
 import { QUEUE_TONE_CLASSES, queueItemIsAgentEvent, queueItemLabel, queueItemTone } from "../features/queue/queuePresentation";
-import { isClearableLegacyCompletion, providerChoiceAcknowledgementUnresolved, providerChoiceRecorded } from "../features/queue/queueTriage";
+import { isClearableLegacyCompletion, providerChoiceRecorded } from "../features/queue/queueTriage";
 
 const INITIAL_QUEUE_RENDER_LIMIT = 80;
 const QUEUE_RENDER_CHUNK_SIZE = 80;
@@ -98,11 +98,12 @@ function QueueItemIcon({ item }: { item: QueueItem }) {
 interface QueueCardProps {
   item: QueueItem;
   onOpenAgent?: (sessionId: string) => void;
-  onSendAgentPrompt?: (sessionId: string, prompt: string) => Promise<void> | void;
+  onSendAgentPrompt?: (sessionId: string, prompt: string, itemId: string) => Promise<void> | void;
 }
 
 function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const dismissItem = useQueueStore((s) => s.dismissItem);
+  const recordProviderChoiceSent = useQueueStore((s) => s.recordProviderChoiceSent);
   const markRead = useQueueStore((s) => s.markRead);
   const resolveApprovalRequest = useQueueStore((s) => s.resolveApprovalRequest);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -119,7 +120,8 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const canOpenAgent = Boolean(item.agent_session_id && onOpenAgent);
   const actionChoices = isActionNeeded ? parseQueueActionChoices(bodyText) : [];
   const canUseActionChoices = Boolean(item.agent_session_id && onSendAgentPrompt && actionChoices.length > 0);
-  const providerChoiceUncertain = providerChoiceAcknowledgementUnresolved(item);
+  const providerChoiceUncertain = Boolean(item.provider_choice_pending);
+  const providerChoiceNeedsAcknowledgement = Boolean(item.provider_choice_sent && !item.read);
   const providerChoiceAlreadyRecorded = providerChoiceRecorded(item);
   const approvalChoices = isApprovalRequest && (item.workflow_approval || item.notification_status === "awaiting_reply")
     ? item.approval_choices ?? []
@@ -132,7 +134,8 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
     setActionError(null);
     setIsSending(true);
     try {
-      await onSendAgentPrompt(item.agent_session_id, choice.value);
+      await onSendAgentPrompt(item.agent_session_id, choice.value, item.id);
+      recordProviderChoiceSent(item.id, choice.value);
       markRead(item.id);
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
@@ -236,7 +239,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
                   aria-label="Open agent terminal"
                   title="Open agent terminal"
                   onClick={() => {
-                    markRead(item.id);
+                    if (canAcknowledge) markRead(item.id);
                     onOpenAgent?.(item.agent_session_id!);
                   }}
                   className="inline-flex h-7 items-center gap-1 rounded-md border border-wardian-border bg-wardian-card-bg-muted px-2 text-[11px] font-semibold text-muted-neutral hover:text-bright-neutral transition-colors"
@@ -282,9 +285,12 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
           )}
           {actionError ? <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">{actionError}</p> : null}
           {providerChoiceUncertain && <p role="alert" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">Response delivery is uncertain. Check the agent before retrying.</p>}
+          {providerChoiceNeedsAcknowledgement && <p role="status" className="mt-2 text-[11px] text-[var(--color-wardian-error)]">
+            Response sent. Inbox status may need updating. <button type="button" onClick={(event) => { event.stopPropagation(); markRead(item.id); }} className="font-semibold underline">Retry Inbox status</button>
+          </p>}
         </div>
 
-        {!item.inbox_notification_id && !item.workflow_approval && !providerChoiceUncertain && <button
+        {!item.inbox_notification_id && !item.workflow_approval && !providerChoiceUncertain && !providerChoiceNeedsAcknowledgement && <button
           type="button"
           aria-label="Clear item"
           title="Clear item"
@@ -376,7 +382,7 @@ function QueueControls({ hasItems, hasReadItems, markAllRead, clearRead }: Queue
 
 export interface InboxViewProps {
   onOpenAgent?: (sessionId: string) => void;
-  onSendAgentPrompt?: (sessionId: string, prompt: string) => Promise<void> | void;
+  onSendAgentPrompt?: (sessionId: string, prompt: string, itemId: string) => Promise<void> | void;
 }
 
 export function InboxView({ onOpenAgent, onSendAgentPrompt }: InboxViewProps) {

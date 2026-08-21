@@ -1,9 +1,31 @@
 use crate::remote::models::{
     DeviceRecord, PendingPairingDecision, PendingPairingRequestRecord, RemoteAccessStatus,
-    RemoteAuditRecord, RemoteDeviceStore, RemoteGatewayConfig, RemotePendingPairingRequest,
-    RemoteSetupCheckResult, REMOTE_AUDIT_SCHEMA_VERSION,
+    RemoteAgentActionRequest, RemoteAuditRecord, RemoteDeviceStore, RemoteGatewayConfig,
+    RemotePendingPairingRequest, RemoteSetupCheckResult, REMOTE_AUDIT_SCHEMA_VERSION,
 };
 use tauri::Manager;
+
+/// Sends a desktop Inbox provider choice through the same durable idempotency
+/// path used by authenticated remote Inbox actions.
+#[tauri::command]
+pub async fn submit_inbox_provider_choice(
+    app: tauri::AppHandle,
+    session_id: String,
+    prompt: String,
+    inbox_item_id: String,
+) -> Result<(), String> {
+    crate::remote::operations::run_remote_agent_action(
+        &app,
+        RemoteAgentActionRequest {
+            action: "send_prompt".to_string(),
+            target: session_id,
+            prompt: Some(prompt),
+            input_mode: Some(wardian_core::control::MessageInputMode::Message),
+            inbox_item_id: Some(inbox_item_id),
+        },
+    )
+    .await
+}
 
 fn canonicalized_remote_gateway_config(
     config: &RemoteGatewayConfig,

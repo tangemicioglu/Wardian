@@ -47,7 +47,7 @@ import { useLibraryStore } from "../store/useLibraryStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useLayoutStore } from "../store/useLayoutStore";
 import { useOnboardingStore } from "../store/useOnboardingStore";
-import { submitInputToAgent, submitInputToAgents } from "../utils/terminalInput";
+import { submitInboxProviderChoice, submitInputToAgent, submitInputToAgents } from "../utils/terminalInput";
 import { CustomCloneModal } from "../features/agents/CustomCloneModal";
 import { WorkbenchConflictDialog } from "../features/workbench/WorkbenchConflictDialog";
 import { createWorkbenchInvokeAdapter } from "../features/workbench/workbenchPersistence";
@@ -1062,13 +1062,19 @@ function AppBody() {
     };
   }, [addWorkflowCompletion, loadQueueItems]);
 
-  async function sendCommand(sessionId: string, cmd: string) {
+  async function sendCommand(sessionId: string, cmd: string, inboxItemId?: string) {
     try {
-      await submitInputToAgent(sessionId, cmd);
+      if (inboxItemId) {
+        await submitInboxProviderChoice(sessionId, cmd, inboxItemId);
+      } else {
+        await submitInputToAgent(sessionId, cmd);
+      }
       const timestamp = new Date().toISOString();
       handleAgentInteractions({ [sessionId]: timestamp });
     } catch (e) {
       console.error(e);
+      if (inboxItemId) await loadQueueItems();
+      throw e;
     }
   }
 

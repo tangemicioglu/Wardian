@@ -57,9 +57,10 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRef
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [sentChoice, setSentChoice] = useState<string | null>(null);
   const [acknowledgementError, setAcknowledgementError] = useState<string | null>(null);
   const [deliveryUncertain, setDeliveryUncertain] = useState(false);
+  const providerChoiceRecoveryByItem = useRemoteStore((state) => state.providerChoiceRecoveryByItem[item.id]);
+  const recordProviderChoiceRecovery = useRemoteStore((state) => state.recordProviderChoiceRecovery);
   const title = item.notification_title ?? item.agent_name ?? item.workflow_name ?? "Unknown";
   const bodyText = item.status === "failed" && item.error ? item.error : item.summary;
   const Icon = queueItemIsAgentEvent(item) ? Bot : GitBranch;
@@ -71,7 +72,7 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRef
   const canOpenAgent = Boolean(item.agent_session_id);
   const actionChoices = item.type === "action_needed" ? parseQueueActionChoices(bodyText) : [];
   const approvalChoices = isApprovalRequest && isPendingApproval ? item.approval_choices ?? [] : [];
-  const providerChoiceSent = item.provider_choice_sent ?? sentChoice;
+  const providerChoiceSent = item.provider_choice_sent ?? providerChoiceRecoveryByItem ?? null;
   const providerChoicePending = item.provider_choice_pending ?? null;
   const providerChoiceUncertain = providerChoicePending !== null || deliveryUncertain;
   const providerChoiceNeedsAcknowledgement = !providerChoiceUncertain && providerChoiceSent !== null && !item.read;
@@ -99,11 +100,14 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRef
     setIsSending(true);
     try {
       await onSendAgentPrompt(item.agent_session_id, choice.value, item.id);
-      setSentChoice(choice.value);
+      // Keep a remount-surviving guard independent of the acknowledgement refresh.
+      recordProviderChoiceRecovery(item.id, choice.value);
       try {
         await onAction("mark_read", item.id);
       } catch (cause) {
         setAcknowledgementError(cause instanceof Error ? cause.message : String(cause));
+        // Refresh the server projection so a remount sees the durable sent marker.
+        void onRefreshInbox().catch(() => undefined);
       }
     } catch (cause) {
       setDeliveryUncertain(true);

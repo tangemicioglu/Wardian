@@ -188,6 +188,7 @@ fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
 
 fn is_clearable_legacy_completion(item: &serde_json::Value) -> bool {
     is_legacy_queue_item(item)
+        && !provider_choice_acknowledgement_unresolved(item)
         && matches!(
             item.get("type").and_then(serde_json::Value::as_str),
             Some("agent_completed" | "workflow_completed")
@@ -229,6 +230,16 @@ fn current_queue_item<'a>(
         .ok_or_else(|| "inbox_item_not_found".to_string())
 }
 
+fn validate_remote_mark_read(item: &serde_json::Value) -> Result<(), String> {
+    if is_pending_approval(item) {
+        return Err("pending_approval_cannot_be_marked_read".to_string());
+    }
+    if item.get("provider_choice_pending").is_some() {
+        return Err("provider_choice_delivery_uncertain_cannot_be_marked_read".to_string());
+    }
+    Ok(())
+}
+
 /// Applies a mobile Inbox mutation to the same persisted projection used by
 /// the desktop Inbox. The caller must authenticate and rate-limit the request.
 pub async fn apply_remote_inbox_action(
@@ -245,9 +256,7 @@ pub async fn apply_remote_inbox_action(
                 .as_deref()
                 .ok_or_else(|| "item_id_required".to_string())?;
             let item = current_queue_item(&projected_items, item_id)?;
-            if is_pending_approval(item) {
-                return Err("pending_approval_cannot_be_marked_read".to_string());
-            }
+            validate_remote_mark_read(item)?;
             let mut persisted = persisted_queue_items();
             if let Some(notification_id) = item
                 .get("inbox_notification_id")
@@ -611,6 +620,9 @@ async fn send_remote_prompt_with_idempotency(
                 Err("provider_choice_already_sent".to_string())
             };
         }
+        // Record the choice before touching the provider. A restart between this
+        // write and the native dispatch must recover as explicitly uncertain,
+        // never as an absent choice that can be replayed blindly.
         persisted[index]["provider_choice_pending"] = serde_json::Value::String(prompt.to_string());
         crate::utils::queue::save_items(&persisted)?;
         let result = crate::delivery::submit_live_surface_prompt(
@@ -877,6 +889,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_provider_choice_survives_reload_as_uncertain() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        crate::utils::queue::save_items(&[serde_json::json!({
+            "id": "action-1",
+            "type": "action_needed",
+            "read": false,
+            "agent_session_id": "agent-1",
+            "summary": "Proceed?\n1. Yes",
+            "provider_choice_pending": "1",
+        })])
+        .expect("pending queue");
+
+        let items = remote_queue_items(&AppState::new()).await;
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+
+        assert_eq!(items[0]["provider_choice_pending"], "1");
+        assert!(provider_choice_acknowledgement_unresolved(&items[0]));
+    }
+
+    #[tokio::test]
     async fn concurrent_queue_mutations_preserve_both_updates_and_valid_json() {
         let _guard = crate::utils::wardian_test_env_lock();
         let temp = tempfile::tempdir().expect("temp home");
@@ -1026,6 +1060,24 @@ mod tests {
     }
 
     #[test]
+    fn remote_mark_read_guard_rejects_pending_provider_choice() {
+        let error = validate_remote_mark_read(&serde_json::json!({
+            "type": "action_needed",
+            "read": false,
+            "provider_choice_pending": "1"
+        }))
+        .expect_err("pending provider choice must remain unread");
+        assert_eq!(error, "provider_choice_delivery_uncertain_cannot_be_marked_read");
+
+        assert!(validate_remote_mark_read(&serde_json::json!({
+            "type": "action_needed",
+            "read": false,
+            "provider_choice_sent": "1"
+        }))
+        .is_ok());
+    }
+
+    #[test]
     fn clear_read_only_targets_legacy_completion_items() {
         assert!(is_clearable_legacy_completion(&serde_json::json!({
             "type": "agent_completed"
@@ -1042,6 +1094,16 @@ mod tests {
         assert!(!is_clearable_legacy_completion(&serde_json::json!({
             "type": "agent_completed",
             "inbox_notification_id": "notice-1"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "workflow_completed",
+            "read": true,
+            "provider_choice_pending": "1"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "agent_completed",
+            "read": false,
+            "provider_choice_sent": "1"
         })));
     }
 

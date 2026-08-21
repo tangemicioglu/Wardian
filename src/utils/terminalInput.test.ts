@@ -26,6 +26,7 @@ import {
   promptWithChatAttachments,
   providerImagePasteKey,
   stageChatImageAttachments,
+  submitInboxProviderChoice,
   submitInputToAgent,
   submitInputToAgents,
 } from "./terminalInput";
@@ -63,6 +64,23 @@ describe("terminalInput", () => {
       sessionId: "agent-1",
       prompt: "hello world",
     });
+  });
+
+  it("sends Inbox provider choices through the durable command", async () => {
+    await submitInboxProviderChoice("agent-1", "1", "inbox-1");
+
+    expect(mockInvoke).toHaveBeenCalledWith("submit_inbox_provider_choice", {
+      sessionId: "agent-1",
+      prompt: "1",
+      inboxItemId: "inbox-1",
+    });
+  });
+
+  it("propagates Inbox provider delivery failures", async () => {
+    mockInvoke.mockRejectedValueOnce(new Error("provider unavailable"));
+
+    await expect(submitInboxProviderChoice("agent-1", "1", "inbox-1"))
+      .rejects.toThrow("provider unavailable");
   });
 
   it("returns all delivery details for multi-agent submission", async () => {

@@ -68,7 +68,7 @@ describe("InboxView", () => {
       }],
     });
 
-    render(<InboxView onOpenAgent={onOpenAgent} onSendAgentPrompt={onSendAgentPrompt} />);
+    const { unmount } = render(<InboxView onOpenAgent={onOpenAgent} onSendAgentPrompt={onSendAgentPrompt} />);
 
     expect(screen.getByText("Action required")).toBeInTheDocument();
     expect(screen.getByTestId("queue-item-summary-item-action")).toHaveTextContent("Do you want to proceed? 1. Yes 2. No");
@@ -79,7 +79,41 @@ describe("InboxView", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Send action response 1: Yes" }));
     });
-    expect(onSendAgentPrompt).toHaveBeenCalledWith("sess-1", "1");
+    expect(onSendAgentPrompt).toHaveBeenCalledWith("sess-1", "1", "item-action");
+    expect(screen.getByRole("button", { name: "Send action response 1: Yes" })).toBeDisabled();
+    expect(useQueueStore.getState().items[0]).toMatchObject({
+      provider_choice_sent: "1",
+      read: true,
+    });
+
+    unmount();
+    render(<InboxView onSendAgentPrompt={onSendAgentPrompt} />);
+    const choiceAfterRemount = screen.getByRole("button", { name: "Send action response 1: Yes" });
+    expect(choiceAfterRemount).toBeDisabled();
+    fireEvent.click(choiceAfterRemount);
+    expect(onSendAgentPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not acknowledge a desktop Inbox choice when delivery fails", async () => {
+    const onSendAgentPrompt = vi.fn().mockRejectedValue(new Error("provider unavailable"));
+    useQueueStore.setState({
+      items: [{
+        id: "item-action-failed",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "sess-1",
+        agent_name: "My Coder",
+        summary: "Proceed?\n1. Yes",
+      }],
+    });
+
+    render(<InboxView onSendAgentPrompt={onSendAgentPrompt} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send action response 1: Yes" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("provider unavailable");
+    expect(useQueueStore.getState().items[0]).toMatchObject({ read: false });
+    expect(useQueueStore.getState().items[0].provider_choice_sent).toBeUndefined();
   });
 
   it("does not render action buttons when the provider did not expose explicit choices", () => {
@@ -124,6 +158,54 @@ describe("InboxView", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Response delivery is uncertain");
     expect(screen.queryByRole("button", { name: /clear item/i })).not.toBeInTheDocument();
     fireEvent.click(choice);
+    expect(onSendAgentPrompt).not.toHaveBeenCalled();
+  });
+
+  it("does not mark an uncertain provider choice read when opening the agent", () => {
+    const onOpenAgent = vi.fn();
+    useQueueStore.setState({
+      items: [{
+        id: "item-action-open-pending",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "sess-1",
+        agent_name: "My Coder",
+        summary: "Proceed?\n1. Yes",
+        provider_choice_pending: "1",
+      }],
+    });
+
+    render(<InboxView onOpenAgent={onOpenAgent} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open agent terminal" }));
+
+    expect(onOpenAgent).toHaveBeenCalledWith("sess-1");
+    expect(useQueueStore.getState().items[0].read).toBe(false);
+  });
+
+  it("recovers a sent provider choice acknowledgement without replaying it", () => {
+    const onSendAgentPrompt = vi.fn();
+    useQueueStore.setState({
+      items: [{
+        id: "item-action-sent-unread",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "sess-1",
+        agent_name: "My Coder",
+        summary: "Proceed?\n1. Yes",
+        provider_choice_sent: "1",
+      }],
+    });
+
+    render(<InboxView onSendAgentPrompt={onSendAgentPrompt} />);
+
+    expect(screen.getByText("Response sent. Inbox status may need updating.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send action response 1: Yes" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry Inbox status" }));
+
+    expect(useQueueStore.getState().items[0].read).toBe(true);
     expect(onSendAgentPrompt).not.toHaveBeenCalled();
   });
 

@@ -47,6 +47,7 @@ interface RemoteState {
   agents: RemoteAgentSummary[];
   workflows: RemoteWorkflowSummary[];
   remoteQueueItems: QueueItem[];
+  providerChoiceRecoveryByItem: Record<string, string>;
   remoteQueueError: string;
   watchlists: Watchlist[];
   teams: AgentTeam[];
@@ -75,6 +76,7 @@ interface RemoteState {
   refresh: () => Promise<void>;
   refreshInbox: () => Promise<boolean>;
   runInboxAction: (action: string, itemId?: string, choice?: string) => Promise<void>;
+  recordProviderChoiceRecovery: (itemId: string, choice: string) => void;
   disconnectStatusStream: () => void;
   setActiveWatchlistId: (id: string) => void;
   setActiveRemoteTab: (tab: ActiveRemoteTab) => void;
@@ -666,6 +668,7 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
   agents: [],
   workflows: [],
   remoteQueueItems: [],
+  providerChoiceRecoveryByItem: {},
   remoteQueueError: "",
   watchlists: [],
   teams: [],
@@ -729,6 +732,14 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
   async runInboxAction(action, itemId, choice) {
     await remoteClient.runInboxAction(action, itemId, choice);
     await refreshRemoteQueue(set);
+  },
+  recordProviderChoiceRecovery(itemId, choice) {
+    set((state) => ({
+      providerChoiceRecoveryByItem: {
+        ...state.providerChoiceRecoveryByItem,
+        [itemId]: choice,
+      },
+    }));
   },
   disconnectStatusStream() {
     closeStatusStream();

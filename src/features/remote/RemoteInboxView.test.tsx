@@ -14,6 +14,7 @@ afterEach(() => {
   window.localStorage.clear();
   useRemoteStore.setState({
     remoteQueueItems: [],
+    providerChoiceRecoveryByItem: {},
     openAgent: originalOpenAgent,
     runInboxAction: originalRunInboxAction,
     sendPromptToAgent: originalSendPromptToAgent,
@@ -141,8 +142,10 @@ describe("RemoteInboxView", () => {
       .mockRejectedValueOnce(new Error("Remote request failed: 503"))
       .mockResolvedValue(undefined);
     const sendPromptToAgent = vi.fn().mockResolvedValue(undefined);
+    const refreshInbox = vi.fn().mockResolvedValue(true);
     useRemoteStore.setState({
       runInboxAction,
+      refreshInbox,
       sendPromptToAgent,
       remoteQueueItems: [{
         id: "action-1",
@@ -168,6 +171,41 @@ describe("RemoteInboxView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry Inbox status" }));
     await waitFor(() => expect(runInboxAction).toHaveBeenCalledTimes(2));
     expect(sendPromptToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a durably sent choice disabled after acknowledgement failure and remount", async () => {
+    const runInboxAction = vi.fn().mockRejectedValue(new Error("Remote request failed: 503"));
+    const sendPromptToAgent = vi.fn().mockResolvedValue(undefined);
+    let resolveRefresh!: (value: boolean) => void;
+    const refreshPromise = new Promise<boolean>((resolve) => { resolveRefresh = resolve; });
+    const refreshInbox = vi.fn().mockReturnValue(refreshPromise);
+    useRemoteStore.setState({
+      runInboxAction,
+      refreshInbox,
+      sendPromptToAgent,
+      remoteQueueItems: [{
+        id: "action-1",
+        type: "action_needed",
+        timestamp: Date.now(),
+        read: false,
+        agent_session_id: "agent-1",
+        agent_name: "Coder",
+        summary: "Proceed?\n1. Yes",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+    fireEvent.click(screen.getByRole("button", { name: "Send action response 1: Yes" }));
+    await waitFor(() => expect(refreshInbox).toHaveBeenCalledTimes(1));
+    expect(useRemoteStore.getState().providerChoiceRecoveryByItem["action-1"]).toBe("1");
+
+    cleanup();
+    render(<RemoteInboxView />);
+    const choice = screen.getByRole("button", { name: "Send action response 1: Yes" });
+    expect(choice).toBeDisabled();
+    fireEvent.click(choice);
+    expect(sendPromptToAgent).toHaveBeenCalledTimes(1);
+    resolveRefresh(true);
   });
 
   it("keeps the provider choice disabled when uncertain delivery cannot be refreshed", async () => {
@@ -273,6 +311,24 @@ describe("RemoteInboxView", () => {
         read: true,
         agent_name: "Coder",
         summary: "Choose an action",
+      }],
+    });
+
+    render(<RemoteInboxView />);
+
+    expect(screen.getByRole("button", { name: "Clear read Inbox items" })).toBeDisabled();
+  });
+
+  it("keeps a read pending provider choice out of Clear read", () => {
+    useRemoteStore.setState({
+      remoteQueueItems: [{
+        id: "read-pending-completion",
+        type: "workflow_completed",
+        timestamp: Date.now(),
+        read: true,
+        agent_name: "Coder",
+        summary: "Choose an action",
+        provider_choice_pending: "1",
       }],
     });
 
