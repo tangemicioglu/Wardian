@@ -53,17 +53,29 @@ Each interactive provider runtime has a provider input generation. The generatio
 ProviderInputState {
   session_id,
   generation,
+  observation_sequence,
   state: unknown | booting | ready | busy | action_required | unavailable,
   ready_evidence: provider_event | prompt_detected | title_detected | manual_status,
   observed_at
 }
 ```
 
+`observation_sequence` is monotonic per provider session. It preserves the
+causal order of provider observations even when their wall-clock timestamps
+are equal.
+
 Delivery follows these rules:
 
-- Ready evidence for the current generation can drain queued interaction delivery.
+- Ready evidence for the current generation can drain ordinary queued
+  interaction delivery. A `queue-if-busy` mailbox record additionally stores
+  a durable `ready_after_observation` watermark: it can drain only when an
+  explicit Ready observation has a strictly greater sequence.
 - Booting, busy, action-required, unavailable, or missing input-sender states keep delivery queued with a precise reason.
 - Readiness or status from an older generation cannot drain queued work for a newer runtime.
+- During startup recovery, legacy mailbox rows are durably armed with the
+  current sequence and rechecked until the watermark covers observations that
+  raced the arm; they then wait for a later Ready observation. See
+  [Queue-if-busy Delivery](../specs/2026-08-21-queue-if-busy-delivery.md).
 - Provider action-required status remains provider-owned. It usually represents a provider permission or authentication prompt, not a Wardian human-in-the-loop interaction.
 - Codex readiness can use prompt detection as release evidence, but it must not depend on a fixed sleep before text injection.
 
