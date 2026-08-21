@@ -44,6 +44,18 @@ static MAILBOX_INITIAL_UPSERT_TEST_GATE: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 
 #[cfg(test)]
+struct MailboxWatermarkUpsertTestGate {
+    target_session_id: String,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+static MAILBOX_WATERMARK_UPSERT_TEST_GATE: std::sync::OnceLock<
+    Mutex<Option<MailboxWatermarkUpsertTestGate>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
 fn install_mailbox_initial_upsert_test_gate(
     target_session_id: &str,
 ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
@@ -72,6 +84,40 @@ async fn pause_before_initial_mailbox_upsert_for_test(target_session_id: &str) {
             return;
         }
         stored_gate.take().expect("checked mailbox test gate")
+    };
+    gate.entered.notify_one();
+    gate.release.notified().await;
+}
+
+#[cfg(test)]
+fn install_mailbox_watermark_upsert_test_gate(
+    target_session_id: &str,
+) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let gate = MAILBOX_WATERMARK_UPSERT_TEST_GATE.get_or_init(|| Mutex::new(None));
+    *gate.lock().unwrap() = Some(MailboxWatermarkUpsertTestGate {
+        target_session_id: target_session_id.to_string(),
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+    });
+    (entered, release)
+}
+
+#[cfg(test)]
+async fn pause_before_mailbox_watermark_upsert_for_test(target_session_id: &str) {
+    let Some(test_gate) = MAILBOX_WATERMARK_UPSERT_TEST_GATE.get() else {
+        return;
+    };
+    let gate = {
+        let mut stored_gate = test_gate.lock().unwrap();
+        if stored_gate
+            .as_ref()
+            .is_none_or(|gate| gate.target_session_id != target_session_id)
+        {
+            return;
+        }
+        stored_gate.take().expect("checked mailbox watermark test gate")
     };
     gate.entered.notify_one();
     gate.release.notified().await;
@@ -1960,11 +2006,11 @@ async fn enqueue_mailbox_delivery(
     origin: Option<&MessageOrigin>,
     runtime_state: &str,
 ) -> Result<DeliveryDetail, ControlError> {
-    let queue_if_busy_idle = runtime_state == "queue_if_busy";
+    let queue_if_busy = queue_policy == QueuePolicy::QueueIfBusy;
     // The mailbox dispatcher uses this same lock before taking a record. Hold
     // it across the durable enqueue so a concurrent drain cannot pass the
     // queue-if-busy producer and write ahead of the new FIFO record.
-    let delivery_lock = if queue_if_busy_idle {
+    let delivery_lock = if queue_if_busy {
         Some(state.delivery_lock_for(&info.uuid).await)
     } else {
         None
@@ -2001,6 +2047,8 @@ async fn enqueue_mailbox_delivery(
         .interactions
         .current_provider_input_observation_sequence(&info.uuid)
         .await;
+    #[cfg(test)]
+    pause_before_mailbox_watermark_upsert_for_test(&info.uuid).await;
     let record = {
         let mut mailbox = state.mailbox.lock().await;
         let armed_record = mailbox
@@ -6027,6 +6075,79 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn queue_if_busy_processing_route_arms_before_a_racing_ready_drain() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Processing...".to_string();
+        }
+        state
+            .interactions
+            .record_provider_input_state(
+                "agent-1",
+                0,
+                ProviderInputReadiness::Busy,
+                None,
+            )
+            .await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        install_test_terminal_runtime(&state, "agent-1", tx).await;
+        let (entered_watermark, release_watermark) =
+            install_mailbox_watermark_upsert_test_gate("agent-1");
+        let watermark_entered = entered_watermark.notified();
+        tokio::pin!(watermark_entered);
+
+        let delivery = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "release after the processing turn completes",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        );
+        tokio::pin!(delivery);
+        tokio::select! {
+            result = &mut delivery => panic!("delivery completed before watermark arming: {result:?}"),
+            _ = &mut watermark_entered => {}
+        }
+
+        *state
+            .agents
+            .lock()
+            .await
+            .get("agent-1")
+            .unwrap()
+            .current_status
+            .lock()
+            .unwrap() = "Idle".to_string();
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        let racing_drain = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1");
+
+        release_watermark.notify_one();
+        let (queued, drained) = tokio::join!(delivery, racing_drain);
+        let queued = queued.expect("processing route persists the message");
+        assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
+        let drained = drained
+            .expect("racing drain succeeds")
+            .expect("Ready after the durable row drains after arming");
+        assert_eq!(drained.message_id, queued[0].message_id);
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            b"\x1b[200~release after the processing turn completes\x1b[201~".to_vec()
+        );
+        assert_eq!(rx.recv().await.unwrap(), b"\r".to_vec());
     }
 
     #[tokio::test]
