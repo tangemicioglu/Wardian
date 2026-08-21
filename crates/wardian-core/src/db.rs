@@ -370,20 +370,48 @@ fn delete_agent_with_conn(conn: &mut Connection, session_id: &str) -> rusqlite::
     let transaction = conn.transaction()?;
     let interaction_ids = {
         let mut statement = transaction.prepare(
-            "SELECT id, sender_session_id, target_session_ids FROM interactions",
+            "SELECT id, sender_session_id, target_session_ids, parent_interaction_id
+             FROM interactions",
         )?;
         let mut rows = statement.query([])?;
-        let mut ids = Vec::new();
+        let mut candidates = Vec::new();
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
             let sender: Option<String> = row.get(1)?;
             let targets_json: String = row.get(2)?;
             let targets: Vec<String> = serde_json::from_str(&targets_json).map_err(to_sql_error)?;
-            if sender.as_deref() == Some(session_id)
-                || targets.iter().any(|target| target == session_id)
-            {
-                ids.push(id);
+            let parent_interaction_id: Option<String> = row.get(3)?;
+            candidates.push((id, sender, targets, parent_interaction_id));
+        }
+
+        let mut ids = candidates
+            .iter()
+            .filter(|(_, sender, targets, _)| {
+                sender.as_deref() == Some(session_id)
+                    || targets.iter().any(|target| target == session_id)
+            })
+            .map(|(id, _, _, _)| id.clone())
+            .collect::<Vec<_>>();
+        let mut known_ids = ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        loop {
+            let descendants = candidates
+                .iter()
+                .filter(|(id, _, _, parent)| {
+                    !known_ids.contains(id)
+                        && parent
+                            .as_deref()
+                            .is_some_and(|parent_id| known_ids.contains(parent_id))
+                })
+                .map(|(id, _, _, _)| id.clone())
+                .collect::<Vec<_>>();
+            if descendants.is_empty() {
+                break;
             }
+            known_ids.extend(descendants.iter().cloned());
+            ids.extend(descendants);
         }
         ids
     };

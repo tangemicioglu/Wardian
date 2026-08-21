@@ -728,7 +728,7 @@ impl InteractionState {
             .map_err(|error| format!("Failed to delete agent state: {error}"))?;
 
         let mut records = self.records.lock().await;
-        let removed_ids = records
+        let mut removed_ids = records
             .iter()
             .filter(|(_, record)| {
                 record.sender_session_id.as_deref() == Some(session_id)
@@ -739,6 +739,23 @@ impl InteractionState {
             })
             .map(|(id, _)| id.clone())
             .collect::<HashSet<_>>();
+        loop {
+            let descendants = records
+                .iter()
+                .filter(|(id, record)| {
+                    !removed_ids.contains(*id)
+                        && record
+                            .parent_interaction_id
+                            .as_deref()
+                            .is_some_and(|parent_id| removed_ids.contains(parent_id))
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>();
+            if descendants.is_empty() {
+                break;
+            }
+            removed_ids.extend(descendants);
+        }
         records.retain(|id, record| {
             !removed_ids.contains(id)
                 && record.sender_session_id.as_deref() != Some(session_id)
@@ -1449,6 +1466,20 @@ mod reply_tests {
                 },
             )
             .await;
+        let anonymous_task = state
+            .create_task(
+                None,
+                "agent-delete".to_string(),
+                InteractionBodyRef::Inline {
+                    body: "review without a sender".to_string(),
+                },
+            )
+            .await;
+        state
+            .fail_task_with_reply(&anonymous_task.id, "agent-delete", "timed out")
+            .await
+            .unwrap();
+        assert!(state.structured_reply(&anonymous_task.id).await.is_some());
 
         state
             .delete_agent_durable_state("agent-delete")
@@ -1456,6 +1487,12 @@ mod reply_tests {
             .unwrap();
         assert!(state.interaction(&task.id).await.is_none());
         assert!(state.structured_reply(&task.id).await.is_none());
+        assert!(state.interaction(&anonymous_task.id).await.is_none());
+        assert!(state.structured_reply(&anonymous_task.id).await.is_none());
+        assert!(!wardian_core::db::list_interaction_records()
+            .unwrap()
+            .iter()
+            .any(|record| record.parent_interaction_id.as_deref() == Some(anonymous_task.id.as_str())));
         assert_eq!(
             state
                 .complete_task_with_reply(&task.id, Some("agent-target"), ReplyStatus::Done, "late")
