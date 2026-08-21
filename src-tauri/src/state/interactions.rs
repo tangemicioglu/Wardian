@@ -436,14 +436,14 @@ impl InteractionState {
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
         let _observations = self.provider_status_observations.lock().await;
-        self.record_provider_input_state_inner(session_id, generation, state, ready_evidence)
+        self.record_provider_input_state_inner(session_id, generation, state, ready_evidence, false)
             .await
     }
 
     /// Records a newly observed provider state even when its readiness value
-    /// matches the previous record. Mailbox delivery uses `observed_at` as a
-    /// causal watermark, so a fresh provider-ready observation must not be
-    /// collapsed into an older identical one.
+    /// matches the previous record. Mailbox delivery uses the monotonic
+    /// observation sequence as a causal watermark, so a fresh provider-ready
+    /// observation must not be collapsed into an older identical one.
     pub async fn record_fresh_provider_input_state(
         &self,
         session_id: &str,
@@ -452,28 +452,8 @@ impl InteractionState {
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
         let _observations = self.provider_status_observations.lock().await;
-        {
-            let mut generations = self.provider_generations.lock().await;
-            let current = generations
-                .entry(session_id.to_string())
-                .or_insert(generation);
-            if generation > *current {
-                *current = generation;
-            }
-        }
-        let record = ProviderInputState {
-            session_id: session_id.to_string(),
-            generation,
-            state,
-            ready_evidence,
-            observed_at: now_rfc3339_millis(),
-        };
-        self.provider_inputs
-            .lock()
+        self.record_provider_input_state_inner(session_id, generation, state, ready_evidence, true)
             .await
-            .insert(session_id.to_string(), record.clone());
-        let _ = wardian_core::db::upsert_provider_input_state(&record);
-        record
     }
 
     async fn record_provider_input_state_inner(
@@ -482,6 +462,7 @@ impl InteractionState {
         generation: u64,
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
+        force_fresh_observation: bool,
     ) -> ProviderInputState {
         {
             let mut generations = self.provider_generations.lock().await;
@@ -495,13 +476,21 @@ impl InteractionState {
 
         let mut inputs = self.provider_inputs.lock().await;
         if let Some(existing) = inputs.get(session_id) {
-            if keep_existing_provider_input_state(existing, generation, state, ready_evidence) {
+            if generation < existing.generation
+                || (!force_fresh_observation
+                    && keep_existing_provider_input_state(existing, generation, state, ready_evidence))
+            {
                 return existing.clone();
             }
         }
         let record = ProviderInputState {
             session_id: session_id.to_string(),
             generation,
+            observation_sequence: inputs
+                .get(session_id)
+                .map(|existing| existing.observation_sequence)
+                .unwrap_or(0)
+                + 1,
             state,
             ready_evidence,
             observed_at: now_rfc3339_millis(),
@@ -522,7 +511,7 @@ impl InteractionState {
         let mut observations = self.provider_status_observations.lock().await;
         if matches!(
             observations.get(session_id).copied(),
-            Some(current) if status_sequence < current
+            Some(current) if status_sequence <= current
         ) {
             if let Some(existing) = self.provider_inputs.lock().await.get(session_id).cloned() {
                 return existing;
@@ -531,7 +520,7 @@ impl InteractionState {
             observations.insert(session_id.to_string(), status_sequence);
         }
 
-        self.record_provider_input_state_inner(session_id, generation, state, ready_evidence)
+        self.record_provider_input_state_inner(session_id, generation, state, ready_evidence, true)
             .await
     }
 
@@ -552,7 +541,7 @@ impl InteractionState {
             generations.insert(session_id.to_string(), generation);
             generation
         };
-        self.record_provider_input_state_inner(session_id, generation, state, ready_evidence)
+        self.record_provider_input_state_inner(session_id, generation, state, ready_evidence, false)
             .await
     }
 
@@ -562,6 +551,18 @@ impl InteractionState {
             .await
             .get(session_id)
             .copied()
+    }
+
+    pub async fn current_provider_input_observation_sequence(
+        &self,
+        session_id: &str,
+    ) -> u64 {
+        self.provider_inputs
+            .lock()
+            .await
+            .get(session_id)
+            .map(|input| input.observation_sequence)
+            .unwrap_or(0)
     }
 
     pub async fn clear_provider_input_state(&self, session_id: &str) {
@@ -1189,6 +1190,33 @@ mod tests {
             Some(ProviderReadyEvidence::ProviderEvent)
         ));
         assert_eq!(repeated.observed_at, initial.observed_at);
+        assert_eq!(repeated.observation_sequence, initial.observation_sequence);
+    }
+
+    #[tokio::test]
+    async fn duplicate_status_observation_sequence_does_not_create_new_ready_evidence() {
+        let state = InteractionState::default();
+        let initial = state
+            .record_provider_input_status_observation(
+                "agent-1",
+                9,
+                1,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        let duplicate = state
+            .record_provider_input_status_observation(
+                "agent-1",
+                9,
+                1,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+
+        assert_eq!(initial.observation_sequence, 1);
+        assert_eq!(duplicate, initial);
     }
 
     #[tokio::test]

@@ -16,12 +16,14 @@ payload may already be present in the provider composer.
 For a live agent that appears idle, `queue-if-busy` now records the message in
 the durable mailbox before any terminal I/O. It then schedules one locked
 mailbox drain. After the initial mailbox row is durably written, Wardian
-persists a per-record readiness watermark. That drain reads the current
-provider readiness, but it can only consume a ready observation recorded after
-that watermark. An already recorded busy turn, a ready observation that
-predates the durable write, or an older ready observation leaves the record
-pending. The fast path also requires explicit ready evidence; an absent or
-unknown state remains pending until Wardian observes a provider-ready event.
+persists the current per-target provider-observation sequence as a per-record
+readiness watermark. That drain reads the current provider readiness, but it
+can only consume a Ready observation with a strictly later sequence. An already
+recorded busy turn, a Ready observation that predates the durable write, or an
+older Ready observation leaves the record pending. The sequence—not wall-clock
+time—preserves the ordering even when two observations share a timestamp. The
+fast path also requires explicit ready evidence; an absent or unknown state
+remains pending until Wardian observes a provider-ready event.
 
 Mailbox dispatch takes the target delivery lock before selecting its next FIFO
 record. It reserves the next provider turn before releasing that lock and
@@ -34,6 +36,11 @@ same turn as idle.
 Existing routes that are already known busy, action-required, leased, or
 headless keep their established queue behavior and release signals.
 
+On startup, a pending mailbox row written by a pre-watermark version is armed
+under its target delivery lock using the restored provider-observation sequence.
+It therefore waits for one new Ready observation after recovery instead of
+blocking FIFO delivery forever or trusting pre-restart readiness.
+
 ## Consequences
 
 - **Positive:** A stale idle status cannot make `queue-if-busy` interrupt an
@@ -41,6 +48,7 @@ headless keep their established queue behavior and release signals.
 - **Positive:** Parallel agents share a durable FIFO and one target input
   reservation rather than racing terminal writes.
 - **Trade-off:** A message sent to an apparently idle target waits for one
-  causally newer ready observation after its durable watermark. This avoids
-  treating the stale idle snapshot, or readiness observed during a delayed
-  mailbox upsert, as permission to write terminal input.
+  causally newer Ready observation after its durable sequence watermark. This
+  avoids treating the stale idle snapshot, readiness observed during a delayed
+  mailbox upsert, or an equal-millisecond timestamp as permission to write
+  terminal input.

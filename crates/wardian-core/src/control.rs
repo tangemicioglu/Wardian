@@ -363,10 +363,10 @@ pub struct MailboxMessageRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<MessageOrigin>,
     pub created_at: String,
-    /// The earliest provider-ready observation that may release this durable
-    /// mailbox record. It is set only after the initial database upsert.
+    /// The earliest provider observation sequence that may release this
+    /// durable mailbox record. It is set only after the initial database upsert.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ready_after: Option<String>,
+    pub ready_after_observation: Option<u64>,
     pub status: MailboxMessageStatus,
     pub phase: MailboxDeliveryPhase,
 }
@@ -749,6 +749,9 @@ pub enum ProviderReadyEvidence {
 pub struct ProviderInputState {
     pub session_id: String,
     pub generation: u64,
+    /// Monotonically increasing per-session provider observation sequence.
+    #[serde(default)]
+    pub observation_sequence: u64,
     pub state: ProviderInputReadiness,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ready_evidence: Option<ProviderReadyEvidence>,
@@ -1637,6 +1640,7 @@ mod tests {
         let state = ProviderInputState {
             session_id: "agent-1".to_string(),
             generation: 7,
+            observation_sequence: 11,
             state: ProviderInputReadiness::Ready,
             ready_evidence: Some(ProviderReadyEvidence::PromptDetected),
             observed_at: "2026-05-25T00:00:00.000Z".to_string(),
@@ -1645,6 +1649,7 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
 
         assert!(json.contains(r#""generation":7"#));
+        assert!(json.contains(r#""observation_sequence":11"#));
         assert!(json.contains(r#""state":"ready""#));
         assert!(json.contains(r#""ready_evidence":"prompt_detected""#));
     }

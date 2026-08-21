@@ -238,6 +238,26 @@ impl AppState {
                         .await;
                 }
                 MailboxRecoveryStatus::Retry => {
+                    // Pre-watermark mailbox rows were created by versions that
+                    // only stored `created_at`. Arm them at recovery so they
+                    // wait for a provider observation that occurs after this
+                    // process has restored the durable record.
+                    if record.ready_after_observation.is_none() {
+                        let delivery_lock = self.delivery_lock_for(&record.target_session_id).await;
+                        let _delivery_guard = delivery_lock.lock().await;
+                        let watermark = self
+                            .interactions
+                            .current_provider_input_observation_sequence(
+                                &record.target_session_id,
+                            )
+                            .await;
+                        record.ready_after_observation = Some(watermark);
+                        if wardian_core::db::upsert_mailbox_message(&record).is_err() {
+                            // Fail closed: keep the restored record pending
+                            // until a later hydration can durably arm it.
+                            record.ready_after_observation = None;
+                        }
+                    }
                     if record.status == MailboxMessageStatus::InFlight {
                         record.status = MailboxMessageStatus::Pending;
                         record.phase = MailboxDeliveryPhase::Queued;
@@ -455,7 +475,7 @@ mod tests {
             approval_action: None,
             origin: None,
             created_at: "2026-08-01T00:00:00.000Z".to_string(),
-            ready_after: None,
+            ready_after_observation: None,
             status: MailboxMessageStatus::Pending,
             phase: MailboxDeliveryPhase::Queued,
         };
@@ -464,11 +484,14 @@ mod tests {
         let restored = AppState::new();
         restored.interactions.hydrate_from_persistence().await;
         restored.hydrate_mailbox_from_persistence().await;
+        let mut expected = record.clone();
+        expected.ready_after_observation = Some(0);
 
         assert_eq!(
             restored.mailbox.lock().await.list_for_target("agent-1"),
-            vec![record]
+            vec![expected.clone()]
         );
+        assert_eq!(wardian_core::db::list_mailbox_messages().unwrap(), vec![expected]);
         assert_eq!(
             restored
                 .interactions
@@ -507,7 +530,7 @@ mod tests {
             approval_action: None,
             origin: None,
             created_at: "2026-08-01T00:00:00.000Z".to_string(),
-            ready_after: None,
+            ready_after_observation: None,
             status: MailboxMessageStatus::InFlight,
             phase: MailboxDeliveryPhase::Dispatching,
         };
@@ -575,7 +598,7 @@ mod tests {
             approval_action: None,
             origin: None,
             created_at: "2026-08-01T00:00:00.000Z".to_string(),
-            ready_after: None,
+            ready_after_observation: None,
             status: MailboxMessageStatus::InFlight,
             phase: MailboxDeliveryPhase::Dispatching,
         };

@@ -18,9 +18,9 @@ use wardian_core::control::{
     ControlRequest, ConversationListResponse, ConversationShowResponse, DeliveryDetail,
     DeliveryErrorDetail, DeliveryTransportKind, InboxNotificationKind, InboxNotificationPayload,
     InboxNotificationResponse, InteractionBodyRef, InteractionStatus, MessageInputMode,
-    MessageOrigin, OkResponse, ProviderInputReadiness, ProviderReadyEvidence, QueuePolicy,
-    ReplyResponse, ReplyStatus, SendMessageResponse, StructuredReply, WatchAgentSnapshot,
-    WatchDeliverySnapshot, WatchEvidenceError,
+    MessageOrigin, OkResponse, ProviderInputReadiness, ProviderInputState, ProviderReadyEvidence,
+    QueuePolicy, ReplyResponse, ReplyStatus, SendMessageResponse, StructuredReply,
+    WatchAgentSnapshot, WatchDeliverySnapshot, WatchEvidenceError,
 };
 use wardian_core::conversations::ConversationLoggingSetting;
 use wardian_core::identity::{normalize_status, AgentIdentity, StatusSource};
@@ -1992,17 +1992,25 @@ async fn enqueue_mailbox_delivery(
                 "failed to persist queued mailbox message: {error}"
             )));
         }
-        // The first upsert makes the mailbox row durable. Capture the
-        // readiness watermark only afterwards, so a Ready observation that
-        // arrives while that write is in progress cannot authorize delivery.
+        record
+    };
+    // The first upsert makes the mailbox row durable. Capture the readiness
+    // watermark only afterwards, so a Ready observation that arrives while
+    // that write is in progress cannot authorize delivery.
+    let ready_after_observation = state
+        .interactions
+        .current_provider_input_observation_sequence(&info.uuid)
+        .await;
+    let record = {
+        let mut mailbox = state.mailbox.lock().await;
         let armed_record = mailbox
-            .set_ready_after(
+            .set_ready_after_observation(
                 &record.id,
-                Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+                Some(ready_after_observation),
             )
             .expect("newly enqueued mailbox record must exist");
         if let Err(error) = wardian_core::db::upsert_mailbox_message(&armed_record) {
-            mailbox.set_ready_after(&record.id, None);
+            mailbox.set_ready_after_observation(&record.id, None);
             return Err(ControlError::request_failed(format!(
                 "failed to persist queued mailbox readiness watermark: {error}"
             )));
@@ -2675,6 +2683,13 @@ async fn provider_input_ready_for_mailbox_drain(
         && input.state == ProviderInputReadiness::Ready
         && input.ready_evidence.is_some())
     .then_some(input)
+}
+
+fn provider_ready_observation_is_newer_than(
+    input: &ProviderInputState,
+    watermark: u64,
+) -> bool {
+    input.observation_sequence > watermark
 }
 
 async fn record_provider_ready_evidence(
@@ -4718,22 +4733,22 @@ async fn drain_next_mailbox_message_for_idle_agent(
         return Ok(None);
     }
 
-    let pending_ready_after = {
+    let pending_ready_after_observation = {
         let mailbox = state.mailbox.lock().await;
         mailbox
             .list_for_target(session_id)
             .into_iter()
             .find(|record| record.status == wardian_core::control::MailboxMessageStatus::Pending)
-            .and_then(|record| record.ready_after)
+            .and_then(|record| record.ready_after_observation)
     };
-    let Some(pending_ready_after) = pending_ready_after else {
+    let Some(pending_ready_after_observation) = pending_ready_after_observation else {
         return Ok(None);
     };
     // A queued idle message must never consume the Ready state that selected
     // its route. The watermark is persisted only after the mailbox row, so
     // restart recovery also waits for a provider-ready observation that
     // happened after the queue record became durable.
-    if ready_input.observed_at <= pending_ready_after {
+    if !provider_ready_observation_is_newer_than(&ready_input, pending_ready_after_observation) {
         return Ok(None);
     }
 
@@ -4744,13 +4759,15 @@ async fn drain_next_mailbox_message_for_idle_agent(
     let Some(record) = record else {
         return Ok(None);
     };
-    let Some(record_ready_after) = record.ready_after.as_deref() else {
+    let Some(record_ready_after_observation) = record.ready_after_observation else {
         state.mailbox.lock().await.mark_pending(&record.id);
         return Ok(None);
     };
     let still_ready = provider_input_ready_for_mailbox_drain(state, session_id)
         .await
-        .is_some_and(|input| input.observed_at.as_str() > record_ready_after);
+        .is_some_and(|input| {
+            provider_ready_observation_is_newer_than(&input, record_ready_after_observation)
+        });
     if !still_ready {
         state.mailbox.lock().await.mark_pending(&record.id);
         return Ok(None);
@@ -5944,7 +5961,6 @@ mod tests {
                 Some(ProviderReadyEvidence::ProviderEvent),
             )
             .await;
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         release_upsert.notify_one();
         let queued = delivery.await.expect("message queues after the upsert");
         let queued_record = state
@@ -5955,11 +5971,13 @@ mod tests {
             .into_iter()
             .next()
             .expect("durable mailbox record");
-        let ready_after = queued_record
-            .ready_after
-            .as_deref()
+        let ready_after_observation = queued_record
+            .ready_after_observation
             .expect("durable ready watermark");
-        assert!(ready_during_upsert.observed_at.as_str() < ready_after);
+        assert_eq!(
+            ready_during_upsert.observation_sequence,
+            ready_after_observation
+        );
 
         assert!(
             drain_next_mailbox_message_for_idle_agent(None, &state, "watermark-agent")
@@ -5969,7 +5987,6 @@ mod tests {
         );
         assert!(rx.try_recv().is_err());
 
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         record_provider_ready_evidence(
             &state,
             "watermark-agent",
@@ -5984,6 +6001,93 @@ mod tests {
         assert_eq!(
             rx.recv().await.unwrap(),
             b"\x1b[200~wait for readiness after durable queueing\x1b[201~".to_vec()
+        );
+        assert_eq!(rx.recv().await.unwrap(), b"\r".to_vec());
+    }
+
+    #[test]
+    fn provider_ready_sequence_orders_events_with_the_same_wall_clock_timestamp() {
+        let ready = ProviderInputState {
+            session_id: "agent-1".to_string(),
+            generation: 4,
+            observation_sequence: 42,
+            state: ProviderInputReadiness::Ready,
+            ready_evidence: Some(ProviderReadyEvidence::ProviderEvent),
+            observed_at: "2026-08-21T08:00:00.000Z".to_string(),
+        };
+
+        assert!(provider_ready_observation_is_newer_than(&ready, 41));
+        assert!(!provider_ready_observation_is_newer_than(&ready, 42));
+    }
+
+    #[tokio::test]
+    async fn legacy_pending_mailbox_record_is_armed_on_restart_and_drains_after_ready() {
+        let _home = TestWardianHome::new();
+        let seeded = AppState::new();
+        let interaction = seeded
+            .interactions
+            .create_message_durable(
+                None,
+                vec!["legacy-agent".to_string()],
+                InteractionBodyRef::Inline {
+                    body: "deliver after upgrade".to_string(),
+                },
+            )
+            .await
+            .expect("persist interaction");
+        let legacy_record = MailboxMessageRecord {
+            id: "msg_0000000000001_legacy".to_string(),
+            interaction_id: interaction.id,
+            target_session_id: "legacy-agent".to_string(),
+            body: "deliver after upgrade".to_string(),
+            input_mode: MessageInputMode::Message,
+            queue_policy: QueuePolicy::QueueIfBusy,
+            approval_action: None,
+            origin: None,
+            created_at: "2026-08-21T08:00:00.000Z".to_string(),
+            ready_after_observation: None,
+            status: wardian_core::control::MailboxMessageStatus::Pending,
+            phase: wardian_core::control::MailboxDeliveryPhase::Queued,
+        };
+        wardian_core::db::upsert_mailbox_message(&legacy_record).expect("persist legacy row");
+
+        let restored = AppState::new();
+        restored.interactions.hydrate_from_persistence().await;
+        restored.hydrate_mailbox_from_persistence().await;
+        let armed = restored
+            .mailbox
+            .lock()
+            .await
+            .list_for_target("legacy-agent")
+            .into_iter()
+            .next()
+            .expect("legacy record restored");
+        assert_eq!(armed.ready_after_observation, Some(0));
+
+        insert_test_agent(&restored, "legacy-agent", "LegacyCoder", "Coder").await;
+        {
+            let agents = restored.agents.lock().await;
+            let agent = agents.get("legacy-agent").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        install_test_terminal_runtime(&restored, "legacy-agent", tx).await;
+        record_provider_ready_evidence(
+            &restored,
+            "legacy-agent",
+            ProviderReadyEvidence::ProviderEvent,
+        )
+        .await;
+
+        let drained = drain_next_mailbox_message_for_idle_agent(None, &restored, "legacy-agent")
+            .await
+            .expect("drain succeeds")
+            .expect("fresh Ready drains upgraded legacy record");
+        assert_eq!(drained.delivery_state, "submit_sent_unconfirmed");
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            b"\x1b[200~deliver after upgrade\x1b[201~".to_vec()
         );
         assert_eq!(rx.recv().await.unwrap(), b"\r".to_vec());
     }

@@ -157,14 +157,14 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             approval_action TEXT,
             origin TEXT,
             created_at TEXT NOT NULL,
-            ready_after TEXT,
+            ready_after_observation INTEGER,
             status TEXT NOT NULL,
             phase TEXT NOT NULL,
             FOREIGN KEY(interaction_id) REFERENCES interactions(id)
         )",
         [],
     )?;
-    ensure_column(conn, "mailbox_messages", "ready_after", "TEXT")?;
+    ensure_column(conn, "mailbox_messages", "ready_after_observation", "INTEGER")?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_mailbox_messages_target_status
          ON mailbox_messages(target_session_id, status, created_at, id)",
@@ -187,11 +187,18 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS provider_input_state (
             session_id TEXT PRIMARY KEY,
             generation INTEGER NOT NULL,
+            observation_sequence INTEGER NOT NULL DEFAULT 0,
             state TEXT NOT NULL,
             ready_evidence TEXT,
             observed_at TEXT NOT NULL
         )",
         [],
+    )?;
+    ensure_column(
+        conn,
+        "provider_input_state",
+        "observation_sequence",
+        "INTEGER NOT NULL DEFAULT 0",
     )?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS structured_replies (
@@ -536,7 +543,7 @@ pub fn upsert_mailbox_message_with_conn(
             approval_action,
             origin,
             created_at,
-            ready_after,
+            ready_after_observation,
             status,
             phase
         )
@@ -549,7 +556,7 @@ pub fn upsert_mailbox_message_with_conn(
             queue_policy = excluded.queue_policy,
             approval_action = excluded.approval_action,
             origin = excluded.origin,
-            ready_after = excluded.ready_after,
+            ready_after_observation = excluded.ready_after_observation,
             status = excluded.status,
             phase = excluded.phase",
         params![
@@ -562,7 +569,7 @@ pub fn upsert_mailbox_message_with_conn(
             approval_action,
             origin,
             record.created_at,
-            record.ready_after,
+            record.ready_after_observation.map(|sequence| sequence as i64),
             enum_value(&record.status)?,
             enum_value(&record.phase)?,
         ],
@@ -588,7 +595,7 @@ pub fn list_mailbox_messages_with_conn(
             approval_action,
             origin,
             created_at,
-            ready_after,
+            ready_after_observation,
             status,
             phase
          FROM mailbox_messages
@@ -619,7 +626,7 @@ fn row_to_mailbox_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MailboxMe
             .map(|value| serde_json::from_str::<MessageOrigin>(&value).map_err(to_sql_error))
             .transpose()?,
         created_at: row.get(8)?,
-        ready_after: row.get(9)?,
+        ready_after_observation: row.get::<_, Option<i64>>(9)?.map(|sequence| sequence as u64),
         status: enum_from_value::<MailboxMessageStatus>(&status)?,
         phase: enum_from_value::<MailboxDeliveryPhase>(&phase)?,
     })
@@ -861,19 +868,22 @@ pub fn upsert_provider_input_state_with_conn(
         "INSERT INTO provider_input_state (
             session_id,
             generation,
+            observation_sequence,
             state,
             ready_evidence,
             observed_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ON CONFLICT(session_id) DO UPDATE SET
             generation = excluded.generation,
+            observation_sequence = excluded.observation_sequence,
             state = excluded.state,
             ready_evidence = excluded.ready_evidence,
             observed_at = excluded.observed_at",
         params![
             state.session_id,
             state.generation as i64,
+            state.observation_sequence as i64,
             enum_value(&state.state)?,
             ready_evidence,
             state.observed_at,
@@ -893,20 +903,21 @@ pub fn list_provider_input_states_with_conn(
     conn: &Connection,
 ) -> rusqlite::Result<Vec<ProviderInputState>> {
     let mut stmt = conn.prepare(
-        "SELECT session_id, generation, state, ready_evidence, observed_at FROM provider_input_state",
+        "SELECT session_id, generation, observation_sequence, state, ready_evidence, observed_at FROM provider_input_state",
     )?;
     let rows = stmt.query_map([], |row| {
-        let state: String = row.get(2)?;
-        let ready_evidence: Option<String> = row.get(3)?;
+        let state: String = row.get(3)?;
+        let ready_evidence: Option<String> = row.get(4)?;
         Ok(ProviderInputState {
             session_id: row.get(0)?,
             generation: row.get::<_, i64>(1)? as u64,
+            observation_sequence: row.get::<_, i64>(2)? as u64,
             state: enum_from_value::<ProviderInputReadiness>(&state)?,
             ready_evidence: ready_evidence
                 .as_deref()
                 .map(enum_from_value::<ProviderReadyEvidence>)
                 .transpose()?,
-            observed_at: row.get(4)?,
+            observed_at: row.get(5)?,
         })
     })?;
     rows.collect()
@@ -1037,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_adds_ready_watermark_to_existing_mailbox_messages_table() {
+    fn migration_adds_ready_observation_to_existing_mailbox_messages_table() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE mailbox_messages (
@@ -1060,7 +1071,28 @@ mod tests {
 
         assert!(table_columns(&conn, "mailbox_messages")
             .unwrap()
-            .contains(&"ready_after".to_string()));
+            .contains(&"ready_after_observation".to_string()));
+    }
+
+    #[test]
+    fn migration_adds_observation_sequence_to_existing_provider_input_state_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE provider_input_state (
+                session_id TEXT PRIMARY KEY,
+                generation INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                ready_evidence TEXT,
+                observed_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        assert!(table_columns(&conn, "provider_input_state")
+            .unwrap()
+            .contains(&"observation_sequence".to_string()));
     }
 
     #[test]
@@ -1126,6 +1158,7 @@ mod tests {
         let state = ProviderInputState {
             session_id: "agent-1".to_string(),
             generation: 7,
+            observation_sequence: 12,
             state: ProviderInputReadiness::Ready,
             ready_evidence: Some(ProviderReadyEvidence::ProviderEvent),
             observed_at: "2026-05-25T00:00:00.000Z".to_string(),
@@ -1170,7 +1203,7 @@ mod tests {
             approval_action: None,
             origin: None,
             created_at: "2026-08-01T00:00:00.000Z".to_string(),
-            ready_after: Some("2026-08-01T00:00:01.000Z".to_string()),
+            ready_after_observation: Some(12),
             status: MailboxMessageStatus::Pending,
             phase: MailboxDeliveryPhase::Queued,
         };

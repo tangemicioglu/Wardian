@@ -1432,15 +1432,27 @@ async fn apply_provider_status_observations(
         let readiness = provider_readiness_from_status(&observation.status);
         let ready_evidence = (readiness == ProviderInputReadiness::Ready)
             .then_some(ProviderReadyEvidence::ProviderEvent);
-        state
-            .interactions
-            .record_provider_input_state(
-                &observation.session_id,
-                observation.generation,
-                readiness,
-                ready_evidence,
-            )
-            .await;
+        if readiness == ProviderInputReadiness::Ready {
+            state
+                .interactions
+                .record_fresh_provider_input_state(
+                    &observation.session_id,
+                    observation.generation,
+                    readiness,
+                    ready_evidence,
+                )
+                .await;
+        } else {
+            state
+                .interactions
+                .record_provider_input_state(
+                    &observation.session_id,
+                    observation.generation,
+                    readiness,
+                    ready_evidence,
+                )
+                .await;
+        }
         if readiness == ProviderInputReadiness::Ready {
             crate::control::drain_mailbox_for_idle_agent_from_status_observation(
                 None,
