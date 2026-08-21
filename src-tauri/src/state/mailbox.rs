@@ -25,6 +25,7 @@ impl MailboxState {
             approval_action: draft.approval_action,
             origin: draft.origin,
             created_at,
+            ready_after: None,
             status: MailboxMessageStatus::Pending,
             phase: MailboxDeliveryPhase::Queued,
         };
@@ -64,6 +65,16 @@ impl MailboxState {
             .filter(|record| record.target_session_id == target_session_id)
             .cloned()
             .collect()
+    }
+
+    pub fn set_ready_after(
+        &mut self,
+        id: &str,
+        ready_after: Option<String>,
+    ) -> Option<MailboxMessageRecord> {
+        let record = self.records.iter_mut().find(|record| record.id == id)?;
+        record.ready_after = ready_after;
+        Some(record.clone())
     }
 
     pub fn next_pending_for_target(&self, target_session_id: &str) -> Option<MailboxMessageRecord> {
@@ -371,6 +382,7 @@ mod tests {
             approval_action: None,
             origin: None,
             created_at: "2026-08-01T00:00:00.000Z".to_string(),
+            ready_after: None,
             status: MailboxMessageStatus::Pending,
             phase: MailboxDeliveryPhase::Queued,
         };

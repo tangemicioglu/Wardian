@@ -157,12 +157,14 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             approval_action TEXT,
             origin TEXT,
             created_at TEXT NOT NULL,
+            ready_after TEXT,
             status TEXT NOT NULL,
             phase TEXT NOT NULL,
             FOREIGN KEY(interaction_id) REFERENCES interactions(id)
         )",
         [],
     )?;
+    ensure_column(conn, "mailbox_messages", "ready_after", "TEXT")?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_mailbox_messages_target_status
          ON mailbox_messages(target_session_id, status, created_at, id)",
@@ -534,10 +536,11 @@ pub fn upsert_mailbox_message_with_conn(
             approval_action,
             origin,
             created_at,
+            ready_after,
             status,
             phase
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         ON CONFLICT(id) DO UPDATE SET
             interaction_id = excluded.interaction_id,
             target_session_id = excluded.target_session_id,
@@ -546,6 +549,7 @@ pub fn upsert_mailbox_message_with_conn(
             queue_policy = excluded.queue_policy,
             approval_action = excluded.approval_action,
             origin = excluded.origin,
+            ready_after = excluded.ready_after,
             status = excluded.status,
             phase = excluded.phase",
         params![
@@ -558,6 +562,7 @@ pub fn upsert_mailbox_message_with_conn(
             approval_action,
             origin,
             record.created_at,
+            record.ready_after,
             enum_value(&record.status)?,
             enum_value(&record.phase)?,
         ],
@@ -583,6 +588,7 @@ pub fn list_mailbox_messages_with_conn(
             approval_action,
             origin,
             created_at,
+            ready_after,
             status,
             phase
          FROM mailbox_messages
@@ -597,8 +603,8 @@ fn row_to_mailbox_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MailboxMe
     let queue_policy: String = row.get(5)?;
     let approval_action: Option<String> = row.get(6)?;
     let origin: Option<String> = row.get(7)?;
-    let status: String = row.get(9)?;
-    let phase: String = row.get(10)?;
+    let status: String = row.get(10)?;
+    let phase: String = row.get(11)?;
     Ok(MailboxMessageRecord {
         id: row.get(0)?,
         interaction_id: row.get(1)?,
@@ -613,6 +619,7 @@ fn row_to_mailbox_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MailboxMe
             .map(|value| serde_json::from_str::<MessageOrigin>(&value).map_err(to_sql_error))
             .transpose()?,
         created_at: row.get(8)?,
+        ready_after: row.get(9)?,
         status: enum_from_value::<MailboxMessageStatus>(&status)?,
         phase: enum_from_value::<MailboxDeliveryPhase>(&phase)?,
     })
@@ -1030,6 +1037,33 @@ mod tests {
     }
 
     #[test]
+    fn migration_adds_ready_watermark_to_existing_mailbox_messages_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE mailbox_messages (
+                id TEXT PRIMARY KEY,
+                interaction_id TEXT NOT NULL,
+                target_session_id TEXT NOT NULL,
+                body TEXT NOT NULL,
+                input_mode TEXT NOT NULL,
+                queue_policy TEXT NOT NULL,
+                approval_action TEXT,
+                origin TEXT,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                phase TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        assert!(table_columns(&conn, "mailbox_messages")
+            .unwrap()
+            .contains(&"ready_after".to_string()));
+    }
+
+    #[test]
     fn upsert_agent_persists_cli_metadata() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
@@ -1136,6 +1170,7 @@ mod tests {
             approval_action: None,
             origin: None,
             created_at: "2026-08-01T00:00:00.000Z".to_string(),
+            ready_after: Some("2026-08-01T00:00:01.000Z".to_string()),
             status: MailboxMessageStatus::Pending,
             phase: MailboxDeliveryPhase::Queued,
         };

@@ -363,6 +363,10 @@ pub struct MailboxMessageRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<MessageOrigin>,
     pub created_at: String,
+    /// The earliest provider-ready observation that may release this durable
+    /// mailbox record. It is set only after the initial database upsert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_after: Option<String>,
     pub status: MailboxMessageStatus,
     pub phase: MailboxDeliveryPhase,
 }

@@ -455,6 +455,7 @@ mod tests {
             approval_action: None,
             origin: None,
             created_at: "2026-08-01T00:00:00.000Z".to_string(),
+            ready_after: None,
             status: MailboxMessageStatus::Pending,
             phase: MailboxDeliveryPhase::Queued,
         };
@@ -506,6 +507,7 @@ mod tests {
             approval_action: None,
             origin: None,
             created_at: "2026-08-01T00:00:00.000Z".to_string(),
+            ready_after: None,
             status: MailboxMessageStatus::InFlight,
             phase: MailboxDeliveryPhase::Dispatching,
         };
@@ -573,6 +575,7 @@ mod tests {
             approval_action: None,
             origin: None,
             created_at: "2026-08-01T00:00:00.000Z".to_string(),
+            ready_after: None,
             status: MailboxMessageStatus::InFlight,
             phase: MailboxDeliveryPhase::Dispatching,
         };
