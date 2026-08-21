@@ -119,6 +119,15 @@ impl InteractionState {
         status: InteractionStatus,
     ) -> Result<InteractionRecord, String> {
         let _mutation = self.mutation_lock.lock().await;
+        self.update_message_status_durable_locked(interaction_id, status)
+            .await
+    }
+
+    async fn update_message_status_durable_locked(
+        &self,
+        interaction_id: &str,
+        status: InteractionStatus,
+    ) -> Result<InteractionRecord, String> {
         let mut records = self.records.lock().await;
         let current = records
             .get(interaction_id)
@@ -370,6 +379,7 @@ impl InteractionState {
         reason: Option<String>,
         error: Option<DeliveryErrorDetail>,
     ) -> InteractionDeliveryAttemptRecord {
+        let _mutation = self.mutation_lock.lock().await;
         let attempt = delivery_attempt_record(
             interaction_id,
             target_session_id,
@@ -400,6 +410,7 @@ impl InteractionState {
         reason: Option<String>,
         error: Option<DeliveryErrorDetail>,
     ) -> Result<InteractionDeliveryAttemptRecord, String> {
+        let _mutation = self.mutation_lock.lock().await;
         let attempt = delivery_attempt_record(
             interaction_id,
             target_session_id,
@@ -422,7 +433,7 @@ impl InteractionState {
                 .get(interaction_id)
                 .is_some_and(|record| record.kind == InteractionKind::Message);
             if is_message {
-                self.update_message_status_durable(interaction_id, status)
+                self.update_message_status_durable_locked(interaction_id, status)
                     .await?;
             }
         }
@@ -450,6 +461,7 @@ impl InteractionState {
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
+        let _mutation = self.mutation_lock.lock().await;
         let _observations = self.provider_status_observations.lock().await;
         self.record_provider_input_state_inner(session_id, generation, state, ready_evidence)
             .await
@@ -498,6 +510,7 @@ impl InteractionState {
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
+        let _mutation = self.mutation_lock.lock().await;
         let mut observations = self.provider_status_observations.lock().await;
         if matches!(
             observations.get(session_id).copied(),
@@ -524,6 +537,7 @@ impl InteractionState {
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
+        let _mutation = self.mutation_lock.lock().await;
         let _observations = self.provider_status_observations.lock().await;
         let generation = {
             let mut generations = self.provider_generations.lock().await;
@@ -1500,6 +1514,81 @@ mod reply_tests {
                 .unwrap_err(),
             "not_found"
         );
+
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("WARDIAN_HOME", value) },
+            None => unsafe { std::env::remove_var("WARDIAN_HOME") },
+        }
+    }
+
+    #[tokio::test]
+    async fn deletion_serializes_queued_delivery_and_provider_writes() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("WARDIAN_HOME");
+        unsafe { std::env::set_var("WARDIAN_HOME", home.path()) };
+        wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
+
+        let state = std::sync::Arc::new(InteractionState::default());
+        let mutation = state.mutation_lock.lock().await;
+        let provider_writer = std::sync::Arc::clone(&state);
+        let provider_write = tokio::spawn(async move {
+            provider_writer
+                .record_provider_input_state(
+                    "agent-delete",
+                    1,
+                    ProviderInputReadiness::Ready,
+                    Some(ProviderReadyEvidence::ProviderEvent),
+                )
+                .await;
+        });
+        tokio::task::yield_now().await;
+        let delete_state = std::sync::Arc::clone(&state);
+        let deletion = tokio::spawn(async move {
+            delete_state
+                .delete_agent_durable_state("agent-delete")
+                .await
+        });
+        drop(mutation);
+        provider_write.await.unwrap();
+        deletion.await.unwrap().unwrap();
+        assert!(wardian_core::db::list_provider_input_states()
+            .unwrap()
+            .iter()
+            .all(|record| record.session_id != "agent-delete"));
+
+        let mutation = state.mutation_lock.lock().await;
+        let delivery_writer = std::sync::Arc::clone(&state);
+        let delivery_write = tokio::spawn(async move {
+            delivery_writer
+                .record_delivery_attempt(
+                    "interaction-delete",
+                    "agent-delete",
+                    DeliveryTransportKind::LiveSurface,
+                    1,
+                    "live_pty_available",
+                    "failed",
+                    Some("test".to_string()),
+                    None,
+                    Some("test".to_string()),
+                    None,
+                )
+                .await;
+        });
+        tokio::task::yield_now().await;
+        let delete_state = std::sync::Arc::clone(&state);
+        let deletion = tokio::spawn(async move {
+            delete_state
+                .delete_agent_durable_state("agent-delete")
+                .await
+        });
+        drop(mutation);
+        delivery_write.await.unwrap();
+        deletion.await.unwrap().unwrap();
+        assert!(wardian_core::db::list_interaction_delivery_attempts("interaction-delete")
+            .unwrap()
+            .iter()
+            .all(|attempt| attempt.target_session_id != "agent-delete"));
 
         match previous_home {
             Some(value) => unsafe { std::env::set_var("WARDIAN_HOME", value) },
