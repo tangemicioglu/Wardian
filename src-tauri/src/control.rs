@@ -6021,14 +6021,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_pending_mailbox_record_is_armed_on_restart_and_drains_after_ready() {
+    async fn legacy_recovery_ignores_ready_evidence_that_races_durable_arming() {
         let _home = TestWardianHome::new();
         let seeded = AppState::new();
         let interaction = seeded
             .interactions
             .create_message_durable(
                 None,
-                vec!["legacy-agent".to_string()],
+                vec!["legacy-recovery-agent".to_string()],
                 InteractionBodyRef::Inline {
                     body: "deliver after upgrade".to_string(),
                 },
@@ -6038,7 +6038,7 @@ mod tests {
         let legacy_record = MailboxMessageRecord {
             id: "msg_0000000000001_legacy".to_string(),
             interaction_id: interaction.id,
-            target_session_id: "legacy-agent".to_string(),
+            target_session_id: "legacy-recovery-agent".to_string(),
             body: "deliver after upgrade".to_string(),
             input_mode: MessageInputMode::Message,
             queue_policy: QueuePolicy::QueueIfBusy,
@@ -6053,34 +6053,78 @@ mod tests {
 
         let restored = AppState::new();
         restored.interactions.hydrate_from_persistence().await;
-        restored.hydrate_mailbox_from_persistence().await;
+        let (arming_entered, release_arming) =
+            crate::state::app_state::install_mailbox_recovery_arm_test_gate(
+                "legacy-recovery-agent",
+            );
+        let arming_notified = arming_entered.notified();
+        tokio::pin!(arming_notified);
+        let hydration = restored.hydrate_mailbox_from_persistence();
+        tokio::pin!(hydration);
+        tokio::select! {
+            result = &mut hydration => panic!("recovery completed before the durable arm: {result:?}"),
+            _ = &mut arming_notified => {}
+        }
+        let ready_during_arming = restored
+            .interactions
+            .record_fresh_provider_input_state(
+                "legacy-recovery-agent",
+                0,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        release_arming.notify_one();
+        hydration.await;
         let armed = restored
             .mailbox
             .lock()
             .await
-            .list_for_target("legacy-agent")
+            .list_for_target("legacy-recovery-agent")
             .into_iter()
             .next()
             .expect("legacy record restored");
-        assert_eq!(armed.ready_after_observation, Some(0));
+        assert_eq!(
+            armed.ready_after_observation,
+            Some(ready_during_arming.observation_sequence)
+        );
 
-        insert_test_agent(&restored, "legacy-agent", "LegacyCoder", "Coder").await;
+        insert_test_agent(
+            &restored,
+            "legacy-recovery-agent",
+            "LegacyCoder",
+            "Coder",
+        )
+        .await;
         {
             let agents = restored.agents.lock().await;
-            let agent = agents.get("legacy-agent").unwrap();
+            let agent = agents.get("legacy-recovery-agent").unwrap();
             agent.config.lock().unwrap().provider = "codex".to_string();
             *agent.current_status.lock().unwrap() = "Idle".to_string();
         }
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        install_test_terminal_runtime(&restored, "legacy-agent", tx).await;
+        install_test_terminal_runtime(&restored, "legacy-recovery-agent", tx).await;
+        assert!(drain_next_mailbox_message_for_idle_agent(
+            None,
+            &restored,
+            "legacy-recovery-agent"
+        )
+        .await
+        .expect("raced-ready drain check succeeds")
+        .is_none());
+        assert!(rx.try_recv().is_err());
         record_provider_ready_evidence(
             &restored,
-            "legacy-agent",
+            "legacy-recovery-agent",
             ProviderReadyEvidence::ProviderEvent,
         )
         .await;
 
-        let drained = drain_next_mailbox_message_for_idle_agent(None, &restored, "legacy-agent")
+        let drained = drain_next_mailbox_message_for_idle_agent(
+            None,
+            &restored,
+            "legacy-recovery-agent",
+        )
             .await
             .expect("drain succeeds")
             .expect("fresh Ready drains upgraded legacy record");

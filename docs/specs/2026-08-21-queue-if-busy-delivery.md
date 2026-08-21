@@ -38,8 +38,10 @@ headless keep their established queue behavior and release signals.
 
 On startup, a pending mailbox row written by a pre-watermark version is armed
 under its target delivery lock using the restored provider-observation sequence.
-It therefore waits for one new Ready observation after recovery instead of
-blocking FIFO delivery forever or trusting pre-restart readiness.
+Recovery rechecks the sequence after each durable arm and raises the watermark
+until it covers any observation that raced the write. It therefore waits for
+one new Ready observation after recovery instead of blocking FIFO delivery
+forever or trusting pre-restart readiness.
 
 ## Consequences
 

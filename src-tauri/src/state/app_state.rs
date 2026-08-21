@@ -16,6 +16,52 @@ use wardian_core::control::{
     MailboxDeliveryPhase, MailboxMessageRecord, MailboxMessageStatus, StructuredReply,
 };
 
+#[cfg(test)]
+struct MailboxRecoveryArmTestGate {
+    target_session_id: String,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+static MAILBOX_RECOVERY_ARM_TEST_GATE: std::sync::OnceLock<
+    std::sync::Mutex<Option<MailboxRecoveryArmTestGate>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn install_mailbox_recovery_arm_test_gate(
+    target_session_id: &str,
+) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let gate = MAILBOX_RECOVERY_ARM_TEST_GATE.get_or_init(|| std::sync::Mutex::new(None));
+    *gate.lock().unwrap() = Some(MailboxRecoveryArmTestGate {
+        target_session_id: target_session_id.to_string(),
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+    });
+    (entered, release)
+}
+
+#[cfg(test)]
+async fn pause_before_recovery_mailbox_arm_upsert_for_test(target_session_id: &str) {
+    let Some(test_gate) = MAILBOX_RECOVERY_ARM_TEST_GATE.get() else {
+        return;
+    };
+    let gate = {
+        let mut stored_gate = test_gate.lock().unwrap();
+        if stored_gate
+            .as_ref()
+            .is_none_or(|gate| gate.target_session_id != target_session_id)
+        {
+            return;
+        }
+        stored_gate.take().expect("checked mailbox recovery test gate")
+    };
+    gate.entered.notify_one();
+    gate.release.notified().await;
+}
+
 pub struct LibraryWatchRegistration {
     pub watcher: notify::RecommendedWatcher,
     pub ref_count: usize,
@@ -245,17 +291,40 @@ impl AppState {
                     if record.ready_after_observation.is_none() {
                         let delivery_lock = self.delivery_lock_for(&record.target_session_id).await;
                         let _delivery_guard = delivery_lock.lock().await;
-                        let watermark = self
-                            .interactions
-                            .current_provider_input_observation_sequence(
+                        loop {
+                            let watermark = self
+                                .interactions
+                                .current_provider_input_observation_sequence(
+                                    &record.target_session_id,
+                                )
+                                .await;
+                            #[cfg(test)]
+                            pause_before_recovery_mailbox_arm_upsert_for_test(
                                 &record.target_session_id,
                             )
                             .await;
-                        record.ready_after_observation = Some(watermark);
-                        if wardian_core::db::upsert_mailbox_message(&record).is_err() {
-                            // Fail closed: keep the restored record pending
-                            // until a later hydration can durably arm it.
-                            record.ready_after_observation = None;
+                            record.ready_after_observation = Some(watermark);
+                            if wardian_core::db::upsert_mailbox_message(&record).is_err() {
+                                // Fail closed: keep the restored record pending
+                                // until a later hydration can durably arm it.
+                                record.ready_after_observation = None;
+                                break;
+                            }
+                            // An observation that arrives during the durable
+                            // arm is not eligible to release this legacy row.
+                            // Raise the watermark until the persisted record
+                            // covers every observation seen before recovery
+                            // completes.
+                            if self
+                                .interactions
+                                .current_provider_input_observation_sequence(
+                                    &record.target_session_id,
+                                )
+                                .await
+                                == watermark
+                            {
+                                break;
+                            }
                         }
                     }
                     if record.status == MailboxMessageStatus::InFlight {
