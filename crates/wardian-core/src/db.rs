@@ -368,6 +368,59 @@ pub fn delete_agent(session_id: &str) -> Result<(), Box<dyn std::error::Error>> 
 
 fn delete_agent_with_conn(conn: &mut Connection, session_id: &str) -> rusqlite::Result<()> {
     let transaction = conn.transaction()?;
+    let interaction_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT id, sender_session_id, target_session_ids FROM interactions",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let sender: Option<String> = row.get(1)?;
+            let targets_json: String = row.get(2)?;
+            let targets: Vec<String> = serde_json::from_str(&targets_json).map_err(to_sql_error)?;
+            if sender.as_deref() == Some(session_id)
+                || targets.iter().any(|target| target == session_id)
+            {
+                ids.push(id);
+            }
+        }
+        ids
+    };
+    transaction.execute(
+        "DELETE FROM mailbox_messages WHERE target_session_id = ?1",
+        params![session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM provider_input_state WHERE session_id = ?1",
+        params![session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM structured_replies WHERE target_session_id = ?1",
+        params![session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM interaction_delivery_attempts WHERE target_session_id = ?1",
+        params![session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM interaction_events WHERE session_id = ?1",
+        params![session_id],
+    )?;
+    for interaction_id in interaction_ids {
+        transaction.execute(
+            "DELETE FROM interaction_delivery_attempts WHERE interaction_id = ?1",
+            params![interaction_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM interaction_events WHERE interaction_id = ?1",
+            params![interaction_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM interactions WHERE id = ?1",
+            params![interaction_id],
+        )?;
+    }
     transaction.execute(
         "DELETE FROM events WHERE session_id = ?1",
         params![session_id],
@@ -1300,6 +1353,91 @@ mod tests {
             params!["agent-delete", "status_change", "Off"],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO interactions (
+                id, kind, sender_session_id, target_session_ids, status,
+                trigger_policy, body_ref, created_at, updated_at
+            ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![
+                "interaction-delete",
+                "message",
+                "[\"agent-delete\"]",
+                "delivered",
+                "start_turn",
+                "{\"inline\":{\"body\":\"hello\"}}",
+                "2026-08-21T00:00:00Z",
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interaction_delivery_attempts (
+                id, interaction_id, target_session_id, generation,
+                runtime_state, delivery_state, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?6)",
+            params![
+                "attempt-delete",
+                "interaction-delete",
+                "agent-delete",
+                "ready",
+                "delivered",
+                "2026-08-21T00:00:00Z",
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mailbox_messages (
+                id, interaction_id, target_session_id, body, input_mode,
+                queue_policy, created_at, status, phase
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                "mailbox-delete",
+                "interaction-delete",
+                "agent-delete",
+                "hello",
+                "message",
+                "queue_if_busy",
+                "2026-08-21T00:00:00Z",
+                "pending",
+                "queued",
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interaction_events (
+                event_id, interaction_id, session_id, kind, generation,
+                source, payload, occurred_at
+            ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)",
+            params![
+                "event-delete",
+                "interaction-delete",
+                "agent-delete",
+                "delivery",
+                "test",
+                "{}",
+                "2026-08-21T00:00:00Z",
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO provider_input_state (
+                session_id, generation, state, observed_at
+            ) VALUES (?1, 1, ?2, ?3)",
+            params!["agent-delete", "ready", "2026-08-21T00:00:00Z"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO structured_replies (
+                request_id, status, body, target_session_id, replied_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                "reply-delete",
+                "completed",
+                "done",
+                "agent-delete",
+                "2026-08-21T00:00:00Z",
+            ],
+        )
+        .unwrap();
 
         delete_agent_with_conn(&mut conn, "agent-delete").unwrap();
 
@@ -1314,6 +1452,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(event_count, 0);
+        for table in [
+            "interactions",
+            "interaction_delivery_attempts",
+            "mailbox_messages",
+            "interaction_events",
+            "provider_input_state",
+            "structured_replies",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table}"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} should be removed with the agent");
+        }
     }
 }
 

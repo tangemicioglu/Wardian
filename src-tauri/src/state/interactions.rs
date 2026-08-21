@@ -528,14 +528,13 @@ impl InteractionState {
             .copied()
     }
 
-    pub async fn clear_provider_input_state(&self, session_id: &str) {
+    pub async fn clear_provider_input_state_in_memory(&self, session_id: &str) {
         self.provider_status_observations
             .lock()
             .await
             .remove(session_id);
         self.provider_generations.lock().await.remove(session_id);
         self.provider_inputs.lock().await.remove(session_id);
-        let _ = wardian_core::db::delete_provider_input_state(session_id);
     }
 
     pub async fn hydrate_from_persistence(&self) {

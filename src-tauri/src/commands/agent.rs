@@ -2918,7 +2918,6 @@ async fn remove_agent(
 
             let agent_dir = home.join("agents").join(&session_id);
             if agent_dir.exists() {
-                lifecycle_heartbeat.ensure_active("remove")?;
                 if let Err(e) = std::fs::remove_dir_all(&agent_dir) {
                     manager::log_debug(&format!(
                         "[WARDIAN] Failed to remove agent directory {:?}: {}",
@@ -3614,7 +3613,34 @@ pub async fn rename_agent(
             }
             return Err(format!("Failed to persist agent rename: {error}"));
         }
-        manager::save_state(&app, &agents, &order);
+        let snapshot = manager::state_configs_snapshot(&agents, &order);
+        if let Err(snapshot_error) = manager::try_save_state_snapshot(&snapshot) {
+            if let Some(agent) = agents.get_mut(&session_id) {
+                if let Ok(mut config) = agent.config.lock() {
+                    config.session_name = previous_name.clone();
+                }
+            }
+            let rollback_error = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
+                session_id: &sid,
+                session_name: &previous_name,
+                description: &description,
+                agent_class: &class,
+                provider: &provider,
+                workspace: Some(&workspace),
+                project: project.as_deref(),
+                is_off,
+                created_at: born.as_deref(),
+            })
+            .err()
+            .map(|error| format!("; rename rollback failed: {error}"))
+            .unwrap_or_default();
+            if let Some(reservation) = rename_reservation.as_ref() {
+                release_spawn_name_reservation(&state, &reservation.session_name).await;
+            }
+            return Err(format!(
+                "Failed to persist agent rename: {snapshot_error}{rollback_error}"
+            ));
+        }
         let _ = app.emit("agents-updated", ());
         if let Some(reservation) = rename_reservation.as_ref() {
             release_spawn_name_reservation(&state, &reservation.session_name).await;
