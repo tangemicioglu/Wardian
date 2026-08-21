@@ -391,6 +391,42 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             ok_json(&OkResponse::new())
         }
 
+        ControlRequest::AgentDelete {
+            target,
+            confirm_name,
+        } => {
+            let uuid = resolve_target_uuid(app, &target)
+                .await
+                .ok_or_else(|| ControlError::not_found(format!("agent not found: {target}")))?;
+            let state = app.state::<AppState>();
+            crate::commands::agent::delete_agent(uuid, confirm_name, state, app.clone())
+                .await
+                .map_err(ControlError::bad_request)?;
+            ok_json(&OkResponse::new())
+        }
+
+        ControlRequest::AgentRename { target, name } => {
+            let uuid = resolve_target_uuid(app, &target)
+                .await
+                .ok_or_else(|| ControlError::not_found(format!("agent not found: {target}")))?;
+            crate::commands::agent::rename_agent(
+                uuid.clone(),
+                name,
+                app.state::<AppState>(),
+                app.clone(),
+            )
+            .await
+            .map_err(ControlError::bad_request)?;
+            let identity = live_agent_identity(app, &uuid).await?;
+            ok_json(&AgentUpdateResponse {
+                schema: wardian_core::control::CONTROL_SCHEMA,
+                ok: true,
+                agent: identity,
+                updated_fields: vec!["name".to_string()],
+                restart_required: false,
+            })
+        }
+
         ControlRequest::AgentRestart { target } => {
             let uuid = resolve_target_uuid(app, &target)
                 .await

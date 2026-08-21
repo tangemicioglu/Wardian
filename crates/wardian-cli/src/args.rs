@@ -998,6 +998,21 @@ pub enum AgentCommand {
         #[arg(long)]
         confirm: bool,
     },
+    /// Permanently remove a stopped agent, its habitat, and its session history.
+    Delete {
+        /// Agent name or UUID.
+        target: String,
+        /// Must exactly match the agent's current name.
+        #[arg(long, value_name = "AGENT_NAME")]
+        confirm: String,
+    },
+    /// Rename an agent without restarting its provider.
+    Rename {
+        /// Agent name or UUID.
+        target: String,
+        /// New name; use only letters, numbers, underscores, or hyphens.
+        new_name: String,
+    },
     /// Restart the provider while preserving the Wardian agent and its history.
     Restart {
         target: String,
@@ -1926,6 +1941,47 @@ mod tests {
         assert!(matches!(
             args.command,
             Some(AgentCommand::Kill { target, confirm: true }) if target == "coder-a1"
+        ));
+    }
+
+    #[test]
+    fn parses_agent_delete_with_exact_name_confirmation() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "agent",
+            "delete",
+            "coder-a1",
+            "--confirm",
+            "coder-a1",
+        ])
+        .unwrap();
+        let Command::Agent(args) = cli.command else {
+            panic!("expected Agent command")
+        };
+        assert!(matches!(
+            args.command,
+            Some(AgentCommand::Delete { ref target, ref confirm })
+                if target == "coder-a1" && confirm == "coder-a1"
+        ));
+    }
+
+    #[test]
+    fn parses_agent_rename() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "agent",
+            "rename",
+            "coder-a1",
+            "release-coder",
+        ])
+        .unwrap();
+        let Command::Agent(args) = cli.command else {
+            panic!("expected Agent command")
+        };
+        assert!(matches!(
+            args.command,
+            Some(AgentCommand::Rename { ref target, ref new_name })
+                if target == "coder-a1" && new_name == "release-coder"
         ));
     }
 
