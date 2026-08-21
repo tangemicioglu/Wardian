@@ -141,6 +141,58 @@ impl InteractionState {
         Ok(updated)
     }
 
+    /// Atomically discard a mailbox record and persist its terminal failed
+    /// interaction state. If the transaction fails, neither side is changed,
+    /// so the caller can leave the mailbox work queued for reconciliation.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fail_mailbox_message_and_interaction_durable(
+        &self,
+        mailbox_message_id: &str,
+        interaction_id: &str,
+        target_session_id: &str,
+        generation: u64,
+        runtime_state: &str,
+        delivery_phase: Option<String>,
+        observed_state: Option<String>,
+        reason: Option<String>,
+        error: Option<DeliveryErrorDetail>,
+    ) -> Result<InteractionDeliveryAttemptRecord, String> {
+        let mut records = self.records.lock().await;
+        let current = records
+            .get(interaction_id)
+            .cloned()
+            .ok_or_else(|| format!("message interaction not found: {interaction_id}"))?;
+        if current.kind != InteractionKind::Message {
+            return Err(format!("interaction is not a message: {interaction_id}"));
+        }
+
+        let now = now_rfc3339_millis();
+        let mut failed = current;
+        failed.status = InteractionStatus::Failed;
+        failed.updated_at = now.clone();
+        failed.completed_at = Some(now);
+        let attempt = delivery_attempt_record(
+            interaction_id,
+            target_session_id,
+            DeliveryTransportKind::LiveSurface,
+            generation,
+            runtime_state,
+            "failed",
+            delivery_phase,
+            observed_state,
+            reason,
+            error,
+        );
+        wardian_core::db::fail_mailbox_message_and_interaction(
+            mailbox_message_id,
+            &failed,
+            &attempt,
+        )
+        .map_err(|error| format!("failed to finalize mailbox rollback: {error}"))?;
+        records.insert(failed.id.clone(), failed);
+        Ok(attempt)
+    }
+
     pub async fn create_notification_durable(
         &self,
         sender_session_id: String,

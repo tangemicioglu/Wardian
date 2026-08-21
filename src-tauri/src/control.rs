@@ -60,6 +60,10 @@ static MAILBOX_WATERMARK_UPSERT_TEST_FAILURE: std::sync::OnceLock<Mutex<Option<S
     std::sync::OnceLock::new();
 
 #[cfg(test)]
+static MAILBOX_ROLLBACK_TEST_FAILURE: std::sync::OnceLock<Mutex<Option<String>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
 fn install_mailbox_initial_upsert_test_gate(
     target_session_id: &str,
 ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
@@ -133,6 +137,23 @@ async fn pause_before_mailbox_watermark_upsert_for_test(target_session_id: &str)
 fn fail_next_mailbox_watermark_upsert_for_test(error: &str) {
     let failure = MAILBOX_WATERMARK_UPSERT_TEST_FAILURE.get_or_init(|| Mutex::new(None));
     *failure.lock().unwrap() = Some(error.to_string());
+}
+
+#[cfg(test)]
+fn fail_next_mailbox_rollback_for_test(error: &str) {
+    let failure = MAILBOX_ROLLBACK_TEST_FAILURE.get_or_init(|| Mutex::new(None));
+    *failure.lock().unwrap() = Some(error.to_string());
+}
+
+fn mailbox_rollback_test_failure() -> Option<String> {
+    #[cfg(test)]
+    {
+        return MAILBOX_ROLLBACK_TEST_FAILURE
+            .get()
+            .and_then(|failure| failure.lock().unwrap().take());
+    }
+    #[cfg(not(test))]
+    None
 }
 
 fn upsert_mailbox_watermark(
@@ -2080,16 +2101,64 @@ async fn enqueue_mailbox_delivery(
             .set_ready_after_observation(&record.id, Some(ready_after_observation))
             .expect("newly enqueued mailbox record must exist");
         if let Err(error) = upsert_mailbox_watermark(&armed_record) {
-            if let Err(rollback_error) = wardian_core::db::delete_mailbox_message(&record.id) {
-                // The first write remains durable, so reporting a failed send
-                // would make a caller retry a message that recovery can later
-                // deliver. Keep the unarmed row in memory and report it as
-                // queued; recovery will arm it before a future Ready event.
+            Err(error.to_string())
+        } else {
+            Ok(armed_record)
+        }
+    };
+    let record = match armed_record {
+        Ok(record) => record,
+        Err(error) => {
+            let error_message =
+                format!("failed to persist queued mailbox readiness watermark: {error}");
+            let mut detail = failed_delivery_detail(
+                info.clone(),
+                runtime_state,
+                "mailbox_watermark_persist_failed",
+                error_message.clone(),
+                input_mode,
+                queue_policy,
+            );
+            detail.message_id = Some(record.id.clone());
+            detail.delivery_phase = Some("mailbox_arm_failed".to_string());
+            detail.reason = Some(
+                "the durable mailbox row was rolled back before terminal delivery".to_string(),
+            );
+            let generation = state
+                .interactions
+                .current_provider_input_generation(&detail.uuid)
+                .await
+                .unwrap_or(0);
+            let rollback = match mailbox_rollback_test_failure() {
+                Some(rollback_error) => Err(rollback_error),
+                None => state
+                    .interactions
+                    .fail_mailbox_message_and_interaction_durable(
+                        &record.id,
+                        &interaction_id,
+                        &detail.uuid,
+                        generation,
+                        &detail.runtime_state,
+                        detail.delivery_phase.clone(),
+                        detail.observed_state.clone(),
+                        detail.reason.clone(),
+                        detail.error.clone(),
+                    )
+                    .await,
+            };
+            if let Err(rollback_error) = rollback {
+                // The original row is still durable because the rollback
+                // transaction did not commit. Keep it unarmed and report a
+                // queued result so a retry cannot duplicate a message that
+                // live reconciliation or restart recovery may deliver.
                 crate::utils::logging::log_debug(&format!(
                     "[Wardian] mailbox watermark write failed for {}; rollback is indeterminate: {error}; {rollback_error}",
                     record.id
                 ));
-                let retained = mailbox
+                let retained = state
+                    .mailbox
+                    .lock()
+                    .await
                     .set_ready_after_observation(&record.id, None)
                     .ok_or_else(|| {
                         ControlError::request_failed(
@@ -2112,47 +2181,7 @@ async fn enqueue_mailbox_delivery(
                     error: None,
                 });
             }
-            mailbox.remove(&record.id);
-            Err(error.to_string())
-        } else {
-            Ok(armed_record)
-        }
-    };
-    let record = match armed_record {
-        Ok(record) => record,
-        Err(error) => {
-            let error_message =
-                format!("failed to persist queued mailbox readiness watermark: {error}");
-            let mut detail = failed_delivery_detail(
-                info,
-                runtime_state,
-                "mailbox_watermark_persist_failed",
-                error_message.clone(),
-                input_mode,
-                queue_policy,
-            );
-            detail.message_id = Some(record.id.clone());
-            detail.delivery_phase = Some("mailbox_arm_failed".to_string());
-            detail.reason = Some(
-                "the durable mailbox row was rolled back before terminal delivery".to_string(),
-            );
-            state
-                .interactions
-                .update_message_status_durable(&interaction_id, InteractionStatus::Failed)
-                .await
-                .map_err(|status_error| {
-                    ControlError::request_failed(format!(
-                        "{error_message}; failed to mark interaction as failed: {status_error}"
-                    ))
-                })?;
-            persist_interaction_delivery_attempt(
-                state,
-                &interaction_id,
-                &detail.uuid,
-                DeliveryTransportKind::LiveSurface,
-                &detail,
-            )
-            .await;
+            state.mailbox.lock().await.remove(&record.id);
             record_delivery_attempt(state, &detail).await;
             return Err(ControlError::request_failed(error_message));
         }
@@ -4846,6 +4875,62 @@ pub(crate) fn spawn_mailbox_drain_after_restore(app: &AppHandle, session_id: &st
     });
 }
 
+/// Arms an unarmed retained record from a failed enqueue rollback. The caller
+/// holds the per-target delivery lock, so a Ready observation can only release
+/// the record after this durable watermark has been established. If another
+/// observation lands while writing, raise the watermark and try again.
+async fn arm_unarmed_mailbox_record_for_live_drain(
+    state: &AppState,
+    session_id: &str,
+) -> Result<(), ControlError> {
+    loop {
+        let watermark = state
+            .interactions
+            .current_provider_input_observation_sequence(session_id)
+            .await;
+        let Some(record) = state
+            .mailbox
+            .lock()
+            .await
+            .list_for_target(session_id)
+            .into_iter()
+            .find(|record| {
+                record.status == wardian_core::control::MailboxMessageStatus::Pending
+                    && record.ready_after_observation.is_none()
+            })
+        else {
+            return Ok(());
+        };
+        let armed = state
+            .mailbox
+            .lock()
+            .await
+            .set_ready_after_observation(&record.id, Some(watermark))
+            .expect("listed mailbox record must still exist while delivery is locked");
+        let persist_error = wardian_core::db::upsert_mailbox_message(&armed)
+            .err()
+            .map(|error| error.to_string());
+        if let Some(error) = persist_error {
+            state
+                .mailbox
+                .lock()
+                .await
+                .set_ready_after_observation(&record.id, None);
+            return Err(ControlError::request_failed(format!(
+                "failed to persist retained mailbox readiness watermark: {error}"
+            )));
+        }
+        if state
+            .interactions
+            .current_provider_input_observation_sequence(session_id)
+            .await
+            == watermark
+        {
+            return Ok(());
+        }
+    }
+}
+
 async fn drain_next_mailbox_message_for_idle_agent(
     app: Option<&AppHandle>,
     state: &AppState,
@@ -4865,6 +4950,7 @@ async fn drain_next_mailbox_message_for_idle_agent(
     if info.status != "idle" {
         return Ok(None);
     }
+    arm_unarmed_mailbox_record_for_live_drain(state, session_id).await?;
     let Some(ready_input) = provider_input_ready_for_mailbox_drain(state, session_id).await else {
         return Ok(None);
     };
@@ -6288,6 +6374,81 @@ mod tests {
             attempts[0].delivery_phase.as_deref(),
             Some("mailbox_arm_failed")
         );
+    }
+
+    #[tokio::test]
+    async fn indeterminate_mailbox_rollback_rearms_and_drains_without_restart() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        install_test_terminal_runtime(&state, "agent-1", tx).await;
+        fail_next_mailbox_watermark_upsert_for_test("injected watermark write failure");
+        fail_next_mailbox_rollback_for_test("injected rollback transaction failure");
+
+        let queued = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "re-arm this retained record live",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("an indeterminate rollback remains queued rather than being retried");
+        let message_id = queued[0].message_id.clone().expect("retained mailbox id");
+        assert_eq!(queued[0].delivery_state, "queued");
+        assert_eq!(
+            state
+                .mailbox
+                .lock()
+                .await
+                .list_for_target("agent-1")[0]
+                .ready_after_observation,
+            None
+        );
+
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        assert!(
+            drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+                .await
+                .expect("first Ready arms the retained record")
+                .is_none()
+        );
+        assert_eq!(
+            state
+                .mailbox
+                .lock()
+                .await
+                .list_for_target("agent-1")[0]
+                .ready_after_observation,
+            Some(1)
+        );
+        assert!(rx.try_recv().is_err());
+
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+            .await
+            .expect("later Ready drains the armed retained record")
+            .expect("retained record is delivered without restart");
+        assert_eq!(drained.message_id.as_deref(), Some(message_id.as_str()));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            b"\x1b[200~re-arm this retained record live\x1b[201~".to_vec()
+        );
+        assert_eq!(rx.recv().await.unwrap(), b"\r".to_vec());
     }
 
     #[tokio::test]

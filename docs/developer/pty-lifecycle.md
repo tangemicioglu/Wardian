@@ -78,7 +78,11 @@ Delivery follows these rules:
 - Readiness or status from an older generation cannot drain queued work for a newer runtime.
 - During startup recovery, legacy mailbox rows are durably armed with the
   current sequence and rechecked until the watermark covers observations that
-  raced the arm; they then wait for a later Ready observation. See
+  raced the arm; they then wait for a later Ready observation. Retained rows
+  from an indeterminate enqueue rollback are armed by the same procedure on
+  the next live readiness-triggered drain, so they do not require a restart.
+  A confirmed rollback atomically removes the mailbox row, fails the message
+  interaction, and records its terminal delivery attempt. See
   [Queue-if-busy Delivery](../specs/2026-08-21-queue-if-busy-delivery.md).
 - Provider action-required status remains provider-owned. It usually represents a provider permission or authentication prompt, not a Wardian human-in-the-loop interaction.
 - Codex readiness can use prompt detection as release evidence, but it must not depend on a fixed sleep before text injection.

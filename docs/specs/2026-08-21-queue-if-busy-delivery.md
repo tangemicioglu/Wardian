@@ -50,6 +50,14 @@ until it covers any observation that raced the write. It therefore waits for
 one new Ready observation after recovery instead of blocking FIFO delivery
 forever or trusting pre-restart readiness.
 
+If the initial watermark write fails and the transaction that would remove the
+mailbox row and fail its interaction cannot commit, Wardian reports the record
+as queued and retains it unarmed. The next live readiness-triggered drain uses
+the same locked arming and recheck procedure before it can submit the record;
+no restart is required and the Ready observation that triggered the arm cannot
+also release it. A confirmed rollback atomically removes the mailbox row,
+marks the interaction failed, and records its terminal delivery attempt.
+
 ## Consequences
 
 - **Positive:** A stale idle status cannot make `queue-if-busy` interrupt an

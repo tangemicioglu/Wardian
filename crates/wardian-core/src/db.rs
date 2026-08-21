@@ -639,6 +639,41 @@ pub fn delete_mailbox_message(id: &str) -> Result<(), Box<dyn std::error::Error>
     })
 }
 
+/// Atomically discard an undeliverable mailbox record and finalize its message
+/// interaction. A caller must use this instead of deleting the mailbox row
+/// before recording the terminal interaction state: a partial rollback would
+/// otherwise leave a queued interaction with no recoverable delivery record.
+pub fn fail_mailbox_message_and_interaction(
+    mailbox_message_id: &str,
+    interaction: &InteractionRecord,
+    attempt: &InteractionDeliveryAttemptRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        fail_mailbox_message_and_interaction_with_conn(conn, mailbox_message_id, interaction, attempt)?;
+        Ok(())
+    })
+}
+
+pub fn fail_mailbox_message_and_interaction_with_conn(
+    conn: &Connection,
+    mailbox_message_id: &str,
+    interaction: &InteractionRecord,
+    attempt: &InteractionDeliveryAttemptRecord,
+) -> rusqlite::Result<()> {
+    let transaction = conn.unchecked_transaction()?;
+    let deleted = transaction.execute(
+        "DELETE FROM mailbox_messages WHERE id = ?1",
+        params![mailbox_message_id],
+    )?;
+    if deleted != 1 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    upsert_interaction_record_with_conn(&transaction, interaction)?;
+    upsert_interaction_delivery_attempt_with_conn(&transaction, attempt)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub fn delete_mailbox_messages_for_target(
     target_session_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1213,6 +1248,72 @@ mod tests {
         assert_eq!(
             list_mailbox_messages_with_conn(&conn).unwrap(),
             vec![record]
+        );
+    }
+
+    #[test]
+    fn mailbox_rollback_finalizes_the_message_and_attempt_atomically() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let queued = InteractionRecord {
+            id: "int_rollback".to_string(),
+            kind: InteractionKind::Message,
+            sender_session_id: None,
+            target_session_ids: vec!["agent-1".to_string()],
+            status: InteractionStatus::Queued,
+            trigger_policy: InteractionTriggerPolicy::StartTurn,
+            body_ref: InteractionBodyRef::Inline {
+                body: "do not ghost this message".to_string(),
+            },
+            parent_interaction_id: None,
+            created_at: "2026-08-21T00:00:00.000Z".to_string(),
+            updated_at: "2026-08-21T00:00:00.000Z".to_string(),
+            completed_at: None,
+        };
+        upsert_interaction_record_with_conn(&conn, &queued).unwrap();
+        let mailbox = MailboxMessageRecord {
+            id: "msg_rollback".to_string(),
+            interaction_id: queued.id.clone(),
+            target_session_id: "agent-1".to_string(),
+            body: "do not ghost this message".to_string(),
+            input_mode: MessageInputMode::Message,
+            queue_policy: QueuePolicy::QueueIfBusy,
+            approval_action: None,
+            origin: None,
+            created_at: queued.created_at.clone(),
+            ready_after_observation: None,
+            status: MailboxMessageStatus::Pending,
+            phase: MailboxDeliveryPhase::Queued,
+        };
+        upsert_mailbox_message_with_conn(&conn, &mailbox).unwrap();
+        let mut failed = queued.clone();
+        failed.status = InteractionStatus::Failed;
+        failed.updated_at = "2026-08-21T00:00:01.000Z".to_string();
+        failed.completed_at = Some(failed.updated_at.clone());
+        let attempt = InteractionDeliveryAttemptRecord {
+            id: "attempt_rollback".to_string(),
+            interaction_id: failed.id.clone(),
+            target_session_id: "agent-1".to_string(),
+            transport: DeliveryTransportKind::LiveSurface,
+            generation: 0,
+            runtime_state: "queue_if_busy".to_string(),
+            delivery_state: "failed".to_string(),
+            delivery_phase: Some("mailbox_arm_failed".to_string()),
+            observed_state: None,
+            reason: Some("rollback confirmed".to_string()),
+            error: None,
+            created_at: failed.updated_at.clone(),
+            updated_at: failed.updated_at.clone(),
+        };
+
+        fail_mailbox_message_and_interaction_with_conn(&conn, &mailbox.id, &failed, &attempt)
+            .unwrap();
+
+        assert!(list_mailbox_messages_with_conn(&conn).unwrap().is_empty());
+        assert_eq!(list_interaction_records_with_conn(&conn).unwrap(), vec![failed]);
+        assert_eq!(
+            list_interaction_delivery_attempts_with_conn(&conn, &queued.id).unwrap(),
+            vec![attempt]
         );
     }
 
