@@ -1526,7 +1526,11 @@ async fn deliver_message_to_target_with_headless_timeout(
     let mut failures = Vec::new();
     let mut delivery = Vec::with_capacity(session_ids.len());
     for initial_info in target_infos {
-        let _target_lifecycle_guard = state.lock_agent_lifecycle(&initial_info.uuid).await;
+        let (lifecycle_was_busy, target_lifecycle_guard) =
+            match state.try_lock_agent_lifecycle(&initial_info.uuid).await {
+                Some(guard) => (false, guard),
+                None => (true, state.lock_agent_lifecycle(&initial_info.uuid).await),
+            };
         let info = delivery_target_info(state, &initial_info.uuid).await?;
         let outbound_message = message_with_origin(
             state,
@@ -1553,7 +1557,14 @@ async fn deliver_message_to_target_with_headless_timeout(
         if let Some(app) = app {
             let _ = app.emit("pair-activity-changed", ());
         }
-        let route = if input_mode == MessageInputMode::ApprovalAction
+        let route = if input_mode != MessageInputMode::ApprovalAction
+            && matches!(queue_policy, QueuePolicy::QueueIfBusy)
+            && lifecycle_was_busy
+        {
+            DeliveryRoute::Mailbox {
+                runtime_state: "conversation_leased",
+            }
+        } else if input_mode == MessageInputMode::ApprovalAction
             || matches!(queue_policy, QueuePolicy::MailboxOnly)
         {
             decide_delivery_route(&info.status, input_mode, queue_policy, approval_action)
@@ -1695,6 +1706,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                         queue_policy,
                         origin,
                         timeout: headless_timeout,
+                        lifecycle_guard: Some(target_lifecycle_guard),
                     },
                 )
                 .await
@@ -1987,6 +1999,7 @@ struct HeadlessMessageDeliveryRequest<'a> {
     queue_policy: QueuePolicy,
     origin: Option<&'a MessageOrigin>,
     timeout: Duration,
+    lifecycle_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
 #[derive(Debug)]
@@ -2008,6 +2021,7 @@ async fn deliver_headless_message(
         queue_policy,
         origin,
         timeout,
+        lifecycle_guard,
     } = request;
     // Direct offline delivery runs a provider against the target agent's
     // workspace. Hold the same home-wide shared guard as workflow drives
@@ -2073,12 +2087,18 @@ async fn deliver_headless_message(
     };
     let mut lease_guard =
         wardian_core::conversation_lease::PersistedConversationLeaseGuard::new(&lease);
-    let Some(_lifecycle_guard) = state.try_lock_agent_lifecycle(&info.uuid).await else {
-        return HeadlessMessageDelivery::Busy(Box::new(
-            delivery_target_info(state, &info.uuid)
-                .await
-                .unwrap_or_else(|_| info.clone()),
-        ));
+    let lifecycle_guard = match lifecycle_guard {
+        Some(guard) => guard,
+        None => match state.try_lock_agent_lifecycle(&info.uuid).await {
+            Some(guard) => guard,
+            None => {
+                return HeadlessMessageDelivery::Busy(Box::new(
+                    delivery_target_info(state, &info.uuid)
+                        .await
+                        .unwrap_or_else(|_| info.clone()),
+                ));
+            }
+        },
     };
     let current_info = match delivery_target_info(state, &info.uuid).await {
         Ok(current_info) => current_info,
@@ -2109,6 +2129,7 @@ async fn deliver_headless_message(
         return HeadlessMessageDelivery::Busy(Box::new(current_info));
     }
     record_headless_status_observation(app, state, &current_info).await;
+    drop(lifecycle_guard);
 
     let result = crate::delivery::run_headless_process_prompt(
         state,
