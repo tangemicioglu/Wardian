@@ -22,14 +22,16 @@ For "exactly how much did this agent do between Tuesday and Friday", use [Analyt
 2. Press `Ctrl+P` / `Cmd+P`, select a pane's **+** button, or use an empty-pane Home state, then choose **Dashboard**. `Ctrl+Alt+D` opens it directly.
 3. Scan the rows. Each quantitative cell carries an inline bar or sparkline beside its number.
 4. Set the trailing **window** from the header when the default 24 hours is the wrong span for what you are watching.
-5. Use **Columns** to add or remove measures. Your choice is remembered per Dashboard, so two Dashboards can watch different things.
+5. Use **Columns** to add or remove measures *in the table*. Your choice is remembered per Dashboard, so two Dashboards can watch different things. The provider strip above is not affected; it always carries the same six figures.
 
 Dashboard is a singleton surface. Opening it again focuses its existing tab instead of creating a duplicate.
 
 ## The Provider Strip
 
 Above the table is a row of cards, one per provider, covering the same window and
-carrying the same trend measure as the table below.
+carrying the same trend measure as the table below. The window control sits above
+both, because it governs both — change it and every figure on the strip moves
+with the rows.
 
 The table answers *which agent is doing what*. The strip answers *which provider
 am I running on* — a question you cannot get from the rows, because with a dozen

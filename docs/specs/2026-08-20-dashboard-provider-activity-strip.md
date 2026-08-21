@@ -293,10 +293,28 @@ comparable to its parts.
 
 The habitat card carries a `title` saying its trend is scaled to itself.
 
+### Where the controls sit
+
+The window control moves **above** the strip, where it used to sit between the
+strip and the table.
+
+A scope control placed between two things it governs reads as governing only the
+lower one. Every figure on the strip comes from the same `telemetry_fleet` read
+at the same `window_minutes` as the rows beneath it, but the old sequencing made
+the strip look like it sat outside the window entirely — inviting the reader to
+take its numbers as all-time.
+
+This trades one scope error for a smaller one: **Columns** genuinely affects only
+the table, and it now sits above the strip too. That is the cheaper confusion.
+A reader who expects the strip's tiles to be configurable tests it once and
+corrects; a reader who thinks the strip is not window-scoped silently misreads
+every figure on it. The picker panel stays down beside the table, and the
+button's tooltip names what it configures.
+
 ### Frontend
 
 - New component `src/features/telemetry/ProviderStrip.tsx`, rendered in place of
-  the `dashboard-view__reserved` div at `src/views/DashboardView.tsx:141`.
+  the `dashboard-view__reserved` div in `src/views/DashboardView.tsx`.
 - Reuses the exported `Sparkline` from `DashboardView.tsx`. Tiles are label plus
   figure with **no bar** — a bar per tile would put six competing scales inside
   one card and the card would stop being glanceable.
@@ -331,6 +349,7 @@ The habitat card carries a `title` saying its trend is scaled to itself.
 | `cargo test` | A measure matching no rows is answered as empty rather than absent |
 | `npm run test` | `useCoalescedRead`: concurrent reads join, sequential reads do not, a changed question does not join, a rejection releases the slot |
 | `npm run test` | Refresh settles on post-ingest figures with a poll's read held open across the ingest |
+| `npm run test` | The window control precedes the strip in document order, and the column picker follows it |
 | `cargo test` | The fleet read never takes the global DB mutex twice, under a timeout |
 | Browser E2E | Strip order, unreported provider, dimmed silent provider, and real horizontal overflow at a narrow viewport |
 | `npm run test` | `ProviderStrip.test.tsx`: `All` renders first; unreported tokens render the dash; idle providers render dimmed and last |

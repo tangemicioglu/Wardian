@@ -140,23 +140,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     // yield, and the table below it shrinks and clips instead of scrolling.
     <div className="dashboard-view flex-1 flex flex-col gap-3 min-h-0 pb-3">
       {/*
-        The space this held empty, now filled with the half of the question that
-        every provider can answer. Account limits are still absent, and for the
-        original reason: only codex publishes one, so a capacity gauge made the
-        surface's shape depend on which vendor the habitat happened to run.
-        Activity has no such dependency — a provider with no token accounting
-        still has turns, active time, files and lines.
-      */}
-      {fleet && (
-        <ProviderStrip
-          habitat={fleet.habitat}
-          providers={fleet.providers}
-          maxima={fleet.provider_maxima}
-          trendMeasure={fleet.trend_measure}
-          grain={fleet.grain}
-        />
-      )}
+        Above the strip, not between it and the table. The window governs every
+        figure on both, and a scope control placed between two things it governs
+        reads as governing only the lower one — which made the strip look like it
+        sat outside the window entirely, so its numbers would be read as all-time.
 
+        The cost is that Columns, which really does only affect the table, now
+        sits above the strip too. That is the cheaper confusion: it is an
+        expectation the reader tests once and corrects, where the other one
+        silently misreads every figure. Its picker stays down beside the table,
+        and its tooltip names what it configures.
+      */}
       <header className="dashboard-view__controls flex items-center gap-2 flex-wrap">
         <div
           className="flex items-center rounded-lg border border-wardian-border/50 overflow-hidden"
@@ -188,7 +182,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           type="button"
           onClick={() => setPicking((open) => !open)}
           aria-expanded={picking}
-          title="Choose columns"
+          title="Choose which columns the table shows"
           className="h-7 px-2.5 flex items-center gap-1.5 rounded-lg border border-wardian-border/50 text-[11px] text-muted-neutral hover:text-primary hover:bg-wardian-card-bg-muted transition-colors"
         >
           <SlidersHorizontal className="w-3 h-3" />
@@ -218,6 +212,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {refreshing ? "Ingesting…" : "Refresh"}
         </button>
       </header>
+
+      {/*
+        The space this held empty, now filled with the half of the question that
+        every provider can answer. Account limits are still absent, and for the
+        original reason: only codex publishes one, so a capacity gauge made the
+        surface's shape depend on which vendor the habitat happened to run.
+        Activity has no such dependency — a provider with no token accounting
+        still has turns, active time, files and lines.
+      */}
+      {fleet && (
+        <ProviderStrip
+          habitat={fleet.habitat}
+          providers={fleet.providers}
+          maxima={fleet.provider_maxima}
+          trendMeasure={fleet.trend_measure}
+          grain={fleet.grain}
+        />
+      )}
+
 
       {picking && <ColumnPicker prefs={prefs} onChange={update} />}
 

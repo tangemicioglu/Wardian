@@ -116,6 +116,42 @@ beforeEach(() => {
   vi.mocked(listen).mockImplementation(() => Promise.resolve(() => {}));
 });
 
+describe("DashboardView layout", () => {
+  it("puts the window control above the strip it governs, not between strip and table", async () => {
+    // The window scopes every figure on both the strip and the table. Sitting
+    // between them, it read as governing only the table — which invites reading
+    // the strip's numbers as all-time.
+    respondWith();
+    render(<DashboardView />);
+    await waitFor(() =>
+      expect(screen.getByRole("group", { name: "Activity by provider" })).toBeInTheDocument(),
+    );
+
+    const window = screen.getByRole("group", { name: "Window" });
+    const strip = screen.getByRole("group", { name: "Activity by provider" });
+
+    // DOCUMENT_POSITION_FOLLOWING: the strip comes after the window control.
+    expect(window.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  it("keeps the column picker beside the table it configures", async () => {
+    // Columns affects only the table. The button rides in the header above the
+    // strip, so the panel it opens is what says which element it belongs to.
+    respondWith();
+    render(<DashboardView />);
+    await waitFor(() => expect(screen.getByText("Wardian-Codex")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: /Columns/ }));
+
+    const strip = screen.getByRole("group", { name: "Activity by provider" });
+    const picker = document.querySelector(".dashboard-view__picker");
+    expect(picker).not.toBeNull();
+    expect(strip.compareDocumentPosition(picker!) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+});
+
 describe("DashboardView refresh", () => {
   it("shows figures from after the ingest, not from a read already in flight", async () => {
     // Reads are coalesced so a backstop poll and a `telemetry-updated` event
