@@ -56,6 +56,10 @@ static MAILBOX_WATERMARK_UPSERT_TEST_GATE: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 
 #[cfg(test)]
+static MAILBOX_WATERMARK_UPSERT_TEST_FAILURE: std::sync::OnceLock<Mutex<Option<String>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
 fn install_mailbox_initial_upsert_test_gate(
     target_session_id: &str,
 ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
@@ -117,10 +121,31 @@ async fn pause_before_mailbox_watermark_upsert_for_test(target_session_id: &str)
         {
             return;
         }
-        stored_gate.take().expect("checked mailbox watermark test gate")
+        stored_gate
+            .take()
+            .expect("checked mailbox watermark test gate")
     };
     gate.entered.notify_one();
     gate.release.notified().await;
+}
+
+#[cfg(test)]
+fn fail_next_mailbox_watermark_upsert_for_test(error: &str) {
+    let failure = MAILBOX_WATERMARK_UPSERT_TEST_FAILURE.get_or_init(|| Mutex::new(None));
+    *failure.lock().unwrap() = Some(error.to_string());
+}
+
+fn upsert_mailbox_watermark(
+    record: &MailboxMessageRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(test)]
+    if let Some(failure) = MAILBOX_WATERMARK_UPSERT_TEST_FAILURE
+        .get()
+        .and_then(|failure| failure.lock().unwrap().take())
+    {
+        return Err(Box::new(std::io::Error::other(failure)));
+    }
+    wardian_core::db::upsert_mailbox_message(record)
 }
 
 async fn rollback_agent_update(
@@ -2022,7 +2047,7 @@ async fn enqueue_mailbox_delivery(
     let record = {
         let mut mailbox = state.mailbox.lock().await;
         let record = mailbox.enqueue(MailboxMessageDraft {
-            interaction_id,
+            interaction_id: interaction_id.clone(),
             target_session_id: info.uuid.clone(),
             body,
             input_mode,
@@ -2049,15 +2074,12 @@ async fn enqueue_mailbox_delivery(
         .await;
     #[cfg(test)]
     pause_before_mailbox_watermark_upsert_for_test(&info.uuid).await;
-    let record = {
+    let armed_record = {
         let mut mailbox = state.mailbox.lock().await;
         let armed_record = mailbox
-            .set_ready_after_observation(
-                &record.id,
-                Some(ready_after_observation),
-            )
+            .set_ready_after_observation(&record.id, Some(ready_after_observation))
             .expect("newly enqueued mailbox record must exist");
-        if let Err(error) = wardian_core::db::upsert_mailbox_message(&armed_record) {
+        if let Err(error) = upsert_mailbox_watermark(&armed_record) {
             if let Err(rollback_error) = wardian_core::db::delete_mailbox_message(&record.id) {
                 // The first write remains durable, so reporting a failed send
                 // would make a caller retry a message that recovery can later
@@ -2091,11 +2113,49 @@ async fn enqueue_mailbox_delivery(
                 });
             }
             mailbox.remove(&record.id);
-            return Err(ControlError::request_failed(format!(
-                "failed to persist queued mailbox readiness watermark: {error}"
-            )));
+            Err(error.to_string())
+        } else {
+            Ok(armed_record)
         }
-        armed_record
+    };
+    let record = match armed_record {
+        Ok(record) => record,
+        Err(error) => {
+            let error_message =
+                format!("failed to persist queued mailbox readiness watermark: {error}");
+            let mut detail = failed_delivery_detail(
+                info,
+                runtime_state,
+                "mailbox_watermark_persist_failed",
+                error_message.clone(),
+                input_mode,
+                queue_policy,
+            );
+            detail.message_id = Some(record.id.clone());
+            detail.delivery_phase = Some("mailbox_arm_failed".to_string());
+            detail.reason = Some(
+                "the durable mailbox row was rolled back before terminal delivery".to_string(),
+            );
+            state
+                .interactions
+                .update_message_status_durable(&interaction_id, InteractionStatus::Failed)
+                .await
+                .map_err(|status_error| {
+                    ControlError::request_failed(format!(
+                        "{error_message}; failed to mark interaction as failed: {status_error}"
+                    ))
+                })?;
+            persist_interaction_delivery_attempt(
+                state,
+                &interaction_id,
+                &detail.uuid,
+                DeliveryTransportKind::LiveSurface,
+                &detail,
+            )
+            .await;
+            record_delivery_attempt(state, &detail).await;
+            return Err(ControlError::request_failed(error_message));
+        }
     };
     Ok(DeliveryDetail {
         uuid: info.uuid,
@@ -6180,6 +6240,54 @@ mod tests {
             b"\x1b[200~release after the processing turn completes\x1b[201~".to_vec()
         );
         assert_eq!(rx.recv().await.unwrap(), b"\r".to_vec());
+    }
+
+    #[tokio::test]
+    async fn failed_mailbox_watermark_arming_marks_the_interaction_failed_after_rollback() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        fail_next_mailbox_watermark_upsert_for_test("injected watermark write failure");
+
+        let error = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "do not leave a ghost queued interaction",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect_err("the caller is told that durable watermark arming failed");
+        assert!(error
+            .to_string()
+            .contains("failed to persist queued mailbox readiness watermark"));
+        assert!(state.mailbox.lock().await.list_for_target("agent-1").is_empty());
+
+        let interaction = wardian_core::db::list_interaction_records()
+            .expect("read durable interactions")
+            .into_iter()
+            .next()
+            .expect("durable interaction created before enqueue");
+        assert_eq!(interaction.status, InteractionStatus::Failed);
+        let attempts = wardian_core::db::list_interaction_delivery_attempts(&interaction.id)
+            .expect("read durable delivery attempt");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].delivery_state, "failed");
+        assert_eq!(
+            attempts[0].delivery_phase.as_deref(),
+            Some("mailbox_arm_failed")
+        );
     }
 
     #[tokio::test]
