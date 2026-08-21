@@ -3020,6 +3020,11 @@ async fn handle_structured_ask(
             body_ref,
         )
         .await;
+    if task.status != InteractionStatus::AwaitingReply {
+        return Err(ControlError::not_found(format!(
+            "agent not found: {target}"
+        )));
+    }
     let _ = app.emit("pair-activity-changed", ());
     let mut payload = serde_json::json!({
         "request_id": task.id,
@@ -3180,6 +3185,15 @@ async fn handle_structured_ask_many(
                 body_ref,
             )
             .await;
+        if task.status != InteractionStatus::AwaitingReply {
+            results.push(ask_target_failure(
+                target,
+                AskTargetOutcome::DeliveryFailed,
+                "not_found",
+                format!("agent not found: {target}"),
+            ));
+            continue;
+        }
         let _ = app.emit("pair-activity-changed", ());
         let mut payload = serde_json::json!({
             "request_id": task.id,

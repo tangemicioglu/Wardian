@@ -44,6 +44,9 @@ impl InteractionState {
         body_ref: InteractionBodyRef,
     ) -> InteractionRecord {
         let _mutation = self.mutation_lock.lock().await;
+        if self.deleted_sessions.lock().await.contains(&target_session_id) {
+            return rejected_task_record(id, sender_session_id, target_session_id, body_ref);
+        }
         let now = now_rfc3339_millis();
         let record = InteractionRecord {
             id,
@@ -94,6 +97,14 @@ impl InteractionState {
         body_ref: InteractionBodyRef,
     ) -> Result<InteractionRecord, String> {
         let _mutation = self.mutation_lock.lock().await;
+        let deleted_sessions = self.deleted_sessions.lock().await;
+        if let Some(target_session_id) = target_session_ids
+            .iter()
+            .find(|target| deleted_sessions.contains(*target))
+        {
+            return Err(format!("agent has been deleted: {target_session_id}"));
+        }
+        drop(deleted_sessions);
         let record = message_record(
             new_interaction_id(),
             sender_session_id,
@@ -819,6 +830,28 @@ impl InteractionState {
         self.provider_generations.lock().await.remove(session_id);
         self.provider_inputs.lock().await.remove(session_id);
         Ok(())
+    }
+}
+
+fn rejected_task_record(
+    id: String,
+    sender_session_id: Option<String>,
+    target_session_id: String,
+    body_ref: InteractionBodyRef,
+) -> InteractionRecord {
+    let now = now_rfc3339_millis();
+    InteractionRecord {
+        id,
+        kind: InteractionKind::Task,
+        sender_session_id,
+        target_session_ids: vec![target_session_id],
+        status: InteractionStatus::Failed,
+        trigger_policy: InteractionTriggerPolicy::ReplyRequired,
+        body_ref,
+        parent_interaction_id: None,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        completed_at: Some(now),
     }
 }
 
@@ -1631,6 +1664,32 @@ mod reply_tests {
             .unwrap()
             .iter()
             .all(|attempt| attempt.target_session_id != "agent-delete"));
+        assert!(state
+            .create_message_durable(
+                None,
+                vec!["agent-delete".to_string()],
+                InteractionBodyRef::Inline {
+                    body: "late message".to_string(),
+                },
+            )
+            .await
+            .is_err());
+        let rejected_task = state
+            .create_task_with_id(
+                "late-task".to_string(),
+                None,
+                "agent-delete".to_string(),
+                InteractionBodyRef::Inline {
+                    body: "late ask".to_string(),
+                },
+            )
+            .await;
+        assert_eq!(rejected_task.status, InteractionStatus::Failed);
+        assert!(state.interaction("late-task").await.is_none());
+        assert!(!wardian_core::db::list_interaction_records()
+            .unwrap()
+            .iter()
+            .any(|record| record.id == "late-task"));
 
         let provider_state = state
             .record_provider_input_state(
