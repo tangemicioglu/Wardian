@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { useCoalescedRead } from "./useCoalescedRead";
 import type { TelemetryFleet, TelemetryRefreshReport } from "./telemetryTypes";
 
 /**
@@ -41,7 +42,7 @@ export function useFleet(
   const requestRef = useRef(0);
   const question = `${windowMinutes}:${measure}`;
 
-  const read = useCallback(async () => {
+  const perform = useCallback(async () => {
     const request = (requestRef.current += 1);
     try {
       const fleet = await invoke<TelemetryFleet>("telemetry_fleet", {
@@ -57,6 +58,10 @@ export function useFleet(
     }
   }, [windowMinutes, measure]);
 
+  // Refresh, the backstop interval, and `telemetry-updated` can all fire within
+  // a few milliseconds of one another. Whichever arrives first does the work.
+  const read = useCoalescedRead(question, perform);
+
   const refresh = useCallback(async () => {
     try {
       await invoke<TelemetryRefreshReport>("telemetry_refresh");
@@ -65,8 +70,11 @@ export function useFleet(
       // ingested so far, and showing that beats showing an error.
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-    await read();
-  }, [read]);
+    // `perform`, not `read`: this one must observe the ingest that just ran. A
+    // coalesced read could join a request issued before the ingest committed,
+    // and Refresh would render pre-refresh figures.
+    await perform();
+  }, [perform]);
 
   useEffect(() => {
     if (!enabled) return;
