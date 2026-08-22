@@ -771,7 +771,13 @@ describe("GraphView", () => {
         return undefined;
       });
 
-      render(<GraphView {...defaultProps} />);
+      render(
+        <GraphView
+          {...defaultProps}
+          filteredAgents={[agent("a"), agent("b"), agent("c")]}
+          allAgents={[agent("a"), agent("b"), agent("c")]}
+        />,
+      );
 
       const node = screen.getByTestId("mock-graph-node");
       await waitFor(() => {
