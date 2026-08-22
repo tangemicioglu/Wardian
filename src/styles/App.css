@@ -852,6 +852,15 @@ summary,
   min-width: 164px;
 }
 
+.chat-slash-menu {
+  position: absolute;
+  inset-inline: 0;
+  bottom: calc(100% + 6px);
+  max-height: 220px;
+  overflow-y: auto;
+  z-index: 30;
+}
+
 .chat-copy-menu-item {
   min-height: 32px;
 }
