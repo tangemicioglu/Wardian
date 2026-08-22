@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -178,25 +178,15 @@ describe("CommandPanel", () => {
     expect(screen.getByRole("heading", { name: "Broadcast", level: 3 })).toHaveClass("text-xs");
   });
 
-  it("makes the current command target visible in the sidebar header", () => {
-    renderCommandPanel({ selectedAgentIds: new Set(["agent-1", "agent-2"]) });
-
-    expect(screen.getByTestId("command-target-scope")).toHaveTextContent("2 selected");
-  });
-
-  it("labels an empty command target as all agents", () => {
+  it("requires an agent selection before enabling command actions", () => {
     renderCommandPanel({ selectedAgentIds: new Set() });
 
-    expect(screen.getByTestId("command-target-scope")).toHaveTextContent("All agents");
-  });
-
-  it("explains selection scope before a command can broadcast", () => {
-    renderCommandPanel();
-
-    expect(screen.getByText("Target before you broadcast")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Command guide" })).toHaveAttribute(
-      "href",
-      "https://docs.wardian.org/guide/command-panel",
+    expect(screen.getByRole("button", { name: /Ship Summary/i })).toBeDisabled();
+    expect(screen.getByTestId("broadcast-textarea")).toBeDisabled();
+    expect(screen.getByTestId("broadcast-submit")).toBeDisabled();
+    expect(screen.getByTestId("broadcast-submit")).toHaveAttribute(
+      "title",
+      "Select at least one agent to send a command",
     );
   });
 
@@ -258,40 +248,6 @@ describe("CommandPanel", () => {
     });
   });
 
-  it("confirms before broadcasting a quick prompt when no agents are selected", async () => {
-    const user = userEvent.setup();
-    mockInvoke.mockImplementation(async (command, args) => {
-      if (command === "read_library_item") {
-        const path = (args as { path?: string } | undefined)?.path ?? "";
-        return promptContents[path] ?? "";
-      }
-      if (command === "list_agents") {
-        return [
-          { session_id: "agent-1", session_name: "One", agent_class: "Coder", folder: "C:/repo", is_off: false },
-          { session_id: "agent-2", session_name: "Two", agent_class: "Coder", folder: "C:/repo", is_off: false },
-        ];
-      }
-      return null;
-    });
-
-    renderCommandPanel({ selectedAgentIds: new Set() });
-    await user.click(screen.getByRole("button", { name: /Review Notes/i }));
-    expect(screen.getByText(/broadcast the prompt to all agents/i)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Confirm" }));
-
-    await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("list_agents");
-    });
-    expect(mockInvoke).toHaveBeenCalledWith("submit_prompt_to_agent", {
-      sessionId: "agent-1",
-      prompt: "Review this",
-    });
-    expect(mockInvoke).toHaveBeenCalledWith("submit_prompt_to_agent", {
-      sessionId: "agent-2",
-      prompt: "Review this",
-    });
-  });
-
   it("copies prompt content without injecting it", async () => {
     const user = userEvent.setup();
 
@@ -304,8 +260,7 @@ describe("CommandPanel", () => {
     expect(mockInvoke).not.toHaveBeenCalledWith("submit_prompt_to_agent", expect.anything());
   });
 
-  it("confirms empty-selection broadcasts before submitting", async () => {
-    const user = userEvent.setup();
+  it("does not broadcast after an empty-selection form submit", () => {
     const onBroadcast = vi.fn();
 
     renderCommandPanel({
@@ -313,11 +268,9 @@ describe("CommandPanel", () => {
       broadcastMessage: "Status?",
       onBroadcast,
     });
-    await user.click(screen.getByTestId("broadcast-submit"));
-    expect(onBroadcast).not.toHaveBeenCalled();
-    expect(screen.getByText("No agents selected. This will broadcast to ALL agents. Are you sure?")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Confirm" }));
-    expect(onBroadcast).toHaveBeenCalledTimes(1);
+    fireEvent.submit(screen.getByTestId("broadcast-submit").closest("form")!);
+
+    expect(onBroadcast).not.toHaveBeenCalled();
   });
 });

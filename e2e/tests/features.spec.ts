@@ -72,9 +72,9 @@ test.describe("Wardian Core Feature Tests", () => {
     await page.locator('[data-testid="sidebar-tab-command"]').click();
     await page.waitForTimeout(500);
     await expect(page.locator('[data-testid="command-panel"]')).toBeVisible();
-    await expect(page.locator('[data-testid="command-target-scope"]')).toHaveText("All agents");
-    await expect(page.locator('[data-testid="quick-prompt-0"]')).toBeVisible();
-    await expect(page.locator('[data-testid="broadcast-textarea"]')).toBeVisible();
+    await expect(page.locator('[data-testid="quick-prompt-0"] > button:first-child')).toBeDisabled();
+    await expect(page.locator('[data-testid="broadcast-textarea"]')).toBeDisabled();
+    await expect(page.locator('[data-testid="broadcast-submit"]')).toBeDisabled();
     if (process.env.WARDIAN_COMMAND_PANEL_SCREENSHOT) {
       await page.locator('[data-testid="command-panel"]').screenshot({
         path: process.env.WARDIAN_COMMAND_PANEL_SCREENSHOT,
@@ -204,15 +204,13 @@ test.describe("Wardian Core Feature Tests", () => {
     await expect(workspaceInput).toHaveValue("C:/temp");
   });
 
-  test("12. Broadcast input functionality", async () => {
+  test("12. Broadcast input requires an agent selection", async () => {
     await page.locator('[data-testid="sidebar-tab-command"]').click();
     await page.waitForTimeout(500);
     
     const textarea = page.locator('[data-testid="broadcast-textarea"]');
-    await textarea.fill("E2E test broadcast message");
-    await expect(textarea).toHaveValue("E2E test broadcast message");
-    
-    await expect(page.locator('[data-testid="broadcast-submit"]')).toBeVisible();
+    await expect(textarea).toBeDisabled();
+    await expect(page.locator('[data-testid="broadcast-submit"]')).toBeDisabled();
   });
 
   test("13. Empty state - no agent cards", async () => {
