@@ -185,6 +185,57 @@ test("renders chat attachment chips alongside a compact provider launch row", as
   await testInfo.attach("chat-attachments", { path, contentType: "image/png" });
 });
 
+test("keeps the composer send button consistent across empty and populated states", async ({ page }, testInfo) => {
+  const overview = makeWorkbenchSurface("composer-send-button-evidence", "agents-overview", {
+    state: {
+      mode: "single",
+      focused_agent_id: "agent-alpha",
+      search_query: "",
+      status_filter: [],
+    },
+  });
+  const document = makeWorkbenchDocument({ revision: 5, surfaces: [overview] });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    localStorage.setItem("wardian-settings", JSON.stringify({
+      state: { gridCardDisplayMode: "chat" },
+      version: 2,
+    }));
+  });
+  await installWorkbenchIpcMock(page, {
+    agents: [agents[0]],
+    load_result: {
+      source: "primary",
+      document,
+      notice: null,
+      durable_revision: document.revision,
+      durable_token: "composer-send-button-evidence-token-5",
+    },
+  });
+
+  await page.goto("/", { waitUntil: "commit" });
+  const card = page.locator('[data-testid="agent-card"]');
+  const input = page.getByLabel("Message agent");
+  const sendButton = page.getByRole("button", { name: "Send message" });
+  await expect(card).toBeVisible();
+  await expect(sendButton).toBeDisabled();
+  await expect(sendButton).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+  const emptyPath = process.env.WARDIAN_COMPOSER_EMPTY_SCREENSHOT
+    ?? testInfo.outputPath("composer-send-empty.png");
+  await card.screenshot({ path: emptyPath, animations: "disabled" });
+  await testInfo.attach("composer-send-empty", { path: emptyPath, contentType: "image/png" });
+
+  await input.fill("Check the composer action styling.");
+  await expect(sendButton).toBeEnabled();
+  await expect(sendButton).toHaveCSS("background-color", "rgb(146, 106, 9)");
+
+  const textPath = process.env.WARDIAN_COMPOSER_TEXT_SCREENSHOT
+    ?? testInfo.outputPath("composer-send-text.png");
+  await card.screenshot({ path: textPath, animations: "disabled" });
+  await testInfo.attach("composer-send-text", { path: textPath, contentType: "image/png" });
+});
+
 test("renders copied feedback in an agent chat", async ({ page }, testInfo) => {
   const overview = makeWorkbenchSurface("copy-feedback-evidence", "agents-overview", {
     state: {

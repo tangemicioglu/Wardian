@@ -702,7 +702,7 @@ function ChatComposer({
           <ChatModelSelection agent={agent} sessionId={sessionId} />
           <button
             aria-label={isInterrupting ? "Interrupting agent" : isExecuting ? "Interrupt agent" : isSubmitting ? "Sending message" : "Send message"}
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-wardian-light disabled:bg-[var(--color-wardian-card-bg-muted)] disabled:text-muted-neutral"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-transparent disabled:bg-transparent disabled:text-muted-neutral disabled:opacity-60"
             disabled={isInterrupting || isSubmitting || (!isExecuting && !canSubmit)}
             onClick={isExecuting ? onInterrupt : undefined}
             title={isExecuting ? "Interrupt agent" : isSubmitting ? "Sending message" : "Send message"}
