@@ -3705,7 +3705,16 @@ fn resolve_external_resume_session(config: &AgentConfig) -> Result<String, Strin
     }
 
     let session_id = config.session_id.trim();
-    if matches!(config.provider.as_str(), "claude" | "opencode") && !session_id.is_empty() {
+    if matches!(config.provider.as_str(), "claude") && !session_id.is_empty() {
+        return Ok(session_id.to_string());
+    }
+
+    // OpenCode only accepts its own `ses_`-prefixed ids; a Wardian UUID would be
+    // treated as a malformed session (same contract as prepare_resume_config).
+    if config.provider == "opencode"
+        && session_id.len() > "ses_".len()
+        && session_id.starts_with("ses_")
+    {
         return Ok(session_id.to_string());
     }
 
@@ -4208,7 +4217,7 @@ mod tests {
         provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
         replace_agent_status_incarnation, reserve_spawn_session_name,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
-        resolve_requested_spawn_session_name, restore_agent_config_in_state,
+        resolve_external_resume_session, resolve_requested_spawn_session_name, restore_agent_config_in_state,
         restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
         restore_runtime_state_snapshot_after_resume, strip_claude_embedded_stream_flags,
         take_agent_runtime_for_termination, terminal_cleared_payload, update_agent_fields_in_state,
@@ -7524,6 +7533,37 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert_eq!(config.resume_session, before.resume_session);
         assert_eq!(config.is_off, before.is_off);
         std::env::remove_var("WARDIAN_HOME");
+    }
+
+    #[test]
+    fn external_resume_never_substitutes_wardian_uuid_for_opencode() {
+        let config = AgentConfig {
+            provider: "opencode".to_string(),
+            session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            resume_session: None,
+            ..Default::default()
+        };
+
+        let error = resolve_external_resume_session(&config).expect_err(
+            "Wardian UUID must not be embedded in an external OpenCode --session flag",
+        );
+
+        assert!(error.contains("not available"));
+    }
+
+    #[test]
+    fn external_resume_allows_opencode_ses_id_from_session_id() {
+        let config = AgentConfig {
+            provider: "opencode".to_string(),
+            session_id: "ses_captured_by_watcher".to_string(),
+            resume_session: None,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            resolve_external_resume_session(&config).expect("ses_ id is a valid OpenCode session"),
+            "ses_captured_by_watcher"
+        );
     }
 
     #[test]
