@@ -12,7 +12,7 @@ use super::codex::{codex_log_lookup_session_id, codex_session_file_path, codex_s
 use super::display_log_path;
 use super::opencode::{
     apply_opencode_log_metrics, opencode_last_assistant_text, opencode_log_dirs,
-    opencode_log_path_in, opencode_session_diff_path, opencode_should_fallback_to_idle,
+    opencode_log_path_in, opencode_session_diff_path, provider_should_fallback_to_idle_after_quiet_period,
 };
 use crate::providers::antigravity::AntigravityProvider;
 use wardian_core::control::{ProviderInputReadiness, ProviderReadyEvidence};
@@ -1342,7 +1342,7 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
             {
                 let current_status = snap.current_status.lock().unwrap().clone();
                 let last_output_at = *snap.last_output_at.lock().unwrap();
-                if opencode_should_fallback_to_idle(
+                if provider_should_fallback_to_idle_after_quiet_period(
                     &current_status,
                     last_output_at,
                     std::time::SystemTime::now(),

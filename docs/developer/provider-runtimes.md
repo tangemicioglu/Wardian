@@ -27,7 +27,7 @@ This document captures the practical runtime differences between Wardian's suppo
 | Antigravity | Real target workspace | `AGENTS.md` | `--add-dir` roots expose Wardian context | Captured after the first real prompt |
 | Claude | Real target workspace | `CLAUDE.md` | `.claude/skills` points at Wardian's `.agents/skills` | Wardian assigns `--session-id` up front |
 | Codex | Real target workspace via `--cd`; habitat-backed `CODEX_HOME` | `AGENTS.md` | Per-agent `CODEX_HOME/skills` under habitat | Fresh local rollout, then exact resume |
-| OpenCode | Habitat command root with real workspace passed as `--dir` | `AGENTS.md` plus injected runtime config | `skills.paths` built from Wardian include roots | Discovered from provider output |
+| OpenCode | Habitat command root; real workspace passed as a positional arg (interactive) or `--dir` (headless `run`) | `AGENTS.md` plus injected runtime config | Skills junctioned into the habitat `.opencode` config dir | Discovered from provider output (`ses_…`) |
 | Gemini *(unmaintained)* | Projected habitat workspace for headless runs | `GEMINI.md` | Patched CLI can discover skills from include directories | Discovered from provider output |
 
 ## Antigravity
@@ -237,30 +237,30 @@ Codex commentary events like `agent_message` should not be used as hard status t
 
 ### Working-root model
 
-OpenCode uses a Wardian habitat as the provider command root when projected context is available. The real target workspace remains the project directory and is passed to `opencode run` explicitly with `--dir`.
+OpenCode uses a Wardian habitat as the provider command root when projected context is available. The real target workspace is passed explicitly: as a positional directory argument for interactive TUI launches, and as `--dir` for headless `opencode run` invocations.
 
 ### Instruction and skill discovery
 
 - OpenCode reads `AGENTS.md` natively when it exists in the working tree.
-- Wardian also injects runtime configuration through `OPENCODE_CONFIG_CONTENT`.
-- That injected config adds:
-  - extra `AGENTS.md` files from Wardian include roots to `instructions`
-  - extra `.agents/skills` directories from Wardian include roots to `skills.paths`
+- Wardian writes a runtime config file to `<habitat>/.opencode/opencode.json` and points OpenCode at it through `OPENCODE_CONFIG` (plus `OPENCODE_CONFIG_DIR`).
+- That injected config adds extra `AGENTS.md` files from Wardian include roots to `instructions`.
+- Skills from Wardian include roots are junctioned into the config dir's `skills/` folder. There is no `skills.paths` config key: OpenCode 1.4.3 dropped it, so Wardian omits any `skills` key entirely.
 
 This is how OpenCode sees Wardian-managed class and agent context without forcing those files into the user repository.
 
 ### Session identity
 
-- OpenCode session IDs are discovered from JSON output during `opencode run --format json`.
-- Wardian extracts the first `sessionID` it sees from `step_start` events.
+- OpenCode session IDs are discovered from JSON output during `opencode run --format json`, or captured from `opencode session list` while the interactive TUI runs.
+- Valid IDs match `ses_…`; Wardian never substitutes its own UUIDs into `--session`.
 - Resume uses `--session <session_id>`.
 
 ### Practical implications
 
-- OpenCode is closer to Gemini than Codex on workspace handling: Wardian launches from the habitat command root while passing the real repo with `--dir`.
+- OpenCode is closer to Gemini than Codex on workspace handling: Wardian launches from the habitat command root while passing the real repo as the project directory.
 - OpenCode is closer to Codex than Gemini on instruction naming: it consumes `AGENTS.md` directly.
-- If OpenCode stops seeing Wardian skills or class instructions, inspect the generated `OPENCODE_CONFIG_CONTENT` first.
-- If interactive spawn works but telemetry is thin, that is expected today; OpenCode does not expose one stable per-session JSONL path the way Claude and Codex do.
+- If OpenCode stops seeing Wardian skills or class instructions, inspect the generated `<habitat>/.opencode/opencode.json` (`OPENCODE_CONFIG`) first, then verify the junctioned `skills/` entries resolve.
+- Interactive status comes from TUI window-title scraping ("OpenCode" idle, "OC | …" processing), while token/cost telemetry comes from OpenCode's shared SQLite store via wardian-core; both channels are expected to exist side by side.
+- TUI "Permission required" prompts never appear in the window title. Wardian detects them from the provider log (`message=asking id=per_…`) and raises Action Needed; the ask is attributed to a session only while its prompt loop is the sole open loop in the log, and clears once loop activity resumes after the prompt is answered.
 - On Windows, Wardian should launch the `opencode` command resolved from PATH,
   matching how a user terminal starts OpenCode. Interactive and headless launch
   wrap that command through the configured shell because npm and PowerShell
@@ -300,5 +300,5 @@ When provider behavior breaks, start with the provider-specific seam instead of 
 
 - Claude problems: inspect `CLAUDE.md` discovery, permission hooks, and explicit session flags.
 - Codex problems: inspect `CODEX_HOME`, `--cd`, bootstrap migration, and sandbox approval transitions.
-- OpenCode problems: inspect `OPENCODE_CONFIG_CONTENT`, real-workspace `cwd`, and JSON session parsing.
+- OpenCode problems: inspect the generated `OPENCODE_CONFIG` file, junctioned skills, real-workspace directory argument, and `ses_…` session discovery.
 - Gemini problems (unmaintained): inspect patching, include directories, and JSON event parsing.
