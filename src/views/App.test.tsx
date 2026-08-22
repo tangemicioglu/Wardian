@@ -513,7 +513,7 @@ beforeEach(() => {
     autoPatchGemini: false,
     terminalFontSize: 14,
     terminalFontFamily: "",
-    titlebarTelemetryVisible: true,
+    titlebarTelemetryVisible: false,
     externalEditor: "system",
     externalEditorCustomExecutable: "",
     fileOpenActions: { text: "wardian", image: "wardian", pdf: "wardian" },
