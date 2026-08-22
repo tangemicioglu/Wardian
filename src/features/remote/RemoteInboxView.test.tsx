@@ -23,6 +23,34 @@ afterEach(() => {
 });
 
 describe("RemoteInboxView", () => {
+  it("loads older Inbox items only after the mobile list is scrolled to its end", () => {
+    useRemoteStore.setState({
+      remoteQueueItems: Array.from({ length: 120 }, (_, index) => ({
+        id: `remote-item-${index}`,
+        type: "agent_completed" as const,
+        timestamp: Date.now() - index,
+        read: false,
+        agent_name: `Agent ${index}`,
+        summary: `Completed task ${index}.`,
+      })),
+    });
+
+    render(<RemoteInboxView />);
+
+    expect(screen.getByText("Agent 79")).toBeInTheDocument();
+    expect(screen.queryByText("Agent 80")).not.toBeInTheDocument();
+
+    const scrollRegion = screen.getByTestId("remote-inbox-scroll-region");
+    Object.defineProperties(scrollRegion, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 1000 },
+      scrollTop: { configurable: true, value: 900, writable: true },
+    });
+    fireEvent.scroll(scrollRegion);
+
+    expect(screen.getByText("Agent 119")).toBeInTheDocument();
+  });
+
   it("collapses long summaries and opens the related agent", () => {
     const openAgent = vi.fn().mockResolvedValue(undefined);
     const item: QueueItem = {

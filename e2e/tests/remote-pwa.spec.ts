@@ -107,7 +107,14 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
             "The complete message should remain available without making every card maximal by default.",
             "The inbox should also provide a direct path back to the agent that produced this update.",
           ].join("\n"),
-        }],
+        }, ...Array.from({ length: 119 }, (_, index) => ({
+          id: `desktop-inbox-history-${index}`,
+          type: "agent_completed",
+          timestamp: 1779417500000 - index,
+          read: false,
+          agent_name: `Inbox history ${index}`,
+          summary: `Completed remote Inbox task ${index}.`,
+        }))],
       }),
     });
   });
@@ -567,6 +574,18 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await expect(page.getByRole("button", { name: "Collapse summary" })).toHaveAttribute("aria-expanded", "true");
   await expect(inboxSummary).toHaveClass(/max-h-80/);
   await captureFeatureScreenshot("inbox-summary.png", page.locator("main"));
+  await expect(page.getByText("Inbox history 100", { exact: true })).toBeHidden();
+  const inboxScrollRegion = page.getByTestId("remote-inbox-scroll-region");
+  await inboxScrollRegion.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect(page.getByText("Inbox history 118", { exact: true })).toBeVisible();
+  await inboxScrollRegion.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await captureFeatureScreenshot("inbox-lazy-history.png", page.locator("main"));
   await page.getByRole("button", { name: "Open agent terminal" }).click();
   await expect(page.locator('[data-testid="remote-agent-detail"]')).toBeVisible();
 });

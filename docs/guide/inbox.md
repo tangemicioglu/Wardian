@@ -24,6 +24,11 @@ Press `Ctrl+P` / `Cmd+P`, select a pane's **+** button, or use the empty-pane Ho
 
 Each item shows its source, agent or workflow, time, and summary. Long text is collapsed by default; use **Show details** to expand it.
 
+To keep large histories responsive, desktop and mobile Inbox initially show the
+newest cards and load older cards in batches as you scroll to the end of the
+list. This only limits what is mounted on screen; it does not discard Inbox
+history or change filters, read state, or triage actions.
+
 Use the **Filter** dropdown to choose visible event types:
 
 - Action needed

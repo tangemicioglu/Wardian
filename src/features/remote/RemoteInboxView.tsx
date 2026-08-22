@@ -4,6 +4,7 @@ import type { QueueItem } from "../../types";
 import { parseQueueActionChoices, type QueueActionChoice } from "../queue/actionChoices";
 import { QUEUE_TONE_CLASSES, queueItemIsAgentEvent, queueItemLabel, queueItemTone } from "../queue/queuePresentation";
 import { isClearableLegacyCompletion, providerChoiceAcknowledgementUnresolved } from "../queue/queueTriage";
+import { useLazyQueueItems } from "../queue/useLazyQueueItems";
 import { useRemoteStore } from "./useRemoteStore";
 
 type RemoteInboxFilter = "all" | QueueItem["type"] | "workflow_failed";
@@ -208,6 +209,7 @@ export const RemoteInboxView: React.FC = () => {
   const [headerAction, setHeaderAction] = useState<"mark_all_read" | "clear_read" | null>(null);
   const [headerActionError, setHeaderActionError] = useState<string | null>(null);
   const visibleItems = useMemo(() => items.filter((item) => matchesFilter(item, filter)), [filter, items]);
+  const { hasMore, loadMoreOnScroll, renderedItems } = useLazyQueueItems(visibleItems);
   const unreadCount = items.filter((item) => !item.read).length;
   const clearableReadCount = items.filter((item) => item.read
     && isClearableLegacyCompletion(item)
@@ -253,7 +255,11 @@ export const RemoteInboxView: React.FC = () => {
         </div>
         {(headerActionError || remoteQueueError) && <div role="alert" className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-wardian-error)]"><span>{headerActionError ?? `Inbox updated, but refresh failed: ${remoteQueueError}`}</span>{remoteQueueError && !headerActionError && <button type="button" onClick={() => void refreshInbox()} className="font-semibold underline">Retry refresh</button>}</div>}
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto px-3 py-4"
+        data-testid="remote-inbox-scroll-region"
+        onScroll={loadMoreOnScroll}
+      >
         {visibleItems.length === 0 ? (
           <div className="rounded-md border border-dashed border-wardian-border px-3 py-5 text-center text-xs text-muted-neutral">
             {items.length === 0 ? "No Inbox items yet." : `No ${filterLabel.toLowerCase()} in Inbox.`}
@@ -261,7 +267,8 @@ export const RemoteInboxView: React.FC = () => {
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            {visibleItems.map((item) => <RemoteInboxCard key={item.id} item={item} onAction={runInboxAction} onOpenAgent={(sessionId) => void openAgent(sessionId)} onSendAgentPrompt={sendPromptToAgent} onRefreshInbox={refreshInbox} />)}
+            {renderedItems.map((item) => <RemoteInboxCard key={item.id} item={item} onAction={runInboxAction} onOpenAgent={(sessionId) => void openAgent(sessionId)} onSendAgentPrompt={sendPromptToAgent} onRefreshInbox={refreshInbox} />)}
+            {hasMore && <p className="sr-only" aria-live="polite">Scroll to load older Inbox items.</p>}
           </div>
         )}
       </div>

@@ -609,34 +609,34 @@ describe("InboxView", () => {
     expect(firstCard?.parentElement).toHaveClass("flex-1", "min-h-0", "overflow-y-auto");
   });
 
-  it("bounds the initial backlog render and fills the rest after idle work", async () => {
-    vi.useFakeTimers();
-    try {
-      useQueueStore.setState({
-        items: Array.from({ length: 120 }, (_, index) => ({
-          id: `item-${index}`,
-          type: "agent_completed",
-          timestamp: Date.now() - index,
-          read: false,
-          agent_name: `Agent ${index}`,
-          summary: `Completed task ${index}.`,
-        })),
-      });
+  it("loads older Inbox items only after the list is scrolled to its end", () => {
+    useQueueStore.setState({
+      items: Array.from({ length: 120 }, (_, index) => ({
+        id: `item-${index}`,
+        type: "agent_completed",
+        timestamp: Date.now() - index,
+        read: false,
+        agent_name: `Agent ${index}`,
+        summary: `Completed task ${index}.`,
+      })),
+    });
 
-      render(<InboxView />);
+    render(<InboxView />);
 
-      expect(screen.getByText("Agent 0")).toBeInTheDocument();
-      expect(screen.getByText("Agent 79")).toBeInTheDocument();
-      expect(screen.queryByText("Agent 80")).not.toBeInTheDocument();
-      expect(screen.queryByText("Agent 119")).not.toBeInTheDocument();
+    expect(screen.getByText("Agent 79")).toBeInTheDocument();
+    expect(screen.queryByText("Agent 80")).not.toBeInTheDocument();
 
-      await act(async () => {
-        vi.runOnlyPendingTimers();
-      });
+    const scrollRegion = screen.getByTestId("inbox-scroll-region");
+    Object.defineProperties(scrollRegion, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 1000 },
+      scrollTop: { configurable: true, value: 0, writable: true },
+    });
+    fireEvent.scroll(scrollRegion);
+    expect(screen.queryByText("Agent 80")).not.toBeInTheDocument();
 
-      expect(screen.getByText("Agent 119")).toBeInTheDocument();
-    } finally {
-      vi.useRealTimers();
-    }
+    scrollRegion.scrollTop = 900;
+    fireEvent.scroll(scrollRegion);
+    expect(screen.getByText("Agent 119")).toBeInTheDocument();
   });
 });
