@@ -1216,7 +1216,7 @@ describe("AgentChatView", () => {
     expect(within(row).getByText(/line 44/)).toBeInTheDocument();
   });
 
-  it("renders provider launch screens as a compact lifecycle row", async () => {
+  it("hides provider launch screens from the transcript", async () => {
     invokeMock.mockResolvedValue([
       event({
         id: "codex-launch",
@@ -1226,18 +1226,21 @@ describe("AgentChatView", () => {
         sequence: 1,
         metadata: { terminal_presentation: "launch" },
       }),
+      event({
+        id: "assistant-message",
+        kind: "message",
+        role: "assistant",
+        text: "Ready to work on the task.",
+        sequence: 2,
+      }),
     ]);
 
     render(<AgentChatView sessionId="agent-1" />);
 
-    const row = await screen.findByTestId("terminal-fallback-row");
-    expect(within(row).getByText("Codex started")).toBeInTheDocument();
-    expect(within(row).getByText("Startup screen - 4 lines")).toBeInTheDocument();
-    expect(within(row).queryByText("OpenAI Codex")).not.toBeInTheDocument();
-
-    fireEvent.click(within(row).getByRole("button", { name: "View details" }));
-
-    expect(row).toHaveTextContent("OpenAI Codex");
+    expect(await screen.findByText("Ready to work on the task.")).toBeInTheDocument();
+    expect(screen.queryByTestId("terminal-fallback-row")).not.toBeInTheDocument();
+    expect(screen.queryByText("Codex started")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Startup screen/)).not.toBeInTheDocument();
   });
 
   it("renders markdown structure in message bubbles", async () => {

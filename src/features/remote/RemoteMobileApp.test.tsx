@@ -1941,7 +1941,7 @@ describe("RemoteMobileApp", () => {
     expect(row).toHaveTextContent("terminal line 45");
   });
 
-  it("renders remote provider launch screens as compact lifecycle rows", async () => {
+  it("hides remote provider launch screens from the chat transcript", async () => {
     mockRemoteAgentDetailFetch("codex", {
       chatEvents: [
         {
@@ -1963,6 +1963,25 @@ describe("RemoteMobileApp", () => {
           sequence: 1,
           metadata: { terminal_presentation: "launch" },
         },
+        {
+          id: "assistant-message",
+          session_id: "agent-1",
+          provider: "codex",
+          kind: "message",
+          role: "assistant",
+          text: "Working on the requested change.",
+          title: null,
+          status: null,
+          turn_id: null,
+          source: "provider_log",
+          command: null,
+          exit_code: null,
+          path: null,
+          language: null,
+          created_at: "2026-05-21T08:00:01.000Z",
+          sequence: 2,
+          metadata: {},
+        },
       ],
     });
 
@@ -1971,13 +1990,10 @@ describe("RemoteMobileApp", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Open Coder details/i }));
     await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
 
-    const row = await screen.findByTestId("terminal-fallback-row");
-    expect(row).toHaveTextContent("Codex started");
-    expect(row).toHaveTextContent("Startup screen - 4 lines");
-    expect(row).not.toHaveTextContent("OpenAI Codex");
-
-    await userEvent.click(within(row).getByRole("button", { name: "View details" }));
-    expect(row).toHaveTextContent("OpenAI Codex");
+    expect(await screen.findByText("Working on the requested change.")).toBeVisible();
+    expect(screen.queryByTestId("terminal-fallback-row")).not.toBeInTheDocument();
+    expect(screen.queryByText("Codex started")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Startup screen/)).not.toBeInTheDocument();
   });
 
   it("renders remote chat work logs with concrete tool call details", async () => {
