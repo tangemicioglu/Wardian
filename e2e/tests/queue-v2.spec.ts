@@ -19,7 +19,16 @@ async function installQueueV2IpcMock(page: Page) {
     };
 
     const now = Date.now();
-    let queueItems: QueueItem[] = [
+    const useQueueBacklog = (window as Window & { __WARDIAN_E2E_QUEUE_BACKLOG__?: boolean })
+      .__WARDIAN_E2E_QUEUE_BACKLOG__ === true;
+    let queueItems: QueueItem[] = useQueueBacklog ? Array.from({ length: 120 }, (_, index) => ({
+      id: `backlog-${index}`,
+      type: "agent_completed",
+      timestamp: now - index,
+      read: false,
+      agent_name: `Inbox history ${index}`,
+      summary: `Completed queued task ${index}.`,
+    })) : [
       {
         id: "action-needed-1",
         type: "action_needed",
@@ -280,6 +289,37 @@ test.describe("Inbox", () => {
     await expect(page.getByText("Workflow completed", { exact: true })).toBeVisible();
     await expect(page.getByText("Release workflow completed successfully.", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeHidden();
+  });
+
+  test("loads older desktop Inbox history when the user scrolls to the end", async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as Window & { __WARDIAN_E2E_QUEUE_BACKLOG__?: boolean }).__WARDIAN_E2E_QUEUE_BACKLOG__ = true;
+    });
+    await installQueueV2IpcMock(page);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+    await openSurface(page, "inbox");
+
+    await expect(page.getByText("Inbox history 0", { exact: true })).toBeVisible();
+    await expect(page.getByText("Inbox history 100", { exact: true })).toBeHidden();
+
+    const scrollRegion = page.getByTestId("inbox-scroll-region");
+    await scrollRegion.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      element.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+
+    await expect(page.getByText("Inbox history 119", { exact: true })).toBeVisible();
+    await scrollRegion.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      element.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+
+    if (process.env.WARDIAN_INBOX_LAZY_SCREENSHOT) {
+      await page
+        .locator('[data-testid="surface-panel"][data-surface-type="inbox"]')
+        .screenshot({ path: process.env.WARDIAN_INBOX_LAZY_SCREENSHOT, animations: "disabled" });
+    }
   });
 
   test("reconciles completed and failed workflow runs that predate the Inbox listener", async ({ page }) => {
