@@ -185,7 +185,7 @@ test("renders chat attachment chips alongside a compact provider launch row", as
   await testInfo.attach("chat-attachments", { path, contentType: "image/png" });
 });
 
-test("keeps the composer send button consistent across empty and populated states", async ({ page }, testInfo) => {
+test("keeps the composer send button consistent across empty, populated, and executing states", async ({ page }, testInfo) => {
   const overview = makeWorkbenchSurface("composer-send-button-evidence", "agents-overview", {
     state: {
       mode: "single",
@@ -213,7 +213,7 @@ test("keeps the composer send button consistent across empty and populated state
     },
   });
 
-  await page.goto("/", { waitUntil: "commit" });
+  await page.goto("/");
   const card = page.locator('[data-testid="agent-card"]');
   const input = page.getByLabel("Message agent");
   const sendButton = page.getByRole("button", { name: "Send message" });
@@ -234,6 +234,24 @@ test("keeps the composer send button consistent across empty and populated state
     ?? testInfo.outputPath("composer-send-text.png");
   await card.screenshot({ path: textPath, animations: "disabled" });
   await testInfo.attach("composer-send-text", { path: textPath, contentType: "image/png" });
+
+  await page.evaluate(() => {
+    const runtime = (window as unknown as {
+      __WARDIAN_WORKBENCH_IPC_MOCK__: { emit: (event: string, payload: unknown) => void };
+    }).__WARDIAN_WORKBENCH_IPC_MOCK__;
+    runtime.emit("agent-status-updated", {
+      session_id: "agent-alpha",
+      current_status: "Processing...",
+    });
+  });
+  const interruptButton = page.getByRole("button", { name: "Interrupt agent" });
+  await expect(interruptButton).toBeEnabled();
+  await expect(interruptButton).toHaveCSS("background-color", "rgb(146, 106, 9)");
+
+  const interruptPath = process.env.WARDIAN_COMPOSER_INTERRUPT_SCREENSHOT
+    ?? testInfo.outputPath("composer-send-interrupt.png");
+  await card.screenshot({ path: interruptPath, animations: "disabled" });
+  await testInfo.attach("composer-send-interrupt", { path: interruptPath, contentType: "image/png" });
 });
 
 test("renders copied feedback in an agent chat", async ({ page }, testInfo) => {

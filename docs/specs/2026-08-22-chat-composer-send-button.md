@@ -22,5 +22,6 @@ The button remains present in every state so the composer layout stays stable.
 
 ## Verification
 
-`e2e/tests/workbench-screenshot.spec.ts` checks the rendered empty and populated
-background colors and captures both states as feature-specific PR evidence.
+`e2e/tests/workbench-screenshot.spec.ts` checks the rendered empty, populated,
+and executing background colors and captures all three states as
+feature-specific PR evidence.
