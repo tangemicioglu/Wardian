@@ -852,6 +852,9 @@ describe("Workbench persistence boot integration", () => {
 
     render(<App />);
 
+    await waitFor(() => {
+      expect(useSettingsStore.getState().app_settings_loaded).toBe(true);
+    });
     useSettingsStore.setState({
       fileOpenActions: { text: "external", image: "wardian", pdf: "wardian" },
       externalEditor: "vscode",
