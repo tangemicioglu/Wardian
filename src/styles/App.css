@@ -173,6 +173,13 @@ summary,
   height: 100%;
 }
 
+.titlebar-drag-spacer {
+  align-self: stretch;
+  flex: 1 1 auto;
+  min-width: 1px;
+  -webkit-app-region: drag;
+}
+
 /* ── Panel Toggle Buttons ────────────────────────────── */
 .titlebar-toggle {
   display: flex;

@@ -324,7 +324,24 @@ describe('app settings persistence', () => {
       pdf: 'external',
     });
     expect(JSON.parse(localStorage.getItem('wardian-settings') ?? '{}')).toEqual(
-      expect.objectContaining({ version: 4 }),
+      expect.objectContaining({ version: 5 }),
+    );
+  });
+
+  it('resets the former visible telemetry default during local preference migration', async () => {
+    localStorage.setItem('wardian-settings', JSON.stringify({
+      state: { titlebarTelemetryVisible: true },
+      version: 4,
+    }));
+
+    await useSettingsStore.persist.rehydrate();
+
+    expect(useSettingsStore.getState().titlebarTelemetryVisible).toBe(false);
+    expect(JSON.parse(localStorage.getItem('wardian-settings') ?? '{}')).toEqual(
+      expect.objectContaining({
+        version: 5,
+        state: expect.objectContaining({ titlebarTelemetryVisible: false }),
+      }),
     );
   });
 

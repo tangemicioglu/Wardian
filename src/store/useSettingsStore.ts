@@ -846,7 +846,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'wardian-settings',
-      version: 4,
+      version: 5,
       migrate: (persistedState) => {
         const state = persistedState as Partial<PersistedSettingsState> & {
           grid_card_display_mode?: GridCardDisplayMode;
@@ -859,7 +859,10 @@ export const useSettingsStore = create<SettingsState>()(
           terminalFontFamily: state.terminalFontFamily?.trim() ?? '',
           gridCardDisplayMode: normalizeGridCardDisplayMode(state.gridCardDisplayMode ?? state.grid_card_display_mode),
           watchlistNewAgentPosition: normalizeWatchlistNewAgentPosition(state.watchlistNewAgentPosition),
-          titlebarTelemetryVisible: typeof state.titlebarTelemetryVisible === 'boolean' ? state.titlebarTelemetryVisible : false,
+          // Version 4 persisted the former visible default, so a legacy true
+          // value is not distinguishable from an implicit default. Reset it;
+          // explicit Show choices made under the new schema remain intact.
+          titlebarTelemetryVisible: false,
           externalEditor: normalizeExternalEditorSetting(state.externalEditor),
           externalEditorCustomExecutable: state.externalEditorCustomExecutable?.trim() ?? '',
           fileOpenActions: state.fileOpenActions

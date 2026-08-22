@@ -523,6 +523,11 @@ test("uses real top-edge tab groups as responsive window chrome", async ({ page 
   await expect(page.getByTestId("titlebar-center")).toHaveCount(0);
   await expect(page.locator(".titlebar-left")).toHaveCSS("-webkit-app-region", "drag");
   await expect(page.locator(".titlebar-right")).toHaveCSS("-webkit-app-region", "drag");
+  await expect(page.locator(".titlebar-drag-spacer")).toHaveCount(2);
+  await expect(page.locator(".titlebar-drag-spacer").first())
+    .toHaveAttribute("data-tauri-drag-region", "");
+  await expect(page.locator(".titlebar-drag-spacer").last())
+    .toHaveAttribute("data-tauri-drag-region", "");
   await expect(page.locator(".titlebar-toggle").first())
     .toHaveCSS("-webkit-app-region", "no-drag");
   await expect(page.locator(".titlebar-winbtn").first())
