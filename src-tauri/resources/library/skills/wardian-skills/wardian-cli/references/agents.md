@@ -54,8 +54,11 @@ for the same `WARDIAN_HOME`:
 ```bash
 wardian agent spawn --provider codex --class Reviewer --name reviewer-a1 --workspace <absolute-workspace-path>
 wardian agent clone reviewer-a1 --name reviewer-a2
+wardian agent rename reviewer-a1 release-reviewer
 wardian agent update reviewer-a1 --class Reviewer --workspace <absolute-workspace-path>
 wardian agent update reviewer-a1 --description "Reviews frontend release changes"
+wardian agent delete reviewer-a1 --confirm reviewer-a1
+wardian agent delete reviewer-a1 --confirm reviewer-a1 --force
 ```
 
 Supply both `--provider` and `--class` when spawning. `clone` carries the
@@ -70,6 +73,20 @@ capabilities. Pass `--description ""` to clear the memo. Run
 `wardian agent restart <target>` when required before relying on a new class or
 workspace. Restart preserves the Wardian agent, habitat, and saved session
 history. Do not use it to move a managed-worktree agent.
+
+Use `agent rename` to change the live and persisted agent name without
+restarting its provider. The new name is available to `send`, `ask`, and other
+targeted commands as soon as the command succeeds; names must be unique and
+may contain only letters, numbers, underscores, or hyphens.
+
+`agent delete` is the only destructive CLI cleanup path. It always requires
+`--confirm <current-agent-name>` so automation must echo the exact target name.
+Without `--force`, it refuses an agent with an attached provider process; pass
+`--force` when explicit provider termination is intended. Deletion removes the
+Wardian agent record, its private habitat, and saved session history, but never
+the project workspace files. This is a
+cascade decision: the agent's Wardian-owned history is intentionally removed,
+not orphaned or archived.
 
 ## Select A Provider Model And Effort
 

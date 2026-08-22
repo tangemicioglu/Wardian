@@ -11,13 +11,20 @@ Wardian uses distinct lifecycle terms for distinct data effects:
 - **Delete Agent** permanently removes the Wardian agent, its habitat, and its
   session history. It does not remove project workspace files.
 
-The CLI exposes the safe reclass sequence as `wardian agent update … --class …`
-followed by `wardian agent restart …`. Destructive `wardian agent kill` requires
-an explicit `--confirm` acknowledgement.
+Renaming uses `wardian agent rename <target> <new-name>` and updates the live
+identity without restarting the provider. The new name is immediately used by
+target resolution. The CLI exposes the safe reclass sequence as
+`wardian agent update … --class …` followed by `wardian agent restart …`.
+`wardian agent delete <target> --confirm <current-name>` is the only explicit
+destructive path. It requires the operator to echo the exact current name and
+refuses an attached provider runtime unless `--force` is supplied. `--force`
+controls provider termination; it does not weaken the confirmation contract.
 
 ## Rationale
 
 Changing an agent class requires a provider restart to apply updated instructions.
 It must not require deleting the agent or its accumulated Wardian state. Explicit
-terms and a confirmation flag make the irreversible boundary visible to both
-operators and automation.
+terms and a target-name confirmation make the irreversible boundary visible to
+both operators and automation. Deletion deliberately cascades Wardian-owned
+agent metadata, private habitat files, and saved session history; project
+workspace files are outside the agent's ownership and remain untouched.

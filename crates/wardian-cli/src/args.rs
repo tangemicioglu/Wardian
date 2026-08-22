@@ -992,11 +992,23 @@ pub enum AgentCommand {
         #[arg(long)]
         refresh: bool,
     },
-    Kill {
+    /// Permanently remove an agent, its habitat, and its session history.
+    Delete {
+        /// Agent name or UUID.
         target: String,
-        /// Confirm permanent removal of the agent, its habitat, and its session history.
+        /// Must exactly match the agent's current name.
+        #[arg(long, value_name = "AGENT_NAME")]
+        confirm: String,
+        /// Also terminate a running provider before removing the agent.
         #[arg(long)]
-        confirm: bool,
+        force: bool,
+    },
+    /// Rename an agent without restarting its provider.
+    Rename {
+        /// Agent name or UUID.
+        target: String,
+        /// New name; use only letters, numbers, underscores, or hyphens.
+        new_name: String,
     },
     /// Restart the provider while preserving the Wardian agent and its history.
     Restart {
@@ -1917,15 +1929,72 @@ mod tests {
     }
 
     #[test]
-    fn parses_agent_kill() {
-        let cli =
-            Cli::try_parse_from(["wardian", "agent", "kill", "coder-a1", "--confirm"]).unwrap();
+    fn parses_agent_delete_with_exact_name_confirmation() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "agent",
+            "delete",
+            "coder-a1",
+            "--confirm",
+            "coder-a1",
+        ])
+        .unwrap();
         let Command::Agent(args) = cli.command else {
-            panic!()
+            panic!("expected Agent command")
         };
         assert!(matches!(
             args.command,
-            Some(AgentCommand::Kill { target, confirm: true }) if target == "coder-a1"
+            Some(AgentCommand::Delete { ref target, ref confirm, force: false })
+                if target == "coder-a1" && confirm == "coder-a1"
+        ));
+    }
+
+    #[test]
+    fn parses_forced_agent_delete_with_exact_name_confirmation() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "agent",
+            "delete",
+            "coder-a1",
+            "--confirm",
+            "coder-a1",
+            "--force",
+        ])
+        .unwrap();
+        let Command::Agent(args) = cli.command else {
+            panic!("expected Agent command")
+        };
+        assert!(matches!(
+            args.command,
+            Some(AgentCommand::Delete { ref target, ref confirm, force: true })
+                if target == "coder-a1" && confirm == "coder-a1"
+        ));
+    }
+
+    #[test]
+    fn rejects_legacy_agent_kill_command() {
+        assert!(
+            Cli::try_parse_from(["wardian", "agent", "kill", "coder-a1", "--confirm",]).is_err()
+        );
+    }
+
+    #[test]
+    fn parses_agent_rename() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "agent",
+            "rename",
+            "coder-a1",
+            "release-coder",
+        ])
+        .unwrap();
+        let Command::Agent(args) = cli.command else {
+            panic!("expected Agent command")
+        };
+        assert!(matches!(
+            args.command,
+            Some(AgentCommand::Rename { ref target, ref new_name })
+                if target == "coder-a1" && new_name == "release-coder"
         ));
     }
 

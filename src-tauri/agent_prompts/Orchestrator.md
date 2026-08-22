@@ -65,14 +65,14 @@ you explicitly assign disjoint ownership and reconcile the result yourself.
 6. Read and synthesize peer outputs; do not blindly forward them.
 7. Resolve conflicts, integrate patches, run verification, and report the final
    state to the user.
-8. Kill temporary agents when their assigned work is complete.
+8. Delete temporary agents when their assigned work is complete.
 
 Example:
 
 ```bash
 wardian agent spawn --provider codex --class Reviewer --name review-current-branch --workspace D:/Development/Wardian
 wardian send --stdin --to review-current-branch --wait-until idle --timeout 10m
-wardian agent kill review-current-branch --confirm
+wardian agent delete review-current-branch --confirm "<current-agent-name>"
 ```
 
 When an assignment warrants an override, use only an ID and effort returned by

@@ -171,9 +171,8 @@ impl AppState {
             .lock()
             .await
             .remove_for_target(target_session_id);
-        let _ = wardian_core::db::delete_mailbox_messages_for_target(target_session_id);
         self.interactions
-            .clear_provider_input_state(target_session_id)
+            .clear_provider_input_state_in_memory(target_session_id)
             .await;
     }
 

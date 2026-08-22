@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tokio::sync::Mutex;
 use wardian_core::control::{
@@ -11,6 +11,8 @@ use wardian_core::control::{
 
 #[derive(Debug, Default)]
 pub struct InteractionState {
+    mutation_lock: Mutex<()>,
+    deleted_sessions: Mutex<HashSet<String>>,
     records: Mutex<HashMap<String, InteractionRecord>>,
     replies: Mutex<HashMap<String, StructuredReply>>,
     provider_generations: Mutex<HashMap<String, u64>>,
@@ -41,6 +43,10 @@ impl InteractionState {
         target_session_id: String,
         body_ref: InteractionBodyRef,
     ) -> InteractionRecord {
+        let _mutation = self.mutation_lock.lock().await;
+        if self.deleted_sessions.lock().await.contains(&target_session_id) {
+            return rejected_task_record(id, sender_session_id, target_session_id, body_ref);
+        }
         let now = now_rfc3339_millis();
         let record = InteractionRecord {
             id,
@@ -69,6 +75,7 @@ impl InteractionState {
         target_session_ids: Vec<String>,
         body_ref: InteractionBodyRef,
     ) -> InteractionRecord {
+        let _mutation = self.mutation_lock.lock().await;
         let record = message_record(
             new_interaction_id(),
             sender_session_id,
@@ -89,6 +96,15 @@ impl InteractionState {
         target_session_ids: Vec<String>,
         body_ref: InteractionBodyRef,
     ) -> Result<InteractionRecord, String> {
+        let _mutation = self.mutation_lock.lock().await;
+        let deleted_sessions = self.deleted_sessions.lock().await;
+        if let Some(target_session_id) = target_session_ids
+            .iter()
+            .find(|target| deleted_sessions.contains(*target))
+        {
+            return Err(format!("agent has been deleted: {target_session_id}"));
+        }
+        drop(deleted_sessions);
         let record = message_record(
             new_interaction_id(),
             sender_session_id,
@@ -110,6 +126,16 @@ impl InteractionState {
     /// authoritative answer to whether that target is queued, being sent, or
     /// has reached a terminal transport outcome.
     pub async fn update_message_status_durable(
+        &self,
+        interaction_id: &str,
+        status: InteractionStatus,
+    ) -> Result<InteractionRecord, String> {
+        let _mutation = self.mutation_lock.lock().await;
+        self.update_message_status_durable_locked(interaction_id, status)
+            .await
+    }
+
+    async fn update_message_status_durable_locked(
         &self,
         interaction_id: &str,
         status: InteractionStatus,
@@ -146,6 +172,7 @@ impl InteractionState {
         sender_session_id: String,
         payload: InboxNotificationPayload,
     ) -> Result<InteractionRecord, &'static str> {
+        let _mutation = self.mutation_lock.lock().await;
         let is_approval = matches!(payload.kind, InboxNotificationKind::Approval);
         let now = now_rfc3339_millis();
         let record = InteractionRecord {
@@ -233,8 +260,9 @@ impl InteractionState {
         notification_id: &str,
         choice: &str,
     ) -> Result<InboxNotificationDecision, &'static str> {
+        let _mutation = self.mutation_lock.lock().await;
         let current = self
-            .expire_notification_if_needed(notification_id)
+            .expire_notification_if_needed_locked(notification_id)
             .await
             .ok_or("not_found")?;
         if current.status == InteractionStatus::Expired {
@@ -315,6 +343,14 @@ impl InteractionState {
         &self,
         notification_id: &str,
     ) -> Option<InteractionRecord> {
+        let _mutation = self.mutation_lock.lock().await;
+        self.expire_notification_if_needed_locked(notification_id).await
+    }
+
+    async fn expire_notification_if_needed_locked(
+        &self,
+        notification_id: &str,
+    ) -> Option<InteractionRecord> {
         let now = now_rfc3339_millis();
         let expired = {
             let mut records = self.records.lock().await;
@@ -355,6 +391,7 @@ impl InteractionState {
         reason: Option<String>,
         error: Option<DeliveryErrorDetail>,
     ) -> InteractionDeliveryAttemptRecord {
+        let _mutation = self.mutation_lock.lock().await;
         let attempt = delivery_attempt_record(
             interaction_id,
             target_session_id,
@@ -367,7 +404,9 @@ impl InteractionState {
             reason,
             error,
         );
-        let _ = wardian_core::db::upsert_interaction_delivery_attempt(&attempt);
+        if !self.deleted_sessions.lock().await.contains(target_session_id) {
+            let _ = wardian_core::db::upsert_interaction_delivery_attempt(&attempt);
+        }
         attempt
     }
 
@@ -385,6 +424,7 @@ impl InteractionState {
         reason: Option<String>,
         error: Option<DeliveryErrorDetail>,
     ) -> Result<InteractionDeliveryAttemptRecord, String> {
+        let _mutation = self.mutation_lock.lock().await;
         let attempt = delivery_attempt_record(
             interaction_id,
             target_session_id,
@@ -397,6 +437,9 @@ impl InteractionState {
             reason,
             error,
         );
+        if self.deleted_sessions.lock().await.contains(target_session_id) {
+            return Err(format!("agent has been deleted: {target_session_id}"));
+        }
         wardian_core::db::upsert_interaction_delivery_attempt(&attempt)
             .map_err(|error| format!("failed to persist delivery attempt: {error}"))?;
         if let Some(status) = Self::message_status_for_delivery_state(delivery_state) {
@@ -407,7 +450,7 @@ impl InteractionState {
                 .get(interaction_id)
                 .is_some_and(|record| record.kind == InteractionKind::Message);
             if is_message {
-                self.update_message_status_durable(interaction_id, status)
+                self.update_message_status_durable_locked(interaction_id, status)
                     .await?;
             }
         }
@@ -435,6 +478,10 @@ impl InteractionState {
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
+        let _mutation = self.mutation_lock.lock().await;
+        if self.deleted_sessions.lock().await.contains(session_id) {
+            return provider_input_state_record(session_id, generation, state, ready_evidence);
+        }
         let _observations = self.provider_status_observations.lock().await;
         self.record_provider_input_state_inner(session_id, generation, state, ready_evidence)
             .await
@@ -447,6 +494,9 @@ impl InteractionState {
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
+        if self.deleted_sessions.lock().await.contains(session_id) {
+            return provider_input_state_record(session_id, generation, state, ready_evidence);
+        }
         {
             let mut generations = self.provider_generations.lock().await;
             let current = generations
@@ -483,6 +533,10 @@ impl InteractionState {
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
+        let _mutation = self.mutation_lock.lock().await;
+        if self.deleted_sessions.lock().await.contains(session_id) {
+            return provider_input_state_record(session_id, generation, state, ready_evidence);
+        }
         let mut observations = self.provider_status_observations.lock().await;
         if matches!(
             observations.get(session_id).copied(),
@@ -509,6 +563,10 @@ impl InteractionState {
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
+        let _mutation = self.mutation_lock.lock().await;
+        if self.deleted_sessions.lock().await.contains(session_id) {
+            return provider_input_state_record(session_id, 0, state, ready_evidence);
+        }
         let _observations = self.provider_status_observations.lock().await;
         let generation = {
             let mut generations = self.provider_generations.lock().await;
@@ -528,14 +586,18 @@ impl InteractionState {
             .copied()
     }
 
-    pub async fn clear_provider_input_state(&self, session_id: &str) {
+    pub async fn clear_provider_input_state_in_memory(&self, session_id: &str) {
         self.provider_status_observations
             .lock()
             .await
             .remove(session_id);
         self.provider_generations.lock().await.remove(session_id);
         self.provider_inputs.lock().await.remove(session_id);
-        let _ = wardian_core::db::delete_provider_input_state(session_id);
+    }
+
+    pub async fn clear_deleted_session(&self, session_id: &str) {
+        let _mutation = self.mutation_lock.lock().await;
+        self.deleted_sessions.lock().await.remove(session_id);
     }
 
     pub async fn hydrate_from_persistence(&self) {
@@ -572,6 +634,7 @@ impl InteractionState {
         status: ReplyStatus,
         body: &str,
     ) -> Result<StructuredReply, &'static str> {
+        let _mutation = self.mutation_lock.lock().await;
         let now = now_rfc3339_millis();
         let (structured_reply, completed_task, reply_record) = {
             let mut records = self.records.lock().await;
@@ -642,6 +705,7 @@ impl InteractionState {
         target_session_id: &str,
         body: &str,
     ) -> Result<StructuredReply, &'static str> {
+        let _mutation = self.mutation_lock.lock().await;
         let now = now_rfc3339_millis();
         let (structured_reply, failed_task, reply_record) = {
             let mut records = self.records.lock().await;
@@ -700,6 +764,109 @@ impl InteractionState {
 
     pub async fn structured_reply(&self, task_id: &str) -> Option<StructuredReply> {
         self.replies.lock().await.get(task_id).cloned()
+    }
+
+    /// Deletes an agent's durable interaction state and invalidates the live
+    /// task/reply cache under the same mutation gate used by reply completion.
+    /// A late provider reply therefore observes `not_found` instead of
+    /// recreating a task that was already deleted.
+    pub async fn delete_agent_durable_state(&self, session_id: &str) -> Result<(), String> {
+        let _mutation = self.mutation_lock.lock().await;
+        wardian_core::db::delete_agent(session_id)
+            .map_err(|error| format!("Failed to delete agent state: {error}"))?;
+        self.deleted_sessions
+            .lock()
+            .await
+            .insert(session_id.to_string());
+
+        let mut records = self.records.lock().await;
+        let mut removed_ids = records
+            .iter()
+            .filter(|(_, record)| {
+                record.sender_session_id.as_deref() == Some(session_id)
+                    || record
+                        .target_session_ids
+                        .iter()
+                        .any(|target| target == session_id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<HashSet<_>>();
+        loop {
+            let descendants = records
+                .iter()
+                .filter(|(id, record)| {
+                    !removed_ids.contains(*id)
+                        && record
+                            .parent_interaction_id
+                            .as_deref()
+                            .is_some_and(|parent_id| removed_ids.contains(parent_id))
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>();
+            if descendants.is_empty() {
+                break;
+            }
+            removed_ids.extend(descendants);
+        }
+        records.retain(|id, record| {
+            !removed_ids.contains(id)
+                && record.sender_session_id.as_deref() != Some(session_id)
+                && !record
+                    .target_session_ids
+                    .iter()
+                    .any(|target| target == session_id)
+        });
+        drop(records);
+
+        self.replies.lock().await.retain(|request_id, reply| {
+            !removed_ids.contains(request_id)
+                && reply.target_session_id != session_id
+                && reply.source_session_id.as_deref() != Some(session_id)
+        });
+        self.provider_status_observations
+            .lock()
+            .await
+            .remove(session_id);
+        self.provider_generations.lock().await.remove(session_id);
+        self.provider_inputs.lock().await.remove(session_id);
+        Ok(())
+    }
+}
+
+fn rejected_task_record(
+    id: String,
+    sender_session_id: Option<String>,
+    target_session_id: String,
+    body_ref: InteractionBodyRef,
+) -> InteractionRecord {
+    let now = now_rfc3339_millis();
+    InteractionRecord {
+        id,
+        kind: InteractionKind::Task,
+        sender_session_id,
+        target_session_ids: vec![target_session_id],
+        status: InteractionStatus::Failed,
+        trigger_policy: InteractionTriggerPolicy::ReplyRequired,
+        body_ref,
+        parent_interaction_id: None,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        completed_at: Some(now),
+    }
+}
+
+fn provider_input_state_record(
+    session_id: &str,
+    generation: u64,
+    state: ProviderInputReadiness,
+    ready_evidence: Option<ProviderReadyEvidence>,
+) -> ProviderInputState {
+    ProviderInputState {
+        session_id: session_id.to_string(),
+        generation,
+        state,
+        ready_evidence,
+        observed_at: now_rfc3339_millis(),
     }
 }
 
@@ -1368,5 +1535,230 @@ mod reply_tests {
             .await
             .unwrap_err();
         assert_eq!(late, "duplicate_reply");
+    }
+
+    #[tokio::test]
+    async fn deleting_agent_invalidates_cached_tasks_before_late_reply() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("WARDIAN_HOME");
+        unsafe { std::env::set_var("WARDIAN_HOME", home.path()) };
+        wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
+
+        let state = InteractionState::default();
+        let task = state
+            .create_task(
+                Some("agent-delete".to_string()),
+                "agent-target".to_string(),
+                InteractionBodyRef::Inline {
+                    body: "review".to_string(),
+                },
+            )
+            .await;
+        let anonymous_task = state
+            .create_task(
+                None,
+                "agent-delete".to_string(),
+                InteractionBodyRef::Inline {
+                    body: "review without a sender".to_string(),
+                },
+            )
+            .await;
+        state
+            .fail_task_with_reply(&anonymous_task.id, "agent-delete", "timed out")
+            .await
+            .unwrap();
+        assert!(state.structured_reply(&anonymous_task.id).await.is_some());
+
+        state
+            .delete_agent_durable_state("agent-delete")
+            .await
+            .unwrap();
+        assert!(state.interaction(&task.id).await.is_none());
+        assert!(state.structured_reply(&task.id).await.is_none());
+        assert!(state.interaction(&anonymous_task.id).await.is_none());
+        assert!(state.structured_reply(&anonymous_task.id).await.is_none());
+        assert!(!wardian_core::db::list_interaction_records()
+            .unwrap()
+            .iter()
+            .any(|record| record.parent_interaction_id.as_deref() == Some(anonymous_task.id.as_str())));
+        assert_eq!(
+            state
+                .complete_task_with_reply(&task.id, Some("agent-target"), ReplyStatus::Done, "late")
+                .await
+                .unwrap_err(),
+            "not_found"
+        );
+
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("WARDIAN_HOME", value) },
+            None => unsafe { std::env::remove_var("WARDIAN_HOME") },
+        }
+    }
+
+    #[tokio::test]
+    async fn deletion_serializes_queued_delivery_and_provider_writes() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("WARDIAN_HOME");
+        unsafe { std::env::set_var("WARDIAN_HOME", home.path()) };
+        wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
+
+        let state = std::sync::Arc::new(InteractionState::default());
+        let mutation = state.mutation_lock.lock().await;
+        let provider_writer = std::sync::Arc::clone(&state);
+        let provider_write = tokio::spawn(async move {
+            provider_writer
+                .record_provider_input_state(
+                    "agent-delete",
+                    1,
+                    ProviderInputReadiness::Ready,
+                    Some(ProviderReadyEvidence::ProviderEvent),
+                )
+                .await;
+        });
+        tokio::task::yield_now().await;
+        let delete_state = std::sync::Arc::clone(&state);
+        let deletion = tokio::spawn(async move {
+            delete_state
+                .delete_agent_durable_state("agent-delete")
+                .await
+        });
+        drop(mutation);
+        provider_write.await.unwrap();
+        deletion.await.unwrap().unwrap();
+        assert!(wardian_core::db::list_provider_input_states()
+            .unwrap()
+            .iter()
+            .all(|record| record.session_id != "agent-delete"));
+
+        let mutation = state.mutation_lock.lock().await;
+        let delivery_writer = std::sync::Arc::clone(&state);
+        let delivery_write = tokio::spawn(async move {
+            delivery_writer
+                .record_delivery_attempt(
+                    "interaction-delete",
+                    "agent-delete",
+                    DeliveryTransportKind::LiveSurface,
+                    1,
+                    "live_pty_available",
+                    "failed",
+                    Some("test".to_string()),
+                    None,
+                    Some("test".to_string()),
+                    None,
+                )
+                .await;
+        });
+        tokio::task::yield_now().await;
+        let delete_state = std::sync::Arc::clone(&state);
+        let deletion = tokio::spawn(async move {
+            delete_state
+                .delete_agent_durable_state("agent-delete")
+                .await
+        });
+        drop(mutation);
+        delivery_write.await.unwrap();
+        deletion.await.unwrap().unwrap();
+        assert!(wardian_core::db::list_interaction_delivery_attempts("interaction-delete")
+            .unwrap()
+            .iter()
+            .all(|attempt| attempt.target_session_id != "agent-delete"));
+        assert!(state
+            .create_message_durable(
+                None,
+                vec!["agent-delete".to_string()],
+                InteractionBodyRef::Inline {
+                    body: "late message".to_string(),
+                },
+            )
+            .await
+            .is_err());
+        let rejected_task = state
+            .create_task_with_id(
+                "late-task".to_string(),
+                None,
+                "agent-delete".to_string(),
+                InteractionBodyRef::Inline {
+                    body: "late ask".to_string(),
+                },
+            )
+            .await;
+        assert_eq!(rejected_task.status, InteractionStatus::Failed);
+        assert!(state.interaction("late-task").await.is_none());
+        assert!(!wardian_core::db::list_interaction_records()
+            .unwrap()
+            .iter()
+            .any(|record| record.id == "late-task"));
+
+        let provider_state = state
+            .record_provider_input_state(
+                "agent-delete",
+                2,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        assert_eq!(provider_state.session_id, "agent-delete");
+        state
+            .start_provider_input_generation(
+                "agent-delete",
+                ProviderInputReadiness::Booting,
+                None,
+            )
+            .await;
+        state
+            .record_provider_input_status_observation(
+                "agent-delete",
+                1,
+                3,
+                ProviderInputReadiness::Busy,
+                None,
+            )
+            .await;
+        let non_durable_attempt = state
+            .record_delivery_attempt(
+                "interaction-delete",
+                "agent-delete",
+                DeliveryTransportKind::LiveSurface,
+                2,
+                "deleted",
+                "failed",
+                None,
+                None,
+                Some("late callback".to_string()),
+                None,
+            )
+            .await;
+        assert_eq!(non_durable_attempt.target_session_id, "agent-delete");
+        assert!(state
+            .record_delivery_attempt_durable(
+                "interaction-delete",
+                "agent-delete",
+                DeliveryTransportKind::LiveSurface,
+                2,
+                "deleted",
+                "failed",
+                None,
+                None,
+                Some("late callback".to_string()),
+                None,
+            )
+            .await
+            .is_err());
+        assert!(state.provider_input_state("agent-delete").await.is_none());
+        assert!(wardian_core::db::list_provider_input_states()
+            .unwrap()
+            .iter()
+            .all(|record| record.session_id != "agent-delete"));
+        assert!(wardian_core::db::list_interaction_delivery_attempts("interaction-delete")
+            .unwrap()
+            .iter()
+            .all(|attempt| attempt.target_session_id != "agent-delete"));
+
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("WARDIAN_HOME", value) },
+            None => unsafe { std::env::remove_var("WARDIAN_HOME") },
+        }
     }
 }

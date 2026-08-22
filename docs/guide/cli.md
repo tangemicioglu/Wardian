@@ -121,7 +121,9 @@ wardian agent show [name-or-uuid]
 wardian agent list
 wardian agent list --scope all
 wardian agent restart <name-or-uuid>
-wardian agent kill <name-or-uuid> --confirm
+wardian agent rename <name-or-uuid> <new-name>
+wardian agent delete <name-or-uuid> --confirm <current-agent-name>
+wardian agent delete <name-or-uuid> --confirm <current-agent-name> --force
 wardian agent pause <name-or-uuid>
 wardian agent resume <name-or-uuid>
 wardian agent models --provider codex --refresh
@@ -206,9 +208,15 @@ wardian notify approval "Production deployment is prepared" --title "Deploy prod
 
 `agent restart` restarts the provider while preserving the Wardian agent, its
 habitat, and saved session history. Use it after `agent update` when the update
-reports `restart_required`, including class changes. `agent kill` is permanent:
-it removes the agent, its habitat, and its session history, while leaving the
-project workspace files untouched. It requires `--confirm` deliberately.
+reports `restart_required`, including class changes. `agent delete` is
+permanent: it removes the agent, its habitat, and its session history, while
+leaving the project workspace files untouched. It always requires the exact
+current agent name as `--confirm <current-agent-name>`. Without `--force`, it
+refuses to delete while the provider process is running; with `--force`, it
+explicitly terminates that provider first. Rename is live and does not restart
+the provider. The new name resolves immediately
+for `send` and `ask`. Agent-owned Wardian history is cascaded with deletion;
+project workspace files are never removed.
 
 `send` is one-way: it reports delivery evidence or queueing, but does not
 return the target's answer. Use `ask` when an automation step needs a durable

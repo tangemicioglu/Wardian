@@ -1356,6 +1356,7 @@ fn insert_new_agent_order(
     }
 }
 
+#[derive(Debug)]
 struct SpawnNameReservation {
     session_name: String,
 }
@@ -1381,6 +1382,54 @@ async fn reserve_spawn_session_name(
 async fn release_spawn_name_reservation(state: &AppState, session_name: &str) {
     let mut reservations = state.agent_name_reservations.lock().await;
     reservations.remove(session_name);
+}
+
+/// Reserve a requested rename name using the same lock order as spawn-name
+/// reservation. The reservation closes the gap between checking the live
+/// roster and committing the rename while another spawn is in flight.
+async fn reserve_rename_session_name(
+    state: &AppState,
+    session_id: &str,
+    new_name: &str,
+) -> Result<Option<SpawnNameReservation>, String> {
+    let agents = state.agents.lock().await;
+    let current_name = agents
+        .get(session_id)
+        .ok_or_else(|| format!("Agent {} not found", session_id))?
+        .config
+        .lock()
+        .map_err(|_| "Agent configuration lock poisoned".to_string())?
+        .session_name
+        .clone();
+
+    if current_name == new_name {
+        return Ok(None);
+    }
+
+    if agents.values().any(|agent| {
+        agent
+            .config
+            .lock()
+            .map(|config| config.session_name == new_name && config.session_id != session_id)
+            .unwrap_or(false)
+    }) {
+        return Err(format!(
+            "An agent with the name '{}' already exists.",
+            new_name
+        ));
+    }
+
+    let mut reservations = state.agent_name_reservations.lock().await;
+    if reservations.contains(new_name) {
+        return Err(format!(
+            "An agent with the name '{}' already exists.",
+            new_name
+        ));
+    }
+    reservations.insert(new_name.to_string());
+    Ok(Some(SpawnNameReservation {
+        session_name: new_name.to_string(),
+    }))
 }
 
 fn normalize_workspace_record_path(path: &std::path::Path) -> String {
@@ -2305,14 +2354,6 @@ fn prepare_clear_config(config: &mut AgentConfig) -> Result<(), String> {
     Ok(())
 }
 
-async fn is_name_unique(state: &AppState, name: &str, exclude_session_id: Option<&str>) -> bool {
-    let agents = state.agents.lock().await;
-    !agents.values().any(|a| {
-        let config = a.config.lock().unwrap();
-        config.session_name == name && exclude_session_id.is_none_or(|id| config.session_id != id)
-    })
-}
-
 async fn is_session_id_available(state: &AppState, session_id: &str) -> bool {
     let agents = state.agents.lock().await;
     !agents.contains_key(session_id)
@@ -2384,6 +2425,9 @@ async fn register_new_agent(
     agents.insert(session_id.clone(), active_agent);
     insert_new_agent_order(&mut order, &session_id, placement);
     manager::save_state(app, &agents, &order);
+    drop(order);
+    drop(agents);
+    state.interactions.clear_deleted_session(&session_id).await;
     let _ = app.emit("agents-updated", ());
 
     Ok(config)
@@ -2709,37 +2753,118 @@ pub async fn list_agent_metrics(state: State<'_, AppState>) -> Result<Vec<AgentT
     Ok(manager::get_all_metrics(&state).await)
 }
 
+/// Permanently removes an agent and its Wardian-owned history.
+///
+/// Without `force`, deletion refuses to remove an agent while its provider
+/// runtime is still attached. `force` explicitly permits terminating that
+/// provider, while the exact-name confirmation remains mandatory in either
+/// mode.
+pub async fn delete_agent(
+    session_id: String,
+    confirm_name: String,
+    force: bool,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    remove_agent(
+        session_id,
+        Some(confirm_name.as_str()),
+        state,
+        app,
+        !force,
+    )
+    .await
+}
+
+/// Internal desktop/remote compatibility alias for forced deletion.
+///
+/// The public CLI has one destructive operation (`agent delete`). Existing
+/// Tauri callers keep this IPC name while sharing the same exact-name
+/// confirmation and forced-removal implementation.
 #[tauri::command]
 pub async fn kill_agent(
     session_id: String,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    let confirm_name = {
+        let agents = state.agents.lock().await;
+        let agent = agents
+            .get(&session_id)
+            .ok_or_else(|| format!("Agent with session ID {} not found", session_id))?;
+        let name = agent
+            .config
+            .lock()
+            .map_err(|_| "agent config lock poisoned".to_string())?
+            .session_name
+            .clone();
+        name
+    };
+    delete_agent(session_id, confirm_name, true, state, app).await
+}
+
+async fn remove_agent(
+    session_id: String,
+    expected_name: Option<&str>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+    require_stopped: bool,
+) -> Result<(), String> {
     manager::log_debug(&format!(
-        "[WARDIAN] kill_agent called for session: {}",
-        session_id
+        "[WARDIAN] {} agent for session: {}",
+        if require_stopped { "delete" } else { "kill" },
+        session_id,
     ));
     let _lifecycle_lease =
         acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "remove").await?;
     let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(_lifecycle_lease.owner().clone());
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
     lifecycle_heartbeat.ensure_active("remove")?;
-    let (agent, state_snapshot, remaining_agent_ids) = {
+    if require_stopped {
+        let agents = state.agents.lock().await;
+        let agent = agents
+            .get(&session_id)
+            .ok_or_else(|| format!("Agent with session ID {} not found", session_id))?;
+        validate_agent_removal(agent, expected_name, require_stopped)?;
+    }
+    let (previous_state_snapshot, deletion_state_snapshot) = {
+        let agents = state.agents.lock().await;
+        let order = state.agent_order.lock().await;
+        if !agents.contains_key(&session_id) {
+            return Err(format!("Agent with session ID {} not found", session_id));
+        }
+        let previous = manager::state_configs_snapshot(&agents, &order);
+        let deletion = previous
+            .iter()
+            .filter(|config| config.session_id != session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        (previous, deletion)
+    };
+    lifecycle_heartbeat.ensure_active("remove")?;
+    if let Err(error) = manager::try_save_state_snapshot(&deletion_state_snapshot) {
+        return Err(format!("Failed to persist agent deletion: {error}"));
+    }
+    if let Err(error) = state
+        .interactions
+        .delete_agent_durable_state(&session_id)
+        .await
+    {
+        let rollback_error = manager::try_save_state_snapshot(&previous_state_snapshot)
+            .err()
+            .map(|rollback| format!("; state snapshot rollback failed: {rollback}"))
+            .unwrap_or_default();
+        return Err(format!("{error}{rollback_error}"));
+    }
+    let (agent, remaining_agent_ids) = {
         let mut agents = state.agents.lock().await;
         let mut order = state.agent_order.lock().await;
-        lifecycle_heartbeat.ensure_active("remove")?;
         let agent = detach_agent_for_kill(&mut agents, &mut order, &session_id);
-        let state_snapshot = agent
-            .is_some()
-            .then(|| manager::state_configs_snapshot(&agents, &order));
         let remaining_agent_ids = agent
             .is_some()
             .then(|| agents.keys().cloned().collect::<BTreeSet<_>>());
-        (agent, state_snapshot, remaining_agent_ids)
+        (agent, remaining_agent_ids)
     };
-    if let Some(snapshot) = state_snapshot {
-        manager::save_state_snapshot(&app, &snapshot);
-    }
     if agent.is_some() {
         state.remove_agent_delivery_state(&session_id).await;
     }
@@ -2758,7 +2883,6 @@ pub async fn kill_agent(
     #[allow(unused_mut)]
     if let Some(mut agent) = agent {
         if let Some(runtime_generation) = agent.runtime_generation {
-            lifecycle_heartbeat.ensure_active("remove")?;
             if let Err(error) = state
                 .terminal_sessions
                 .terminate_and_remove_runtime(&session_id, runtime_generation)
@@ -2769,7 +2893,6 @@ pub async fn kill_agent(
                 ));
             }
         }
-        lifecycle_heartbeat.ensure_active("remove")?;
         let agent_workspace = agent
             .config
             .lock()
@@ -2778,9 +2901,9 @@ pub async fn kill_agent(
             .filter(|folder| !folder.trim().is_empty());
         manager::terminate_active_agent_process(&mut agent);
 
-        // Phase 2: Remove from SQLite
-        lifecycle_heartbeat.ensure_active("remove")?;
-        let _ = wardian_core::db::delete_agent(&session_id);
+        // Durable state was deleted before detaching the live agent. Post-commit
+        // cleanup is best-effort so a lease heartbeat cannot leave the roster
+        // diverging from the two durable stores after the commit.
         let _ = app.emit("agents-updated", ());
 
         // Cleanup: remove persisted references and the agent's private directory.
@@ -2826,7 +2949,6 @@ pub async fn kill_agent(
 
             let agent_dir = home.join("agents").join(&session_id);
             if agent_dir.exists() {
-                lifecycle_heartbeat.ensure_active("remove")?;
                 if let Err(e) = std::fs::remove_dir_all(&agent_dir) {
                     manager::log_debug(&format!(
                         "[WARDIAN] Failed to remove agent directory {:?}: {}",
@@ -2847,6 +2969,39 @@ pub async fn kill_agent(
         manager::log_debug(&format!("[WARDIAN] {}", err_msg));
         Err(err_msg)
     }
+}
+
+fn agent_has_running_process(agent: &ActiveAgent) -> bool {
+    agent.runtime_generation.is_some()
+        || agent.process_id.is_some()
+        || agent.child_process.is_some()
+        || !agent.background_processes.is_empty()
+}
+
+fn validate_agent_removal(
+    agent: &ActiveAgent,
+    expected_name: Option<&str>,
+    require_stopped: bool,
+) -> Result<(), String> {
+    let current_name = agent
+        .config
+        .lock()
+        .map(|config| config.session_name.clone())
+        .unwrap_or_else(|_| "<unknown>".to_string());
+    if let Some(expected_name) = expected_name {
+        if expected_name != current_name {
+            return Err(format!(
+                "delete confirmation must exactly match the agent name `{current_name}`"
+            ));
+        }
+    }
+    if require_stopped && agent_has_running_process(agent) {
+        return Err(format!(
+            "Cannot delete agent {} while its provider process is running; pause it first or pass --force when provider termination is intended",
+            current_name
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -3432,29 +3587,28 @@ pub async fn rename_agent(
         session_id, new_name
     ));
 
+    let new_name = new_name.trim().to_string();
     if !is_valid_name(&new_name) {
         return Err("Invalid agent name. Names must contain only alphanumeric characters, underscores, or hyphens (no spaces).".to_string());
     }
 
-    if !is_name_unique(&state, &new_name, Some(&session_id)).await {
-        return Err(format!(
-            "An agent with the name '{}' already exists.",
-            new_name
-        ));
-    }
+    let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
+    let rename_reservation = reserve_rename_session_name(&state, &session_id, &new_name).await?;
 
     let mut agents = state.agents.lock().await;
     let order = state.agent_order.lock().await;
 
     if let Some(agent) = agents.get_mut(&session_id) {
-        let (sid, name, description, class, provider, workspace, is_off, born) = {
+        let (sid, previous_name, name, description, class, provider, workspace, is_off, born) = {
             let mut config = agent.config.lock().unwrap();
+            let previous_name = config.session_name.clone();
             config.session_name = new_name;
             let workspace = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id)
                 .to_string_lossy()
                 .to_string();
             (
                 config.session_id.clone(),
+                previous_name,
                 config.session_name.clone(),
                 config.description.clone(),
                 config.agent_class.clone(),
@@ -3467,7 +3621,7 @@ pub async fn rename_agent(
 
         // Phase 2: Update agent metadata in SQLite
         let project = wardian_core::db::project_name_from_workspace(&workspace);
-        let _ = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
+        let persistence_error = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
             session_id: &sid,
             session_name: &name,
             description: &description,
@@ -3477,10 +3631,57 @@ pub async fn rename_agent(
             project: project.as_deref(),
             is_off,
             created_at: born.as_deref(),
-        });
-        manager::save_state(&app, &agents, &order);
+        })
+        .err()
+        .map(|error| error.to_string());
+        if let Some(error) = persistence_error {
+            if let Some(agent) = agents.get_mut(&session_id) {
+                if let Ok(mut config) = agent.config.lock() {
+                    config.session_name = previous_name;
+                }
+            }
+            if let Some(reservation) = rename_reservation.as_ref() {
+                release_spawn_name_reservation(&state, &reservation.session_name).await;
+            }
+            return Err(format!("Failed to persist agent rename: {error}"));
+        }
+        let snapshot = manager::state_configs_snapshot(&agents, &order);
+        if let Err(snapshot_error) = manager::try_save_state_snapshot(&snapshot) {
+            if let Some(agent) = agents.get_mut(&session_id) {
+                if let Ok(mut config) = agent.config.lock() {
+                    config.session_name = previous_name.clone();
+                }
+            }
+            let rollback_error = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
+                session_id: &sid,
+                session_name: &previous_name,
+                description: &description,
+                agent_class: &class,
+                provider: &provider,
+                workspace: Some(&workspace),
+                project: project.as_deref(),
+                is_off,
+                created_at: born.as_deref(),
+            })
+            .err()
+            .map(|error| format!("; rename rollback failed: {error}"))
+            .unwrap_or_default();
+            if let Some(reservation) = rename_reservation.as_ref() {
+                release_spawn_name_reservation(&state, &reservation.session_name).await;
+            }
+            return Err(format!(
+                "Failed to persist agent rename: {snapshot_error}{rollback_error}"
+            ));
+        }
+        let _ = app.emit("agents-updated", ());
+        if let Some(reservation) = rename_reservation.as_ref() {
+            release_spawn_name_reservation(&state, &reservation.session_name).await;
+        }
         Ok(())
     } else {
+        if let Some(reservation) = rename_reservation.as_ref() {
+            release_spawn_name_reservation(&state, &reservation.session_name).await;
+        }
         Err(format!("Agent {} not found", session_id))
     }
 }
@@ -4193,7 +4394,8 @@ mod tests {
         archive_agent_lifecycle_boundary, archive_agent_lifecycle_boundary_from_snapshot,
         assign_worktree_config, build_agent_cli_command_for_session_id_with_shells,
         build_agent_cli_command_with_shells, build_agent_clone_preview,
-        capture_resume_runtime_snapshot, clone_cleanup_created_profile_dirs,
+        agent_has_running_process, capture_resume_runtime_snapshot,
+        clone_cleanup_created_profile_dirs,
         clone_collect_eligible_file_tree, clone_copy_agent_profile_files, clone_copy_profile_plan,
         clone_copy_selected_agent_profile_files, clone_copy_selected_agent_skills,
         clone_ensure_profile_destination_available, clone_match_selected_agent_skills,
@@ -4215,7 +4417,9 @@ mod tests {
         prepare_restored_config_for_spawn, prepare_resume_config,
         prepare_resume_config_for_runtime, promote_fresh_provider_session_after_resume,
         provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
-        replace_agent_status_incarnation, reserve_spawn_session_name,
+        replace_agent_status_incarnation, release_spawn_name_reservation,
+        reserve_spawn_session_name, reserve_rename_session_name,
+        validate_agent_removal,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
         resolve_external_resume_session, resolve_requested_spawn_session_name, restore_agent_config_in_state,
         restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
@@ -5756,6 +5960,56 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert_eq!(second.session_name, "Coder-2");
     }
 
+    #[tokio::test]
+    async fn rename_rejects_a_name_reserved_by_an_in_flight_spawn() {
+        let state = AppState::new();
+        let agent = make_test_agent();
+        {
+            let mut config = agent.config.lock().unwrap();
+            config.session_id = "agent-1".to_string();
+            config.session_name = "CoderOne".to_string();
+        }
+        state.agents.lock().await.insert("agent-1".to_string(), agent);
+        state
+            .agent_name_reservations
+            .lock()
+            .await
+            .insert("ReservedName".to_string());
+
+        let error = reserve_rename_session_name(&state, "agent-1", "ReservedName")
+            .await
+            .expect_err("rename must not claim an in-flight spawn name");
+
+        assert!(error.contains("An agent with the name 'ReservedName' already exists"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_renames_claim_a_name_only_once() {
+        let state = AppState::new();
+        for (session_id, session_name) in [("agent-1", "CoderOne"), ("agent-2", "CoderTwo")] {
+            let agent = make_test_agent();
+            {
+                let mut config = agent.config.lock().unwrap();
+                config.session_id = session_id.to_string();
+                config.session_name = session_name.to_string();
+            }
+            state.agents.lock().await.insert(session_id.to_string(), agent);
+        }
+
+        let (first, second) = tokio::join!(
+            reserve_rename_session_name(&state, "agent-1", "SharedName"),
+            reserve_rename_session_name(&state, "agent-2", "SharedName"),
+        );
+
+        assert_eq!(first.is_ok(), !second.is_ok());
+        if let Ok(Some(reservation)) = first {
+            release_spawn_name_reservation(&state, &reservation.session_name).await;
+        }
+        if let Ok(Some(reservation)) = second {
+            release_spawn_name_reservation(&state, &reservation.session_name).await;
+        }
+    }
+
     #[test]
     fn normalize_spawn_folder_stores_forward_slash_absolute_paths() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -7146,6 +7400,45 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert!(!agents.contains_key("agent-1"));
         assert!(agents.contains_key("agent-2"));
         assert_eq!(order, vec!["agent-2".to_string()]);
+    }
+
+    #[test]
+    fn explicit_delete_detects_attached_provider_runtime() {
+        let mut active = make_test_agent();
+        assert!(!agent_has_running_process(&active));
+
+        active.runtime_generation = Some(7);
+        assert!(agent_has_running_process(&active));
+
+        active.runtime_generation = None;
+        active.process_id = Some(1234);
+        assert!(agent_has_running_process(&active));
+    }
+
+    #[test]
+    fn explicit_delete_requires_exact_name_and_a_stopped_runtime() {
+        let mut active = make_test_agent();
+        {
+            let mut config = active.config.lock().unwrap();
+            config.session_name = "DeleteMe".to_string();
+        }
+
+        let error = validate_agent_removal(&active, Some("WrongName"), true)
+            .expect_err("stale confirmation must be rejected");
+        assert!(error.contains("DeleteMe"));
+
+        active.process_id = Some(1234);
+        let error = validate_agent_removal(&active, Some("DeleteMe"), true)
+            .expect_err("attached runtime must be rejected");
+        assert!(error.contains("provider process is running"));
+
+        active.process_id = None;
+        validate_agent_removal(&active, Some("DeleteMe"), true)
+            .expect("exact confirmation must allow a stopped agent");
+
+        active.process_id = Some(1234);
+        validate_agent_removal(&active, Some("DeleteMe"), false)
+            .expect("exact confirmation must allow forced removal of a running agent");
     }
 
     #[tokio::test]

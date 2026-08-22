@@ -197,7 +197,12 @@ fn handle_agent(args: AgentArgs) -> Result<String, CliError> {
         ),
         Some(AgentCommand::Models { provider, refresh }) => handle_agent_models(provider, *refresh),
         None => handle_show(args.target.as_deref(), &args),
-        Some(AgentCommand::Kill { target, confirm }) => handle_agent_kill(target, *confirm),
+        Some(AgentCommand::Delete {
+            target,
+            confirm,
+            force,
+        }) => handle_agent_delete(target, confirm, *force),
+        Some(AgentCommand::Rename { target, new_name }) => handle_agent_rename(target, new_name),
         Some(AgentCommand::Restart { target }) => handle_agent_restart(target),
         Some(AgentCommand::Pause { target }) => handle_agent_pause(target),
         Some(AgentCommand::Resume { target }) => handle_agent_resume(target),
@@ -272,20 +277,26 @@ fn handle_agent(args: AgentArgs) -> Result<String, CliError> {
     }
 }
 
-fn handle_agent_kill(target: &str, confirmed: bool) -> Result<String, CliError> {
-    if !confirmed {
-        return Err(CliError::backend(
-            ExitCode::Generic,
-            "confirmation_required",
-            "agent kill permanently removes the agent, its habitat, and its session history; rerun with --confirm, or use `wardian agent restart <name-or-uuid>` to preserve them",
-        ));
-    }
-    live::agent_kill(target).map_err(control_error)?;
+fn handle_agent_delete(target: &str, confirm_name: &str, force: bool) -> Result<String, CliError> {
+    live::agent_delete(target, confirm_name, force).map_err(control_error)?;
     Ok(format!(
         "{}\n",
-        serde_json::to_string_pretty(&serde_json::json!({"schema":1,"ok":true,"target":target}))
-            .unwrap()
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": 1,
+            "ok": true,
+            "target": target,
+            "deleted": true,
+            "removed": ["agent", "habitat", "session_history"]
+        }))
+        .unwrap()
     ))
+}
+
+fn handle_agent_rename(target: &str, new_name: &str) -> Result<String, CliError> {
+    let response = live::agent_rename(target, new_name).map_err(control_error)?;
+    serde_json::to_string_pretty(&response)
+        .map(|json| format!("{json}\n"))
+        .map_err(|error| CliError::generic(error.to_string()))
 }
 
 fn handle_agent_restart(target: &str) -> Result<String, CliError> {

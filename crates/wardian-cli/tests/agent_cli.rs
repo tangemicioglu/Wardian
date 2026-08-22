@@ -325,10 +325,10 @@ fn missing_db_exits_four() {
 }
 
 #[test]
-fn kill_requires_explicit_confirmation() {
+fn delete_requires_explicit_confirmation() {
     let home = seed_home();
     let output = Command::new(bin())
-        .args(["agent", "kill", "coder-a1"])
+        .args(["agent", "delete", "coder-a1"])
         .env("WARDIAN_HOME", home.path())
         .env_remove("WARDIAN_SESSION_ID")
         .output()
@@ -336,15 +336,21 @@ fn kill_requires_explicit_confirmation() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains(r#""code":"confirmation_required""#));
-    assert!(stderr.contains("--confirm"));
+    assert!(stderr.contains("--confirm"), "stderr: {stderr}");
 }
 
 #[test]
-fn confirmed_kill_without_app_running_exits_six() {
+fn forced_delete_without_app_running_exits_six() {
     let home = seed_home();
     let output = Command::new(bin())
-        .args(["agent", "kill", "coder-a1", "--confirm"])
+        .args([
+            "agent",
+            "delete",
+            "coder-a1",
+            "--confirm",
+            "coder-a1",
+            "--force",
+        ])
         .env("WARDIAN_HOME", home.path())
         .env_remove("WARDIAN_SESSION_ID")
         .output()

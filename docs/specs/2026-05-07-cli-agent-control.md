@@ -11,7 +11,7 @@
 
 Wardian extends the CLI with:
 
-- `wardian agent kill|pause|resume|spawn|clone`
+- `wardian agent delete|pause|resume|spawn|clone`
 - `wardian agent wait`
 - `wardian workflow list|show|run|stop`
 - `wardian send`

@@ -383,12 +383,41 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 .map_err(browser_control_error)?,
         ),
 
-        ControlRequest::AgentKill { target } => {
+        ControlRequest::AgentDelete {
+            target,
+            confirm_name,
+            force,
+        } => {
             let uuid = resolve_target_uuid(app, &target)
                 .await
                 .ok_or_else(|| ControlError::not_found(format!("agent not found: {target}")))?;
-            handle_agent_kill(app, uuid).await?;
+            let state = app.state::<AppState>();
+            crate::commands::agent::delete_agent(uuid, confirm_name, force, state, app.clone())
+                .await
+                .map_err(ControlError::bad_request)?;
             ok_json(&OkResponse::new())
+        }
+
+        ControlRequest::AgentRename { target, name } => {
+            let uuid = resolve_target_uuid(app, &target)
+                .await
+                .ok_or_else(|| ControlError::not_found(format!("agent not found: {target}")))?;
+            crate::commands::agent::rename_agent(
+                uuid.clone(),
+                name,
+                app.state::<AppState>(),
+                app.clone(),
+            )
+            .await
+            .map_err(ControlError::bad_request)?;
+            let identity = live_agent_identity(app, &uuid).await?;
+            ok_json(&AgentUpdateResponse {
+                schema: wardian_core::control::CONTROL_SCHEMA,
+                ok: true,
+                agent: identity,
+                updated_fields: vec!["name".to_string()],
+                restart_required: false,
+            })
         }
 
         ControlRequest::AgentRestart { target } => {
@@ -740,6 +769,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             let MessageOrigin::WardianAgent { session_id } = origin;
             validate_inbox_notification(&notification)?;
             let state = app.state::<AppState>();
+            let _origin_lifecycle_guard = state.lock_agent_lifecycle(&session_id).await;
             {
                 let agents = state.agents.lock().await;
                 if !agents.contains_key(&session_id) {
@@ -1230,13 +1260,6 @@ async fn live_agent_identity(
 // Agent operation helpers
 // ---------------------------------------------------------------------------
 
-async fn handle_agent_kill(app: &AppHandle, session_id: String) -> std::io::Result<()> {
-    let state = app.state::<AppState>();
-    crate::commands::agent::kill_agent(session_id, state, app.clone())
-        .await
-        .map_err(std::io::Error::other)
-}
-
 async fn handle_agent_pause(app: &AppHandle, session_id: &str) -> std::io::Result<()> {
     let state = app.state::<AppState>();
     crate::commands::agent::pause_agent(session_id.to_string(), state, app.clone())
@@ -1488,7 +1511,13 @@ async fn deliver_message_to_target_with_headless_timeout(
     let mut queued = 0usize;
     let mut failures = Vec::new();
     let mut delivery = Vec::with_capacity(session_ids.len());
-    for info in target_infos {
+    for initial_info in target_infos {
+        let (lifecycle_was_busy, target_lifecycle_guard) =
+            match state.try_lock_agent_lifecycle(&initial_info.uuid).await {
+                Some(guard) => (false, guard),
+                None => (true, state.lock_agent_lifecycle(&initial_info.uuid).await),
+            };
+        let info = delivery_target_info(state, &initial_info.uuid).await?;
         let outbound_message = message_with_origin(
             state,
             message,
@@ -1514,7 +1543,14 @@ async fn deliver_message_to_target_with_headless_timeout(
         if let Some(app) = app {
             let _ = app.emit("pair-activity-changed", ());
         }
-        let route = if input_mode == MessageInputMode::ApprovalAction
+        let route = if input_mode != MessageInputMode::ApprovalAction
+            && matches!(queue_policy, QueuePolicy::QueueIfBusy)
+            && lifecycle_was_busy
+        {
+            DeliveryRoute::Mailbox {
+                runtime_state: "conversation_leased",
+            }
+        } else if input_mode == MessageInputMode::ApprovalAction
             || matches!(queue_policy, QueuePolicy::MailboxOnly)
         {
             decide_delivery_route(&info.status, input_mode, queue_policy, approval_action)
@@ -1656,6 +1692,7 @@ async fn deliver_message_to_target_with_headless_timeout(
                         queue_policy,
                         origin,
                         timeout: headless_timeout,
+                        lifecycle_guard: Some(target_lifecycle_guard),
                     },
                 )
                 .await
@@ -1948,6 +1985,7 @@ struct HeadlessMessageDeliveryRequest<'a> {
     queue_policy: QueuePolicy,
     origin: Option<&'a MessageOrigin>,
     timeout: Duration,
+    lifecycle_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
 #[derive(Debug)]
@@ -1969,6 +2007,7 @@ async fn deliver_headless_message(
         queue_policy,
         origin,
         timeout,
+        lifecycle_guard,
     } = request;
     // Direct offline delivery runs a provider against the target agent's
     // workspace. Hold the same home-wide shared guard as workflow drives
@@ -2034,12 +2073,18 @@ async fn deliver_headless_message(
     };
     let mut lease_guard =
         wardian_core::conversation_lease::PersistedConversationLeaseGuard::new(&lease);
-    let Some(_lifecycle_guard) = state.try_lock_agent_lifecycle(&info.uuid).await else {
-        return HeadlessMessageDelivery::Busy(Box::new(
-            delivery_target_info(state, &info.uuid)
-                .await
-                .unwrap_or_else(|_| info.clone()),
-        ));
+    let lifecycle_guard = match lifecycle_guard {
+        Some(guard) => guard,
+        None => match state.try_lock_agent_lifecycle(&info.uuid).await {
+            Some(guard) => guard,
+            None => {
+                return HeadlessMessageDelivery::Busy(Box::new(
+                    delivery_target_info(state, &info.uuid)
+                        .await
+                        .unwrap_or_else(|_| info.clone()),
+                ));
+            }
+        },
     };
     let current_info = match delivery_target_info(state, &info.uuid).await {
         Ok(current_info) => current_info,
@@ -2070,6 +2115,7 @@ async fn deliver_headless_message(
         return HeadlessMessageDelivery::Busy(Box::new(current_info));
     }
     record_headless_status_observation(app, state, &current_info).await;
+    drop(lifecycle_guard);
 
     let result = crate::delivery::run_headless_process_prompt(
         state,
@@ -2981,6 +3027,11 @@ async fn handle_structured_ask(
             body_ref,
         )
         .await;
+    if task.status != InteractionStatus::AwaitingReply {
+        return Err(ControlError::not_found(format!(
+            "agent not found: {target}"
+        )));
+    }
     let _ = app.emit("pair-activity-changed", ());
     let mut payload = serde_json::json!({
         "request_id": task.id,
@@ -3141,6 +3192,15 @@ async fn handle_structured_ask_many(
                 body_ref,
             )
             .await;
+        if task.status != InteractionStatus::AwaitingReply {
+            results.push(ask_target_failure(
+                target,
+                AskTargetOutcome::DeliveryFailed,
+                "not_found",
+                format!("agent not found: {target}"),
+            ));
+            continue;
+        }
         let _ = app.emit("pair-activity-changed", ());
         let mut payload = serde_json::json!({
             "request_id": task.id,
@@ -6099,13 +6159,19 @@ mod tests {
             None,
             None,
             false,
-        )
-        .await
-        .expect("queue while lifecycle transition owns the gate");
+        );
+        tokio::pin!(delivery);
+        tokio::select! {
+            _ = &mut delivery => panic!("delivery must wait for the lifecycle transition"),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+        drop(lifecycle_guard);
+        let delivery = delivery
+            .await
+            .expect("queue after lifecycle transition releases the gate");
 
         assert_eq!(delivery[0].delivery_state, "queued");
         assert_eq!(delivery[0].runtime_state, "conversation_leased");
-        drop(lifecycle_guard);
     }
 
     #[tokio::test]
@@ -6716,6 +6782,32 @@ mod tests {
             Some("agent-1")
         );
         assert_eq!(resolve_target_uuid_in_state(&state, "missing").await, None);
+    }
+
+    #[tokio::test]
+    async fn renamed_agent_is_immediately_resolvable_by_send_and_ask() {
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        state
+            .agents
+            .lock()
+            .await
+            .get_mut("agent-1")
+            .unwrap()
+            .config
+            .lock()
+            .unwrap()
+            .session_name = "RenamedCoder".to_string();
+
+        assert_eq!(
+            resolve_send_targets_scoped(&state, "RenamedCoder", None, false).await,
+            vec!["agent-1".to_string()]
+        );
+        assert_eq!(
+            resolve_target_uuid_in_state(&state, "RenamedCoder").await,
+            Some("agent-1".to_string())
+        );
+        assert_eq!(resolve_target_uuid_in_state(&state, "CoderOne").await, None);
     }
 
     #[tokio::test]

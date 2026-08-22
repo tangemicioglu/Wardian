@@ -12,8 +12,15 @@ const FNV_PRIME: u64 = 0x100000001b3;
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum ControlRequest {
     AgentList,
-    AgentKill {
+    AgentDelete {
         target: String,
+        confirm_name: String,
+        #[serde(default)]
+        force: bool,
+    },
+    AgentRename {
+        target: String,
+        name: String,
     },
     AgentRestart {
         target: String,
@@ -1041,13 +1048,27 @@ mod tests {
     }
 
     #[test]
-    fn agent_kill_request_serializes_with_target() {
-        let req = ControlRequest::AgentKill {
-            target: "coder-a1".to_string(),
+    fn agent_delete_request_serializes_exact_name_confirmation() {
+        let req = ControlRequest::AgentDelete {
+            target: "uuid-1".to_string(),
+            confirm_name: "coder-a1".to_string(),
+            force: false,
         };
         let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains(r#""command":"agent_kill""#));
-        assert!(json.contains(r#""target":"coder-a1""#));
+        assert!(json.contains(r#""command":"agent_delete""#));
+        assert!(json.contains(r#""confirm_name":"coder-a1""#));
+        assert!(json.contains(r#""force":false"#));
+    }
+
+    #[test]
+    fn agent_rename_request_serializes_new_name() {
+        let req = ControlRequest::AgentRename {
+            target: "coder-a1".to_string(),
+            name: "release-coder".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""command":"agent_rename""#));
+        assert!(json.contains(r#""name":"release-coder""#));
     }
 
     #[test]
