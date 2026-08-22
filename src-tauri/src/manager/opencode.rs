@@ -20,8 +20,21 @@ pub(crate) fn opencode_status_from_title(title: &str) -> Option<&'static str> {
     None
 }
 
-pub(crate) fn opencode_session_diff_path(session_id: &str) -> std::path::PathBuf {
-    let base = dirs::data_local_dir()
+/// Extracts the owning session id from a 1.17+ prompt-loop log line
+/// (`message=loop session.id=ses_… step=N` or
+/// `message="exiting loop" session.id=ses_…`). Returns `None` for any other
+/// line, including pre-1.17 markers and permission lines (which carry no
+/// session id at all).
+fn opencode_loop_line_session_id(line: &str) -> Option<String> {
+    if !line.contains("message=loop") && !line.contains("message=\"exiting loop\"") {
+        return None;
+    }
+    line.split_whitespace()
+        .find_map(|token| token.strip_prefix("session.id="))
+        .map(str::to_string)
+}
+
+pub(crate) fn opencode_session_diff_path(session_id: &str) -> std::path::PathBuf {    let base = dirs::data_local_dir()
         .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")));
     let base = base.unwrap_or_else(|| std::path::PathBuf::from("."));
     base.join("opencode")
@@ -149,7 +162,11 @@ pub(crate) fn opencode_last_assistant_text_from_db(
     Ok(None)
 }
 
-pub(crate) fn opencode_should_fallback_to_idle(
+/// Provider-agnostic quiet-period fallback: after 6s without PTY output while
+/// a full-screen TUI shows "Processing...", treat the turn as finished. Shared
+/// by opencode, claude, and antigravity (see telemetry.rs) despite living in
+/// this module for historical reasons.
+pub(crate) fn provider_should_fallback_to_idle_after_quiet_period(
     current_status: &str,
     last_output_at: Option<std::time::SystemTime>,
     now: std::time::SystemTime,
@@ -359,8 +376,43 @@ pub(crate) fn opencode_metrics_from_log(content: &str, session_id: &str) -> Open
     let mut last_prompt_exited = false;
     let mut saw_prompt = false;
     let mut saw_error = false;
+    // Permission-prompt detection: opencode writes `message=asking id=per_…`
+    // when the TUI shows a "Permission required" prompt, but that line — unlike
+    // loop markers — carries no `session.id`, so it cannot be filtered by
+    // session. An ask is therefore attributed positionally: to this session
+    // only while its prompt loop is the single open loop at that point in the
+    // chronological log, and until any later loop activity for the session
+    // proves the prompt was answered.
+    let mut open_loops: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut pending_ask = false;
 
     for line in content.lines() {
+        if let Some(loop_owner) = opencode_loop_line_session_id(line) {
+            if line.contains("exiting loop") {
+                open_loops.remove(&loop_owner);
+                if loop_owner == session_id {
+                    last_prompt_exited = true;
+                    saw_prompt = true;
+                    pending_ask = false;
+                }
+            } else if line.contains(" step=") {
+                open_loops.insert(loop_owner.clone());
+                if loop_owner == session_id {
+                    metrics.query_count += 1;
+                    last_prompt_exited = false;
+                    saw_prompt = true;
+                    pending_ask = false;
+                }
+            }
+        }
+
+        if line.contains("message=asking") && !line.contains("session.id=") {
+            if open_loops.len() == 1 && open_loops.contains(session_id) {
+                pending_ask = true;
+            }
+            continue;
+        }
+
         if !line.contains(session_id) {
             continue;
         }
@@ -380,12 +432,9 @@ pub(crate) fn opencode_metrics_from_log(content: &str, session_id: &str) -> Open
                 });
         }
 
-        // Prompt-loop markers: pre-1.17 logs tag them `service=session.prompt`,
-        // 1.17+ logs use `message=loop ... step=N` / `message="exiting loop"`.
-        let prompt_marker = line.contains("service=session.prompt")
-            || line.contains("message=loop")
-            || line.contains("message=\"exiting loop\"");
-        if prompt_marker {
+        // Pre-1.17 prompt-loop markers. The 1.17+ `message=loop` markers were
+        // already handled above (they carry `session.id` for every session).
+        if line.contains("service=session.prompt") {
             if line.contains("exiting loop") {
                 last_prompt_exited = true;
                 saw_prompt = true;
@@ -404,6 +453,10 @@ pub(crate) fn opencode_metrics_from_log(content: &str, session_id: &str) -> Open
 
     metrics.status = if saw_error && !last_prompt_exited {
         Some("Error".to_string())
+    } else if pending_ask {
+        // A live "Permission required" prompt outranks the derived Processing
+        // state; the loop is paused until the operator answers it.
+        Some("Action Needed".to_string())
     } else if !saw_prompt {
         // No prompt activity yet — return None so we don't override a
         // status set by the PTY reader (e.g. "Pending…" or "Off").
@@ -464,17 +517,90 @@ mod tests {
         assert_eq!(opencode_status_from_title(""), None);
     }
 
+    fn permission_log_line(permission: &str, pattern: &str, action: &str) -> String {
+        format!(
+            "timestamp=2026-08-21T15:59:53.288Z level=INFO run=r1 message=evaluated \
+             permission={permission} pattern=\"{pattern}\" action.permission={permission} \
+             action.pattern=* action.action={action}"
+        )
+    }
+
     #[test]
-    fn opencode_idle_fallback_triggers_after_quiet_period() {
+    fn opencode_log_permission_prompt_maps_to_action_needed() {
+        let log = [
+            "timestamp=2026-08-21T18:04:18.494Z level=INFO run=r1 message=loop session.id=ses_a step=1",
+            &permission_log_line("bash", "ls", "ask"),
+            "timestamp=2026-08-21T18:04:20.001Z level=INFO run=r1 message=asking id=per_1 permission=bash patterns=\"[\\\"ls\\\"]\"",
+            "timestamp=2026-08-21T18:05:10.000Z level=INFO run=r1 message=\"exiting loop\" session.id=ses_b",
+        ]
+        .join("\n");
+
+        let metrics = opencode_metrics_from_log(&log, "ses_a");
+
+        assert_eq!(metrics.status.as_deref(), Some("Action Needed"));
+        assert_eq!(metrics.query_count, 1);
+    }
+
+    #[test]
+    fn opencode_log_permission_prompt_clears_after_resume() {
+        let log = [
+            "timestamp=2026-08-21T18:04:18.494Z level=INFO run=r1 message=loop session.id=ses_a step=1",
+            "timestamp=2026-08-21T18:04:20.001Z level=INFO run=r1 message=asking id=per_1 permission=bash patterns=\"[\\\"ls\\\"]\"",
+            // The operator answered the prompt; the loop resumed.
+            "timestamp=2026-08-21T18:05:00.000Z level=INFO run=r1 message=loop session.id=ses_a step=2",
+        ]
+        .join("\n");
+
+        let metrics = opencode_metrics_from_log(&log, "ses_a");
+
+        assert_eq!(metrics.status.as_deref(), Some("Processing..."));
+        assert_eq!(metrics.query_count, 2);
+    }
+
+    #[test]
+    fn opencode_log_permission_prompt_after_exit_is_not_attributed() {
+        let log = [
+            "timestamp=2026-08-21T18:03:11.768Z level=INFO run=r1 message=\"exiting loop\" session.id=ses_a",
+            "timestamp=2026-08-21T18:04:20.001Z level=INFO run=r1 message=asking id=per_1 permission=bash patterns=\"[\\\"ls\\\"]\"",
+        ]
+        .join("\n");
+
+        let metrics = opencode_metrics_from_log(&log, "ses_a");
+
+        assert_eq!(metrics.status.as_deref(), Some("Idle"));
+    }
+
+    #[test]
+    fn opencode_log_permission_prompt_with_concurrent_loop_is_skipped() {
+        // Two sessions mid-turn when the ask appears: attribution is ambiguous.
+        let log = [
+            "timestamp=2026-08-21T18:04:18.000Z level=INFO run=r1 message=loop session.id=ses_a step=1",
+            "timestamp=2026-08-21T18:04:19.000Z level=INFO run=r2 message=loop session.id=ses_b step=4",
+            "timestamp=2026-08-21T18:04:20.001Z level=INFO run=r1 message=asking id=per_1 permission=bash patterns=\"[\\\"ls\\\"]\"",
+        ]
+        .join("\n");
+
+        let metrics = opencode_metrics_from_log(&log, "ses_a");
+
+        assert_eq!(metrics.status.as_deref(), Some("Processing..."));
+        assert_eq!(metrics.query_count, 1);
+    }
+
+    #[test]
+    fn provider_idle_fallback_triggers_after_quiet_period() {
         let now = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10);
         let last = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(3);
 
-        assert!(opencode_should_fallback_to_idle(
+        assert!(provider_should_fallback_to_idle_after_quiet_period(
             "Processing...",
             Some(last),
             now
         ));
-        assert!(!opencode_should_fallback_to_idle("Idle", Some(last), now));
+        assert!(!provider_should_fallback_to_idle_after_quiet_period(
+            "Idle",
+            Some(last),
+            now
+        ));
     }
 
     #[test]
