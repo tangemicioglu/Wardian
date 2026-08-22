@@ -158,7 +158,7 @@ export function ActivityEvent({
   };
   if (isThinkingIndicator(event)) return <ThinkingRow />;
   if (event.kind === "status") return <StatusRow event={event} block={block} />;
-  if (event.kind === "terminal_output") return <TerminalFallback event={event} block={block} />;
+  if (event.kind === "terminal_output") return <TerminalFallback block={block} />;
   return (
     <ActivityRow
       approvalIsLive={approvalIsLive}
@@ -473,12 +473,9 @@ export function StructuredEditPanel({ edit }: { edit: StructuredEdit }) {
   );
 }
 
-export function TerminalFallback({ event, block }: { event: AgentChatEvent; block: ActivityBlockModel }) {
+export function TerminalFallback({ block }: { block: ActivityBlockModel }) {
   const [expanded, setExpanded] = useState(false);
   const lineLabel = `${block.lineCount} ${block.lineCount === 1 ? "line" : "lines"}`;
-  const isLaunch = event.metadata?.terminal_presentation === "launch";
-  const title = isLaunch ? event.title?.trim() || "Provider started" : "Terminal fallback";
-  const subtitle = isLaunch ? `Startup screen - ${lineLabel}` : `Raw watch output - ${lineLabel}`;
   const preview = compactTerminalPreview(block.content);
 
   return (
@@ -488,8 +485,8 @@ export function TerminalFallback({ event, block }: { event: AgentChatEvent; bloc
     >
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-semibold leading-5 text-primary">{title}</div>
-          <div className="truncate text-[11px] leading-4 text-muted-neutral">{subtitle}</div>
+          <div className="truncate text-[12px] font-semibold leading-5 text-primary">Terminal fallback</div>
+          <div className="truncate text-[11px] leading-4 text-muted-neutral">Raw watch output - {lineLabel}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <button
@@ -497,16 +494,16 @@ export function TerminalFallback({ event, block }: { event: AgentChatEvent; bloc
             className="rounded border border-wardian-light px-2 py-1 text-[11px] font-semibold leading-4 text-muted-neutral hover:text-primary"
             onClick={() => setExpanded((value) => !value)}
           >
-            {expanded ? "Hide details" : isLaunch ? "View details" : "Show terminal"}
+            {expanded ? "Hide details" : "Show terminal"}
           </button>
         </div>
       </div>
       <ChatRowActions
-        actions={[{ label: isLaunch ? "Copy launch details" : "Copy terminal output", value: block.content }]}
+        actions={[{ label: "Copy terminal output", value: block.content }]}
         className="chat-row-actions--overlay"
         label="Terminal actions"
       />
-      {preview && !expanded && !isLaunch ? (
+      {preview && !expanded ? (
         <div className="mt-1 truncate font-mono text-[11px] leading-4 text-muted-neutral">{preview}</div>
       ) : null}
       {expanded ? (

@@ -394,6 +394,7 @@ export function sortTranscriptEvents(events: AgentChatEvent[]): AgentChatEvent[]
  * synthetic thinking indicator.
  */
 export function shouldShowChatEvent(event: AgentChatEvent): boolean {
+  if (isProviderLaunchScreen(event)) return false;
   if (
     event.kind === "tool_call" &&
     !event.command?.trim() &&
@@ -406,4 +407,18 @@ export function shouldShowChatEvent(event: AgentChatEvent): boolean {
   if (event.kind !== "status") return true;
   if (isThinkingIndicator(event)) return true;
   return shouldShowStatusEvent(event);
+}
+
+/**
+ * Provider TUIs write a branded startup screen ("Codex started") before any
+ * structured transcript exists. The backend preserves it as terminal evidence
+ * for history and the CLI, but a card announcing that an agent the operator
+ * just launched has launched adds nothing to the conversation, so neither chat
+ * surface renders it.
+ */
+export function isProviderLaunchScreen(event: AgentChatEvent): boolean {
+  return (
+    event.kind === "terminal_output" &&
+    event.metadata?.terminal_presentation === "launch"
+  );
 }
