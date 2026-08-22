@@ -797,25 +797,34 @@ summary,
 }
 
 /* Message rows keep their actions in flow below the content, hover-revealed,
-   so they can never detach from the text they belong to. */
+   so they can never detach from the text they belong to. Collapsed to zero
+   height when idle: an invisible action strip under every message read as
+   blank lines between turns. */
 .chat-row-actions--inline {
-  display: inline-flex;
-  align-items: center;
-  margin-top: 2px;
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: 0;
   opacity: 0;
-  transition: opacity 140ms ease;
+  transition: grid-template-rows 140ms ease, opacity 140ms ease;
+}
+
+.chat-row-actions--inline > * {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .chat-row-actions--start {
-  align-self: flex-start;
+  justify-items: start;
 }
 
 .chat-row-actions--end {
-  align-self: flex-end;
+  justify-items: end;
 }
 
 .chat-row:hover .chat-row-actions--inline,
 .chat-row:focus-within .chat-row-actions--inline {
+  grid-template-rows: 1fr;
+  margin-top: 4px;
   opacity: 1;
 }
 
@@ -874,6 +883,22 @@ summary,
     display: inline-flex;
     min-width: 44px;
     min-height: 44px;
+  }
+
+  /* Touch has no hover: message actions pin over the content's corner and the
+     content reserves room for them, instead of a collapsed row that could not
+     be revealed. */
+  .chat-row .chat-row-actions--inline {
+    display: block;
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    margin-top: 0;
+    opacity: 1;
+  }
+
+  .chat-message-content {
+    padding-right: 2.75rem;
   }
 
   .chat-row-actions--overlay {

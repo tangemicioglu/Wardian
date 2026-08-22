@@ -124,12 +124,12 @@ export function MessageRow({
   return (
     <article
       aria-label={`${role} message`}
-      className={`chat-row group/chat-message flex flex-col gap-1 ${
-        isAssistant ? "w-full max-w-[76ch] items-start px-1 py-0.5" : "items-end"
+      className={`chat-row group/chat-message flex w-full flex-col ${
+        isAssistant ? "max-w-[76ch] items-start px-1 py-0.5" : "items-end"
       }`}
     >
       <div
-        className={`min-w-0 ${isAssistant ? "" : "chat-message-user max-w-[92%] px-3 py-2"}`}
+        className={`chat-message-content min-w-0 max-w-full break-words ${isAssistant ? "" : "chat-message-user max-w-[92%] px-3 py-2"}`}
         data-testid={isAssistant ? undefined : "chat-user-bubble"}
       >
         {content}
