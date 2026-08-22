@@ -99,7 +99,7 @@ test("renders a capture-ready tabs-and-splits workbench", async ({ page }, testI
   await testInfo.attach("tabs-and-splits", { path, contentType: "image/png" });
 });
 
-test("renders chat attachment chips alongside a compact provider launch row", async ({ page }, testInfo) => {
+test("renders chat attachment chips while hiding the provider launch screen", async ({ page }, testInfo) => {
   const overview = makeWorkbenchSurface("chat-attachment-evidence", "agents-overview", {
     state: {
       mode: "single",
@@ -135,25 +135,46 @@ test("renders chat attachment chips alongside a compact provider launch row", as
       durable_token: "chat-attachment-evidence-token-3",
     },
     responses: {
-      load_agent_chat_transcript: [{
-        id: "codex-launch",
-        session_id: "agent-alpha",
-        provider: "codex",
-        kind: "terminal_output",
-        role: "system",
-        text: "OpenAI Codex\nReady for your task\n/workspace/alpha",
-        title: "Codex started",
-        status: null,
-        turn_id: null,
-        source: null,
-        command: null,
-        exit_code: null,
-        path: null,
-        language: null,
-        created_at: null,
-        sequence: 1,
-        metadata: { terminal_presentation: "launch" },
-      }],
+      load_agent_chat_transcript: [
+        {
+          id: "codex-launch",
+          session_id: "agent-alpha",
+          provider: "codex",
+          kind: "terminal_output",
+          role: "system",
+          text: "OpenAI Codex\nReady for your task\n/workspace/alpha",
+          title: "Codex started",
+          status: null,
+          turn_id: null,
+          source: null,
+          command: null,
+          exit_code: null,
+          path: null,
+          language: null,
+          created_at: null,
+          sequence: 1,
+          metadata: { terminal_presentation: "launch" },
+        },
+        {
+          id: "assistant-kickoff",
+          session_id: "agent-alpha",
+          provider: "codex",
+          kind: "message",
+          role: "assistant",
+          text: "Working through the requested refactor now.",
+          title: null,
+          status: null,
+          turn_id: null,
+          source: null,
+          command: null,
+          exit_code: null,
+          path: null,
+          language: null,
+          created_at: null,
+          sequence: 2,
+          metadata: {},
+        },
+      ],
       "plugin:dialog|open": ["C:/evidence/dashboard.png", "C:/evidence/notes.txt"],
       list_provider_model_catalog: {
         provider: "codex",
@@ -173,7 +194,9 @@ test("renders chat attachment chips alongside a compact provider launch row", as
 
   await page.goto("/");
   await expect(page.getByTestId("agent-card")).toBeVisible();
-  await expect(page.getByText("Codex started", { exact: true })).toBeVisible();
+  await expect(page.getByText("Codex started", { exact: true })).toBeHidden();
+  await expect(page.getByTestId("terminal-fallback-row")).toHaveCount(0);
+  await expect(page.getByText("Working through the requested refactor now.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Attach files" }).click();
   await expect(page.getByText("dashboard.png", { exact: true })).toBeVisible();
   await expect(page.getByText("notes.txt", { exact: true })).toBeVisible();

@@ -114,6 +114,24 @@ describe("shouldShowChatEvent", () => {
     expect(shouldShowChatEvent(event({ kind: "status", status: "succeeded" }))).toBe(false);
     expect(shouldShowChatEvent(event({ kind: "status", status: "failed" }))).toBe(true);
   });
+
+  it("hides provider launch screens but keeps real watch output", () => {
+    const launch = event({
+      kind: "terminal_output",
+      title: "Codex started",
+      metadata: { terminal_presentation: "launch" },
+    });
+    expect(shouldShowChatEvent(launch)).toBe(false);
+
+    const rawOutput = event({
+      id: "raw-output",
+      kind: "terminal_output",
+      title: "Terminal output",
+      text: "line one",
+      metadata: {},
+    });
+    expect(shouldShowChatEvent(rawOutput)).toBe(true);
+  });
 });
 
 describe("workGroupDurationLabel", () => {
