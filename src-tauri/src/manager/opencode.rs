@@ -34,7 +34,8 @@ fn opencode_loop_line_session_id(line: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-pub(crate) fn opencode_session_diff_path(session_id: &str) -> std::path::PathBuf {    let base = dirs::data_local_dir()
+pub(crate) fn opencode_session_diff_path(session_id: &str) -> std::path::PathBuf {
+    let base = dirs::data_local_dir()
         .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")));
     let base = base.unwrap_or_else(|| std::path::PathBuf::from("."));
     base.join("opencode")
