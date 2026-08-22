@@ -8087,13 +8087,23 @@ mod tests {
         .await
         .unwrap();
 
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::PromptDetected)
+            .await;
+        assert!(
+            drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+                .await
+                .expect("drain succeeds")
+                .is_some(),
+            "fresh ready evidence releases the queued message"
+        );
+
         let expected = expected_terminal_chunks("codex", "hello");
         assert_eq!(rx.recv().await.unwrap(), expected[0]);
         assert_eq!(rx.recv().await.unwrap(), expected[1]);
         {
             let agents = state.agents.lock().await;
             let agent = agents.get("agent-1").unwrap();
-            assert_eq!(agent.current_status.lock().unwrap().as_str(), "Idle");
+            assert_eq!(agent.current_status.lock().unwrap().as_str(), "Processing...");
             assert_eq!(*agent.query_count.lock().unwrap(), 1);
         }
     }
@@ -8150,6 +8160,16 @@ mod tests {
         )
         .await
         .unwrap();
+
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        assert!(
+            drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+                .await
+                .expect("drain succeeds")
+                .is_some(),
+            "fresh ready evidence releases the queued message"
+        );
 
         assert_eq!(
             rx.recv().await.unwrap(),
@@ -9412,6 +9432,16 @@ mod tests {
         .await
         .unwrap();
 
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        assert!(
+            drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+                .await
+                .expect("drain succeeds")
+                .is_some(),
+            "fresh ready evidence releases the queued message"
+        );
+
         assert_eq!(rx.recv().await.unwrap(), b"From PlannerOne: yes".to_vec());
         assert_eq!(rx.recv().await.unwrap(), b"\r".to_vec());
     }
@@ -9460,7 +9490,7 @@ mod tests {
             "hello",
             None,
             MessageInputMode::Message,
-            QueuePolicy::QueueIfBusy,
+            QueuePolicy::LiveOnly,
             None,
             None,
             false,
@@ -9511,7 +9541,7 @@ mod tests {
             "hello",
             None,
             MessageInputMode::Message,
-            QueuePolicy::QueueIfBusy,
+            QueuePolicy::LiveOnly,
             None,
             None,
             false,
