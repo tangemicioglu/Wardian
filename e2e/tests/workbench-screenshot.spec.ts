@@ -208,6 +208,96 @@ test("renders chat attachment chips while hiding the provider launch screen", as
   await testInfo.attach("chat-attachments", { path, contentType: "image/png" });
 });
 
+test("keeps the composer send button consistent across empty, populated, and executing states", async ({ page }, testInfo) => {
+  const overview = makeWorkbenchSurface("composer-send-button-evidence", "agents-overview", {
+    state: {
+      mode: "single",
+      focused_agent_id: "agent-alpha",
+      search_query: "",
+      status_filter: [],
+    },
+  });
+  const document = makeWorkbenchDocument({ revision: 5, surfaces: [overview] });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    localStorage.setItem("wardian-settings", JSON.stringify({
+      state: { gridCardDisplayMode: "chat" },
+      version: 2,
+    }));
+  });
+  await installWorkbenchIpcMock(page, {
+    agents: [{
+      ...agents[0],
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      provider_config: { type: "codex", reasoning_effort: "high" },
+    }],
+    load_result: {
+      source: "primary",
+      document,
+      notice: null,
+      durable_revision: document.revision,
+      durable_token: "composer-send-button-evidence-token-5",
+    },
+    responses: {
+      list_provider_model_catalog: {
+        provider: "codex",
+        version: "codex-cli 0.146.0",
+        source: "live_catalog",
+        refresh_error: null,
+        models: [{
+          id: "gpt-5.6-sol",
+          display_name: "5.6 Terra",
+          effort_options: ["low", "high"],
+          default_effort: "high",
+          is_default: true,
+        }],
+      },
+    },
+  });
+
+  await page.goto("/");
+  const card = page.locator('[data-testid="agent-card"]');
+  const input = page.getByLabel("Message agent");
+  const sendButton = page.getByRole("button", { name: "Send message" });
+  await expect(card).toBeVisible();
+  await expect(page.getByText("Provider returned an invalid model catalogue.", { exact: true })).toBeHidden();
+  await expect(sendButton).toBeDisabled();
+  await expect(sendButton).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+  const emptyPath = process.env.WARDIAN_COMPOSER_EMPTY_SCREENSHOT
+    ?? testInfo.outputPath("composer-send-empty.png");
+  await card.screenshot({ path: emptyPath, animations: "disabled" });
+  await testInfo.attach("composer-send-empty", { path: emptyPath, contentType: "image/png" });
+
+  await input.fill("Check the composer action styling.");
+  await expect(sendButton).toBeEnabled();
+  await expect(sendButton).toHaveCSS("background-color", "rgb(146, 106, 9)");
+
+  const textPath = process.env.WARDIAN_COMPOSER_TEXT_SCREENSHOT
+    ?? testInfo.outputPath("composer-send-text.png");
+  await card.screenshot({ path: textPath, animations: "disabled" });
+  await testInfo.attach("composer-send-text", { path: textPath, contentType: "image/png" });
+
+  await page.evaluate(() => {
+    const runtime = (window as unknown as {
+      __WARDIAN_WORKBENCH_IPC_MOCK__: { emit: (event: string, payload: unknown) => void };
+    }).__WARDIAN_WORKBENCH_IPC_MOCK__;
+    runtime.emit("agent-status-updated", {
+      session_id: "agent-alpha",
+      current_status: "Processing...",
+    });
+  });
+  const interruptButton = page.getByRole("button", { name: "Interrupt agent" });
+  await expect(interruptButton).toBeEnabled();
+  await expect(interruptButton).toHaveCSS("background-color", "rgb(146, 106, 9)");
+
+  const interruptPath = process.env.WARDIAN_COMPOSER_INTERRUPT_SCREENSHOT
+    ?? testInfo.outputPath("composer-send-interrupt.png");
+  await card.screenshot({ path: interruptPath, animations: "disabled" });
+  await testInfo.attach("composer-send-interrupt", { path: interruptPath, contentType: "image/png" });
+});
+
 test("renders copied feedback in an agent chat", async ({ page }, testInfo) => {
   const overview = makeWorkbenchSurface("copy-feedback-evidence", "agents-overview", {
     state: {
