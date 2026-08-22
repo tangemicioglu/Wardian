@@ -771,10 +771,9 @@ summary,
 }
 
 .chat-message-user {
-  max-width: min(92%, 48ch);
-  border-inline-end: 2px solid var(--color-wardian-accent);
-  border-radius: 4px 0 0 4px;
-  background: color-mix(in srgb, var(--color-wardian-accent), transparent 94%);
+  border-radius: 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-wardian-accent), transparent 72%);
+  background: color-mix(in srgb, var(--color-wardian-accent), transparent 88%);
 }
 
 .chat-row-actions {
@@ -795,6 +794,29 @@ summary,
   position: absolute;
   top: 6px;
   right: 6px;
+}
+
+/* Message rows keep their actions in flow below the content, hover-revealed,
+   so they can never detach from the text they belong to. */
+.chat-row-actions--inline {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.chat-row-actions--start {
+  align-self: flex-start;
+}
+
+.chat-row-actions--end {
+  align-self: flex-end;
+}
+
+.chat-row:hover .chat-row-actions--inline,
+.chat-row:focus-within .chat-row-actions--inline {
+  opacity: 1;
 }
 
 .chat-row-actions--with-toggle {
@@ -854,10 +876,6 @@ summary,
     right: 48px;
   }
 
-  .chat-message-content {
-    padding-right: 2.75rem;
-  }
-
   .chat-activity-row {
     padding-right: 56px;
   }
@@ -887,10 +905,6 @@ summary,
 
   .chat-message-user {
     max-width: 96%;
-  }
-
-  .chat-message-content {
-    padding-right: 2.75rem;
   }
 
   .chat-activity-detail {
