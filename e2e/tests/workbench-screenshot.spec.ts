@@ -203,13 +203,33 @@ test("keeps the composer send button consistent across empty, populated, and exe
     }));
   });
   await installWorkbenchIpcMock(page, {
-    agents: [agents[0]],
+    agents: [{
+      ...agents[0],
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      provider_config: { type: "codex", reasoning_effort: "high" },
+    }],
     load_result: {
       source: "primary",
       document,
       notice: null,
       durable_revision: document.revision,
       durable_token: "composer-send-button-evidence-token-5",
+    },
+    responses: {
+      list_provider_model_catalog: {
+        provider: "codex",
+        version: "codex-cli 0.146.0",
+        source: "live_catalog",
+        refresh_error: null,
+        models: [{
+          id: "gpt-5.6-sol",
+          display_name: "5.6 Terra",
+          effort_options: ["low", "high"],
+          default_effort: "high",
+          is_default: true,
+        }],
+      },
     },
   });
 
@@ -218,6 +238,7 @@ test("keeps the composer send button consistent across empty, populated, and exe
   const input = page.getByLabel("Message agent");
   const sendButton = page.getByRole("button", { name: "Send message" });
   await expect(card).toBeVisible();
+  await expect(page.getByText("Provider returned an invalid model catalogue.", { exact: true })).toBeHidden();
   await expect(sendButton).toBeDisabled();
   await expect(sendButton).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
 
