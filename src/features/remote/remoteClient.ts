@@ -29,6 +29,8 @@ export class RemoteRequestError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
+    readonly detail?: string,
   ) {
     super(message);
     this.name = "RemoteRequestError";
@@ -64,7 +66,21 @@ async function remoteJson<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
   });
   if (!response.ok) {
-    throw new RemoteRequestError(`Remote request failed: ${response.status}`, response.status);
+    let code: string | undefined;
+    let detail: string | undefined;
+    try {
+      const body = (await response.json()) as { code?: unknown; detail?: unknown };
+      if (typeof body.code === "string") code = body.code;
+      if (typeof body.detail === "string" && body.detail.trim()) detail = body.detail;
+    } catch {
+      // An error body is optional; the status code alone still surfaces.
+    }
+    throw new RemoteRequestError(
+      detail ? `Remote request failed: ${detail}` : `Remote request failed: ${response.status}`,
+      response.status,
+      code,
+      detail,
+    );
   }
   return response.json() as Promise<T>;
 }

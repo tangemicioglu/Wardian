@@ -781,9 +781,8 @@ async fn run_agent_action(
         );
         return Err(error);
     }
-    if crate::remote::operations::run_remote_agent_action(&ctx.app, request.clone())
-        .await
-        .is_err()
+    if let Err(error) =
+        crate::remote::operations::run_remote_agent_action(&ctx.app, request.clone()).await
     {
         let code = "agent_action_failed";
         audit_gateway_event(
@@ -792,7 +791,7 @@ async fn run_agent_action(
             GatewayAuditEvent::rejected("agent_action", &request.action, code)
                 .target("agent", &request.target),
         );
-        return Err(RemoteGatewayError::bad_request(code));
+        return Err(RemoteGatewayError::bad_request_with_detail(code, error));
     }
     audit_gateway_event(
         &session,
@@ -1487,6 +1486,7 @@ fn millis_to_rfc3339(ms: i64) -> String {
 struct RemoteGatewayError {
     status: StatusCode,
     code: &'static str,
+    detail: Option<String>,
 }
 
 impl RemoteGatewayError {
@@ -1494,6 +1494,18 @@ impl RemoteGatewayError {
         Self {
             status: StatusCode::BAD_REQUEST,
             code,
+            detail: None,
+        }
+    }
+
+    /// Carries an operator-readable reason (e.g. a delivery failure message)
+    /// alongside the stable machine code so remote clients can distinguish
+    /// "agent busy" from "agent unreachable" instead of guessing.
+    fn bad_request_with_detail(code: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code,
+            detail: Some(detail.into()),
         }
     }
 
@@ -1501,6 +1513,7 @@ impl RemoteGatewayError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             code,
+            detail: None,
         }
     }
 
@@ -1508,6 +1521,7 @@ impl RemoteGatewayError {
         Self {
             status: StatusCode::FORBIDDEN,
             code,
+            detail: None,
         }
     }
 
@@ -1515,6 +1529,7 @@ impl RemoteGatewayError {
         Self {
             status: StatusCode::TOO_MANY_REQUESTS,
             code,
+            detail: None,
         }
     }
 
@@ -1522,6 +1537,7 @@ impl RemoteGatewayError {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             code,
+            detail: None,
         }
     }
 
@@ -1529,16 +1545,21 @@ impl RemoteGatewayError {
         Self {
             status: StatusCode::NOT_FOUND,
             code,
+            detail: None,
         }
     }
 }
 
 impl IntoResponse for RemoteGatewayError {
     fn into_response(self) -> Response {
-        let body = axum::Json(serde_json::json!({
+        let mut body = serde_json::json!({
             "ok": false,
             "code": self.code,
-        }));
+        });
+        if let Some(detail) = self.detail.as_deref().filter(|value| !value.trim().is_empty()) {
+            body["detail"] = serde_json::Value::String(detail.to_string());
+        }
+        let body = axum::Json(body);
         (self.status, body).into_response()
     }
 }
@@ -1584,6 +1605,42 @@ mod tests {
 
         assert_eq!(error.status, axum::http::StatusCode::BAD_REQUEST);
         assert_eq!(error.code, "device_not_found");
+        assert!(error.detail.is_none());
+    }
+
+    #[test]
+    fn gateway_error_detail_is_serialized_into_response_body() {
+        let error = RemoteGatewayError::bad_request_with_detail(
+            "agent_action_failed",
+            "Timed out waiting for ses_1 OpenCode terminal to become ready",
+        );
+
+        let response = error.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = tauri::async_runtime::block_on(axum::body::to_bytes(
+            response.into_body(),
+            usize::MAX,
+        ))
+        .expect("response body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(payload["code"], "agent_action_failed");
+        assert_eq!(
+            payload["detail"],
+            "Timed out waiting for ses_1 OpenCode terminal to become ready"
+        );
+    }
+
+    #[test]
+    fn gateway_error_without_detail_omits_detail_field() {
+        let response = RemoteGatewayError::bad_request("agent_action_failed").into_response();
+        let body = tauri::async_runtime::block_on(axum::body::to_bytes(
+            response.into_body(),
+            usize::MAX,
+        ))
+        .expect("response body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+
+        assert!(payload.get("detail").is_none());
     }
 
     #[test]
