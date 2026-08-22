@@ -819,19 +819,26 @@ function ChatModelSelection({
   }));
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  // Rollback target for a failed save. A ref rather than render-scope state:
+  // two rapid changes must roll back to the last persisted value, not to a
+  // snapshot the first change already superseded.
+  const selectionRef = useRef(selection);
 
   useEffect(() => {
-    setSelection({
+    const nextSelection = {
       model: agent?.model,
       reasoning_effort: reasoningEffortForConfig(agent ?? {}),
-    });
+    };
+    selectionRef.current = nextSelection;
+    setSelection(nextSelection);
     setSaveError(null);
   }, [agent?.model, agent?.provider_config, sessionId]);
 
   if (!provider?.trim()) return null;
 
   const saveSelection = async (nextSelection: ModelSelection) => {
-    const previousSelection = selection;
+    const previousSelection = selectionRef.current;
+    selectionRef.current = nextSelection;
     let persisted = false;
     setSelection(nextSelection);
     setSaveError(null);
@@ -842,16 +849,21 @@ function ChatModelSelection({
         model: nextSelection.model ?? null,
         reasoningEffort: nextSelection.reasoning_effort ?? null,
       });
-      setSelection({
+      const savedSelection = {
         model: saved.model,
         reasoning_effort: reasoningEffortForConfig(saved),
-      });
+      };
+      selectionRef.current = savedSelection;
+      setSelection(savedSelection);
       persisted = true;
       if (saved.model) {
         await submitInputToAgent(sessionId, `/model ${saved.model}`);
       }
     } catch (reason) {
-      if (!persisted) setSelection(previousSelection);
+      if (!persisted) {
+        selectionRef.current = previousSelection;
+        setSelection(previousSelection);
+      }
       setSaveError(persisted ? `Saved, but the live model could not be changed: ${errorMessage(reason)}` : errorMessage(reason));
     } finally {
       setIsSaving(false);
