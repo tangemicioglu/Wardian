@@ -38,7 +38,10 @@ test.describe("Wardian Core Feature Tests", () => {
     // same invoke mock library-redesign.spec.ts uses (shared via
     // ../fixtures/libraryIpcMock) before the initial navigation so it's in
     // place for every test in this suite, not just the library ones.
-    await installLibraryIpcMock(page, buildLibraryIndexFixture(), buildLibraryContentFixture());
+    const libraryIndex = buildLibraryIndexFixture();
+    const quickPrompt = libraryIndex.sections.prompts.tree.children[0];
+    if (quickPrompt && "is_starred" in quickPrompt) quickPrompt.is_starred = true;
+    await installLibraryIpcMock(page, libraryIndex, buildLibraryContentFixture());
     await page.goto("/", { waitUntil: "domcontentloaded" });
     await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
   });
@@ -69,7 +72,15 @@ test.describe("Wardian Core Feature Tests", () => {
     await page.locator('[data-testid="sidebar-tab-command"]').click();
     await page.waitForTimeout(500);
     await expect(page.locator('[data-testid="command-panel"]')).toBeVisible();
+    await expect(page.locator('[data-testid="command-target-scope"]')).toHaveText("All agents");
+    await expect(page.locator('[data-testid="quick-prompt-0"]')).toBeVisible();
     await expect(page.locator('[data-testid="broadcast-textarea"]')).toBeVisible();
+    if (process.env.WARDIAN_COMMAND_PANEL_SCREENSHOT) {
+      await page.locator('[data-testid="command-panel"]').screenshot({
+        path: process.env.WARDIAN_COMMAND_PANEL_SCREENSHOT,
+        animations: "disabled",
+      });
+    }
   });
 
   test("4. Sidebar navigation - Workflows tab", async () => {

@@ -12,6 +12,8 @@ Use it when you need to send the same instruction to selected agents, run a star
 2. **Broadcast**
 
 Both modes operate on your current agent selection in the right roster.
+The header makes that scope explicit by showing the selected-agent count or
+**All agents** when no roster selection is active.
 
 ## When to Use It
 

@@ -178,6 +178,18 @@ describe("CommandPanel", () => {
     expect(screen.getByRole("heading", { name: "Broadcast", level: 3 })).toHaveClass("text-xs");
   });
 
+  it("makes the current command target visible in the sidebar header", () => {
+    renderCommandPanel({ selectedAgentIds: new Set(["agent-1", "agent-2"]) });
+
+    expect(screen.getByTestId("command-target-scope")).toHaveTextContent("2 selected");
+  });
+
+  it("labels an empty command target as all agents", () => {
+    renderCommandPanel({ selectedAgentIds: new Set() });
+
+    expect(screen.getByTestId("command-target-scope")).toHaveTextContent("All agents");
+  });
+
   it("explains selection scope before a command can broadcast", () => {
     renderCommandPanel();
 
