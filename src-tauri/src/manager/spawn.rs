@@ -2264,13 +2264,11 @@ mod tests {
     fn restored_pi_cursor_resets_for_in_place_rewrite_after_prefix() {
         let dir = tempfile::tempdir().expect("Pi session directory");
         let path = dir.path().join("session.jsonl");
+        let padding = "x".repeat(8192);
         let old_content = format!(
-            "{}{}{}",
+            "{}{{\"type\":\"padding\",\"content\":\"{}\"}}\n{}",
             "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
-            format!(
-                "{{\"type\":\"padding\",\"content\":\"{}\"}}\n",
-                "x".repeat(8192)
-            ),
+            padding,
             "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":\"old\",\"stopReason\":\"stop\"}}\n",
         );
         std::fs::write(&path, &old_content).expect("existing Pi transcript");
