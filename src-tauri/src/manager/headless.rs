@@ -342,6 +342,7 @@ pub(crate) fn headless_provider_args(
         "pi" => {
             if let Some(config) = config_override {
                 let mut config = config.clone();
+                let resume_session = resume_session.filter(|session_id| !session_id.trim().is_empty());
                 config.resume_session = resume_session.map(str::to_string);
                 let mut spawn_args = provider.get_spawn_args(&config, resume_session.is_some());
                 spawn_args = strip_flag_value_pairs(spawn_args, "--tui-mode");
@@ -2407,6 +2408,48 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--session-dir", expected_session_dir.as_str()]));
         assert!(!args.contains(&"--no-session".to_string()));
+    }
+
+    #[test]
+    fn pi_blank_resume_id_keeps_explicit_fresh_session_policy() {
+        let _test_wardian_home = TestWardianHome::new();
+        let provider = ProviderFactory::resolve("pi").expect("Pi provider");
+        let registered_config = AgentConfig {
+            provider: "pi".into(),
+            session_id: "visible-agent".into(),
+            resume_session: Some("   ".into()),
+            fresh_provider_session_id: None,
+            provider_config: wardian_core::models::ProviderConfig::Pi(Default::default()),
+            ..Default::default()
+        };
+
+        let config = effective_headless_provider_config(
+            "pi",
+            Path::new("/workspace"),
+            "workflow-fresh-run",
+            Some("   "),
+            Some(&registered_config),
+            None,
+        )
+        .expect("fresh Pi workflow config");
+        let provider_session_id = config
+            .fresh_provider_session_id
+            .as_deref()
+            .expect("fresh Pi identity");
+        let args = headless_provider_args(
+            "pi",
+            provider.as_ref(),
+            Path::new("/workspace"),
+            "task",
+            "json",
+            Some("   "),
+            Some(&config),
+        );
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--session-id", provider_session_id]));
+        assert!(!args.contains(&"--session".to_string()));
     }
 
     #[test]

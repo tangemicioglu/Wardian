@@ -53,6 +53,40 @@ fn mock_transcript_log_path(session_id: &str) -> Option<std::path::PathBuf> {
         .map(|dir| dir.join("mock-transcript.jsonl"))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PiLogBaseline {
+    path: std::path::PathBuf,
+    offset: u64,
+}
+
+fn pi_log_baseline(session_dir: &std::path::Path, provider_session_id: &str) -> Option<PiLogBaseline> {
+    let path = PiProvider::session_file(session_dir, provider_session_id)?;
+    let offset = std::fs::metadata(&path).ok()?.len();
+    Some(PiLogBaseline { path, offset })
+}
+
+fn restored_pi_log_baseline(config: &AgentConfig, is_restored: bool) -> Option<PiLogBaseline> {
+    if !is_restored || config.provider != "pi" {
+        return None;
+    }
+    let provider_session_id = config
+        .resume_session
+        .as_deref()
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())?;
+    let session_dir = PiProvider::session_dir(&config.session_id)?;
+    pi_log_baseline(&session_dir, provider_session_id)
+}
+
+fn open_pi_log_at_offset(path: &std::path::Path, offset: &mut u64) -> Option<std::fs::File> {
+    let mut file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() < *offset {
+        *offset = 0;
+    }
+    file.seek(std::io::SeekFrom::Start(*offset)).ok()?;
+    Some(file)
+}
+
 fn antigravity_watcher_conversation(
     existing: Option<String>,
     workspace_before: Option<&str>,
@@ -683,6 +717,11 @@ pub async fn spawn_agent(
         is_restored
     ));
 
+    // A restored Pi process can append its first turn immediately after spawn.
+    // Capture the existing transcript boundary while the provider is still
+    // unable to write, then start the watcher from that exact byte offset.
+    let pi_log_baseline = restored_pi_log_baseline(&config, is_restored);
+
     let child = pair
         .slave
         .spawn_command(cmd)
@@ -802,7 +841,8 @@ pub async fn spawn_agent(
     let terminal_title_clone = terminal_title.clone();
     let last_output_at = std::sync::Arc::new(std::sync::Mutex::new(None));
     let last_output_at_clone = last_output_at.clone();
-    let log_path = std::sync::Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+    let initial_log_path = pi_log_baseline.as_ref().map(|baseline| baseline.path.clone());
+    let log_path = std::sync::Arc::new(std::sync::Mutex::new(initial_log_path));
     // The mock provider writes its event stream to a file it owns, so its log
     // path is known up front and needs no discovery watcher. Without this the
     // chat transcript sees nothing for a mock agent: normalized tool events
@@ -1303,11 +1343,13 @@ pub async fn spawn_agent(
         let watcher_current_status = current_status.clone();
         let watcher_log_path = log_path.clone();
         let watcher_watch_state = watch_state.clone();
-        let watcher_skip_existing_log = is_restored;
+        let watcher_initial_offset = pi_log_baseline
+            .as_ref()
+            .map(|baseline| baseline.offset)
+            .unwrap_or(0);
 
         std::thread::spawn(move || {
-            let mut offset = 0_u64;
-            let mut positioned_initial_log = !watcher_skip_existing_log;
+            let mut offset = watcher_initial_offset;
             loop {
                 let current = watcher_current_status
                     .lock()
@@ -1340,90 +1382,78 @@ pub async fn spawn_agent(
                     if let Ok(mut stored_path) = watcher_log_path.lock() {
                         *stored_path = Some(path.clone());
                     }
-                    if let Ok(mut file) = std::fs::File::open(&path) {
-                        if let Ok(metadata) = file.metadata() {
-                            if metadata.len() < offset {
-                                offset = 0;
-                                positioned_initial_log = true;
+                    if let Some(file) = open_pi_log_at_offset(&path, &mut offset) {
+                        let mut reader = std::io::BufReader::new(file);
+                        let mut line = String::new();
+                        loop {
+                            line.clear();
+                            let read = reader.read_line(&mut line).unwrap_or(0);
+                            if read == 0 {
+                                break;
                             }
-                            if !positioned_initial_log {
-                                offset = metadata.len();
-                                positioned_initial_log = true;
+                            offset += read as u64;
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() {
+                                continue;
                             }
-                        }
-                        if file.seek(std::io::SeekFrom::Start(offset)).is_ok() {
-                            let mut reader = std::io::BufReader::new(file);
-                            let mut line = String::new();
-                            loop {
-                                line.clear();
-                                let read = reader.read_line(&mut line).unwrap_or(0);
-                                if read == 0 {
-                                    break;
+                            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed)
+                            else {
+                                continue;
+                            };
+                            let raw_line = parsed.to_string();
+                            if let Some(message) = extract_transcript_message("pi", &raw_line) {
+                                if let Ok(mut watch_state) = watcher_watch_state.lock() {
+                                    watch_state.push_transcript(message);
                                 }
-                                offset += read as u64;
-                                let trimmed = line.trim();
-                                if trimmed.is_empty() {
-                                    continue;
-                                }
-                                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed)
-                                else {
-                                    continue;
-                                };
-                                let raw_line = parsed.to_string();
-                                if let Some(message) = extract_transcript_message("pi", &raw_line) {
-                                    if let Ok(mut watch_state) = watcher_watch_state.lock() {
-                                        watch_state.push_transcript(message);
-                                    }
-                                }
-                                if let Some(event) = watcher_provider.parse_output(&raw_line) {
-                                    if matches!(&event, AgentEvent::Init { .. }) {
-                                        match handle_provider_init_event(
-                                            "pi",
-                                            &event,
-                                            &watcher_config,
-                                            &watcher_init_timestamp,
-                                        ) {
-                                            Ok(_) => {
-                                                if let Ok(mut config) = watcher_config.lock() {
-                                                    if let Some(fresh) =
-                                                        config.fresh_provider_session_id.take()
-                                                    {
-                                                        config.resume_session = Some(fresh);
-                                                    }
+                            }
+                            if let Some(event) = watcher_provider.parse_output(&raw_line) {
+                                if matches!(&event, AgentEvent::Init { .. }) {
+                                    match handle_provider_init_event(
+                                        "pi",
+                                        &event,
+                                        &watcher_config,
+                                        &watcher_init_timestamp,
+                                    ) {
+                                        Ok(_) => {
+                                            if let Ok(mut config) = watcher_config.lock() {
+                                                if let Some(fresh) =
+                                                    config.fresh_provider_session_id.take()
+                                                {
+                                                    config.resume_session = Some(fresh);
                                                 }
-                                                persist_runtime_agent_configs(&watcher_app);
                                             }
-                                            Err(error) => {
-                                                log_debug(&format!(
-                                                    "[WARDIAN] Rejected Pi initialization identity: {error}"
-                                                ));
-                                                set_agent_status(
-                                                    &watcher_app,
-                                                    &watcher_session,
-                                                    &watcher_current_status,
-                                                    "Error",
-                                                );
-                                                break;
-                                            }
+                                            persist_runtime_agent_configs(&watcher_app);
+                                        }
+                                        Err(error) => {
+                                            log_debug(&format!(
+                                                "[WARDIAN] Rejected Pi initialization identity: {error}"
+                                            ));
+                                            set_agent_status(
+                                                &watcher_app,
+                                                &watcher_session,
+                                                &watcher_current_status,
+                                                "Error",
+                                            );
+                                            break;
                                         }
                                     }
-                                    apply_agent_event(
-                                        &watcher_app,
-                                        &watcher_session,
-                                        event,
-                                        &watcher_query_count,
-                                        &watcher_init_timestamp,
-                                        &watcher_current_status,
-                                    );
                                 }
-                                let _ = watcher_app.emit(
-                                    "agent-json-event",
-                                    serde_json::json!({
-                                        "session_id": watcher_session,
-                                        "data": parsed,
-                                    }),
+                                apply_agent_event(
+                                    &watcher_app,
+                                    &watcher_session,
+                                    event,
+                                    &watcher_query_count,
+                                    &watcher_init_timestamp,
+                                    &watcher_current_status,
                                 );
                             }
+                            let _ = watcher_app.emit(
+                                "agent-json-event",
+                                serde_json::json!({
+                                    "session_id": watcher_session,
+                                    "data": parsed,
+                                }),
+                            );
                         }
                     }
                 }
@@ -2072,6 +2102,40 @@ mod tests {
     fn restored_spawns_skip_stale_process_scan() {
         assert!(!should_cleanup_stale_session_processes_before_spawn(true));
         assert!(should_cleanup_stale_session_processes_before_spawn(false));
+    }
+
+    #[test]
+    fn restored_pi_baseline_preserves_events_appended_before_first_watcher_poll() {
+        let dir = tempfile::tempdir().expect("Pi session directory");
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+                "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":\"old\",\"stopReason\":\"stop\"}}\n",
+            ),
+        )
+        .expect("existing Pi transcript");
+        let baseline = pi_log_baseline(dir.path(), "pi-session").expect("Pi baseline");
+
+        let mut append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("append Pi turn before watcher starts");
+        writeln!(
+            append,
+            "{{\"type\":\"message_end\",\"message\":{{\"role\":\"assistant\",\"content\":\"new\",\"stopReason\":\"stop\"}}}}"
+        )
+        .expect("new Pi turn");
+        drop(append);
+
+        let mut offset = baseline.offset;
+        let mut file = open_pi_log_at_offset(&baseline.path, &mut offset).expect("positioned log");
+        let mut observed = String::new();
+        file.read_to_string(&mut observed).expect("new Pi events");
+
+        assert!(!observed.contains("old"));
+        assert!(observed.contains("new"));
     }
 
     fn agent_without_pty() -> crate::state::ActiveAgent {
