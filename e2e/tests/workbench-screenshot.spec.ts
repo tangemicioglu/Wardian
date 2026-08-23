@@ -354,10 +354,14 @@ test("serializes chat model selection while persistence and live application are
         ],
       },
       update_agent_model_selection: {
-        ...agents[0],
-        provider: "codex",
-        model: "gpt-5.6-luna",
-        provider_config: { type: "codex", reasoning_effort: "high" },
+        config: {
+          ...agents[0],
+          provider: "codex",
+          model: "gpt-5.6-luna",
+          provider_config: { type: "codex", reasoning_effort: "high" },
+        },
+        live_application: "applied",
+        live_error: null,
       },
       submit_prompt_to_agent: null,
     },
@@ -373,7 +377,7 @@ test("serializes chat model selection while persistence and live application are
 
   await expect(model).toBeDisabled();
   await expect(effort).toBeDisabled();
-  await expect(card.getByRole("status")).toHaveText("Saving model…");
+  await expect(card.getByRole("status")).toHaveText("Applying model…");
   await expect.poll(async () => (await ipc.calls("update_agent_model_selection")).length).toBe(1);
 
   const path = process.env.WARDIAN_CHAT_MODEL_SAVING_SCREENSHOT

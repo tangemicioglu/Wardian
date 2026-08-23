@@ -1,5 +1,6 @@
 use crate::manager;
 use crate::providers::antigravity::AntigravityProvider;
+use crate::providers::codex_model_selection::{apply_live_selection, resolve_live_selection};
 use crate::providers::ProviderFactory;
 use crate::state::conversation_archive::effective_conversation_logging;
 use crate::state::{ActiveAgent, AppState};
@@ -16,6 +17,25 @@ use wardian_core::models::{
     AgentConfig, AgentSessionPersistence, AgentSessionPersistenceOverride, AgentTelemetry,
     DeployedSkillRef, ProviderConfig,
 };
+
+/// Outcome of applying a persisted agent model selection to its live provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentModelLiveApplication {
+    Applied,
+    Deferred,
+    Failed,
+    NotAttempted,
+}
+
+/// Persisted agent configuration together with the independent live outcome.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentModelSelectionUpdateResult {
+    pub config: AgentConfig,
+    pub live_application: AgentModelLiveApplication,
+    pub live_error: Option<String>,
+}
 
 const MAX_AGENT_DESCRIPTION_CHARS: usize = 280;
 
@@ -3774,7 +3794,11 @@ pub async fn update_agent_model_selection(
     reasoning_effort: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
-) -> Result<AgentConfig, String> {
+) -> Result<AgentModelSelectionUpdateResult, String> {
+    // Persisting and live-applying are one mutation. This lock also prevents
+    // another Wardian surface from delivering input between picker steps.
+    let delivery_lock = state.delivery_lock_for(&session_id).await;
+    let _delivery_guard = delivery_lock.lock().await;
     let mut config = {
         let agents = state.agents.lock().await;
         let agent = agents
@@ -3790,8 +3814,71 @@ pub async fn update_agent_model_selection(
         normalized_optional_agent_setting(reasoning_effort),
     )?;
 
-    update_agent_config(config.clone(), state, app).await?;
-    Ok(config)
+    update_agent_config(config.clone(), state.clone(), app).await?;
+
+    if !config.provider.eq_ignore_ascii_case("codex") {
+        return Ok(AgentModelSelectionUpdateResult {
+            config,
+            live_application: AgentModelLiveApplication::NotAttempted,
+            live_error: None,
+        });
+    }
+
+    if config.is_off {
+        return Ok(AgentModelSelectionUpdateResult {
+            config,
+            live_application: AgentModelLiveApplication::Deferred,
+            live_error: None,
+        });
+    }
+
+    use crate::state::terminal_session::TerminalBrokerError;
+    match state.terminal_sessions.snapshot(&session_id).await {
+        Err(
+            TerminalBrokerError::SessionNotFound
+            | TerminalBrokerError::RuntimeTerminated
+            | TerminalBrokerError::RuntimeUnavailable,
+        ) => {
+            return Ok(AgentModelSelectionUpdateResult {
+                config,
+                live_application: AgentModelLiveApplication::Deferred,
+                live_error: None,
+            });
+        }
+        Err(error) => {
+            return Ok(AgentModelSelectionUpdateResult {
+                config,
+                live_application: AgentModelLiveApplication::Failed,
+                live_error: Some(format!("Unable to inspect the Codex terminal: {error}")),
+            });
+        }
+        Ok(_) => {}
+    }
+
+    let live_result = async {
+        crate::control::wait_for_terminal_ready_for_delivery_service(&state, &session_id).await?;
+        let catalog = crate::providers::models::model_catalog("codex", false).await;
+        let selection = resolve_live_selection(
+            &catalog,
+            config.model.as_deref(),
+            config.codex_config().reasoning_effort.as_deref(),
+        )?;
+        apply_live_selection(&state.terminal_sessions, &session_id, &selection).await
+    }
+    .await;
+
+    match live_result {
+        Ok(()) => Ok(AgentModelSelectionUpdateResult {
+            config,
+            live_application: AgentModelLiveApplication::Applied,
+            live_error: None,
+        }),
+        Err(error) => Ok(AgentModelSelectionUpdateResult {
+            config,
+            live_application: AgentModelLiveApplication::Failed,
+            live_error: Some(error),
+        }),
+    }
 }
 
 fn normalized_optional_agent_setting(value: Option<String>) -> Option<String> {

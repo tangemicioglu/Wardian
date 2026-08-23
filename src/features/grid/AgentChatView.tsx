@@ -5,7 +5,7 @@ import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { FileText, Hand, Image as ImageIcon, Loader2, Plus, SendHorizontal, Square, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import type { AgentChatEvent, AgentConfig, AgentTelemetry } from "../../types";
+import type { AgentChatEvent, AgentConfig, AgentModelSelectionUpdateResult, AgentTelemetry } from "../../types";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { reasoningEffortForConfig } from "../agents/configUtils";
 import { ProviderModelSelector, type ModelSelection } from "../agents/ProviderModelSelector";
@@ -818,6 +818,7 @@ function ChatModelSelection({
     reasoning_effort: reasoningEffortForConfig(agent ?? {}),
   }));
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   // Rollback target for a failed save. A ref rather than render-scope state:
   // two rapid changes must roll back to the last persisted value, not to a
@@ -832,6 +833,7 @@ function ChatModelSelection({
     selectionRef.current = nextSelection;
     setSelection(nextSelection);
     setSaveError(null);
+    setSaveNotice(null);
   }, [agent?.model, agent?.provider_config, sessionId]);
 
   if (!provider?.trim()) return null;
@@ -842,13 +844,15 @@ function ChatModelSelection({
     let persisted = false;
     setSelection(nextSelection);
     setSaveError(null);
+    setSaveNotice(null);
     setIsSaving(true);
     try {
-      const saved = await invoke<AgentConfig>("update_agent_model_selection", {
+      const result = await invoke<AgentModelSelectionUpdateResult>("update_agent_model_selection", {
         sessionId,
         model: nextSelection.model ?? null,
         reasoningEffort: nextSelection.reasoning_effort ?? null,
       });
+      const saved = result.config;
       const savedSelection = {
         model: saved.model,
         reasoning_effort: reasoningEffortForConfig(saved),
@@ -856,7 +860,11 @@ function ChatModelSelection({
       selectionRef.current = savedSelection;
       setSelection(savedSelection);
       persisted = true;
-      if (saved.model) {
+      if (result.live_application === "failed") {
+        setSaveError(`Saved, but the live model could not be changed: ${result.live_error ?? "Codex did not confirm the selection."}`);
+      } else if (result.live_application === "deferred") {
+        setSaveNotice("Saved for the next start or restart.");
+      } else if (result.live_application === "not_attempted" && saved.model) {
         await submitInputToAgent(sessionId, `/model ${saved.model}`);
       }
     } catch (reason) {
@@ -880,7 +888,8 @@ function ChatModelSelection({
         selection={selection}
         onSelectionChange={(nextSelection) => void saveSelection(nextSelection)}
       />
-      {isSaving ? <span className="shrink-0 text-[10px] text-muted-neutral" role="status">Saving model…</span> : null}
+      {isSaving ? <span className="shrink-0 text-[10px] text-muted-neutral" role="status">Applying model…</span> : null}
+      {saveNotice ? <p className="mt-1 text-[10px] text-muted-neutral" role="status">{saveNotice}</p> : null}
       {saveError ? <p className="mt-1 text-[10px] text-wardian-error" role="alert">{saveError}</p> : null}
     </div>
   );

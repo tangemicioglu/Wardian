@@ -7,7 +7,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentChatEvent, AgentConfig } from "../../types";
+import type { AgentChatEvent, AgentModelSelectionUpdateResult } from "../../types";
 import { AppShell } from "../../layout/AppShell";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { AgentChatView } from "./AgentChatView";
@@ -1671,19 +1671,19 @@ describe("AgentChatView", () => {
           reasoningEffort: "low",
         });
         return Promise.resolve({
-          session_id: "agent-1",
-          session_name: "Alpha",
-          agent_class: "Coder",
-          folder: "C:/repo",
-          is_off: false,
-          provider: "codex",
-          model: "gpt-5.6-sol",
-          provider_config: { type: "codex", reasoning_effort: "low" },
+          config: {
+            session_id: "agent-1",
+            session_name: "Alpha",
+            agent_class: "Coder",
+            folder: "C:/repo",
+            is_off: false,
+            provider: "codex",
+            model: "gpt-5.6-sol",
+            provider_config: { type: "codex", reasoning_effort: "low" },
+          },
+          live_application: "applied",
+          live_error: null,
         });
-      }
-      if (command === "submit_prompt_to_agent") {
-        expect(args).toEqual({ sessionId: "agent-1", prompt: "/model gpt-5.6-sol" });
-        return Promise.resolve(undefined);
       }
       return Promise.reject(new Error(`unexpected command: ${command}`));
     });
@@ -1699,11 +1699,74 @@ describe("AgentChatView", () => {
       model: "gpt-5.6-sol",
       reasoningEffort: "low",
     }));
+    expect(invokeMock).not.toHaveBeenCalledWith("submit_prompt_to_agent", expect.anything());
     expect(screen.queryByText("Applies when this agent next starts or restarts.")).not.toBeInTheDocument();
   });
 
+  it.each([
+    {
+      name: "reports a deferred live change as saved for restart",
+      liveApplication: "deferred" as const,
+      liveError: null,
+      expected: "Saved for the next start or restart.",
+      role: "status" as const,
+    },
+    {
+      name: "reports a failed live change without rolling back persistence",
+      liveApplication: "failed" as const,
+      liveError: "Timed out waiting for Codex model picker",
+      expected: "Saved, but the live model could not be changed: Timed out waiting for Codex model picker",
+      role: "alert" as const,
+    },
+  ])("$name", async ({ liveApplication, liveError, expected, role }) => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "list_provider_model_catalog") {
+        return Promise.resolve({
+          provider: "codex",
+          version: "codex-cli 0.149.0",
+          source: "live_catalog",
+          refresh_error: null,
+          models: [{
+            id: "gpt-target",
+            display_name: "GPT Target",
+            effort_options: ["low"],
+            default_effort: "low",
+            is_default: false,
+          }],
+        });
+      }
+      if (command === "update_agent_model_selection") {
+        return Promise.resolve({
+          config: {
+            session_id: "agent-1",
+            session_name: "Alpha",
+            agent_class: "Coder",
+            folder: "C:/repo",
+            is_off: liveApplication === "deferred",
+            provider: "codex",
+            model: "gpt-target",
+            provider_config: { type: "codex", reasoning_effort: "low" },
+          },
+          live_application: liveApplication,
+          live_error: liveError,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<AgentChatView sessionId="agent-1" agent={{ session_name: "Alpha", agent_class: "Coder", provider: "codex" }} status="Idle" />);
+    await screen.findByRole("option", { name: "GPT Target" });
+    await user.selectOptions(screen.getByLabelText("Model"), "gpt-target");
+
+    expect(await screen.findByRole(role)).toHaveTextContent(expected);
+    expect(invokeMock).not.toHaveBeenCalledWith("submit_prompt_to_agent", expect.anything());
+    expect(screen.getByLabelText("Model")).toHaveValue("gpt-target");
+  });
+
   it("blocks overlapping chat model saves until persistence and live application finish", async () => {
-    const firstSave = deferred<AgentConfig>();
+    const firstSave = deferred<AgentModelSelectionUpdateResult>();
     const updateCalls: unknown[] = [];
     invokeMock.mockImplementation((command, args) => {
       if (command === "load_agent_chat_transcript") return Promise.resolve([]);
@@ -1723,14 +1786,18 @@ describe("AgentChatView", () => {
         updateCalls.push(args);
         if (updateCalls.length === 1) return firstSave.promise;
         return Promise.resolve({
-          session_id: "agent-1",
-          session_name: "Alpha",
-          agent_class: "Coder",
-          folder: "C:/repo",
-          is_off: false,
-          provider: "codex",
-          model: "model-c",
-          provider_config: { type: "codex" },
+          config: {
+            session_id: "agent-1",
+            session_name: "Alpha",
+            agent_class: "Coder",
+            folder: "C:/repo",
+            is_off: false,
+            provider: "codex",
+            model: "model-c",
+            provider_config: { type: "codex" },
+          },
+          live_application: "applied",
+          live_error: null,
         });
       }
       if (command === "submit_prompt_to_agent") return Promise.resolve(undefined);
@@ -1746,19 +1813,23 @@ describe("AgentChatView", () => {
 
     await waitFor(() => expect(modelSelector).toBeDisabled());
     expect(screen.getByLabelText("Effort")).toBeDisabled();
-    expect(screen.getByRole("status")).toHaveTextContent("Saving model…");
+    expect(screen.getByRole("status")).toHaveTextContent("Applying model…");
     await user.selectOptions(modelSelector, "model-c");
     expect(updateCalls).toHaveLength(1);
 
     firstSave.resolve({
-      session_id: "agent-1",
-      session_name: "Alpha",
-      agent_class: "Coder",
-      folder: "C:/repo",
-      is_off: false,
-      provider: "codex",
-      model: "model-b",
-      provider_config: { type: "codex", reasoning_effort: "low" },
+      config: {
+        session_id: "agent-1",
+        session_name: "Alpha",
+        agent_class: "Coder",
+        folder: "C:/repo",
+        is_off: false,
+        provider: "codex",
+        model: "model-b",
+        provider_config: { type: "codex", reasoning_effort: "low" },
+      },
+      live_application: "applied",
+      live_error: null,
     });
 
     await waitFor(() => expect(modelSelector).not.toBeDisabled());
