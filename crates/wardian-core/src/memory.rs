@@ -1230,7 +1230,8 @@ mod tests {
             primary: true,
         });
         let first = store.save(create).unwrap();
-        assert_eq!(first.workspace.as_deref(), Some("c:/work"));
+        let expected_workspace = if cfg!(windows) { "c:/work" } else { "C:/Work" };
+        assert_eq!(first.workspace.as_deref(), Some(expected_workspace));
         assert_eq!(first.sources.len(), 1);
         let second = store
             .update(UpdateMemoryRequest {
