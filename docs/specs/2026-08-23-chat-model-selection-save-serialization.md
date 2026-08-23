@@ -31,8 +31,12 @@ opens `/model`, reads canonical PTY snapshots to identify each picker, moves
 from the current option to the requested option with arrow keys, and waits for
 Codex's confirmation. The requested defaults are resolved from Codex's cached
 provider-owned catalog; Wardian does not hard-code model order or availability.
-The per-agent delivery lock covers persistence and every picker step so another
-Wardian delivery cannot interleave with the sequence.
+The per-agent lifecycle lock covers the configuration snapshot, persistence,
+and every picker step so a CLI, control, or other configuration update cannot
+overtake the live application. The per-agent delivery lock covers the same
+boundary so another Wardian delivery cannot interleave with the sequence.
+Wardian acquires those locks in lifecycle-then-delivery order, matching control
+delivery and avoiding a cross-surface lock inversion.
 
 Persistence remains authoritative if live application fails. An off agent
 reports the choice as saved for its next start or restart. A live timeout or
@@ -55,6 +59,9 @@ commands from this surface.
    confirmed by the interactive provider UI.
 6. Provider defaults expand through the live Codex catalog, never a Wardian
    model list or assumed picker index.
+7. A concurrent control/configuration update waits until persistence and live
+   application finish, then applies after that transaction rather than leaving
+   durable configuration and the live Codex session on different selections.
 
 ## Verification
 
@@ -64,3 +71,7 @@ until persistence and live application finish. Rust tests simulate the Codex
 PTY and cover exact option parsing, default resolution, and the nested Ultra
 sequence. The opt-in native provider test spawns real Codex, changes model and
 effort through the command, and verifies the confirmed terminal footer.
+
+A backend concurrency test holds the model-selection mutation guards across a
+simulated live-picker delay and proves that a control-path model/effort update
+cannot complete until the live transaction releases them.

@@ -3708,7 +3708,7 @@ pub async fn rename_agent(
 
 #[tauri::command]
 pub async fn update_agent_config(
-    mut new_config: AgentConfig,
+    new_config: AgentConfig,
     state: State<'_, AppState>,
     _app: AppHandle,
 ) -> Result<(), String> {
@@ -3716,10 +3716,17 @@ pub async fn update_agent_config(
         "[WARDIAN] update_agent_config called for session: {}",
         new_config.session_id
     ));
+    let _lifecycle_guard = lock_agent_lifecycle(&state, &new_config.session_id).await;
+    persist_agent_config_while_lifecycle_locked(new_config, state.inner()).await
+}
+
+async fn persist_agent_config_while_lifecycle_locked(
+    mut new_config: AgentConfig,
+    state: &AppState,
+) -> Result<(), String> {
     new_config.validate_provider_config_matches_provider()?;
     new_config.description = normalize_agent_description(&new_config.description)?;
     new_config.mark_provider_config_nested_for_save();
-    let _lifecycle_guard = lock_agent_lifecycle(&state, &new_config.session_id).await;
     let agents = state.agents.lock().await;
     let order = state.agent_order.lock().await;
 
@@ -3787,18 +3794,38 @@ pub async fn update_agent_config(
     }
 }
 
+struct AgentModelSelectionMutationGuards {
+    _lifecycle: tokio::sync::OwnedMutexGuard<()>,
+    _delivery: tokio::sync::OwnedMutexGuard<()>,
+}
+
+async fn lock_agent_model_selection_mutation(
+    state: &AppState,
+    session_id: &str,
+) -> AgentModelSelectionMutationGuards {
+    // Keep the global per-agent order aligned with control delivery:
+    // lifecycle first, then delivery. Reversing these can deadlock a model
+    // change against a control message that already owns the lifecycle gate.
+    let lifecycle = lock_agent_lifecycle(state, session_id).await;
+    let delivery = state.delivery_lock_for(session_id).await.lock_owned().await;
+    AgentModelSelectionMutationGuards {
+        _lifecycle: lifecycle,
+        _delivery: delivery,
+    }
+}
+
 #[tauri::command]
 pub async fn update_agent_model_selection(
     session_id: String,
     model: Option<String>,
     reasoning_effort: Option<String>,
     state: State<'_, AppState>,
-    app: AppHandle,
+    _app: AppHandle,
 ) -> Result<AgentModelSelectionUpdateResult, String> {
-    // Persisting and live-applying are one mutation. This lock also prevents
-    // another Wardian surface from delivering input between picker steps.
-    let delivery_lock = state.delivery_lock_for(&session_id).await;
-    let _delivery_guard = delivery_lock.lock().await;
+    // Persisting and live-applying are one mutation. The lifecycle guard keeps
+    // every configuration surface out until the live result is known, while
+    // the delivery guard prevents input from interleaving between picker steps.
+    let _mutation_guards = lock_agent_model_selection_mutation(&state, &session_id).await;
     let mut config = {
         let agents = state.agents.lock().await;
         let agent = agents
@@ -3814,7 +3841,7 @@ pub async fn update_agent_model_selection(
         normalized_optional_agent_setting(reasoning_effort),
     )?;
 
-    update_agent_config(config.clone(), state.clone(), app).await?;
+    persist_agent_config_while_lifecycle_locked(config.clone(), state.inner()).await?;
 
     if !config.provider.eq_ignore_ascii_case("codex") {
         return Ok(AgentModelSelectionUpdateResult {
@@ -4496,7 +4523,8 @@ mod tests {
         ensure_provider_available_before_session_bootstrap, find_assignable_worktree,
         find_deletable_worktree_for_source, flatten_clone_file_paths, generated_agent_name,
         insert_new_agent_order, is_under_managed_agent_worktree_root,
-        is_under_wardian_agent_worktree_root, lock_agent_lifecycle, mark_agent_paused_off,
+        is_under_wardian_agent_worktree_root, lock_agent_lifecycle,
+        lock_agent_model_selection_mutation, mark_agent_paused_off,
         new_agent_order_placement_for_setting, normalize_clone_folder_override,
         normalize_discovered_git_worktree_path, normalize_existing_workspace_record_path,
         normalize_spawn_folder, normalize_workspace_record_path,
@@ -6395,6 +6423,58 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
 
         let outcome = update.await.unwrap().expect("update after lifecycle lock");
         assert_eq!(outcome.updated_fields, vec!["workspace"]);
+    }
+
+    #[tokio::test]
+    async fn model_selection_mutation_blocks_control_model_updates_until_live_apply_finishes() {
+        let state = Arc::new(AppState::new());
+        let agent = make_test_agent();
+        {
+            let mut config = agent.config.lock().unwrap();
+            config.session_id = "agent-1".to_string();
+            config.provider = "codex".to_string();
+            config.reset_provider_config_for_provider();
+        }
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
+        state.agent_order.lock().await.push("agent-1".to_string());
+
+        let mutation_guards = lock_agent_model_selection_mutation(&state, "agent-1").await;
+        let state_for_update = Arc::clone(&state);
+        let control_update = tokio::spawn(async move {
+            update_agent_fields_in_state(
+                &state_for_update,
+                "agent-1",
+                AgentUpdateFields {
+                    class: None,
+                    workspace: None,
+                    description: None,
+                    model: Some("gpt-5.6-sol"),
+                    reasoning_effort: Some("high"),
+                },
+                &[],
+            )
+            .await
+        });
+
+        // Model selection keeps these guards while the real picker waits for
+        // intermediate screens. A control/config update must not overtake it.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!control_update.is_finished());
+        drop(mutation_guards);
+
+        let outcome = control_update
+            .await
+            .unwrap()
+            .expect("control update after live model application");
+        assert_eq!(outcome.config.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            outcome.config.codex_config().reasoning_effort.as_deref(),
+            Some("high")
+        );
     }
 
     #[test]
