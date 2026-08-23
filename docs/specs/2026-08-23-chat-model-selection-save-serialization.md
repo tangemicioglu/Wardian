@@ -37,6 +37,10 @@ overtake the live application. The per-agent delivery lock covers the same
 boundary so another Wardian delivery cannot interleave with the sequence.
 Wardian acquires those locks in lifecycle-then-delivery order, matching control
 delivery and avoiding a cross-surface lock inversion.
+Desktop presentation input, legacy input commands, injected/broadcast input,
+and remote terminal input all join the same delivery queue. Input received
+during a model transaction waits until the picker is closed, while the picker
+controller's privileged writes run inside the transaction it already owns.
 
 Persistence remains authoritative if live application fails. An off agent
 reports the choice as saved for its next start or restart. A live timeout or
@@ -72,6 +76,8 @@ PTY and cover exact option parsing, default resolution, and the nested Ultra
 sequence. The opt-in native provider test spawns real Codex, changes model and
 effort through the command, and verifies the confirmed terminal footer.
 
-A backend concurrency test holds the model-selection mutation guards across a
-simulated live-picker delay and proves that a control-path model/effort update
-cannot complete until the live transaction releases them.
+A backend concurrency test invokes the real persistence transaction with an
+injected live-picker seam. It pauses after persistence, proves that both a
+control-path model/effort update and presentation input remain blocked, then
+releases the picker and verifies both operations continue only after the live
+transaction finishes.

@@ -679,14 +679,17 @@ async fn handle_client_message(
             else {
                 return ClientMessageAction::Fatal("invalid_terminal_attach_message");
             };
-            match state
-                .terminal_sessions
-                .send_input(TerminalInputRequest {
-                    lease: lease(binding, runtime_generation, lease_epoch),
-                    bytes: data.into_bytes(),
-                })
-                .await
-            {
+            let result = {
+                let _delivery_guard = state.lock_agent_delivery(&binding.session_id).await;
+                state
+                    .terminal_sessions
+                    .send_input(TerminalInputRequest {
+                        lease: lease(binding, runtime_generation, lease_epoch),
+                        bytes: data.into_bytes(),
+                    })
+                    .await
+            };
+            match result {
                 Ok(decision) => {
                     send_json(
                         socket,
@@ -714,14 +717,17 @@ async fn handle_client_message(
             else {
                 return ClientMessageAction::Fatal("invalid_terminal_attach_message");
             };
-            match state
-                .terminal_sessions
-                .send_input(TerminalInputRequest {
-                    lease: lease(binding, runtime_generation, lease_epoch),
-                    bytes,
-                })
-                .await
-            {
+            let result = {
+                let _delivery_guard = state.lock_agent_delivery(&binding.session_id).await;
+                state
+                    .terminal_sessions
+                    .send_input(TerminalInputRequest {
+                        lease: lease(binding, runtime_generation, lease_epoch),
+                        bytes,
+                    })
+                    .await
+            };
+            match result {
                 Ok(decision) => {
                     send_json(
                         socket,
@@ -969,14 +975,17 @@ async fn send_v1_input(
     binding: &mut TerminalSocketBinding,
     bytes: Vec<u8>,
 ) -> ClientMessageAction {
-    match state
-        .terminal_sessions
-        .send_input(TerminalInputRequest {
-            lease: lease(binding, binding.runtime_generation, binding.lease_epoch),
-            bytes,
-        })
-        .await
-    {
+    let result = {
+        let _delivery_guard = state.lock_agent_delivery(&binding.session_id).await;
+        state
+            .terminal_sessions
+            .send_input(TerminalInputRequest {
+                lease: lease(binding, binding.runtime_generation, binding.lease_epoch),
+                bytes,
+            })
+            .await
+    };
+    match result {
         Ok(decision) => {
             binding.lease_epoch = decision.lease_epoch;
             binding.owner_presentation_id = decision.owner_presentation_id.clone();

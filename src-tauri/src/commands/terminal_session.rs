@@ -114,6 +114,14 @@ pub(crate) async fn send_terminal_presentation_input_with_broker(
         .await
 }
 
+pub(crate) async fn send_terminal_presentation_input_for_state(
+    state: &AppState,
+    request: TerminalPresentationTextInputRequest,
+) -> Result<TerminalLeaseDecision, TerminalBrokerError> {
+    let _delivery_guard = state.lock_agent_delivery(&request.session_id).await;
+    send_terminal_presentation_input_with_broker(&state.terminal_sessions, request).await
+}
+
 pub(crate) async fn unregister_terminal_presentation_with_broker(
     broker: &TerminalSessionBroker,
     session_id: &str,
@@ -288,7 +296,7 @@ pub async fn send_terminal_presentation_input(
     request: TerminalPresentationTextInputRequest,
     state: State<'_, AppState>,
 ) -> Result<TerminalLeaseDecision, String> {
-    send_terminal_presentation_input_with_broker(&state.terminal_sessions, request)
+    send_terminal_presentation_input_for_state(&state, request)
         .await
         .map_err(command_error)
 }
@@ -298,6 +306,7 @@ pub async fn send_terminal_presentation_binary(
     request: TerminalPresentationBinaryInputRequest,
     state: State<'_, AppState>,
 ) -> Result<TerminalLeaseDecision, String> {
+    let _delivery_guard = state.lock_agent_delivery(&request.session_id).await;
     state
         .terminal_sessions
         .send_input(TerminalInputRequest {

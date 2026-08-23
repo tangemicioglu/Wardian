@@ -130,6 +130,19 @@ impl AppState {
             .clone()
     }
 
+    /// Serializes every external writer to one agent PTY. Multi-step provider
+    /// interactions retain this guard for their whole transaction so raw
+    /// terminal input cannot be inserted between automated steps.
+    pub async fn lock_agent_delivery(
+        &self,
+        target_session_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.delivery_lock_for(target_session_id)
+            .await
+            .lock_owned()
+            .await
+    }
+
     /// Returns the gate shared by agent lifecycle transitions and headless
     /// provider runs for one registered agent. Keeping this ownership in
     /// `AppState` prevents a resumed live session from overlapping an in-flight
