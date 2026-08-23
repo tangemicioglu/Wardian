@@ -298,6 +298,95 @@ test("keeps the composer send button consistent across empty, populated, and exe
   await testInfo.attach("composer-send-interrupt", { path: interruptPath, contentType: "image/png" });
 });
 
+test("serializes chat model selection while persistence and live application are active", async ({ page }, testInfo) => {
+  const overview = makeWorkbenchSurface("chat-model-saving-evidence", "agents-overview", {
+    state: {
+      mode: "single",
+      focused_agent_id: "agent-alpha",
+      search_query: "",
+      status_filter: [],
+    },
+  });
+  const document = makeWorkbenchDocument({ revision: 6, surfaces: [overview] });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    localStorage.setItem("wardian-settings", JSON.stringify({
+      state: { gridCardDisplayMode: "chat" },
+      version: 2,
+    }));
+  });
+  const ipc = await installWorkbenchIpcMock(page, {
+    agents: [{
+      ...agents[0],
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      provider_config: { type: "codex", reasoning_effort: "low" },
+    }],
+    load_result: {
+      source: "primary",
+      document,
+      notice: null,
+      durable_revision: document.revision,
+      durable_token: "chat-model-saving-evidence-token-6",
+    },
+    response_delays_ms: { update_agent_model_selection: 1_500 },
+    responses: {
+      list_provider_model_catalog: {
+        provider: "codex",
+        version: "codex-cli 0.146.0",
+        source: "live_catalog",
+        refresh_error: null,
+        models: [
+          {
+            id: "gpt-5.6-sol",
+            display_name: "5.6 Terra",
+            effort_options: ["low", "high"],
+            default_effort: "low",
+            is_default: true,
+          },
+          {
+            id: "gpt-5.6-luna",
+            display_name: "5.6 Luna",
+            effort_options: ["low", "high"],
+            default_effort: "high",
+            is_default: false,
+          },
+        ],
+      },
+      update_agent_model_selection: {
+        ...agents[0],
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        provider_config: { type: "codex", reasoning_effort: "high" },
+      },
+      submit_prompt_to_agent: null,
+    },
+  });
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  const card = page.getByTestId("agent-card");
+  const model = card.getByLabel("Model", { exact: true });
+  const effort = card.getByLabel("Effort");
+  await expect(card).toBeVisible();
+  await expect(model).toBeEnabled();
+  await model.selectOption("gpt-5.6-luna");
+
+  await expect(model).toBeDisabled();
+  await expect(effort).toBeDisabled();
+  await expect(card.getByRole("status")).toHaveText("Saving model…");
+  await expect.poll(async () => (await ipc.calls("update_agent_model_selection")).length).toBe(1);
+
+  const path = process.env.WARDIAN_CHAT_MODEL_SAVING_SCREENSHOT
+    ?? testInfo.outputPath("chat-model-saving.png");
+  await card.screenshot({ path, animations: "disabled" });
+  await testInfo.attach("chat-model-saving", { path, contentType: "image/png" });
+
+  await page.waitForTimeout(250);
+  expect(await ipc.calls("update_agent_model_selection")).toHaveLength(1);
+  await expect(model).toBeEnabled();
+  await expect(effort).toBeEnabled();
+});
+
 test("renders copied feedback in an agent chat", async ({ page }, testInfo) => {
   const overview = makeWorkbenchSurface("copy-feedback-evidence", "agents-overview", {
     state: {

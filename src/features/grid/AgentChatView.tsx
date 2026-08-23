@@ -874,12 +874,13 @@ function ChatModelSelection({
     <div className="min-w-0 shrink-0">
       <ProviderModelSelector
         compact
+        disabled={isSaving}
         idPrefix={`chat-${sessionId}`}
         provider={provider}
         selection={selection}
         onSelectionChange={(nextSelection) => void saveSelection(nextSelection)}
       />
-      {isSaving ? <span className="sr-only">Saving model…</span> : null}
+      {isSaving ? <span className="shrink-0 text-[10px] text-muted-neutral" role="status">Saving model…</span> : null}
       {saveError ? <p className="mt-1 text-[10px] text-wardian-error" role="alert">{saveError}</p> : null}
     </div>
   );
