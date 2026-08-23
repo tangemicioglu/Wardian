@@ -2803,11 +2803,11 @@ pub async fn kill_agent(
     delete_agent(session_id, confirm_name, true, state, app).await
 }
 
-async fn remove_agent(
+async fn remove_agent<R: tauri::Runtime>(
     session_id: String,
     expected_name: Option<&str>,
     state: State<'_, AppState>,
-    app: AppHandle,
+    app: AppHandle<R>,
     require_stopped: bool,
 ) -> Result<(), String> {
     manager::log_debug(&format!(
@@ -2820,7 +2820,7 @@ async fn remove_agent(
     let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(_lifecycle_lease.owner().clone());
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
     lifecycle_heartbeat.ensure_active("remove")?;
-    if require_stopped {
+    {
         let agents = state.agents.lock().await;
         let agent = agents
             .get(&session_id)
@@ -4417,7 +4417,7 @@ mod tests {
         prepare_restored_config_for_spawn, prepare_resume_config,
         prepare_resume_config_for_runtime, promote_fresh_provider_session_after_resume,
         provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
-        replace_agent_status_incarnation, release_spawn_name_reservation,
+        replace_agent_status_incarnation, release_spawn_name_reservation, remove_agent,
         reserve_spawn_session_name, reserve_rename_session_name,
         validate_agent_removal,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
@@ -4438,6 +4438,7 @@ mod tests {
     use crate::utils::{ShellOption, ShellSettings};
     use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
+    use tauri::Manager;
     use wardian_core::models::provider::AgentProvider;
     use wardian_core::models::{
         AgentClassDefinition, AgentConfig, AgentSessionPersistenceOverride,
@@ -7439,6 +7440,46 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         active.process_id = Some(1234);
         validate_agent_removal(&active, Some("DeleteMe"), false)
             .expect("exact confirmation must allow forced removal of a running agent");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn forced_delete_rejects_incorrect_confirmation_before_removing_agent() {
+        let _lock = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp wardian home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        let _home = WardianHomeGuard;
+
+        let app = tauri::test::mock_app();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let agent = make_test_agent();
+        {
+            let mut config = agent.config.lock().unwrap();
+            config.session_id = "agent-1".to_string();
+            config.session_name = "DeleteMe".to_string();
+        }
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
+        state.agent_order.lock().await.push("agent-1".to_string());
+
+        let error = remove_agent(
+            "agent-1".to_string(),
+            Some("WrongName"),
+            state,
+            app.handle().clone(),
+            false, // `delete_agent` maps `force: true` to `require_stopped: false`.
+        )
+        .await
+        .expect_err("forced deletion must still reject an incorrect confirmation");
+
+        assert!(error.contains("DeleteMe"), "unexpected error: {error}");
+        let state = app.state::<AppState>();
+        assert!(state.agents.lock().await.contains_key("agent-1"));
+        assert_eq!(state.agent_order.lock().await.as_slice(), ["agent-1"]);
     }
 
     #[tokio::test]
