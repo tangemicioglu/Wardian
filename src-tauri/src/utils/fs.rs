@@ -109,10 +109,6 @@ pub fn prepare_provider_habitat(
     class_name: &str,
     session_id: Option<&str>,
 ) -> Result<Option<std::path::PathBuf>, String> {
-    if !provider_uses_projected_workspace(provider) {
-        return Ok(None);
-    }
-
     let Some(session_id) = session_id.filter(|sid| !sid.trim().is_empty()) else {
         return Ok(None);
     };
@@ -123,6 +119,38 @@ pub fn prepare_provider_habitat(
     }
 
     Ok(Some(habitat_root))
+}
+
+/// Add Wardian's runtime-owned memory contract and startup brief to the
+/// generated habitat instructions without touching user-authored files.
+pub fn append_habitat_memory_instructions(
+    habitat_root: &std::path::Path,
+    startup_brief: Option<&str>,
+) -> Result<(), String> {
+    let path = habitat_root.join("AGENTS.md");
+    let mut content =
+        std::fs::read_to_string(&path).unwrap_or_else(|_| "# Wardian Habitat\n".into());
+    content.push('\n');
+    content.push_str(&wardian_memory_instructions(startup_brief));
+    std::fs::write(path, content).map_err(|error| error.to_string())
+}
+
+/// Build the provider-neutral memory context used by both generated habitat
+/// files and providers that accept runtime developer instructions directly.
+pub fn wardian_memory_instructions(startup_brief: Option<&str>) -> String {
+    let mut content = String::from(
+        "## Wardian memory\nSource: Wardian runtime\n\n\
+Use `wardian memory save` for clear durable preferences, decisions, corrections, lessons, current project state, and explicit requests to remember. \
+Default to workspace scope; use agent scope only for cross-project preferences and working conventions. \
+Always include a durable evidence excerpt. Do not save ambiguous or transient chatter. \
+Do not say memory was saved unless the command succeeds. Conversation logging and memory retention are independent.\n",
+    );
+    if let Some(brief) = startup_brief.filter(|brief| !brief.trim().is_empty()) {
+        content.push_str("\n### Loaded at provider start\n\n");
+        content.push_str(brief.trim());
+        content.push('\n');
+    }
+    content
 }
 
 pub fn habitat_workspace_cwd(habitat_root: &std::path::Path) -> std::path::PathBuf {
@@ -1190,12 +1218,13 @@ pub fn validate_workspace_path(path: &std::path::Path) -> Result<std::path::Path
 #[cfg(test)]
 mod tests {
     use super::{
-        build_habitat_skill_projection, build_opencode_runtime_config, codex_trusted_project_key,
-        create_directory_link, ensure_claude_permission_hook, habitat_root_for_session,
-        prepare_provider_habitat, project_antigravity_include_directories,
-        projected_link_matches_target, provider_uses_projected_workspace,
-        resolve_opencode_runtime_roots, resolve_system_include_directories, sync_codex_agent_home,
-        sync_opencode_config_dir, write_habitat_instruction_files,
+        append_habitat_memory_instructions, build_habitat_skill_projection,
+        build_opencode_runtime_config, codex_trusted_project_key, create_directory_link,
+        ensure_claude_permission_hook, habitat_root_for_session, prepare_provider_habitat,
+        project_antigravity_include_directories, projected_link_matches_target,
+        provider_uses_projected_workspace, resolve_opencode_runtime_roots,
+        resolve_system_include_directories, sync_codex_agent_home, sync_opencode_config_dir,
+        write_habitat_instruction_files,
     };
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1221,6 +1250,32 @@ mod tests {
                 .join("provider-session-123")
                 .join("habitat")
         );
+    }
+
+    #[test]
+    fn generated_habitat_carries_direct_retention_and_exact_startup_brief() {
+        let root = unique_temp_dir("memory-instructions");
+        std::fs::create_dir_all(&root).expect("create habitat");
+        std::fs::write(root.join("AGENTS.md"), "# Generated\n").expect("seed instructions");
+
+        append_habitat_memory_instructions(
+            &root,
+            Some("# Wardian memory\n\n## Stable memory\n- Prefer metric units"),
+        )
+        .expect("append memory instructions");
+
+        let content = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        assert!(content.contains("Use `wardian memory save`"));
+        assert!(content.contains("Do not say memory was saved unless the command succeeds"));
+        assert!(content.contains("## Stable memory\n- Prefer metric units"));
+        assert!(provider_uses_projected_workspace("codex"));
+        assert!(provider_uses_projected_workspace("gemini"));
+        assert!(provider_uses_projected_workspace("opencode"));
+        assert!(!provider_uses_projected_workspace("claude"));
+        assert!(!provider_uses_projected_workspace("antigravity"));
+        assert!(!provider_uses_projected_workspace("mock"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

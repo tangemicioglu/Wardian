@@ -1,5 +1,5 @@
-mod atomic_file;
 pub mod artifacts;
+mod atomic_file;
 pub mod browser;
 pub mod classes;
 pub mod control;
@@ -10,9 +10,11 @@ pub mod engine;
 pub mod files;
 pub mod identity;
 pub mod library;
+pub mod memory;
 pub mod models;
 pub mod paths;
 pub mod schedule;
+pub mod session_close;
 pub mod telemetry;
 pub mod topology;
 pub mod workbench;

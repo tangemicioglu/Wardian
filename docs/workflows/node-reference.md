@@ -223,6 +223,25 @@ Common pitfall:
 
 - expecting deep nested object semantics everywhere; keep storage keys simple unless you have confirmed the exact shape you need
 
+### Memory Commit
+
+**Status:** Available in the builder and runtime
+
+Use it to validate and atomically commit an upstream `MemoryCommitBatch` to an
+agent's durable memory store.
+
+Behavior:
+
+- reads structured output from the task named by `source_node`
+- commits revisions, source links, consolidation cursor, audit events, and the
+  idempotency receipt in one transaction
+- rejects an invalid batch without partial writes
+
+Common pitfall:
+
+- connecting an unstructured task result; the upstream node must return the
+  complete typed batch rather than prose
+
 ### Notify
 
 **Status:** Available in the builder and runtime

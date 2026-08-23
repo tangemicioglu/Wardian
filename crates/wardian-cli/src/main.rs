@@ -6,6 +6,7 @@ mod errors;
 mod graph;
 mod library;
 mod live;
+mod memory;
 mod output;
 mod telemetry;
 mod watchlist;
@@ -22,7 +23,7 @@ use args::{
     AgentArgs, AgentCommand, AgentWorktreeCommand, ApprovalArg, AskArgs, Cli, Command,
     ConversationArgs, ConversationCommand, NotifyArgs, NotifyCommand, QueuePolicyArg, ReplyArgs,
     ReplyStatusArg, ScheduleDefinitionArgs, SendArgs, WorkflowArgs, WorkflowCommand,
-    WorkflowScheduleCommand,
+    WorkflowScheduleCommand, WorkflowSessionCloseCommand,
 };
 use clap::Parser;
 use errors::{CliError, ExitCode};
@@ -60,6 +61,7 @@ fn run() -> i32 {
         Command::Artifact(args) => artifact::handle_artifact(args),
         Command::Browser(args) => browser::handle_browser(args),
         Command::Conversation(args) => handle_conversation(args),
+        Command::Memory(args) => memory::handle_memory(args),
         Command::Library(args) => library::handle_library(args),
         Command::Workflow(args) => handle_workflow(args),
         Command::Team(args) => watchlist::handle_team(args),
@@ -520,6 +522,7 @@ fn handle_workflow(args: WorkflowArgs) -> Result<String, CliError> {
         }
         WorkflowCommand::GenDocs { out, check } => render_workflow_gen(&out, GenKind::Docs, check),
         WorkflowCommand::Schedule(command) => render_workflow_schedule(*command),
+        WorkflowCommand::SessionClose(command) => render_workflow_session_close(*command),
     }
 }
 
@@ -1093,6 +1096,90 @@ fn render_workflow_schedule(command: WorkflowScheduleCommand) -> Result<String, 
             }))
         }
     }
+}
+
+fn render_workflow_session_close(command: WorkflowSessionCloseCommand) -> Result<String, CliError> {
+    use wardian_core::session_close::{load_invokers, save_invokers, WorkflowSessionCloseInvoker};
+    use WorkflowSessionCloseCommand as C;
+
+    match command {
+        C::List => render_json(serde_json::json!({
+            "schema": 1,
+            "session_close_invokers": load_invokers(),
+        })),
+        C::Add {
+            blueprint,
+            name,
+            agent,
+            boundary,
+            provider,
+            workspace,
+            input,
+            assignments,
+            enable,
+            require_archive,
+        } => {
+            validate_schedule_blueprint(&blueprint)?;
+            validate_schedule_provider(provider.as_deref())?;
+            let input = parse_workflow_exec_input(input.as_deref())?;
+            let assignments: WorkflowAssignments = assignments
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|error| CliError::generic(format!("invalid assignments JSON: {error}")))?
+                .unwrap_or_default();
+            wardian_core::workflow::assignment::validate_assignments(&assignments)
+                .map_err(CliError::generic)?;
+            let record = WorkflowSessionCloseInvoker {
+                id: wardian_core::engine::driver::new_run_id(),
+                blueprint_id: blueprint,
+                name,
+                enabled: enable,
+                require_archive,
+                source_agent_id: agent.map(|target| resolve_conversation_agent_target(&target)),
+                boundary_reasons: boundary,
+                provider,
+                workspace,
+                input,
+                bindings: wardian_core::workflow::assignment::legacy_bindings(&assignments),
+                assignments,
+            };
+            let mut invokers = load_invokers();
+            invokers.push(record.clone());
+            save_invokers(&invokers).map_err(|error| CliError::generic(error.to_string()))?;
+            render_json(serde_json::json!({ "schema": 1, "session_close_invoker": record }))
+        }
+        C::Enable { id } => mutate_session_close_invoker(&id, |invoker| invoker.enabled = true),
+        C::Disable { id } => mutate_session_close_invoker(&id, |invoker| invoker.enabled = false),
+        C::Remove { id } => {
+            let mut invokers = load_invokers();
+            let before = invokers.len();
+            invokers.retain(|invoker| invoker.id != id);
+            if invokers.len() == before {
+                return Err(CliError::generic(format!(
+                    "session-close invoker not found: {id}"
+                )));
+            }
+            save_invokers(&invokers).map_err(|error| CliError::generic(error.to_string()))?;
+            render_json(serde_json::json!({ "schema": 1, "removed": id }))
+        }
+    }
+}
+
+fn mutate_session_close_invoker(
+    id: &str,
+    mutate: impl FnOnce(&mut wardian_core::session_close::WorkflowSessionCloseInvoker),
+) -> Result<String, CliError> {
+    let mut invokers = wardian_core::session_close::load_invokers();
+    let invoker = invokers
+        .iter_mut()
+        .find(|invoker| invoker.id == id)
+        .ok_or_else(|| CliError::generic(format!("session-close invoker not found: {id}")))?;
+    mutate(invoker);
+    let result = invoker.clone();
+    wardian_core::session_close::save_invokers(&invokers)
+        .map_err(|error| CliError::generic(error.to_string()))?;
+    render_json(serde_json::json!({ "schema": 1, "session_close_invoker": result }))
 }
 
 fn mutate_schedule(

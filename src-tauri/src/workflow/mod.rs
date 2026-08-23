@@ -4,6 +4,7 @@ pub mod resolve;
 pub mod runner;
 pub mod runs;
 pub mod schedule;
+pub mod session_close;
 
 use resolve::{AgentBinding, AgentRouteInput, PlannedAgentRoute};
 use runner::{AgentRunSpec, AgentRunner, LiveAgentRunSpec, LiveAgentRunner};
@@ -13,8 +14,8 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use wardian_core::engine::{
-    AgentTaskRequest, ChosenPort, DecisionRequest, NotifyRequest, ScriptRequest, ShellRequest,
-    StateRequest, StepError, StepExecutor, StepOutput,
+    AgentTaskRequest, ChosenPort, DecisionRequest, MemoryCommitRequest, NotifyRequest,
+    ScriptRequest, ShellRequest, StateRequest, StepError, StepExecutor, StepOutput,
 };
 use wardian_core::models::{InvocationKind, WorkflowAssignments, WorkflowRoleAssignment};
 
@@ -185,11 +186,49 @@ impl LiveStepExecutor {
             WorkflowRoleAssignment::TemporaryProvider {
                 provider,
                 workspace,
+                model,
+                effort,
             } => {
                 let cwd = workspace
                     .as_ref()
                     .map(PathBuf::from)
                     .unwrap_or_else(|| self.workspace.clone());
+                let session_id = temporary_provider_session_id(&self.owner_id, node);
+                let config_override = wardian_core::models::AgentConfig {
+                    session_id: session_id.clone(),
+                    provider: provider.clone(),
+                    folder: cwd.to_string_lossy().to_string(),
+                    model: model.clone(),
+                    provider_config: match provider.as_str() {
+                        "codex" => wardian_core::models::ProviderConfig::Codex(
+                            wardian_core::models::CodexProviderConfig {
+                                reasoning_effort: effort.clone(),
+                                ..Default::default()
+                            },
+                        ),
+                        "claude" => wardian_core::models::ProviderConfig::Claude(
+                            wardian_core::models::ClaudeProviderConfig {
+                                reasoning_effort: effort.clone(),
+                                ..Default::default()
+                            },
+                        ),
+                        "antigravity" => wardian_core::models::ProviderConfig::Antigravity(
+                            wardian_core::models::AntigravityProviderConfig {
+                                reasoning_effort: effort.clone(),
+                                ..Default::default()
+                            },
+                        ),
+                        "gemini" => {
+                            wardian_core::models::ProviderConfig::Gemini(Default::default())
+                        }
+                        "opencode" => {
+                            wardian_core::models::ProviderConfig::OpenCode(Default::default())
+                        }
+                        "mock" => wardian_core::models::ProviderConfig::Mock(Default::default()),
+                        _ => wardian_core::models::ProviderConfig::Unknown(serde_json::json!({})),
+                    },
+                    ..Default::default()
+                };
                 self.runner
                     .run(AgentRunSpec {
                         node: node.to_string(),
@@ -201,10 +240,10 @@ impl LiveStepExecutor {
                         // habitat project its workspace link to this role's
                         // resolved project/folder while keeping it distinct
                         // from registered agents and their conversations.
-                        session_id: temporary_provider_session_id(&self.owner_id, node),
+                        session_id,
                         agent_session_id: None,
                         resume_session: None,
-                        config_override: None,
+                        config_override: Some(config_override),
                         lease_owner: None,
                     })
                     .await
@@ -596,6 +635,28 @@ impl StepExecutor for LiveStepExecutor {
     {
         Box::pin(async move { ops::state_op(&req) })
     }
+
+    fn memory_commit<'life0, 'async_trait>(
+        &'life0 self,
+        req: MemoryCommitRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<StepOutput, StepError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let batch: wardian_core::memory::MemoryCommitBatch =
+                serde_json::from_value(req.payload).map_err(|error| {
+                    StepError::new(format!("invalid memory_commit payload: {error}"))
+                })?;
+            let result = wardian_core::memory::MemoryStore::from_default_home()
+                .and_then(|store| store.commit_batch(batch))
+                .map_err(|error| StepError::new(error.to_string()))?;
+            serde_json::to_value(result)
+                .map(StepOutput)
+                .map_err(|error| StepError::new(error.to_string()))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -879,7 +940,13 @@ mod tests {
                     );
                     assert!(spec.agent_session_id.is_none());
                     assert!(spec.resume_session.is_none());
-                    assert!(spec.config_override.is_none());
+                    let override_config =
+                        spec.config_override.expect("temporary provider override");
+                    assert_eq!(override_config.model.as_deref(), Some("gpt-5.6-luna"));
+                    assert_eq!(
+                        override_config.codex_config().reasoning_effort.as_deref(),
+                        Some("low")
+                    );
                     assert!(spec.lease_owner.is_none());
                     Ok("{\"ok\":true}".to_string())
                 })
@@ -891,6 +958,8 @@ mod tests {
             WorkflowRoleAssignment::TemporaryProvider {
                 provider: "codex".to_string(),
                 workspace: Some("/workflow-project".to_string()),
+                model: Some("gpt-5.6-luna".to_string()),
+                effort: Some("low".to_string()),
             },
         )]);
         let exec = LiveStepExecutor::new_with_assignments_and_live_runner(

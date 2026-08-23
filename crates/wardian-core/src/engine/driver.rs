@@ -504,6 +504,21 @@ async fn run_side_effect(
             })
             .await?
             .0),
+        "memory_commit" => {
+            let source_node = f("source_node")?;
+            let payload = s.node_output(&source_node).cloned().ok_or_else(|| {
+                StepError::new(format!(
+                    "memory_commit source node `{source_node}` has no output"
+                ))
+            })?;
+            Ok(exec
+                .memory_commit(MemoryCommitRequest {
+                    node: node.id.clone(),
+                    payload,
+                })
+                .await?
+                .0)
+        }
         other => Err(StepError::new(format!(
             "no executor for node type `{other}`"
         ))),
@@ -803,5 +818,82 @@ mod tests {
         assert!(!events
             .iter()
             .any(|event| matches!(event.kind, EventKind::NodeFailed { .. })));
+    }
+
+    #[tokio::test]
+    async fn memory_commit_receives_the_named_upstream_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = serde_json::json!({
+            "agent_id": "agent-a",
+            "idempotency_key": "run-1:conv-1:4",
+            "operations": []
+        });
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "memory-workflow".into(),
+            name: "Memory workflow".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                Node {
+                    id: "extract".into(),
+                    r#type: "task".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({"agent":"role:curator","prompt":"extract"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    position: None,
+                },
+                Node {
+                    id: "commit".into(),
+                    r#type: "memory_commit".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({"source_node":"extract"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    position: None,
+                },
+            ],
+            edges: vec![
+                crate::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "extract".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "extract".into(),
+                    from_port: "out".into(),
+                    to: "commit".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        let exec = MockExecutor::new().with_task_output("extract", payload.clone());
+
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-memory",
+            serde_json::json!({}),
+            dir.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.status, RunStatus::Completed);
+        assert_eq!(state.node_output("commit"), Some(&payload));
+        assert_eq!(exec.calls(), vec!["task:extract", "memory_commit:commit"]);
     }
 }

@@ -315,6 +315,8 @@ pub(super) fn record_kind_from_chat_event_kind(
         AgentChatEventKind::Status => None,
         AgentChatEventKind::Error => Some(ConversationRecordKind::Error),
         AgentChatEventKind::TerminalOutput => None,
+        // Memory has its own durable store and retention lifecycle.
+        AgentChatEventKind::Memory => None,
     }
 }
 

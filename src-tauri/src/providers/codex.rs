@@ -150,6 +150,31 @@ impl CodexProvider {
         }
     }
 
+    /// Inject runtime-owned context at developer priority. Codex discovers
+    /// workspace `AGENTS.md` files from the real working directory, while
+    /// Wardian keeps generated agent instructions in the isolated habitat.
+    /// The config override bridges that boundary without modifying user files.
+    pub(crate) fn insert_developer_instructions_arg(
+        &self,
+        args: &mut Vec<String>,
+        instructions: &str,
+    ) {
+        if instructions.trim().is_empty() {
+            return;
+        }
+        let insert_at = args
+            .iter()
+            .position(|arg| arg == "exec")
+            .unwrap_or(args.len());
+        args.splice(
+            insert_at..insert_at,
+            [
+                "-c".to_string(),
+                format!("developer_instructions={}", toml_basic_string(instructions)),
+            ],
+        );
+    }
+
     fn append_common_args_with_runtime_policy(
         &self,
         args: &mut Vec<String>,
@@ -630,6 +655,19 @@ mod tests {
     fn instruction_filename_is_agents_md() {
         let p = make_provider();
         assert_eq!(p.get_instruction_filename(), "AGENTS.md");
+    }
+
+    #[test]
+    fn developer_instructions_are_inserted_before_exec_and_toml_escaped() {
+        let mut args = vec!["--model".into(), "gpt-5.6-luna".into(), "exec".into()];
+        make_provider()
+            .insert_developer_instructions_arg(&mut args, "Memory says \"compact\".\nKeep it.");
+        assert_eq!(args[2], "-c");
+        assert_eq!(
+            args[3],
+            "developer_instructions=\"Memory says \\\"compact\\\".\\nKeep it.\""
+        );
+        assert_eq!(args[4], "exec");
     }
 
     #[test]

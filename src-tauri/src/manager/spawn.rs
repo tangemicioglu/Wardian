@@ -1,5 +1,6 @@
 use crate::providers::antigravity::{changed_workspace_conversation, AntigravityProvider};
 use crate::providers::claude::{classify_claude_user_event, ClaudeUserEventKind};
+use crate::providers::codex::CodexProvider;
 use crate::providers::transcript::extract_transcript_message;
 use crate::providers::ProviderFactory;
 use crate::state::{ActiveAgent, AgentWatchState, AppState};
@@ -427,7 +428,7 @@ fn persist_runtime_agent_configs(app: &AppHandle) {
 
 pub async fn spawn_agent(
     app: AppHandle,
-    config: AgentConfig,
+    mut config: AgentConfig,
     is_restored: bool,
     initial_timestamp: Option<String>,
 ) -> Result<ActiveAgent, String> {
@@ -550,12 +551,64 @@ pub async fn spawn_agent(
     } else {
         None
     };
+    let memory_process_key = if is_restored {
+        config
+            .resume_session
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| config.session_id.clone())
+    } else {
+        format!("fresh:{}:{born_to_save}", config.session_id)
+    };
+    let memory_setup = match wardian_core::memory::MemoryStore::from_default_home() {
+        Ok(store) => match store.compile_brief(
+            &config.session_id,
+            Some(&expected_folder),
+            &config.provider,
+            &memory_process_key,
+            is_restored,
+            12_000,
+        ) {
+            Ok(brief) => Some((store, brief)),
+            Err(error) => {
+                log_debug(&format!(
+                    "[Wardian] memory recall unavailable for {}: {error}",
+                    config.session_id
+                ));
+                None
+            }
+        },
+        Err(error) => {
+            log_debug(&format!(
+                "[Wardian] memory store unavailable for {}: {error}",
+                config.session_id
+            ));
+            None
+        }
+    };
     let habitat_root = prepare_provider_habitat(
         &config.provider,
         &cwd,
         &config.agent_class,
         Some(&config.session_id),
     )?;
+    if let Some(root) = habitat_root.as_ref() {
+        crate::utils::fs::append_habitat_memory_instructions(
+            root,
+            memory_setup
+                .as_ref()
+                .and_then(|(_, brief)| (!brief.is_empty).then_some(brief.context_text.as_str())),
+        )?;
+        if !crate::utils::fs::provider_uses_projected_workspace(&config.provider) {
+            let include = root.to_string_lossy().to_string();
+            let includes = config
+                .system_include_directories
+                .get_or_insert_with(Vec::new);
+            if !includes.contains(&include) {
+                includes.push(include);
+            }
+        }
+    }
     let provider_cwd =
         interactive_provider_cwd(&config.provider, &cwd, habitat_root.as_deref(), None);
     let fresh_claude_log_paths =
@@ -594,6 +647,15 @@ pub async fn spawn_agent(
         spawn_args,
     );
     provider_args.extend(spawn_args);
+    if config.provider == "codex" {
+        let runtime_instructions = wardian_memory_instructions(
+            memory_setup
+                .as_ref()
+                .and_then(|(_, brief)| (!brief.is_empty).then_some(brief.context_text.as_str())),
+        );
+        CodexProvider::new()
+            .insert_developer_instructions_arg(&mut provider_args, &runtime_instructions);
+    }
     provider_args = interactive_provider_args(&config.provider, &provider_cwd, &cwd, provider_args);
 
     let launch_spec = interactive_provider_launch(&config.provider, &bin, &provider_args)?;
@@ -686,6 +748,21 @@ pub async fn spawn_agent(
         .slave
         .spawn_command(cmd)
         .map_err(|e| format!("Failed to spawn command: {}", e))?;
+
+    if let Some((memory_store, memory_brief)) = memory_setup {
+        if let Err(error) = memory_store.record_injection(
+            &config.session_id,
+            Some(&expected_folder),
+            &config.provider,
+            &memory_process_key,
+            &memory_brief,
+        ) {
+            log_debug(&format!(
+                "[Wardian] memory injection audit unavailable for {}: {error}",
+                config.session_id
+            ));
+        }
+    }
 
     let process_id = child.process_id();
 

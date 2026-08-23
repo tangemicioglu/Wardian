@@ -337,6 +337,36 @@
       "version": 1
     },
     {
+      "id": "memory_commit",
+      "kind": "engine",
+      "category": "State",
+      "label": "Memory commit",
+      "icon": "database",
+      "description": "Validate and atomically commit structured agent-memory changes.",
+      "fields": [
+        {
+          "id": "source_node",
+          "kind": "text",
+          "label": "Source node",
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "inputs": [
+        {
+          "id": "in",
+          "label": "In"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "out",
+          "label": "Out"
+        }
+      ],
+      "version": 1
+    },
+    {
       "id": "notify",
       "kind": "engine",
       "category": "State",

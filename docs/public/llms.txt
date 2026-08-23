@@ -32,6 +32,7 @@ This file is an agent-readable index for the public Wardian documentation. Use t
 ## Reuse and Agent Direction
 
 - https://docs.wardian.org/guide/library - Manage reusable prompts, skills, and library item assignment.
+- https://docs.wardian.org/guide/agent-memory - Save evidence-backed agent memory, inspect recall, and configure optional workflow consolidation.
 - https://docs.wardian.org/guide/command-panel - Send one-off broadcasts or starred prompts to selected agents.
 - https://docs.wardian.org/guide/class-management - Define reusable agent setups used by spawn and clone flows.
 
@@ -63,6 +64,7 @@ This file is an agent-readable index for the public Wardian documentation. Use t
 - https://docs.wardian.org/developer/architecture - Read the high-level architecture for frontend, backend, state, and runtime boundaries.
 - https://docs.wardian.org/developer/setup - Set up a development checkout and local verification environment.
 - https://docs.wardian.org/developer/state-management - Understand persisted state, runtime state, and frontend state ownership.
+- https://docs.wardian.org/developer/agent-memory - Understand the SQLite authority, startup injection, workflow commit boundary, and provider-neutral recall architecture.
 - https://docs.wardian.org/developer/workflow-engine - Debug or extend deterministic workflow execution.
 - https://docs.wardian.org/developer/native-e2e - Pick the native E2E layer for PTY, invoke, provider, and filesystem behavior.
 - https://docs.wardian.org/developer/release-updates - Configure, validate, and recover signed desktop release updates, including macOS notarization.

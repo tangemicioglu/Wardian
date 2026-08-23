@@ -149,7 +149,7 @@ function assignmentLabels(
       if (assignment.target_type === 'agent') {
         return `${role}: ${agentLabels[assignment.agent_id] ?? assignment.agent_id}`;
       }
-      return `${role}: temp ${assignment.provider}`;
+      return `${role}: temp ${assignment.provider}${assignment.model ? ` · ${assignment.model}` : ''}${assignment.effort ? ` · ${assignment.effort}` : ''}`;
     });
   }
   const bindingLabels = Object.entries(bindings ?? {})

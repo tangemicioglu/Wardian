@@ -31,6 +31,7 @@ const guideSidebar = [
     text: "Reuse and Direct Work",
     items: [
       { text: "Library", link: "/guide/library" },
+      { text: "Agent Memory", link: "/guide/agent-memory" },
       { text: "Command Panel", link: "/guide/command-panel" },
       { text: "Wardian CLI", link: "/guide/cli" },
     ],
@@ -116,6 +117,7 @@ export default defineConfig({
             { text: "Architecture", link: "/developer/architecture" },
             { text: "Setup", link: "/developer/setup" },
             { text: "State Management", link: "/developer/state-management" },
+            { text: "Agent Memory", link: "/developer/agent-memory" },
             { text: "IPC Events", link: "/developer/ipc-events" },
             { text: "Tauri Commands", link: "/developer/tauri-command-reference" },
             { text: "Provider Runtimes", link: "/developer/provider-runtimes" },

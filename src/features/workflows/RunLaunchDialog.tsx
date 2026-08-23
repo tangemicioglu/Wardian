@@ -9,6 +9,7 @@ import {
   isUserFacingProviderName,
   resolveEffectiveProvider,
 } from '../agents/providerOptions';
+import { ProviderModelSelector, type ModelSelection } from '../agents/ProviderModelSelector';
 import { ScheduleEditor } from './ScheduleEditor';
 import type { Blueprint } from './builder/blueprintTypes';
 import type {
@@ -70,6 +71,9 @@ export function RunLaunchDialog({
   );
   const [roleBusyPolicies, setRoleBusyPolicies] = useState<Record<string, WorkflowBusyPolicy>>(
     () => initialRoleBusyPolicies(editSchedule?.assignments),
+  );
+  const [roleModelSelections, setRoleModelSelections] = useState<Record<string, ModelSelection>>(
+    () => initialRoleModelSelections(editSchedule?.assignments),
   );
   const inputParamKey = useMemo(
     () => inputParams.map((param) => `${param.name}:${param.type}`).join('|'),
@@ -142,6 +146,7 @@ export function RunLaunchDialog({
     setRoleBindings(initialRoleTargets(editSchedule?.bindings, editSchedule?.assignments));
     setRoleConversations(initialRoleConversations(editSchedule?.assignments));
     setRoleBusyPolicies(initialRoleBusyPolicies(editSchedule?.assignments));
+    setRoleModelSelections(initialRoleModelSelections(editSchedule?.assignments));
   }, [editSchedule?.assignments, editSchedule?.bindings, roleBindingsKey]);
 
   const providerOptions = useMemo(
@@ -200,7 +205,15 @@ export function RunLaunchDialog({
     try {
       const input = collectInput(inputParams, inputValues);
       const bindings = collectBindings(roles, roleBindings, provider);
-      const assignments = collectAssignments(roles, selectedRoleTargets, roleConversations, roleBusyPolicies, launchMode, workspace);
+      const assignments = collectAssignments(
+        roles,
+        selectedRoleTargets,
+        roleConversations,
+        roleBusyPolicies,
+        roleModelSelections,
+        launchMode,
+        workspace,
+      );
       const res = await invoke<{ ok: boolean; run_id?: string; diagnostics?: unknown[] }>('workflow_run', {
         path,
         ...(showGlobalProvider ? { provider } : {}),
@@ -242,7 +255,15 @@ export function RunLaunchDialog({
       const input = collectInput(inputParams, inputValues);
       const schedule = { active: true, ...scheduleDef } as ScheduleDefinition;
       const bindings = collectBindings(roles, roleBindings, provider);
-      const assignments = collectAssignments(roles, selectedRoleTargets, roleConversations, roleBusyPolicies, launchMode, workspace);
+      const assignments = collectAssignments(
+        roles,
+        selectedRoleTargets,
+        roleConversations,
+        roleBusyPolicies,
+        roleModelSelections,
+        launchMode,
+        workspace,
+      );
       await invoke(editSchedule ? 'schedule_update' : 'schedule_create', {
         ...(editSchedule ? { id: editSchedule.id } : { blueprintId }),
         ...(editSchedule ? {} : { name: scheduleName || blueprintId }),
@@ -302,6 +323,7 @@ export function RunLaunchDialog({
             {roles.map((role) => {
               const id = `run-role-${role.name}`;
               const selectedTarget = selectedRoleTargets[role.name] ?? providerTarget(provider);
+              const modelSelection = roleModelSelections[role.name] ?? {};
               const pickerOpen = pickerRole === role.name;
               return (
                 <div key={role.name} data-tour-target={role.name.trim().toLocaleLowerCase() === 'evolver' ? 'workflow-evolver-assignment' : undefined} className="relative rounded border border-wardian-border bg-[var(--color-wardian-bg)] p-2">
@@ -310,8 +332,8 @@ export function RunLaunchDialog({
                       <div id={id} className="text-xs font-bold text-primary">
                         {role.name}
                       </div>
-                      <div className="mt-0.5 truncate text-[11px] text-muted" title={roleTargetSummary(selectedTarget, providerOptions, agents)}>
-                        {roleTargetSummary(selectedTarget, providerOptions, agents)}
+                      <div className="mt-0.5 truncate text-[11px] text-muted" title={roleTargetSummary(selectedTarget, providerOptions, agents, modelSelection)}>
+                        {roleTargetSummary(selectedTarget, providerOptions, agents, modelSelection)}
                       </div>
                     </div>
                     <button
@@ -338,6 +360,9 @@ export function RunLaunchDialog({
                       onSearch={setAgentSearch}
                       onSelect={(value) => {
                         setRoleBindings((current) => ({ ...current, [role.name]: value }));
+                        if (value !== selectedTarget) {
+                          setRoleModelSelections((current) => ({ ...current, [role.name]: {} }));
+                        }
                         setPickerRole(null);
                         setAgentSearch('');
                       }}
@@ -381,6 +406,21 @@ export function RunLaunchDialog({
                           </select>
                         </div>
                       )}
+                    </div>
+                  )}
+                  {selectedTarget.startsWith(PROVIDER_TARGET_PREFIX) && (
+                    <div className="mt-2">
+                      <ProviderModelSelector
+                        provider={selectedTarget.slice(PROVIDER_TARGET_PREFIX.length)}
+                        selection={modelSelection}
+                        onSelectionChange={(selection) => {
+                          setRoleModelSelections((current) => ({
+                            ...current,
+                            [role.name]: selection,
+                          }));
+                        }}
+                        idPrefix={`${id}-temporary-provider`}
+                      />
                     </div>
                   )}
                 </div>
@@ -679,6 +719,7 @@ function collectAssignments(
   selectedRoleTargets: Record<string, string>,
   roleConversations: Record<string, WorkflowAgentConversation>,
   roleBusyPolicies: Record<string, WorkflowBusyPolicy>,
+  roleModelSelections: Record<string, ModelSelection>,
   launchMode: 'run' | 'schedule',
   workspace: string,
 ): WorkflowAssignments {
@@ -702,6 +743,12 @@ function collectAssignments(
         target_type: 'temporary_provider',
         provider,
         ...(workspace.trim() ? { workspace: workspace.trim() } : {}),
+        ...(roleModelSelections[role.name]?.model
+          ? { model: roleModelSelections[role.name].model }
+          : {}),
+        ...(roleModelSelections[role.name]?.reasoning_effort
+          ? { effort: roleModelSelections[role.name].reasoning_effort }
+          : {}),
       }];
     });
 
@@ -762,11 +809,16 @@ function roleTargetSummary(
   target: string,
   providerOptions: ReturnType<typeof buildProviderOptions>,
   agents: AgentConfig[],
+  modelSelection: ModelSelection = {},
 ) {
   if (target.startsWith(PROVIDER_TARGET_PREFIX)) {
     const providerValue = target.slice(PROVIDER_TARGET_PREFIX.length);
     const providerOption = providerOptions.find((option) => option.value === providerValue);
-    return `New temporary ${providerOption?.label ?? providerValue} agent`;
+    const model = modelSelection.model ? ` · ${modelSelection.model}` : '';
+    const effort = modelSelection.reasoning_effort
+      ? ` · ${modelSelection.reasoning_effort} effort`
+      : '';
+    return `New temporary ${providerOption?.label ?? providerValue} agent${model}${effort}`;
   }
   if (target.startsWith(AGENT_TARGET_PREFIX)) {
     const agentId = target.slice(AGENT_TARGET_PREFIX.length);
@@ -897,6 +949,19 @@ function initialRoleBusyPolicies(assignments?: WorkflowAssignments) {
       .map(([role, assignment]) => [
         role,
         assignment.target_type === 'agent' ? assignment.busy_policy ?? 'fail' : 'fail',
+      ]),
+  );
+}
+
+function initialRoleModelSelections(assignments?: WorkflowAssignments) {
+  return Object.fromEntries(
+    Object.entries(assignments ?? {})
+      .filter(([, assignment]) => assignment.target_type === 'temporary_provider')
+      .map(([role, assignment]) => [
+        role,
+        assignment.target_type === 'temporary_provider'
+          ? { model: assignment.model, reasoning_effort: assignment.effort }
+          : {},
       ]),
   );
 }

@@ -3243,7 +3243,7 @@ async fn archive_agent_lifecycle_boundary_from_snapshot(
     session_id: &str,
     boundary_reason: ConversationBoundaryReason,
     snapshot: crate::commands::chat::AgentArchiveCaptureSnapshot,
-) -> Result<(), String> {
+) -> Result<Option<wardian_core::conversations::ConversationIndexEntry>, String> {
     let global_conversation_logging = crate::utils::shell::load_shell_settings()
         .unwrap_or_default()
         .conversation_logging;
@@ -3254,10 +3254,12 @@ async fn archive_agent_lifecycle_boundary_from_snapshot(
     let capture = crate::commands::chat::collect_agent_chat_events_for_archive(&snapshot)?;
 
     if effective_logging == ConversationLoggingSetting::Enabled {
+        let mut archive_complete = true;
         if let Err(error) = state
             .conversation_archive
             .append_chat_events_with_context(capture.context.clone(), &capture.events)
         {
+            archive_complete = false;
             manager::log_debug(&format!(
                 "[WARDIAN] conversation archive pre-clear append failed for {session_id}: {error}"
             ));
@@ -3266,17 +3268,35 @@ async fn archive_agent_lifecycle_boundary_from_snapshot(
             .conversation_archive
             .append_lifecycle_boundary_with_context(capture.context, boundary_reason)
         {
+            archive_complete = false;
             manager::log_debug(&format!(
                 "[WARDIAN] conversation archive lifecycle append failed for {session_id}: {error}"
             ));
         }
+        let closed_conversation_id = state
+            .conversation_archive
+            .active_conversation_id(session_id)
+            .ok()
+            .flatten();
         if let Err(error) = state
             .conversation_archive
             .rollover_agent(session_id, boundary_reason)
         {
+            archive_complete = false;
             manager::log_debug(&format!(
                 "[WARDIAN] conversation archive rollover failed for {session_id}: {error}"
             ));
+        }
+        if archive_complete {
+            let closed_conversation = closed_conversation_id.and_then(|conversation_id| {
+                state
+                    .conversation_archive
+                    .list(Some(session_id), false)
+                    .ok()?
+                    .into_iter()
+                    .find(|entry| entry.conversation_id == conversation_id)
+            });
+            return Ok(closed_conversation);
         }
     } else if let Err(error) = state
         .conversation_archive
@@ -3287,18 +3307,18 @@ async fn archive_agent_lifecycle_boundary_from_snapshot(
         ));
     }
 
-    Ok(())
+    Ok(None)
 }
 
 async fn archive_agent_lifecycle_boundary(
     state: &AppState,
     session_id: &str,
     boundary_reason: ConversationBoundaryReason,
-) -> Result<(), String> {
+) -> Result<Option<wardian_core::conversations::ConversationIndexEntry>, String> {
     let snapshot =
         match crate::commands::chat::agent_archive_capture_snapshot(state, session_id).await {
             Ok(snapshot) => snapshot,
-            Err(error) if error.contains("agent not found") => return Ok(()),
+            Err(error) if error.contains("agent not found") => return Ok(None),
             Err(error) => return Err(error),
         };
     archive_agent_lifecycle_boundary_from_snapshot(state, session_id, boundary_reason, snapshot)
@@ -3374,11 +3394,40 @@ async fn clear_agent_session_inner(
     } else {
         archive_agent_lifecycle_boundary(&state, &session_id, boundary_reason).await
     };
-    if let Err(error) = archive_result {
-        manager::log_debug(&format!(
-            "[WARDIAN] conversation archive lifecycle boundary failed for {session_id}: {error}"
-        ));
-    }
+    let closed_conversation = match archive_result {
+        Ok(conversation) => conversation,
+        Err(error) => {
+            manager::log_debug(&format!(
+                "[WARDIAN] conversation archive lifecycle boundary failed for {session_id}: {error}"
+            ));
+            None
+        }
+    };
+    let boundary_reason_text = serde_json::to_value(boundary_reason)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "clear".to_string());
+    let archive_available = closed_conversation.is_some();
+    crate::workflow::session_close::invoke_matching(
+        app.clone(),
+        crate::workflow::session_close::SessionCloseContext {
+            agent_id: session_id.clone(),
+            agent_name: original_config.session_name.clone(),
+            workspace: crate::utils::fs::resolve_cwd(
+                &original_config.folder,
+                &original_config.session_id,
+            )
+            .to_string_lossy()
+            .to_string(),
+            provider: original_config.provider.clone(),
+            boundary_reason: boundary_reason_text,
+            archive_available,
+            conversation_id: closed_conversation
+                .as_ref()
+                .map(|entry| entry.conversation_id.clone()),
+            source_sequence: closed_conversation.as_ref().map(|entry| entry.record_count),
+        },
+    );
 
     // Establish the fresh provider identity before touching the current runtime.
     // If exact bootstrap evidence is unavailable, clear fails with the live agent intact.
@@ -4419,13 +4468,12 @@ mod tests {
         provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
         replace_agent_status_incarnation, release_spawn_name_reservation, remove_agent,
         reserve_spawn_session_name, reserve_rename_session_name,
-        validate_agent_removal,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
         resolve_external_resume_session, resolve_requested_spawn_session_name, restore_agent_config_in_state,
         restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
         restore_runtime_state_snapshot_after_resume, strip_claude_embedded_stream_flags,
         take_agent_runtime_for_termination, terminal_cleared_payload, update_agent_fields_in_state,
-        validate_assignable_worktree_for_agent, validate_deletable_agent_worktree,
+        validate_agent_removal, validate_assignable_worktree_for_agent, validate_deletable_agent_worktree,
         workspace_paths_match, worktree_deletion_is_already_complete, AgentOrderPlacement,
         AgentUpdateFields, AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
         DeletedAgentReferenceCleanup, DiscoveredGitWorktree, ResumeRuntimeSnapshot,
@@ -4807,11 +4855,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
                 ..Default::default()
             };
         }
-        state
-            .agents
-            .lock()
-            .await
-            .insert("agent-1".to_string(), agent);
+        state.agents.lock().await.insert("agent-1".to_string(), agent);
 
         let command = build_agent_cli_command_for_session_id_with_shells(
             "agent-1", &state, &settings, &shells,
@@ -5970,7 +6014,11 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             config.session_id = "agent-1".to_string();
             config.session_name = "CoderOne".to_string();
         }
-        state.agents.lock().await.insert("agent-1".to_string(), agent);
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
         state
             .agent_name_reservations
             .lock()

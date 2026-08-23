@@ -10,6 +10,7 @@ const BUNDLED_WORKFLOW_SAMPLES: &[&str] = &[
     "research-brief.md",
     "incident-triage.md",
     "conversation-pattern-review.md",
+    "memory-consolidation.md",
 ];
 
 pub fn get_all_agent_classes(_app: &AppHandle) -> Vec<AgentClassDefinition> {
@@ -497,6 +498,10 @@ mod tests {
             (
                 "conversation-pattern-review",
                 include_str!("../../resources/library/workflows/conversation-pattern-review.md"),
+            ),
+            (
+                "memory-consolidation",
+                include_str!("../../resources/library/workflows/memory-consolidation.md"),
             ),
         ] {
             let blueprint = wardian_core::workflow::parse_str(sample)

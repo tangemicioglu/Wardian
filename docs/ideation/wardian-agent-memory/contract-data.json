@@ -1,0 +1,150 @@
+{
+  "projectName": "Wardian Agent Memory",
+  "slug": "wardian-agent-memory",
+  "date": "2026-08-23",
+  "status": "Approved",
+  "supersedes": "docs/specs/2026-04-17-evidence-first-memory.md",
+  "confidence": {
+    "score": 96,
+    "dimensions": [
+      {
+        "key": "scope",
+        "score": 98,
+        "label": "Scope",
+        "reason": "The first three delivery phases and their deferred features are explicitly bounded."
+      },
+      {
+        "key": "risk",
+        "score": 93,
+        "label": "Risk",
+        "reason": "Provider-neutral startup injection and source-independent evidence are identified as the highest-risk boundaries."
+      },
+      {
+        "key": "effort",
+        "score": 95,
+        "label": "Effort",
+        "reason": "The work is separated into sequential foundation, recall, and optional-consolidation phases."
+      },
+      {
+        "key": "clarity",
+        "score": 98,
+        "label": "Clarity",
+        "reason": "Default behavior, scope rules, provenance, aging, and workflow ownership have been decided."
+      },
+      {
+        "key": "tests",
+        "score": 96,
+        "label": "Tests",
+        "reason": "Success criteria cover provider parity, startup recall, supersession, retries, isolation, and reliable misses."
+      }
+    ]
+  },
+  "problem": [
+    "Wardian preserves provider continuity and agent-owned conversation archives, but neither is a provider-neutral long-term memory system. Agents cannot reliably begin a new provider session with the durable preferences, decisions, lessons, and current project state that should carry forward.",
+    "A useful memory system must make recall dependable before adding automated synthesis. It must remain local-first and inspectable, preserve evidence without duplicating conversation logs, avoid mandatory model quota usage, and keep memory scoped to the owning agent and active workspace."
+  ],
+  "goals": [
+    "Make direct, evidence-backed memory saving and session-start recall available by default without an additional model call.",
+    "Deliver the same memory behavior across supported providers through Wardian-owned APIs and startup dispatch.",
+    "Keep automated consolidation optional, transparent, user-configurable, and implemented as a normal Wardian workflow.",
+    "Preserve durable provenance while allowing conversation archives and memories to follow independent retention lifecycles."
+  ],
+  "successCriteria": [
+    "An agent can save, update, supersede, inspect, and remove agent-scoped memory through validated Wardian APIs.",
+    "Every saved memory contains normalized recall text, a durable evidence excerpt, an integrity hash, and zero or more optional source links.",
+    "Fresh provider sessions receive a bounded Stable memory and Current state brief before work begins; resumed sessions receive only the relevant delta since the last injected fingerprint.",
+    "Successful saves and startup loads appear as compact, expandable Memory saved and Memory loaded chat events.",
+    "Startup recall works when automated consolidation is disabled and consumes no separate provider quota.",
+    "Agent-wide memory and active-workspace memory are recalled without leaking another workspace's project state.",
+    "Stable memories persist until superseded or removed; current-state memories retain timestamps and become visibly stale rather than being silently deleted.",
+    "The consolidation workflow is off by default, uses a user-selected provider and model, resumes from durable archive cursors, and commits idempotently.",
+    "Regression tests prove provider parity, fresh and resumed startup behavior, supersession, agent isolation, stale-state labeling, retry idempotency, and reliable misses."
+  ],
+  "scope": {
+    "mvp": [
+      {
+        "item": "Memory foundation",
+        "reason": "A SQLite-backed authority, lifecycle API, scoping, provenance, and audit history are prerequisites for every recall path."
+      },
+      {
+        "item": "Direct retention by default",
+        "reason": "Useful memory must work without enabling a curator model or consuming separate provider quota."
+      }
+    ],
+    "full": [
+      {
+        "item": "Provider-neutral startup recall",
+        "reason": "Session-start continuity is the primary user value and the most important reliability target."
+      },
+      {
+        "item": "Observable memory chat events",
+        "reason": "Users need to inspect what was saved and exactly what context Wardian loaded."
+      },
+      {
+        "item": "Optional consolidation workflow",
+        "reason": "Users may opt into automatic extraction and consolidation using their chosen provider and model."
+      }
+    ],
+    "stretch": [
+      {
+        "item": "Hybrid query-time semantic retrieval"
+      },
+      {
+        "item": "Cross-agent and shared-memory scopes"
+      }
+    ],
+    "outOfScope": [
+      {
+        "item": "Provider-native session history as durable memory",
+        "reason": "Provider continuity remains a separate runtime concern."
+      },
+      {
+        "item": "Conversation archives as the memory source of truth",
+        "reason": "Archives provide optional detailed provenance, while memory retains its own evidence excerpt."
+      },
+      {
+        "item": "Mandatory or hidden consolidation",
+        "reason": "Automatic consolidation is off by default and may consume the user's selected provider quota."
+      },
+      {
+        "item": "Memory-specific workflow reset, fork, compare, or restore controls",
+        "reason": "The bundled consolidator follows the normal workflow sample lifecycle."
+      },
+      {
+        "item": "Automatic cascading deletion between conversations and memory",
+        "reason": "The two stores have independent retention semantics."
+      }
+    ],
+    "future": [
+      "Shared scopes with explicit cross-agent promotion policy.",
+      "Local semantic embeddings and reranking after startup recall is benchmarked.",
+      "Generic bundled-workflow upgrade controls, if introduced for all workflow samples."
+    ]
+  },
+  "execution": {
+    "strategy": "Sequential",
+    "phases": [
+      {
+        "title": "Memory foundation",
+        "risk": "medium",
+        "blocking": true,
+        "specPath": "docs/ideation/wardian-agent-memory/spec-phase-1.md",
+        "notes": "Implement the SQLite authority, memory lifecycle API, scopes, evidence snapshots and source links, audit history, and direct-retention instruction contract."
+      },
+      {
+        "title": "Reliable startup recall",
+        "risk": "high",
+        "blocking": true,
+        "specPath": "docs/ideation/wardian-agent-memory/spec-phase-2.md",
+        "notes": "Compile and inject bounded provider-neutral startup briefs, track fingerprints and resume deltas, and expose observable save/load events."
+      },
+      {
+        "title": "Optional consolidation workflow",
+        "risk": "medium",
+        "blocking": false,
+        "specPath": "docs/ideation/wardian-agent-memory/spec-phase-3.md",
+        "notes": "Add the ordinary bundled consolidation workflow, session-close invocation, curator selection, archive cursors, strict structured output, and idempotent memory commits."
+      }
+    ]
+  }
+}

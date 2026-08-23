@@ -53,6 +53,7 @@ const KIND_TITLES: Record<Exclude<AgentChatEventKind, "message">, string> = {
   approval: "Approval",
   status: "Status",
   terminal_output: "Terminal output",
+  memory: "Memory",
   error: "Error",
 };
 

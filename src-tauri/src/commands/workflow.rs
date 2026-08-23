@@ -11,6 +11,45 @@ use wardian_core::engine::RunStatus;
 use wardian_core::models::{
     InvocationKind, WorkflowAssignments, WorkflowRoleAssignment, WorkflowSchedule,
 };
+
+#[tauri::command]
+pub async fn session_close_invoker_list(
+) -> Result<Vec<wardian_core::session_close::WorkflowSessionCloseInvoker>, String> {
+    Ok(wardian_core::session_close::load_invokers())
+}
+
+#[tauri::command]
+pub async fn session_close_invoker_save(
+    invoker: wardian_core::session_close::WorkflowSessionCloseInvoker,
+) -> Result<wardian_core::session_close::WorkflowSessionCloseInvoker, String> {
+    if invoker.id.trim().is_empty()
+        || invoker.name.trim().is_empty()
+        || invoker.blueprint_id.trim().is_empty()
+    {
+        return Err("session-close invoker id, name, and blueprint_id are required".into());
+    }
+    wardian_core::workflow::resolve_blueprint_path(&invoker.blueprint_id)
+        .ok_or_else(|| format!("workflow blueprint not found: {}", invoker.blueprint_id))?;
+    let mut invokers = wardian_core::session_close::load_invokers();
+    if let Some(existing) = invokers.iter_mut().find(|item| item.id == invoker.id) {
+        *existing = invoker.clone();
+    } else {
+        invokers.push(invoker.clone());
+    }
+    wardian_core::session_close::save_invokers(&invokers).map_err(|error| error.to_string())?;
+    Ok(invoker)
+}
+
+#[tauri::command]
+pub async fn session_close_invoker_delete(id: String) -> Result<(), String> {
+    let mut invokers = wardian_core::session_close::load_invokers();
+    let before = invokers.len();
+    invokers.retain(|item| item.id != id);
+    if invokers.len() == before {
+        return Err(format!("session-close invoker not found: {id}"));
+    }
+    wardian_core::session_close::save_invokers(&invokers).map_err(|error| error.to_string())
+}
 use wardian_core::schedule::{
     compute_next_run, load_schedules, resolve_workspace_path, save_schedules,
     validate_schedule_definition,

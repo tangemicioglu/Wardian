@@ -14,6 +14,10 @@ pub enum WorkflowRoleAssignment {
         provider: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
     },
 }
 
