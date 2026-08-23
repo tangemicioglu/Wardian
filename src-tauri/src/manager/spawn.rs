@@ -56,13 +56,56 @@ fn mock_transcript_log_path(session_id: &str) -> Option<std::path::PathBuf> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PiLogBaseline {
     path: std::path::PathBuf,
+    cursor: PiLogCursor,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PiLogCursor {
     offset: u64,
+    identity: Option<PiFileIdentity>,
+    prefix: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PiFileIdentity(u64, u64);
+
+fn pi_file_identity(metadata: &std::fs::Metadata) -> Option<PiFileIdentity> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(PiFileIdentity(metadata.dev(), metadata.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Stable Rust does not expose Windows' by-handle file index yet.
+        // Creation time is stable across appends, while the prefix check below
+        // also detects in-place rewrites and same-timestamp replacements.
+        Some(PiFileIdentity(metadata.creation_time(), 0))
+    }
+}
+
+fn pi_log_prefix(file: &mut std::fs::File) -> Option<Vec<u8>> {
+    const PREFIX_BYTES: u64 = 4096;
+    file.seek(std::io::SeekFrom::Start(0)).ok()?;
+    let mut prefix = Vec::new();
+    std::io::Read::by_ref(file)
+        .take(PREFIX_BYTES)
+        .read_to_end(&mut prefix)
+        .ok()?;
+    Some(prefix)
 }
 
 fn pi_log_baseline(session_dir: &std::path::Path, provider_session_id: &str) -> Option<PiLogBaseline> {
     let path = PiProvider::session_file(session_dir, provider_session_id)?;
-    let offset = std::fs::metadata(&path).ok()?.len();
-    Some(PiLogBaseline { path, offset })
+    let mut file = std::fs::File::open(&path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let cursor = PiLogCursor {
+        offset: metadata.len(),
+        identity: pi_file_identity(&metadata),
+        prefix: pi_log_prefix(&mut file)?,
+    };
+    Some(PiLogBaseline { path, cursor })
 }
 
 fn restored_pi_log_baseline(config: &AgentConfig, is_restored: bool) -> Option<PiLogBaseline> {
@@ -78,12 +121,30 @@ fn restored_pi_log_baseline(config: &AgentConfig, is_restored: bool) -> Option<P
     pi_log_baseline(&session_dir, provider_session_id)
 }
 
-fn open_pi_log_at_offset(path: &std::path::Path, offset: &mut u64) -> Option<std::fs::File> {
+fn open_pi_log_at_cursor(
+    path: &std::path::Path,
+    cursor: &mut PiLogCursor,
+) -> Option<std::fs::File> {
     let mut file = std::fs::File::open(path).ok()?;
-    if file.metadata().ok()?.len() < *offset {
-        *offset = 0;
+    let metadata = file.metadata().ok()?;
+    let identity = pi_file_identity(&metadata);
+    let prefix = pi_log_prefix(&mut file)?;
+    let identity_changed = cursor
+        .identity
+        .zip(identity)
+        .is_some_and(|(before, after)| before != after);
+    let prefix_changed = !cursor.prefix.is_empty()
+        && (prefix.len() < cursor.prefix.len()
+            || prefix[..cursor.prefix.len()] != cursor.prefix);
+    let reset = identity_changed || prefix_changed || metadata.len() < cursor.offset;
+    if reset {
+        cursor.offset = 0;
     }
-    file.seek(std::io::SeekFrom::Start(*offset)).ok()?;
+    cursor.identity = identity;
+    if cursor.prefix.is_empty() || reset {
+        cursor.prefix = prefix;
+    }
+    file.seek(std::io::SeekFrom::Start(cursor.offset)).ok()?;
     Some(file)
 }
 
@@ -1343,13 +1404,13 @@ pub async fn spawn_agent(
         let watcher_current_status = current_status.clone();
         let watcher_log_path = log_path.clone();
         let watcher_watch_state = watch_state.clone();
-        let watcher_initial_offset = pi_log_baseline
+        let watcher_initial_cursor = pi_log_baseline
             .as_ref()
-            .map(|baseline| baseline.offset)
-            .unwrap_or(0);
+            .map(|baseline| baseline.cursor.clone())
+            .unwrap_or_default();
 
         std::thread::spawn(move || {
-            let mut offset = watcher_initial_offset;
+            let mut cursor = watcher_initial_cursor;
             loop {
                 let current = watcher_current_status
                     .lock()
@@ -1382,7 +1443,7 @@ pub async fn spawn_agent(
                     if let Ok(mut stored_path) = watcher_log_path.lock() {
                         *stored_path = Some(path.clone());
                     }
-                    if let Some(file) = open_pi_log_at_offset(&path, &mut offset) {
+                    if let Some(file) = open_pi_log_at_cursor(&path, &mut cursor) {
                         let mut reader = std::io::BufReader::new(file);
                         let mut line = String::new();
                         loop {
@@ -1391,7 +1452,7 @@ pub async fn spawn_agent(
                             if read == 0 {
                                 break;
                             }
-                            offset += read as u64;
+                            cursor.offset += read as u64;
                             let trimmed = line.trim();
                             if trimmed.is_empty() {
                                 continue;
@@ -2129,13 +2190,50 @@ mod tests {
         .expect("new Pi turn");
         drop(append);
 
-        let mut offset = baseline.offset;
-        let mut file = open_pi_log_at_offset(&baseline.path, &mut offset).expect("positioned log");
+        let mut cursor = baseline.cursor;
+        let mut file =
+            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("positioned log");
         let mut observed = String::new();
         file.read_to_string(&mut observed).expect("new Pi events");
 
         assert!(!observed.contains("old"));
         assert!(observed.contains("new"));
+    }
+
+    #[test]
+    fn restored_pi_cursor_resets_for_larger_same_path_replacement() {
+        let dir = tempfile::tempdir().expect("Pi session directory");
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+                "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":\"old\",\"stopReason\":\"stop\"}}\n",
+            ),
+        )
+        .expect("existing Pi transcript");
+        let baseline = pi_log_baseline(dir.path(), "pi-session").expect("Pi baseline");
+        let replacement = dir.path().join("replacement.jsonl");
+        let new_content = format!(
+            "{}{}{}",
+            "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+            "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":\"new\",\"stopReason\":\"stop\"}}\n",
+            "x".repeat(baseline.cursor.offset as usize),
+        );
+        std::fs::write(&replacement, new_content).expect("replacement Pi transcript");
+        std::fs::remove_file(&path).expect("remove old Pi transcript");
+        std::fs::rename(&replacement, &path).expect("replace Pi transcript at same path");
+
+        let mut cursor = baseline.cursor;
+        let mut file =
+            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("replacement log");
+        let mut observed = String::new();
+        file.read_to_string(&mut observed)
+            .expect("replacement Pi events");
+
+        assert_eq!(cursor.offset, 0);
+        assert!(observed.contains("new"));
+        assert!(!observed.contains("old"));
     }
 
     fn agent_without_pty() -> crate::state::ActiveAgent {
