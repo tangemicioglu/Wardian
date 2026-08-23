@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("codex", "claude", "gemini", "opencode", "antigravity")]
+  [ValidateSet("codex", "claude", "gemini", "opencode", "antigravity", "pi")]
   [string]$Provider,
 
   [string]$Workspace = (Get-Location).Path,
@@ -214,6 +214,9 @@ $codexExecutable = "codex"
 $claudeExecutable = "claude"
 $geminiExecutable = "gemini"
 $antigravityExecutable = "agy"
+$piExecutable = "pi"
+$piSessionDir = ""
+$escapedPiSessionDir = ""
 $escapedOpenCodeConfigDir = ""
 $escapedOpenCodeConfig = ""
 $escapedOpenCodeStateHome = ""
@@ -328,6 +331,21 @@ if ($Provider -eq "antigravity") {
   }
 }
 $escapedAntigravityExecutable = $antigravityExecutable.Replace("'", "''")
+if ($Provider -eq "pi") {
+  $piCommand = Get-Command "pi.cmd" -ErrorAction SilentlyContinue
+  if (-not $piCommand) {
+    $piCommand = Get-Command "pi.exe" -ErrorAction SilentlyContinue
+  }
+  if ($piCommand -and $piCommand.Source) {
+    $piExecutable = $piCommand.Source
+  }
+  if ($WardianHome.Trim().Length -gt 0 -and $SessionId.Trim().Length -gt 0) {
+    $piSessionDir = Join-Path $WardianHome (Join-Path "agents" (Join-Path $SessionId "pi\sessions"))
+    New-Item -ItemType Directory -Force -Path $piSessionDir | Out-Null
+    $escapedPiSessionDir = $piSessionDir.Replace("'", "''")
+  }
+}
+$escapedPiExecutable = $piExecutable.Replace("'", "''")
 if ($Provider -eq "opencode" -and $WardianHome.Trim().Length -gt 0 -and $SessionId.Trim().Length -gt 0) {
   $habitatRoot = Join-Path $WardianHome (Join-Path "agents" (Join-Path $SessionId "habitat"))
   $providerCwd = $habitatRoot
@@ -387,6 +405,12 @@ $providerInvocation = if ($Provider -eq "codex") {
   "& '$escapedGeminiExecutable'"
 } elseif ($Provider -eq "antigravity") {
   "& '$escapedAntigravityExecutable' --prompt-interactive ''"
+} elseif ($Provider -eq "pi") {
+  if ($escapedPiSessionDir.Trim().Length -gt 0 -and $escapedSessionId.Trim().Length -gt 0) {
+    "& '$escapedPiExecutable' --tui-mode regular --session-dir '$escapedPiSessionDir' --session '$escapedSessionId'"
+  } else {
+    "& '$escapedPiExecutable' --tui-mode regular"
+  }
 } elseif ($Provider -eq "opencode" -and $escapedOpenCodeTarget.Trim().Length -gt 0) {
   "& opencode --session '$escapedOpenCodeProviderSessionId' '$escapedOpenCodeTarget'"
 } else {
@@ -460,6 +484,8 @@ if ($Columns -gt 0 -and $Rows -gt 0) {
   claude_executable = '$escapedClaudeExecutable'
   antigravity_executable = '$escapedAntigravityExecutable'
   gemini_executable = '$escapedGeminiExecutable'
+  pi_executable = '$escapedPiExecutable'
+  pi_session_dir = '$escapedPiSessionDir'
   font_zoom_steps = $FontZoomSteps
   initial_wait_seconds = $InitialWaitSeconds
   session_name = '$escapedSessionName'
@@ -568,6 +594,8 @@ try {
     claude_common_dir = if ($claudeCommonDir.Trim().Length -gt 0) { $claudeCommonDir } else { $null }
     claude_agent_dir = if ($claudeAgentDir.Trim().Length -gt 0) { $claudeAgentDir } else { $null }
     gemini_executable = if ($Provider -eq "gemini") { $geminiExecutable } else { $null }
+    pi_executable = if ($Provider -eq "pi") { $piExecutable } else { $null }
+    pi_session_dir = if ($piSessionDir.Trim().Length -gt 0) { $piSessionDir } else { $null }
     opencode_config_dir = if ($escapedOpenCodeConfigDir.Trim().Length -gt 0) { $escapedOpenCodeConfigDir } else { $null }
     opencode_config = if ($escapedOpenCodeConfig.Trim().Length -gt 0) { $escapedOpenCodeConfig } else { $null }
     opencode_state_home = if ($escapedOpenCodeStateHome.Trim().Length -gt 0) { $escapedOpenCodeStateHome } else { $null }

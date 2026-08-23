@@ -15,7 +15,7 @@ import {
 
 // Gemini is deprecated. Keep the real delivery matrix aligned with the
 // providers Wardian currently supports for new agent sessions.
-export const PROVIDERS = ["codex", "claude", "opencode", "antigravity"];
+export const PROVIDERS = ["codex", "claude", "opencode", "antigravity", "pi"];
 
 export const INPUT_CASES = [
   {
@@ -207,7 +207,15 @@ async function killRealProviderAgent(driver, sessionId) {
   );
 }
 
-async function waitForDeliveryState(cliPath, harness, target, state, messageId, timeoutMs = 60000) {
+async function waitForDeliveryState(
+  cliPath,
+  harness,
+  target,
+  agentSessionId,
+  state,
+  messageId,
+  timeoutMs = 60000,
+) {
   const startedAt = Date.now();
   let lastResult = null;
 
@@ -216,6 +224,8 @@ async function waitForDeliveryState(cliPath, harness, target, state, messageId, 
       "agent",
       "watch",
       target,
+      "--since",
+      `${agentSessionId}:0`,
       "--until",
       `delivery:${state}`,
       "--include",
@@ -322,6 +332,7 @@ async function runRealDeliveryCase({
     cliPath,
     harness,
     agentName,
+    agentSessionId,
     "provider_accepted",
     queuedDelivery.message_id,
   );
@@ -338,6 +349,8 @@ async function runRealDeliveryCase({
       "agent",
       "watch",
       agentName,
+      "--since",
+      `${agentSessionId}:0`,
       "--until",
       `output:${expected}`,
       "--include",

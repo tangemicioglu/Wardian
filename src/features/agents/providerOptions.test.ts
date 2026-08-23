@@ -17,6 +17,7 @@ describe('provider option helpers', () => {
       { value: 'codex', label: 'Codex', available: true, reason: null },
       { value: 'antigravity', label: 'Antigravity', available: true, reason: null },
       { value: 'opencode', label: 'OpenCode', available: true, reason: null },
+      { value: 'pi', label: 'Pi', available: true, reason: null },
       { value: 'gemini', label: 'Gemini', available: true, reason: null },
     ]);
   });

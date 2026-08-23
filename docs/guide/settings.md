@@ -276,8 +276,8 @@ The Gemini patch controls help Gemini discover Wardian skills:
 - **Auto-patch Gemini CLI**
 - **Run Patch Now**
 
-Changing Gemini patch settings does not affect Claude, Codex, Antigravity, or
-OpenCode behavior.
+Changing Gemini patch settings does not affect Claude, Codex, Antigravity,
+OpenCode, or Pi behavior.
 
 ## Troubleshooting
 

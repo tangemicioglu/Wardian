@@ -220,7 +220,7 @@ const rowDefinitions: SettingsRowDefinition[] = [
     category: "Agent Runtime",
     label: "Default provider",
     detail: "Auto prefers Claude when available.",
-    keywords: ["agent", "provider", "runtime", "claude", "codex", "gemini", "antigravity", "opencode"],
+    keywords: ["agent", "provider", "runtime", "claude", "codex", "gemini", "antigravity", "opencode", "pi"],
   },
   {
     id: "session-persistence",
@@ -1051,6 +1051,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
               <option value="gemini">Gemini</option>
               <option value="antigravity">Antigravity</option>
               <option value="opencode">OpenCode</option>
+              <option value="pi">Pi</option>
             </select>
           </SettingRow>
         );

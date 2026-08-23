@@ -106,7 +106,7 @@ fn apply_provider_identity_with_environment(
     }
 
     match provider {
-        "claude" | "gemini" | "mock" => {
+        "claude" | "gemini" | "pi" | "mock" => {
             let expected = expected_caller_owned_identity(config).ok_or_else(|| {
                 format!("{provider} session identity has no caller-owned expectation")
             })?;

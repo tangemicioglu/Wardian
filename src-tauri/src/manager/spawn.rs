@@ -1,5 +1,6 @@
 use crate::providers::antigravity::{changed_workspace_conversation, AntigravityProvider};
 use crate::providers::claude::{classify_claude_user_event, ClaudeUserEventKind};
+use crate::providers::pi::PiProvider;
 use crate::providers::transcript::extract_transcript_message;
 use crate::providers::ProviderFactory;
 use crate::state::{ActiveAgent, AgentWatchState, AppState};
@@ -730,10 +731,10 @@ pub async fn spawn_agent(
         crate::state::terminal_session::NativeTerminalWriteRequest,
     >(256);
     let terminal_runtime = crate::state::terminal_session::native_terminal_runtime(tx, pty_master);
-    let terminal_runtime = if config.provider == "codex" {
-        terminal_runtime.ignore_scrollback_erase()
-    } else {
-        terminal_runtime
+    let terminal_runtime = match config.provider.as_str() {
+        "codex" => terminal_runtime.ignore_scrollback_erase(),
+        "pi" => terminal_runtime.reset_parser_on_scrollback_erase(),
+        _ => terminal_runtime,
     };
     let runtime_generation = app_state
         .terminal_sessions
@@ -913,15 +914,12 @@ pub async fn spawn_agent(
                     );
                     let text = pty_decoder.decode_chunk(&buf[0..n]);
                     let startup_output = if startup_prompt_pending {
-                        watch_state_clone
-                            .lock()
-                            .ok()
-                            .and_then(|watch_state| {
-                                watch_state
-                                    .snapshot_since(None, None)
-                                    .ok()
-                                    .map(|snapshot| snapshot.output.text)
-                            })
+                        watch_state_clone.lock().ok().and_then(|watch_state| {
+                            watch_state
+                                .snapshot_since(None, None)
+                                .ok()
+                                .map(|snapshot| snapshot.output.text)
+                        })
                     } else {
                         None
                     };
@@ -1052,10 +1050,7 @@ pub async fn spawn_agent(
                                 // `OpenCode` to `OC | …` when it accepts a
                                 // submitted turn.
                                 if was_idle && next_status == "Processing..." {
-                                    super::emit_agent_turn_started(
-                                        &pty_emit_app,
-                                        &sid_for_pty,
-                                    );
+                                    super::emit_agent_turn_started(&pty_emit_app, &sid_for_pty);
                                 }
                             }
                         } else if provider_name_for_pty == "gemini" {
@@ -1295,6 +1290,143 @@ pub async fn spawn_agent(
                     }
                 }
 
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        });
+    } else if config.provider == "pi" {
+        let watcher_app = app.clone();
+        let watcher_provider = provider.clone();
+        let watcher_session = config.session_id.clone();
+        let watcher_config = config_lock.clone();
+        let watcher_query_count = query_count.clone();
+        let watcher_init_timestamp = init_timestamp.clone();
+        let watcher_current_status = current_status.clone();
+        let watcher_log_path = log_path.clone();
+        let watcher_watch_state = watch_state.clone();
+        let watcher_skip_existing_log = is_restored;
+
+        std::thread::spawn(move || {
+            let mut offset = 0_u64;
+            let mut positioned_initial_log = !watcher_skip_existing_log;
+            loop {
+                let current = watcher_current_status
+                    .lock()
+                    .map(|status| status.clone())
+                    .unwrap_or_else(|error| error.into_inner().clone());
+                if current == "Off" {
+                    break;
+                }
+
+                let provider_session_id = watcher_config
+                    .lock()
+                    .ok()
+                    .and_then(|config| expected_caller_owned_identity(&config).map(str::to_string));
+                let path = provider_session_id
+                    .as_deref()
+                    .and_then(|provider_session_id| {
+                        let cached = watcher_log_path
+                            .lock()
+                            .ok()
+                            .and_then(|path| path.clone())
+                            .filter(|path| path.is_file());
+                        cached.or_else(|| {
+                            PiProvider::session_dir(&watcher_session).and_then(|session_dir| {
+                                PiProvider::session_file(&session_dir, provider_session_id)
+                            })
+                        })
+                    });
+
+                if let Some(path) = path {
+                    if let Ok(mut stored_path) = watcher_log_path.lock() {
+                        *stored_path = Some(path.clone());
+                    }
+                    if let Ok(mut file) = std::fs::File::open(&path) {
+                        if let Ok(metadata) = file.metadata() {
+                            if metadata.len() < offset {
+                                offset = 0;
+                                positioned_initial_log = true;
+                            }
+                            if !positioned_initial_log {
+                                offset = metadata.len();
+                                positioned_initial_log = true;
+                            }
+                        }
+                        if file.seek(std::io::SeekFrom::Start(offset)).is_ok() {
+                            let mut reader = std::io::BufReader::new(file);
+                            let mut line = String::new();
+                            loop {
+                                line.clear();
+                                let read = reader.read_line(&mut line).unwrap_or(0);
+                                if read == 0 {
+                                    break;
+                                }
+                                offset += read as u64;
+                                let trimmed = line.trim();
+                                if trimmed.is_empty() {
+                                    continue;
+                                }
+                                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed)
+                                else {
+                                    continue;
+                                };
+                                let raw_line = parsed.to_string();
+                                if let Some(message) = extract_transcript_message("pi", &raw_line) {
+                                    if let Ok(mut watch_state) = watcher_watch_state.lock() {
+                                        watch_state.push_transcript(message);
+                                    }
+                                }
+                                if let Some(event) = watcher_provider.parse_output(&raw_line) {
+                                    if matches!(&event, AgentEvent::Init { .. }) {
+                                        match handle_provider_init_event(
+                                            "pi",
+                                            &event,
+                                            &watcher_config,
+                                            &watcher_init_timestamp,
+                                        ) {
+                                            Ok(_) => {
+                                                if let Ok(mut config) = watcher_config.lock() {
+                                                    if let Some(fresh) =
+                                                        config.fresh_provider_session_id.take()
+                                                    {
+                                                        config.resume_session = Some(fresh);
+                                                    }
+                                                }
+                                                persist_runtime_agent_configs(&watcher_app);
+                                            }
+                                            Err(error) => {
+                                                log_debug(&format!(
+                                                    "[WARDIAN] Rejected Pi initialization identity: {error}"
+                                                ));
+                                                set_agent_status(
+                                                    &watcher_app,
+                                                    &watcher_session,
+                                                    &watcher_current_status,
+                                                    "Error",
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    apply_agent_event(
+                                        &watcher_app,
+                                        &watcher_session,
+                                        event,
+                                        &watcher_query_count,
+                                        &watcher_init_timestamp,
+                                        &watcher_current_status,
+                                    );
+                                }
+                                let _ = watcher_app.emit(
+                                    "agent-json-event",
+                                    serde_json::json!({
+                                        "session_id": watcher_session,
+                                        "data": parsed,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         });

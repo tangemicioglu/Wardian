@@ -70,8 +70,160 @@ pub fn normalize_chat_line(
         "gemini" => normalize_gemini(session_id, &provider, &parsed, sequence),
         "antigravity" => normalize_antigravity(session_id, &provider, &parsed, sequence),
         "opencode" => normalize_opencode(session_id, &provider, &parsed, sequence),
+        "pi" => normalize_pi(session_id, &provider, &parsed, sequence),
         "mock" => normalize_mock(session_id, &provider, &parsed, sequence),
         _ => normalize_fallback_json(session_id, &provider, &parsed, raw_line, sequence),
+    }
+}
+
+fn normalize_pi(
+    session_id: &str,
+    provider: &str,
+    parsed: &Value,
+    sequence: u64,
+) -> Option<AgentChatEvent> {
+    let msg_type = str_field(parsed, "type")?;
+    match msg_type {
+        "session" => Some(status_event(
+            session_id,
+            provider,
+            sequence,
+            AgentChatStatus::Idle,
+            msg_type,
+            parsed,
+        )),
+        "agent_start" | "turn_start" | "message_start" | "message_update" => {
+            Some(status_event(
+                session_id,
+                provider,
+                sequence,
+                AgentChatStatus::Processing,
+                msg_type,
+                parsed,
+            ))
+        }
+        "agent_end" => Some(status_event(
+            session_id,
+            provider,
+            sequence,
+            AgentChatStatus::Succeeded,
+            msg_type,
+            parsed,
+        )),
+        "message" | "message_end" => {
+            let message = parsed.get("message")?;
+            match str_field(message, "role")? {
+                "user" => message_event(
+                    session_id,
+                    provider,
+                    sequence,
+                    AgentChatRole::User,
+                    text_from_value(message)?,
+                    msg_type.into(),
+                    turn_id_from(message),
+                    "message",
+                ),
+                "assistant" => {
+                    if let Some(text) = text_from_value(message) {
+                        return message_event(
+                            session_id,
+                            provider,
+                            sequence,
+                            AgentChatRole::Assistant,
+                            text,
+                            msg_type.into(),
+                            turn_id_from(message),
+                            "message",
+                        );
+                    }
+                    let tool = content_array(message)?.iter().find(|block| {
+                        str_field(block, "type") == Some("toolCall")
+                    })?;
+                    let tool_name = str_field(tool, "name").unwrap_or("tool");
+                    let input = tool.get("arguments").or_else(|| tool.get("input"));
+                    let mut event = tool_call_event(
+                        session_id,
+                        provider,
+                        sequence,
+                        msg_type.into(),
+                        first_string(&[tool.get("id"), message.get("id")]),
+                        (tool_name == "bash")
+                            .then(|| input.and_then(|value| str_field(value, "command")))
+                            .flatten()
+                            .map(str::to_string),
+                        None,
+                        tool_name,
+                        AgentChatStatus::Running,
+                    );
+                    attach_tool_input_metadata(&mut event, tool_name, input);
+                    Some(event)
+                }
+                "toolResult" | "bashExecution" => Some(event(
+                    session_id,
+                    provider,
+                    sequence,
+                    AgentChatEventKind::ToolResult,
+                    EventFields {
+                        role: Some(AgentChatRole::Tool),
+                        text: text_from_value(message),
+                        title: str_field(message, "toolName")
+                            .or_else(|| str_field(message, "name"))
+                            .map(str::to_string),
+                        status: Some(if message.get("isError").and_then(Value::as_bool) == Some(true) {
+                            AgentChatStatus::Failed
+                        } else {
+                            AgentChatStatus::Succeeded
+                        }),
+                        turn_id: first_string(&[
+                            message.get("toolCallId"),
+                            message.get("id"),
+                        ]),
+                        source: Some(msg_type.into()),
+                        metadata: json!({"raw_type": "toolResult"}),
+                        ..Default::default()
+                    },
+                )),
+                _ => None,
+            }
+        }
+        "tool_execution_start" => {
+            let tool_name = str_field(parsed, "toolName").unwrap_or("tool");
+            let input = parsed.get("args").or_else(|| parsed.get("input"));
+            let mut event = tool_call_event(
+                session_id,
+                provider,
+                sequence,
+                msg_type.into(),
+                first_string(&[parsed.get("toolCallId"), parsed.get("id")]),
+                None,
+                None,
+                tool_name,
+                AgentChatStatus::Running,
+            );
+            attach_tool_input_metadata(&mut event, tool_name, input);
+            Some(event)
+        }
+        "tool_execution_end" => Some(event(
+            session_id,
+            provider,
+            sequence,
+            AgentChatEventKind::ToolResult,
+            EventFields {
+                role: Some(AgentChatRole::Tool),
+                text: text_from_value(parsed),
+                title: str_field(parsed, "toolName").map(str::to_string),
+                status: Some(if parsed.get("isError").and_then(Value::as_bool) == Some(true) {
+                    AgentChatStatus::Failed
+                } else {
+                    AgentChatStatus::Succeeded
+                }),
+                turn_id: first_string(&[parsed.get("toolCallId"), parsed.get("id")]),
+                source: Some(msg_type.into()),
+                metadata: json!({"raw_type": msg_type}),
+                ..Default::default()
+            },
+        )),
+        _ => None,
     }
 }
 
@@ -1206,7 +1358,7 @@ fn fallback_terminal_event(
 ) -> Option<AgentChatEvent> {
     if matches!(
         provider,
-        "codex" | "claude" | "gemini" | "antigravity" | "opencode" | "mock"
+        "codex" | "claude" | "gemini" | "antigravity" | "opencode" | "pi" | "mock"
     ) {
         return None;
     }
@@ -2044,5 +2196,23 @@ mod tests {
         assert_eq!(fallback.kind, AgentChatEventKind::TerminalOutput);
         assert_eq!(fallback.text.as_deref(), Some("plain terminal output"));
         assert_eq!(fallback.source.as_deref(), Some("terminal"));
+    }
+
+    #[test]
+    fn pi_session_messages_render_user_assistant_and_tool_rows() {
+        let lines = [
+            r#"{"type":"session","id":"pi-session"}"#,
+            r#"{"type":"message","message":{"role":"user","content":"Inspect the file"}}"#,
+            r#"{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"src/main.rs"}}],"stopReason":"toolUse"}}"#,
+            r#"{"type":"message","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"text","text":"file contents"}],"isError":false}}"#,
+            r#"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Pi answer"}],"stopReason":"stop"}}"#,
+        ];
+
+        let events = normalize_chat_lines("agent-1", "pi", lines);
+        assert_eq!(events[1].role, Some(AgentChatRole::User));
+        assert_eq!(events[2].kind, AgentChatEventKind::ToolCall);
+        assert_eq!(events[2].metadata["files_read"][0], "src/main.rs");
+        assert_eq!(events[3].kind, AgentChatEventKind::ToolResult);
+        assert_eq!(events[4].text.as_deref(), Some("Pi answer"));
     }
 }

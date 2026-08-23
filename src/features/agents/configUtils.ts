@@ -5,12 +5,13 @@ import {
   CodexProviderConfig,
   GeminiProviderConfig,
   OpenCodeProviderConfig,
+  PiProviderConfig,
   ProviderConfig,
   ProviderName,
 } from "../../types";
 
 function isKnownProviderName(provider: string | undefined): provider is ProviderName {
-  return provider === "claude" || provider === "codex" || provider === "gemini" || provider === "antigravity" || provider === "opencode" || provider === "mock";
+  return provider === "claude" || provider === "codex" || provider === "gemini" || provider === "antigravity" || provider === "opencode" || provider === "pi" || provider === "mock";
 }
 
 function providerValue(provider: AgentConfig["provider"]): string {
@@ -34,6 +35,8 @@ export function defaultProviderConfig(provider: AgentConfig["provider"]): Provid
       return { type: "antigravity" };
     case "opencode":
       return { type: "opencode" };
+    case "pi":
+      return { type: "pi" };
     case "mock":
       return { type: "mock" };
     case "claude":
@@ -119,6 +122,10 @@ function legacyProviderConfig(config: AgentConfig, provider: ProviderName): Prov
         port: config.opencode_port,
       };
       return stripUndefined(opencode);
+    }
+    case "pi": {
+      const pi: PiProviderConfig = { type: "pi" };
+      return pi;
     }
     case "mock":
       return { type: "mock" };

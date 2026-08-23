@@ -11,7 +11,7 @@ import {
   waitForAppShell,
 } from "../lib/harness.mjs";
 
-const PROVIDERS = ["codex", "claude", "opencode", "antigravity"];
+const PROVIDERS = ["codex", "claude", "opencode", "antigravity", "pi"];
 const runRealHeadlessProviders = process.env.WARDIAN_E2E_REAL_HEADLESS_PROVIDERS === "1";
 const allowPartialProviders = process.env.WARDIAN_E2E_HEADLESS_ALLOW_PARTIAL === "1";
 const workspacePath = process.env.WARDIAN_E2E_REAL_WORKSPACE || process.cwd();
