@@ -63,7 +63,8 @@ struct PiLogBaseline {
 struct PiLogCursor {
     offset: u64,
     identity: Option<PiFileIdentity>,
-    prefix: Vec<u8>,
+    boundary_start: u64,
+    boundary: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,32 +80,42 @@ fn pi_file_identity(metadata: &std::fs::Metadata) -> Option<PiFileIdentity> {
     {
         use std::os::windows::fs::MetadataExt;
         // Stable Rust does not expose Windows' by-handle file index yet.
-        // Creation time is stable across appends, while the prefix check below
+        // Creation time is stable across appends, while the boundary check below
         // also detects in-place rewrites and same-timestamp replacements.
         Some(PiFileIdentity(metadata.creation_time(), 0))
     }
 }
 
-fn pi_log_prefix(file: &mut std::fs::File) -> Option<Vec<u8>> {
-    const PREFIX_BYTES: u64 = 4096;
-    file.seek(std::io::SeekFrom::Start(0)).ok()?;
-    let mut prefix = Vec::new();
+fn pi_log_boundary(file: &mut std::fs::File, offset: u64) -> Option<(u64, Vec<u8>)> {
+    const BOUNDARY_BYTES: u64 = 4096;
+    let boundary_start = offset.saturating_sub(BOUNDARY_BYTES);
+    let boundary_len = offset.saturating_sub(boundary_start);
+    file.seek(std::io::SeekFrom::Start(boundary_start)).ok()?;
+    let mut boundary = Vec::new();
     std::io::Read::by_ref(file)
-        .take(PREFIX_BYTES)
-        .read_to_end(&mut prefix)
+        .take(boundary_len)
+        .read_to_end(&mut boundary)
         .ok()?;
-    Some(prefix)
+    (boundary.len() as u64 == boundary_len).then_some((boundary_start, boundary))
+}
+
+fn refresh_pi_log_boundary(file: &mut std::fs::File, cursor: &mut PiLogCursor) -> Option<()> {
+    let (boundary_start, boundary) = pi_log_boundary(file, cursor.offset)?;
+    cursor.boundary_start = boundary_start;
+    cursor.boundary = boundary;
+    Some(())
 }
 
 fn pi_log_baseline(session_dir: &std::path::Path, provider_session_id: &str) -> Option<PiLogBaseline> {
     let path = PiProvider::session_file(session_dir, provider_session_id)?;
     let mut file = std::fs::File::open(&path).ok()?;
     let metadata = file.metadata().ok()?;
-    let cursor = PiLogCursor {
+    let mut cursor = PiLogCursor {
         offset: metadata.len(),
         identity: pi_file_identity(&metadata),
-        prefix: pi_log_prefix(&mut file)?,
+        ..Default::default()
     };
+    refresh_pi_log_boundary(&mut file, &mut cursor)?;
     Some(PiLogBaseline { path, cursor })
 }
 
@@ -128,22 +139,33 @@ fn open_pi_log_at_cursor(
     let mut file = std::fs::File::open(path).ok()?;
     let metadata = file.metadata().ok()?;
     let identity = pi_file_identity(&metadata);
-    let prefix = pi_log_prefix(&mut file)?;
     let identity_changed = cursor
         .identity
         .zip(identity)
         .is_some_and(|(before, after)| before != after);
-    let prefix_changed = !cursor.prefix.is_empty()
-        && (prefix.len() < cursor.prefix.len()
-            || prefix[..cursor.prefix.len()] != cursor.prefix);
-    let reset = identity_changed || prefix_changed || metadata.len() < cursor.offset;
+    let boundary_changed = if cursor.boundary.is_empty() {
+        false
+    } else {
+        let boundary_end = cursor
+            .boundary_start
+            .saturating_add(cursor.boundary.len() as u64);
+        if metadata.len() < boundary_end {
+            true
+        } else {
+            file.seek(std::io::SeekFrom::Start(cursor.boundary_start))
+                .ok()?;
+            let mut current_boundary = vec![0; cursor.boundary.len()];
+            file.read_exact(&mut current_boundary).ok()?;
+            current_boundary != cursor.boundary
+        }
+    };
+    let reset = identity_changed || boundary_changed || metadata.len() < cursor.offset;
     if reset {
         cursor.offset = 0;
+        cursor.boundary_start = 0;
+        cursor.boundary.clear();
     }
     cursor.identity = identity;
-    if cursor.prefix.is_empty() || reset {
-        cursor.prefix = prefix;
-    }
     file.seek(std::io::SeekFrom::Start(cursor.offset)).ok()?;
     Some(file)
 }
@@ -1516,6 +1538,8 @@ pub async fn spawn_agent(
                                 }),
                             );
                         }
+                        let mut file = reader.into_inner();
+                        let _ = refresh_pi_log_boundary(&mut file, &mut cursor);
                     }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(250));
@@ -2234,6 +2258,45 @@ mod tests {
         assert_eq!(cursor.offset, 0);
         assert!(observed.contains("new"));
         assert!(!observed.contains("old"));
+    }
+
+    #[test]
+    fn restored_pi_cursor_resets_for_in_place_rewrite_after_prefix() {
+        let dir = tempfile::tempdir().expect("Pi session directory");
+        let path = dir.path().join("session.jsonl");
+        let old_content = format!(
+            "{}{}{}",
+            "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+            format!(
+                "{{\"type\":\"padding\",\"content\":\"{}\"}}\n",
+                "x".repeat(8192)
+            ),
+            "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":\"old\",\"stopReason\":\"stop\"}}\n",
+        );
+        std::fs::write(&path, &old_content).expect("existing Pi transcript");
+        let baseline = pi_log_baseline(dir.path(), "pi-session").expect("Pi baseline");
+        let new_content = old_content.replace("\"content\":\"old\"", "\"content\":\"new\"");
+        assert_eq!(new_content.len(), old_content.len());
+        assert_eq!(&new_content[..4096], &old_content[..4096]);
+        std::fs::write(&path, new_content).expect("in-place Pi transcript rewrite");
+
+        let mut cursor = baseline.cursor;
+        let mut file =
+            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("rewritten log");
+        let mut observed = String::new();
+        file.read_to_string(&mut observed).expect("rewritten Pi events");
+        let assistant_messages = observed
+            .lines()
+            .filter_map(|line| extract_transcript_message("pi", line))
+            .collect::<Vec<_>>();
+
+        assert_eq!(cursor.offset, 0);
+        assert!(assistant_messages
+            .iter()
+            .any(|message| message.text == "new"));
+        assert!(!assistant_messages
+            .iter()
+            .any(|message| message.text == "old"));
     }
 
     fn agent_without_pty() -> crate::state::ActiveAgent {
