@@ -385,10 +385,9 @@ test("serializes chat model selection while persistence and live application are
   await card.screenshot({ path, animations: "disabled" });
   await testInfo.attach("chat-model-saving", { path, contentType: "image/png" });
 
-  await page.waitForTimeout(250);
-  expect(await ipc.calls("update_agent_model_selection")).toHaveLength(1);
   await expect(model).toBeEnabled();
   await expect(effort).toBeEnabled();
+  expect(await ipc.calls("update_agent_model_selection")).toHaveLength(1);
 });
 
 test("renders copied feedback in an agent chat", async ({ page }, testInfo) => {

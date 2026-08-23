@@ -3876,18 +3876,18 @@ async fn apply_agent_model_selection_live(
     session_id: String,
     config: AgentConfig,
 ) -> AgentModelSelectionUpdateResult {
-    if !config.provider.eq_ignore_ascii_case("codex") {
-        return AgentModelSelectionUpdateResult {
-            config,
-            live_application: AgentModelLiveApplication::NotAttempted,
-            live_error: None,
-        };
-    }
-
     if config.is_off {
         return AgentModelSelectionUpdateResult {
             config,
             live_application: AgentModelLiveApplication::Deferred,
+            live_error: None,
+        };
+    }
+
+    if !config.provider.eq_ignore_ascii_case("codex") {
+        return AgentModelSelectionUpdateResult {
+            config,
+            live_application: AgentModelLiveApplication::NotAttempted,
             live_error: None,
         };
     }
@@ -4553,7 +4553,8 @@ mod tests {
         conversation_boundary_for_clear_reason, detach_agent_for_kill, disable_worktree_config,
         discover_git_worktrees_for_configs, discover_git_worktrees_for_sources_with,
         enable_worktree_config, ensure_existing_worktree_is_git_registered,
-        ensure_provider_available_before_session_bootstrap, find_assignable_worktree,
+        apply_agent_model_selection_live, ensure_provider_available_before_session_bootstrap,
+        find_assignable_worktree,
         find_deletable_worktree_for_source, flatten_clone_file_paths, generated_agent_name,
         insert_new_agent_order, is_under_managed_agent_worktree_root,
         is_under_wardian_agent_worktree_root, lock_agent_lifecycle, mark_agent_paused_off,
@@ -6594,6 +6595,30 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             outcome.config.codex_config().reasoning_effort.as_deref(),
             Some("high")
         );
+    }
+
+    #[tokio::test]
+    async fn off_non_codex_model_selection_is_deferred_until_restart() {
+        let mut config = AgentConfig::default();
+        config.session_id = "agent-1".to_string();
+        config.provider = "claude".to_string();
+        config.is_off = true;
+        config.model = Some("claude-target".to_string());
+        config.reset_provider_config_for_provider();
+
+        let result = apply_agent_model_selection_live(
+            &AppState::new(),
+            "agent-1".to_string(),
+            config,
+        )
+        .await;
+
+        assert_eq!(
+            result.live_application,
+            AgentModelLiveApplication::Deferred
+        );
+        assert_eq!(result.config.model.as_deref(), Some("claude-target"));
+        assert!(result.live_error.is_none());
     }
 
     #[test]

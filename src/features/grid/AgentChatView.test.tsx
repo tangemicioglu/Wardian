@@ -1765,6 +1765,51 @@ describe("AgentChatView", () => {
     expect(screen.getByLabelText("Model")).toHaveValue("gpt-target");
   });
 
+  it("keeps an off non-Codex model change deferred instead of sending a live command", async () => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "list_provider_model_catalog") {
+        return Promise.resolve({
+          provider: "claude",
+          version: "claude-cli test",
+          source: "live_catalog",
+          refresh_error: null,
+          models: [{
+            id: "claude-target",
+            display_name: "Claude Target",
+            effort_options: [],
+            is_default: false,
+          }],
+        });
+      }
+      if (command === "update_agent_model_selection") {
+        return Promise.resolve({
+          config: {
+            session_id: "agent-1",
+            session_name: "Alpha",
+            agent_class: "Coder",
+            folder: "C:/repo",
+            is_off: true,
+            provider: "claude",
+            model: "claude-target",
+            provider_config: { type: "claude" },
+          },
+          live_application: "deferred",
+          live_error: null,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<AgentChatView sessionId="agent-1" agent={{ session_name: "Alpha", agent_class: "Coder", provider: "claude" }} status="Off" />);
+    await screen.findByRole("option", { name: "Claude Target" });
+    await user.selectOptions(screen.getByLabelText("Model"), "claude-target");
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Saved for the next start or restart.");
+    expect(invokeMock).not.toHaveBeenCalledWith("submit_prompt_to_agent", expect.anything());
+  });
+
   it("blocks overlapping chat model saves until persistence and live application finish", async () => {
     const firstSave = deferred<AgentModelSelectionUpdateResult>();
     const updateCalls: unknown[] = [];
