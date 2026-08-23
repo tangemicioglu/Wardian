@@ -1,3 +1,4 @@
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use wardian_core::models::provider::{AgentEvent, AgentProvider};
@@ -44,9 +45,10 @@ impl PiProvider {
             if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
                 return None;
             }
-            let content = std::fs::read_to_string(&path).ok()?;
-            let header = content.lines().next()?;
-            let parsed: serde_json::Value = serde_json::from_str(header).ok()?;
+            let file = std::fs::File::open(&path).ok()?;
+            let mut header = String::new();
+            std::io::BufReader::new(file).read_line(&mut header).ok()?;
+            let parsed: serde_json::Value = serde_json::from_str(header.trim_end()).ok()?;
             (parsed.get("type").and_then(|value| value.as_str()) == Some("session")
                 && parsed.get("id").and_then(|value| value.as_str())
                     == Some(provider_session_id))
@@ -352,5 +354,20 @@ mod tests {
 
         assert_eq!(PiProvider::session_file(dir.path(), "wanted"), Some(wanted));
         assert_eq!(PiProvider::session_file(dir.path(), "missing"), None);
+    }
+
+    #[test]
+    fn resolves_session_without_reading_large_non_utf8_transcript_tail() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().expect("session dir");
+        let wanted = dir.path().join("wanted.jsonl");
+        let mut file = std::fs::File::create(&wanted).expect("session file");
+        file.write_all(b"{\"type\":\"session\",\"id\":\"wanted\"}\n")
+            .expect("session header");
+        file.write_all(&vec![0xff; 1024 * 1024])
+            .expect("large transcript tail");
+
+        assert_eq!(PiProvider::session_file(dir.path(), "wanted"), Some(wanted));
     }
 }
