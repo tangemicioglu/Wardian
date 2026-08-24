@@ -160,6 +160,18 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                         Auto-approve (dangerous)
                     </label>
                   )}
+                  {provider === 'pi' && providerConfig.type === 'pi' && (
+                    <>
+                      <label className="flex items-center gap-2 text-xs text-muted-neutral">
+                        <input type="checkbox" checked={providerConfig.no_tools || false} onChange={e => updateProviderConfigField("no_tools", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
+                        Disable tools
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-muted-neutral">
+                        <input type="checkbox" checked={providerConfig.offline || false} onChange={e => updateProviderConfigField("offline", e.target.checked)} className="accent-[var(--color-wardian-accent)]" />
+                        Offline startup
+                      </label>
+                    </>
+                  )}
               </div>
 
               {provider !== 'opencode' && provider !== 'mock' && (
@@ -438,6 +450,39 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                     onChange={(e) => updateProviderConfigField("agent", e.target.value || undefined)}
                     />
                 </div>
+              )}
+
+              {provider === 'pi' && providerConfig.type === 'pi' && (
+                <>
+                  <div>
+                    <label htmlFor="pi-project-trust" className="block text-[10px] font-bold text-muted-neutral mb-1">Project Extensions and Skills</label>
+                    <select
+                      id="pi-project-trust"
+                      className="w-full bg-[var(--color-wardian-input-bg)] border border-wardian-light rounded px-3 py-1.5 text-xs text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors"
+                      value={providerConfig.project_trust || ""}
+                      onChange={(e) => updateProviderConfigField("project_trust", e.target.value || undefined)}
+                    >
+                      <option value="">Use Pi default</option>
+                      <option value="approve">Trust for this launch</option>
+                      <option value="ignore">Ignore project-local additions</option>
+                    </select>
+                    <p className="mt-1 text-[10px] text-muted-neutral/80">
+                      This controls project-local Pi configuration. It does not sandbox shell tools or extensions.
+                    </p>
+                  </div>
+                  <ListEditor
+                    label="Enabled Tools"
+                    values={providerConfig.tools}
+                    placeholder="e.g. read, bash, edit, write"
+                    onChange={(vals: string[]) => updateProviderConfigField("tools", vals)}
+                  />
+                  <ListEditor
+                    label="Excluded Tools"
+                    values={providerConfig.exclude_tools}
+                    placeholder="e.g. bash, write"
+                    onChange={(vals: string[]) => updateProviderConfigField("exclude_tools", vals)}
+                  />
+                </>
               )}
           </div>
 

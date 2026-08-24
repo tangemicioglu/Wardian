@@ -91,6 +91,19 @@ pub fn delivery_profile(provider: &str) -> DeliveryProfile {
             input_ready_markers: &[">"],
             busy_markers: &["Working"],
         },
+        "pi" => DeliveryProfile {
+            provider: normalized,
+            submit_key: SubmitKey::CarriageReturn,
+            // Pi's editor accepts bracketed paste and applies it asynchronously
+            // before Return submits the complete prompt.
+            submit_delay_ms: 500,
+            bracketed_paste: BracketedPasteProfile {
+                enabled: true,
+                min_bytes: 1,
+            },
+            input_ready_markers: &[],
+            busy_markers: &["esc to interrupt"],
+        },
         _ => DeliveryProfile {
             provider: normalized,
             submit_key: SubmitKey::CarriageReturn,
@@ -129,7 +142,7 @@ mod tests {
 
     #[test]
     fn every_user_provider_has_a_profile() {
-        for provider in ["codex", "claude", "gemini", "opencode", "antigravity"] {
+        for provider in ["codex", "claude", "gemini", "opencode", "antigravity", "pi"] {
             let profile = delivery_profile(provider);
             assert_eq!(profile.provider, provider);
         }

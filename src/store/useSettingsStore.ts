@@ -78,7 +78,7 @@ export function effectiveTerminalFontFamily(value: string | null | undefined) {
 
 const CODEX_SANDBOX_MODES: CodexSandboxMode[] = ['read-only', 'workspace-write', 'danger-full-access'];
 const CODEX_APPROVAL_POLICIES: CodexApprovalPolicy[] = ['untrusted', 'on-request', 'never'];
-const DEFAULT_PROVIDER_SETTINGS: DefaultProviderSetting[] = ['auto', 'claude', 'codex', 'gemini', 'antigravity', 'opencode'];
+const DEFAULT_PROVIDER_SETTINGS: DefaultProviderSetting[] = ['auto', 'claude', 'codex', 'gemini', 'antigravity', 'opencode', 'pi'];
 const CONVERSATION_LOGGING_SETTINGS: ConversationLoggingSetting[] = ['enabled', 'disabled'];
 const GRID_CARD_DISPLAY_MODES: GridCardDisplayMode[] = ['terminal', 'chat'];
 const WATCHLIST_NEW_AGENT_POSITIONS: WatchlistNewAgentPosition[] = ['top', 'bottom'];

@@ -15,6 +15,7 @@ const DEFAULT_PROVIDER_VALUES: &[&str] = &[
     "gemini",
     "antigravity",
     "opencode",
+    "pi",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1365,11 +1365,22 @@ test("outside Antigravity capture mirrors Wardian interactive launch", () => {
     "utf8",
   );
 
-  assert.match(script, /ValidateSet\("codex", "claude", "gemini", "opencode", "antigravity"\)/);
+  assert.match(script, /ValidateSet\("codex", "claude", "gemini", "opencode", "antigravity", "pi"\)/);
   assert.match(script, /Get-Command "agy\.exe"/);
   assert.match(script, /Get-Command "agy\.cmd"/);
   assert.match(script, /& '\$escapedAntigravityExecutable' --prompt-interactive ''/);
   assert.match(script, /antigravity_executable/);
+});
+
+test("outside Pi capture mirrors Wardian regular-TUI session resume", () => {
+  const script = fs.readFileSync(
+    path.join(process.cwd(), "scripts", "capture-outside-provider-rendering.ps1"),
+    "utf8",
+  );
+
+  assert.match(script, /Get-Command "pi\.cmd"/);
+  assert.match(script, /& '\$escapedPiExecutable' --tui-mode regular --session-dir '\$escapedPiSessionDir' --session '\$escapedSessionId'/);
+  assert.match(script, /pi_session_dir/);
 });
 
 test("real-provider Wardian capture records DOM terminal geometry", () => {
@@ -1459,6 +1470,7 @@ test("real-provider Wardian capture exposes provider model env knobs", () => {
   assert.match(testSource, /WARDIAN_E2E_RENDERING_CLAUDE_MODEL/);
   assert.match(testSource, /WARDIAN_E2E_RENDERING_GEMINI_MODEL/);
   assert.match(testSource, /WARDIAN_E2E_RENDERING_OPENCODE_MODEL/);
+  assert.match(testSource, /WARDIAN_E2E_RENDERING_PI_MODEL/);
   assert.match(testSource, /DEFAULT_CLAUDE_RENDERING_MODEL = "haiku"/);
   assert.match(testSource, /DEFAULT_GEMINI_RENDERING_MODEL = "gemini-2\.5-flash"/);
   assert.match(testSource, /DEFAULT_OPENCODE_RENDERING_MODEL = "opencode\/deepseek-v4-flash-free"/);

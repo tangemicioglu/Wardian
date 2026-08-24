@@ -38,6 +38,10 @@ const USER_FACING_PROVIDER_DESCRIPTORS: &[ProviderDescriptor] = &[
         id: "opencode",
         display_name: "OpenCode",
     },
+    ProviderDescriptor {
+        id: "pi",
+        display_name: "Pi",
+    },
 ];
 
 pub fn user_facing_provider_descriptors() -> &'static [ProviderDescriptor] {
@@ -264,7 +268,7 @@ mod tests {
 
         assert_eq!(
             ids,
-            vec!["claude", "codex", "gemini", "antigravity", "opencode"]
+            vec!["claude", "codex", "gemini", "antigravity", "opencode", "pi"]
         );
     }
 
@@ -276,6 +280,16 @@ mod tests {
             .expect("antigravity descriptor");
 
         assert_eq!(descriptor.display_name, "Antigravity");
+    }
+
+    #[test]
+    fn pi_descriptor_uses_canonical_label() {
+        let descriptor = user_facing_provider_descriptors()
+            .iter()
+            .find(|provider| provider.id == "pi")
+            .expect("Pi descriptor");
+
+        assert_eq!(descriptor.display_name, "Pi");
     }
 
     #[test]

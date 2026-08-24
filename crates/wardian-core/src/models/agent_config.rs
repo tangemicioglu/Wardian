@@ -16,6 +16,7 @@ fn provider_key(provider: &str) -> &str {
         "codex" => "codex",
         "antigravity" => "antigravity",
         "opencode" => "opencode",
+        "pi" => "pi",
         "mock" => "mock",
         _ => "",
     }
@@ -23,7 +24,7 @@ fn provider_key(provider: &str) -> &str {
 
 fn provider_type_name(provider: &str) -> String {
     match provider_key(provider) {
-        "claude" | "gemini" | "codex" | "antigravity" | "opencode" | "mock" => {
+        "claude" | "gemini" | "codex" | "antigravity" | "opencode" | "pi" | "mock" => {
             provider_key(provider).to_string()
         }
         _ => {
@@ -40,7 +41,7 @@ fn provider_type_name(provider: &str) -> String {
 fn is_known_provider_type(provider: &str) -> bool {
     matches!(
         provider,
-        "claude" | "gemini" | "codex" | "antigravity" | "opencode" | "mock"
+        "claude" | "gemini" | "codex" | "antigravity" | "opencode" | "pi" | "mock"
     )
 }
 
@@ -58,6 +59,7 @@ pub enum ProviderConfig {
     Codex(CodexProviderConfig),
     Antigravity(AntigravityProviderConfig),
     OpenCode(OpenCodeProviderConfig),
+    Pi(PiProviderConfig),
     Mock(MockProviderConfig),
     Unknown(serde_json::Value),
 }
@@ -173,6 +175,25 @@ pub struct OpenCodeProviderConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
+pub struct PiProviderConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// One-launch project trust override: `approve`, `ignore`, or omitted to
+    /// preserve Pi's native trust decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_trust: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude_tools: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_tools: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offline: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct MockProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scenario: Option<String>,
@@ -181,6 +202,11 @@ pub struct MockProviderConfig {
 }
 
 impl ProviderConfig {
+    /// Creates the typed default configuration for a provider ID.
+    pub fn default_for_provider_name(provider: &str) -> Self {
+        Self::default_for_provider(provider)
+    }
+
     pub fn type_name(&self) -> &str {
         match self {
             Self::Claude(_) => "claude",
@@ -188,6 +214,7 @@ impl ProviderConfig {
             Self::Codex(_) => "codex",
             Self::Antigravity(_) => "antigravity",
             Self::OpenCode(_) => "opencode",
+            Self::Pi(_) => "pi",
             Self::Mock(_) => "mock",
             Self::Unknown(value) => value
                 .get("type")
@@ -202,6 +229,7 @@ impl ProviderConfig {
             "codex" => Self::Codex(CodexProviderConfig::default()),
             "antigravity" => Self::Antigravity(AntigravityProviderConfig::default()),
             "opencode" => Self::OpenCode(OpenCodeProviderConfig::default()),
+            "pi" => Self::Pi(PiProviderConfig::default()),
             "mock" => Self::Mock(MockProviderConfig::default()),
             "claude" => Self::Claude(ClaudeProviderConfig::default()),
             "" => {
@@ -250,6 +278,7 @@ impl ProviderConfig {
             "opencode" => {
                 serde_json::from_value::<OpenCodeProviderConfig>(value).map(Self::OpenCode)
             }
+            "pi" => serde_json::from_value::<PiProviderConfig>(value).map(Self::Pi),
             "mock" => serde_json::from_value::<MockProviderConfig>(value).map(Self::Mock),
             _ => Ok(Self::Unknown(value)),
         }
@@ -267,6 +296,7 @@ impl Serialize for ProviderConfig {
             Self::Codex(config) => Self::to_value_with_type("codex", config),
             Self::Antigravity(config) => Self::to_value_with_type("antigravity", config),
             Self::OpenCode(config) => Self::to_value_with_type("opencode", config),
+            Self::Pi(config) => Self::to_value_with_type("pi", config),
             Self::Mock(config) => Self::to_value_with_type("mock", config),
             Self::Unknown(value) => value.clone(),
         };
@@ -525,6 +555,7 @@ impl AgentConfigCompat {
                 auto: None,
                 port: self.opencode_port,
             }),
+            "pi" => ProviderConfig::Pi(PiProviderConfig::default()),
             "mock" => ProviderConfig::Mock(MockProviderConfig::default()),
             "claude" => ProviderConfig::Claude(ClaudeProviderConfig {
                 permission_mode: self.permission_mode.clone(),
@@ -715,6 +746,13 @@ impl AgentConfig {
         }
     }
 
+    pub fn pi_config(&self) -> PiProviderConfig {
+        match &self.provider_config {
+            ProviderConfig::Pi(config) if provider_key(&self.provider) == "pi" => config.clone(),
+            _ => PiProviderConfig::default(),
+        }
+    }
+
     pub fn reset_provider_config_for_provider(&mut self) {
         let encoding = self.provider_config_encoding;
         self.provider_config = ProviderConfig::default_for_provider(&self.provider);
@@ -807,7 +845,7 @@ impl AgentConfig {
                 self.opencode_agent = config.agent.clone();
                 self.opencode_port = config.port;
             }
-            ProviderConfig::Mock(_) | ProviderConfig::Unknown(_) => {}
+            ProviderConfig::Pi(_) | ProviderConfig::Mock(_) | ProviderConfig::Unknown(_) => {}
         }
     }
 
@@ -878,6 +916,7 @@ impl AgentConfig {
                 map.serialize_entry("opencode_agent", &config.agent)?;
                 map.serialize_entry("opencode_port", &config.port)?;
             }
+            "pi" => {}
             _ => {
                 let config = self.claude_config();
                 map.serialize_entry("permission_mode", &config.permission_mode)?;
@@ -1389,6 +1428,32 @@ mod tests {
             deserialized.antigravity_config().agent.as_deref(),
             Some("reviewer")
         );
+    }
+
+    #[test]
+    fn pi_provider_config_roundtrips() {
+        let config = AgentConfig {
+            provider: "pi".into(),
+            provider_config: ProviderConfig::Pi(PiProviderConfig {
+                reasoning_effort: Some("high".into()),
+                project_trust: Some("ignore".into()),
+                tools: Some(vec!["read".into(), "bash".into()]),
+                exclude_tools: Some(vec!["write".into()]),
+                no_tools: Some(false),
+                offline: Some(true),
+            }),
+            ..Default::default()
+        };
+
+        let value = serde_json::to_value(&config).expect("serialize Pi config");
+        assert_eq!(value["provider_config"]["type"], "pi");
+        assert_eq!(value["provider_config"]["reasoning_effort"], "high");
+        assert_eq!(value["provider_config"]["project_trust"], "ignore");
+
+        let decoded: AgentConfig = serde_json::from_value(value).expect("deserialize Pi config");
+        assert!(matches!(decoded.provider_config, ProviderConfig::Pi(_)));
+        assert_eq!(decoded.pi_config().tools, Some(vec!["read".into(), "bash".into()]));
+        assert_eq!(decoded.pi_config().offline, Some(true));
     }
 
     #[test]

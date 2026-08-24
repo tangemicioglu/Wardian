@@ -12,8 +12,38 @@ pub fn extract_transcript_message(
         "antigravity" => extract_antigravity(raw_line),
         "mock" => extract_mock(raw_line),
         "opencode" => extract_opencode(raw_line),
+        "pi" => extract_pi(raw_line),
         _ => None,
     }
+}
+
+fn extract_pi(raw_line: &str) -> Option<WatchTranscriptMessage> {
+    let parsed: serde_json::Value = serde_json::from_str(raw_line).ok()?;
+    let kind = parsed.get("type").and_then(|value| value.as_str())?;
+    let message = match kind {
+        "message" | "message_end" => parsed.get("message")?,
+        _ => return None,
+    };
+    if message.get("role").and_then(|value| value.as_str()) != Some("assistant") {
+        return None;
+    }
+    if kind == "message" {
+        let stop_reason = message.get("stopReason").and_then(|value| value.as_str());
+        if !matches!(stop_reason, Some("stop" | "length")) {
+            return None;
+        }
+    }
+    let text = extract_text(message)?;
+    Some(WatchTranscriptMessage {
+        role: "assistant".into(),
+        text,
+        provider: "pi".into(),
+        turn_id: message
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        source: Some(if kind == "message" { "session_jsonl" } else { "json_mode" }.into()),
+    })
 }
 
 fn extract_codex(raw_line: &str) -> Option<WatchTranscriptMessage> {
@@ -283,6 +313,16 @@ mod tests {
         let line = r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"hello"}"#;
 
         assert!(extract_transcript_message("antigravity", line).is_none());
+    }
+
+    #[test]
+    fn pi_completed_session_message_extracts_assistant_text() {
+        let line = r#"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Pi answer"}],"stopReason":"stop"}}"#;
+
+        let message = extract_transcript_message("pi", line).unwrap();
+        assert_eq!(message.text, "Pi answer");
+        assert_eq!(message.provider, "pi");
+        assert_eq!(message.source.as_deref(), Some("session_jsonl"));
     }
 
     #[test]

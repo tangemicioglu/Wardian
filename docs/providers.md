@@ -1,6 +1,6 @@
 # Provider Runtimes
 
-Wardian provides one orchestration layer over five supported CLI providers: Antigravity, Claude Code, Codex, OpenCode, and Gemini CLI. Each provider keeps its native command-line behavior, while Wardian adapts session identity, working roots, skill discovery, status tracking, and workflow execution into a consistent app model.
+Wardian provides one orchestration layer over six supported CLI providers: Antigravity, Claude Code, Codex, OpenCode, Pi, and Gemini CLI. Each provider keeps its native command-line behavior, while Wardian adapts session identity, working roots, skill discovery, status tracking, and workflow execution into a consistent app model.
 
 ## Overview
 
@@ -10,6 +10,7 @@ Wardian provides one orchestration layer over five supported CLI providers: Anti
 | **[Claude Code](https://github.com/anthropics/claude-code)** | Supported | Real target workspace | `CLAUDE.md` | `--add-dir` instruction roots plus `.claude/skills` links to Wardian-managed skills | Wardian assigns fresh session IDs and resumes explicitly |
 | **[Codex](https://github.com/openai/codex)** | Supported | Real target workspace via `--cd` | `AGENTS.md` | Per-agent `CODEX_HOME` habitat with scoped skill projection | Fresh local rollout, then exact resume |
 | **[OpenCode](https://github.com/anomalyco/opencode)** | Supported | Real target workspace | `AGENTS.md` plus injected runtime config | `OPENCODE_CONFIG` adds Wardian instructions; `OPENCODE_CONFIG_DIR` exposes projected skills | Discovered from JSON events and resumed with `--session` |
+| **[Pi](https://pi.dev/docs/latest/)** | Supported | Real target workspace | `AGENTS.md` | Wardian instruction files use `--append-system-prompt`; skill roots use repeated `--skill` | Wardian assigns an exact project session ID and resumes explicitly |
 | **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Unmaintained | Real target workspace | `GEMINI.md` | Wardian include roots passed through `--include-directories`; Gemini patch enables multi-root skill discovery | Discovered from provider output |
 
 ## Shared Runtime Model
@@ -145,6 +146,46 @@ Wardian discovers OpenCode session IDs from JSON events emitted by `opencode run
 ### Debug First
 
 If OpenCode misses instructions or skills, inspect the generated `OPENCODE_CONFIG` file and `OPENCODE_CONFIG_DIR` skill projection. On Windows, also verify whether Wardian resolved a native executable or correctly wrapped a command shim through the host shell.
+
+## Pi (`pi`)
+
+Pi runs directly in the real target workspace and keeps the user's global Pi
+configuration, authentication, packages, extensions, and themes.
+
+### Instruction and Skill Discovery
+
+Pi reads project and parent `AGENTS.md` files natively. Wardian passes each
+common, class, and agent `AGENTS.md` through repeated
+`--append-system-prompt <absolute-file-path>` arguments and passes each
+Wardian-managed `.agents/skills` directory through repeated
+`--skill <absolute-directory-path>` arguments. The target repository stays
+unchanged.
+
+### Session and Status Handling
+
+Wardian gives every fresh Pi launch a provider UUID distinct from the Wardian
+agent UUID. The provider session JSONL is isolated under the agent's Wardian
+directory through `--session-dir`; fresh launches use `--session-id` and resumed
+launches use `--session`. Wardian watches only the JSONL whose header confirms
+that exact ID.
+
+Visible agents use Pi's `regular` TUI mode so xterm retains terminal scrollback.
+Workflow execution uses `--mode json` and treats `agent_end` as definitive turn
+completion. Model discovery uses `pi --list-models`; models that advertise
+thinking support expose Pi's `off` through `max` levels in the model picker.
+
+Pi's project trust controls project-local settings, extensions, and skills. It
+does not sandbox tools or extensions. On Windows, Pi also requires a
+Bash-compatible shell, normally Git Bash.
+
+### Debug First
+
+If Pi starts but Chat or `wardian agent watch` has no transcript, inspect the
+agent's `pi/sessions` directory and verify that the JSONL header ID matches the
+saved `resume_session`. If no model is selectable, run `pi --list-models` in a
+normal terminal and complete provider authentication or configure a custom
+model. If tool execution fails on Windows, verify Pi's Bash setup before
+changing Wardian's PTY path.
 
 ## Gemini CLI (`@google/gemini-cli`) — Unmaintained
 

@@ -2888,6 +2888,24 @@ fn gemini_output_has_api_key_prompt(output: &str) -> bool {
     output.contains("Enter Gemini API Key") || output.contains("Paste your API key here")
 }
 
+fn pi_output_has_startup_ready_prompt(output: &str) -> bool {
+    let cleaned = strip_ansi_controls(output).replace('\r', "\n");
+    if cleaned.contains("No models available") || cleaned.contains("Error: Model") {
+        return false;
+    }
+
+    let lines = cleaned
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    lines.windows(2).any(|pair| {
+        pair[0].contains(" • ")
+            && pair[1].contains("%/")
+            && pair[1].split_whitespace().count() >= 2
+    })
+}
+
 pub(crate) fn antigravity_output_has_ready_prompt(output: &str) -> bool {
     let cleaned = strip_ansi_controls(output).replace('\r', "\n");
     let lines = cleaned
@@ -2935,6 +2953,7 @@ pub(crate) fn provider_output_has_startup_ready_prompt(provider: &str, output: &
                 && cleaned.contains("Type your message or @path/to/file")
         }
         "antigravity" => antigravity_output_has_ready_prompt(&cleaned),
+        "pi" => pi_output_has_startup_ready_prompt(&cleaned),
         _ => false,
     }
 }
@@ -5506,6 +5525,18 @@ mod tests {
         assert!(provider_output_has_startup_ready_prompt(
             "codex",
             "\u{1b}[1;1H\u{1b}[J\u{1b}[13;1H\u{1b}[1m›\u{1b}[22m Write tests for @filename\u{1b}[?25h",
+        ));
+    }
+
+    #[test]
+    fn startup_ready_prompt_accepts_pi_regular_tui_footer() {
+        assert!(provider_output_has_startup_ready_prompt(
+            "pi",
+            "pi v0.84.2\r\n────────────────\r\nC:\\workspace • Wardian-Pi\r\n0.0%/33k (auto) echo",
+        ));
+        assert!(!provider_output_has_startup_ready_prompt(
+            "pi",
+            "No models available. Use /login to log into a provider.",
         ));
     }
 

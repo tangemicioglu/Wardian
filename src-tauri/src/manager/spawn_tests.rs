@@ -45,7 +45,7 @@ fn matching_claude_init_confirms_identity_then_captures_timestamp() {
 
 #[test]
 fn conflicting_caller_owned_init_leaves_identity_and_timestamp_unchanged() {
-    for provider in ["claude", "gemini", "mock"] {
+    for provider in ["claude", "gemini", "pi", "mock"] {
         let config = config(provider, "wardian-id", Some("expected-id"), None);
         let timestamp = Arc::new(Mutex::new(None));
         assert!(handle_provider_init_event(
@@ -61,6 +61,17 @@ fn conflicting_caller_owned_init_leaves_identity_and_timestamp_unchanged() {
         );
         assert_eq!(*timestamp.lock().unwrap(), None);
     }
+}
+
+#[test]
+fn matching_fresh_pi_init_confirms_exact_project_session() {
+    let config = config("pi", "wardian-id", None, Some("pi-session-id"));
+    let timestamp = Arc::new(Mutex::new(None));
+
+    assert_eq!(
+        handle_provider_init_event("pi", &init("pi-session-id"), &config, &timestamp),
+        Ok(ProviderIdentityOutcome::Confirmed)
+    );
 }
 
 #[test]

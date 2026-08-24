@@ -142,6 +142,7 @@ async fn discover_model_catalog(provider: &str) -> ProviderModelCatalog {
             },
         },
         "opencode" => discover_opencode_catalog(provider, version).await,
+        "pi" => discover_pi_catalog(provider, version).await,
         "antigravity" => discover_line_catalog(provider, version, &["models"]).await,
         "claude" => {
             discover_alias_catalog(
@@ -172,6 +173,30 @@ async fn discover_model_catalog(provider: &str) -> ProviderModelCatalog {
             .await
         }
         _ => ProviderModelCatalog::unavailable(provider, "unsupported provider"),
+    }
+}
+
+async fn discover_pi_catalog(provider: &str, version: Option<String>) -> ProviderModelCatalog {
+    match provider_command_output(provider, &["--list-models"]).await {
+        Ok(output) => {
+            let models = parse_pi_catalog(&output);
+            ProviderModelCatalog {
+                provider: provider.to_string(),
+                version,
+                source: if models.is_empty() { "unavailable" } else { "live_catalog" }.into(),
+                refresh_error: models
+                    .is_empty()
+                    .then(|| "Pi returned no configured models; authenticate a provider or add models.json".into()),
+                models,
+            }
+        }
+        Err(error) => ProviderModelCatalog {
+            provider: provider.to_string(),
+            version,
+            source: "unavailable".into(),
+            models: Vec::new(),
+            refresh_error: Some(error),
+        },
     }
 }
 
@@ -395,6 +420,44 @@ fn parse_line_catalog(output: &str) -> Vec<ProviderModelOption> {
         .collect()
 }
 
+fn parse_pi_catalog(output: &str) -> Vec<ProviderModelOption> {
+    output
+        .lines()
+        .map(strip_ansi)
+        .filter_map(|line| {
+            let columns = line.split_whitespace().collect::<Vec<_>>();
+            if columns.len() < 6 || columns[0].eq_ignore_ascii_case("provider") {
+                return None;
+            }
+            let provider = columns[0].trim();
+            let model = columns[1].trim();
+            if provider.is_empty() || model.is_empty() {
+                return None;
+            }
+            let id = if model.starts_with(&format!("{provider}/")) {
+                model.to_string()
+            } else {
+                format!("{provider}/{model}")
+            };
+            let effort_options = if columns[4].eq_ignore_ascii_case("yes") {
+                ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            Some(ProviderModelOption {
+                display_name: id.clone(),
+                id,
+                effort_options,
+                default_effort: None,
+                is_default: false,
+            })
+        })
+        .collect()
+}
+
 fn strip_ansi(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut chars = value.chars();
@@ -426,7 +489,7 @@ fn first_nonempty_line(value: &str) -> Option<String> {
 fn is_user_facing_provider(provider: &str) -> bool {
     matches!(
         provider,
-        "claude" | "codex" | "gemini" | "antigravity" | "opencode"
+        "claude" | "codex" | "gemini" | "antigravity" | "opencode" | "pi"
     )
 }
 
@@ -485,5 +548,23 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["openai/gpt-5.6", "opencode/free"],
         );
+    }
+
+    #[test]
+    fn parses_pi_model_table_and_thinking_support() {
+        let models = parse_pi_catalog(
+            "provider  model                 context  max-out  thinking  images\n\
+             anthropic claude-sonnet-4-5     200000   64000    yes       yes\n\
+             openai    gpt-4.1-mini          1047576  32768    no        yes\n",
+        );
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "anthropic/claude-sonnet-4-5");
+        assert_eq!(
+            models[0].effort_options.last().map(String::as_str),
+            Some("max")
+        );
+        assert_eq!(models[1].id, "openai/gpt-4.1-mini");
+        assert!(models[1].effort_options.is_empty());
     }
 }
