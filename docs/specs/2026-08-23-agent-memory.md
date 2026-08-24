@@ -90,7 +90,7 @@ Temporary-provider workflow assignments may optionally specify a model and
 effort. This is normal workflow configuration, not memory-specific behavior.
 
 The engine renders the target `agent_id` into `memory_commit` only from the
-canonical `{{trigger.output.agent_id}}` invocation value; model-produced
+canonical `&#123;&#123;trigger.output.agent_id&#125;&#125;` invocation value; model-produced
 structured output cannot select the memory owner. Trigger input is not an
 authority boundary. The executor separately requires an immutable authenticated
 invocation principal supplied by the trusted session-close context or by a

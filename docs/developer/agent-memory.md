@@ -30,7 +30,7 @@ source and retention lifecycle is `memory.db`.
 Workflow mutation is routed through the `memory_commit` engine node. Its payload
 is a `MemoryCommitBatch`; the live executor calls `MemoryStore::commit_batch`.
 `MemoryCommitRequest.agent_id` is rendered from the canonical
-`{{trigger.output.agent_id}}` invocation value by the engine. No other template
+`&#123;&#123;trigger.output.agent_id&#125;&#125;` invocation value by the engine. No other template
 is accepted. That rendered value is not authority: the live executor also
 requires an immutable invocation principal supplied by a trusted session-close
 launch or by a managed CLI process whose launch-scoped capability the desktop
