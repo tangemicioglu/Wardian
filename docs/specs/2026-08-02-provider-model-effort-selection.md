@@ -57,8 +57,10 @@ existing restart-required behavior for launch arguments. Changing it in chat
 uses the focused `update_agent_model_selection` command. Codex is the live
 application exception: while it is idle, Wardian drives Codex's interactive
 `/model` model and reasoning pickers and reports the live outcome separately
-from persistence. Other providers, off agents, and Codex sessions that cannot
-be updated in place use the saved choice on the next start or restart. See
+from persistence. For a live non-Codex agent, Wardian retains the provider's
+model-command fallback; this applies the model immediately but does not claim
+to apply a separate reasoning-effort choice. Off agents and live sessions that
+cannot be updated in place use the saved choice on the next start or restart. See
 [Chat model selection save serialization](2026-08-23-chat-model-selection-save-serialization.md)
 for the transaction and failure semantics.
 
