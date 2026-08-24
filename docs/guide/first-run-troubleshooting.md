@@ -44,19 +44,23 @@ Wardian can only spawn an agent for a provider command the app process can find.
 Check only the provider command you selected in Wardian. These examples show the supported command names:
 
 ```bash
-command -v gemini
+command -v agy
 command -v claude
 command -v codex
 command -v opencode
+command -v pi
+command -v gemini
 ```
 
 PowerShell:
 
 ```powershell
-Get-Command gemini
+Get-Command agy
 Get-Command claude
 Get-Command codex
 Get-Command opencode
+Get-Command pi
+Get-Command gemini
 ```
 
 If the command is missing, install or repair that provider CLI, then restart Wardian. If the command works in a terminal but not in Wardian, restart the desktop app so it receives the updated PATH from the operating system.

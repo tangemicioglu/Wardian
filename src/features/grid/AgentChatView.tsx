@@ -5,7 +5,7 @@ import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { FileText, Hand, Image as ImageIcon, Loader2, Plus, SendHorizontal, Square, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import type { AgentChatEvent, AgentConfig, AgentTelemetry } from "../../types";
+import type { AgentChatEvent, AgentConfig, AgentModelSelectionUpdateResult, AgentTelemetry } from "../../types";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { reasoningEffortForConfig } from "../agents/configUtils";
 import { ProviderModelSelector, type ModelSelection } from "../agents/ProviderModelSelector";
@@ -42,6 +42,7 @@ interface AgentChatViewBaseProps {
   refreshIntervalMs?: number;
   autoFocusComposer?: boolean;
   onComposerAutoFocused?: () => void;
+  onAgentConfigUpdated?: (agent: AgentConfig) => void;
 }
 
 type AgentChatDraftControlProps =
@@ -74,6 +75,7 @@ export function AgentChatView({
   autoFocusComposer = false,
   draft,
   onComposerAutoFocused,
+  onAgentConfigUpdated,
   onDraftChange,
 }: AgentChatViewProps) {
   const [events, setEvents] = useState<AgentChatEvent[]>([]);
@@ -422,6 +424,7 @@ export function AgentChatView({
         isSubmitting={isSubmitting}
         attachments={attachments}
         onAutoFocused={onComposerAutoFocused}
+        onAgentConfigUpdated={onAgentConfigUpdated}
         onAttachmentsChange={setAttachments}
         onChange={setActiveDraft}
         onInterrupt={handleInterrupt}
@@ -449,6 +452,7 @@ function ChatComposer({
   isInterrupting,
   isSubmitting,
   onAutoFocused,
+  onAgentConfigUpdated,
   onAttachmentsChange,
   onChange,
   onInterrupt,
@@ -466,6 +470,7 @@ function ChatComposer({
   isInterrupting: boolean;
   isSubmitting: boolean;
   onAutoFocused?: () => void;
+  onAgentConfigUpdated?: (agent: AgentConfig) => void;
   onAttachmentsChange: (attachments: ChatAttachment[]) => void;
   onChange: (value: string) => void;
   onInterrupt: () => void;
@@ -777,7 +782,11 @@ function ChatComposer({
         ) : null}
         </div>
         <div className="ml-auto flex min-w-0 items-center gap-1">
-          <ChatModelSelection agent={agent} sessionId={sessionId} />
+          <ChatModelSelection
+            agent={agent}
+            onAgentConfigUpdated={onAgentConfigUpdated}
+            sessionId={sessionId}
+          />
           <button
             aria-label={isInterrupting ? "Interrupting agent" : isExecuting ? "Interrupt agent" : isSubmitting ? "Sending message" : "Send message"}
             className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-transparent disabled:bg-transparent disabled:text-muted-neutral disabled:opacity-60"
@@ -807,9 +816,11 @@ function ChatComposer({
 
 function ChatModelSelection({
   agent,
+  onAgentConfigUpdated,
   sessionId,
 }: {
   agent?: Pick<AgentConfig, "session_name" | "agent_class" | "provider" | "model" | "provider_config">;
+  onAgentConfigUpdated?: (agent: AgentConfig) => void;
   sessionId: string;
 }) {
   const provider = agent?.provider;
@@ -818,6 +829,7 @@ function ChatModelSelection({
     reasoning_effort: reasoningEffortForConfig(agent ?? {}),
   }));
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   // Rollback target for a failed save. A ref rather than render-scope state:
   // two rapid changes must roll back to the last persisted value, not to a
@@ -832,6 +844,7 @@ function ChatModelSelection({
     selectionRef.current = nextSelection;
     setSelection(nextSelection);
     setSaveError(null);
+    setSaveNotice(null);
   }, [agent?.model, agent?.provider_config, sessionId]);
 
   if (!provider?.trim()) return null;
@@ -842,22 +855,27 @@ function ChatModelSelection({
     let persisted = false;
     setSelection(nextSelection);
     setSaveError(null);
+    setSaveNotice(null);
     setIsSaving(true);
     try {
-      const saved = await invoke<AgentConfig>("update_agent_model_selection", {
+      const result = await invoke<AgentModelSelectionUpdateResult>("update_agent_model_selection", {
         sessionId,
         model: nextSelection.model ?? null,
         reasoningEffort: nextSelection.reasoning_effort ?? null,
       });
+      const saved = result.config;
       const savedSelection = {
         model: saved.model,
         reasoning_effort: reasoningEffortForConfig(saved),
       };
       selectionRef.current = savedSelection;
       setSelection(savedSelection);
+      onAgentConfigUpdated?.(saved);
       persisted = true;
-      if (saved.model) {
-        await submitInputToAgent(sessionId, `/model ${saved.model}`);
+      if (result.live_application === "failed") {
+        setSaveError(`Saved, but the live model could not be changed: ${result.live_error ?? "Codex did not confirm the selection."}`);
+      } else if (result.live_application === "deferred") {
+        setSaveNotice("Saved for the next start or restart.");
       }
     } catch (reason) {
       if (!persisted) {
@@ -874,12 +892,14 @@ function ChatModelSelection({
     <div className="min-w-0 shrink-0">
       <ProviderModelSelector
         compact
+        disabled={isSaving}
         idPrefix={`chat-${sessionId}`}
         provider={provider}
         selection={selection}
         onSelectionChange={(nextSelection) => void saveSelection(nextSelection)}
       />
-      {isSaving ? <span className="sr-only">Saving model…</span> : null}
+      {isSaving ? <span className="shrink-0 text-[10px] text-muted-neutral" role="status">Applying model…</span> : null}
+      {saveNotice ? <p className="mt-1 text-[10px] text-muted-neutral" role="status">{saveNotice}</p> : null}
       {saveError ? <p className="mt-1 text-[10px] text-wardian-error" role="alert">{saveError}</p> : null}
     </div>
   );

@@ -10,6 +10,7 @@ Windows is the primary development and testing platform for Wardian.
 
 - **Implementation**: Wardian uses `portable-pty` with native **ConPTY** support. This ensures a true, high-fidelity Windows terminal experience (supporting PowerShell 7, Git Bash, and CMD).
 - **Nuance**: On Windows, Wardian handles UNC path resolution for Gemini logs and session state navigation, preventing common "path not found" errors when working across drive letters.
+- **Pi shell requirement**: Install Git Bash or another Bash-compatible shell supported by Pi before launching Pi agents on Windows.
 - **Install**: Use `winget install WardianApp.Wardian`, or download `Wardian_X.Y.Z_x64-setup.exe` from the Releases page.
 - **Recommended Tools**: We recommend using the latest PowerShell 7 for agent operations.
 

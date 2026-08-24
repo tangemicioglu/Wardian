@@ -5,9 +5,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { readImage, writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentChatEvent } from "../../types";
+import type { AgentChatEvent, AgentConfig, AgentModelSelectionUpdateResult } from "../../types";
 import { AppShell } from "../../layout/AppShell";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { AgentChatView } from "./AgentChatView";
@@ -1671,19 +1671,19 @@ describe("AgentChatView", () => {
           reasoningEffort: "low",
         });
         return Promise.resolve({
-          session_id: "agent-1",
-          session_name: "Alpha",
-          agent_class: "Coder",
-          folder: "C:/repo",
-          is_off: false,
-          provider: "codex",
-          model: "gpt-5.6-sol",
-          provider_config: { type: "codex", reasoning_effort: "low" },
+          config: {
+            session_id: "agent-1",
+            session_name: "Alpha",
+            agent_class: "Coder",
+            folder: "C:/repo",
+            is_off: false,
+            provider: "codex",
+            model: "gpt-5.6-sol",
+            provider_config: { type: "codex", reasoning_effort: "low" },
+          },
+          live_application: "applied",
+          live_error: null,
         });
-      }
-      if (command === "submit_prompt_to_agent") {
-        expect(args).toEqual({ sessionId: "agent-1", prompt: "/model gpt-5.6-sol" });
-        return Promise.resolve(undefined);
       }
       return Promise.reject(new Error(`unexpected command: ${command}`));
     });
@@ -1699,7 +1699,274 @@ describe("AgentChatView", () => {
       model: "gpt-5.6-sol",
       reasoningEffort: "low",
     }));
+    expect(invokeMock).not.toHaveBeenCalledWith("submit_prompt_to_agent", expect.anything());
     expect(screen.queryByText("Applies when this agent next starts or restarts.")).not.toBeInTheDocument();
+  });
+
+  it("restores the saved model after a Terminal round trip and preserves it for an effort-only change", async () => {
+    const updateCalls: unknown[] = [];
+    invokeMock.mockImplementation((command, args) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "list_provider_model_catalog") {
+        return Promise.resolve({
+          provider: "codex",
+          version: "codex-cli test",
+          source: "live_catalog",
+          refresh_error: null,
+          models: [
+            { id: "gpt-5.6-sol", display_name: "5.6 Sol", effort_options: ["low", "high"], default_effort: "low", is_default: true },
+            { id: "gpt-5.6-luna", display_name: "5.6 Luna", effort_options: ["low", "high"], default_effort: "high", is_default: false },
+          ],
+        });
+      }
+      if (command === "update_agent_model_selection") {
+        const selection = args as { model: string; reasoningEffort: string };
+        updateCalls.push(args);
+        return Promise.resolve({
+          config: {
+            session_id: "agent-1",
+            session_name: "Alpha",
+            agent_class: "Coder",
+            folder: "C:/repo",
+            is_off: false,
+            provider: "codex",
+            model: selection.model,
+            provider_config: { type: "codex", reasoning_effort: selection.reasoningEffort },
+          },
+          live_application: "applied",
+          live_error: null,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    function Harness() {
+      const [agent, setAgent] = useState<AgentConfig>({
+        session_id: "agent-1",
+        session_name: "Alpha",
+        agent_class: "Coder",
+        folder: "C:/repo",
+        is_off: false,
+        provider: "codex",
+      });
+      const [mode, setMode] = useState<"chat" | "terminal">("chat");
+      return (
+        <>
+          <button onClick={() => setMode(mode === "chat" ? "terminal" : "chat")} type="button">
+            {mode === "chat" ? "Show Terminal" : "Show Chat"}
+          </button>
+          {mode === "chat" ? (
+            <AgentChatView
+              agent={agent}
+              onAgentConfigUpdated={setAgent}
+              sessionId="agent-1"
+              status="Idle"
+            />
+          ) : <div>Terminal view</div>}
+        </>
+      );
+    }
+
+    const user = userEvent.setup();
+    render(<Harness />);
+    await screen.findByRole("option", { name: "5.6 Luna" });
+    await user.selectOptions(screen.getByLabelText("Model"), "gpt-5.6-luna");
+    await waitFor(() => expect(updateCalls).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Show Terminal" }));
+    await user.click(screen.getByRole("button", { name: "Show Chat" }));
+    expect(await screen.findByLabelText("Model")).toHaveValue("gpt-5.6-luna");
+    expect(screen.getByLabelText("Effort")).toHaveValue("high");
+
+    await user.selectOptions(screen.getByLabelText("Effort"), "low");
+    await waitFor(() => expect(updateCalls).toHaveLength(2));
+    expect(updateCalls[1]).toEqual({
+      sessionId: "agent-1",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
+    });
+  });
+
+  it.each([
+    {
+      name: "reports a deferred live change as saved for restart",
+      liveApplication: "deferred" as const,
+      liveError: null,
+      expected: "Saved for the next start or restart.",
+      role: "status" as const,
+    },
+    {
+      name: "reports a failed live change without rolling back persistence",
+      liveApplication: "failed" as const,
+      liveError: "Timed out waiting for Codex model picker",
+      expected: "Saved, but the live model could not be changed: Timed out waiting for Codex model picker",
+      role: "alert" as const,
+    },
+  ])("$name", async ({ liveApplication, liveError, expected, role }) => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "list_provider_model_catalog") {
+        return Promise.resolve({
+          provider: "codex",
+          version: "codex-cli 0.149.0",
+          source: "live_catalog",
+          refresh_error: null,
+          models: [{
+            id: "gpt-target",
+            display_name: "GPT Target",
+            effort_options: ["low"],
+            default_effort: "low",
+            is_default: false,
+          }],
+        });
+      }
+      if (command === "update_agent_model_selection") {
+        return Promise.resolve({
+          config: {
+            session_id: "agent-1",
+            session_name: "Alpha",
+            agent_class: "Coder",
+            folder: "C:/repo",
+            is_off: liveApplication === "deferred",
+            provider: "codex",
+            model: "gpt-target",
+            provider_config: { type: "codex", reasoning_effort: "low" },
+          },
+          live_application: liveApplication,
+          live_error: liveError,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<AgentChatView sessionId="agent-1" agent={{ session_name: "Alpha", agent_class: "Coder", provider: "codex" }} status="Idle" />);
+    await screen.findByRole("option", { name: "GPT Target" });
+    await user.selectOptions(screen.getByLabelText("Model"), "gpt-target");
+
+    expect(await screen.findByRole(role)).toHaveTextContent(expected);
+    expect(invokeMock).not.toHaveBeenCalledWith("submit_prompt_to_agent", expect.anything());
+    expect(screen.getByLabelText("Model")).toHaveValue("gpt-target");
+  });
+
+  it.each([
+    { runtime: "live", status: "Idle", isOff: false },
+    { runtime: "off", status: "Off", isOff: true },
+  ])("keeps a $runtime non-Codex model change deferred instead of sending a live command", async ({ status, isOff }) => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "list_provider_model_catalog") {
+        return Promise.resolve({
+          provider: "claude",
+          version: "claude-cli test",
+          source: "live_catalog",
+          refresh_error: null,
+          models: [{
+            id: "claude-target",
+            display_name: "Claude Target",
+            effort_options: [],
+            is_default: false,
+          }],
+        });
+      }
+      if (command === "update_agent_model_selection") {
+        return Promise.resolve({
+          config: {
+            session_id: "agent-1",
+            session_name: "Alpha",
+            agent_class: "Coder",
+            folder: "C:/repo",
+            is_off: isOff,
+            provider: "claude",
+            model: "claude-target",
+            provider_config: { type: "claude" },
+          },
+          live_application: "deferred",
+          live_error: null,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<AgentChatView sessionId="agent-1" agent={{ session_name: "Alpha", agent_class: "Coder", provider: "claude" }} status={status} />);
+    await screen.findByRole("option", { name: "Claude Target" });
+    await user.selectOptions(screen.getByLabelText("Model"), "claude-target");
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Saved for the next start or restart.");
+    expect(invokeMock).not.toHaveBeenCalledWith("submit_prompt_to_agent", expect.anything());
+  });
+
+  it("blocks overlapping chat model saves until persistence and live application finish", async () => {
+    const firstSave = deferred<AgentModelSelectionUpdateResult>();
+    const updateCalls: unknown[] = [];
+    invokeMock.mockImplementation((command, args) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "list_provider_model_catalog") {
+        return Promise.resolve({
+          provider: "codex",
+          version: "codex-cli 0.146.0",
+          source: "live_catalog",
+          refresh_error: null,
+          models: [
+            { id: "model-b", display_name: "Model B", effort_options: ["low", "high"], default_effort: "low", is_default: false },
+            { id: "model-c", display_name: "Model C", effort_options: [], is_default: false },
+          ],
+        });
+      }
+      if (command === "update_agent_model_selection") {
+        updateCalls.push(args);
+        if (updateCalls.length === 1) return firstSave.promise;
+        return Promise.resolve({
+          config: {
+            session_id: "agent-1",
+            session_name: "Alpha",
+            agent_class: "Coder",
+            folder: "C:/repo",
+            is_off: false,
+            provider: "codex",
+            model: "model-c",
+            provider_config: { type: "codex" },
+          },
+          live_application: "applied",
+          live_error: null,
+        });
+      }
+      if (command === "submit_prompt_to_agent") return Promise.resolve(undefined);
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<AgentChatView sessionId="agent-1" agent={{ session_name: "Alpha", agent_class: "Coder", provider: "codex" }} status="Idle" />);
+
+    await screen.findByRole("option", { name: "Model B" });
+    const modelSelector = screen.getByLabelText("Model");
+    await user.selectOptions(modelSelector, "model-b");
+
+    await waitFor(() => expect(modelSelector).toBeDisabled());
+    expect(screen.getByLabelText("Effort")).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Applying model…");
+    await user.selectOptions(modelSelector, "model-c");
+    expect(updateCalls).toHaveLength(1);
+
+    firstSave.resolve({
+      config: {
+        session_id: "agent-1",
+        session_name: "Alpha",
+        agent_class: "Coder",
+        folder: "C:/repo",
+        is_off: false,
+        provider: "codex",
+        model: "model-b",
+        provider_config: { type: "codex", reasoning_effort: "low" },
+      },
+      live_application: "applied",
+      live_error: null,
+    });
+
+    await waitFor(() => expect(modelSelector).not.toBeDisabled());
+    await user.selectOptions(modelSelector, "model-c");
+    await waitFor(() => expect(updateCalls).toHaveLength(2));
   });
 
   it("stages image files with the provider paste shortcut and includes every attachment path in the sent prompt", async () => {

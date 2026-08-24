@@ -1849,6 +1849,7 @@ function AppBody() {
         onRestart={onRestart}
         onClear={onClear}
         onClone={onClone}
+        onAgentConfigUpdated={agentResources.apply_agent_config}
         on_state_change={(state) => {
           workbenchPersistence.store.getState().apply_commands([{
             type: "update_surface_state",

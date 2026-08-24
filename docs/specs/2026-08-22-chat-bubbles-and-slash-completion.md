@@ -52,8 +52,8 @@ through a channel that guarantees an interactive surface.
 - Any "/"-prefixed prompt is delivered as `input_mode: "command"` so provider
   slash commands always reach an interactive surface (or the mailbox when the
   agent is off), never headless execution. This matches the remote PWA's
-  existing inference and fixes the composer's own `/model` live-apply, which
-  previously traveled the message channel.
+  existing inference. The model selector uses its own backend-controlled flow
+  because Codex `/model` requires multiple interactive picker steps.
 - The completion payload omits `input_mode` for ordinary messages, keeping the
   IPC shape unchanged for existing callers.
 

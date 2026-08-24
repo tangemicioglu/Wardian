@@ -135,6 +135,7 @@ export type WorkbenchIpcMockOptions = {
   reset_delay_ms?: number;
   reset_outcome?: "saved" | "revision_conflict" | "error";
   responses?: Record<string, unknown>;
+  response_delays_ms?: Record<string, number>;
   explorer_root?: string;
   files?: WorkbenchFileFixture[];
   /** Exact path returned by the next native Save As picker call; null models cancellation. */
@@ -198,6 +199,7 @@ export async function installWorkbenchIpcMock(
       resetDelayMs,
       resetOutcome,
       responses,
+      responseDelaysMs,
       explorerRoot,
       files,
       saveTargetPath,
@@ -816,6 +818,10 @@ export async function installWorkbenchIpcMock(
           }
           if (command === "plugin:event|unlisten") return null;
 
+          const responseDelayMs = responseDelaysMs[command] ?? 0;
+          if (responseDelayMs > 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, responseDelayMs));
+          }
           if (Object.prototype.hasOwnProperty.call(responses, command)) {
             return clone(responses[command]);
           }
@@ -833,6 +839,7 @@ export async function installWorkbenchIpcMock(
       resetDelayMs: options.reset_delay_ms ?? 0,
       resetOutcome: options.reset_outcome ?? "saved",
       responses: options.responses ?? {},
+      responseDelaysMs: options.response_delays_ms ?? {},
       explorerRoot: options.explorer_root ?? "/workspace",
       files: browserFiles,
       saveTargetPath: options.save_target_path ?? null,

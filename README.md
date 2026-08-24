@@ -26,7 +26,7 @@ workflows, and project context.
 
 Wardian gives the agent tools you already run durable identity, live terminals, scoped skills, workflow runs, queue evidence, and workspace context in one GUI-first habitat.
 
-Use it to spawn specialized agents, monitor their progress, hand work between them, collect completed output, and automate repeatable flows across providers such as Antigravity, Claude, Codex, and OpenCode. The bundled `wardian` CLI gives agents and scripts a textual control surface for discovering identity, coordinating peers, and controlling Wardian without driving the graphical app.
+Use it to spawn specialized agents, monitor their progress, hand work between them, collect completed output, and automate repeatable flows across providers such as Antigravity, Claude, Codex, OpenCode, and Pi. The bundled `wardian` CLI gives agents and scripts a textual control surface for discovering identity, coordinating peers, and controlling Wardian without driving the graphical app.
 
 Wardian is built for malleable agent work. Prompts, classes, skills, workflows, queues, and memory-ready evidence are treated as visible, reusable artifacts rather than opaque app state. Its tab-based Workbench lets surfaces move between panes, split side by side, and restore across launches while the agent roster and auxiliary tools remain available. You can start by watching live agents, then gradually turn repeated instructions into prompts, reusable roles, deployable skills, workflow templates, and durable project context.
 
@@ -119,7 +119,7 @@ For complete user and developer docs, start here:
 
 ## Supported Providers
 
-Wardian supports five provider CLIs today and adapts each runtime into the same agent lifecycle, telemetry, skill, and workflow model.
+Wardian supports six provider CLIs today and adapts each runtime into the same agent lifecycle, telemetry, skill, and workflow model.
 
 | Provider        | Support       | Runtime Model                                              |
 | :-------------- | :------------ | :--------------------------------------------------------- |
@@ -127,6 +127,7 @@ Wardian supports five provider CLIs today and adapts each runtime into the same 
 | **[Claude Code](https://github.com/anthropics/claude-code)** | ✅ Supported  | Real-workspace runtime with explicit session IDs and permission hooks. |
 | **[Codex](https://github.com/openai/codex)**       | ✅ Supported  | Real-workspace execution via `--cd` with per-agent `CODEX_HOME` habitat state. |
 | **[OpenCode](https://github.com/anomalyco/opencode)**    | ✅ Supported  | Real-workspace runtime with native `AGENTS.md` discovery and injected config for Wardian scope. |
+| **[Pi](https://pi.dev/docs/latest/)** | ✅ Supported | Real-workspace runtime with native `AGENTS.md` discovery, exact session IDs, and appended Wardian instructions and skills. |
 | **[Gemini CLI](https://github.com/google-gemini/gemini-cli)**  | ⚠️ Unmaintained | Real-workspace runtime with patched skill discovery. Consumer/free access ended June 18, 2026. Use Antigravity for Google-model access. |
 
 > See [Provider Runtime Notes](docs/providers.md) for a deep dive into provider-specific discovery and lifecycle management.

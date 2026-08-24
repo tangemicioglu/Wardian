@@ -328,7 +328,9 @@ provider process runs from the habitat workspace path during headless execution.
 
 When provider behavior breaks, start with the provider-specific seam instead of the generic agent UI.
 
+- Antigravity problems: inspect visible include-root projections, the exact workspace conversation mapping, and the conversation transcript.
 - Claude problems: inspect `CLAUDE.md` discovery, permission hooks, and explicit session flags.
 - Codex problems: inspect `CODEX_HOME`, `--cd`, bootstrap migration, and sandbox approval transitions.
 - OpenCode problems: inspect the generated `OPENCODE_CONFIG` file, junctioned skills, real-workspace directory argument, and `ses_…` session discovery.
+- Pi problems: inspect appended system-prompt and skill arguments, the private session directory, and the exact Pi session ID and JSONL boundary.
 - Gemini problems (unmaintained): inspect patching, include directories, and JSON event parsing.

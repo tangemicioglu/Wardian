@@ -318,6 +318,39 @@ describe("useAgentResourceController", () => {
     expect(result.current.agents.map((agent) => agent.session_id)).toEqual(["agent-2"]);
   });
 
+  it("merges an authoritative agent config without reordering the shared roster", async () => {
+    const { result } = renderHook(() => useAgentResourceController());
+    await waitFor(() => expect(result.current.agents).toHaveLength(2));
+
+    let resolveStaleLoad!: (value: AgentConfig[]) => void;
+    const staleLoad = new Promise<AgentConfig[]>((resolve) => {
+      resolveStaleLoad = resolve;
+    });
+    mockInvoke.mockImplementationOnce(() => staleLoad);
+    let staleRefresh!: Promise<readonly AgentConfig[]>;
+    act(() => {
+      staleRefresh = result.current.refresh_agents();
+    });
+
+    act(() => result.current.apply_agent_config({
+      ...alpha,
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      provider_config: { type: "codex", reasoning_effort: "high" },
+    }));
+
+    await act(async () => {
+      resolveStaleLoad([alpha, beta]);
+      await staleRefresh;
+    });
+
+    expect(result.current.agents.map((agent) => agent.session_id)).toEqual(["agent-1", "agent-2"]);
+    expect(result.current.agents[0]).toEqual(expect.objectContaining({
+      model: "gpt-5.6-luna",
+      provider_config: { type: "codex", reasoning_effort: "high" },
+    }));
+  });
+
   it("exposes lifecycle operations without moving confirmation or roster ownership into the controller", async () => {
     const { result } = renderHook(() => useAgentResourceController());
     await waitFor(() => expect(result.current.agents).toHaveLength(2));

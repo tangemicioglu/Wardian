@@ -2,6 +2,7 @@ pub mod antigravity;
 pub mod chat_transcript;
 pub mod claude;
 pub mod codex;
+pub mod codex_model_selection;
 pub mod factory;
 pub mod gemini;
 pub mod mock;

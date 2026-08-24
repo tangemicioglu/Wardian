@@ -363,7 +363,7 @@ fn parse_codex_catalog(output: &str) -> Result<Vec<ProviderModelOption>, String>
                 .filter(|value| !value.is_empty())
                 .unwrap_or(id)
                 .to_string();
-            let effort_options = model
+            let mut effort_options: Vec<String> = model
                 .get("supported_reasoning_levels")
                 .or_else(|| model.get("supportedReasoningEfforts"))
                 .and_then(serde_json::Value::as_array)
@@ -379,13 +379,28 @@ fn parse_codex_catalog(output: &str) -> Result<Vec<ProviderModelOption>, String>
                         .map(str::to_string)
                 })
                 .collect();
-            let default_effort = model
+            let mut default_effort = model
                 .get("default_reasoning_level")
                 .or_else(|| model.get("defaultReasoningEffort"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
+            if let Some(default) = default_effort.clone() {
+                if let Some(existing) = effort_options
+                    .iter()
+                    .find(|effort| effort.eq_ignore_ascii_case(&default))
+                {
+                    default_effort = Some(existing.clone());
+                } else {
+                    let default_rank = reasoning_effort_rank(&default);
+                    let insert_at = effort_options
+                        .iter()
+                        .position(|effort| reasoning_effort_rank(effort) > default_rank)
+                        .unwrap_or(effort_options.len());
+                    effort_options.insert(insert_at, default);
+                }
+            }
             Some(ProviderModelOption {
                 id: id.to_string(),
                 display_name,
@@ -400,6 +415,13 @@ fn parse_codex_catalog(output: &str) -> Result<Vec<ProviderModelOption>, String>
             })
         })
         .collect())
+}
+
+fn reasoning_effort_rank(effort: &str) -> usize {
+    ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        .iter()
+        .position(|candidate| candidate.eq_ignore_ascii_case(effort))
+        .unwrap_or(usize::MAX)
 }
 
 fn parse_line_catalog(output: &str) -> Vec<ProviderModelOption> {
@@ -528,10 +550,34 @@ mod tests {
             vec![ProviderModelOption {
                 id: "gpt-5.6-sol".to_string(),
                 display_name: "GPT-5.6-Sol".to_string(),
-                effort_options: vec!["low".to_string(), "high".to_string()],
+                effort_options: vec![
+                    "low".to_string(),
+                    "medium".to_string(),
+                    "high".to_string(),
+                ],
                 default_effort: Some("medium".to_string()),
                 is_default: true,
             }],
+        );
+
+        let catalog = ProviderModelCatalog {
+            provider: "codex".to_string(),
+            version: Some("codex-cli test".to_string()),
+            source: "live_catalog".to_string(),
+            models: parse_codex_catalog(output).unwrap(),
+            refresh_error: None,
+        };
+        assert_eq!(
+            crate::providers::codex_model_selection::resolve_live_selection(
+                &catalog,
+                Some("gpt-5.6-sol"),
+                None,
+            )
+            .expect("resolve declared Codex default"),
+            crate::providers::codex_model_selection::CodexLiveModelSelection {
+                model: "gpt-5.6-sol".to_string(),
+                effort: "medium".to_string(),
+            }
         );
     }
 
