@@ -11,10 +11,13 @@ drop and paste events when the host exposes filesystem paths. Attachments stay
 as exact paths until submission so image files can use the provider's native
 paste path and text files can be included in the prompt context.
 
-Changing the model persists the agent configuration and immediately sends the
-provider's `/model <model>` command to the active session. Persistence and live
-application are reported separately when the provider command fails; a failed
-live command does not discard the successfully persisted selection.
+Changing the model persists the agent configuration and applies the selection
+to the active provider. Codex is controlled through its interactive `/model`
+picker: Wardian chooses the model, then the reasoning level, and uses the
+advanced submenu for Max or Ultra. Persistence and live application are
+reported separately when provider interaction fails; a failed live change does
+not discard the successfully persisted selection. Off agents use the saved
+selection when they next start or restart.
 
 ## Scope and limits
 

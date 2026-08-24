@@ -227,11 +227,14 @@ pub async fn send_input_to_agent(
 ) -> Result<(), String> {
     let is_interrupt = input.contains('\u{3}');
     let is_submit = input.contains('\r') || input.contains('\n');
-    let decision = state
-        .terminal_sessions
-        .send_legacy_input(&session_id, input.as_bytes().to_vec())
-        .await
-        .map_err(|error| error.to_string())?;
+    let decision = {
+        let _delivery_guard = state.lock_agent_delivery(&session_id).await;
+        state
+            .terminal_sessions
+            .send_legacy_input(&session_id, input.as_bytes().to_vec())
+            .await
+            .map_err(|error| error.to_string())?
+    };
     if decision.status == wardian_core::models::TerminalLeaseDecisionStatus::Accepted {
         if is_interrupt {
             clear_raw_terminal_prompt_buffer(&session_id);
@@ -273,6 +276,7 @@ pub async fn inject_session_input(
     text: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _delivery_guard = state.lock_agent_delivery(&session_id).await;
     state
         .terminal_sessions
         .send_privileged_input(&session_id, text.into_bytes())
@@ -324,6 +328,7 @@ pub async fn broadcast_input(input: String, state: State<'_, AppState>) -> Resul
         .cloned()
         .collect::<Vec<_>>();
     for session_id in session_ids {
+        let _delivery_guard = state.lock_agent_delivery(&session_id).await;
         let _ = state
             .terminal_sessions
             .send_privileged_input(&session_id, input.clone().into_bytes())
@@ -338,6 +343,7 @@ pub async fn send_binary_input_to_agent(
     input: Vec<u8>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _delivery_guard = state.lock_agent_delivery(&session_id).await;
     let decision = state
         .terminal_sessions
         .send_legacy_input(&session_id, input)

@@ -158,6 +158,12 @@ export interface ProviderModelCatalog {
     refresh_error: string | null;
 }
 
+export interface AgentModelSelectionUpdateResult {
+    config: AgentConfig;
+    live_application: "applied" | "deferred" | "failed";
+    live_error: string | null;
+}
+
 export interface UnknownProviderConfig {
     type: string;
     [key: string]: unknown;

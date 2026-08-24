@@ -54,9 +54,14 @@ them. Their model selection remains available.
 Changing a selection in Spawn Agent becomes part of the spawn override.
 Changing it in Configure Agent persists the same fields and follows the
 existing restart-required behavior for launch arguments. Changing it in chat
-uses the focused `update_agent_model_selection` command and states that the
-selection applies when the agent next starts or restarts. Wardian does not
-interrupt an active provider turn or claim that a session changed in place.
+uses the focused `update_agent_model_selection` command. Codex is the live
+application exception: while it is idle, Wardian drives Codex's interactive
+`/model` model and reasoning pickers and reports the live outcome separately
+from persistence. Non-Codex providers, off agents, and live sessions that
+cannot be updated in place use the saved model and effort on the next start or
+restart; chat does not issue a partial model-only fallback. See
+[Chat model selection save serialization](2026-08-23-chat-model-selection-save-serialization.md)
+for the transaction and failure semantics.
 
 The `wardian` CLI exposes the same provider-owned catalogue through
 `agent models --provider <provider> [--refresh]`, then accepts explicit

@@ -17,6 +17,7 @@ interface ProviderModelSelectorProps {
   onSelectionChange: (selection: ModelSelection) => void;
   idPrefix: string;
   compact?: boolean;
+  disabled?: boolean;
 }
 
 export function ProviderModelSelector({
@@ -25,6 +26,7 @@ export function ProviderModelSelector({
   onSelectionChange,
   idPrefix,
   compact = false,
+  disabled = false,
 }: ProviderModelSelectorProps) {
   const [catalog, setCatalog] = useState<ProviderModelCatalog | null>(null);
   const [loading, setLoading] = useState(false);
@@ -119,7 +121,7 @@ export function ProviderModelSelector({
               className={compact
                 ? "max-w-[15rem] appearance-none rounded border border-transparent bg-transparent px-1 py-1 pr-5 text-[11px] font-medium text-primary outline-none transition-colors hover:border-wardian-light focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-60"
                 : "w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)] disabled:cursor-not-allowed disabled:opacity-60"}
-              disabled={loading || models.length === 0}
+              disabled={disabled || loading || models.length === 0}
               id={modelId}
               onChange={(event) => chooseModel(event.target.value)}
               value={modelValue}
@@ -145,6 +147,7 @@ export function ProviderModelSelector({
                   ? "w-full appearance-none rounded border border-transparent bg-transparent px-1 py-1 pr-4 text-[11px] font-medium text-muted-neutral outline-none transition-colors hover:border-wardian-light focus:border-[var(--color-wardian-accent)]"
                   : "w-full rounded border border-wardian-light bg-[var(--color-wardian-input-bg)] px-2 py-1.5 text-xs text-primary outline-none transition-colors focus:border-[var(--color-wardian-accent)]"}
                 id={effortId}
+                disabled={disabled}
                 onChange={(event) => onSelectionChange({
                   model: selection.model,
                   reasoning_effort: event.target.value || undefined,

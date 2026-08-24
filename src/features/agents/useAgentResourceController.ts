@@ -50,6 +50,7 @@ export type AgentResourceController = {
   agent_statuses: Record<string, string>;
   off_agent_ids: Set<string>;
   refresh_agents: (spawned_agent?: AgentConfig) => Promise<readonly AgentConfig[]>;
+  apply_agent_config: (agent: AgentConfig) => void;
   set_terminal_title: (session_id: string, title: string) => void;
   rename_agent: (session_id: string, new_name: string) => Promise<void>;
   pause_agent: (session_id: string) => Promise<void>;
@@ -176,6 +177,18 @@ export function useAgentResourceController(
       return agents_ref.current;
     }
   }, [commitAgents, reportError]);
+
+  const applyAgentConfig = useCallback((updated_agent: AgentConfig) => {
+    const normalized_agent = normalizeAgentConfig(updated_agent);
+    const current_agents = agents_ref.current;
+    if (!current_agents.some((agent) => agent.session_id === normalized_agent.session_id)) return;
+    // This backend result is newer than any roster load that began before it.
+    // Prevent an older list_agents snapshot from restoring the pre-save model.
+    fetch_request_ref.current += 1;
+    commitAgents(current_agents.map((agent) => (
+      agent.session_id === normalized_agent.session_id ? normalized_agent : agent
+    )));
+  }, [commitAgents]);
 
   const applyStatus = useCallback((
     session_id: string,
@@ -415,6 +428,7 @@ export function useAgentResourceController(
     agent_statuses: agentStatuses,
     off_agent_ids: offAgentIds,
     refresh_agents: refreshAgents,
+    apply_agent_config: applyAgentConfig,
     set_terminal_title: setTerminalTitle,
     rename_agent: renameAgent,
     pause_agent: pauseAgent,
@@ -426,6 +440,7 @@ export function useAgentResourceController(
   }), [
     agentStatuses,
     agents,
+    applyAgentConfig,
     appTelemetry,
     clearAgent,
     cloneAgent,
