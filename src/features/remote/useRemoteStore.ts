@@ -100,8 +100,22 @@ type RemoteSet = (
 ) => void;
 type RemoteGet = () => RemoteState;
 
-const statusFromError = (error: unknown): RemoteStatus =>
-  error instanceof RemoteRequestError && error.status === 401 ? "session_expired" : "unreachable";
+const PAIRING_EXPIRED_ERROR_CODES = new Set([
+  "pairing_offer_not_found",
+  "pairing_offer_used",
+  "pairing_offer_expired",
+  "pairing_offer_invalid",
+  "pending_pairing_not_found",
+  "pending_pairing_not_active",
+]);
+
+const statusFromError = (error: unknown): RemoteStatus => {
+  if (!(error instanceof RemoteRequestError)) return "unreachable";
+  if (error.status === 401) return "session_expired";
+  if (error.code && PAIRING_EXPIRED_ERROR_CODES.has(error.code)) return "pairing_expired";
+  if (error.code === "device_not_found" || error.code === "device_revoked") return "device_revoked";
+  return "unreachable";
+};
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -711,10 +725,14 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
         return;
       }
       if (error instanceof RemotePairingExpiredError) {
+        clearPairingUrl();
         set({ status: "pairing_expired" });
         return;
       }
-      set({ status: statusFromError(error) });
+      const nextStatus = statusFromError(error);
+      if (nextStatus === "pairing_expired") clearPairingUrl();
+      if (nextStatus === "device_revoked") await clearStoredRemoteIdentity();
+      set({ status: nextStatus });
     }
   },
   async refresh() {
@@ -723,7 +741,10 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
       await loadRemoteShellData(set, get);
     } catch (error) {
       closeStatusStream();
-      set({ status: statusFromError(error) });
+      const nextStatus = statusFromError(error);
+      if (nextStatus === "pairing_expired") clearPairingUrl();
+      if (nextStatus === "device_revoked") await clearStoredRemoteIdentity();
+      set({ status: nextStatus });
     }
   },
   async refreshInbox() {

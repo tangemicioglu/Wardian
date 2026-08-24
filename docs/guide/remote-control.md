@@ -208,9 +208,18 @@ tailnet access rules, the installed app cannot send commands.
   literals, or alternate hostnames in the origin field.
 - **The pairing code expires:** create a fresh code from the desktop. Pairing
   offers are single use and intentionally short lived.
-- **The installed PWA opens but cannot control agents:** reopen Tailscale on
-  the phone, refresh the PWA, and confirm the device is still listed as paired
-  in Wardian Remote Access settings.
+- **The PWA says the pairing link is expired or invalid:** create and scan a
+  fresh pairing code. The old URL cannot be reused after its offer expires or
+  is consumed.
+- **The PWA says the device was revoked:** create and scan a fresh pairing
+  code, then approve the new device on the desktop. Revocation ends the old
+  device's active sessions.
+- **The PWA says the session expired:** tap Re-authenticate. If that fails,
+  confirm the device is still listed as paired and scan a fresh pairing code
+  after revocation or remote-access reset.
+- **The installed PWA says the desktop is unreachable:** reopen Tailscale on
+  the phone, confirm the desktop gateway is running, and retry. This state is
+  reserved for transport or gateway failures rather than stale pairing state.
 
 ## Security Model
 
@@ -265,7 +274,10 @@ terminal interfaces. Chat remains one tap away.
 The agent detail composer sends ordinary chat messages by default. Turn on
 command mode when you need to submit a provider slash command or another input
 that must reach the provider command channel without chat attribution. Command
-mode resets after a successful send.
+mode resets after a successful send. Ordinary prompts do not wait for the
+agent's status: an offline agent starts a headless provider turn, while an
+offline command remains queued until an interactive provider surface is
+available.
 
 The mobile action strip includes lifecycle controls for the selected agent.
 Clone remains a desktop-only operation so the phone does not create new agent

@@ -203,7 +203,7 @@ export function AgentChatView({
   const latestVisibleRowKey = visibleChatRows.length > 0 ? chatTranscriptRowKey(visibleChatRows[visibleChatRows.length - 1]) : "";
   const hasActionRequired = mergedEvents.some((event) => event.status === "action_required");
   const liveApprovalId = useMemo(() => liveApprovalEventId(sortTranscriptEvents(mergedEvents)), [mergedEvents]);
-  const disabledReason = inputDisabledReason(activeStatus, isSubmitting);
+  const disabledReason = inputDisabledReason(isSubmitting);
   const openChangedFile = useMemo(() => {
     const workspace = workspacePath?.trim();
     if (!workbenchNavigation || !workspace) return undefined;
@@ -1105,15 +1105,8 @@ function responseEventCount(events: AgentChatEvent[]): number {
   }).length;
 }
 
-function inputDisabledReason(status: string | null, isSubmitting: boolean): string | null {
+function inputDisabledReason(isSubmitting: boolean): string | null {
   if (isSubmitting) return "Sending...";
-  const normalized = (status ?? "").toLowerCase();
-  if (!normalized) return null;
-  if (normalized.includes("action")) return null;
-  if (normalized.includes("off")) return "Agent is off";
-  if (normalized.includes("headless")) return "Agent is headless";
-  if (normalized.includes("paused")) return "Agent is paused";
-  if (normalized.includes("error")) return "Agent is in an error state";
   return null;
 }
 

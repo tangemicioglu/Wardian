@@ -1605,6 +1605,41 @@ describe("AgentChatView", () => {
     expect(input).toHaveValue("");
   });
 
+  it("keeps the composer available for an offline agent", async () => {
+    invokeMock.mockImplementation((command, args) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "submit_prompt_to_agent") {
+        expect(args).toEqual({ sessionId: "agent-1", prompt: "Run offline." });
+        return Promise.resolve({
+          runtime_state: "headless_process",
+          delivery_state: "provider_applied",
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    render(
+      <AgentChatView
+        sessionId="agent-1"
+        agent={{ session_name: "Alpha", agent_class: "Coder", provider: "mock" }}
+        status="Off"
+      />,
+    );
+    expect(await screen.findByText("No chat transcript yet")).toBeInTheDocument();
+
+    const input = await screen.findByLabelText("Message agent");
+    expect(input).not.toBeDisabled();
+    fireEvent.change(input, { target: { value: "Run offline." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("submit_prompt_to_agent", {
+        sessionId: "agent-1",
+        prompt: "Run offline.",
+      }),
+    );
+  });
+
   it("completes slash commands from the composer and routes them as commands", async () => {
     invokeMock.mockImplementation((command, args) => {
       if (command === "load_agent_chat_transcript") return Promise.resolve([]);
