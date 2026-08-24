@@ -208,9 +208,18 @@ tailnet access rules, the installed app cannot send commands.
   literals, or alternate hostnames in the origin field.
 - **The pairing code expires:** create a fresh code from the desktop. Pairing
   offers are single use and intentionally short lived.
-- **The installed PWA opens but cannot control agents:** reopen Tailscale on
-  the phone, refresh the PWA, and confirm the device is still listed as paired
-  in Wardian Remote Access settings.
+- **The PWA says the pairing link is expired or invalid:** create and scan a
+  fresh pairing code. The old URL cannot be reused after its offer expires or
+  is consumed.
+- **The PWA says the device was revoked:** create and scan a fresh pairing
+  code, then approve the new device on the desktop. Revocation ends the old
+  device's active sessions.
+- **The PWA says the session expired:** tap Re-authenticate. If that fails,
+  confirm the device is still listed as paired and scan a fresh pairing code
+  after revocation or remote-access reset.
+- **The installed PWA says the desktop is unreachable:** reopen Tailscale on
+  the phone, confirm the desktop gateway is running, and retry. This state is
+  reserved for transport or gateway failures rather than stale pairing state.
 
 ## Security Model
 

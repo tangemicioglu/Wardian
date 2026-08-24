@@ -120,7 +120,7 @@ export const RemoteMobileApp: React.FC = () => {
   }
 
   if (status === "pairing_expired") {
-    return <RemotePairingView state="expired" actionLabel="Retry" onAction={() => void load()} />;
+    return <RemotePairingView state="expired" />;
   }
 
   if (status === "gateway_identity_changed") {
