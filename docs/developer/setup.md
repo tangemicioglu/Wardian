@@ -26,13 +26,14 @@ This generates `coverage/rust-lcov.info` which is uploaded to Codecov in CI. The
 
 Install and authenticate at least one supported provider CLI before running real agents. Native and real-provider E2E work may require the specific provider under test.
 
-| Provider | GitHub Project | Common CLI Command |
+| Provider | Project | Common CLI Command |
 |---|---|---|
-| Gemini CLI | [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) | `gemini` |
 | Antigravity | [Antigravity CLI overview](https://www.antigravity.google/docs/cli-overview) | `agy` |
 | Claude Code | [anthropics/claude-code](https://github.com/anthropics/claude-code) | `claude` |
 | Codex | [openai/codex](https://github.com/openai/codex) | `codex` |
 | OpenCode | [anomalyco/opencode](https://github.com/anomalyco/opencode) | `opencode` |
+| Pi | [Pi coding agent documentation](https://pi.dev/docs/latest/) | `pi` |
+| Gemini CLI *(unmaintained)* | [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) | `gemini` |
 
 ## Optional Tools
 

@@ -37,9 +37,17 @@ invariants:
   terminal geometry, ordered output, bounded snapshots/replay, and the single
   interactive presentation lease shared by desktop and remote clients. See
   [Terminal Presentation Broker](./terminal-presentation-broker.md).
-- **Provider Adapters**: Agent CLIs are integrated behind a Rust provider layer so session spawn, headless execution, and telemetry enrichment can support Gemini, Antigravity, Claude, Codex, and OpenCode without rewriting the rest of the backend.
+- **Provider Adapters**: Agent CLIs are integrated behind a Rust provider layer so session spawn, headless execution, and telemetry enrichment can support Gemini, Antigravity, Claude, Codex, OpenCode, and Pi without rewriting the rest of the backend.
   See [Provider Runtime Notes](./provider-runtimes.md) for the provider-specific working-root, skill, and session rules that sit behind this abstraction.
-- **Habitat Projection**: For providers that cannot natively discover Wardian instructions and skills from external include roots, the backend materializes a neutral per-session `habitat` directory. That habitat links the real workspace, projects a scoped `AGENTS.md`, and exposes provider-native skill layouts without mutating the user repository. OpenCode is an explicit exception: it stays in the real workspace and receives class/skill scope through injected runtime config instead of a projected workspace.
+- **Habitat Projection**: For providers that need a neutral per-session
+  habitat, the backend links the real workspace, projects scoped instructions,
+  and exposes provider-native skill layouts without mutating the user
+  repository. Codex uses a habitat-backed `CODEX_HOME` while executing against
+  the real workspace, Gemini headless runs use the projected workspace, and
+  OpenCode uses the habitat as its command root while receiving the real
+  workspace explicitly. Pi does not create this projected habitat; it runs in
+  the real workspace and receives Wardian instruction and skill roots through
+  provider-native launch flags.
 - **State Management**: `AppState` holds `Mutex`-protected maps of active agents, metrics, workflow runs, and background tasks.
 - **Worker Threads**:
   - **Workflow Scheduler**: Fires persisted workflow schedule invokers.

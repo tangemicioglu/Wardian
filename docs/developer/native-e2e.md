@@ -124,7 +124,7 @@ lease enforcement, remote authentication, or provider behavior.
 
 Real-provider checks are opt-in. Keep them isolated and use them for every provider-runtime claim. The mock provider can prove Wardian-owned behavior such as routing, queueing, rendering, state sharing, and deterministic PTY plumbing. It cannot prove that a real provider CLI accepts input, exposes a ready prompt, clears a compose field, resumes a session, or responds through its real transcript path.
 
-Never make a mock-backed test spoof a real provider identity to validate Codex, Claude, Gemini, OpenCode, or Antigravity behavior. If a test would need that, write an opt-in real-provider native E2E test or leave a skipped test with `// @real-provider-only`.
+Never make a mock-backed test spoof a real provider identity to validate Codex, Claude, Gemini, OpenCode, Antigravity, or Pi behavior. If a test would need that, write an opt-in real-provider native E2E test or leave a skipped test with `// @real-provider-only`.
 
 ```bash
 WARDIAN_E2E_REAL_OPENCODE=1 WARDIAN_E2E_REAL_WORKSPACE=<absolute-workspace-path> npm run test:e2e:native
@@ -181,6 +181,11 @@ npm run tauri -- build --debug --no-bundle
 npm run test:e2e:native:fast -- e2e-native/tests/real-provider-rendering-native.test.mjs
 ```
 
+The provider list also accepts `pi`. Include it in
+`WARDIAN_E2E_RENDERING_PROVIDERS` for a Pi rendering run, and set
+`WARDIAN_E2E_RENDERING_PI_MODEL` when the test should use a specific configured
+Pi model.
+
 The run writes Wardian-side evidence under `e2e/screenshots/real-provider-rendering/<run-id>/`. Each provider directory includes JSON and screenshots for `initial`, `settled`, `narrow`, `resized`, `wide`, card-level `card-maximized` and `card-restored`, window-level `minimized`, `restored-after-minimize`, `maximized`, `restored-after-maximize`, `rapid-resize-final`, `scrolled-top`, `cleared-immediate`, `paused`, and `resumed`.
 
 When `WARDIAN_E2E_RENDERING_INPUT_TEXT` is unset, the lab submits a compact default prompt that asks the provider to print exactly 50 lines from `WARDIAN_SCROLL_001` through `WARDIAN_SCROLL_050`. This keeps the typed prompt from polluting scrollback with a second copy of the audit rows while still requiring `WARDIAN_SCROLL_050` in the provider response.
@@ -213,6 +218,7 @@ WARDIAN_E2E_RENDERING_EXPECT_RESPONSE_TEXT=<optional-response-marker>
 WARDIAN_E2E_RENDERING_CODEX_MODEL=<optional-codex-model>
 WARDIAN_E2E_RENDERING_CLAUDE_MODEL=<optional-claude-model>
 WARDIAN_E2E_RENDERING_OPENCODE_MODEL=opencode/deepseek-v4-flash-free
+WARDIAN_E2E_RENDERING_PI_MODEL=<optional-pi-model>
 ```
 
 The default `initial`, `settled`, and `wide` visual states use a 1920x1080 desktop window so PR evidence resembles a normal fullscreen desktop. Keep the smaller `resized`, `narrow`, rapid-resize, geometry sweep, and outside-terminal sizes when the test is deliberately proving wrapping, cramped layout, or resize behavior.

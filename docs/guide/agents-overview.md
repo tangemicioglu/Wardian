@@ -86,7 +86,7 @@ Auto adds columns only when the pane can support their preferred working width a
 Open an agent's configuration and expand **Advanced Settings** to override
 options for that provider. Wardian shows only options consumed by the selected
 provider. Switching providers replaces the provider-specific configuration so
-Claude, Gemini, Codex, Antigravity, and OpenCode flags do not leak into one
+Claude, Gemini, Codex, Antigravity, OpenCode, and Pi flags do not leak into one
 another.
 
 Options marked **Headless** apply to background deliveries and workflow runs
@@ -99,6 +99,8 @@ Codex sandbox and approval values inherit the provider-wide defaults under
 Gemini's sandbox option requires Docker or Podman on the machine running the
 provider CLI. If neither is available, Gemini rejects the launch before it can
 begin a session.
+Pi's project approval options control project-local configuration, extensions,
+and skills. They do not sandbox Pi's tools or extensions.
 Use **Custom Arguments** for a current provider flag that Wardian does not model;
 custom arguments are passed only to the selected provider.
 

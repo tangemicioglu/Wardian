@@ -91,6 +91,7 @@ agy
 claude
 codex
 opencode
+pi
 gemini
 ```
 
@@ -103,6 +104,7 @@ agy
 claude
 codex
 opencode
+pi
 gemini
 ```
 
