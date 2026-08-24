@@ -8,6 +8,9 @@ use wardian_core::models::InvocationKind;
 
 #[derive(Debug, Clone)]
 pub struct SessionCloseContext {
+    /// Unique lifecycle boundary identity. Retries of one launched workflow
+    /// retain this value; later archive-less boundaries never collide.
+    pub boundary_id: String,
     pub agent_id: String,
     pub agent_name: String,
     pub workspace: String,
@@ -72,13 +75,20 @@ async fn launch(
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
-    input.insert("agent_id".into(), Value::String(context.agent_id));
+    input.insert(
+        "agent_id".into(),
+        Value::String(context.agent_id.clone()),
+    );
     input.insert("agent_name".into(), Value::String(context.agent_name));
     input.insert("workspace".into(), Value::String(context.workspace));
     input.insert("source_provider".into(), Value::String(context.provider));
     input.insert(
         "boundary_reason".into(),
         Value::String(context.boundary_reason),
+    );
+    input.insert(
+        "boundary_id".into(),
+        Value::String(context.boundary_id.clone()),
     );
     input.insert(
         "archive_available".into(),
@@ -98,11 +108,9 @@ async fn launch(
     );
     input.insert(
         "idempotency_key".into(),
-        Value::String(format!(
-            "session-close:{}:{}:{}",
-            invoker.id,
-            context.conversation_id.as_deref().unwrap_or("no-archive"),
-            context.source_sequence.unwrap_or(0)
+        Value::String(session_close_idempotency_key(
+            &invoker.id,
+            &context.boundary_id,
         )),
     );
     let assignments = wardian_core::workflow::assignment::normalize_assignments(
@@ -119,7 +127,8 @@ async fn launch(
         &provider,
     )
     .await;
-    let run_state = runs::prepare_new_run_with_assignments(
+    let memory_principal = context.agent_id.clone();
+    let run_state = runs::prepare_new_run_with_assignments_and_memory_principal(
         &blueprint,
         &run_id,
         &run_root,
@@ -128,12 +137,13 @@ async fn launch(
         &invoker.bindings,
         &assignments,
         Value::Object(input),
+        Some(memory_principal.clone()),
     )?;
     let blueprint_for_inbox = blueprint.clone();
     let run_root_for_inbox = run_root.clone();
     let app_for_inbox = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = runs::drive_started_run_with_catalog_and_assignments(
+        let result = runs::drive_started_run_with_catalog_assignments_and_memory_principal(
             Some(app),
             blueprint,
             run_state,
@@ -143,6 +153,7 @@ async fn launch(
             invoker.bindings,
             assignments,
             catalog,
+            Some(memory_principal),
         )
         .await;
         if let Err(error) = result {
@@ -153,4 +164,22 @@ async fn launch(
         runs::emit_workflow_inbox_update(&app_for_inbox, &blueprint_for_inbox, &run_root_for_inbox);
     });
     Ok(())
+}
+
+fn session_close_idempotency_key(invoker_id: &str, boundary_id: &str) -> String {
+    format!("session-close:{invoker_id}:{boundary_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_close_idempotency_key;
+
+    #[test]
+    fn archive_less_boundaries_receive_distinct_idempotency_keys() {
+        let first = session_close_idempotency_key("invoker", "boundary-a");
+        let retry = session_close_idempotency_key("invoker", "boundary-a");
+        let second = session_close_idempotency_key("invoker", "boundary-b");
+        assert_eq!(first, retry);
+        assert_ne!(first, second);
+    }
 }

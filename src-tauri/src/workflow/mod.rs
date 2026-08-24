@@ -30,6 +30,7 @@ pub struct LiveStepExecutor {
     assignments: WorkflowAssignments,
     agent_catalog: HashMap<String, AgentBinding>,
     owner_id: String,
+    memory_principal: Option<String>,
 }
 
 impl LiveStepExecutor {
@@ -98,11 +99,20 @@ impl LiveStepExecutor {
             assignments,
             agent_catalog,
             owner_id: "workflow/manual".to_string(),
+            memory_principal: None,
         }
     }
 
     pub fn with_owner_id(mut self, owner_id: String) -> Self {
         self.owner_id = owner_id;
+        self
+    }
+
+    /// Authorize memory commits for one invocation-owned agent. The value is
+    /// supplied by a trusted launch boundary, never interpolated model/input
+    /// data.
+    pub fn with_memory_principal(mut self, agent_id: String) -> Self {
+        self.memory_principal = Some(agent_id);
         self
     }
 
@@ -645,10 +655,27 @@ impl StepExecutor for LiveStepExecutor {
         Self: 'async_trait,
     {
         Box::pin(async move {
+            let principal = self.memory_principal.as_deref().ok_or_else(|| {
+                StepError::new(
+                    "memory_commit requires an authenticated invocation memory principal",
+                )
+            })?;
+            if req.agent_id != principal {
+                return Err(StepError::new(format!(
+                    "memory_commit requested agent {} but the invocation authorizes {}",
+                    req.agent_id, principal
+                )));
+            }
             let batch: wardian_core::memory::MemoryCommitBatch =
                 serde_json::from_value(req.payload).map_err(|error| {
                     StepError::new(format!("invalid memory_commit payload: {error}"))
                 })?;
+            if batch.agent_id != req.agent_id {
+                return Err(StepError::new(format!(
+                    "memory_commit payload agent_id {} does not match authorized agent {}",
+                    batch.agent_id, req.agent_id
+                )));
+            }
             let result = wardian_core::memory::MemoryStore::from_default_home()
                 .and_then(|store| store.commit_batch(batch))
                 .map_err(|error| StepError::new(error.to_string()))?;
@@ -723,6 +750,125 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.0["go"], true);
+    }
+
+    #[tokio::test]
+    async fn memory_commit_rejects_model_selected_agent_identity() {
+        let _home = TestWardianHome::new();
+        let exec = exec_with(FakeAgentRunner::new()).with_memory_principal("agent-a".into());
+        let payload = serde_json::json!({
+            "agent_id": "agent-b",
+            "idempotency_key": "run:boundary:one",
+            "operations": []
+        });
+
+        let error = exec
+            .memory_commit(MemoryCommitRequest {
+                node: "commit".into(),
+                agent_id: "agent-a".into(),
+                payload,
+            })
+            .await
+            .expect_err("model-selected peer identity must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("does not match authorized agent"));
+        assert!(wardian_core::memory::MemoryStore::from_default_home()
+            .unwrap()
+            .list_events("agent-b")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn workflow_cannot_commit_for_caller_selected_peer_principal() {
+        let _home = TestWardianHome::new();
+        let run_root = tempfile::tempdir().unwrap();
+        let payload = serde_json::json!({
+            "agent_id": "agent-b",
+            "idempotency_key": "run:boundary:peer",
+            "operations": []
+        });
+        let blueprint = wardian_core::workflow::Blueprint {
+            schema: 2,
+            id: "memory-authority-test".into(),
+            name: "Memory authority test".into(),
+            nodes: vec![
+                wardian_core::workflow::Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                wardian_core::workflow::Node {
+                    id: "extract".into(),
+                    r#type: "task".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({"agent":"role:curator","prompt":"extract"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    position: None,
+                },
+                wardian_core::workflow::Node {
+                    id: "commit".into(),
+                    r#type: "memory_commit".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({
+                        "source_node":"extract",
+                        "agent_id":"{{trigger.output.agent_id}}"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+            ],
+            edges: vec![
+                wardian_core::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "extract".into(),
+                    to_port: "in".into(),
+                },
+                wardian_core::workflow::Edge {
+                    from: "extract".into(),
+                    from_port: "out".into(),
+                    to: "commit".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        let response = payload.to_string();
+        let exec = exec_with(FakeAgentRunner::new().with_response("extract", &response))
+            .with_memory_principal("agent-a".into());
+
+        let state = wardian_core::engine::Engine::start_with_id(
+            &blueprint,
+            "run-peer-spoof",
+            serde_json::json!({"agent_id":"agent-b"}),
+            run_root.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.status, wardian_core::engine::RunStatus::Failed);
+        assert!(state
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("invocation authorizes agent-a")));
+        assert!(wardian_core::memory::MemoryStore::from_default_home()
+            .unwrap()
+            .list_events("agent-b")
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

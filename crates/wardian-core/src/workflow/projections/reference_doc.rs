@@ -50,7 +50,7 @@ pub fn reference_doc() -> String {
             let _ = writeln!(out, "Outgoing ports: {}\n", ports.join(", "));
         }
     }
-    out
+    format!("{}\n", out.trim_end())
 }
 
 fn kind_label(kind: NodeKind) -> &'static str {
@@ -92,5 +92,12 @@ mod tests {
         // `task.prompt` is required.
         assert!(md.contains("`prompt`"));
         assert!(md.contains("required"));
+    }
+
+    #[test]
+    fn doc_ends_with_exactly_one_newline() {
+        let md = reference_doc();
+        assert!(md.ends_with('\n'));
+        assert!(!md.ends_with("\n\n"));
     }
 }

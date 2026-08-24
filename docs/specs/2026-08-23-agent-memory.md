@@ -15,6 +15,15 @@ Direct retention and startup recall are the default. They do not call a model.
 Automated consolidation is optional, disabled by default, and implemented as an
 ordinary bundled workflow with ordinary provider/model/effort assignments.
 
+At the end of every user task, the provider independently checks whether the
+user established a clear durable preference, project convention, decision,
+correction, lesson, or current state. It saves that context in the same turn
+even when the request is brief and does not use words such as "remember" or
+"save". This is a required pre-final-answer lifecycle step, and the runtime
+instruction includes the basic save/list/update syntax so the provider need not
+load a separate skill first. Ambiguous and explicitly transient instructions
+are not retained.
+
 ## Record lifecycle
 
 Each logical memory has immutable revisions. Updating an active revision marks
@@ -50,6 +59,19 @@ normal instruction projection; Codex also receives it through a runtime
 developer-instructions override because its real workspace remains the process
 working directory. No user-authored instruction file is changed.
 
+Every successful non-empty provider delivery records its own injection receipt,
+even when the compiled checkpoint is unchanged. Headless delivery becomes
+successful only after a zero exit; interactive delivery becomes successful only
+after provider-ready evidence. A failed or pre-readiness launch records no
+receipt, so its replacement receives the required context again. A repeated
+fingerprint means the memory content is unchanged; it does not mean a later
+provider process consumed an earlier delivery.
+
+Fresh background workflow workers keep their synthetic provider-process
+identity, but recall and managed memory commands use the registered agent named
+by the assignment. This keeps workflow process isolation without creating a
+second memory owner.
+
 ## Workflow boundary
 
 `memory_commit` is the only workflow node that can mutate memory. It consumes a
@@ -67,12 +89,45 @@ Failures are workflow failures and do not roll back the agent lifecycle action.
 Temporary-provider workflow assignments may optionally specify a model and
 effort. This is normal workflow configuration, not memory-specific behavior.
 
+The engine renders the target `agent_id` into `memory_commit` only from the
+canonical `{{trigger.output.agent_id}}` invocation value; model-produced
+structured output cannot select the memory owner. Trigger input is not an
+authority boundary. The executor separately requires an immutable authenticated
+invocation principal supplied by the trusted session-close context or by a
+managed CLI process whose launch-scoped memory capability the desktop validates.
+It rejects unauthenticated commits and any rendered request or batch whose agent
+identity differs from that principal. The principal persists with the run so an
+approval resume cannot lose or replace the original authority.
+
+Session-close workflow launch is a post-commit lifecycle effect. Wardian starts
+it only after the clear/rollover succeeds, and every boundary receives a unique
+idempotency component even when no archive is available. Concurrent invoker
+edits are serialized under a filesystem lock so independent CLI and desktop
+writes cannot overwrite one another.
+
+Inside a Wardian-managed provider process, `wardian memory` authorizes only the
+agent identified by `WARDIAN_SESSION_ID` and a matching runtime-issued
+`WARDIAN_MEMORY_CAPABILITY`. Wardian stores only the capability hash and permits
+concurrent provider processes for the same agent, so changing the claimed
+session ID is not sufficient to impersonate another agent. Each process owns a
+separate lease owned by its `ActiveAgent`; Wardian revokes it when terminating,
+replacing, or reclaiming that runtime, not merely when a PTY reader fails.
+Another agent's name or UUID is rejected for list, show, save, update, history,
+and remove. An operator shell
+without a managed identity retains administrative access. Offline name lookup
+uses persisted roster state and must resolve to a unique agent UUID.
+
 ## Observability
 
 Memory save, update, remove, and non-empty load actions are stored independently
 of provider logs and rendered as dedicated compact chat events. `Memory loaded`
 expands to the exact injected context. Local and remote chat share the renderer.
 Memory events are deliberately excluded from conversation archives.
+
+Native GPT-5.6-Luna acceptance covers explicit save and isolation, fresh and
+delta recall, implicit capture from ordinary tasks, correction/supersession,
+agent-wide versus workspace scope, rejection of one-response-only formatting,
+and later authoritative recall.
 
 ## Deferred
 

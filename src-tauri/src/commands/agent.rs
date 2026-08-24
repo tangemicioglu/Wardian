@@ -395,6 +395,7 @@ fn take_agent_runtime_for_termination(agent: &mut ActiveAgent) -> ActiveAgent {
         config: agent.config.clone(),
         child_process: agent.child_process.take(),
         background_processes: std::mem::take(&mut agent.background_processes),
+        memory_capability: agent.memory_capability.take(),
         runtime_generation: agent.runtime_generation.take(),
         process_id: agent.process_id.take(),
         query_count: agent.query_count.clone(),
@@ -3107,19 +3108,19 @@ pub async fn resume_agent(
     let status_before_resume = snapshot.current_status.clone();
     let mut config = snapshot.config.clone();
     let starts_fresh = resolved_session_persistence(&config) == AgentSessionPersistence::Fresh;
-    if starts_fresh {
-        if let Err(error) = archive_agent_lifecycle_boundary(
-            &state,
-            &session_id,
-            ConversationBoundaryReason::Clear,
-        )
-        .await
-        {
-            manager::log_debug(&format!(
-                "[WARDIAN] fresh resume conversation boundary failed for {session_id}: {error}"
-            ));
+    let fresh_archive_snapshot = if starts_fresh {
+        match crate::commands::chat::agent_archive_capture_snapshot(&state, &session_id).await {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                manager::log_debug(&format!(
+                    "[WARDIAN] fresh resume conversation snapshot failed for {session_id}: {error}"
+                ));
+                None
+            }
         }
-    }
+    } else {
+        None
+    };
     if let Err(error) = prepare_resume_config_for_runtime(&mut config, snapshot.query_count) {
         restore_agent_status_after_failed_runtime_start(
             &state,
@@ -3225,6 +3226,35 @@ pub async fn resume_agent(
         "agent-pty-output-ready",
         terminal_cleared_payload(&session_id),
     );
+    if starts_fresh {
+        let closed_conversation = if let Some(archive_snapshot) = fresh_archive_snapshot {
+            match archive_agent_lifecycle_boundary_from_snapshot(
+                &state,
+                &session_id,
+                ConversationBoundaryReason::Clear,
+                archive_snapshot,
+            )
+            .await
+            {
+                Ok(conversation) => conversation,
+                Err(error) => {
+                    manager::log_debug(&format!(
+                        "[WARDIAN] fresh resume conversation boundary failed for {session_id}: {error}"
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let context = build_session_close_context(
+            &snapshot.config,
+            &session_id,
+            ConversationBoundaryReason::Clear,
+            closed_conversation.as_ref(),
+        );
+        crate::workflow::session_close::invoke_matching(app, context);
+    }
     Ok(())
 }
 
@@ -3325,6 +3355,31 @@ async fn archive_agent_lifecycle_boundary(
         .await
 }
 
+fn build_session_close_context(
+    config: &AgentConfig,
+    agent_id: &str,
+    boundary_reason: ConversationBoundaryReason,
+    closed_conversation: Option<&wardian_core::conversations::ConversationIndexEntry>,
+) -> crate::workflow::session_close::SessionCloseContext {
+    let boundary_reason = serde_json::to_value(boundary_reason)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "clear".to_string());
+    crate::workflow::session_close::SessionCloseContext {
+        boundary_id: uuid::Uuid::new_v4().to_string(),
+        agent_id: agent_id.to_string(),
+        agent_name: config.session_name.clone(),
+        workspace: crate::utils::fs::resolve_cwd(&config.folder, &config.session_id)
+            .to_string_lossy()
+            .to_string(),
+        provider: config.provider.clone(),
+        boundary_reason,
+        archive_available: closed_conversation.is_some(),
+        conversation_id: closed_conversation.map(|entry| entry.conversation_id.clone()),
+        source_sequence: closed_conversation.map(|entry| entry.record_count),
+    }
+}
+
 pub async fn clear_agent_session_with_reason(
     session_id: String,
     reason: Option<String>,
@@ -3403,30 +3458,11 @@ async fn clear_agent_session_inner(
             None
         }
     };
-    let boundary_reason_text = serde_json::to_value(boundary_reason)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .unwrap_or_else(|| "clear".to_string());
-    let archive_available = closed_conversation.is_some();
-    crate::workflow::session_close::invoke_matching(
-        app.clone(),
-        crate::workflow::session_close::SessionCloseContext {
-            agent_id: session_id.clone(),
-            agent_name: original_config.session_name.clone(),
-            workspace: crate::utils::fs::resolve_cwd(
-                &original_config.folder,
-                &original_config.session_id,
-            )
-            .to_string_lossy()
-            .to_string(),
-            provider: original_config.provider.clone(),
-            boundary_reason: boundary_reason_text,
-            archive_available,
-            conversation_id: closed_conversation
-                .as_ref()
-                .map(|entry| entry.conversation_id.clone()),
-            source_sequence: closed_conversation.as_ref().map(|entry| entry.record_count),
-        },
+    let session_close_context = build_session_close_context(
+        &original_config,
+        &session_id,
+        boundary_reason,
+        closed_conversation.as_ref(),
     );
 
     // Establish the fresh provider identity before touching the current runtime.
@@ -3621,6 +3657,9 @@ async fn clear_agent_session_inner(
         "agent-pty-output-ready",
         serde_json::json!({ "session_id": session_id }),
     );
+    // A session-close workflow is a post-commit lifecycle effect. Launch only
+    // after the fresh provider is installed and durable metadata is updated.
+    crate::workflow::session_close::invoke_matching(app, session_close_context);
     Ok(())
 }
 
@@ -4443,6 +4482,7 @@ mod tests {
         archive_agent_lifecycle_boundary, archive_agent_lifecycle_boundary_from_snapshot,
         assign_worktree_config, build_agent_cli_command_for_session_id_with_shells,
         build_agent_cli_command_with_shells, build_agent_clone_preview,
+        build_session_close_context,
         agent_has_running_process, capture_resume_runtime_snapshot,
         clone_cleanup_created_profile_dirs,
         clone_collect_eligible_file_tree, clone_copy_agent_profile_files, clone_copy_profile_plan,
@@ -4507,6 +4547,7 @@ mod tests {
             config: Arc::new(Mutex::new(AgentConfig::default())),
             child_process: None,
             background_processes: Vec::new(),
+            memory_capability: None,
             runtime_generation: None,
             process_id: None,
             query_count: Arc::new(Mutex::new(0)),
@@ -8622,6 +8663,36 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert_eq!(*new_active.query_count.lock().unwrap(), 0);
         assert_eq!(*new_active.init_timestamp.lock().unwrap(), None);
         assert_eq!(*new_active.log_path.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn fresh_resume_session_close_context_has_a_unique_boundary_without_an_archive() {
+        let config = AgentConfig {
+            session_id: "agent-a".to_string(),
+            session_name: "Agent A".to_string(),
+            provider: "codex".to_string(),
+            ..Default::default()
+        };
+
+        let first = build_session_close_context(
+            &config,
+            "agent-a",
+            wardian_core::conversations::ConversationBoundaryReason::Clear,
+            None,
+        );
+        let second = build_session_close_context(
+            &config,
+            "agent-a",
+            wardian_core::conversations::ConversationBoundaryReason::Clear,
+            None,
+        );
+
+        assert_ne!(first.boundary_id, second.boundary_id);
+        assert_eq!(first.agent_id, "agent-a");
+        assert_eq!(first.boundary_reason, "clear");
+        assert!(!first.archive_available);
+        assert_eq!(first.conversation_id, None);
+        assert_eq!(first.source_sequence, None);
     }
 
     #[test]

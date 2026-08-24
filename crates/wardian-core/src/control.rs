@@ -176,6 +176,13 @@ pub enum ControlRequest {
         input: Option<serde_json::Value>,
         bindings: Option<HashMap<String, String>>,
         assignments: Option<crate::models::WorkflowAssignments>,
+        /// Managed-process identity used only to authenticate workflow memory
+        /// authority. The server validates it with `memory_capability` and
+        /// never trusts `input.agent_id` as a principal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller_agent_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory_capability: Option<String>,
     },
     /// Opens a browser session and, unless detached, a surface presenting it.
     BrowserOpen {
@@ -1790,6 +1797,8 @@ mod tests {
                 "codex".to_string(),
             )])),
             assignments: None,
+            caller_agent_id: None,
+            memory_capability: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();

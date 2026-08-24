@@ -17,6 +17,7 @@ import {
 const runRealLuna = process.env.WARDIAN_E2E_REAL_CODEX_MEMORY === "1";
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
+const MODEL_TOKEN_SUFFIX = RUN_ID.replace(/\D/g, "");
 const SCREENSHOT_DATE = "2026-08-23";
 
 function commandName(name) {
@@ -57,14 +58,21 @@ function runCliOk(cliPath, harness, args) {
   return result;
 }
 
-async function enableCodexWorkspaceTrust(harness) {
+async function configureCodexNativeTestPolicy(harness) {
   const settingsDir = path.join(harness.isolatedHome, "settings");
   fs.mkdirSync(settingsDir, { recursive: true });
   fs.writeFileSync(
     path.join(settingsDir, "shell.json"),
     JSON.stringify({
       schema_version: 2,
-      overrides: { codex_runtime_policy: { trust_workspaces: true } },
+      overrides: {
+        codex_runtime_policy: {
+          sandbox_mode: "danger-full-access",
+          approval_policy: "never",
+          full_auto: true,
+          trust_workspaces: true,
+        },
+      },
     }),
   );
 }
@@ -95,6 +103,47 @@ function runMemoryProbe(cliPath, harness, workflowPath, agentId, expected, forbi
   assert.doesNotMatch(evidence, new RegExp(forbidden));
 }
 
+function runOrdinaryTask(cliPath, harness, workflowPath, agentId, task) {
+  const execution = JSON.parse(runCliOk(cliPath, harness, [
+    "workflow", "exec", workflowPath,
+    "--executor", "live",
+    "--bind", `worker=${agentId}`,
+    "--input", JSON.stringify({ task }),
+  ]).stdout);
+  assert.equal(execution.ok, true);
+  const startedAt = Date.now();
+  let shown = null;
+  while (Date.now() - startedAt < 360_000) {
+    const result = runCli(cliPath, harness, [
+      "workflow", "run-show", "memory-native-ordinary-task", execution.run_id,
+    ]);
+    if (result.status === 0) {
+      shown = JSON.parse(result.stdout);
+      if (["completed", "failed", "awaiting_approval"].includes(shown.state?.status)) break;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  }
+  assert.equal(shown?.state?.status, "completed", JSON.stringify(shown));
+  return shown;
+}
+
+function activeMemories(cliPath, harness, agentName, workspace) {
+  return JSON.parse(runCliOk(cliPath, harness, [
+    "memory", "list", "--agent", agentName, "--workspace", workspace,
+  ]).stdout).memories;
+}
+
+function waitForMemory(cliPath, harness, agentName, workspace, predicate, description) {
+  const startedAt = Date.now();
+  let memories = [];
+  while (Date.now() - startedAt < 30_000) {
+    memories = activeMemories(cliPath, harness, agentName, workspace);
+    if (predicate(memories)) return memories;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+  }
+  assert.fail(`${description}; active memories: ${JSON.stringify(memories)}`);
+}
+
 async function waitForLoadedMemory(driver, sessionId, expectedText, minimumCount = 1) {
   return driver.wait(async () => {
     const events = await invokeTauri(driver, "load_agent_chat_transcript", { sessionId });
@@ -123,7 +172,7 @@ async function switchCardToChat(driver, sessionId) {
   }, 30_000, `agent card for ${sessionId} never mounted`);
 }
 
-test("temporary GPT-5.6-Luna agents receive isolated startup memory and resume deltas", { timeout: 900_000 }, async (t) => {
+test("temporary GPT-5.6-Luna agents receive, save, revise, and recall durable memory", { timeout: 1_200_000 }, async (t) => {
   if (!runRealLuna) {
     t.skip("Set WARDIAN_E2E_REAL_CODEX_MEMORY=1 to run the Luna memory acceptance test.");
     return;
@@ -132,7 +181,7 @@ test("temporary GPT-5.6-Luna agents receive isolated startup memory and resume d
   const harness = await createNativeHarness();
   if (!skipNativeBuild) ensureNativeAppBuilt(harness);
   prepareIsolatedHome(harness);
-  await enableCodexWorkspaceTrust(harness);
+  await configureCodexNativeTestPolicy(harness);
   const workspace = path.join(harness.isolatedHome, `luna-memory-workspace-${RUN_ID}`);
   fs.mkdirSync(workspace, { recursive: true });
   const cliPath = buildCli(harness);
@@ -222,6 +271,144 @@ edges:
 `);
   runMemoryProbe(cliPath, harness, workflowPath, agentAId, tokenA2, tokenB);
   runMemoryProbe(cliPath, harness, workflowPath, agentBId, tokenB, tokenA2);
+
+  const implicitAName = `Memory-Luna-Implicit-A-${RUN_ID}`;
+  const implicitBName = `Memory-Luna-Implicit-B-${RUN_ID}`;
+  const implicitA = spawn(implicitAName);
+  const implicitB = spawn(implicitBName);
+  const implicitAId = implicitA.uuid ?? implicitA.session_id;
+  const implicitBId = implicitB.uuid ?? implicitB.session_id;
+  runCliOk(cliPath, harness, ["agent", "pause", implicitAName]);
+  runCliOk(cliPath, harness, ["agent", "pause", implicitBName]);
+
+  const ordinaryWorkflowPath = path.join(
+    harness.isolatedHome,
+    "library",
+    "workflows",
+    "memory-native-ordinary-task.md",
+  );
+  fs.writeFileSync(ordinaryWorkflowPath, `---
+schema: 2
+id: memory-native-ordinary-task
+name: Memory Native Ordinary Task
+nodes:
+  - id: trigger
+    type: manual_trigger
+    fields:
+      input_schema: '{"type":"object","required":["task"],"properties":{"task":{"type":"string"}}}'
+  - id: work
+    type: task
+    fields:
+      agent: role:worker
+      prompt: |
+        Complete this user task normally:
+        {{trigger.output.task}}
+edges:
+  - from: trigger
+    to: work
+---
+`);
+
+  const firstConvention = `LUNARELEASECYAN${MODEL_TOKEN_SUFFIX}`;
+  const revisedConvention = `LUNARELEASEAMBER${MODEL_TOKEN_SUFFIX}`;
+  runOrdinaryTask(
+    cliPath,
+    harness,
+    ordinaryWorkflowPath,
+    implicitAId,
+    `We are standardizing this project. Every release status summary begins with ${firstConvention} and ends with the owner's initials. Draft a two-line example for today's release.`,
+  );
+  const firstSaved = waitForMemory(
+    cliPath,
+    harness,
+    implicitAName,
+    workspace,
+    (memories) => memories.some((memory) => memory.text.includes(firstConvention)),
+    "Luna did not independently save the durable project convention",
+  ).find((memory) => memory.text.includes(firstConvention));
+  assert.ok(firstSaved?.memory_id, "implicit convention needs a durable memory id");
+
+  runOrdinaryTask(
+    cliPath,
+    harness,
+    ordinaryWorkflowPath,
+    implicitAId,
+    `Correction to that project convention: release status summaries now begin with ${revisedConvention}; ${firstConvention} is retired. Draft the corrected two-line example.`,
+  );
+  const revised = waitForMemory(
+    cliPath,
+    harness,
+    implicitAName,
+    workspace,
+    (memories) => memories.some((memory) => memory.text.includes(revisedConvention))
+      && memories.every(
+        (memory) => !memory.text.includes(firstConvention)
+          || memory.text.includes(revisedConvention),
+      ),
+    "Luna did not revise the superseded convention without leaving a contradictory active memory",
+  );
+  const firstHistory = JSON.parse(runCliOk(cliPath, harness, [
+    "memory", "history", firstSaved.memory_id,
+  ]).stdout).history;
+  assert.ok(
+    firstHistory.some(
+      (record) => record.revision_id === firstSaved.revision_id && record.status !== "active",
+    ),
+    "the original convention revision must be superseded or removed",
+  );
+
+  const crossProjectPreference = `LUNAHANDOFFISO${MODEL_TOKEN_SUFFIX}`;
+  const transientToken = `LUNATRANSIENT${MODEL_TOKEN_SUFFIX}`;
+  runOrdinaryTask(
+    cliPath,
+    harness,
+    ordinaryWorkflowPath,
+    implicitBId,
+    `Across every project I work on, handoff dates use ISO 8601 and include the marker ${crossProjectPreference}. Rewrite this handoff date accordingly: August 23, 2026.`,
+  );
+  const crossProject = waitForMemory(
+    cliPath,
+    harness,
+    implicitBName,
+    workspace,
+    (memories) => memories.some((memory) => memory.text.includes(crossProjectPreference)),
+    "Luna did not independently save the cross-project preference",
+  );
+  assert.equal(
+    crossProject.find((memory) => memory.text.includes(crossProjectPreference))?.workspace,
+    null,
+    "cross-project preference should use agent scope",
+  );
+
+  runOrdinaryTask(
+    cliPath,
+    harness,
+    ordinaryWorkflowPath,
+    implicitBId,
+    `For this response only, prefix the answer with ${transientToken}. What is 17 plus 25?`,
+  );
+  assert.ok(
+    activeMemories(cliPath, harness, implicitBName, workspace)
+      .every((memory) => !memory.text.includes(transientToken)),
+    "explicitly transient response formatting must not become durable memory",
+  );
+
+  runMemoryProbe(
+    cliPath,
+    harness,
+    workflowPath,
+    implicitAId,
+    revisedConvention,
+    firstConvention,
+  );
+  runMemoryProbe(
+    cliPath,
+    harness,
+    workflowPath,
+    implicitBId,
+    crossProjectPreference,
+    transientToken,
+  );
 
   runCliOk(cliPath, harness, ["agent", "restart", agentAName]);
   await switchCardToChat(session.driver, agentAId);

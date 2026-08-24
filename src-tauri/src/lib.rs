@@ -67,6 +67,7 @@ fn restored_agent_without_process(
         config: std::sync::Arc::new(std::sync::Mutex::new(config)),
         child_process: None,
         background_processes: Vec::new(),
+        memory_capability: None,
         runtime_generation: None,
         process_id,
         query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),

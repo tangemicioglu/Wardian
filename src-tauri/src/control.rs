@@ -1168,6 +1168,7 @@ struct WorkflowRunControlLaunch {
     input: Option<serde_json::Value>,
     bindings: Option<std::collections::HashMap<String, String>>,
     assignments: Option<wardian_core::models::WorkflowAssignments>,
+    memory_principal: Option<String>,
 }
 
 fn workflow_run_control_launch(
@@ -1181,6 +1182,8 @@ fn workflow_run_control_launch(
             input,
             bindings,
             assignments,
+            caller_agent_id,
+            memory_capability,
         } => Ok(WorkflowRunControlLaunch {
             path,
             provider,
@@ -1188,9 +1191,45 @@ fn workflow_run_control_launch(
             input,
             bindings,
             assignments,
+            memory_principal: authenticate_workflow_memory_principal(
+                caller_agent_id.as_deref(),
+                memory_capability.as_deref(),
+            )?,
         }),
         _ => Err(ControlError::bad_request(
             "expected workflow_run control request",
+        )),
+    }
+}
+
+fn authenticate_workflow_memory_principal(
+    caller_agent_id: Option<&str>,
+    memory_capability: Option<&str>,
+) -> Result<Option<String>, ControlError> {
+    match (caller_agent_id, memory_capability) {
+        (None, None) => Ok(None),
+        (Some(agent_id), Some(capability)) => {
+            let agent_id = agent_id.trim();
+            let capability = capability.trim();
+            if agent_id.is_empty() || capability.is_empty() {
+                return Err(ControlError::bad_request(
+                    "workflow memory authority is incomplete",
+                ));
+            }
+            let valid = wardian_core::memory::MemoryStore::from_default_home()
+                .and_then(|store| store.validate_capability(agent_id, capability))
+                .map_err(|_| {
+                    ControlError::request_failed("workflow memory authority could not be validated")
+                })?;
+            if !valid {
+                return Err(ControlError::bad_request(
+                    "workflow memory authority is invalid",
+                ));
+            }
+            Ok(Some(agent_id.to_string()))
+        }
+        _ => Err(ControlError::bad_request(
+            "workflow memory authority is incomplete",
         )),
     }
 }
@@ -1208,6 +1247,7 @@ async fn handle_workflow_run_control(
         launch.input,
         launch.bindings,
         launch.assignments,
+        launch.memory_principal,
     )
     .await
     .map_err(ControlError::request_failed)?;
@@ -2125,6 +2165,7 @@ async fn deliver_headless_message(
             cwd: current_info.cwd.clone(),
             prompt: prompt.to_string(),
             session_id: current_info.uuid.clone(),
+            memory_agent_id: Some(current_info.uuid.clone()),
             resume_session: current_info.resume_session.clone(),
             config_override: Some(current_info.config.clone()),
             interaction_id: Some(interaction_id.to_string()),
@@ -2640,6 +2681,12 @@ async fn record_provider_ready_evidence(
 /// Wardian has not yet observed it doing work.
 pub(crate) async fn record_provider_ready_prompt(state: &AppState, session_id: &str) {
     record_provider_ready_evidence(state, session_id, ProviderReadyEvidence::PromptDetected).await;
+}
+
+/// OpenCode exposes initial compose readiness through its provider-owned
+/// terminal title rather than a stable prompt marker in the raw PTY stream.
+pub(crate) async fn record_provider_ready_title(state: &AppState, session_id: &str) {
+    record_provider_ready_evidence(state, session_id, ProviderReadyEvidence::TitleDetected).await;
 }
 
 async fn current_agent_status_is_idle(state: &AppState, session_id: &str) -> Result<bool, String> {
@@ -5332,6 +5379,8 @@ mod tests {
             input: Some(input.clone()),
             bindings: Some(bindings.clone()),
             assignments: Some(assignments.clone()),
+            caller_agent_id: None,
+            memory_capability: None,
         };
 
         let launch = workflow_run_control_launch(request).unwrap();
@@ -5342,6 +5391,29 @@ mod tests {
         assert_eq!(launch.input, Some(input));
         assert_eq!(launch.bindings, Some(bindings));
         assert_eq!(launch.assignments, Some(assignments));
+        assert_eq!(launch.memory_principal, None);
+    }
+
+    #[test]
+    fn workflow_memory_principal_requires_agent_bound_capability() {
+        let _home = TestWardianHome::new();
+        let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
+        let capability = store.issue_process_capability("agent-a").unwrap();
+
+        assert_eq!(
+            authenticate_workflow_memory_principal(
+                Some("agent-a"),
+                Some(capability.token()),
+            )
+            .unwrap(),
+            Some("agent-a".to_string())
+        );
+        assert!(authenticate_workflow_memory_principal(
+            Some("agent-b"),
+            Some(capability.token()),
+        )
+        .is_err());
+        assert!(authenticate_workflow_memory_principal(Some("agent-a"), None).is_err());
     }
 
     fn test_agent(session_id: &str, session_name: &str, agent_class: &str) -> ActiveAgent {
@@ -5356,6 +5428,7 @@ mod tests {
             })),
             child_process: None,
             background_processes: Vec::new(),
+            memory_capability: None,
             runtime_generation: None,
             process_id: Some(1234),
             query_count: Arc::new(Mutex::new(0)),

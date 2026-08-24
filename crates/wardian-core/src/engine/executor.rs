@@ -56,6 +56,8 @@ pub struct StateRequest {
 #[derive(Debug, Clone)]
 pub struct MemoryCommitRequest {
     pub node: String,
+    /// Engine-rendered mutation principal. Model output cannot choose it.
+    pub agent_id: String,
     pub payload: serde_json::Value,
 }
 

@@ -21,6 +21,7 @@
  *   failure       — init → user → generating → exit(1)
  *   long_output   — init → user → 200 lines of text → model_response → turn_completed
  *   headless      — single JSON response object, then exit
+ *   headless_failure — exits unsuccessfully before a headless result
  *   headless_delayed — waits for the configured delay, then emits the headless response
  *   headless_structured_reply — completes a structured Wardian request through the CLI
  *   multi_turn    — init → [user → generating → model_response → turn_completed] × 3
@@ -426,7 +427,10 @@ async function main() {
   // Headless mode: --print normally returns the standard response, while the
   // delayed variant lets native tests observe the active headless interval.
   if (isPrint) {
-    if (scenario === "headless_delayed") {
+    if (scenario === "headless_failure") {
+      process.stderr.write("Error: Mock headless failure before result\n");
+      process.exit(1);
+    } else if (scenario === "headless_delayed") {
       await runHeadlessDelayed();
     } else if (scenario === "headless_structured_reply") {
       await runHeadlessStructuredReply();

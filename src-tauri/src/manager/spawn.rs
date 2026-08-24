@@ -35,6 +35,71 @@ use crate::providers::gemini::gemini_status_from_title;
 
 const OUTPUT_READY_EMIT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
+type PendingMemoryInjection = (
+    wardian_core::memory::MemoryStore,
+    wardian_core::memory::CompiledMemoryBrief,
+    String,
+    String,
+);
+
+fn record_pending_memory_injection(
+    pending: &mut Option<PendingMemoryInjection>,
+    agent_id: &str,
+    provider: &str,
+) -> bool {
+    let Some((store, brief, workspace, process_key)) = pending.take() else {
+        return false;
+    };
+    if let Err(error) = store.record_injection(
+        agent_id,
+        Some(&workspace),
+        provider,
+        &process_key,
+        &brief,
+    ) {
+        log_debug(&format!(
+            "[Wardian] memory injection receipt unavailable for {agent_id}: {error}"
+        ));
+    }
+    true
+}
+
+fn provider_title_has_startup_ready_prompt(provider: &str, title: &str, status: &str) -> bool {
+    if provider != "opencode"
+        || wardian_core::identity::normalize_status(status) != "idle"
+    {
+        return false;
+    }
+    let title = title.trim();
+    title == "OpenCode" || title.starts_with("OC | ")
+}
+
+#[derive(Default)]
+struct OpenCodeStartupMemoryTransition {
+    ready_observed: bool,
+}
+
+impl OpenCodeStartupMemoryTransition {
+    /// Classify the real provider title and promote the pending memory receipt
+    /// exactly once when that title proves the compose surface is ready.
+    fn observe_title(
+        &mut self,
+        pending: &mut Option<PendingMemoryInjection>,
+        provider: &str,
+        title: &str,
+        agent_id: &str,
+    ) -> Option<&'static str> {
+        let status = opencode_status_from_title(title)?;
+        if !self.ready_observed
+            && provider_title_has_startup_ready_prompt(provider, title, status)
+        {
+            self.ready_observed = true;
+            record_pending_memory_injection(pending, agent_id, provider);
+        }
+        Some(status)
+    }
+}
+
 /// Selects the verified Antigravity conversation created by this launch for
 /// log discovery and whether it should be persisted as the resume identity.
 /// A workspace mapping that existed before launch belongs to the prior
@@ -494,6 +559,7 @@ pub async fn spawn_agent(
             config: std::sync::Arc::new(std::sync::Mutex::new(config)),
             child_process: None,
             background_processes: Vec::new(),
+            memory_capability: None,
             runtime_generation: None,
             process_id: None,
             query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
@@ -675,6 +741,13 @@ pub async fn spawn_agent(
     super::apply_managed_cli_path_to_pty(&mut cmd);
     super::apply_interactive_provider_runtime_env(&config.provider, &mut cmd)?;
     cmd.env("WARDIAN_SESSION_ID", &config.session_id);
+    let memory_capability = super::issue_memory_capability(&config.session_id);
+    if let Some(capability) = memory_capability.as_ref() {
+        cmd.env(
+            wardian_core::memory::MEMORY_CAPABILITY_ENV,
+            capability.token(),
+        );
+    }
     for (key, value) in super::worktree_build_env(&config) {
         cmd.env(key, value);
     }
@@ -748,21 +821,6 @@ pub async fn spawn_agent(
         .slave
         .spawn_command(cmd)
         .map_err(|e| format!("Failed to spawn command: {}", e))?;
-
-    if let Some((memory_store, memory_brief)) = memory_setup {
-        if let Err(error) = memory_store.record_injection(
-            &config.session_id,
-            Some(&expected_folder),
-            &config.provider,
-            &memory_process_key,
-            &memory_brief,
-        ) {
-            log_debug(&format!(
-                "[Wardian] memory injection audit unavailable for {}: {error}",
-                config.session_id
-            ));
-        }
-    }
 
     let process_id = child.process_id();
 
@@ -899,6 +957,9 @@ pub async fn spawn_agent(
     let terminal_sessions = app_state.terminal_sessions.clone();
     let reader_runtime_generation = runtime_generation;
     let pty_config = config_lock.clone();
+    let mut pending_memory_injection = memory_setup.map(|(store, brief)| {
+        (store, brief, expected_folder.clone(), memory_process_key)
+    });
     std::thread::spawn(move || {
         let mut buf = [0; 4096];
         let mut current_line = String::new();
@@ -906,6 +967,8 @@ pub async fn spawn_agent(
         let mut opencode_chunks_logged = 0usize;
         let mut codex_terminal_theme_responder = CodexTerminalThemeProbeResponder::default();
         let mut antigravity_turn_completion_gate = AntigravityTurnCompletionGate::default();
+        let mut opencode_startup_memory_transition =
+            OpenCodeStartupMemoryTransition::default();
         let mut startup_prompt_pending = true;
         let mut pty_decoder = PtyUtf8Decoder::new();
         let output_ready_emit_gate =
@@ -1009,6 +1072,11 @@ pub async fn spawn_agent(
                         )
                     }) {
                         startup_prompt_pending = false;
+                        record_pending_memory_injection(
+                            &mut pending_memory_injection,
+                            &sid_for_pty,
+                            &provider_name_for_pty,
+                        );
                         set_agent_status(&pty_app, &sid_for_pty, &current_status_clone, "Idle");
                         let readiness_app = pty_app.clone();
                         let readiness_session_id = sid_for_pty.clone();
@@ -1110,7 +1178,14 @@ pub async fn spawn_agent(
                             *current_title = title.clone();
                         }
                         if provider_name_for_pty == "opencode" {
-                            if let Some(next_status) = opencode_status_from_title(&title) {
+                            if let Some(next_status) = opencode_startup_memory_transition
+                                .observe_title(
+                                    &mut pending_memory_injection,
+                                    &provider_name_for_pty,
+                                    &title,
+                                    &sid_for_pty,
+                                )
+                            {
                                 let was_idle = current_status_clone
                                     .lock()
                                     .map(|status| {
@@ -1123,6 +1198,26 @@ pub async fn spawn_agent(
                                     &current_status_clone,
                                     next_status,
                                 );
+                                if startup_prompt_pending
+                                    && opencode_startup_memory_transition.ready_observed
+                                {
+                                    startup_prompt_pending = false;
+                                    let readiness_app = pty_app.clone();
+                                    let readiness_session_id = sid_for_pty.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        let state = readiness_app.state::<AppState>();
+                                        crate::control::record_provider_ready_title(
+                                            state.inner(),
+                                            &readiness_session_id,
+                                        )
+                                        .await;
+                                        crate::control::spawn_mailbox_drain_if_idle(
+                                            &readiness_app,
+                                            &readiness_session_id,
+                                            "Idle",
+                                        );
+                                    });
+                                }
                                 // OpenCode's TUI does not expose a separate
                                 // JSON acknowledgement in interactive mode;
                                 // its provider-owned title changes from
@@ -1902,6 +1997,7 @@ pub async fn spawn_agent(
         config: config_lock,
         child_process: Some(child),
         background_processes,
+        memory_capability,
         runtime_generation: Some(runtime_generation),
         process_id,
         query_count,
@@ -2024,6 +2120,7 @@ mod tests {
             config: std::sync::Arc::new(std::sync::Mutex::new(AgentConfig::default())),
             child_process: None,
             background_processes: Vec::new(),
+            memory_capability: None,
             runtime_generation: None,
             process_id: None,
             query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
@@ -2040,6 +2137,22 @@ mod tests {
             #[cfg(windows)]
             job_object: None,
         }
+    }
+
+    #[test]
+    fn active_agent_lease_survives_reader_lifecycle_until_runtime_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = wardian_core::memory::MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let lease = store.issue_process_capability("agent-a").unwrap();
+        let token = lease.token().to_string();
+        let mut agent = agent_without_pty();
+        agent.memory_capability = Some(lease);
+
+        // PTY readers hold no revoker. A reader/broker exit therefore leaves
+        // the provider runtime's ActiveAgent-owned authority intact.
+        assert!(store.validate_capability("agent-a", &token).unwrap());
+        drop(agent);
+        assert!(!store.validate_capability("agent-a", &token).unwrap());
     }
 
     // A resize that arrives while the agent is still a "Restoring" placeholder
@@ -2195,6 +2308,98 @@ mod tests {
 
         assert_eq!(conversation_id, None);
         assert!(!capture_identity);
+    }
+
+    #[test]
+    fn opencode_title_readiness_records_receipt_and_enables_resume_delta() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = wardian_core::memory::MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let agent_id = "opencode-memory-agent";
+        let workspace = temp.path().to_string_lossy().to_string();
+        let process_key = "opencode-provider-session";
+        store
+            .save(wardian_core::memory::SaveMemoryRequest {
+                agent_id: agent_id.into(),
+                workspace: Some(workspace.clone()),
+                kind: wardian_core::memory::MemoryKind::Stable,
+                text: "Initial OpenCode memory".into(),
+                evidence_excerpt: "Established before interactive startup.".into(),
+                sources: vec![],
+                idempotency_key: None,
+            })
+            .unwrap();
+        let brief = store
+            .compile_brief(
+                agent_id,
+                Some(&workspace),
+                "opencode",
+                process_key,
+                false,
+                8_000,
+            )
+            .unwrap();
+        let mut pending = Some((store, brief, workspace.clone(), process_key.into()));
+
+        let title_event = "\u{1b}]0;OpenCode\u{7}";
+        let title = extract_terminal_titles(title_event)
+            .into_iter()
+            .last()
+            .expect("OpenCode title");
+        let mut transition = OpenCodeStartupMemoryTransition::default();
+        assert_eq!(
+            transition.observe_title(
+                &mut pending,
+                "opencode",
+                &title,
+                agent_id,
+            ),
+            Some("Idle")
+        );
+        assert!(transition.ready_observed);
+        assert!(!record_pending_memory_injection(
+            &mut pending,
+            agent_id,
+            "opencode"
+        ));
+        assert!(pending.is_none());
+
+        let store = wardian_core::memory::MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        assert_eq!(
+            store
+                .list_events(agent_id)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.action == "loaded")
+                .count(),
+            1
+        );
+        store
+            .save(wardian_core::memory::SaveMemoryRequest {
+                agent_id: agent_id.into(),
+                workspace: Some(workspace.clone()),
+                kind: wardian_core::memory::MemoryKind::Current,
+                text: "Later OpenCode memory".into(),
+                evidence_excerpt: "Established after the startup receipt.".into(),
+                sources: vec![],
+                idempotency_key: None,
+            })
+            .unwrap();
+        let resumed = store
+            .compile_brief(
+                agent_id,
+                Some(&workspace),
+                "opencode",
+                process_key,
+                true,
+                8_000,
+            )
+            .unwrap();
+        assert_eq!(
+            resumed.kind,
+            wardian_core::memory::MemoryBriefKind::ResumeDelta
+        );
+        assert!(resumed.context_text.contains("Later OpenCode memory"));
+        assert!(!resumed.context_text.contains("Initial OpenCode memory"));
     }
 
     #[test]

@@ -72,6 +72,11 @@ impl FieldDef {
         self
     }
 
+    pub fn default(mut self, value: impl Into<serde_json::Value>) -> Self {
+        self.default = Some(value.into());
+        self
+    }
+
     pub fn help(mut self, text: impl Into<String>) -> Self {
         self.help = text.into();
         self

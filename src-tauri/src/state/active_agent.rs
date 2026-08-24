@@ -8,6 +8,9 @@ pub struct ActiveAgent {
     pub config: Arc<Mutex<AgentConfig>>,
     pub child_process: Option<Box<dyn portable_pty::Child + Send>>,
     pub background_processes: Vec<std::process::Child>,
+    /// Agent-bound CLI authority for this exact provider process. Dropping the
+    /// lease revokes only this process and leaves concurrent runtimes valid.
+    pub memory_capability: Option<wardian_core::memory::MemoryCapabilityLease>,
     /// Exact terminal-session broker generation for this native runtime.
     /// Native master/input handles live only inside the broker actor.
     pub runtime_generation: Option<u64>,

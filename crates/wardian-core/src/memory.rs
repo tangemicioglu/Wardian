@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 4;
 pub const DEFAULT_STALE_DAYS: i64 = 30;
 pub const MEMORY_BUDGET_POLICY_VERSION: u32 = 1;
+pub const MEMORY_CAPABILITY_ENV: &str = "WARDIAN_MEMORY_CAPABILITY";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -229,6 +230,26 @@ pub struct MemoryStore {
     path: PathBuf,
 }
 
+pub struct MemoryCapabilityLease {
+    store_path: PathBuf,
+    agent_id: String,
+    token: String,
+}
+
+impl MemoryCapabilityLease {
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+impl Drop for MemoryCapabilityLease {
+    fn drop(&mut self) {
+        if let Ok(store) = MemoryStore::open(&self.store_path) {
+            let _ = store.revoke_capability(&self.agent_id, &self.token);
+        }
+    }
+}
+
 struct StoredInjection {
     revision_ids: Vec<String>,
 }
@@ -251,6 +272,67 @@ impl MemoryStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Mint an agent-bound memory capability for one provider process.
+    /// Only the digest is persisted, so changing `WARDIAN_SESSION_ID` cannot
+    /// turn a caller's inherited capability into another agent's authority.
+    /// Multiple provider processes for the same agent remain valid concurrently.
+    pub fn issue_capability(&self, agent_id: &str) -> Result<String, MemoryError> {
+        let agent_id = required("agent_id", agent_id)?;
+        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let token_hash = hash_text(&token);
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO memory_process_capabilities(token_hash, agent_id, created_at) VALUES (?1, ?2, ?3)",
+            params![token_hash, agent_id, Utc::now().to_rfc3339()],
+        )?;
+        transaction.commit()?;
+        Ok(token)
+    }
+
+    pub fn issue_process_capability(
+        &self,
+        agent_id: &str,
+    ) -> Result<MemoryCapabilityLease, MemoryError> {
+        let agent_id = required("agent_id", agent_id)?;
+        let token = self.issue_capability(&agent_id)?;
+        Ok(MemoryCapabilityLease {
+            store_path: self.path.clone(),
+            agent_id,
+            token,
+        })
+    }
+
+    pub fn revoke_capability(&self, agent_id: &str, token: &str) -> Result<bool, MemoryError> {
+        let agent_id = required("agent_id", agent_id)?;
+        let token = required("memory capability", token)?;
+        let token_hash = hash_text(&token);
+        let connection = self.connection()?;
+        Ok(connection.execute(
+            "DELETE FROM memory_process_capabilities WHERE agent_id=?1 AND token_hash=?2",
+            params![agent_id, token_hash],
+        )? > 0)
+    }
+
+    pub fn validate_capability(
+        &self,
+        agent_id: &str,
+        token: &str,
+    ) -> Result<bool, MemoryError> {
+        let agent_id = required("agent_id", agent_id)?;
+        let token = required("memory capability", token)?;
+        let token_hash = hash_text(&token);
+        let connection = self.connection()?;
+        Ok(connection
+            .query_row(
+                "SELECT 1 FROM memory_process_capabilities WHERE agent_id=?1 AND token_hash=?2",
+                params![agent_id, token_hash],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
     }
 
     fn connection(&self) -> Result<Connection, MemoryError> {
@@ -591,8 +673,8 @@ impl MemoryStore {
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
         let injection_id = Uuid::new_v4().to_string();
-        let inserted = transaction.execute(
-            "INSERT OR IGNORE INTO memory_injections
+        transaction.execute(
+            "INSERT INTO memory_injections
              (injection_id, agent_id, workspace, provider, provider_process_key, fingerprint,
               revision_ids_json, context_text, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -608,10 +690,6 @@ impl MemoryStore {
                 Utc::now().to_rfc3339()
             ],
         )?;
-        if inserted == 0 {
-            transaction.commit()?;
-            return Ok(None);
-        }
         insert_event(
             &transaction,
             agent_id,
@@ -927,6 +1005,7 @@ fn migrate(connection: &Connection) -> Result<(), MemoryError> {
         CREATE TABLE IF NOT EXISTS memory_schema (version INTEGER NOT NULL);
         INSERT INTO memory_schema(version) SELECT {SCHEMA_VERSION}
           WHERE NOT EXISTS (SELECT 1 FROM memory_schema);
+        UPDATE memory_schema SET version={SCHEMA_VERSION};
         CREATE TABLE IF NOT EXISTS memory_records (
           revision_id TEXT PRIMARY KEY, memory_id TEXT NOT NULL, revision INTEGER NOT NULL,
           agent_id TEXT NOT NULL, workspace TEXT, kind TEXT NOT NULL, text TEXT NOT NULL,
@@ -952,8 +1031,9 @@ fn migrate(connection: &Connection) -> Result<(), MemoryError> {
           provider_process_key TEXT NOT NULL, fingerprint TEXT NOT NULL, revision_ids_json TEXT NOT NULL,
           context_text TEXT NOT NULL, created_at TEXT NOT NULL
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_injection_unique
-          ON memory_injections(agent_id, provider, provider_process_key, fingerprint);
+        DROP INDEX IF EXISTS idx_memory_injection_unique;
+        CREATE INDEX IF NOT EXISTS idx_memory_injection_checkpoint
+          ON memory_injections(agent_id, provider, provider_process_key, fingerprint, created_at);
         CREATE INDEX IF NOT EXISTS idx_memory_injection_process ON memory_injections(agent_id, provider, provider_process_key, created_at);
         CREATE TABLE IF NOT EXISTS memory_consolidation_cursors (
           cursor_key TEXT PRIMARY KEY, agent_id TEXT NOT NULL, workspace TEXT,
@@ -963,6 +1043,13 @@ fn migrate(connection: &Connection) -> Result<(), MemoryError> {
           idempotency_key TEXT PRIMARY KEY, request_hash TEXT NOT NULL,
           result_json TEXT NOT NULL, created_at TEXT NOT NULL
         );
+        DROP TABLE IF EXISTS memory_capabilities;
+        CREATE TABLE IF NOT EXISTS memory_process_capabilities (
+          token_hash TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_process_capabilities_agent
+          ON memory_process_capabilities(agent_id, created_at);
     "#))?;
     Ok(())
 }
@@ -1309,9 +1396,25 @@ mod tests {
             .unwrap();
         assert!(fresh.context_text.contains("Stable memory"));
         assert!(fresh.context_text.contains("Use the compact layout"));
-        store
+        let first_receipt = store
             .record_injection("agent-a", Some("one"), "codex", "session-1", &fresh)
-            .unwrap();
+            .unwrap()
+            .expect("first injection receipt");
+        let second_receipt = store
+            .record_injection("agent-a", Some("one"), "codex", "session-1", &fresh)
+            .unwrap()
+            .expect("second injection receipt");
+        assert_ne!(first_receipt, second_receipt);
+        assert_eq!(
+            store
+                .list_events("agent-a")
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.action == "loaded")
+                .count(),
+            2,
+            "every successful launch injection needs its own audit receipt"
+        );
         let unchanged = store
             .compile_brief("agent-a", Some("one"), "codex", "session-1", true, 8_000)
             .unwrap();
@@ -1475,5 +1578,36 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cursors, 0);
+    }
+
+    #[test]
+    fn capabilities_are_agent_bound_and_support_concurrent_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let first = store.issue_capability("agent-a").unwrap();
+        assert!(store.validate_capability("agent-a", &first).unwrap());
+        assert!(!store.validate_capability("agent-b", &first).unwrap());
+
+        let second = store.issue_capability("agent-a").unwrap();
+        assert_ne!(first, second);
+        assert!(store.validate_capability("agent-a", &first).unwrap());
+        assert!(store.validate_capability("agent-a", &second).unwrap());
+    }
+
+    #[test]
+    fn dropping_one_process_capability_revokes_only_that_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let first = store.issue_process_capability("agent-a").unwrap();
+        let first_token = first.token().to_string();
+        let second = store.issue_process_capability("agent-a").unwrap();
+        let second_token = second.token().to_string();
+
+        drop(first);
+
+        assert!(!store.validate_capability("agent-a", &first_token).unwrap());
+        assert!(store.validate_capability("agent-a", &second_token).unwrap());
+        drop(second);
+        assert!(!store.validate_capability("agent-a", &second_token).unwrap());
     }
 }

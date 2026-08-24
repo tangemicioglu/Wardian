@@ -8,6 +8,15 @@ Direct memory is enabled by default. It does not consume a second model call.
 The optional Memory Consolidation workflow is disabled until you configure and
 run it or bind it to a session-close invoker.
 
+You do not need to say "remember this." At the end of an ordinary task, an agent
+checks for clear preferences, project conventions, decisions, corrections,
+lessons, and ongoing state that will matter in a future session. It saves a
+small number of useful records when the evidence is clear. Brief or explicitly
+one-response-only instructions are not saved merely because they appeared in a
+conversation. The check happens before the agent's final answer; it does not
+require loading an optional consolidation workflow or making another model
+call.
+
 ## Save and inspect memory
 
 ```bash
@@ -38,6 +47,16 @@ inspection without coupling retention.
 
 Use `show`, `history`, `update`, and `remove` with the returned memory ID. Update
 and remove preserve audit history.
+
+Inside a Wardian-managed terminal, memory commands are restricted to that
+agent's own records and authenticated with a launch-scoped capability. Run them
+from an operator shell without a managed agent identity when administering
+another agent's memory.
+
+The capability expires when Wardian terminates, replaces, or reclaims that
+provider runtime. A PTY reader or broker error alone does not revoke a still-live
+runtime's capability. Concurrent interactive and workflow processes receive
+independent capabilities.
 
 ## What appears in chat
 

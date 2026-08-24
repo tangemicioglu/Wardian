@@ -17,4 +17,11 @@ describe('node registry', () => {
     expect(fieldTypeKinds()).toContain('prompt');
     expect(fieldTypeKinds()).toContain('branch_port');
   });
+  it('creates memory commits with an invocation-owned principal', () => {
+    const commit = findNodeType('memory_commit');
+    expect(commit?.fields.find((field) => field.id === 'agent_id')).toMatchObject({
+      required: true,
+      default: '{{trigger.output.agent_id}}',
+    });
+  });
 });

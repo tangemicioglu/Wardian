@@ -143,6 +143,12 @@ pub fn wardian_memory_instructions(startup_brief: Option<&str>) -> String {
 Use `wardian memory save` for clear durable preferences, decisions, corrections, lessons, current project state, and explicit requests to remember. \
 Default to workspace scope; use agent scope only for cross-project preferences and working conventions. \
 Always include a durable evidence excerpt. Do not save ambiguous or transient chatter. \
+Before finishing every user task, independently check whether the user established or corrected durable context worth carrying into a future session; save it without waiting for an explicit request when the evidence is clear. \
+In particular, save a clear preference, project convention, decision, correction, or ongoing state stated inside an ordinary task even when the task is brief and the user never says remember or save. \
+This retention check is a required end-of-task step: complete it before the final answer and do not defer it to another turn. \
+The basic commands are `wardian memory save \"<normalized memory>\" --evidence \"<short durable excerpt>\"`, `wardian memory list`, and `wardian memory update <memory-id> \"<replacement>\" --evidence \"<new excerpt>\"`; add `--scope agent` only for cross-project memory. These instructions are sufficient for ordinary retention, so do not open a skill merely to discover the command syntax. \
+Prefer a small number of high-value memories over logging the conversation. \
+When durable context replaces an earlier memory, inspect the relevant active memories and update or remove the older record instead of preserving contradictory active facts. \
 Do not say memory was saved unless the command succeeds. Conversation logging and memory retention are independent.\n",
     );
     if let Some(brief) = startup_brief.filter(|brief| !brief.trim().is_empty()) {
@@ -1266,6 +1272,12 @@ mod tests {
 
         let content = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
         assert!(content.contains("Use `wardian memory save`"));
+        assert!(content.contains("Before finishing every user task"));
+        assert!(content.contains("the user never says remember or save"));
+        assert!(content.contains("required end-of-task step"));
+        assert!(content.contains("do not open a skill merely"));
+        assert!(content.contains("without waiting for an explicit request"));
+        assert!(content.contains("instead of preserving contradictory active facts"));
         assert!(content.contains("Do not say memory was saved unless the command succeeds"));
         assert!(content.contains("## Stable memory\n- Prefer metric units"));
         assert!(provider_uses_projected_workspace("codex"));

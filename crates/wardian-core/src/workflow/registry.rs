@@ -240,7 +240,13 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Memory commit".into(),
             icon: "database".into(),
             description: "Validate and atomically commit structured agent-memory changes.".into(),
-            fields: vec![FieldDef::new("source_node", FieldType::Text, "Source node").required()],
+            fields: vec![
+                FieldDef::new("source_node", FieldType::Text, "Source node").required(),
+                FieldDef::new("agent_id", FieldType::Text, "Memory agent")
+                    .required()
+                    .default("{{trigger.output.agent_id}}")
+                    .help("Engine-owned invocation agent; only {{trigger.output.agent_id}} is accepted."),
+            ],
             inputs: default_in(),
             outputs: default_out(),
             outputs_from_field: None,

@@ -1,8 +1,10 @@
 //! Persistence and matching for generic workflow session-close invokers.
 
 use crate::models::WorkflowAssignments;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowSessionCloseInvoker {
@@ -42,13 +44,38 @@ pub fn load_invokers() -> Vec<WorkflowSessionCloseInvoker> {
 }
 
 pub fn save_invokers(invokers: &[WorkflowSessionCloseInvoker]) -> std::io::Result<()> {
+    mutate_invokers(|stored| {
+        *stored = invokers.to_vec();
+        Ok(())
+    })
+}
+
+/// Serialize the complete read-modify-write operation across app and CLI
+/// processes. Atomic replacement alone prevents torn JSON, not lost updates.
+pub fn mutate_invokers<T>(
+    mutate: impl FnOnce(&mut Vec<WorkflowSessionCloseInvoker>) -> std::io::Result<T>,
+) -> std::io::Result<T> {
     let path = crate::paths::session_close_invokers_path().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "Wardian home is unavailable")
     })?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    crate::atomic_file::write_json_atomic(&path, invokers)
+    let lock_path = path.with_extension("lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?;
+    FileExt::lock_exclusive(&lock)?;
+    let mut invokers = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|body| serde_json::from_str(&body).ok())
+        .unwrap_or_default();
+    let result = mutate(&mut invokers)?;
+    crate::atomic_file::write_json_atomic(&path, &invokers)?;
+    Ok(result)
 }
 
 pub fn matching_invokers(
@@ -83,6 +110,52 @@ pub fn archive_requirement_satisfied(
 mod tests {
     use super::*;
 
+    struct TestHome {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        _home: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl TestHome {
+        fn new() -> Self {
+            let guard = crate::tests::env_lock();
+            let home = tempfile::tempdir().expect("temp home");
+            let previous = std::env::var_os("WARDIAN_HOME");
+            std::env::set_var("WARDIAN_HOME", home.path());
+            Self {
+                _guard: guard,
+                _home: home,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("WARDIAN_HOME", value),
+                None => std::env::remove_var("WARDIAN_HOME"),
+            }
+        }
+    }
+
+    fn invoker(id: &str) -> WorkflowSessionCloseInvoker {
+        WorkflowSessionCloseInvoker {
+            id: id.into(),
+            blueprint_id: "memory-consolidation".into(),
+            name: id.into(),
+            enabled: false,
+            require_archive: false,
+            source_agent_id: None,
+            boundary_reasons: vec![],
+            provider: None,
+            workspace: None,
+            input: serde_json::json!({}),
+            bindings: HashMap::new(),
+            assignments: WorkflowAssignments::new(),
+        }
+    }
+
     #[test]
     fn matching_is_disabled_by_default_and_honors_filters() {
         let invoker = WorkflowSessionCloseInvoker {
@@ -104,5 +177,31 @@ mod tests {
         assert!(invoker.boundary_reasons.contains(&"clear".to_string()));
         assert!(!archive_requirement_satisfied(&invoker, false));
         assert!(archive_requirement_satisfied(&invoker, true));
+    }
+
+    #[test]
+    fn concurrent_mutations_preserve_every_invoker() {
+        let _home = TestHome::new();
+        let threads = (0..8)
+            .map(|index| {
+                std::thread::spawn(move || {
+                    mutate_invokers(|invokers| {
+                        invokers.push(invoker(&format!("invoker-{index}")));
+                        Ok(())
+                    })
+                    .expect("mutate invokers");
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().expect("join invoker writer");
+        }
+        let stored = load_invokers();
+        assert_eq!(stored.len(), 8);
+        for index in 0..8 {
+            assert!(stored
+                .iter()
+                .any(|item| item.id == format!("invoker-{index}")));
+        }
     }
 }

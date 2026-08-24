@@ -1099,7 +1099,7 @@ fn render_workflow_schedule(command: WorkflowScheduleCommand) -> Result<String, 
 }
 
 fn render_workflow_session_close(command: WorkflowSessionCloseCommand) -> Result<String, CliError> {
-    use wardian_core::session_close::{load_invokers, save_invokers, WorkflowSessionCloseInvoker};
+    use wardian_core::session_close::{load_invokers, mutate_invokers, WorkflowSessionCloseInvoker};
     use WorkflowSessionCloseCommand as C;
 
     match command {
@@ -1144,23 +1144,28 @@ fn render_workflow_session_close(command: WorkflowSessionCloseCommand) -> Result
                 bindings: wardian_core::workflow::assignment::legacy_bindings(&assignments),
                 assignments,
             };
-            let mut invokers = load_invokers();
-            invokers.push(record.clone());
-            save_invokers(&invokers).map_err(|error| CliError::generic(error.to_string()))?;
+            mutate_invokers(|invokers| {
+                invokers.push(record.clone());
+                Ok(())
+            })
+            .map_err(|error| CliError::generic(error.to_string()))?;
             render_json(serde_json::json!({ "schema": 1, "session_close_invoker": record }))
         }
         C::Enable { id } => mutate_session_close_invoker(&id, |invoker| invoker.enabled = true),
         C::Disable { id } => mutate_session_close_invoker(&id, |invoker| invoker.enabled = false),
         C::Remove { id } => {
-            let mut invokers = load_invokers();
-            let before = invokers.len();
-            invokers.retain(|invoker| invoker.id != id);
-            if invokers.len() == before {
-                return Err(CliError::generic(format!(
-                    "session-close invoker not found: {id}"
-                )));
-            }
-            save_invokers(&invokers).map_err(|error| CliError::generic(error.to_string()))?;
+            mutate_invokers(|invokers| {
+                let before = invokers.len();
+                invokers.retain(|invoker| invoker.id != id);
+                if invokers.len() == before {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("session-close invoker not found: {id}"),
+                    ));
+                }
+                Ok(())
+            })
+            .map_err(|error| CliError::generic(error.to_string()))?;
             render_json(serde_json::json!({ "schema": 1, "removed": id }))
         }
     }
@@ -1170,15 +1175,20 @@ fn mutate_session_close_invoker(
     id: &str,
     mutate: impl FnOnce(&mut wardian_core::session_close::WorkflowSessionCloseInvoker),
 ) -> Result<String, CliError> {
-    let mut invokers = wardian_core::session_close::load_invokers();
-    let invoker = invokers
-        .iter_mut()
-        .find(|invoker| invoker.id == id)
-        .ok_or_else(|| CliError::generic(format!("session-close invoker not found: {id}")))?;
-    mutate(invoker);
-    let result = invoker.clone();
-    wardian_core::session_close::save_invokers(&invokers)
-        .map_err(|error| CliError::generic(error.to_string()))?;
+    let result = wardian_core::session_close::mutate_invokers(|invokers| {
+        let invoker = invokers
+            .iter_mut()
+            .find(|invoker| invoker.id == id)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("session-close invoker not found: {id}"),
+                )
+            })?;
+        mutate(invoker);
+        Ok(invoker.clone())
+    })
+    .map_err(|error| CliError::generic(error.to_string()))?;
     render_json(serde_json::json!({ "schema": 1, "session_close_invoker": result }))
 }
 
