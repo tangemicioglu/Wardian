@@ -76,24 +76,33 @@ pub async fn load_agent_chat_transcript_for_state(
     // only the active durable archive so a restart or log rotation does not
     // erase current chat rows, while a new provider session starts empty.
     let mut events = merge_chat_events(result.events, archived_events);
-    let memory_events = memory_chat_events(&session_id);
-    if !memory_events.is_empty() {
-        events.extend(memory_events);
-        events.sort_by(|left, right| {
-            left.created_at
-                .as_deref()
-                .unwrap_or_default()
-                .cmp(right.created_at.as_deref().unwrap_or_default())
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        for (index, event) in events.iter_mut().enumerate() {
-            event.sequence = Some(index as u64 + 1);
-        }
-    }
+    let conversation_started_at = active_conversation_started_at(state, &session_id);
+    events.extend(memory_chat_events(
+        &session_id,
+        conversation_started_at.as_deref(),
+    ));
+    sort_chat_events(&mut events);
     Ok(events)
 }
 
-fn memory_chat_events(session_id: &str) -> Vec<AgentChatEvent> {
+fn active_conversation_started_at(state: &AppState, session_id: &str) -> Option<String> {
+    let conversation_id = state
+        .conversation_archive
+        .active_conversation_id(session_id)
+        .ok()??;
+    state
+        .conversation_archive
+        .list(Some(session_id), false)
+        .ok()?
+        .into_iter()
+        .find(|entry| entry.conversation_id == conversation_id)
+        .map(|entry| entry.started_at)
+}
+
+fn memory_chat_events(
+    session_id: &str,
+    conversation_started_at: Option<&str>,
+) -> Vec<AgentChatEvent> {
     let Ok(store) = wardian_core::memory::MemoryStore::from_default_home() else {
         return Vec::new();
     };
@@ -103,6 +112,7 @@ fn memory_chat_events(session_id: &str) -> Vec<AgentChatEvent> {
     };
     events
         .into_iter()
+        .filter(|event| memory_event_belongs_to_conversation(event, conversation_started_at))
         .map(|event| {
             let (title, text) = match event.action.as_str() {
                 "saved" => (
@@ -158,6 +168,37 @@ fn memory_chat_events(session_id: &str) -> Vec<AgentChatEvent> {
             }
         })
         .collect()
+}
+
+fn memory_event_belongs_to_conversation(
+    event: &wardian_core::memory::MemoryEvent,
+    conversation_started_at: Option<&str>,
+) -> bool {
+    let Some(started_at) = conversation_started_at else {
+        return false;
+    };
+    match (
+        chrono::DateTime::parse_from_rfc3339(&event.occurred_at),
+        chrono::DateTime::parse_from_rfc3339(started_at),
+    ) {
+        (Ok(occurred_at), Ok(started_at)) => occurred_at >= started_at,
+        _ => event.occurred_at.as_str() >= started_at,
+    }
+}
+
+fn sort_chat_events(events: &mut [AgentChatEvent]) {
+    events.sort_by(|left, right| {
+        match (left.created_at.as_deref(), right.created_at.as_deref()) {
+            (Some(left), Some(right)) => left.cmp(right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left.sequence.cmp(&right.sequence),
+        }
+        .then_with(|| left.id.cmp(&right.id))
+    });
+    for (index, event) in events.iter_mut().enumerate() {
+        event.sequence = Some(index as u64 + 1);
+    }
 }
 
 pub(crate) async fn agent_archive_capture_snapshot(
@@ -2073,5 +2114,84 @@ Do you want to proceed?
             opencode_session_id("wardian-uuid", Some("stale-uuid")),
             None
         );
+    }
+
+    #[test]
+    fn memory_events_before_active_conversation_are_not_replayed() {
+        let before = wardian_core::memory::MemoryEvent {
+            event_id: "before".into(),
+            agent_id: "agent-1".into(),
+            memory_id: None,
+            revision_id: None,
+            action: "loaded".into(),
+            payload: serde_json::Value::Null,
+            occurred_at: "2026-08-24T10:00:00.000Z".into(),
+        };
+        let after = wardian_core::memory::MemoryEvent {
+            occurred_at: "2026-08-24T11:00:00.000Z".into(),
+            event_id: "after".into(),
+            ..before.clone()
+        };
+
+        assert!(!memory_event_belongs_to_conversation(
+            &before,
+            Some("2026-08-24T10:30:00.000Z")
+        ));
+        assert!(!memory_event_belongs_to_conversation(&after, None));
+        assert!(memory_event_belongs_to_conversation(
+            &after,
+            Some("2026-08-24T10:30:00.000Z")
+        ));
+    }
+
+    #[test]
+    fn memory_events_are_interleaved_with_chat_events_by_timestamp() {
+        let mut events = vec![
+            AgentChatEvent {
+                id: "chat-late".into(),
+                session_id: "agent-1".into(),
+                provider: "mock".into(),
+                kind: AgentChatEventKind::Message,
+                role: Some(AgentChatRole::Assistant),
+                text: Some("late".into()),
+                title: None,
+                status: None,
+                turn_id: None,
+                source: None,
+                command: None,
+                exit_code: None,
+                path: None,
+                language: None,
+                created_at: Some("2026-08-24T11:00:00.000Z".into()),
+                sequence: Some(1),
+                metadata: serde_json::Value::Null,
+            },
+            AgentChatEvent {
+                id: "memory-middle".into(),
+                session_id: "agent-1".into(),
+                provider: "wardian".into(),
+                kind: AgentChatEventKind::Memory,
+                role: Some(AgentChatRole::System),
+                text: None,
+                title: Some("Memory loaded".into()),
+                status: Some(AgentChatStatus::Succeeded),
+                turn_id: None,
+                source: Some("wardian_memory".into()),
+                command: None,
+                exit_code: None,
+                path: None,
+                language: Some("markdown".into()),
+                created_at: Some("2026-08-24T10:30:00.000Z".into()),
+                sequence: Some(2),
+                metadata: serde_json::Value::Null,
+            },
+        ];
+
+        sort_chat_events(&mut events);
+
+        assert_eq!(events[0].id, "memory-middle");
+        assert_eq!(events[1].id, "chat-late");
+        assert_eq!(events[0].sequence, Some(1));
+        assert_eq!(events[1].sequence, Some(2));
     }
 }
