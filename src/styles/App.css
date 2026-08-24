@@ -918,6 +918,12 @@ summary,
     opacity: 1;
   }
 
+  /* The desktop collapse wrapper clips its child while it is zero-height.
+     Touch menus are pinned open, so let the popup escape that wrapper. */
+  .chat-row-actions--inline > .chat-row-actions {
+    overflow: visible;
+  }
+
   .chat-message-content {
     padding-right: 2.75rem;
   }
@@ -925,6 +931,10 @@ summary,
   .chat-row-actions--overlay {
     top: 2px;
     right: 4px;
+  }
+
+  .chat-row-actions--inline > .chat-row-actions {
+    overflow: visible;
   }
 
   .chat-row-actions--with-toggle {

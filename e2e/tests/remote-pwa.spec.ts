@@ -540,6 +540,13 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await expect(page.getByLabel("assistant message")).toHaveClass(/\bw-full\b/);
   await expect(page.getByTestId("chat-work-group")).toHaveAttribute("data-expanded", "false");
   await captureFeatureScreenshot("chat-collapsed-work.png", page.locator('[data-testid="remote-agent-detail"]'));
+  await page.getByRole("button", { name: "Message actions" }).last().click();
+  await expect(page.getByRole("menuitem", { name: "Copy message" }).last()).toBeVisible();
+  await expect
+    .poll(() => page.locator(".chat-row-actions--inline > .chat-row-actions").last().evaluate((element) => getComputedStyle(element).overflow))
+    .toBe("visible");
+  await captureFeatureScreenshot("chat-message-actions-menu.png", page.locator('[data-testid="remote-agent-detail"]'));
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Show all" }).click();
   await expect(page.getByTestId("chat-work-group")).toHaveAttribute("data-expanded", "true");
   await captureFeatureScreenshot("chat-expanded-work.png", page.locator('[data-testid="remote-agent-detail"]'));

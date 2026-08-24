@@ -61,6 +61,12 @@ type EdgeBackSwipeStart = {
   closed: boolean;
 };
 
+function canStartEdgeBackSwipe(target: EventTarget | null) {
+  return !(target instanceof Element && target.closest(
+    "button, a, input, textarea, select, [role=button], [role=menuitem], [data-chat-selectable]",
+  ));
+}
+
 function wardianColorToken(name: string, fallback: string) {
   if (typeof window === "undefined") return fallback;
   const value = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -513,7 +519,7 @@ export const RemoteAgentDetailView: React.FC<{ agent: RemoteAgentSummary }> = ({
       return;
     }
     const touch = event.touches[0];
-    edgeBackSwipeStartRef.current = touch.clientX <= EDGE_BACK_START_MAX_X
+    edgeBackSwipeStartRef.current = canStartEdgeBackSwipe(event.target) && touch.clientX <= EDGE_BACK_START_MAX_X
       ? { x: touch.clientX, y: touch.clientY, closed: false }
       : null;
   };
@@ -1050,7 +1056,11 @@ function ChatPane({
   );
   const liveApprovalId = useMemo(() => liveApprovalEventId(sortTranscriptEvents(visibleEvents)), [visibleEvents]);
   return (
-    <section className="min-h-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto px-3 py-3" aria-label={`${agent.session_name} chat`}>
+    <section
+      className="min-h-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto px-3 py-3"
+      aria-label={`${agent.session_name} chat`}
+      data-chat-selectable="true"
+    >
       {error && <div className="rounded-md border border-wardian-error px-3 py-2 text-xs text-wardian-error">{error}</div>}
       {loading && visibleEvents.length === 0 && (
         <div className="inline-flex items-center gap-2 text-sm text-muted-neutral">
