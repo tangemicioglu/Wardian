@@ -88,6 +88,7 @@ export interface AgentsOverviewViewProps {
   onRestart: (agentId: string) => void;
   onClear: (agentId: string) => void;
   onClone?: (agentId: string, mode: CloneMode) => void;
+  onAgentConfigUpdated?: (agent: AgentConfig) => void;
   onTerminalFocus?: (agentId: string) => void;
 }
 
@@ -181,6 +182,7 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
   onRestart,
   onClear,
   onClone,
+  onAgentConfigUpdated,
   onTerminalFocus,
 }) => {
   const gridRef = useRef<HTMLDivElement>(null);
@@ -546,6 +548,7 @@ export const AgentsOverviewView: React.FC<AgentsOverviewViewProps> = ({
                     draft={chatDrafts[agentId] ?? ""}
                     sessionId={agentId}
                     agent={agent}
+                    onAgentConfigUpdated={onAgentConfigUpdated}
                     provider={agent.provider}
                     isMaximized={isAgentMaximized}
                     status={effectiveStatus}

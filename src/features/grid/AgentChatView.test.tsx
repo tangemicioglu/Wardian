@@ -5,9 +5,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { readImage, writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentChatEvent, AgentModelSelectionUpdateResult } from "../../types";
+import type { AgentChatEvent, AgentConfig, AgentModelSelectionUpdateResult } from "../../types";
 import { AppShell } from "../../layout/AppShell";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { AgentChatView } from "./AgentChatView";
@@ -1701,6 +1701,90 @@ describe("AgentChatView", () => {
     }));
     expect(invokeMock).not.toHaveBeenCalledWith("submit_prompt_to_agent", expect.anything());
     expect(screen.queryByText("Applies when this agent next starts or restarts.")).not.toBeInTheDocument();
+  });
+
+  it("restores the saved model after a Terminal round trip and preserves it for an effort-only change", async () => {
+    const updateCalls: unknown[] = [];
+    invokeMock.mockImplementation((command, args) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "list_provider_model_catalog") {
+        return Promise.resolve({
+          provider: "codex",
+          version: "codex-cli test",
+          source: "live_catalog",
+          refresh_error: null,
+          models: [
+            { id: "gpt-5.6-sol", display_name: "5.6 Sol", effort_options: ["low", "high"], default_effort: "low", is_default: true },
+            { id: "gpt-5.6-luna", display_name: "5.6 Luna", effort_options: ["low", "high"], default_effort: "high", is_default: false },
+          ],
+        });
+      }
+      if (command === "update_agent_model_selection") {
+        const selection = args as { model: string; reasoningEffort: string };
+        updateCalls.push(args);
+        return Promise.resolve({
+          config: {
+            session_id: "agent-1",
+            session_name: "Alpha",
+            agent_class: "Coder",
+            folder: "C:/repo",
+            is_off: false,
+            provider: "codex",
+            model: selection.model,
+            provider_config: { type: "codex", reasoning_effort: selection.reasoningEffort },
+          },
+          live_application: "applied",
+          live_error: null,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    function Harness() {
+      const [agent, setAgent] = useState<AgentConfig>({
+        session_id: "agent-1",
+        session_name: "Alpha",
+        agent_class: "Coder",
+        folder: "C:/repo",
+        is_off: false,
+        provider: "codex",
+      });
+      const [mode, setMode] = useState<"chat" | "terminal">("chat");
+      return (
+        <>
+          <button onClick={() => setMode(mode === "chat" ? "terminal" : "chat")} type="button">
+            {mode === "chat" ? "Show Terminal" : "Show Chat"}
+          </button>
+          {mode === "chat" ? (
+            <AgentChatView
+              agent={agent}
+              onAgentConfigUpdated={setAgent}
+              sessionId="agent-1"
+              status="Idle"
+            />
+          ) : <div>Terminal view</div>}
+        </>
+      );
+    }
+
+    const user = userEvent.setup();
+    render(<Harness />);
+    await screen.findByRole("option", { name: "5.6 Luna" });
+    await user.selectOptions(screen.getByLabelText("Model"), "gpt-5.6-luna");
+    await waitFor(() => expect(updateCalls).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Show Terminal" }));
+    await user.click(screen.getByRole("button", { name: "Show Chat" }));
+    expect(await screen.findByLabelText("Model")).toHaveValue("gpt-5.6-luna");
+    expect(screen.getByLabelText("Effort")).toHaveValue("high");
+
+    await user.selectOptions(screen.getByLabelText("Effort"), "low");
+    await waitFor(() => expect(updateCalls).toHaveLength(2));
+    expect(updateCalls[1]).toEqual({
+      sessionId: "agent-1",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
+    });
   });
 
   it.each([

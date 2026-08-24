@@ -48,6 +48,14 @@ unexpected picker reports partial success and sends Escape to unwind any open
 picker. Non-Codex providers report the saved model and effort as deferred to
 the next start or restart rather than issuing a partial model-only command.
 
+The configuration returned by a successful save immediately replaces that
+agent's shared roster snapshot. Chat therefore remounts from the persisted
+model and effort after a Terminal round trip; it must not resolve provider
+defaults merely because the prior Chat component was unmounted. An effort-only
+change carries that restored model back to the backend.
+Roster loads that started before the save are superseded so an older discovery
+snapshot cannot restore the pre-save selection afterward.
+
 This boundary is intentionally local to chat. Spawn and Configure Agent retain
 their existing selection behavior because they do not apply overlapping live
 commands from this surface.

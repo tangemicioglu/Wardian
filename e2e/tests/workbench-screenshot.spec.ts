@@ -388,6 +388,25 @@ test("serializes chat model selection while persistence and live application are
   await expect(model).toBeEnabled();
   await expect(effort).toBeEnabled();
   expect(await ipc.calls("update_agent_model_selection")).toHaveLength(1);
+
+  await card.getByRole("button", { name: /mode: Chat\. Switch to Terminal\./ }).click();
+  await expect(card.getByRole("button", { name: /mode: Terminal\. Switch to Chat\./ })).toBeVisible();
+  await card.getByRole("button", { name: /mode: Terminal\. Switch to Chat\./ }).click();
+  await expect(card.getByLabel("Model", { exact: true })).toHaveValue("gpt-5.6-luna");
+  await expect(card.getByLabel("Effort")).toHaveValue("high");
+
+  const restoredPath = process.env.WARDIAN_CHAT_MODEL_RESTORED_SCREENSHOT
+    ?? testInfo.outputPath("chat-model-restored.png");
+  await card.screenshot({ path: restoredPath, animations: "disabled" });
+  await testInfo.attach("chat-model-restored", { path: restoredPath, contentType: "image/png" });
+
+  await card.getByLabel("Effort").selectOption("low");
+  await expect.poll(async () => (await ipc.calls("update_agent_model_selection")).length).toBe(2);
+  expect((await ipc.calls("update_agent_model_selection"))[1]?.args).toEqual({
+    sessionId: "agent-alpha",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "low",
+  });
 });
 
 test("renders copied feedback in an agent chat", async ({ page }, testInfo) => {
