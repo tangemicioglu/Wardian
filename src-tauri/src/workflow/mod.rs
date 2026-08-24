@@ -676,8 +676,70 @@ impl StepExecutor for LiveStepExecutor {
                     batch.agent_id, req.agent_id
                 )));
             }
+            if let Some(expected_workspace) = req.workspace.as_deref() {
+                if wardian_core::memory::normalize_workspace(batch.workspace.as_deref())
+                    != wardian_core::memory::normalize_workspace(Some(expected_workspace))
+                {
+                    return Err(StepError::new(
+                        "memory_commit payload workspace does not match the invocation workspace",
+                    ));
+                }
+            }
+            if let Some(expected_key) = req
+                .idempotency_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if batch.idempotency_key.trim() != expected_key {
+                    return Err(StepError::new(
+                        "memory_commit payload idempotency key does not match the invocation boundary",
+                    ));
+                }
+            }
+            match req.archive_available {
+                Some(true) => {
+                    let expected_conversation = req
+                        .conversation_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| {
+                            StepError::new(
+                                "archive-backed memory_commit requires a trusted conversation ID",
+                            )
+                        })?;
+                    let expected_sequence = req.source_sequence.ok_or_else(|| {
+                        StepError::new(
+                            "archive-backed memory_commit requires a trusted source sequence",
+                        )
+                    })?;
+                    let cursor = batch.cursor.as_ref().ok_or_else(|| {
+                        StepError::new("archive-backed memory_commit requires a cursor")
+                    })?;
+                    let payload_conversation = cursor
+                        .conversation_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty());
+                    if payload_conversation != Some(expected_conversation)
+                        || cursor.sequence != expected_sequence
+                    {
+                        return Err(StepError::new(
+                            "memory_commit cursor does not match the invocation boundary",
+                        ));
+                    }
+                }
+                Some(false) if batch.cursor.is_some() => {
+                    return Err(StepError::new(
+                        "archive-less memory_commit must omit the cursor",
+                    ));
+                }
+                _ => {}
+            }
+            let actor = wardian_core::memory::MemoryActor::agent(&req.agent_id);
             let result = wardian_core::memory::MemoryStore::from_default_home()
-                .and_then(|store| store.commit_batch(batch))
+                .and_then(|store| store.commit_batch(&actor, batch))
                 .map_err(|error| StepError::new(error.to_string()))?;
             serde_json::to_value(result)
                 .map(StepOutput)
@@ -766,6 +828,11 @@ mod tests {
             .memory_commit(MemoryCommitRequest {
                 node: "commit".into(),
                 agent_id: "agent-a".into(),
+                workspace: None,
+                conversation_id: None,
+                source_sequence: None,
+                archive_available: None,
+                idempotency_key: None,
                 payload,
             })
             .await
@@ -776,9 +843,66 @@ mod tests {
             .contains("does not match authorized agent"));
         assert!(wardian_core::memory::MemoryStore::from_default_home()
             .unwrap()
-            .list_events("agent-b")
+            .list_events(&wardian_core::memory::MemoryActor::Operator, "agent-b")
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn memory_commit_rejects_model_selected_cursor_epoch() {
+        let home = TestWardianHome::new();
+        let exec = exec_with(FakeAgentRunner::new()).with_memory_principal("agent-a".into());
+        let payload = serde_json::json!({
+            "agent_id": "agent-a",
+            "workspace": "workspace-a",
+            "idempotency_key": "boundary-a",
+            "operations": [{
+                "op": "save",
+                "kind": "current",
+                "text": "Stale duplicate",
+                "evidence_excerpt": "Old evidence",
+                "sources": []
+            }],
+            "cursor": {
+                "cursor_key": "model-bypass",
+                "conversation_id": "conversation-b",
+                "sequence": 1
+            }
+        });
+
+        let error = exec
+            .memory_commit(MemoryCommitRequest {
+                node: "commit".into(),
+                agent_id: "agent-a".into(),
+                workspace: Some("workspace-a".into()),
+                conversation_id: Some("conversation-a".into()),
+                source_sequence: Some(100),
+                archive_available: Some(true),
+                idempotency_key: Some("boundary-a".into()),
+                payload,
+            })
+            .await
+            .expect_err("model-selected cursor epoch must be rejected");
+
+        assert!(error.to_string().contains("cursor does not match"));
+        let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
+        assert!(store
+            .list_active(
+                &wardian_core::memory::MemoryActor::Operator,
+                "agent-a",
+                Some("workspace-a"),
+            )
+            .unwrap()
+            .is_empty());
+        let connection = rusqlite::Connection::open(home._home.path().join("memory.db")).unwrap();
+        let cursors: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_consolidation_cursors",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursors, 0);
     }
 
     #[tokio::test]
@@ -866,7 +990,7 @@ mod tests {
             .is_some_and(|failure| failure.contains("invocation authorizes agent-a")));
         assert!(wardian_core::memory::MemoryStore::from_default_home()
             .unwrap()
-            .list_events("agent-b")
+            .list_events(&wardian_core::memory::MemoryActor::Operator, "agent-b")
             .unwrap()
             .is_empty());
     }

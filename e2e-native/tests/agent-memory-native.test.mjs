@@ -127,17 +127,15 @@ function runOrdinaryTask(cliPath, harness, workflowPath, agentId, task) {
   return shown;
 }
 
-function activeMemories(cliPath, harness, agentName, workspace) {
-  return JSON.parse(runCliOk(cliPath, harness, [
-    "memory", "list", "--agent", agentName, "--workspace", workspace,
-  ]).stdout).memories;
+async function activeMemories(driver, agentId, workspace) {
+  return invokeTauri(driver, "memory_list", { agentId, workspace });
 }
 
-function waitForMemory(cliPath, harness, agentName, workspace, predicate, description) {
+async function waitForMemory(driver, agentId, workspace, predicate, description) {
   const startedAt = Date.now();
   let memories = [];
   while (Date.now() - startedAt < 30_000) {
-    memories = activeMemories(cliPath, harness, agentName, workspace);
+    memories = await activeMemories(driver, agentId, workspace);
     if (predicate(memories)) return memories;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
   }
@@ -208,18 +206,24 @@ test("temporary GPT-5.6-Luna agents receive, save, revise, and recall durable me
 
   const tokenA = `LUNA_MEMORY_ALPHA_${RUN_ID}`;
   const tokenB = `LUNA_MEMORY_BRAVO_${RUN_ID}`;
-  const savedA = JSON.parse(runCliOk(cliPath, harness, [
-    "memory", "save", `The verification token is ${tokenA}`,
-    "--evidence", "Native acceptance seeded the first agent's private token.",
-    "--scope", "agent",
-    "--agent", agentAName,
-  ]).stdout).memory;
-  runCliOk(cliPath, harness, [
-    "memory", "save", `The verification token is ${tokenB}`,
-    "--evidence", "Native acceptance seeded the second agent's private token.",
-    "--scope", "agent",
-    "--agent", agentBName,
-  ]);
+  const savedA = await invokeTauri(session.driver, "memory_save", { request: {
+    agent_id: agentAId,
+    workspace: null,
+    kind: "stable",
+    text: `The verification token is ${tokenA}`,
+    evidence_excerpt: "Native acceptance seeded the first agent's private token.",
+    sources: [],
+    idempotency_key: null,
+  } });
+  await invokeTauri(session.driver, "memory_save", { request: {
+    agent_id: agentBId,
+    workspace: null,
+    kind: "stable",
+    text: `The verification token is ${tokenB}`,
+    evidence_excerpt: "Native acceptance seeded the second agent's private token.",
+    sources: [],
+    idempotency_key: null,
+  } });
 
   runCliOk(cliPath, harness, ["agent", "restart", agentAName]);
   runCliOk(cliPath, harness, ["agent", "restart", agentBName]);
@@ -229,11 +233,13 @@ test("temporary GPT-5.6-Luna agents receive, save, revise, and recall durable me
   assert.doesNotMatch(firstB.latest.text, new RegExp(tokenA));
 
   const tokenA2 = `${tokenA}_UPDATED`;
-  runCliOk(cliPath, harness, [
-    "memory", "update", savedA.memory_id,
-    `The verification token is ${tokenA2}`,
-    "--evidence", "Native acceptance replaced the first agent's token.",
-  ]);
+  await invokeTauri(session.driver, "memory_update", { request: {
+    memory_id: savedA.memory_id,
+    text: `The verification token is ${tokenA2}`,
+    evidence_excerpt: "Native acceptance replaced the first agent's token.",
+    sources: [],
+    idempotency_key: null,
+  } });
   runCliOk(cliPath, harness, ["agent", "restart", agentAName]);
   const resumedA = await waitForLoadedMemory(
     session.driver,
@@ -318,14 +324,13 @@ edges:
     implicitAId,
     `We are standardizing this project. Every release status summary begins with ${firstConvention} and ends with the owner's initials. Draft a two-line example for today's release.`,
   );
-  const firstSaved = waitForMemory(
-    cliPath,
-    harness,
-    implicitAName,
+  const firstSaved = (await waitForMemory(
+    session.driver,
+    implicitAId,
     workspace,
     (memories) => memories.some((memory) => memory.text.includes(firstConvention)),
     "Luna did not independently save the durable project convention",
-  ).find((memory) => memory.text.includes(firstConvention));
+  )).find((memory) => memory.text.includes(firstConvention));
   assert.ok(firstSaved?.memory_id, "implicit convention needs a durable memory id");
 
   runOrdinaryTask(
@@ -335,10 +340,9 @@ edges:
     implicitAId,
     `Correction to that project convention: release status summaries now begin with ${revisedConvention}; ${firstConvention} is retired. Draft the corrected two-line example.`,
   );
-  const revised = waitForMemory(
-    cliPath,
-    harness,
-    implicitAName,
+  const revised = await waitForMemory(
+    session.driver,
+    implicitAId,
     workspace,
     (memories) => memories.some((memory) => memory.text.includes(revisedConvention))
       && memories.every(
@@ -347,9 +351,9 @@ edges:
       ),
     "Luna did not revise the superseded convention without leaving a contradictory active memory",
   );
-  const firstHistory = JSON.parse(runCliOk(cliPath, harness, [
-    "memory", "history", firstSaved.memory_id,
-  ]).stdout).history;
+  const firstHistory = await invokeTauri(session.driver, "memory_history", {
+    memoryId: firstSaved.memory_id,
+  });
   assert.ok(
     firstHistory.some(
       (record) => record.revision_id === firstSaved.revision_id && record.status !== "active",
@@ -366,10 +370,9 @@ edges:
     implicitBId,
     `Across every project I work on, handoff dates use ISO 8601 and include the marker ${crossProjectPreference}. Rewrite this handoff date accordingly: August 23, 2026.`,
   );
-  const crossProject = waitForMemory(
-    cliPath,
-    harness,
-    implicitBName,
+  const crossProject = await waitForMemory(
+    session.driver,
+    implicitBId,
     workspace,
     (memories) => memories.some((memory) => memory.text.includes(crossProjectPreference)),
     "Luna did not independently save the cross-project preference",
@@ -388,7 +391,7 @@ edges:
     `For this response only, prefix the answer with ${transientToken}. What is 17 plus 25?`,
   );
   assert.ok(
-    activeMemories(cliPath, harness, implicitBName, workspace)
+    (await activeMemories(session.driver, implicitBId, workspace))
       .every((memory) => !memory.text.includes(transientToken)),
     "explicitly transient response formatting must not become durable memory",
   );

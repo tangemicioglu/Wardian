@@ -19,8 +19,10 @@ nodes:
         Do not infer uncertain memories and do not quote sensitive content
         beyond the shortest durable evidence excerpt. Return a MemoryCommitBatch
         JSON object. Use idempotency key {{trigger.output.idempotency_key}} and cursor key
-        memory-consolidation:{{trigger.output.agent_id}}:{{trigger.output.workspace}} exactly.
-        Set the cursor conversation_id and sequence to the supplied values.
+        memory-consolidation exactly. Wardian derives the authoritative cursor namespace
+        from the authenticated agent, normalized workspace, and conversation ID.
+        When archive_available is true, set the cursor conversation_id and sequence to the
+        supplied values. When it is false, omit the cursor.
         An empty operations array is a valid result.
       output_schema: >
         {"type":"object","required":["agent_id","idempotency_key","operations"],"properties":{"agent_id":{"type":"string"},"workspace":{"type":["string","null"]},"idempotency_key":{"type":"string"},"operations":{"type":"array"},"cursor":{"type":["object","null"]}},"additionalProperties":false}

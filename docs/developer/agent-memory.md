@@ -29,6 +29,14 @@ source and retention lifecycle is `memory.db`.
 
 Workflow mutation is routed through the `memory_commit` engine node. Its payload
 is a `MemoryCommitBatch`; the live executor calls `MemoryStore::commit_batch`.
+The store acquires the SQLite writer lock and advances a strictly increasing
+conversation cursor before applying mutations. A stale batch therefore rolls
+back without writing memories, events, a cursor, or an idempotency receipt.
+The store derives that cursor namespace from the authorized agent, normalized
+workspace, and conversation ID. The executor binds workspace, conversation,
+sequence, and idempotency key to trusted invocation values before opening the
+store; model-produced cursor metadata is not authority, and a new conversation
+starts a distinct cursor epoch.
 `MemoryCommitRequest.agent_id` is rendered from the canonical
 `&#123;&#123;trigger.output.agent_id&#125;&#125;` invocation value by the engine. No other template
 is accepted. That rendered value is not authority: the live executor also
@@ -62,6 +70,24 @@ Managed callers may resolve and mutate only themselves; changing an environment
 variable alone does not authorize another identity. Keep persisted `state.db` resolution
 available when the desktop control endpoint is offline, but reject unknown or
 ambiguous names rather than treating them as memory owner IDs.
+The CLI has no operator fallback: absence of `WARDIAN_SESSION_ID` or its matching
+capability fails closed. Cross-agent user administration belongs to the desktop
+host's explicit operator path.
+
+Every `MemoryStore` read, write, recall, audit, and commit operation requires a
+`MemoryActor`. Agent actors are constrained by `agent_id` in the underlying SQL;
+the desktop host uses the explicit `Operator` actor for user-directed
+cross-agent administration. Do not restore ID-only store methods or rely on a
+CLI-only ownership check.
+
+Save and update idempotency keys are globally unique. Replays must match the
+complete normalized request, including source provenance; another agent or a
+different source set receives a validation error rather than a partial replay.
+
+Headless processes receive durable memory only when Wardian supplies a
+registered `memory_agent_id`. Temporary provider workers keep their synthetic
+process identity but receive no memory instructions or capability, preventing
+orphaned synthetic-agent records.
 
 When changing selection or rendering, increment the memory budget-policy version
 so resumed providers recover with a full changed fingerprint. An unchanged

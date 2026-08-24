@@ -96,7 +96,8 @@ fn memory_chat_events(session_id: &str) -> Vec<AgentChatEvent> {
     let Ok(store) = wardian_core::memory::MemoryStore::from_default_home() else {
         return Vec::new();
     };
-    let Ok(events) = store.list_events(session_id) else {
+    let Ok(events) = store.list_events(&wardian_core::memory::MemoryActor::Operator, session_id)
+    else {
         return Vec::new();
     };
     events

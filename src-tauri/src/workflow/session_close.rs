@@ -173,6 +173,9 @@ fn session_close_idempotency_key(invoker_id: &str, boundary_id: &str) -> String 
 #[cfg(test)]
 mod tests {
     use super::session_close_idempotency_key;
+    use wardian_core::memory::{
+        MemoryActor, MemoryCommitBatch, MemoryKind, MemoryMutation, MemoryStore,
+    };
 
     #[test]
     fn archive_less_boundaries_receive_distinct_idempotency_keys() {
@@ -181,5 +184,39 @@ mod tests {
         let second = session_close_idempotency_key("invoker", "boundary-b");
         assert_eq!(first, retry);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn archive_less_boundaries_commit_independently() {
+        let temp = tempfile::tempdir().expect("temp memory store");
+        let store = MemoryStore::open(temp.path().join("memory.db")).expect("memory store");
+        let actor = MemoryActor::agent("agent-a");
+        for (boundary_id, text) in [
+            ("boundary-a", "First archive-less boundary"),
+            ("boundary-b", "Second archive-less boundary"),
+        ] {
+            store
+                .commit_batch(
+                    &actor,
+                    MemoryCommitBatch {
+                        agent_id: "agent-a".into(),
+                        workspace: Some("workspace".into()),
+                        idempotency_key: session_close_idempotency_key("invoker", boundary_id),
+                        operations: vec![MemoryMutation::Save {
+                            kind: MemoryKind::Current,
+                            text: text.into(),
+                            evidence_excerpt: format!("Evidence from {boundary_id}"),
+                            sources: vec![],
+                        }],
+                        cursor: None,
+                    },
+                )
+                .expect("independent boundary commit");
+        }
+
+        let memories = store
+            .list_active(&actor, "agent-a", Some("workspace"))
+            .expect("list committed boundaries");
+        assert_eq!(memories.len(), 2);
     }
 }

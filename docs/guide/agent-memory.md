@@ -50,8 +50,8 @@ and remove preserve audit history.
 
 Inside a Wardian-managed terminal, memory commands are restricted to that
 agent's own records and authenticated with a launch-scoped capability. Run them
-from an operator shell without a managed agent identity when administering
-another agent's memory.
+only from that managed context. Cross-agent administration is available through
+Wardian's desktop memory surface; an uncredentialed operator shell fails closed.
 
 The capability expires when Wardian terminates, replaces, or reclaims that
 provider runtime. A PTY reader or broker error alone does not revoke a still-live

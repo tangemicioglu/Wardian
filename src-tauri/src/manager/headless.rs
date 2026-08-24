@@ -63,7 +63,8 @@ pub struct HeadlessRunOptions<'a> {
     pub wardian_session_id: &'a str,
     /// Registered agent that owns recall and in-process `wardian memory`
     /// commands. Fresh workflow workers may keep a synthetic provider session
-    /// while using this durable memory identity.
+    /// while using this durable memory identity. `None` disables durable
+    /// memory for ephemeral workflow providers.
     pub memory_agent_id: Option<&'a str>,
     pub resume_session: Option<&'a str>,
     pub output_format: &'a str,
@@ -343,8 +344,7 @@ pub async fn run_headless_with_options(
     let wardian_session_id = options.wardian_session_id;
     let memory_agent_id = options
         .memory_agent_id
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(wardian_session_id);
+        .filter(|value| !value.trim().is_empty());
     let resume_session = options.resume_session;
     let output_format = options.output_format;
     let provider_name = options.provider_name;
@@ -368,30 +368,33 @@ pub async fn run_headless_with_options(
         .map(str::to_string)
         .unwrap_or_else(|| format!("fresh:{}:{}", wardian_session_id, uuid::Uuid::new_v4()));
     let memory_workspace = cwd.to_string_lossy().to_string();
-    let memory_setup = match wardian_core::memory::MemoryStore::from_default_home() {
-        Ok(store) => match store.compile_brief(
-            memory_agent_id,
-            Some(&memory_workspace),
-            provider_name,
-            &memory_process_key,
-            resume_session.is_some_and(|value| !value.trim().is_empty()),
-            12_000,
-        ) {
-            Ok(brief) => Some((store, brief)),
+    let memory_setup = memory_agent_id.and_then(|memory_agent_id| {
+        match wardian_core::memory::MemoryStore::from_default_home() {
+            Ok(store) => match store.compile_brief(
+                &wardian_core::memory::MemoryActor::agent(memory_agent_id),
+                memory_agent_id,
+                Some(&memory_workspace),
+                provider_name,
+                &memory_process_key,
+                resume_session.is_some_and(|value| !value.trim().is_empty()),
+                12_000,
+            ) {
+                Ok(brief) => Some((store, brief)),
+                Err(error) => {
+                    log_debug(&format!(
+                        "[Wardian] headless memory recall unavailable for {memory_agent_id}: {error}"
+                    ));
+                    None
+                }
+            },
             Err(error) => {
                 log_debug(&format!(
-                    "[Wardian] headless memory recall unavailable for {memory_agent_id}: {error}"
+                    "[Wardian] headless memory store unavailable for {memory_agent_id}: {error}"
                 ));
                 None
             }
-        },
-        Err(error) => {
-            log_debug(&format!(
-                "[Wardian] headless memory store unavailable for {memory_agent_id}: {error}"
-            ));
-            None
         }
-    };
+    });
     let provider_context = headless_provider_context(
         provider_name,
         cwd,
@@ -399,7 +402,7 @@ pub async fn run_headless_with_options(
         config_override,
         persisted_config.as_ref(),
     )?;
-    if let Some(root) = provider_context.habitat_root.as_ref() {
+    if let (Some(_), Some(root)) = (memory_agent_id, provider_context.habitat_root.as_ref()) {
         append_habitat_memory_instructions(
             root,
             memory_setup
@@ -426,11 +429,15 @@ pub async fn run_headless_with_options(
             }
         }
     }
-    let memory_runtime_instructions = wardian_memory_instructions(
-        memory_setup
-            .as_ref()
-            .and_then(|(_, brief)| (!brief.is_empty).then_some(brief.context_text.as_str())),
-    );
+    let memory_runtime_instructions = memory_agent_id
+        .map(|_| {
+            wardian_memory_instructions(
+                memory_setup.as_ref().and_then(|(_, brief)| {
+                    (!brief.is_empty).then_some(brief.context_text.as_str())
+                }),
+            )
+        })
+        .unwrap_or_default();
     let (bin, _) = provider.get_executable();
     let claude_hook = if provider_name == "claude" {
         ensure_claude_permission_hook(wardian_session_id).ok()
@@ -447,7 +454,7 @@ pub async fn run_headless_with_options(
         resume_session,
         effective_provider_config.as_ref(),
     );
-    if provider_name == "codex" {
+    if provider_name == "codex" && memory_agent_id.is_some() {
         CodexProvider::new()
             .insert_developer_instructions_arg(&mut provider_args, &memory_runtime_instructions);
     }
@@ -463,7 +470,8 @@ pub async fn run_headless_with_options(
     for arg in &launch_spec.args {
         cmd.arg(arg);
     }
-    let _memory_capability = apply_headless_identity_env(&mut cmd, memory_agent_id);
+    let _memory_capability =
+        apply_headless_identity_env(&mut cmd, wardian_session_id, memory_agent_id);
     super::apply_managed_cli_path_to_process(&mut cmd);
     super::apply_process_provider_runtime_env(provider_name, &mut cmd)?;
     if let Some(config) = effective_provider_config.as_ref() {
@@ -638,7 +646,9 @@ pub async fn run_headless_with_options(
     }
 
     if let Some((memory_store, memory_brief)) = memory_setup {
+        let memory_agent_id = memory_agent_id.expect("memory setup requires an owner");
         if let Err(error) = memory_store.record_injection(
+            &wardian_core::memory::MemoryActor::agent(memory_agent_id),
             memory_agent_id,
             Some(&memory_workspace),
             provider_name,
@@ -1052,8 +1062,9 @@ pub async fn obtain_session_id(
     for arg in &launch_spec.args {
         cmd.arg(arg);
     }
-    let _memory_capability = bootstrap_session_id
-        .and_then(|session_id| apply_headless_identity_env(&mut cmd, session_id));
+    let _memory_capability = bootstrap_session_id.and_then(|session_id| {
+        apply_headless_identity_env(&mut cmd, session_id, Some(session_id))
+    });
     super::apply_managed_cli_path_to_process(&mut cmd);
     super::apply_process_provider_runtime_env(provider_name, &mut cmd)?;
 
@@ -1266,14 +1277,18 @@ fn bootstrap_output_session_id(provider_name: &str, output: &str) -> Option<Stri
 
 fn apply_headless_identity_env(
     cmd: &mut tokio::process::Command,
-    wardian_session_id: &str,
+    process_session_id: &str,
+    memory_agent_id: Option<&str>,
 ) -> Option<wardian_core::memory::MemoryCapabilityLease> {
     if let Some(home) = crate::utils::fs::get_wardian_home() {
         cmd.env("WARDIAN_HOME", home);
     }
-    if !wardian_session_id.trim().is_empty() {
-        cmd.env("WARDIAN_SESSION_ID", wardian_session_id);
-        let capability = super::issue_memory_capability(wardian_session_id);
+    let effective_session_id = memory_agent_id.unwrap_or(process_session_id);
+    if !effective_session_id.trim().is_empty() {
+        cmd.env("WARDIAN_SESSION_ID", effective_session_id);
+    }
+    if let Some(memory_agent_id) = memory_agent_id {
+        let capability = super::issue_memory_capability(memory_agent_id);
         if let Some(capability) = capability.as_ref() {
             cmd.env(
                 wardian_core::memory::MEMORY_CAPABILITY_ENV,
@@ -1377,15 +1392,18 @@ mod tests {
         let session_id = "headless-memory-agent";
         let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
         store
-            .save(wardian_core::memory::SaveMemoryRequest {
-                agent_id: session_id.into(),
-                workspace: Some(workspace.path().to_string_lossy().to_string()),
-                kind: wardian_core::memory::MemoryKind::Stable,
-                text: "Prefer metric units".into(),
-                evidence_excerpt: "The user explicitly selected metric units.".into(),
-                sources: vec![],
-                idempotency_key: None,
-            })
+            .save(
+                &wardian_core::memory::MemoryActor::Operator,
+                wardian_core::memory::SaveMemoryRequest {
+                    agent_id: session_id.into(),
+                    workspace: Some(workspace.path().to_string_lossy().to_string()),
+                    kind: wardian_core::memory::MemoryKind::Stable,
+                    text: "Prefer metric units".into(),
+                    evidence_excerpt: "The user explicitly selected metric units.".into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                },
+            )
             .unwrap();
         let previous_scenario = std::env::var_os("WARDIAN_MOCK_SCENARIO");
         std::env::set_var("WARDIAN_MOCK_SCENARIO", "headless");
@@ -1400,7 +1418,7 @@ mod tests {
             cwd: workspace.path(),
             prompt: "Report ready.",
             wardian_session_id: session_id,
-            memory_agent_id: None,
+            memory_agent_id: Some(session_id),
             resume_session: None,
             output_format: "json",
             provider_name: "mock",
@@ -1428,7 +1446,7 @@ mod tests {
         assert!(instructions.contains("Use `wardian memory save`"));
         assert!(instructions.contains("Prefer metric units"));
         let loaded = store
-            .list_events(session_id)
+            .list_events(&wardian_core::memory::MemoryActor::Operator, session_id)
             .unwrap()
             .into_iter()
             .find(|event| event.action == "loaded")
@@ -1449,15 +1467,18 @@ mod tests {
         let process_key = "headless-memory-failure-process";
         let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
         store
-            .save(wardian_core::memory::SaveMemoryRequest {
-                agent_id: session_id.into(),
-                workspace: Some(workspace.path().to_string_lossy().to_string()),
-                kind: wardian_core::memory::MemoryKind::Stable,
-                text: "Keep the full startup context".into(),
-                evidence_excerpt: "Durable test evidence".into(),
-                sources: vec![],
-                idempotency_key: None,
-            })
+            .save(
+                &wardian_core::memory::MemoryActor::Operator,
+                wardian_core::memory::SaveMemoryRequest {
+                    agent_id: session_id.into(),
+                    workspace: Some(workspace.path().to_string_lossy().to_string()),
+                    kind: wardian_core::memory::MemoryKind::Stable,
+                    text: "Keep the full startup context".into(),
+                    evidence_excerpt: "Durable test evidence".into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                },
+            )
             .unwrap();
         let previous_scenario = std::env::var_os("WARDIAN_MOCK_SCENARIO");
         std::env::set_var("WARDIAN_MOCK_SCENARIO", "headless_failure");
@@ -1472,7 +1493,7 @@ mod tests {
             cwd: workspace.path(),
             prompt: "Fail before accepting the context.",
             wardian_session_id: session_id,
-            memory_agent_id: None,
+            memory_agent_id: Some(session_id),
             resume_session: Some(process_key),
             output_format: "json",
             provider_name: "mock",
@@ -1488,23 +1509,28 @@ mod tests {
 
         assert!(result.is_err());
         assert!(store
-            .list_events(session_id)
+            .list_events(&wardian_core::memory::MemoryActor::Operator, session_id,)
             .unwrap()
             .into_iter()
             .all(|event| event.action != "loaded"));
         store
-            .save(wardian_core::memory::SaveMemoryRequest {
-                agent_id: session_id.into(),
-                workspace: Some(workspace.path().to_string_lossy().to_string()),
-                kind: wardian_core::memory::MemoryKind::Current,
-                text: "Include the changed context on retry".into(),
-                evidence_excerpt: "A later durable change makes an advanced cursor observable.".into(),
-                sources: vec![],
-                idempotency_key: None,
-            })
+            .save(
+                &wardian_core::memory::MemoryActor::Operator,
+                wardian_core::memory::SaveMemoryRequest {
+                    agent_id: session_id.into(),
+                    workspace: Some(workspace.path().to_string_lossy().to_string()),
+                    kind: wardian_core::memory::MemoryKind::Current,
+                    text: "Include the changed context on retry".into(),
+                    evidence_excerpt: "A later durable change makes an advanced cursor observable."
+                        .into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                },
+            )
             .unwrap();
         let retry = store
             .compile_brief(
+                &wardian_core::memory::MemoryActor::agent(session_id),
                 session_id,
                 Some(&workspace.path().to_string_lossy()),
                 "mock",
@@ -1531,15 +1557,18 @@ mod tests {
         let worker_id = "workflow-bg-run-node";
         let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
         store
-            .save(wardian_core::memory::SaveMemoryRequest {
-                agent_id: agent_id.into(),
-                workspace: Some(workspace.path().to_string_lossy().to_string()),
-                kind: wardian_core::memory::MemoryKind::Stable,
-                text: "Use the registered agent memory".into(),
-                evidence_excerpt: "The user established a durable project convention.".into(),
-                sources: vec![],
-                idempotency_key: None,
-            })
+            .save(
+                &wardian_core::memory::MemoryActor::Operator,
+                wardian_core::memory::SaveMemoryRequest {
+                    agent_id: agent_id.into(),
+                    workspace: Some(workspace.path().to_string_lossy().to_string()),
+                    kind: wardian_core::memory::MemoryKind::Stable,
+                    text: "Use the registered agent memory".into(),
+                    evidence_excerpt: "The user established a durable project convention.".into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                },
+            )
             .unwrap();
         let previous_scenario = std::env::var_os("WARDIAN_MOCK_SCENARIO");
         std::env::set_var("WARDIAN_MOCK_SCENARIO", "headless");
@@ -1581,11 +1610,87 @@ mod tests {
         .expect("generated worker habitat instructions");
         assert!(instructions.contains("Use the registered agent memory"));
         assert!(store
-            .list_events(agent_id)
+            .list_events(&wardian_core::memory::MemoryActor::Operator, agent_id,)
             .unwrap()
             .into_iter()
             .any(|event| event.action == "loaded"));
-        assert!(store.list_events(worker_id).unwrap().is_empty());
+        assert!(store
+            .list_events(&wardian_core::memory::MemoryActor::Operator, worker_id,)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn ephemeral_worker_receives_no_durable_memory_surface() {
+        if !node_available() {
+            return;
+        }
+        let test_home = TestWardianHome::new();
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let worker_id = "workflow-bg-temporary-node";
+        let previous_scenario = std::env::var_os("WARDIAN_MOCK_SCENARIO");
+        std::env::set_var("WARDIAN_MOCK_SCENARIO", "headless");
+        let config = AgentConfig {
+            session_id: worker_id.into(),
+            folder: workspace.path().to_string_lossy().to_string(),
+            provider: "mock".into(),
+            ..Default::default()
+        };
+
+        let result = run_headless_with_options(HeadlessRunOptions {
+            cwd: workspace.path(),
+            prompt: "Report ready.",
+            wardian_session_id: worker_id,
+            memory_agent_id: None,
+            resume_session: None,
+            output_format: "json",
+            provider_name: "mock",
+            config_override: Some(&config),
+            timeout: Duration::from_secs(10),
+            lease_owner: None,
+        })
+        .await;
+        match previous_scenario {
+            Some(value) => std::env::set_var("WARDIAN_MOCK_SCENARIO", value),
+            None => std::env::remove_var("WARDIAN_MOCK_SCENARIO"),
+        }
+        result.expect("mock headless run");
+
+        let instructions = std::fs::read_to_string(
+            test_home
+                ._home
+                .path()
+                .join("agents")
+                .join(worker_id)
+                .join("habitat")
+                .join("AGENTS.md"),
+        )
+        .expect("generated worker habitat instructions");
+        assert!(!instructions.contains("## Wardian memory"));
+        assert!(!instructions.contains("wardian memory save"));
+        let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
+        assert!(store
+            .list_active(
+                &wardian_core::memory::MemoryActor::Operator,
+                worker_id,
+                Some(&workspace.path().to_string_lossy()),
+            )
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .list_events(&wardian_core::memory::MemoryActor::Operator, worker_id)
+            .unwrap()
+            .is_empty());
+        let connection = rusqlite::Connection::open(test_home._home.path().join("memory.db"))
+            .expect("memory database");
+        let capabilities: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_process_capabilities WHERE agent_id=?1",
+                [worker_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(capabilities, 0);
     }
 
     #[cfg(windows)]
@@ -2488,8 +2593,11 @@ mod tests {
         let test_home = TestWardianHome::new();
         let mut cmd = crate::utils::process::new_headless_command("node");
 
-        let _memory_capability =
-            apply_headless_identity_env(&mut cmd, "wardian-session-123");
+        let _memory_capability = apply_headless_identity_env(
+            &mut cmd,
+            "workflow-bg-run-node",
+            Some("wardian-session-123"),
+        );
 
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
         assert!(envs.iter().any(|(key, value)| {
@@ -2513,6 +2621,36 @@ mod tests {
     }
 
     #[test]
+    fn ephemeral_headless_identity_has_no_memory_capability() {
+        let test_home = TestWardianHome::new();
+        let mut cmd = crate::utils::process::new_headless_command("node");
+
+        let capability =
+            apply_headless_identity_env(&mut cmd, "workflow-bg-temporary-node", None);
+
+        assert!(capability.is_none());
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        assert!(envs.iter().any(|(key, value)| {
+            key.to_string_lossy() == "WARDIAN_SESSION_ID"
+                && value.map(|value| value.to_string_lossy())
+                    == Some("workflow-bg-temporary-node".into())
+        }));
+        assert!(!envs.iter().any(|(key, _)| {
+            key.to_string_lossy() == wardian_core::memory::MEMORY_CAPABILITY_ENV
+        }));
+        let connection = rusqlite::Connection::open(test_home._home.path().join("memory.db"))
+            .expect("memory database");
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_process_capabilities",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn headless_identity_env_includes_resolved_wardian_home() {
         let _guard = crate::utils::wardian_test_env_lock();
         let previous_home = std::env::var_os("WARDIAN_HOME");
@@ -2520,7 +2658,11 @@ mod tests {
         std::env::set_var("WARDIAN_HOME", home.path());
         let mut cmd = crate::utils::process::new_headless_command("node");
 
-        apply_headless_identity_env(&mut cmd, "wardian-session-123");
+        apply_headless_identity_env(
+            &mut cmd,
+            "workflow-bg-run-node",
+            Some("wardian-session-123"),
+        );
 
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
         assert!(envs.iter().any(|(key, value)| {
@@ -2539,7 +2681,7 @@ mod tests {
     fn headless_identity_env_is_omitted_when_session_id_is_blank() {
         let mut cmd = crate::utils::process::new_headless_command("node");
 
-        apply_headless_identity_env(&mut cmd, "  ");
+        apply_headless_identity_env(&mut cmd, "  ", None);
 
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
         assert!(!envs

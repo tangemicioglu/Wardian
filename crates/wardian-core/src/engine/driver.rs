@@ -523,10 +523,26 @@ async fn run_side_effect(
                     "memory_commit source node `{source_node}` has no output"
                 ))
             })?;
+            let trigger_output = s.registry.get("trigger").and_then(|value| value.get("output"));
+            let trigger_string = |field: &str| {
+                trigger_output
+                    .and_then(|value| value.get(field))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            };
             Ok(exec
                 .memory_commit(MemoryCommitRequest {
                     node: node.id.clone(),
                     agent_id,
+                    workspace: trigger_string("workspace"),
+                    conversation_id: trigger_string("conversation_id"),
+                    source_sequence: trigger_output
+                        .and_then(|value| value.get("source_sequence"))
+                        .and_then(|value| value.as_u64()),
+                    archive_available: trigger_output
+                        .and_then(|value| value.get("archive_available"))
+                        .and_then(|value| value.as_bool()),
+                    idempotency_key: trigger_string("idempotency_key"),
                     payload,
                 })
                 .await?

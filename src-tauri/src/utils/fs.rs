@@ -141,7 +141,7 @@ pub fn wardian_memory_instructions(startup_brief: Option<&str>) -> String {
     let mut content = String::from(
         "## Wardian memory\nSource: Wardian runtime\n\n\
 Use `wardian memory save` for clear durable preferences, decisions, corrections, lessons, current project state, and explicit requests to remember. \
-Default to workspace scope; use agent scope only for cross-project preferences and working conventions. \
+Classify scope before every save. Use workspace scope for project-specific context. If the user says a preference or convention applies across every project, globally, or wherever this agent works, you MUST pass `--scope agent`; never omit that flag for cross-project memory. \
 Always include a durable evidence excerpt. Do not save ambiguous or transient chatter. \
 Before finishing every user task, independently check whether the user established or corrected durable context worth carrying into a future session; save it without waiting for an explicit request when the evidence is clear. \
 In particular, save a clear preference, project convention, decision, correction, or ongoing state stated inside an ordinary task even when the task is brief and the user never says remember or save. \
@@ -1272,6 +1272,7 @@ mod tests {
 
         let content = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
         assert!(content.contains("Use `wardian memory save`"));
+        assert!(content.contains("you MUST pass `--scope agent`"));
         assert!(content.contains("Before finishing every user task"));
         assert!(content.contains("the user never says remember or save"));
         assert!(content.contains("required end-of-task step"));

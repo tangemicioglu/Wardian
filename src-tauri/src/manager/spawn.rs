@@ -51,6 +51,7 @@ fn record_pending_memory_injection(
         return false;
     };
     if let Err(error) = store.record_injection(
+        &wardian_core::memory::MemoryActor::agent(agent_id),
         agent_id,
         Some(&workspace),
         provider,
@@ -628,6 +629,7 @@ pub async fn spawn_agent(
     };
     let memory_setup = match wardian_core::memory::MemoryStore::from_default_home() {
         Ok(store) => match store.compile_brief(
+            &wardian_core::memory::MemoryActor::agent(&config.session_id),
             &config.session_id,
             Some(&expected_folder),
             &config.provider,
@@ -2318,18 +2320,22 @@ mod tests {
         let workspace = temp.path().to_string_lossy().to_string();
         let process_key = "opencode-provider-session";
         store
-            .save(wardian_core::memory::SaveMemoryRequest {
-                agent_id: agent_id.into(),
-                workspace: Some(workspace.clone()),
-                kind: wardian_core::memory::MemoryKind::Stable,
-                text: "Initial OpenCode memory".into(),
-                evidence_excerpt: "Established before interactive startup.".into(),
-                sources: vec![],
-                idempotency_key: None,
-            })
+            .save(
+                &wardian_core::memory::MemoryActor::Operator,
+                wardian_core::memory::SaveMemoryRequest {
+                    agent_id: agent_id.into(),
+                    workspace: Some(workspace.clone()),
+                    kind: wardian_core::memory::MemoryKind::Stable,
+                    text: "Initial OpenCode memory".into(),
+                    evidence_excerpt: "Established before interactive startup.".into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                },
+            )
             .unwrap();
         let brief = store
             .compile_brief(
+                &wardian_core::memory::MemoryActor::agent(agent_id),
                 agent_id,
                 Some(&workspace),
                 "opencode",
@@ -2366,7 +2372,7 @@ mod tests {
         let store = wardian_core::memory::MemoryStore::open(temp.path().join("memory.db")).unwrap();
         assert_eq!(
             store
-                .list_events(agent_id)
+                .list_events(&wardian_core::memory::MemoryActor::Operator, agent_id,)
                 .unwrap()
                 .into_iter()
                 .filter(|event| event.action == "loaded")
@@ -2374,18 +2380,22 @@ mod tests {
             1
         );
         store
-            .save(wardian_core::memory::SaveMemoryRequest {
-                agent_id: agent_id.into(),
-                workspace: Some(workspace.clone()),
-                kind: wardian_core::memory::MemoryKind::Current,
-                text: "Later OpenCode memory".into(),
-                evidence_excerpt: "Established after the startup receipt.".into(),
-                sources: vec![],
-                idempotency_key: None,
-            })
+            .save(
+                &wardian_core::memory::MemoryActor::Operator,
+                wardian_core::memory::SaveMemoryRequest {
+                    agent_id: agent_id.into(),
+                    workspace: Some(workspace.clone()),
+                    kind: wardian_core::memory::MemoryKind::Current,
+                    text: "Later OpenCode memory".into(),
+                    evidence_excerpt: "Established after the startup receipt.".into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                },
+            )
             .unwrap();
         let resumed = store
             .compile_brief(
+                &wardian_core::memory::MemoryActor::agent(agent_id),
                 agent_id,
                 Some(&workspace),
                 "opencode",

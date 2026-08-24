@@ -78,7 +78,15 @@ second memory owner.
 strict `MemoryCommitBatch`, validates the complete request, and commits memory
 operations, archive cursor movement, audit events, and an idempotency receipt in
 one transaction. Replaying the same key and request returns the original result;
-reusing a key for different content is rejected.
+reusing a key for different content is rejected. Cursor movement is serialized
+before mutations and must be strictly monotonic for its conversation stream, so
+a late consolidator cannot apply stale operations or move the checkpoint back.
+Wardian derives the cursor namespace from the authorized agent, normalized
+workspace, and conversation ID; each conversation is a distinct epoch and the
+executor binds those values, the source sequence, and idempotency key to the
+trusted invocation boundary, so model-provided metadata cannot bypass ordering.
+Direct save/update idempotency keys are globally unique and provenance is part
+of the replay comparison.
 
 The bundled `memory-consolidation` workflow is seeded like every other sample:
 only when missing, never auto-run, and never overwritten after user edits. A
@@ -88,6 +96,9 @@ Failures are workflow failures and do not roll back the agent lifecycle action.
 
 Temporary-provider workflow assignments may optionally specify a model and
 effort. This is normal workflow configuration, not memory-specific behavior.
+Because those providers have no registered agent owner, they receive neither
+durable-memory instructions nor a managed memory capability. A workflow must
+assign a registered agent to read or save that agent's durable memory.
 
 The engine renders the target `agent_id` into `memory_commit` only from the
 canonical `&#123;&#123;trigger.output.agent_id&#125;&#125;` invocation value; model-produced
@@ -113,9 +124,11 @@ session ID is not sufficient to impersonate another agent. Each process owns a
 separate lease owned by its `ActiveAgent`; Wardian revokes it when terminating,
 replacing, or reclaiming that runtime, not merely when a PTY reader fails.
 Another agent's name or UUID is rejected for list, show, save, update, history,
-and remove. An operator shell
-without a managed identity retains administrative access. Offline name lookup
-uses persisted roster state and must resolve to a unique agent UUID.
+and remove. The core store requires a `MemoryActor` for every operation and
+constrains agent-actor SQL by owner; only the desktop host uses explicit
+operator authority. The CLI has no absent-identity operator
+fallback. Offline name lookup uses persisted roster state and must resolve to a
+unique agent UUID.
 
 ## Observability
 

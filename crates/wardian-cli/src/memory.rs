@@ -2,11 +2,12 @@ use crate::args::{MemoryArgs, MemoryCommand, MemoryKindArg, MemoryScopeArg};
 use crate::errors::{CliError, ExitCode};
 use wardian_core::identity::{self, AgentIdentity, ListFilters, Scope};
 use wardian_core::memory::{
-    MemoryKind, MemorySource, MemoryStore, SaveMemoryRequest, UpdateMemoryRequest,
+    MemoryActor, MemoryKind, MemorySource, MemoryStore, SaveMemoryRequest, UpdateMemoryRequest,
 };
 
 pub fn handle_memory(args: MemoryArgs) -> Result<String, CliError> {
     let store = MemoryStore::from_default_home().map_err(memory_error)?;
+    let actor = memory_actor(&store)?;
     let value = match args.command {
         MemoryCommand::Save {
             text,
@@ -18,7 +19,7 @@ pub fn handle_memory(args: MemoryArgs) -> Result<String, CliError> {
             source,
             idempotency_key,
         } => {
-            let context = resolve_context(&store, agent, workspace)?;
+            let context = resolve_context(&actor, agent, workspace)?;
             let workspace = match scope {
                 MemoryScopeArg::Agent => None,
                 MemoryScopeArg::Workspace => Some(context.workspace.ok_or_else(|| {
@@ -28,31 +29,35 @@ pub fn handle_memory(args: MemoryArgs) -> Result<String, CliError> {
                 })?),
             };
             let record = store
-                .save(SaveMemoryRequest {
-                    agent_id: context.agent_id,
-                    workspace,
-                    kind: match kind {
-                        MemoryKindArg::Stable => MemoryKind::Stable,
-                        MemoryKindArg::Current => MemoryKind::Current,
+                .save(
+                    &actor,
+                    SaveMemoryRequest {
+                        agent_id: context.agent_id,
+                        workspace,
+                        kind: match kind {
+                            MemoryKindArg::Stable => MemoryKind::Stable,
+                            MemoryKindArg::Current => MemoryKind::Current,
+                        },
+                        text,
+                        evidence_excerpt: evidence,
+                        sources: source.into_iter().map(source_from_locator).collect(),
+                        idempotency_key,
                     },
-                    text,
-                    evidence_excerpt: evidence,
-                    sources: source.into_iter().map(source_from_locator).collect(),
-                    idempotency_key,
-                })
+                )
                 .map_err(memory_error)?;
             serde_json::json!({ "schema": 1, "memory": record })
         }
         MemoryCommand::List { agent, workspace } => {
-            let context = resolve_context(&store, agent, workspace)?;
+            let context = resolve_context(&actor, agent, workspace)?;
             let records = store
-                .list_active(&context.agent_id, context.workspace.as_deref())
+                .list_active(&actor, &context.agent_id, context.workspace.as_deref())
                 .map_err(memory_error)?;
             serde_json::json!({ "schema": 1, "memories": records })
         }
         MemoryCommand::Show { memory_id } => {
-            let record = store.get(&memory_id).map_err(memory_error)?;
-            authorize_record_owner(&store, &record.agent_id)?;
+            let record = store
+                .get(&actor, &memory_id)
+                .map_err(|error| actor_memory_error(&actor, error))?;
             serde_json::json!({ "schema": 1, "memory": record })
         }
         MemoryCommand::Update {
@@ -62,36 +67,37 @@ pub fn handle_memory(args: MemoryArgs) -> Result<String, CliError> {
             source,
             idempotency_key,
         } => {
-            let existing = store.get(&memory_id).map_err(memory_error)?;
-            authorize_record_owner(&store, &existing.agent_id)?;
             let record = store
-                .update(UpdateMemoryRequest {
-                    memory_id,
-                    text,
-                    evidence_excerpt: evidence,
-                    sources: source.into_iter().map(source_from_locator).collect(),
-                    idempotency_key,
-                })
-                .map_err(memory_error)?;
+                .update(
+                    &actor,
+                    UpdateMemoryRequest {
+                        memory_id,
+                        text,
+                        evidence_excerpt: evidence,
+                        sources: source.into_iter().map(source_from_locator).collect(),
+                        idempotency_key,
+                    },
+                )
+                .map_err(|error| actor_memory_error(&actor, error))?;
             serde_json::json!({ "schema": 1, "memory": record })
         }
         MemoryCommand::Remove { memory_id } => {
-            let existing = store.get(&memory_id).map_err(memory_error)?;
-            authorize_record_owner(&store, &existing.agent_id)?;
-            let record = store.remove(&memory_id).map_err(memory_error)?;
+            let record = store
+                .remove(&actor, &memory_id)
+                .map_err(|error| actor_memory_error(&actor, error))?;
             serde_json::json!({ "schema": 1, "memory": record })
         }
         MemoryCommand::Recall { agent, workspace } => {
-            let context = resolve_context(&store, agent, workspace)?;
+            let context = resolve_context(&actor, agent, workspace)?;
             let recall = store
-                .recall(&context.agent_id, context.workspace.as_deref())
+                .recall(&actor, &context.agent_id, context.workspace.as_deref())
                 .map_err(memory_error)?;
             serde_json::to_value(recall).map_err(|error| CliError::generic(error.to_string()))?
         }
         MemoryCommand::History { memory_id } => {
-            let existing = store.get(&memory_id).map_err(memory_error)?;
-            authorize_record_owner(&store, &existing.agent_id)?;
-            let history = store.history(&memory_id).map_err(memory_error)?;
+            let history = store
+                .history(&actor, &memory_id)
+                .map_err(|error| actor_memory_error(&actor, error))?;
             serde_json::json!({ "schema": 1, "history": history })
         }
     };
@@ -107,11 +113,14 @@ struct MemoryContext {
 }
 
 fn resolve_context(
-    store: &MemoryStore,
+    actor: &MemoryActor,
     requested_agent: Option<String>,
     requested_workspace: Option<String>,
 ) -> Result<MemoryContext, CliError> {
-    let caller = managed_caller(store)?;
+    let caller = match actor {
+        MemoryActor::Agent(agent_id) => Some(agent_id.clone()),
+        MemoryActor::Operator => None,
+    };
     let target = requested_agent
         .or_else(|| caller.clone())
         .map(|value| value.trim().to_string())
@@ -134,14 +143,16 @@ fn resolve_context(
     })
 }
 
-fn managed_caller(store: &MemoryStore) -> Result<Option<String>, CliError> {
-    let Some(agent_id) = std::env::var("WARDIAN_SESSION_ID")
+fn memory_actor(store: &MemoryStore) -> Result<MemoryActor, CliError> {
+    managed_caller(store).map(MemoryActor::agent)
+}
+
+fn managed_caller(store: &MemoryStore) -> Result<String, CliError> {
+    let agent_id = std::env::var("WARDIAN_SESSION_ID")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
+        .ok_or_else(memory_identity_required)?;
     let token = std::env::var(wardian_core::memory::MEMORY_CAPABILITY_ENV)
         .ok()
         .map(|value| value.trim().to_string())
@@ -153,7 +164,7 @@ fn managed_caller(store: &MemoryStore) -> Result<Option<String>, CliError> {
     {
         return Err(invalid_memory_capability(&agent_id));
     }
-    Ok(Some(agent_id))
+    Ok(agent_id)
 }
 
 /// Full roster with the persisted database as the offline authority.
@@ -197,25 +208,20 @@ fn resolve_agent<'a>(
     }
 }
 
-fn authorize_record_owner(store: &MemoryStore, record_agent_id: &str) -> Result<(), CliError> {
-    let Some(caller) = managed_caller(store)? else {
-        return Ok(());
-    };
-    let agents = agent_snapshot()?;
-    let caller = resolve_agent(&agents, &caller)?;
-    if caller.uuid == record_agent_id {
-        Ok(())
-    } else {
-        Err(memory_access_denied(&caller.uuid, record_agent_id))
-    }
-}
-
 fn invalid_memory_capability(agent_id: &str) -> CliError {
     CliError::backend_with_details(
         ExitCode::Generic,
         "invalid_memory_capability",
         "managed memory commands require the capability issued to this provider process",
         serde_json::json!({ "claimed_agent_id": agent_id }),
+    )
+}
+
+fn memory_identity_required() -> CliError {
+    CliError::backend(
+        ExitCode::Generic,
+        "memory_identity_required",
+        "wardian memory commands require a managed agent identity and capability",
     )
 }
 
@@ -226,6 +232,19 @@ fn memory_access_denied(caller: &str, target: &str) -> CliError {
         "managed agents may access only their own memory",
         serde_json::json!({ "caller_agent_id": caller, "target_agent_id": target }),
     )
+}
+
+fn actor_memory_error(actor: &MemoryActor, error: wardian_core::memory::MemoryError) -> CliError {
+    if let MemoryActor::Agent(agent_id) = actor {
+        if matches!(
+            error,
+            wardian_core::memory::MemoryError::NotFound(_)
+                | wardian_core::memory::MemoryError::AccessDenied { .. }
+        ) {
+            return memory_access_denied(agent_id, "redacted");
+        }
+    }
+    memory_error(error)
 }
 
 fn source_from_locator(locator: String) -> MemorySource {
@@ -330,22 +349,33 @@ mod tests {
     fn seed(agent_id: &str, workspace: &str, text: &str) -> wardian_core::memory::MemoryRecord {
         MemoryStore::from_default_home()
             .unwrap()
-            .save(SaveMemoryRequest {
-                agent_id: agent_id.into(),
-                workspace: Some(workspace.into()),
-                kind: MemoryKind::Stable,
-                text: text.into(),
-                evidence_excerpt: "durable test evidence".into(),
-                sources: vec![],
-                idempotency_key: None,
-            })
+            .save(
+                &MemoryActor::Operator,
+                SaveMemoryRequest {
+                    agent_id: agent_id.into(),
+                    workspace: Some(workspace.into()),
+                    kind: MemoryKind::Stable,
+                    text: text.into(),
+                    evidence_excerpt: "durable test evidence".into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                },
+            )
             .unwrap()
     }
 
     #[test]
-    fn offline_name_resolution_uses_persisted_agent_uuid_and_workspace() {
+    fn managed_offline_name_resolution_uses_persisted_agent_uuid_and_workspace() {
         let _home = TestHome::new();
         seed("agent-a", "C:/work/alpha", "Alpha preference");
+        let capability = MemoryStore::from_default_home()
+            .unwrap()
+            .issue_capability("agent-a")
+            .unwrap();
+        unsafe {
+            std::env::set_var("WARDIAN_SESSION_ID", "agent-a");
+            std::env::set_var(wardian_core::memory::MEMORY_CAPABILITY_ENV, capability);
+        }
 
         let output = handle_memory(MemoryArgs {
             command: MemoryCommand::List {
@@ -357,6 +387,25 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(value["memories"][0]["agent_id"], "agent-a");
         assert_eq!(value["memories"][0]["text"], "Alpha preference");
+    }
+
+    #[test]
+    fn clearing_managed_identity_does_not_grant_operator_memory_access() {
+        let _home = TestHome::new();
+        seed("agent-b", "C:/work/beta", "Beta preference");
+        unsafe {
+            std::env::remove_var("WARDIAN_SESSION_ID");
+            std::env::remove_var(wardian_core::memory::MEMORY_CAPABILITY_ENV);
+        }
+
+        let error = handle_memory(MemoryArgs {
+            command: MemoryCommand::List {
+                agent: Some("Beta".into()),
+                workspace: None,
+            },
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "memory_identity_required");
     }
 
     #[test]
@@ -396,13 +445,73 @@ mod tests {
         .unwrap_err();
         assert_eq!(target_error.code, "memory_access_denied");
 
+        let save_error = handle_memory(MemoryArgs {
+            command: MemoryCommand::Save {
+                text: "Unauthorized beta preference".into(),
+                evidence: "No authority".into(),
+                kind: MemoryKindArg::Stable,
+                scope: MemoryScopeArg::Workspace,
+                agent: Some("Beta".into()),
+                workspace: None,
+                source: vec![],
+                idempotency_key: None,
+            },
+        })
+        .unwrap_err();
+        assert_eq!(save_error.code, "memory_access_denied");
+
+        let recall_error = handle_memory(MemoryArgs {
+            command: MemoryCommand::Recall {
+                agent: Some("Beta".into()),
+                workspace: None,
+            },
+        })
+        .unwrap_err();
+        assert_eq!(recall_error.code, "memory_access_denied");
+
         let record_error = handle_memory(MemoryArgs {
             command: MemoryCommand::Show {
-                memory_id: peer.memory_id,
+                memory_id: peer.memory_id.clone(),
             },
         })
         .unwrap_err();
         assert_eq!(record_error.code, "memory_access_denied");
+
+        let update_error = handle_memory(MemoryArgs {
+            command: MemoryCommand::Update {
+                memory_id: peer.memory_id.clone(),
+                text: "Unauthorized update".into(),
+                evidence: "No authority".into(),
+                source: vec![],
+                idempotency_key: None,
+            },
+        })
+        .unwrap_err();
+        assert_eq!(update_error.code, "memory_access_denied");
+
+        let history_error = handle_memory(MemoryArgs {
+            command: MemoryCommand::History {
+                memory_id: peer.memory_id.clone(),
+            },
+        })
+        .unwrap_err();
+        assert_eq!(history_error.code, "memory_access_denied");
+
+        let remove_error = handle_memory(MemoryArgs {
+            command: MemoryCommand::Remove {
+                memory_id: peer.memory_id.clone(),
+            },
+        })
+        .unwrap_err();
+        assert_eq!(remove_error.code, "memory_access_denied");
+        assert_eq!(
+            MemoryStore::from_default_home()
+                .unwrap()
+                .get(&MemoryActor::Operator, &peer.memory_id)
+                .unwrap()
+                .status,
+            wardian_core::memory::MemoryStatus::Active
+        );
 
         unsafe { std::env::set_var("WARDIAN_SESSION_ID", "agent-b") };
         let spoofed = handle_memory(MemoryArgs {

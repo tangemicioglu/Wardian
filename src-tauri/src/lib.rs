@@ -596,6 +596,7 @@ pub fn run() {
             commands::memory::memory_save,
             commands::memory::memory_list,
             commands::memory::memory_get,
+            commands::memory::memory_history,
             commands::memory::memory_update,
             commands::memory::memory_remove,
             commands::memory::memory_recall,
