@@ -1261,4 +1261,88 @@ describe('AgentWatchlist', () => {
     expect(screen.getByText('Antigravity · planner')).toBeInTheDocument();
     expect(screen.queryByText('antigravity · planner')).not.toBeInTheDocument();
   });
+
+  describe('drag activation', () => {
+    it('does not apply the dragging treatment to a plain press', () => {
+      render(<AgentWatchlist {...defaultProps} />);
+      const alphaRow = screen.getByText('Alpha').closest('.watchlist-row')!;
+
+      fireEvent.mouseDown(alphaRow, { clientX: 40, clientY: 20 });
+
+      expect(alphaRow).not.toHaveClass('opacity-50');
+      expect(screen.getByTestId('watchlist-scroll')).not.toHaveClass('watchlist-dragging');
+    });
+
+    it('ignores pointer jitter below the activation threshold', () => {
+      render(<AgentWatchlist {...defaultProps} />);
+      const alphaRow = screen.getByText('Alpha').closest('.watchlist-row')!;
+      setRect(alphaRow, 0, 40);
+
+      fireEvent.mouseDown(alphaRow, { clientX: 40, clientY: 20 });
+      fireEvent.mouseMove(alphaRow, { clientX: 42, clientY: 21 });
+
+      expect(alphaRow).not.toHaveClass('opacity-50');
+      expect(screen.getByTestId('watchlist-scroll')).not.toHaveClass('watchlist-dragging');
+    });
+
+    it('activates once the pointer travels past the activation threshold', () => {
+      render(<AgentWatchlist {...defaultProps} />);
+      const alphaRow = screen.getByText('Alpha').closest('.watchlist-row')!;
+      setRect(alphaRow, 0, 40);
+
+      fireEvent.mouseDown(alphaRow, { clientX: 40, clientY: 20 });
+      fireEvent.mouseMove(alphaRow, { clientX: 40, clientY: 32 });
+
+      expect(alphaRow).toHaveClass('opacity-50');
+      expect(screen.getByTestId('watchlist-scroll')).toHaveClass('watchlist-dragging');
+    });
+
+    it('activates when the pointer reaches another row', () => {
+      render(<AgentWatchlist {...defaultProps} />);
+      const alphaRow = screen.getByText('Alpha').closest('.watchlist-row')!;
+      const betaRow = screen.getByText('Beta').closest('.watchlist-row')!;
+      setRect(betaRow, 40, 40);
+
+      fireEvent.mouseDown(alphaRow, { clientX: 40, clientY: 20 });
+      fireEvent.mouseMove(betaRow, { clientX: 40, clientY: 50 });
+
+      expect(alphaRow).toHaveClass('opacity-50');
+      expect(betaRow).toHaveClass('drag-over-before');
+    });
+
+    it('clears the dragging treatment when the drag ends', () => {
+      render(<AgentWatchlist {...defaultProps} />);
+      const alphaRow = screen.getByText('Alpha').closest('.watchlist-row')!;
+      const betaRow = screen.getByText('Beta').closest('.watchlist-row')!;
+      setRect(betaRow, 40, 40);
+
+      fireEvent.mouseDown(alphaRow, { clientX: 40, clientY: 20 });
+      fireEvent.mouseMove(betaRow, { clientX: 40, clientY: 50 });
+      fireEvent.mouseUp(betaRow, { clientX: 40, clientY: 50 });
+
+      expect(screen.getByTestId('watchlist-scroll')).not.toHaveClass('watchlist-dragging');
+      expect(screen.getByText('Alpha').closest('.watchlist-row')!).not.toHaveClass('opacity-50');
+    });
+
+    it('leaves list tabs undimmed until a drag reaches another tab', () => {
+      render(
+        <AgentWatchlist
+          {...defaultProps}
+          watchlists={[
+            { id: 'today', name: 'Today', entries: [] },
+            { id: 'ops', name: 'Ops', entries: [] },
+          ]}
+        />
+      );
+      const todayTab = screen.getByTitle('Today');
+      const opsTab = screen.getByTitle('Ops');
+      setRect(todayTab, 100, 40);
+
+      fireEvent.mouseDown(opsTab);
+      expect(opsTab).not.toHaveClass('opacity-50');
+
+      fireEvent.mouseMove(todayTab, { clientY: 110 });
+      expect(opsTab).toHaveClass('opacity-50');
+    });
+  });
 });

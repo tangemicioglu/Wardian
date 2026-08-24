@@ -102,7 +102,7 @@ As your swarm grows, a single list becomes difficult to manage. Wardian allows y
 
 ### Managing Agents
 - **Reordering Lists**: Drag custom watchlist tabs left or right to reorder them. The **All** tab stays fixed as the first view.
-- **Reordering**: Drag and drop agent cards within a watchlist to prioritize your view.
+- **Reordering**: Drag and drop agent cards within a watchlist to prioritize your view. A press only becomes a drag once the pointer moves, so clicking a row still just selects it. Holding a dragged row over the top or bottom edge of the roster scrolls the list, so you can move an agent to a position that is currently out of view without letting go.
 - **Filtering**: Click a watchlist tab to focus only on that group of agents.
 - **Bulk Selection**: Use `Ctrl+Click` on Windows/Linux or `Cmd+Click` on macOS to select multiple agents within a watchlist for broadcast commands.
 - **Bulk Context Menu**: If you right-click inside the current multi-selection, the menu applies to the whole selection. Bulk delete shows one confirmation dialog for the full selected set instead of prompting once per agent.
