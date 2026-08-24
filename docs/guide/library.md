@@ -250,10 +250,12 @@ deployments as part of the same operation, so links never dangle.
 
 Wardian adapts the same assigned skills to each provider's native discovery model:
 
-- Gemini uses Wardian's Gemini patch so `--include-directories` can expose common, class, and agent skill roots.
+- Antigravity receives Wardian skill and instruction roots through repeated `--add-dir` arguments.
 - Claude uses additional instruction roots and `.claude/skills` links where provider-native discovery requires them.
 - Codex receives scoped skills in the agent-specific `CODEX_HOME/skills` habitat.
 - OpenCode receives scoped skills through Wardian's generated OpenCode config directory.
+- Pi receives common, class, and agent skill roots through repeated `--skill` arguments.
+- Gemini uses Wardian's Gemini patch so `--include-directories` can expose common, class, and agent skill roots.
 
 If Gemini skills are missing, ensure **Auto-patch Gemini CLI** is enabled in the **Settings** panel or run the patch manually. For other providers, start with the provider comparison in [Provider Runtimes](../providers.md).
 
