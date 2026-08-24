@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::manager::{self, opencode::opencode_database_path};
 use crate::providers::antigravity::AntigravityProvider;
+use crate::providers::pi::PiProvider;
 use crate::providers::chat_transcript::{normalize_chat_lines, visible_chat_text};
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
@@ -217,6 +218,22 @@ pub(crate) async fn agent_archive_capture_snapshot(
                 })
             })
         {
+            log_path = Some(path.clone());
+            if let Ok(mut agent_log_path) = agent.log_path.lock() {
+                *agent_log_path = Some(path);
+            }
+        }
+    }
+    if provider == "pi" && log_path.is_none() {
+        let provider_session_id = config
+            .resume_session
+            .as_deref()
+            .or(config.fresh_provider_session_id.as_deref());
+        if let Some(path) = provider_session_id.and_then(|provider_session_id| {
+            PiProvider::session_dir(&config.session_id).and_then(|session_dir| {
+                PiProvider::session_file(&session_dir, provider_session_id)
+            })
+        }) {
             log_path = Some(path.clone());
             if let Ok(mut agent_log_path) = agent.log_path.lock() {
                 *agent_log_path = Some(path);
@@ -1254,6 +1271,9 @@ fn provider_launch_title(provider: &str, output: &str) -> Option<&'static str> {
         "gemini" if output.contains("gemini") => Some("Gemini started"),
         "opencode" if output.contains("opencode") => Some("OpenCode started"),
         "antigravity" if output.contains("antigravity") => Some("Antigravity started"),
+        "pi" if output.contains("pi coding agent") || output.contains("pi v") => {
+            Some("Pi started")
+        }
         _ => None,
     }
 }

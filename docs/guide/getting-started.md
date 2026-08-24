@@ -77,6 +77,7 @@ Wardian runs local provider CLIs inside managed terminals. Install and authentic
 | Claude Code | `npm install -g @anthropic-ai/claude-code` | `claude --version` |
 | Codex | `npm install -g @openai/codex` | `codex --version` |
 | OpenCode | Provider package that exposes `opencode` | `opencode --version` |
+| Pi | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent` | `pi --version` |
 | Gemini CLI *(unmaintained)* | `npm install -g @google/gemini-cli` | `gemini --version` |
 
 Run the check from a normal terminal first. If the command is not found there, Wardian usually will not find it either.

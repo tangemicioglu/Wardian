@@ -7,7 +7,7 @@ use crate::models::{
 pub fn is_known_provider(value: &str) -> bool {
     matches!(
         value,
-        "claude" | "codex" | "gemini" | "antigravity" | "opencode" | "mock"
+        "claude" | "codex" | "gemini" | "antigravity" | "opencode" | "pi" | "mock"
     )
 }
 

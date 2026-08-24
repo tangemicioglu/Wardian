@@ -124,7 +124,7 @@ describe("turn segmentation across providers", () => {
   // Turns split on user messages. Codex, Claude, Gemini, and Antigravity emit
   // them from their own logs; OpenCode's come from its SQLite database rather
   // than the stream, but arrive as the same normalized shape.
-  it.each(["claude", "codex", "gemini", "antigravity", "opencode"])("splits a %s transcript on user messages", (provider) => {
+  it.each(["claude", "codex", "gemini", "antigravity", "opencode", "pi"])("splits a %s transcript on user messages", (provider) => {
     const changes = turnChanges([
       userMessage(provider, "first ask"),
       event({

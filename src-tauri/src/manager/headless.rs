@@ -176,24 +176,48 @@ fn headless_provider_context(
 fn effective_headless_provider_config(
     provider_name: &str,
     cwd: &std::path::Path,
+    wardian_session_id: &str,
+    resume_session: Option<&str>,
     config_override: Option<&AgentConfig>,
     persisted_config: Option<&AgentConfig>,
 ) -> Option<AgentConfig> {
-    config_override
+    let mut config = config_override
         .cloned()
         .or_else(|| persisted_config.cloned())
         .or_else(|| {
             // Provider-bound workflow workers do not have an agent profile,
             // but Codex still needs the persisted runtime policy flags.
-            (provider_name == "codex").then(|| AgentConfig {
-                provider: "codex".to_string(),
+            matches!(provider_name, "codex" | "pi").then(|| AgentConfig {
+                provider: provider_name.to_string(),
+                session_id: wardian_session_id.to_string(),
                 folder: cwd.to_string_lossy().to_string(),
-                provider_config: wardian_core::models::ProviderConfig::Codex(
-                    wardian_core::models::CodexProviderConfig::default(),
+                fresh_provider_session_id: (provider_name == "pi")
+                    .then(|| uuid::Uuid::new_v4().to_string()),
+                provider_config: wardian_core::models::ProviderConfig::default_for_provider_name(
+                    provider_name,
                 ),
                 ..Default::default()
             })
-        })
+        })?;
+
+    if provider_name == "pi" && resume_session.is_none_or(|session_id| session_id.trim().is_empty())
+    {
+        // A registered background-fresh workflow carries the agent's profile
+        // as an override, but its synthetic Wardian session must own a distinct
+        // Pi transcript and provider identity.
+        let owns_different_session = config.session_id != wardian_session_id;
+        config.session_id = wardian_session_id.to_string();
+        if owns_different_session
+            || config
+                .fresh_provider_session_id
+                .as_deref()
+                .is_none_or(|session_id| session_id.trim().is_empty())
+        {
+            config.fresh_provider_session_id = Some(uuid::Uuid::new_v4().to_string());
+        }
+    }
+
+    Some(config)
 }
 
 pub(crate) fn headless_provider_args(
@@ -320,6 +344,24 @@ pub(crate) fn headless_provider_args(
             provider_args.push("--print".to_string());
             provider_args.push(prompt.to_string());
         }
+        "pi" => {
+            if let Some(config) = config_override {
+                let mut config = config.clone();
+                let resume_session = resume_session.filter(|session_id| !session_id.trim().is_empty());
+                config.resume_session = resume_session.map(str::to_string);
+                let mut spawn_args = provider.get_spawn_args(&config, resume_session.is_some());
+                spawn_args = strip_flag_value_pairs(spawn_args, "--tui-mode");
+                provider_args.extend(spawn_args);
+            } else if let Some(resume_id) = resume_session.filter(|s| !s.trim().is_empty()) {
+                provider_args.push("--session".into());
+                provider_args.push(resume_id.into());
+            } else {
+                provider_args.push("--no-session".into());
+            }
+            provider_args.push("--mode".into());
+            provider_args.push("json".into());
+            provider_args.push(prompt.to_string());
+        }
         _ => {
             provider_args.push("-p".to_string());
             provider_args.push(prompt.to_string());
@@ -413,6 +455,8 @@ pub async fn run_headless_with_options(
     let mut effective_provider_config = effective_headless_provider_config(
         provider_name,
         cwd,
+        wardian_session_id,
+        resume_session,
         config_override,
         persisted_config.as_ref(),
     );
@@ -498,7 +542,7 @@ pub async fn run_headless_with_options(
             cmd.env(key, value);
         }
         cmd.stdin(std::process::Stdio::null());
-    } else if provider_name == "antigravity" {
+    } else if matches!(provider_name, "antigravity" | "pi") {
         cmd.stdin(std::process::Stdio::null());
     } else if provider_name == "mock" {
         if let Ok(scenario) = std::env::var("WARDIAN_MOCK_SCENARIO") {
@@ -754,12 +798,73 @@ pub async fn run_headless_with_options(
         } else {
             Ok(serde_json::json!({ "text": response }))
         }
+    } else if provider_name == "pi" {
+        normalize_pi_headless_output(&output, output_format)
     } else if output_format == "json" {
         serde_json::from_str(&output)
             .map_err(|e| format!("Failed to parse JSON output: {}. Raw: {}", e, output))
     } else {
         Ok(serde_json::json!({ "text": output }))
     }
+}
+
+fn normalize_pi_headless_output(
+    output: &str,
+    output_format: &str,
+) -> Result<serde_json::Value, String> {
+    let mut session_id = None;
+    let mut response = None;
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let parsed: serde_json::Value = serde_json::from_str(line.trim())
+            .map_err(|error| format!("Failed to parse Pi JSON event: {error}. Raw: {output}"))?;
+        match parsed.get("type").and_then(|value| value.as_str()) {
+            Some("session") => {
+                session_id = parsed
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+            }
+            Some(event_type @ ("message" | "message_end")) => {
+                let message = parsed.get("message").unwrap_or(&parsed);
+                let is_assistant =
+                    message.get("role").and_then(|value| value.as_str()) == Some("assistant");
+                let is_complete = match message.get("stopReason").and_then(|value| value.as_str()) {
+                    Some("stop" | "length") => true,
+                    Some(_) => false,
+                    None => event_type == "message_end",
+                };
+                if is_assistant && is_complete {
+                    response = pi_message_text(message).or(response);
+                }
+            }
+            _ => {}
+        }
+    }
+    let response = response.ok_or_else(|| "Pi completed without an assistant response".to_string())?;
+    if output_format == "json" {
+        Ok(serde_json::json!({
+            "session_id": session_id,
+            "response": response,
+            "raw": output,
+        }))
+    } else {
+        Ok(serde_json::json!({ "text": response }))
+    }
+}
+
+fn pi_message_text(message: &serde_json::Value) -> Option<String> {
+    let content = message.get("content")?;
+    if let Some(text) = content.as_str() {
+        return (!text.trim().is_empty()).then(|| text.trim().to_string());
+    }
+    let text = content
+        .as_array()?
+        .iter()
+        .filter(|block| block.get("type").and_then(|value| value.as_str()) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>()
+        .join("");
+    (!text.trim().is_empty()).then(|| text.trim().to_string())
 }
 
 async fn wait_for_headless_child(
@@ -2079,8 +2184,9 @@ mod tests {
         .expect("write unrestricted Codex policy");
 
         let cwd = Path::new("D:/Development/Wardian");
-        let config = effective_headless_provider_config("codex", cwd, None, None)
-            .expect("temporary Codex worker config");
+        let config =
+            effective_headless_provider_config("codex", cwd, "agent-1", None, None, None)
+                .expect("temporary Codex worker config");
         let provider = crate::providers::ProviderFactory::resolve("codex").unwrap();
         let args = headless_provider_args(
             "codex",
@@ -2687,5 +2793,160 @@ mod tests {
         assert!(!envs
             .iter()
             .any(|(key, _value)| key.to_string_lossy() == "WARDIAN_SESSION_ID"));
+    }
+
+    #[test]
+    fn pi_headless_args_use_json_mode_and_exact_session() {
+        let provider = ProviderFactory::resolve("pi").expect("Pi provider");
+        let config = AgentConfig {
+            provider: "pi".into(),
+            session_id: "wardian-agent".into(),
+            fresh_provider_session_id: Some("pi-session".into()),
+            provider_config: wardian_core::models::ProviderConfig::Pi(
+                wardian_core::models::PiProviderConfig {
+                    reasoning_effort: Some("high".into()),
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        };
+
+        let args = headless_provider_args(
+            "pi",
+            provider.as_ref(),
+            Path::new("/workspace"),
+            "say hello",
+            "json",
+            None,
+            Some(&config),
+        );
+
+        assert!(!args.contains(&"--tui-mode".to_string()));
+        assert!(args.windows(2).any(|pair| pair == ["--mode", "json"]));
+        assert!(args.windows(2).any(|pair| pair == ["--session-id", "pi-session"]));
+        assert_eq!(args.last().map(String::as_str), Some("say hello"));
+    }
+
+    #[test]
+    fn pi_fresh_headless_config_rebinds_registered_agent_profile() {
+        let test_wardian_home = TestWardianHome::new();
+        let provider = ProviderFactory::resolve("pi").expect("Pi provider");
+        let registered_config = AgentConfig {
+            provider: "pi".into(),
+            session_id: "visible-agent".into(),
+            fresh_provider_session_id: None,
+            provider_config: wardian_core::models::ProviderConfig::Pi(Default::default()),
+            ..Default::default()
+        };
+
+        let config = effective_headless_provider_config(
+            "pi",
+            Path::new("/workspace"),
+            "workflow-fresh-run",
+            None,
+            Some(&registered_config),
+            None,
+        )
+        .expect("fresh Pi workflow config");
+        let provider_session_id = config
+            .fresh_provider_session_id
+            .as_deref()
+            .expect("fresh Pi identity");
+        let args = headless_provider_args(
+            "pi",
+            provider.as_ref(),
+            Path::new("/workspace"),
+            "task",
+            "json",
+            None,
+            Some(&config),
+        );
+
+        assert_eq!(config.session_id, "workflow-fresh-run");
+        assert!(uuid::Uuid::parse_str(provider_session_id).is_ok());
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--session-id", provider_session_id]));
+        let expected_session_dir = test_wardian_home
+            ._home
+            .path()
+            .join("agents")
+            .join("workflow-fresh-run")
+            .join("pi")
+            .join("sessions")
+            .to_string_lossy()
+            .to_string();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--session-dir", expected_session_dir.as_str()]));
+        assert!(!args.contains(&"--no-session".to_string()));
+    }
+
+    #[test]
+    fn pi_blank_resume_id_keeps_explicit_fresh_session_policy() {
+        let _test_wardian_home = TestWardianHome::new();
+        let provider = ProviderFactory::resolve("pi").expect("Pi provider");
+        let registered_config = AgentConfig {
+            provider: "pi".into(),
+            session_id: "visible-agent".into(),
+            resume_session: Some("   ".into()),
+            fresh_provider_session_id: None,
+            provider_config: wardian_core::models::ProviderConfig::Pi(Default::default()),
+            ..Default::default()
+        };
+
+        let config = effective_headless_provider_config(
+            "pi",
+            Path::new("/workspace"),
+            "workflow-fresh-run",
+            Some("   "),
+            Some(&registered_config),
+            None,
+        )
+        .expect("fresh Pi workflow config");
+        let provider_session_id = config
+            .fresh_provider_session_id
+            .as_deref()
+            .expect("fresh Pi identity");
+        let args = headless_provider_args(
+            "pi",
+            provider.as_ref(),
+            Path::new("/workspace"),
+            "task",
+            "json",
+            Some("   "),
+            Some(&config),
+        );
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--session-id", provider_session_id]));
+        assert!(!args.contains(&"--session".to_string()));
+    }
+
+    #[test]
+    fn pi_headless_output_returns_final_assistant_text() {
+        let output = concat!(
+            "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+            "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Pi answer\"}],\"stopReason\":\"stop\"}}\n",
+            "{\"type\":\"agent_end\",\"messages\":[]}\n",
+        );
+
+        let normalized = normalize_pi_headless_output(output, "json").expect("Pi output");
+        assert_eq!(normalized["session_id"], "pi-session");
+        assert_eq!(normalized["response"], "Pi answer");
+    }
+
+    #[test]
+    fn pi_headless_output_accepts_completed_message_event() {
+        let output = concat!(
+            "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+            "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Pi final answer\"}],\"stopReason\":\"stop\"}}\n",
+            "{\"type\":\"agent_end\",\"messages\":[]}\n",
+        );
+
+        let normalized = normalize_pi_headless_output(output, "json").expect("Pi output");
+        assert_eq!(normalized["session_id"], "pi-session");
+        assert_eq!(normalized["response"], "Pi final answer");
     }
 }

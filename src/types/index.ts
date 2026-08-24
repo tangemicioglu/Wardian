@@ -1,5 +1,5 @@
-export type ProviderName = "claude" | "codex" | "gemini" | "antigravity" | "opencode" | "mock";
-export type UserFacingProviderName = "claude" | "codex" | "gemini" | "antigravity" | "opencode";
+export type ProviderName = "claude" | "codex" | "gemini" | "antigravity" | "opencode" | "pi" | "mock";
+export type UserFacingProviderName = "claude" | "codex" | "gemini" | "antigravity" | "opencode" | "pi";
 
 export type GridCardDisplayMode = "terminal" | "chat";
 
@@ -129,6 +129,16 @@ export interface OpenCodeProviderConfig {
     port?: number;
 }
 
+export interface PiProviderConfig {
+    type: "pi";
+    reasoning_effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+    project_trust?: "approve" | "ignore";
+    tools?: string[];
+    exclude_tools?: string[];
+    no_tools?: boolean;
+    offline?: boolean;
+}
+
 export interface MockProviderConfig {
     type: "mock";
 }
@@ -160,6 +170,7 @@ export type ProviderConfig =
     | CodexProviderConfig
     | AntigravityProviderConfig
     | OpenCodeProviderConfig
+    | PiProviderConfig
     | MockProviderConfig;
 
 export interface AgentConfig {

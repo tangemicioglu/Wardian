@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const REAL_RENDERING_PROVIDERS = ["codex", "claude", "gemini", "opencode", "antigravity"];
+const REAL_RENDERING_PROVIDERS = ["codex", "claude", "gemini", "opencode", "antigravity", "pi"];
 const DEFAULT_REAL_RENDERING_PROVIDERS = ["codex", "claude"];
 const RESIZE_AUDIT_STATES = new Set([
   "resized",

@@ -134,6 +134,7 @@ async function installCustomCloneIpcMock(page: Page, options: { includeRecentSor
             { provider: "gemini", display_name: "Gemini", available: true, executable: "C:/tools/gemini.cmd", reason: null },
             { provider: "antigravity", display_name: "Antigravity", available: true, executable: "C:/tools/agy.exe", reason: null },
             { provider: "opencode", display_name: "OpenCode", available: true, executable: "C:/tools/opencode.cmd", reason: null },
+            { provider: "pi", display_name: "Pi", available: true, executable: "C:/tools/pi.cmd", reason: null },
           ];
         }
         if (command === "list_provider_model_catalog") {
@@ -148,6 +149,21 @@ async function installCustomCloneIpcMock(page: Page, options: { includeRecentSor
                 id: "gpt-5.6-sol",
                 display_name: "GPT-5.6 Sol",
                 effort_options: ["low", "medium", "high"],
+                default_effort: "medium",
+                is_default: true,
+              }],
+            };
+          }
+          if (provider === "pi") {
+            return {
+              provider,
+              version: "pi 0.84.2",
+              source: "live_catalog",
+              refresh_error: null,
+              models: [{
+                id: "anthropic/claude-sonnet-4-6",
+                display_name: "Claude Sonnet 4.6",
+                effort_options: ["off", "low", "medium", "high"],
                 default_effort: "medium",
                 is_default: true,
               }],
@@ -266,6 +282,7 @@ test.describe("Agent Spawn Form", () => {
     const options = await select.locator("option").allTextContents();
     expect(options).toContain("Claude");
     expect(options).toContain("Antigravity");
+    expect(options).toContain("Pi");
     expect(options.length).toBeGreaterThanOrEqual(3);
   });
 
@@ -315,6 +332,35 @@ test.describe("Agent Spawn Form", () => {
     // No agent rows expected in empty state.
     const cards = page.locator('[data-testid="agent-card"]');
     await expect(cards).toHaveCount(0);
+  });
+});
+
+test("configures Pi-specific launch controls", async ({ page }) => {
+  await installCustomCloneIpcMock(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+  await page.locator('[data-testid="sidebar-tab-agent-config"]').click();
+  await page.locator('[data-testid="spawn-provider"]').selectOption("pi");
+  await page.getByRole("button", { name: "Advanced Settings" }).click();
+
+  await page.getByLabel("Offline startup").check();
+  await page.getByLabel("Project Extensions and Skills").selectOption("approve");
+
+  await expect(page.locator('[data-testid="spawn-provider"]')).toHaveValue("pi");
+  await expect(page.getByLabel("Disable tools")).not.toBeChecked();
+  await expect(page.getByLabel("Offline startup")).toBeChecked();
+  await expect(page.getByLabel("Project Extensions and Skills")).toHaveValue("approve");
+  await expect(page.getByText("It does not sandbox shell tools or extensions.", { exact: false })).toBeVisible();
+
+  await page.getByTestId("advanced-settings-content").screenshot({
+    path: path.join(
+      "e2e",
+      "screenshots",
+      "pi-provider",
+      "2026-08-23",
+      "pi-provider-advanced-settings.png",
+    ),
+    animations: "disabled",
   });
 });
 

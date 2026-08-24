@@ -1075,7 +1075,7 @@ fn persisted_resume_session_for_provider(actual_resume: Option<String>) -> Optio
 }
 
 fn provider_uses_manual_session_id(provider_name: &str) -> bool {
-    matches!(provider_name, "claude" | "gemini" | "mock")
+    matches!(provider_name, "claude" | "gemini" | "pi" | "mock")
 }
 
 struct NewAgentIdentityPlan {
@@ -2102,6 +2102,7 @@ fn set_agent_reasoning_effort(
         ProviderConfig::Codex(provider_config) => &mut provider_config.reasoning_effort,
         ProviderConfig::Claude(provider_config) => &mut provider_config.reasoning_effort,
         ProviderConfig::Antigravity(provider_config) => &mut provider_config.reasoning_effort,
+        ProviderConfig::Pi(provider_config) => &mut provider_config.reasoning_effort,
         _ if reasoning_effort.is_some() => {
             return Err(format!(
                 "{} does not support launch-time reasoning effort selection",
@@ -5084,7 +5085,7 @@ mod tests {
     use wardian_core::models::{
         AgentClassDefinition, AgentConfig, AgentSessionPersistenceOverride,
         AntigravityProviderConfig, ClaudeProviderConfig, CodexProviderConfig, DeployedSkillRef,
-        GeminiProviderConfig, OpenCodeProviderConfig, ProviderConfig,
+        GeminiProviderConfig, OpenCodeProviderConfig, PiProviderConfig, ProviderConfig,
     };
 
     struct WardianHomeGuard;
@@ -5640,6 +5641,36 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
                 ],
                 vec![],
             ),
+            (
+                "pi",
+                AgentConfig {
+                    session_id: "pi-agent".to_string(),
+                    session_name: "PiAgent".to_string(),
+                    agent_class: "Coder".to_string(),
+                    folder: workspace_text.clone(),
+                    provider: "pi".to_string(),
+                    resume_session: Some("pi-resume".to_string()),
+                    model: Some("anthropic/claude-sonnet-4-5".to_string()),
+                    provider_config: ProviderConfig::Pi(PiProviderConfig {
+                        reasoning_effort: Some("high".to_string()),
+                        offline: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                vec![
+                    "pi-agent",
+                    "--session",
+                    "pi-resume",
+                    "--tui-mode",
+                    "regular",
+                    "anthropic/claude-sonnet-4-5",
+                    "--thinking",
+                    "high",
+                    "--offline",
+                ],
+                vec!["--mode json", "--no-session"],
+            ),
         ];
 
         for (provider, config, expected_fragments, forbidden_fragments) in cases {
@@ -5691,6 +5722,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             ("claude", "claude"),
             ("opencode", "opencode"),
             ("antigravity", "agy"),
+            ("pi", "pi"),
         ] {
             write_fake_provider_executable(&bin_dir, executable_name, provider);
         }
@@ -5736,6 +5768,16 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
                 provider: "antigravity".to_string(),
                 resume_session: Some("antigravity-resume".to_string()),
                 provider_config: ProviderConfig::Antigravity(AntigravityProviderConfig::default()),
+                ..Default::default()
+            },
+            AgentConfig {
+                session_id: "pi-agent".to_string(),
+                session_name: "PiAgent".to_string(),
+                agent_class: "Coder".to_string(),
+                folder: workspace_text.clone(),
+                provider: "pi".to_string(),
+                resume_session: Some("pi-resume".to_string()),
+                provider_config: ProviderConfig::Pi(PiProviderConfig::default()),
                 ..Default::default()
             },
         ];

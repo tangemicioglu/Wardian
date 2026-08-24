@@ -19,6 +19,7 @@ const providerCommands = {
   gemini: "gemini",
   antigravity: "agy",
   opencode: "opencode",
+  pi: "pi",
 };
 
 function fakeCommandName(command) {
@@ -105,7 +106,7 @@ test("native provider readiness reports user-facing provider commands from the a
 
   assert.deepEqual(
     [...byProvider.keys()],
-    ["claude", "codex", "gemini", "antigravity", "opencode"],
+    ["claude", "codex", "gemini", "antigravity", "opencode", "pi"],
   );
   for (const [provider, command] of Object.entries(providerCommands)) {
     const entry = byProvider.get(provider);

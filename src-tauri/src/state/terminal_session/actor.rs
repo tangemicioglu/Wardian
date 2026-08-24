@@ -71,6 +71,7 @@ pub struct TerminalRuntimeHandles {
     input_tx: TerminalRuntimeInput,
     resize: Arc<ResizeHandler>,
     ignore_scrollback_erase: bool,
+    reset_parser_on_scrollback_erase: bool,
 }
 
 impl TerminalRuntimeHandles {
@@ -82,6 +83,7 @@ impl TerminalRuntimeHandles {
             input_tx: TerminalRuntimeInput::Legacy(input_tx),
             resize: Arc::new(resize),
             ignore_scrollback_erase: false,
+            reset_parser_on_scrollback_erase: false,
         }
     }
 
@@ -98,6 +100,7 @@ impl TerminalRuntimeHandles {
             input_tx: TerminalRuntimeInput::Acknowledged(input_tx),
             resize: Arc::new(resize),
             ignore_scrollback_erase: false,
+            reset_parser_on_scrollback_erase: false,
         }
     }
 
@@ -113,26 +116,76 @@ impl TerminalRuntimeHandles {
         self.ignore_scrollback_erase = true;
         self
     }
+
+    /// Resets canonical parser history when a full-frame TUI emits ED3.
+    ///
+    /// Some TUIs repaint the complete frame after every resize. xterm honors
+    /// ED3, but vt100 0.16 does not, so the canonical snapshot otherwise
+    /// accumulates duplicate frames that appear when a renderer is recreated.
+    pub fn reset_parser_on_scrollback_erase(mut self) -> Self {
+        self.reset_parser_on_scrollback_erase = true;
+        self
+    }
 }
 
 const ERASE_SCROLLBACK_SEQUENCE: &[u8] = b"\x1b[3J";
 
 struct TerminalOutputFilter {
     ignore_scrollback_erase: bool,
+    reset_parser_on_scrollback_erase: bool,
     pending: Vec<u8>,
 }
 
+struct FilteredTerminalOutput {
+    published: Vec<u8>,
+    parser: Vec<u8>,
+    reset_parser: bool,
+}
+
 impl TerminalOutputFilter {
-    fn new(ignore_scrollback_erase: bool) -> Self {
+    fn new(ignore_scrollback_erase: bool, reset_parser_on_scrollback_erase: bool) -> Self {
         Self {
             ignore_scrollback_erase,
+            reset_parser_on_scrollback_erase,
             pending: Vec::new(),
         }
     }
 
-    fn filter(&mut self, bytes: &[u8]) -> Vec<u8> {
+    fn filter(&mut self, bytes: &[u8]) -> FilteredTerminalOutput {
+        if self.reset_parser_on_scrollback_erase {
+            let mut parser_input = std::mem::take(&mut self.pending);
+            parser_input.extend_from_slice(bytes);
+            let last_erase = parser_input
+                .windows(ERASE_SCROLLBACK_SEQUENCE.len())
+                .rposition(|window| window == ERASE_SCROLLBACK_SEQUENCE);
+            if let Some(index) = last_erase {
+                return FilteredTerminalOutput {
+                    published: bytes.to_vec(),
+                    parser: parser_input[index + ERASE_SCROLLBACK_SEQUENCE.len()..].to_vec(),
+                    reset_parser: true,
+                };
+            }
+
+            let pending_len =
+                trailing_sequence_prefix_len(&parser_input, ERASE_SCROLLBACK_SEQUENCE);
+            if pending_len > 0 {
+                self.pending
+                    .extend_from_slice(&parser_input[parser_input.len() - pending_len..]);
+                parser_input.truncate(parser_input.len() - pending_len);
+            }
+            return FilteredTerminalOutput {
+                published: bytes.to_vec(),
+                parser: parser_input,
+                reset_parser: false,
+            };
+        }
+
         if !self.ignore_scrollback_erase {
-            return bytes.to_vec();
+            return FilteredTerminalOutput {
+                published: bytes.to_vec(),
+                parser: bytes.to_vec(),
+                reset_parser: false,
+            };
         }
 
         let mut input = std::mem::take(&mut self.pending);
@@ -154,8 +207,19 @@ impl TerminalOutputFilter {
             output.push(input[index]);
             index += 1;
         }
-        output
+        FilteredTerminalOutput {
+            published: output.clone(),
+            parser: output,
+            reset_parser: false,
+        }
     }
+}
+
+fn trailing_sequence_prefix_len(input: &[u8], sequence: &[u8]) -> usize {
+    (1..sequence.len())
+        .rev()
+        .find(|length| input.ends_with(&sequence[..*length]))
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1636,7 +1700,10 @@ impl TerminalSessionActor {
         timer: Arc<dyn TerminalTimer>,
     ) -> Self {
         let initial_lease_epoch = lease_epoch.load(Ordering::SeqCst);
-        let output_filter = TerminalOutputFilter::new(runtime.ignore_scrollback_erase);
+        let output_filter = TerminalOutputFilter::new(
+            runtime.ignore_scrollback_erase,
+            runtime.reset_parser_on_scrollback_erase,
+        );
         Self {
             session_id,
             runtime_generation,
@@ -1897,13 +1964,18 @@ impl TerminalSessionActor {
         if bytes.is_empty() {
             return Ok(());
         }
-        let bytes = self.output_filter.filter(&bytes);
-        if bytes.is_empty() {
+        let output = self.output_filter.filter(&bytes);
+        if output.published.is_empty() && output.parser.is_empty() {
             return Ok(());
         }
         self.cached_snapshot = None;
-        for chunk in bytes.chunks(MAX_BATCH_BYTES as usize) {
+        if output.reset_parser {
+            self.parser = vt100::Parser::new(self.geometry.rows, self.geometry.cols, 1_000);
+        }
+        for chunk in output.parser.chunks(MAX_BATCH_BYTES as usize) {
             self.parser.process(chunk);
+        }
+        for chunk in output.published.chunks(MAX_BATCH_BYTES as usize) {
             self.emit_event(TerminalBrokerEventKind::Output {
                 bytes: chunk.to_vec(),
             });

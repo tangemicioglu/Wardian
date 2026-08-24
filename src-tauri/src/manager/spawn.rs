@@ -1,6 +1,7 @@
 use crate::providers::antigravity::{changed_workspace_conversation, AntigravityProvider};
 use crate::providers::claude::{classify_claude_user_event, ClaudeUserEventKind};
 use crate::providers::codex::CodexProvider;
+use crate::providers::pi::PiProvider;
 use crate::providers::transcript::extract_transcript_message;
 use crate::providers::ProviderFactory;
 use crate::state::{ActiveAgent, AgentWatchState, AppState};
@@ -117,6 +118,123 @@ fn mock_transcript_log_path(session_id: &str) -> Option<std::path::PathBuf> {
     wardian_core::paths::agent_conversations_dir(session_id)
         .and_then(|dir| dir.parent().map(|agent_dir| agent_dir.to_path_buf()))
         .map(|dir| dir.join("mock-transcript.jsonl"))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PiLogBaseline {
+    path: std::path::PathBuf,
+    cursor: PiLogCursor,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PiLogCursor {
+    offset: u64,
+    identity: Option<PiFileIdentity>,
+    boundary_start: u64,
+    boundary: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PiFileIdentity(u64, u64);
+
+fn pi_file_identity(metadata: &std::fs::Metadata) -> Option<PiFileIdentity> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(PiFileIdentity(metadata.dev(), metadata.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Stable Rust does not expose Windows' by-handle file index yet.
+        // Creation time is stable across appends, while the boundary check below
+        // also detects in-place rewrites and same-timestamp replacements.
+        Some(PiFileIdentity(metadata.creation_time(), 0))
+    }
+}
+
+fn pi_log_boundary(file: &mut std::fs::File, offset: u64) -> Option<(u64, Vec<u8>)> {
+    const BOUNDARY_BYTES: u64 = 4096;
+    let boundary_start = offset.saturating_sub(BOUNDARY_BYTES);
+    let boundary_len = offset.saturating_sub(boundary_start);
+    file.seek(std::io::SeekFrom::Start(boundary_start)).ok()?;
+    let mut boundary = Vec::new();
+    std::io::Read::by_ref(file)
+        .take(boundary_len)
+        .read_to_end(&mut boundary)
+        .ok()?;
+    (boundary.len() as u64 == boundary_len).then_some((boundary_start, boundary))
+}
+
+fn refresh_pi_log_boundary(file: &mut std::fs::File, cursor: &mut PiLogCursor) -> Option<()> {
+    let (boundary_start, boundary) = pi_log_boundary(file, cursor.offset)?;
+    cursor.boundary_start = boundary_start;
+    cursor.boundary = boundary;
+    Some(())
+}
+
+fn pi_log_baseline(session_dir: &std::path::Path, provider_session_id: &str) -> Option<PiLogBaseline> {
+    let path = PiProvider::session_file(session_dir, provider_session_id)?;
+    let mut file = std::fs::File::open(&path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let mut cursor = PiLogCursor {
+        offset: metadata.len(),
+        identity: pi_file_identity(&metadata),
+        ..Default::default()
+    };
+    refresh_pi_log_boundary(&mut file, &mut cursor)?;
+    Some(PiLogBaseline { path, cursor })
+}
+
+fn restored_pi_log_baseline(config: &AgentConfig, is_restored: bool) -> Option<PiLogBaseline> {
+    if !is_restored || config.provider != "pi" {
+        return None;
+    }
+    let provider_session_id = config
+        .resume_session
+        .as_deref()
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())?;
+    let session_dir = PiProvider::session_dir(&config.session_id)?;
+    pi_log_baseline(&session_dir, provider_session_id)
+}
+
+fn open_pi_log_at_cursor(
+    path: &std::path::Path,
+    cursor: &mut PiLogCursor,
+) -> Option<std::fs::File> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let identity = pi_file_identity(&metadata);
+    let identity_changed = cursor
+        .identity
+        .zip(identity)
+        .is_some_and(|(before, after)| before != after);
+    let boundary_changed = if cursor.boundary.is_empty() {
+        false
+    } else {
+        let boundary_end = cursor
+            .boundary_start
+            .saturating_add(cursor.boundary.len() as u64);
+        if metadata.len() < boundary_end {
+            true
+        } else {
+            file.seek(std::io::SeekFrom::Start(cursor.boundary_start))
+                .ok()?;
+            let mut current_boundary = vec![0; cursor.boundary.len()];
+            file.read_exact(&mut current_boundary).ok()?;
+            current_boundary != cursor.boundary
+        }
+    };
+    let reset = identity_changed || boundary_changed || metadata.len() < cursor.offset;
+    if reset {
+        cursor.offset = 0;
+        cursor.boundary_start = 0;
+        cursor.boundary.clear();
+    }
+    cursor.identity = identity;
+    file.seek(std::io::SeekFrom::Start(cursor.offset)).ok()?;
+    Some(file)
 }
 
 fn antigravity_watcher_conversation(
@@ -819,6 +937,11 @@ pub async fn spawn_agent(
         is_restored
     ));
 
+    // A restored Pi process can append its first turn immediately after spawn.
+    // Capture the existing transcript boundary while the provider is still
+    // unable to write, then start the watcher from that exact byte offset.
+    let pi_log_baseline = restored_pi_log_baseline(&config, is_restored);
+
     let child = pair
         .slave
         .spawn_command(cmd)
@@ -867,10 +990,10 @@ pub async fn spawn_agent(
         crate::state::terminal_session::NativeTerminalWriteRequest,
     >(256);
     let terminal_runtime = crate::state::terminal_session::native_terminal_runtime(tx, pty_master);
-    let terminal_runtime = if config.provider == "codex" {
-        terminal_runtime.ignore_scrollback_erase()
-    } else {
-        terminal_runtime
+    let terminal_runtime = match config.provider.as_str() {
+        "codex" => terminal_runtime.ignore_scrollback_erase(),
+        "pi" => terminal_runtime.reset_parser_on_scrollback_erase(),
+        _ => terminal_runtime,
     };
     let runtime_generation = app_state
         .terminal_sessions
@@ -938,7 +1061,8 @@ pub async fn spawn_agent(
     let terminal_title_clone = terminal_title.clone();
     let last_output_at = std::sync::Arc::new(std::sync::Mutex::new(None));
     let last_output_at_clone = last_output_at.clone();
-    let log_path = std::sync::Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+    let initial_log_path = pi_log_baseline.as_ref().map(|baseline| baseline.path.clone());
+    let log_path = std::sync::Arc::new(std::sync::Mutex::new(initial_log_path));
     // The mock provider writes its event stream to a file it owns, so its log
     // path is known up front and needs no discovery watcher. Without this the
     // chat transcript sees nothing for a mock agent: normalized tool events
@@ -1055,15 +1179,12 @@ pub async fn spawn_agent(
                     );
                     let text = pty_decoder.decode_chunk(&buf[0..n]);
                     let startup_output = if startup_prompt_pending {
-                        watch_state_clone
-                            .lock()
-                            .ok()
-                            .and_then(|watch_state| {
-                                watch_state
-                                    .snapshot_since(None, None)
-                                    .ok()
-                                    .map(|snapshot| snapshot.output.text)
-                            })
+                        watch_state_clone.lock().ok().and_then(|watch_state| {
+                            watch_state
+                                .snapshot_since(None, None)
+                                .ok()
+                                .map(|snapshot| snapshot.output.text)
+                        })
                     } else {
                         None
                     };
@@ -1226,10 +1347,7 @@ pub async fn spawn_agent(
                                 // `OpenCode` to `OC | …` when it accepts a
                                 // submitted turn.
                                 if was_idle && next_status == "Processing..." {
-                                    super::emit_agent_turn_started(
-                                        &pty_emit_app,
-                                        &sid_for_pty,
-                                    );
+                                    super::emit_agent_turn_started(&pty_emit_app, &sid_for_pty);
                                 }
                             }
                         } else if provider_name_for_pty == "gemini" {
@@ -1469,6 +1587,135 @@ pub async fn spawn_agent(
                     }
                 }
 
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        });
+    } else if config.provider == "pi" {
+        let watcher_app = app.clone();
+        let watcher_provider = provider.clone();
+        let watcher_session = config.session_id.clone();
+        let watcher_config = config_lock.clone();
+        let watcher_query_count = query_count.clone();
+        let watcher_init_timestamp = init_timestamp.clone();
+        let watcher_current_status = current_status.clone();
+        let watcher_log_path = log_path.clone();
+        let watcher_watch_state = watch_state.clone();
+        let watcher_initial_cursor = pi_log_baseline
+            .as_ref()
+            .map(|baseline| baseline.cursor.clone())
+            .unwrap_or_default();
+
+        std::thread::spawn(move || {
+            let mut cursor = watcher_initial_cursor;
+            loop {
+                let current = watcher_current_status
+                    .lock()
+                    .map(|status| status.clone())
+                    .unwrap_or_else(|error| error.into_inner().clone());
+                if current == "Off" {
+                    break;
+                }
+
+                let provider_session_id = watcher_config
+                    .lock()
+                    .ok()
+                    .and_then(|config| expected_caller_owned_identity(&config).map(str::to_string));
+                let path = provider_session_id
+                    .as_deref()
+                    .and_then(|provider_session_id| {
+                        let cached = watcher_log_path
+                            .lock()
+                            .ok()
+                            .and_then(|path| path.clone())
+                            .filter(|path| path.is_file());
+                        cached.or_else(|| {
+                            PiProvider::session_dir(&watcher_session).and_then(|session_dir| {
+                                PiProvider::session_file(&session_dir, provider_session_id)
+                            })
+                        })
+                    });
+
+                if let Some(path) = path {
+                    if let Ok(mut stored_path) = watcher_log_path.lock() {
+                        *stored_path = Some(path.clone());
+                    }
+                    if let Some(file) = open_pi_log_at_cursor(&path, &mut cursor) {
+                        let mut reader = std::io::BufReader::new(file);
+                        let mut line = String::new();
+                        loop {
+                            line.clear();
+                            let read = reader.read_line(&mut line).unwrap_or(0);
+                            if read == 0 {
+                                break;
+                            }
+                            cursor.offset += read as u64;
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed)
+                            else {
+                                continue;
+                            };
+                            let raw_line = parsed.to_string();
+                            if let Some(message) = extract_transcript_message("pi", &raw_line) {
+                                if let Ok(mut watch_state) = watcher_watch_state.lock() {
+                                    watch_state.push_transcript(message);
+                                }
+                            }
+                            if let Some(event) = watcher_provider.parse_output(&raw_line) {
+                                if matches!(&event, AgentEvent::Init { .. }) {
+                                    match handle_provider_init_event(
+                                        "pi",
+                                        &event,
+                                        &watcher_config,
+                                        &watcher_init_timestamp,
+                                    ) {
+                                        Ok(_) => {
+                                            if let Ok(mut config) = watcher_config.lock() {
+                                                if let Some(fresh) =
+                                                    config.fresh_provider_session_id.take()
+                                                {
+                                                    config.resume_session = Some(fresh);
+                                                }
+                                            }
+                                            persist_runtime_agent_configs(&watcher_app);
+                                        }
+                                        Err(error) => {
+                                            log_debug(&format!(
+                                                "[WARDIAN] Rejected Pi initialization identity: {error}"
+                                            ));
+                                            set_agent_status(
+                                                &watcher_app,
+                                                &watcher_session,
+                                                &watcher_current_status,
+                                                "Error",
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                                apply_agent_event(
+                                    &watcher_app,
+                                    &watcher_session,
+                                    event,
+                                    &watcher_query_count,
+                                    &watcher_init_timestamp,
+                                    &watcher_current_status,
+                                );
+                            }
+                            let _ = watcher_app.emit(
+                                "agent-json-event",
+                                serde_json::json!({
+                                    "session_id": watcher_session,
+                                    "data": parsed,
+                                }),
+                            );
+                        }
+                        let mut file = reader.into_inner();
+                        let _ = refresh_pi_log_boundary(&mut file, &mut cursor);
+                    }
+                }
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         });
@@ -2115,6 +2362,114 @@ mod tests {
     fn restored_spawns_skip_stale_process_scan() {
         assert!(!should_cleanup_stale_session_processes_before_spawn(true));
         assert!(should_cleanup_stale_session_processes_before_spawn(false));
+    }
+
+    #[test]
+    fn restored_pi_baseline_preserves_events_appended_before_first_watcher_poll() {
+        let dir = tempfile::tempdir().expect("Pi session directory");
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+                "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":\"old\",\"stopReason\":\"stop\"}}\n",
+            ),
+        )
+        .expect("existing Pi transcript");
+        let baseline = pi_log_baseline(dir.path(), "pi-session").expect("Pi baseline");
+
+        let mut append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("append Pi turn before watcher starts");
+        writeln!(
+            append,
+            "{{\"type\":\"message_end\",\"message\":{{\"role\":\"assistant\",\"content\":\"new\",\"stopReason\":\"stop\"}}}}"
+        )
+        .expect("new Pi turn");
+        drop(append);
+
+        let mut cursor = baseline.cursor;
+        let mut file =
+            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("positioned log");
+        let mut observed = String::new();
+        file.read_to_string(&mut observed).expect("new Pi events");
+
+        assert!(!observed.contains("old"));
+        assert!(observed.contains("new"));
+    }
+
+    #[test]
+    fn restored_pi_cursor_resets_for_larger_same_path_replacement() {
+        let dir = tempfile::tempdir().expect("Pi session directory");
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+                "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":\"old\",\"stopReason\":\"stop\"}}\n",
+            ),
+        )
+        .expect("existing Pi transcript");
+        let baseline = pi_log_baseline(dir.path(), "pi-session").expect("Pi baseline");
+        let replacement = dir.path().join("replacement.jsonl");
+        let new_content = format!(
+            "{}{}{}",
+            "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+            "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":\"new\",\"stopReason\":\"stop\"}}\n",
+            "x".repeat(baseline.cursor.offset as usize),
+        );
+        std::fs::write(&replacement, new_content).expect("replacement Pi transcript");
+        std::fs::remove_file(&path).expect("remove old Pi transcript");
+        std::fs::rename(&replacement, &path).expect("replace Pi transcript at same path");
+
+        let mut cursor = baseline.cursor;
+        let mut file =
+            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("replacement log");
+        let mut observed = String::new();
+        file.read_to_string(&mut observed)
+            .expect("replacement Pi events");
+
+        assert_eq!(cursor.offset, 0);
+        assert!(observed.contains("new"));
+        assert!(!observed.contains("old"));
+    }
+
+    #[test]
+    fn restored_pi_cursor_resets_for_in_place_rewrite_after_prefix() {
+        let dir = tempfile::tempdir().expect("Pi session directory");
+        let path = dir.path().join("session.jsonl");
+        let padding = "x".repeat(8192);
+        let old_content = format!(
+            "{}{{\"type\":\"padding\",\"content\":\"{}\"}}\n{}",
+            "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+            padding,
+            "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":\"old\",\"stopReason\":\"stop\"}}\n",
+        );
+        std::fs::write(&path, &old_content).expect("existing Pi transcript");
+        let baseline = pi_log_baseline(dir.path(), "pi-session").expect("Pi baseline");
+        let new_content = old_content.replace("\"content\":\"old\"", "\"content\":\"new\"");
+        assert_eq!(new_content.len(), old_content.len());
+        assert_eq!(&new_content[..4096], &old_content[..4096]);
+        std::fs::write(&path, new_content).expect("in-place Pi transcript rewrite");
+
+        let mut cursor = baseline.cursor;
+        let mut file =
+            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("rewritten log");
+        let mut observed = String::new();
+        file.read_to_string(&mut observed).expect("rewritten Pi events");
+        let assistant_messages = observed
+            .lines()
+            .filter_map(|line| extract_transcript_message("pi", line))
+            .collect::<Vec<_>>();
+
+        assert_eq!(cursor.offset, 0);
+        assert!(assistant_messages
+            .iter()
+            .any(|message| message.text == "new"));
+        assert!(!assistant_messages
+            .iter()
+            .any(|message| message.text == "old"));
     }
 
     fn agent_without_pty() -> crate::state::ActiveAgent {

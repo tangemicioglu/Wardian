@@ -99,6 +99,7 @@ const auditGeminiModel =
   process.env.WARDIAN_E2E_RENDERING_GEMINI_MODEL?.trim() || DEFAULT_GEMINI_RENDERING_MODEL;
 const auditOpenCodeModel =
   process.env.WARDIAN_E2E_RENDERING_OPENCODE_MODEL?.trim() || DEFAULT_OPENCODE_RENDERING_MODEL;
+const auditPiModel = process.env.WARDIAN_E2E_RENDERING_PI_MODEL?.trim() || "";
 const auditRapidResizeSequence = parseWindowSizeSequence(
   process.env.WARDIAN_E2E_RENDERING_RAPID_SEQUENCE,
   [
@@ -230,6 +231,9 @@ function modelForProvider(provider) {
   }
   if (provider === "opencode") {
     return auditOpenCodeModel || null;
+  }
+  if (provider === "pi") {
+    return auditPiModel || null;
   }
   return null;
 }
@@ -618,6 +622,9 @@ function providerReadyText(provider) {
   }
   if (provider === "opencode") {
     return "ctrl+p commands";
+  }
+  if (provider === "pi") {
+    return "Pi can explain its own features";
   }
   return "";
 }
@@ -2012,6 +2019,7 @@ test("real provider terminal rendering audit captures user-visible Wardian state
       claude: auditClaudeModel || null,
       gemini: auditGeminiModel || null,
       opencode: auditOpenCodeModel || null,
+      pi: auditPiModel || null,
     },
     stable_rows_quiet_ms: positiveInt(auditStableRowsQuietMs, 750),
     settle_timeout_ms: positiveInt(auditSettleTimeoutMs, 10000),

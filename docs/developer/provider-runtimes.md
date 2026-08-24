@@ -1,6 +1,6 @@
 # Provider Runtime Notes
 
-This document captures the practical runtime differences between Wardian's supported CLI providers: Antigravity, Claude, Codex, OpenCode, and Gemini (unmaintained). It is intended for maintainers working on spawn, resume, workflow execution, skill projection, and status/approval handling.
+This document captures the practical runtime differences between Wardian's supported CLI providers: Antigravity, Claude, Codex, OpenCode, Pi, and Gemini (unmaintained). It is intended for maintainers working on spawn, resume, workflow execution, skill projection, and status/approval handling.
 
 ## Shared Wardian Invariants
 
@@ -28,6 +28,7 @@ This document captures the practical runtime differences between Wardian's suppo
 | Claude | Real target workspace | `CLAUDE.md` | `.claude/skills` points at Wardian's `.agents/skills` | Wardian assigns `--session-id` up front |
 | Codex | Real target workspace via `--cd`; habitat-backed `CODEX_HOME` | `AGENTS.md` | Per-agent `CODEX_HOME/skills` under habitat | Fresh local rollout, then exact resume |
 | OpenCode | Habitat command root; real workspace passed as a positional arg (interactive) or `--dir` (headless `run`) | `AGENTS.md` plus injected runtime config | Skills junctioned into the habitat `.opencode` config dir | Discovered from provider output (`ses_…`) |
+| Pi | Real target workspace | `AGENTS.md` plus appended Wardian instruction files | Repeated `--skill` paths point at Wardian-managed skill roots | Wardian assigns `--session-id` up front |
 | Gemini *(unmaintained)* | Projected habitat workspace for headless runs | `GEMINI.md` | Patched CLI can discover skills from include directories | Discovered from provider output |
 
 ## Antigravity
@@ -265,6 +266,35 @@ This is how OpenCode sees Wardian-managed class and agent context without forcin
   matching how a user terminal starts OpenCode. Interactive and headless launch
   wrap that command through the configured shell because npm and PowerShell
   shims need shell dispatch semantics.
+
+## Pi
+
+### Working-root and identity model
+
+Pi runs in the real workspace. Wardian passes a private `--session-dir` under
+the Wardian agent directory, assigns a distinct UUID with `--session-id`, and
+uses `--session` for exact resume. Pi writes the JSONL lazily after its first
+persisted entry, so discovery validates the session header ID and never falls
+back to the newest file.
+
+### Instruction and skill model
+
+Pi discovers the workspace's parent/project `AGENTS.md` chain itself. Wardian
+adds common, class, and agent instructions with repeated
+`--append-system-prompt <absolute-file-path>` arguments and their Agent Skills
+directories with repeated `--skill <absolute-directory-path>` arguments. Do not
+redirect `PI_CODING_AGENT_DIR`: it would replace the user's authentication,
+packages, extensions, settings, and themes rather than isolate only sessions.
+
+### Output and status model
+
+The interactive `regular` TUI stays attached to the PTY. Wardian tails the
+version 3 session JSONL for user messages, assistant stop reasons, tool calls,
+tool results, and definitive completion. Headless workflows use `--mode json`;
+`agent_end`, not a transient assistant message, is the final workflow boundary.
+
+Pi's `--approve` and `--no-approve` flags control project-local configuration,
+extensions, and skills. They do not sandbox the shell tool or extensions.
 
 ## Gemini (Unmaintained)
 

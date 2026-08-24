@@ -166,6 +166,32 @@ describe("AdvancedSettings", () => {
     });
   });
 
+  it("labels Pi project trust separately from sandboxing", () => {
+    const updateField = vi.fn();
+    render(
+      <AdvancedSettings
+        config={{ provider: "pi", provider_config: { type: "pi" } }}
+        updateField={updateField}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Advanced Settings" }));
+    fireEvent.change(screen.getByLabelText("Project Extensions and Skills"), {
+      target: { value: "ignore" },
+    });
+    fireEvent.click(screen.getByLabelText("Offline startup"));
+
+    expect(screen.getByText(/does not sandbox shell tools or extensions/i)).toBeInTheDocument();
+    expect(updateField).toHaveBeenNthCalledWith(1, "provider_config", {
+      type: "pi",
+      project_trust: "ignore",
+    });
+    expect(updateField).toHaveBeenNthCalledWith(2, "provider_config", {
+      type: "pi",
+      offline: true,
+    });
+  });
+
   it("edits regular session persistence from advanced settings", () => {
     const updateField = vi.fn();
 

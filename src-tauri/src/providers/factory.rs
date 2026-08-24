@@ -4,6 +4,7 @@ use crate::providers::codex::CodexProvider;
 use crate::providers::gemini::GeminiProvider;
 use crate::providers::mock::MockProvider;
 use crate::providers::opencode::OpenCodeProvider;
+use crate::providers::pi::PiProvider;
 use std::sync::Arc;
 use wardian_core::models::provider::AgentProvider;
 
@@ -14,7 +15,7 @@ pub struct ProviderFactory;
 impl ProviderFactory {
     /// Returns an `Arc<dyn AgentProvider>` for the given provider name.
     ///
-    /// Currently supported: `"gemini"`, `"claude"`, `"codex"`, `"antigravity"`, `"opencode"`, and `"mock"`.
+    /// Currently supported: `"gemini"`, `"claude"`, `"codex"`, `"antigravity"`, `"opencode"`, `"pi"`, and `"mock"`.
     /// Returns `Err` for unknown provider names.
     pub fn resolve(provider_name: &str) -> Result<Arc<dyn AgentProvider>, String> {
         let lower = provider_name.to_lowercase();
@@ -24,9 +25,10 @@ impl ProviderFactory {
             "codex" => Ok(Arc::new(CodexProvider::new())),
             "antigravity" => Ok(Arc::new(AntigravityProvider::new())),
             "opencode" => Ok(Arc::new(OpenCodeProvider::new())),
+            "pi" => Ok(Arc::new(PiProvider::new())),
             "mock" => Ok(Arc::new(MockProvider::new())),
             other => Err(format!(
-                "Unknown provider '{}'. Supported providers: gemini, claude, codex, antigravity, opencode, mock",
+                "Unknown provider '{}'. Supported providers: gemini, claude, codex, antigravity, opencode, pi, mock",
                 other
             )),
         }
@@ -83,6 +85,13 @@ mod tests {
     fn resolve_antigravity_case_insensitive() {
         assert!(ProviderFactory::resolve("Antigravity").is_ok());
         assert!(ProviderFactory::resolve("ANTIGRAVITY").is_ok());
+    }
+
+    #[test]
+    fn resolve_pi_succeeds_and_uses_agents_md() {
+        let provider = ProviderFactory::resolve("Pi").expect("Pi provider");
+        assert_eq!(provider.name(), "Pi");
+        assert_eq!(provider.get_instruction_filename(), "AGENTS.md");
     }
 
     #[test]

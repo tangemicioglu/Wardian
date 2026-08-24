@@ -282,7 +282,7 @@ Wardian is built with a focus on modularity, thread safety, and separation of co
 
 1. **Rust**: Install [rustup.rs](https://rustup.rs/) (latest stable).
 2. **Node.js**: Ensure Node.js (v18+) is installed.
-3. **Agent CLIs**: Install at least one supported provider CLI before spawning agents: [Antigravity](https://www.antigravity.google/docs/cli-overview) (`agy`), [Claude Code](https://github.com/anthropics/claude-code) (`@anthropic-ai/claude-code`), [Codex](https://github.com/openai/codex) (`@openai/codex`), or [OpenCode](https://github.com/anomalyco/opencode) (`opencode` command, commonly installed from `opencode-ai`). Ensure each provider is authenticated successfully in your terminal first.
+3. **Agent CLIs**: Install at least one supported provider CLI before spawning agents: [Antigravity](https://www.antigravity.google/docs/cli-overview) (`agy`), [Claude Code](https://github.com/anthropics/claude-code) (`@anthropic-ai/claude-code`), [Codex](https://github.com/openai/codex) (`@openai/codex`), [OpenCode](https://github.com/anomalyco/opencode) (`opencode` command, commonly installed from `opencode-ai`), or [Pi](https://pi.dev/docs/latest/) (`@earendil-works/pi-coding-agent`). Ensure each provider is authenticated successfully in your terminal first.
 4. **Clone & Install**:
    ```bash
    git clone https://github.com/wardian-app/Wardian.git
