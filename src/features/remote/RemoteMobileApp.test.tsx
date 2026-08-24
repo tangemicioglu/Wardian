@@ -4597,8 +4597,101 @@ describe("RemoteMobileApp", () => {
 
     render(<RemoteMobileApp />);
 
-    expect(await screen.findByText("Session expired. Re-authentication is required.")).toBeVisible();
+    expect(await screen.findByText("This remote session expired. Re-authenticate to continue.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Re-authenticate" })).toBeVisible();
+  });
+
+  it("explains that a stale pairing link needs a fresh QR code", async () => {
+    window.history.pushState(
+      {},
+      "",
+      "/remote?pairing_offer_id=expired-offer&nonce=nonce-1&server_fingerprint=desktop-fp",
+    );
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/remote/api/pairing/submit" && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ code: "pairing_offer_not_found" }), { status: 404 }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 503 }));
+    });
+
+    render(<RemoteMobileApp />);
+
+    expect(
+      await screen.findByText(
+        "This pairing link expired or is no longer valid. Scan a fresh QR code to pair this device.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText("Desktop unreachable.")).not.toBeInTheDocument();
+    expect(window.location.search).toBe("");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
+  it("distinguishes a revoked device from an expired session", async () => {
+    vi.mocked(loadStoredRemoteIdentity).mockResolvedValue({
+      device_id: "dev-revoked",
+      public_key_fingerprint: "phone-fp",
+      server_identity_fingerprint: "desktop-fp",
+      origin: "http://localhost:1420",
+      private_key: { type: "private" } as CryptoKey,
+      paired_at: "2026-05-21T08:00:30.000Z",
+    });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/remote/api/session") {
+        return Promise.resolve(new Response("{}", { status: 401 }));
+      }
+      if (url === "/remote/api/auth/challenge" && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ code: "device_not_found" }), { status: 404 }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 503 }));
+    });
+
+    render(<RemoteMobileApp />);
+
+    expect(await screen.findByText("This device was revoked. Scan a fresh QR code to pair it again.")).toBeVisible();
+    expect(screen.queryByText("This remote session expired. Re-authenticate to continue.")).not.toBeInTheDocument();
+    expect(clearStoredRemoteIdentity).toHaveBeenCalled();
+  });
+
+  it("clears the stored identity when refresh discovers a revoked device", async () => {
+    vi.mocked(loadStoredRemoteIdentity).mockResolvedValue({
+      device_id: "dev-refresh-revoked",
+      public_key_fingerprint: "phone-fp",
+      server_identity_fingerprint: "desktop-fp",
+      origin: "http://localhost:1420",
+      private_key: { type: "private" } as CryptoKey,
+      paired_at: "2026-05-21T08:00:30.000Z",
+    });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/remote/api/session") {
+        return Promise.resolve(new Response("{}", { status: 401 }));
+      }
+      if (url === "/remote/api/auth/challenge" && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ code: "device_not_found" }), { status: 404 }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 503 }));
+    });
+
+    await useRemoteStore.getState().refresh();
+
+    expect(useRemoteStore.getState().status).toBe("device_revoked");
+    expect(clearStoredRemoteIdentity).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps genuine transport failures as desktop unreachable", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(new Response("{}", { status: 503 })));
+
+    render(<RemoteMobileApp />);
+
+    expect(
+      await screen.findByText("Desktop unreachable. Check the desktop and network connection, then retry."),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
   });
 
   it("clears the stored phone identity and asks for a fresh QR code when the desktop fingerprint changes", async () => {

@@ -10,12 +10,12 @@ type RemotePairingState =
   | "unreachable";
 
 const labels: Record<RemotePairingState, string> = {
-  expired: "Pairing expired.",
+  expired: "This pairing link expired or is no longer valid. Scan a fresh QR code to pair this device.",
   identity_changed: "Gateway identity changed. Scan a fresh QR code to re-pair.",
   pending: "Waiting for desktop approval.",
-  revoked: "This device has been revoked.",
-  session_expired: "Session expired. Re-authentication is required.",
-  unreachable: "Desktop unreachable.",
+  revoked: "This device was revoked. Scan a fresh QR code to pair it again.",
+  session_expired: "This remote session expired. Re-authenticate to continue.",
+  unreachable: "Desktop unreachable. Check the desktop and network connection, then retry.",
 };
 
 interface RemotePairingViewProps {
