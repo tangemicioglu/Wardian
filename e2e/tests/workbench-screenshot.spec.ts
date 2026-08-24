@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
 
 import { surfacePanel, surfaceTab } from "../fixtures/workbench";
 import {
@@ -206,6 +208,88 @@ test("renders chat attachment chips while hiding the provider launch screen", as
     ?? testInfo.outputPath("chat-attachments.png");
   await page.locator('[data-testid="agent-card"]').screenshot({ path, animations: "disabled" });
   await testInfo.attach("chat-attachments", { path, contentType: "image/png" });
+});
+
+test("shows the actual command for a lifecycle-labelled tool call", async ({ page }, testInfo) => {
+  const overview = makeWorkbenchSurface("chat-tool-call-one-line", "agents-overview", {
+    state: {
+      mode: "single",
+      focused_agent_id: "agent-alpha",
+      search_query: "",
+      status_filter: [],
+    },
+  });
+  const document = makeWorkbenchDocument({ revision: 7, surfaces: [overview] });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    localStorage.setItem("wardian-settings", JSON.stringify({
+      state: { gridCardDisplayMode: "chat" },
+      version: 2,
+    }));
+  });
+  await installWorkbenchIpcMock(page, {
+    agents: [{
+      ...agents[0],
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      provider_config: { type: "codex", reasoning_effort: "high" },
+    }],
+    load_result: {
+      source: "primary",
+      document,
+      notice: null,
+      durable_revision: document.revision,
+      durable_token: "chat-tool-call-one-line-token-7",
+    },
+    responses: {
+      load_agent_chat_transcript: [{
+        id: "exec-call-1",
+        session_id: "agent-alpha",
+        provider: "codex",
+        kind: "tool_call",
+        role: null,
+        text: null,
+        title: "exec_command_begin",
+        status: "running",
+        turn_id: "turn-1",
+        source: "provider_log",
+        command: "npm test -- chat",
+        exit_code: null,
+        path: null,
+        language: "shell",
+        created_at: "2026-08-24T06:00:00.000Z",
+        sequence: 1,
+        metadata: { raw_type: "exec_command_begin" },
+      }],
+      list_provider_model_catalog: {
+        provider: "codex",
+        version: "codex-cli 0.149.1",
+        source: "live_catalog",
+        refresh_error: null,
+        models: [{
+          id: "gpt-5.6-sol",
+          display_name: "GPT-5.6-Sol",
+          effort_options: ["low", "high"],
+          default_effort: "high",
+          is_default: true,
+        }],
+      },
+    },
+  });
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  const card = page.getByTestId("agent-card");
+  const summary = card.getByTestId("chat-tool-call-summary");
+  await expect(summary).toBeVisible();
+  await expect(summary).toContainText("$ npm test -- chat");
+  await expect(summary).not.toContainText("exec command begin");
+
+  const screenshotPath = path.resolve(
+    "e2e/screenshots/chat-tool-call-one-line/2026-08-24/mobile-lifecycle-command.png",
+  );
+  mkdirSync(path.dirname(screenshotPath), { recursive: true });
+  await card.screenshot({ path: screenshotPath, animations: "disabled" });
+  await testInfo.attach("mobile-lifecycle-command", { path: screenshotPath, contentType: "image/png" });
 });
 
 test("keeps the offline agent composer send button consistent across empty, populated, and executing states", async ({ page }, testInfo) => {

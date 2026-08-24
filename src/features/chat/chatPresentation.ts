@@ -4,6 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import type { AgentChatEvent } from "../../types";
 import {
   isGenericActivityTitle,
+  isLowSignalActivityTitle,
   shouldCollapseActivity,
   type ActivityBlockModel,
   type ActivityTone,
@@ -127,6 +128,7 @@ export function readableToolTitle(event: AgentChatEvent, fallback: string): stri
   const title = event.title?.trim();
   const toolName = toolNameFromEvent(event);
   const command = event.command?.trim();
+  if (command && (!title || isGenericActivityTitle(title) || isLowSignalActivityTitle(title))) return command;
   if (title && !isGenericActivityTitle(title)) return title.replace(/_/g, " ");
   if (toolName) return toolName.replace(/_/g, " ");
   if (command) return commandName(command);
@@ -141,9 +143,10 @@ function commandName(command: string): string {
 
 function toolLabelFromEvent(event: AgentChatEvent, rawType: string | null, toolName: string | null): string | null {
   const title = event.title?.trim();
-  if (title && !isGenericActivityTitle(title)) return title.replace(/_/g, " ");
-  if (toolName) return toolName.replace(/_/g, " ");
-  if (rawType) return rawType.replace(/_/g, " ");
+  if (title && !isGenericActivityTitle(title) && !isLowSignalActivityTitle(title)) return title.replace(/_/g, " ");
+  if (toolName && !isLowSignalActivityTitle(toolName)) return toolName.replace(/_/g, " ");
+  if (rawType && !isLowSignalActivityTitle(rawType)) return rawType.replace(/_/g, " ");
+  if (event.command?.trim()) return null;
   if (event.kind === "tool_call") return "tool call";
   if (event.kind === "tool_result") return "tool result";
   return null;
@@ -206,7 +209,7 @@ export function stringMetadata(metadata: Record<string, unknown>, key: string): 
 export function outputWithoutCommandPrefix(content: string, command: string | null): string {
   if (!command?.trim()) return content;
   const escaped = command.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return content.replace(new RegExp(`^\\$\\s+${escaped}\\s*(?:\\r?\\n){1,2}`), "").trimEnd();
+  return content.replace(new RegExp(`^\\$\\s+${escaped}(?:(?:\\r?\\n){1,2}|$)`), "").trimEnd();
 }
 
 export function parseTodoItems(content: string): Array<{ done: boolean; label: string }> {

@@ -71,6 +71,22 @@ export function isGenericActivityTitle(title: string | null | undefined): boolea
   return Boolean(normalized && GENERIC_TITLES.has(normalized));
 }
 
+/**
+ * Provider lifecycle labels describe the transport transition, not the tool
+ * invocation an operator needs to inspect. When a command is present, the
+ * command should become the visible title instead of labels such as
+ * `exec_command_begin` or `exec running`.
+ */
+export function isLowSignalActivityTitle(title: string | null | undefined): boolean {
+  const normalized = title?.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  return Boolean(
+    normalized &&
+      /^(?:exec(?: command)?|command|task|tool)\s+(?:start|started|begin|began|running|run|end|ended|finish|finished|complete|completed|result)$/.test(
+        normalized,
+      ),
+  );
+}
+
 export function classifyActivityLanguage(event: AgentChatEvent): string {
   if (event.language?.trim()) return normalizeLanguage(event.language);
 
@@ -107,7 +123,7 @@ export function toActivityBlock(event: AgentChatEvent): ActivityBlockModel {
 
 function activityTitle(event: AgentChatEvent): string {
   const title = event.title?.trim();
-  if (title && !isGenericActivityTitle(title)) return title;
+  if (title && !isGenericActivityTitle(title) && !isLowSignalActivityTitle(title)) return title;
   if (event.command?.trim()) return event.command.trim();
   if (event.kind === "message") return event.role ?? "message";
   if (title) return title.replace(/_/g, " ");
