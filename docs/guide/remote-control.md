@@ -274,7 +274,10 @@ terminal interfaces. Chat remains one tap away.
 The agent detail composer sends ordinary chat messages by default. Turn on
 command mode when you need to submit a provider slash command or another input
 that must reach the provider command channel without chat attribution. Command
-mode resets after a successful send.
+mode resets after a successful send. Ordinary prompts do not wait for the
+agent's status: an offline agent starts a headless provider turn, while an
+offline command remains queued until an interactive provider surface is
+available.
 
 The mobile action strip includes lifecycle controls for the selected agent.
 Clone remains a desktop-only operation so the phone does not create new agent

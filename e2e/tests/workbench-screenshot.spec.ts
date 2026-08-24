@@ -208,7 +208,7 @@ test("renders chat attachment chips while hiding the provider launch screen", as
   await testInfo.attach("chat-attachments", { path, contentType: "image/png" });
 });
 
-test("keeps the composer send button consistent across empty, populated, and executing states", async ({ page }, testInfo) => {
+test("keeps the offline agent composer send button consistent across empty, populated, and executing states", async ({ page }, testInfo) => {
   const overview = makeWorkbenchSurface("composer-send-button-evidence", "agents-overview", {
     state: {
       mode: "single",
@@ -228,6 +228,7 @@ test("keeps the composer send button consistent across empty, populated, and exe
   await installWorkbenchIpcMock(page, {
     agents: [{
       ...agents[0],
+      is_off: false,
       provider: "codex",
       model: "gpt-5.6-sol",
       provider_config: { type: "codex", reasoning_effort: "high" },
@@ -261,6 +262,16 @@ test("keeps the composer send button consistent across empty, populated, and exe
   const input = page.getByLabel("Message agent");
   const sendButton = page.getByRole("button", { name: "Send message" });
   await expect(card).toBeVisible();
+  await page.evaluate(() => {
+    const runtime = (window as unknown as {
+      __WARDIAN_WORKBENCH_IPC_MOCK__: { emit: (event: string, payload: unknown) => void };
+    }).__WARDIAN_WORKBENCH_IPC_MOCK__;
+    runtime.emit("agent-status-updated", {
+      session_id: "agent-alpha",
+      current_status: "Off",
+    });
+  });
+  await expect(input).toBeEnabled();
   await expect(page.getByText("Provider returned an invalid model catalogue.", { exact: true })).toBeHidden();
   await expect(sendButton).toBeDisabled();
   await expect(sendButton).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");

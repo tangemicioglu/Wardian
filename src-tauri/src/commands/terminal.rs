@@ -288,24 +288,19 @@ pub async fn inject_session_input(
 pub async fn submit_prompt_to_agent(
     session_id: String,
     prompt: String,
+    input_mode: Option<wardian_core::control::MessageInputMode>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<wardian_core::control::DeliveryDetail, String> {
-    let result = crate::delivery::submit_live_surface_prompt(
+    let detail = crate::control::deliver_prompt_to_agent(
         Some(&app),
         &state,
-        crate::delivery::LiveSurfacePromptRequest::message(session_id.clone(), prompt.clone()),
+        &session_id,
+        &prompt,
+        input_mode.unwrap_or(wardian_core::control::MessageInputMode::Message),
     )
     .await
     .map_err(|error| error.to_string())?;
-
-    if let Err(error) =
-        archive_delivered_prompt_for_agent_state(state.inner(), &session_id, &prompt).await
-    {
-        crate::manager::log_debug(&format!(
-            "[WARDIAN] conversation archive delivered prompt failed for {session_id}: {error}"
-        ));
-    }
 
     if let Err(error) =
         crate::commands::chat::archive_agent_chat_events_for_state(state.inner(), &session_id).await
@@ -315,7 +310,7 @@ pub async fn submit_prompt_to_agent(
         ));
     }
 
-    Ok(result.detail)
+    Ok(detail)
 }
 
 #[tauri::command]

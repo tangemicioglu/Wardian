@@ -669,27 +669,10 @@ async fn send_remote_prompt_with_idempotency(
         };
     }
 
-    crate::delivery::submit_live_surface_prompt(
-        Some(app),
-        state,
-        crate::delivery::LiveSurfacePromptRequest {
-            session_id: target.to_string(),
-            prompt: prompt.to_string(),
-            interaction_id: None,
-            input_mode,
-            queue_policy: wardian_core::control::QueuePolicy::LiveOnly,
-            approval_action: None,
-            origin: None,
-            runtime_state: "live_pty_available",
-            mark_prompt_started: true,
-            require_provider_turn_receipt: false,
-            payload_sent_detail: None,
-            delivery_message_id: None,
-        },
-    )
-    .await
-    .map_err(|error| error.to_string())
-    .map(|_| ())
+    crate::control::deliver_prompt_to_agent(Some(app), state, target, prompt, input_mode)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
