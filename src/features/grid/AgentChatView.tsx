@@ -864,8 +864,6 @@ function ChatModelSelection({
         setSaveError(`Saved, but the live model could not be changed: ${result.live_error ?? "Codex did not confirm the selection."}`);
       } else if (result.live_application === "deferred") {
         setSaveNotice("Saved for the next start or restart.");
-      } else if (result.live_application === "not_attempted" && saved.model) {
-        await submitInputToAgent(sessionId, `/model ${saved.model}`);
       }
     } catch (reason) {
       if (!persisted) {

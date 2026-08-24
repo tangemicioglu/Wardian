@@ -25,7 +25,6 @@ pub enum AgentModelLiveApplication {
     Applied,
     Deferred,
     Failed,
-    NotAttempted,
 }
 
 /// Persisted agent configuration together with the independent live outcome.
@@ -3887,7 +3886,7 @@ async fn apply_agent_model_selection_live(
     if !config.provider.eq_ignore_ascii_case("codex") {
         return AgentModelSelectionUpdateResult {
             config,
-            live_application: AgentModelLiveApplication::NotAttempted,
+            live_application: AgentModelLiveApplication::Deferred,
             live_error: None,
         };
     }
@@ -6598,27 +6597,29 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    async fn off_non_codex_model_selection_is_deferred_until_restart() {
-        let mut config = AgentConfig::default();
-        config.session_id = "agent-1".to_string();
-        config.provider = "claude".to_string();
-        config.is_off = true;
-        config.model = Some("claude-target".to_string());
-        config.reset_provider_config_for_provider();
+    async fn non_codex_model_selection_is_deferred_until_restart() {
+        for is_off in [false, true] {
+            let mut config = AgentConfig::default();
+            config.session_id = "agent-1".to_string();
+            config.provider = "claude".to_string();
+            config.is_off = is_off;
+            config.model = Some("claude-target".to_string());
+            config.reset_provider_config_for_provider();
 
-        let result = apply_agent_model_selection_live(
-            &AppState::new(),
-            "agent-1".to_string(),
-            config,
-        )
-        .await;
+            let result = apply_agent_model_selection_live(
+                &AppState::new(),
+                "agent-1".to_string(),
+                config,
+            )
+            .await;
 
-        assert_eq!(
-            result.live_application,
-            AgentModelLiveApplication::Deferred
-        );
-        assert_eq!(result.config.model.as_deref(), Some("claude-target"));
-        assert!(result.live_error.is_none());
+            assert_eq!(
+                result.live_application,
+                AgentModelLiveApplication::Deferred
+            );
+            assert_eq!(result.config.model.as_deref(), Some("claude-target"));
+            assert!(result.live_error.is_none());
+        }
     }
 
     #[test]

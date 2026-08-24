@@ -1765,7 +1765,10 @@ describe("AgentChatView", () => {
     expect(screen.getByLabelText("Model")).toHaveValue("gpt-target");
   });
 
-  it("keeps an off non-Codex model change deferred instead of sending a live command", async () => {
+  it.each([
+    { runtime: "live", status: "Idle", isOff: false },
+    { runtime: "off", status: "Off", isOff: true },
+  ])("keeps a $runtime non-Codex model change deferred instead of sending a live command", async ({ status, isOff }) => {
     invokeMock.mockImplementation((command) => {
       if (command === "load_agent_chat_transcript") return Promise.resolve([]);
       if (command === "list_provider_model_catalog") {
@@ -1789,7 +1792,7 @@ describe("AgentChatView", () => {
             session_name: "Alpha",
             agent_class: "Coder",
             folder: "C:/repo",
-            is_off: true,
+            is_off: isOff,
             provider: "claude",
             model: "claude-target",
             provider_config: { type: "claude" },
@@ -1802,7 +1805,7 @@ describe("AgentChatView", () => {
     });
     const user = userEvent.setup();
 
-    render(<AgentChatView sessionId="agent-1" agent={{ session_name: "Alpha", agent_class: "Coder", provider: "claude" }} status="Off" />);
+    render(<AgentChatView sessionId="agent-1" agent={{ session_name: "Alpha", agent_class: "Coder", provider: "claude" }} status={status} />);
     await screen.findByRole("option", { name: "Claude Target" });
     await user.selectOptions(screen.getByLabelText("Model"), "claude-target");
 

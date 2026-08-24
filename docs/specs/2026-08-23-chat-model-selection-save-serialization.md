@@ -45,7 +45,8 @@ controller's privileged writes run inside the transaction it already owns.
 Persistence remains authoritative if live application fails. An off agent
 reports the choice as saved for its next start or restart. A live timeout or
 unexpected picker reports partial success and sends Escape to unwind any open
-picker. Other providers retain their existing live command path.
+picker. Non-Codex providers report the saved model and effort as deferred to
+the next start or restart rather than issuing a partial model-only command.
 
 This boundary is intentionally local to chat. Spawn and Configure Agent retain
 their existing selection behavior because they do not apply overlapping live

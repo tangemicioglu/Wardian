@@ -150,7 +150,7 @@ export interface ProviderModelCatalog {
 
 export interface AgentModelSelectionUpdateResult {
     config: AgentConfig;
-    live_application: "applied" | "deferred" | "failed" | "not_attempted";
+    live_application: "applied" | "deferred" | "failed";
     live_error: string | null;
 }
 
