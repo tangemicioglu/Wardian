@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   sendBrowserWheel: vi.fn(),
   sendBrowserKey: vi.fn(),
   setBrowserViewport: vi.fn(),
+  answerBrowserDialog: vi.fn(),
+  closeBrowserPopup: vi.fn(),
   subscribeBrowserSession: vi.fn(),
 }));
 
@@ -33,6 +35,8 @@ vi.mock("./browserSessionClient", async () => {
     sendBrowserWheel: mocks.sendBrowserWheel,
     sendBrowserKey: mocks.sendBrowserKey,
     setBrowserViewport: mocks.setBrowserViewport,
+    answerBrowserDialog: mocks.answerBrowserDialog,
+    closeBrowserPopup: mocks.closeBrowserPopup,
     subscribeBrowserSession: mocks.subscribeBrowserSession,
   };
 });
@@ -48,6 +52,7 @@ function summary(overrides: Partial<BrowserSessionSummary> = {}): BrowserSession
     engine: "edge",
     console_error_count: 0,
     network_failure_count: 0,
+    popup: false,
     ...overrides,
   };
 }
@@ -107,6 +112,8 @@ beforeEach(() => {
   mocks.sendBrowserWheel.mockResolvedValue(undefined);
   mocks.sendBrowserKey.mockResolvedValue(undefined);
   mocks.setBrowserViewport.mockResolvedValue(summary());
+  mocks.answerBrowserDialog.mockResolvedValue(summary());
+  mocks.closeBrowserPopup.mockResolvedValue(summary());
   mocks.subscribeBrowserSession.mockImplementation(
     (_id: string, handler: (event: BrowserSessionEvent) => void) => {
       emit = handler;
@@ -478,6 +485,112 @@ describe("BrowserSurface", () => {
     });
     expect(mocks.navigateBrowserSession).not.toHaveBeenCalled();
     expect(mocks.sendBrowserPointer).not.toHaveBeenCalled();
+  });
+
+  it("shows a waiting dialog and answers it with what the operator pressed", async () => {
+    await renderSurface();
+    expect(screen.queryByTestId("browser-surface-dialog")).not.toBeInTheDocument();
+
+    act(() => {
+      emit?.({
+        kind: "state",
+        browser_id: "b-1",
+        summary: summary({
+          dialog: { kind: "confirm", message: "Delete everything?", default_prompt: "" },
+        }),
+      });
+    });
+
+    expect(screen.getByTestId("browser-surface-dialog-message")).toHaveTextContent(
+      "Delete everything?",
+    );
+    fireEvent.click(screen.getByTestId("browser-surface-dialog-accept"));
+    await waitFor(() =>
+      expect(mocks.answerBrowserDialog).toHaveBeenCalledWith("b-1", true, null, "lease-1"),
+    );
+  });
+
+  it("sends what was typed into a prompt, and only for a prompt", async () => {
+    await renderSurface();
+    act(() => {
+      emit?.({
+        kind: "state",
+        browser_id: "b-1",
+        summary: summary({
+          dialog: { kind: "prompt", message: "Your name?", default_prompt: "anonymous" },
+        }),
+      });
+    });
+
+    // The page's own default is the starting point, the way a real prompt works.
+    const field = screen.getByTestId("browser-surface-dialog-prompt");
+    expect(field).toHaveValue("anonymous");
+    fireEvent.change(field, { target: { value: "wardian" } });
+    fireEvent.click(screen.getByTestId("browser-surface-dialog-accept"));
+    await waitFor(() =>
+      expect(mocks.answerBrowserDialog).toHaveBeenCalledWith("b-1", true, "wardian", "lease-1"),
+    );
+  });
+
+  it("offers one button for an alert, because there is nothing to decline", async () => {
+    await renderSurface();
+    act(() => {
+      emit?.({
+        kind: "state",
+        browser_id: "b-1",
+        summary: summary({
+          dialog: { kind: "alert", message: "Saved", default_prompt: "" },
+        }),
+      });
+    });
+    expect(screen.getByTestId("browser-surface-dialog-accept")).toBeInTheDocument();
+    expect(screen.queryByTestId("browser-surface-dialog-dismiss")).not.toBeInTheDocument();
+  });
+
+  it("stops forwarding input to a page that a dialog has stopped", async () => {
+    await renderSurface();
+    act(() => {
+      emit?.({ kind: "frame", browser_id: "b-1", data: "AAAA", width: 1000, height: 500 });
+      emit?.({
+        kind: "state",
+        browser_id: "b-1",
+        summary: summary({
+          dialog: { kind: "alert", message: "Saved", default_prompt: "" },
+        }),
+      });
+    });
+    stubFrameGeometry();
+
+    const viewport = screen.getByTestId("browser-surface-viewport");
+    fireEvent.pointerDown(viewport, { clientX: 10, clientY: 10, button: 0 });
+    fireEvent.keyDown(viewport, { key: "a", code: "KeyA" });
+    fireEvent.wheel(viewport, { clientX: 10, clientY: 10, deltaX: 0, deltaY: 10 });
+    // The renderer is stopped: anything sent now would land on a page that has
+    // already moved on by the time it is answered.
+    expect(mocks.sendBrowserPointer).not.toHaveBeenCalled();
+    expect(mocks.sendBrowserKey).not.toHaveBeenCalled();
+    expect(mocks.sendBrowserWheel).not.toHaveBeenCalled();
+  });
+
+  it("says when a popup is presented and offers the way back", async () => {
+    await renderSurface();
+    expect(screen.queryByTestId("browser-surface-popup")).not.toBeInTheDocument();
+
+    act(() => {
+      emit?.({
+        kind: "state",
+        browser_id: "b-1",
+        summary: summary({ popup: true, url: "https://accounts.example.com/oauth" }),
+      });
+    });
+
+    expect(screen.getByTestId("browser-surface-popup")).toBeInTheDocument();
+    // The popup's own history has no entry for its opener, so Back cannot be
+    // the way out.
+    fireEvent.click(screen.getByLabelText("Close popup"));
+    await waitFor(() =>
+      expect(mocks.closeBrowserPopup).toHaveBeenCalledWith("b-1", "lease-1"),
+    );
   });
 
   it("takes the controls back when the lease is handed to this presentation", async () => {

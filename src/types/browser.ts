@@ -19,6 +19,21 @@ export type BrowserConsoleEntry = {
   text: string;
 };
 
+/**
+ * A page dialog waiting to be answered.
+ *
+ * The page is stopped until it is: `alert`, `confirm`, `prompt`, and
+ * `beforeunload` all hold the renderer, so nothing else about the session
+ * works while this is set.
+ */
+export type BrowserDialog = {
+  /** `alert`, `confirm`, `prompt`, or `beforeunload`. */
+  kind: string;
+  message: string;
+  /** What a `prompt` starts with; empty for every other kind. */
+  default_prompt: string;
+};
+
 export type BrowserSessionSummary = {
   browser_id: string;
   /** Short ref an agent or human can type, e.g. `browser:3`. */
@@ -33,6 +48,15 @@ export type BrowserSessionSummary = {
   console_error_count: number;
   /** Recorded requests that failed outright or answered 4xx/5xx. */
   network_failure_count: number;
+  /**
+   * True while a page this session opened is presented over its opener.
+   *
+   * One viewport means a popup takes the place of the page that opened it;
+   * `url`, `title`, and every action already describe whatever is presented.
+   */
+  popup: boolean;
+  /** The dialog stopping the page, if one is. */
+  dialog?: BrowserDialog | null;
 };
 
 /**

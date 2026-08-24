@@ -6,7 +6,7 @@
 //! session ends only on explicit close, on its owning agent's termination, or
 //! on app exit.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -15,8 +15,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 pub use wardian_core::browser::{
-    BrowserSessionSummary, ConsoleEntry, LoadState, Viewport, DEFAULT_VIEWPORT_HEIGHT,
-    DEFAULT_VIEWPORT_WIDTH,
+    BrowserDialog, BrowserSessionSummary, ConsoleEntry, LoadState, Viewport,
+    DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH,
 };
 use wardian_core::browser::{
     BrowserCookie, CookieAction, DownloadRecord, NetworkEntry, NetworkFilter, NetworkRequestDetail,
@@ -324,6 +324,22 @@ struct SessionState {
     screencast_viewers: Vec<Attachment>,
     /// The attachment allowed to drive the page. First attach wins.
     owner_token: Option<String>,
+    /// The dialog stopping the page, while one is waiting to be answered.
+    dialog: Option<BrowserDialog>,
+    /// Page targets this session has already accounted for.
+    ///
+    /// Target discovery re-announces everything that already exists the
+    /// moment it is switched on, and the browser starts with a page of its
+    /// own besides the one this session created. Without a record of what was
+    /// there first, the session would adopt its own base page as a popup.
+    known_targets: HashSet<String>,
+}
+
+/// One page target this session is attached to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AttachedTarget {
+    target_id: String,
+    cdp_session_id: String,
 }
 
 /// One presentation's streaming attachment.
@@ -346,7 +362,13 @@ pub struct BrowserSession {
     workspace: Option<String>,
     engine: EngineKind,
     connection: Arc<CdpConnection>,
-    cdp_session_id: String,
+    /// The page this session presents, and the ones it is stacked on.
+    ///
+    /// A popup is presented in place of its opener, so "which protocol
+    /// session do I talk to" is a runtime question rather than a fixed
+    /// identity. Kept apart from `state` so reading it never contends with
+    /// the page state a call is about to write.
+    targets: RwLock<Vec<AttachedTarget>>,
     profile_dir: PathBuf,
     /// Where this session's downloads land.
     ///
@@ -379,7 +401,30 @@ impl BrowserSession {
         self.owner_agent_id.as_deref()
     }
 
+    /// The protocol session for the page this surface is presenting.
+    ///
+    /// Every call goes to the presented page, not to the base one: a popup is
+    /// what the operator is looking at and what an agent's next action means.
+    async fn cdp_session(&self) -> String {
+        let targets = self.targets.read().await;
+        targets
+            .last()
+            .map(|target| target.cdp_session_id.clone())
+            // Unreachable in practice: the base target is pushed before the
+            // session exists. Falling back to an empty id makes the call fail
+            // with a protocol error rather than panicking a command handler.
+            .unwrap_or_default()
+    }
+
+    /// Whether a popup is presented in place of its opener.
+    async fn presenting_popup(&self) -> bool {
+        self.targets.read().await.len() > 1
+    }
+
     pub async fn summary(&self) -> BrowserSessionSummary {
+        // Read outside the state lock: `targets` is a separate lock and the
+        // order between them has to stay one-way.
+        let popup = self.presenting_popup().await;
         let state = self.state.read().await;
         BrowserSessionSummary {
             browser_id: self.browser_id.clone(),
@@ -393,6 +438,8 @@ impl BrowserSession {
             workspace: self.workspace.clone(),
             console_error_count: state.console_error_count,
             network_failure_count: state.network.failure_count(),
+            popup,
+            dialog: state.dialog.clone(),
         }
     }
 
@@ -400,7 +447,7 @@ impl BrowserSession {
         let result = self
             .connection
             .call_session(
-                &self.cdp_session_id,
+                &self.cdp_session().await,
                 "Runtime.evaluate",
                 json!({
                     "expression": expression,
@@ -439,7 +486,7 @@ impl BrowserSession {
         }
         let result = self
             .connection
-            .call_session(&self.cdp_session_id, "Page.navigate", json!({ "url": url }))
+            .call_session(&self.cdp_session().await, "Page.navigate", json!({ "url": url }))
             .await?;
         if let Some(error) = result.get("errorText").and_then(Value::as_str) {
             let mut state = self.state.write().await;
@@ -465,7 +512,7 @@ impl BrowserSession {
     pub async fn traverse_history(&self, delta: i64) -> Result<(), BrowserError> {
         let history = self
             .connection
-            .call_session(&self.cdp_session_id, "Page.getNavigationHistory", json!({}))
+            .call_session(&self.cdp_session().await, "Page.getNavigationHistory", json!({}))
             .await?;
         let current = history
             .get("currentIndex")
@@ -494,7 +541,7 @@ impl BrowserSession {
             })?;
         self.connection
             .call_session(
-                &self.cdp_session_id,
+                &self.cdp_session().await,
                 "Page.navigateToHistoryEntry",
                 json!({ "entryId": entry_id }),
             )
@@ -504,14 +551,14 @@ impl BrowserSession {
 
     pub async fn reload(&self) -> Result<(), BrowserError> {
         self.connection
-            .call_session(&self.cdp_session_id, "Page.reload", json!({}))
+            .call_session(&self.cdp_session().await, "Page.reload", json!({}))
             .await?;
         Ok(())
     }
 
     pub async fn stop_loading(&self) -> Result<(), BrowserError> {
         self.connection
-            .call_session(&self.cdp_session_id, "Page.stopLoading", json!({}))
+            .call_session(&self.cdp_session().await, "Page.stopLoading", json!({}))
             .await?;
         Ok(())
     }
@@ -667,7 +714,7 @@ impl BrowserSession {
         let result = self
             .connection
             .call_session(
-                &self.cdp_session_id,
+                &self.cdp_session().await,
                 "Page.captureScreenshot",
                 json!({ "format": "png", "captureBeyondViewport": full_page }),
             )
@@ -698,7 +745,7 @@ impl BrowserSession {
         }
         self.connection
             .call_session(
-                &self.cdp_session_id,
+                &self.cdp_session().await,
                 "Emulation.setDeviceMetricsOverride",
                 json!({
                     "width": resolved.width,
@@ -783,7 +830,7 @@ impl BrowserSession {
         let result = self
             .connection
             .call_session(
-                &self.cdp_session_id,
+                &self.cdp_session().await,
                 "Network.getResponseBody",
                 json!({ "requestId": request_id }),
             )
@@ -830,7 +877,7 @@ impl BrowserSession {
                 };
                 let result = self
                     .connection
-                    .call_session(&self.cdp_session_id, method, json!({}))
+                    .call_session(&self.cdp_session().await, method, json!({}))
                     .await?;
                 Ok(cookies_from(&result))
             }
@@ -884,7 +931,7 @@ impl BrowserSession {
                     params["expires"] = json!(expires);
                 }
                 self.connection
-                    .call_session(&self.cdp_session_id, "Network.setCookie", params)
+                    .call_session(&self.cdp_session().await, "Network.setCookie", params)
                     .await?;
                 Ok(Vec::new())
             }
@@ -917,13 +964,13 @@ impl BrowserSession {
                     params["path"] = json!(path);
                 }
                 self.connection
-                    .call_session(&self.cdp_session_id, "Network.deleteCookies", params)
+                    .call_session(&self.cdp_session().await, "Network.deleteCookies", params)
                     .await?;
                 Ok(Vec::new())
             }
             CookieAction::Clear => {
                 self.connection
-                    .call_session(&self.cdp_session_id, "Network.clearBrowserCookies", json!({}))
+                    .call_session(&self.cdp_session().await, "Network.clearBrowserCookies", json!({}))
                     .await?;
                 Ok(Vec::new())
             }
@@ -1092,7 +1139,7 @@ impl BrowserSession {
             if let Err(error) = self
                 .connection
                 .call_session(
-                    &self.cdp_session_id,
+                    &self.cdp_session().await,
                     "Page.startScreencast",
                     json!({ "format": "jpeg", "quality": SCREENCAST_JPEG_QUALITY, "everyNthFrame": 1 }),
                 )
@@ -1133,6 +1180,215 @@ impl BrowserSession {
         });
     }
 
+    /// Presents a page this session's page opened, in place of its opener.
+    ///
+    /// A surface has one viewport, so a popup either replaces what is on it or
+    /// runs where nobody can see or drive it. The second is what a popup used
+    /// to do: `window.open` and every `target="_blank"` link — every OAuth
+    /// flow — created a target this session ignored, leaving the operator
+    /// looking at an opener that would never change.
+    ///
+    /// Best effort throughout. A popup that closes itself between the
+    /// announcement and the attach is not an error, and failing to present it
+    /// must not disturb the page that is already presented.
+    async fn adopt_popup(&self, target_id: &str, events: &broadcast::Sender<BrowserSessionEvent>) {
+        // Shares the screencast lock with attach/detach: the stream has to
+        // stop on one target and start on the other without an attach landing
+        // in between and starting it on the one being left.
+        let _transition = self.screencast_transition.lock().await;
+        let previous = self.cdp_session().await;
+        let Ok(page) = equip_target(&self.connection, target_id).await else {
+            return;
+        };
+        let (viewport, streaming) = {
+            let state = self.state.read().await;
+            (state.viewport, !state.screencast_viewers.is_empty())
+        };
+        // The popup opens at the browser's own window size; the pane's size is
+        // the one the operator chose.
+        let _ = self
+            .connection
+            .call_session(
+                &page.target.cdp_session_id,
+                "Emulation.setDeviceMetricsOverride",
+                json!({
+                    "width": viewport.width,
+                    "height": viewport.height,
+                    "deviceScaleFactor": 1,
+                    "mobile": false,
+                }),
+            )
+            .await;
+        if streaming {
+            let _ = self
+                .connection
+                .call_session(&previous, "Page.stopScreencast", json!({}))
+                .await;
+        }
+        self.targets.write().await.push(page.target.clone());
+        {
+            let mut state = self.state.write().await;
+            state.main_frame_id = page.main_frame_id;
+            // Refs name elements in the document that minted them, and this is
+            // a different document.
+            state.ledger.invalidate();
+        }
+        if streaming {
+            let _ = self
+                .connection
+                .call_session(
+                    &page.target.cdp_session_id,
+                    "Page.startScreencast",
+                    json!({
+                        "format": "jpeg",
+                        "quality": SCREENCAST_JPEG_QUALITY,
+                        "everyNthFrame": 1,
+                    }),
+                )
+                .await;
+        }
+        // The stream has moved; the lock is only about that. What follows runs
+        // script in the popup, and a popup that greets you with `alert` would
+        // otherwise hold attach and detach for a whole protocol timeout.
+        drop(_transition);
+        // A popup that finished loading before this attach emits nothing
+        // further, so its address is read rather than waited for.
+        self.resync_presented_page(events).await;
+    }
+
+    /// Returns to the page behind a popup that has gone away.
+    async fn release_popup(&self, target_id: &str, events: &broadcast::Sender<BrowserSessionEvent>) {
+        let _transition = self.screencast_transition.lock().await;
+        let restored = {
+            let mut targets = self.targets.write().await;
+            // The base page closing means the browser is going away, which the
+            // disconnect path already owns.
+            let Some(index) = targets.iter().position(|t| t.target_id == target_id) else {
+                return;
+            };
+            if index == 0 {
+                return;
+            }
+            let was_presented = index == targets.len() - 1;
+            targets.remove(index);
+            // A popup behind the presented one closed: the stack shrinks and
+            // nothing on screen changes.
+            if !was_presented {
+                return;
+            }
+            targets.last().cloned()
+        };
+        let Some(restored) = restored else { return };
+        let streaming = !self.state.read().await.screencast_viewers.is_empty();
+        if streaming {
+            let _ = self
+                .connection
+                .call_session(
+                    &restored.cdp_session_id,
+                    "Page.startScreencast",
+                    json!({
+                        "format": "jpeg",
+                        "quality": SCREENCAST_JPEG_QUALITY,
+                        "everyNthFrame": 1,
+                    }),
+                )
+                .await;
+        }
+        {
+            let mut state = self.state.write().await;
+            state.ledger.invalidate();
+            // A dialog belongs to the page that raised it, and that page is
+            // gone.
+            state.dialog = None;
+        }
+        let main_frame_id = self
+            .connection
+            .call_session(&restored.cdp_session_id, "Page.getFrameTree", json!({}))
+            .await
+            .ok()
+            .and_then(|tree| {
+                tree.get("frameTree")
+                    .and_then(|frame_tree| frame_tree.get("frame"))
+                    .and_then(|frame| frame.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+        if main_frame_id.is_some() {
+            self.state.write().await.main_frame_id = main_frame_id;
+        }
+        // As in `adopt_popup`: the page work below must not hold the lock that
+        // attach and detach need.
+        drop(_transition);
+        self.resync_presented_page(events).await;
+    }
+
+    /// Closes the popup on top and returns to the page behind it.
+    ///
+    /// A popup that does not close itself would otherwise be a one-way door:
+    /// its history has no entry for the opener, so Back cannot leave it.
+    pub async fn close_popup(&self, lease_token: Option<&str>) -> Result<(), BrowserError> {
+        self.require_drive(lease_token).await?;
+        let presented = {
+            let targets = self.targets.read().await;
+            if targets.len() <= 1 {
+                return Err(BrowserError::Invalid {
+                    detail: "this session is not presenting a popup".to_string(),
+                });
+            }
+            targets.last().cloned()
+        };
+        let Some(presented) = presented else {
+            return Ok(());
+        };
+        // `Target.targetDestroyed` does the rest, the same way it does when a
+        // popup closes itself.
+        self.connection
+            .call(
+                "Target.closeTarget",
+                json!({ "targetId": presented.target_id }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Answers the dialog stopping the page.
+    ///
+    /// `accept` is what the operator pressed; `prompt_text` is only read for a
+    /// `prompt`. Answering is the only way the page resumes — until it does,
+    /// nothing else about the session works.
+    pub async fn answer_dialog(
+        &self,
+        lease_token: Option<&str>,
+        accept: bool,
+        prompt_text: Option<&str>,
+    ) -> Result<(), BrowserError> {
+        self.require_drive(lease_token).await?;
+        let cdp_session_id = self.cdp_session().await;
+        dispatch_dialog_answer(
+            &self.connection,
+            &cdp_session_id,
+            accept,
+            prompt_text,
+        )
+        .await?;
+        self.state.write().await.dialog = None;
+        Ok(())
+    }
+
+    /// Re-reads what the presented page says about itself and republishes it.
+    async fn resync_presented_page(&self, events: &broadcast::Sender<BrowserSessionEvent>) {
+        if let Ok(url) = self.get(PageField::Url, None).await {
+            self.state.write().await.url = url;
+        }
+        if let Ok(title) = self.get(PageField::Title, None).await {
+            self.state.write().await.title = title;
+        }
+        let _ = events.send(BrowserSessionEvent::State {
+            browser_id: self.browser_id.clone(),
+            summary: self.summary().await,
+        });
+    }
+
     /// Drops one attachment and hands the lease on if it held it.
     async fn release_attachment(&self, token: &str) -> bool {
         let mut state = self.state.write().await;
@@ -1157,8 +1413,19 @@ impl BrowserSession {
         let should_stop = self.release_attachment(token).await;
         self.announce_lease().await;
         if should_stop {
+            // Nobody is left to answer, and a dialog holds the whole page.
+            // Leaving it up would freeze a session whose surface simply
+            // closed.
+            let pending = self.state.read().await.dialog.clone();
+            if let Some(dialog) = pending {
+                let _ = self
+                    .answer_dialog(None, safe_dialog_answer(&dialog.kind), None)
+                    .await;
+            }
+        }
+        if should_stop {
             self.connection
-                .call_session(&self.cdp_session_id, "Page.stopScreencast", json!({}))
+                .call_session(&self.cdp_session().await, "Page.stopScreencast", json!({}))
                 .await?;
         }
         Ok(())
@@ -1212,7 +1479,7 @@ impl BrowserSession {
         }
         self.connection
             .call_session(
-                &self.cdp_session_id,
+                &self.cdp_session().await,
                 "Input.dispatchMouseEvent",
                 json!({
                     "type": event.event_type,
@@ -1240,7 +1507,7 @@ impl BrowserSession {
         self.require_drive(lease_token).await?;
         self.connection
             .call_session(
-                &self.cdp_session_id,
+                &self.cdp_session().await,
                 "Input.dispatchMouseEvent",
                 json!({
                     "type": "mouseWheel",
@@ -1291,7 +1558,7 @@ impl BrowserSession {
             params["text"] = json!(text);
         }
         self.connection
-            .call_session(&self.cdp_session_id, "Input.dispatchKeyEvent", params)
+            .call_session(&self.cdp_session().await, "Input.dispatchKeyEvent", params)
             .await?;
         Ok(())
     }
@@ -1300,7 +1567,7 @@ impl BrowserSession {
     pub async fn insert_text(&self, text: &str) -> Result<(), BrowserError> {
         self.connection
             .call_session(
-                &self.cdp_session_id,
+                &self.cdp_session().await,
                 "Input.insertText",
                 json!({ "text": text }),
             )
@@ -1325,7 +1592,7 @@ impl BrowserSession {
         if !self.connection.is_closed() {
             let _ = self
                 .connection
-                .call_session(&self.cdp_session_id, "Page.close", json!({}))
+                .call_session(&self.cdp_session().await, "Page.close", json!({}))
                 .await;
         }
         if let Some(mut child) = self.child.lock().await.take() {
@@ -1607,7 +1874,7 @@ impl BrowserSessionBroker {
         // its profile lock — so the child is killed and awaited explicitly
         // before the directory is removed.
         let attached = attach_page(&launched.websocket_url).await;
-        let (connection, cdp_session_id, main_frame_id) = match attached {
+        let (connection, page, known_targets) = match attached {
             Ok(attached) => attached,
             Err(error) => {
                 let _ = launched.child.kill().await;
@@ -1615,6 +1882,7 @@ impl BrowserSessionBroker {
                 return Err(error);
             }
         };
+        let main_frame_id = page.main_frame_id.clone();
 
         let session = Arc::new(BrowserSession {
             browser_id: browser_id.clone(),
@@ -1623,13 +1891,14 @@ impl BrowserSessionBroker {
             workspace: request.workspace.clone(),
             engine: launched.kind,
             connection,
-            cdp_session_id,
+            targets: RwLock::new(vec![page.target]),
             profile_dir: profile_dir.clone(),
             download_dir: download_dir.clone(),
             child: Mutex::new(Some(launched.child)),
             state: RwLock::new(SessionState {
                 viewport,
                 main_frame_id,
+                known_targets,
                 ..SessionState::default()
             }),
             screencast_transition: Mutex::new(()),
@@ -1671,6 +1940,7 @@ impl BrowserSessionBroker {
             .await
             .insert(browser_id.clone(), Arc::clone(&session));
         self.spawn_event_pump(Arc::clone(&session));
+        self.spawn_dialog_watcher(Arc::clone(&session));
 
         if let Some(url) = target_url {
             // A failed first load is a page outcome, not a failed open. The
@@ -1688,12 +1958,113 @@ impl BrowserSessionBroker {
         Ok(session)
     }
 
+    /// Services page dialogs on a subscription of their own.
+    ///
+    /// A dialog stops the renderer, and the session's event pump does page
+    /// work inline — a `Runtime.evaluate` for a title, an ack for a frame.
+    /// Leaving dialogs to the pump deadlocks the session: the one call that
+    /// releases the renderer queues behind a call the renderer cannot answer,
+    /// so `alert()` froze the page for a full protocol timeout and then some.
+    /// This loop only ever reads, and hands the answering to a task of its
+    /// own, so nothing a page does can stop it from arriving.
+    fn spawn_dialog_watcher(&self, session: Arc<BrowserSession>) {
+        let mut receiver = session.connection.subscribe();
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            loop {
+                let event = match receiver.recv().await {
+                    Ok(event) => event,
+                    // Dropping a dialog announcement would strand the page, so
+                    // a lagging reader keeps going rather than giving up.
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                if event.method == DISCONNECTED_METHOD {
+                    return;
+                }
+                match event.method.as_str() {
+                    "Page.javascriptDialogOpening" => {}
+                    "Page.javascriptDialogClosed" => {
+                        // Answered here, or dismissed by a navigation away.
+                        let presented = event.session_id.as_deref()
+                            == Some(session.cdp_session().await.as_str());
+                        if !presented {
+                            continue;
+                        }
+                        let had_dialog = {
+                            let mut state = session.state.write().await;
+                            state.dialog.take().is_some()
+                        };
+                        if had_dialog {
+                            let _ = events.send(BrowserSessionEvent::State {
+                                browser_id: session.browser_id.clone(),
+                                summary: session.summary().await,
+                            });
+                        }
+                        continue;
+                    }
+                    _ => continue,
+                }
+                let Some(cdp_session_id) = event.session_id.clone() else {
+                    continue;
+                };
+                let dialog = BrowserDialog {
+                    kind: event
+                        .params
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("alert")
+                        .to_string(),
+                    message: event
+                        .params
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    default_prompt: event
+                        .params
+                        .get("defaultPrompt")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                };
+                let session = Arc::clone(&session);
+                let events = events.clone();
+                // Spawned so the loop is ready for the next announcement even
+                // while this one is being answered.
+                tokio::spawn(async move {
+                    let presented = cdp_session_id == session.cdp_session().await;
+                    // A dialog on a page nobody is presenting — the opener
+                    // behind a popup — cannot be shown, so it is answered
+                    // rather than left to stop that page for good. So is one
+                    // on a session no surface is watching: an agent driving
+                    // through the CLI navigates away from `beforeunload`
+                    // constantly and would otherwise wedge on the first.
+                    if !presented || session.attachment_count().await == 0 {
+                        let _ = dispatch_dialog_answer(
+                            &session.connection,
+                            &cdp_session_id,
+                            safe_dialog_answer(&dialog.kind),
+                            None,
+                        )
+                        .await;
+                        return;
+                    }
+                    session.state.write().await.dialog = Some(dialog);
+                    let _ = events.send(BrowserSessionEvent::State {
+                        browser_id: session.browser_id.clone(),
+                        summary: session.summary().await,
+                    });
+                });
+            }
+        });
+    }
+
     /// Translates protocol events into session state and surface events.
     fn spawn_event_pump(&self, session: Arc<BrowserSession>) {
         let mut receiver = session.connection.subscribe();
         let events = self.events.clone();
         let sessions = Arc::clone(&self.sessions);
-        let cdp_session_id = session.cdp_session_id.clone();
         tokio::spawn(async move {
             // The connection can close between `subscribe` and the first
             // `recv`, in which case the disconnect event was published to
@@ -1729,14 +2100,18 @@ impl BrowserSessionBroker {
                     return;
                 }
                 match event.session_id.as_deref() {
-                    Some(id) if id == cdp_session_id => {}
-                    // Browser-scoped events — download progress among them —
-                    // carry no session id, and this connection serves exactly
-                    // one browser, so an unaddressed event here is this
-                    // session's by construction.
+                    // The presented page. A popup this session adopted is the
+                    // presented page while it is up, so the comparison is
+                    // against the top of the stack rather than the base.
+                    Some(id) if id == session.cdp_session().await => {}
+                    // Browser-scoped events — target discovery and download
+                    // progress among them — carry no session id, and this
+                    // connection serves exactly one browser, so an unaddressed
+                    // event here is this session's by construction.
                     None => {}
-                    // Some other target: a popup, an extension worker. Its page
-                    // events must not rewrite this session's state.
+                    // A target this session is not presenting: the page behind
+                    // an open popup, or a worker. Its page events must not
+                    // rewrite what the surface is showing.
                     Some(_) => continue,
                 }
                 handle_protocol_event(&session, &events, event).await;
@@ -1889,23 +2264,22 @@ async fn reap_dead_session(
     session.shutdown().await;
 }
 
-/// Connects to a launched browser and attaches to a fresh page.
-///
-/// Free of the broker so `open` keeps ownership of the child across the whole
-/// fallible region and can reap it before touching the profile directory.
-async fn attach_page(
-    websocket_url: &str,
-) -> Result<(Arc<CdpConnection>, String, Option<String>), BrowserError> {
-    let connection = CdpConnection::connect(websocket_url).await?;
+/// What a freshly attached page target needs before it can be presented.
+struct AttachedPage {
+    target: AttachedTarget,
+    main_frame_id: Option<String>,
+}
 
-    // Size is deliberately omitted: the protocol only accepts it alongside
-    // `newWindow`, and the viewport is established by
-    // `Emulation.setDeviceMetricsOverride`, which is what the screencast
-    // actually follows.
-    let created = connection
-        .call("Target.createTarget", json!({ "url": "about:blank" }))
-        .await?;
-    let target_id = required_str("Target.createTarget", &created, "targetId")?;
+/// Turns a page target into one this session can present and drive.
+///
+/// Every domain a session depends on is enabled here rather than only at open,
+/// because a popup this session adopts has to arrive equipped the same way its
+/// opener did — otherwise the console, the network ledger, and the frame
+/// events all stop the moment a page opens a window.
+async fn equip_target(
+    connection: &Arc<CdpConnection>,
+    target_id: &str,
+) -> Result<AttachedPage, BrowserError> {
     let attached = connection
         .call(
             "Target.attachToTarget",
@@ -1948,7 +2322,87 @@ async fn attach_page(
                 .and_then(Value::as_str)
                 .map(str::to_string)
         });
-    Ok((connection, cdp_session_id, main_frame_id))
+    Ok(AttachedPage {
+        target: AttachedTarget {
+            target_id: target_id.to_string(),
+            cdp_session_id,
+        },
+        main_frame_id,
+    })
+}
+
+/// Connects to a launched browser and attaches to a fresh page.
+///
+/// Free of the broker so `open` keeps ownership of the child across the whole
+/// fallible region and can reap it before touching the profile directory.
+async fn attach_page(
+    websocket_url: &str,
+) -> Result<(Arc<CdpConnection>, AttachedPage, HashSet<String>), BrowserError> {
+    let connection = CdpConnection::connect(websocket_url).await?;
+
+    // Size is deliberately omitted: the protocol only accepts it alongside
+    // `newWindow`, and the viewport is established by
+    // `Emulation.setDeviceMetricsOverride`, which is what the screencast
+    // actually follows.
+    let created = connection
+        .call("Target.createTarget", json!({ "url": "about:blank" }))
+        .await?;
+    let target_id = required_str("Target.createTarget", &created, "targetId")?;
+    let page = equip_target(&connection, &target_id).await?;
+
+    // Everything that exists now is scenery: this session's own page, and the
+    // blank one the browser opens for itself at launch. Discovery re-announces
+    // all of them, so the pump needs the list that was already there to tell a
+    // popup from the furniture.
+    let known = connection
+        .call("Target.getTargets", json!({}))
+        .await
+        .ok()
+        .and_then(|targets| targets.get("targetInfos").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|info| info.get("targetId").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<HashSet<String>>();
+    // Discovery rather than auto-attach: auto-attach would also pause every
+    // service worker until this client released it, which is a page-breaking
+    // way to learn about a popup.
+    connection
+        .call("Target.setDiscoverTargets", json!({ "discover": true }))
+        .await?;
+
+    Ok((connection, page, known))
+}
+
+/// Answers one dialog on the protocol session that raised it.
+///
+/// Free of `BrowserSession` so the dialog watcher can answer a dialog raised
+/// by a target the session is not presenting — the opener behind a popup —
+/// which still stops that page and which nobody can see.
+async fn dispatch_dialog_answer(
+    connection: &Arc<CdpConnection>,
+    cdp_session_id: &str,
+    accept: bool,
+    prompt_text: Option<&str>,
+) -> Result<(), BrowserError> {
+    let mut params = json!({ "accept": accept });
+    if let Some(text) = prompt_text {
+        params["promptText"] = json!(text);
+    }
+    connection
+        .call_session(cdp_session_id, "Page.handleJavaScriptDialog", params)
+        .await?;
+    Ok(())
+}
+
+/// What a session with nobody watching should answer a dialog with.
+///
+/// `beforeunload` is accepted because the navigation that raised it was asked
+/// for, and refusing it would silently cancel the caller's own request.
+/// Everything else is dismissed: a `confirm` nobody saw has not been agreed
+/// to, and a `prompt` nobody answered has no answer.
+fn safe_dialog_answer(kind: &str) -> bool {
+    kind == "beforeunload"
 }
 
 /// Applies one protocol event to session state and republishes what surfaces need.
@@ -1959,13 +2413,43 @@ async fn handle_protocol_event(
 ) {
     let browser_id = session.browser_id.clone();
     match event.method.as_str() {
+        // A page opened a window. The surface has one viewport, so the popup
+        // is presented in place of its opener rather than disappearing into a
+        // target nobody is attached to.
+        "Target.targetCreated" => {
+            let Some(info) = event.params.get("targetInfo") else {
+                return;
+            };
+            if info.get("type").and_then(Value::as_str) != Some("page") {
+                return;
+            }
+            let Some(target_id) = info.get("targetId").and_then(Value::as_str) else {
+                return;
+            };
+            {
+                let mut state = session.state.write().await;
+                // Discovery replays what already existed, and the browser's
+                // own startup page is among it.
+                if !state.known_targets.insert(target_id.to_string()) {
+                    return;
+                }
+            }
+            session.adopt_popup(target_id, events).await;
+        }
+        "Target.targetDestroyed" => {
+            let Some(target_id) = event.params.get("targetId").and_then(Value::as_str) else {
+                return;
+            };
+            session.state.write().await.known_targets.remove(target_id);
+            session.release_popup(target_id, events).await;
+        }
         "Page.screencastFrame" => {
             let ack_id = event.params.get("sessionId").and_then(Value::as_i64);
             if let Some(ack_id) = ack_id {
                 let _ = session
                     .connection
                     .call_session(
-                        &session.cdp_session_id,
+                        &session.cdp_session().await,
                         "Page.screencastFrameAck",
                         json!({ "sessionId": ack_id }),
                     )

@@ -287,6 +287,54 @@ of a layout nobody chose. Only the driving presentation resizes: the viewport
 belongs to the shared page, so a mirror reflowing it would move the page under
 the pane that owns it.
 
+**A popup is presented in place of its opener.** A surface has one viewport,
+so a window a page opens either replaces what is on it or runs where nobody can
+see or drive it. The second is what used to happen: `window.open` and every
+`target="_blank"` link — every OAuth flow — created a target the session
+ignored, leaving the operator watching an opener that would never change.
+
+The session keeps a stack of attached page targets and presents the last. A
+popup is adopted with the domains its opener had, the pane's viewport, and the
+screencast moved onto it; `url`, `title`, snapshots, and actions then all
+describe the popup, because that is what is presented. `summary.popup` is the
+one bit that says the opener is still behind it, and the surface's **Close
+popup** button is the way back: the popup's own history has no entry for the
+page that opened it, so Back cannot leave it.
+
+Adoption is keyed on the target being new rather than on `openerId`. Chromium
+implies `noopener` for `target="_blank"`, so the commonest popup of all arrives
+with no opener recorded — and this browser is exclusive to its session, so any
+page target that appears after open is one this session's page asked for. The
+targets that already existed are recorded at open, because discovery
+re-announces everything the moment it is switched on and the browser starts
+with a page of its own.
+
+Discovery rather than `Target.setAutoAttach`: auto-attach would also pause
+every service worker until this client released it, which is a page-breaking
+way to learn about a popup.
+
+**A dialog stops the page, and something always answers it.** `alert`,
+`confirm`, `prompt`, and `beforeunload` hold the renderer until a client calls
+`Page.handleJavaScriptDialog`. With `Page.enable` on and nobody answering, the
+page stopped for good — the surface kept its last frame and every later call
+timed out, which reads as a frozen browser rather than as a dialog.
+
+Dialogs have a subscription of their own, separate from the session's event
+pump. The pump does page work inline — a `Runtime.evaluate` for a title, an ack
+for a frame — so a pump that owned dialogs would deadlock: the one call that
+releases the renderer would queue behind a call the renderer cannot answer. The
+watcher only reads, and hands answering to a task of its own.
+
+Who answers depends on who could see it. A session with a presentation attached
+holds the dialog, reports it in `summary.dialog`, and the surface shows it with
+the buttons that dialog kind has. A session nobody is watching answers its own,
+and so does a dialog raised by a target that is not being presented — the
+opener behind a popup. `beforeunload` is accepted, because the navigation that
+raised it was asked for and refusing it would silently cancel the caller's own
+request; everything else is dismissed, because a `confirm` nobody saw has not
+been agreed to. The last presentation to detach answers whatever was still
+waiting, so closing a pane cannot strand a page.
+
 **One driver at a time.** `attach_browser_screencast` mints an opaque lease
 token and returns it with `can_drive`. The first attachment holds the lease and
 later ones mirror it read-only, the same arrangement the terminal broker uses.
@@ -380,8 +428,8 @@ width the operator never chose.
 | Layer | What it covers | How to run |
 | --- | --- | --- |
 | Rust unit | URL normalization, wait predicates, ref staleness, snapshot parsing, network event folding, filters, storage and download bounds, CLI arg parsing, error codes | `cargo test --lib browser_session` |
-| Engine-backed | Real Edge: navigate, snapshot, fill, click, stale refusal, screenshot, viewport, editing keys, lease handover, short refs, the network ledger, cookies, storage, a real download | `cargo test --lib browser_session::tests -- --ignored --test-threads=1` |
-| Frontend | Coordinate mapping, input forwarding, read-only mode, lease handover, viewport tracking, screencast attach/detach, reopen path, footer counts | `npx vitest run src/features/browser` |
+| Engine-backed | Real Edge: navigate, snapshot, fill, click, stale refusal, screenshot, viewport, editing keys, lease handover, popup adoption and return, dialogs held and auto-answered, short refs, the network ledger, cookies, storage, a real download | `cargo test --lib browser_session::tests -- --ignored --test-threads=1` |
+| Frontend | Coordinate mapping, input forwarding, read-only mode, lease handover, viewport tracking, the dialog bar and popup controls, screencast attach/detach, reopen path, footer counts | `npx vitest run src/features/browser` |
 
 The engine-backed tests are `#[ignore]`d so a machine without a Chromium still
 runs a green suite. They serve a fixture over an ephemeral loopback port rather

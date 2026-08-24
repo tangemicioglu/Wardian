@@ -16,9 +16,11 @@ import type {
   TerminalVisibility,
 } from "../../types";
 import {
+  answerBrowserDialog,
   attachBrowserScreencast,
   cdpModifiers,
   cdpMouseButton,
+  closeBrowserPopup,
   detachBrowserScreencast,
   getBrowserSession,
   isTextKey,
@@ -134,6 +136,8 @@ export function BrowserSurface({
   const [restoreError, setRestoreError] = useState<string | null>(null);
   /** The lease this presentation currently holds, if it is attached. */
   const [lease, setLease] = useState<{ token: string; can_drive: boolean } | null>(null);
+  /** What the operator has typed into a `prompt` that is waiting. */
+  const [promptDraft, setPromptDraft] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   /**
@@ -324,6 +328,38 @@ export function BrowserSurface({
   // live but does nothing is worse than one that is visibly disabled. An
   // unattached surface has no lease and so cannot drive at all.
   const isReadOnly = read_only || lease === null || !lease.can_drive;
+  const dialog = summary?.dialog ?? null;
+  // A dialog stops the renderer, so anything sent to the page while one is up
+  // is input the operator aimed at a page that cannot receive it. It would be
+  // delivered the instant the dialog is answered, to a page that has moved on.
+  const inputBlocked = isReadOnly || dialog !== null;
+
+  const answerDialog = useCallback(
+    (accept: boolean) => {
+      if (isReadOnly || !lease || !dialog) return;
+      setActionError(null);
+      void answerBrowserDialog(
+        resource_key,
+        accept,
+        dialog.kind === "prompt" ? promptDraft : null,
+        lease.token,
+      )
+        .then(setSummary)
+        .catch((error: unknown) => {
+          setActionError(error instanceof Error ? error.message : String(error));
+        });
+    },
+    [dialog, isReadOnly, lease, promptDraft, resource_key],
+  );
+
+  // Each dialog starts from what the page suggested rather than from what was
+  // typed into the previous one.
+  const dialogMessage = dialog?.message ?? null;
+  useEffect(() => {
+    setPromptDraft(dialog?.default_prompt ?? "");
+    // `dialogMessage` is in the deps because two dialogs in a row are two
+    // dialogs, even when their defaults match.
+  }, [dialog?.default_prompt, dialogMessage]);
 
   /**
    * Keeps the page's own viewport the size of the pane showing it.
@@ -406,7 +442,7 @@ export function BrowserSurface({
 
   const handlePointer = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>, eventType: "mousePressed" | "mouseReleased" | "mouseMoved") => {
-      if (isReadOnly || missing || !lease) return;
+      if (inputBlocked || missing || !lease) return;
       const point = toPageCoordinates(event.clientX, event.clientY);
       if (!point) return;
       if (eventType === "mousePressed") viewportRef.current?.focus();
@@ -421,12 +457,12 @@ export function BrowserSurface({
         modifiers: cdpModifiers(event),
       }).catch(() => {});
     },
-    [isReadOnly, lease, missing, resource_key, toPageCoordinates],
+    [inputBlocked, lease, missing, resource_key, toPageCoordinates],
   );
 
   const handleWheel = useCallback(
     (event: ReactWheelEvent<HTMLDivElement>) => {
-      if (isReadOnly || missing || !lease) return;
+      if (inputBlocked || missing || !lease) return;
       const point = toPageCoordinates(event.clientX, event.clientY);
       if (!point) return;
       void sendBrowserWheel({
@@ -439,12 +475,12 @@ export function BrowserSurface({
         modifiers: cdpModifiers(event),
       }).catch(() => {});
     },
-    [isReadOnly, lease, missing, resource_key, toPageCoordinates],
+    [inputBlocked, lease, missing, resource_key, toPageCoordinates],
   );
 
   const handleKey = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>, eventType: "keyDown" | "keyUp") => {
-      if (isReadOnly || missing || !lease) return;
+      if (inputBlocked || missing || !lease) return;
       // Leave the workbench's own chords alone so a focused page cannot
       // swallow tab switching or the command palette.
       if (event.ctrlKey || event.metaKey) return;
@@ -460,7 +496,7 @@ export function BrowserSurface({
         modifiers: cdpModifiers(event),
       }).catch(() => {});
     },
-    [isReadOnly, lease, missing, resource_key],
+    [inputBlocked, lease, missing, resource_key],
   );
 
   if (missing) {
@@ -574,6 +610,39 @@ export function BrowserSurface({
           />
         </form>
         <div className="flex shrink-0 items-center gap-1.5">
+          {/*
+            A popup is presented in place of its opener, so without this the
+            address simply changes and the page behind it is invisible. The
+            close button is the only way back: the popup's own history has no
+            entry for the page that opened it.
+          */}
+          {summary?.popup ? (
+            <>
+              <span
+                className="rounded-full border border-wardian-border bg-[var(--color-wardian-card)] px-2 py-0.5 text-[10px] font-medium text-muted-neutral"
+                data-testid="browser-surface-popup"
+              >
+                Popup
+              </span>
+              <button
+                aria-label="Close popup"
+                className="rounded border border-wardian-border px-2 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-[var(--color-wardian-card-bg-muted)] disabled:opacity-40"
+                disabled={isReadOnly}
+                onClick={() => {
+                  if (isReadOnly || !lease) return;
+                  setActionError(null);
+                  void closeBrowserPopup(resource_key, lease.token)
+                    .then(setSummary)
+                    .catch((error: unknown) => {
+                      setActionError(error instanceof Error ? error.message : String(error));
+                    });
+                }}
+                type="button"
+              >
+                Close popup
+              </button>
+            </>
+          ) : null}
           <span
             className="rounded-full border border-wardian-border bg-[var(--color-wardian-card)] px-2 py-0.5 text-[10px] font-medium text-muted-neutral"
             data-testid="browser-surface-load-state"
@@ -613,6 +682,65 @@ export function BrowserSurface({
         aria-label={summary?.title || "Browser page"}
         tabIndex={isReadOnly ? -1 : 0}
       >
+        {/*
+          The page is stopped until this is answered, which is why it covers
+          the frame rather than sitting beside it: what is underneath is a
+          picture of a page that has already stopped responding.
+        */}
+        {dialog ? (
+          <div
+            className="absolute inset-x-0 top-0 z-10 border-b border-wardian-border bg-[var(--color-wardian-card)] p-3 shadow-sm"
+            data-testid="browser-surface-dialog"
+            role="alertdialog"
+            aria-label={`The page says: ${dialog.message}`}
+          >
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-neutral">
+              {dialog.kind === "beforeunload" ? "Leave this page?" : "This page says"}
+            </p>
+            <p className="mt-1 break-words text-sm text-primary" data-testid="browser-surface-dialog-message">
+              {dialog.message}
+            </p>
+            {dialog.kind === "prompt" ? (
+              <input
+                aria-label="Reply to the page"
+                autoFocus
+                className="mt-2 w-full rounded border border-wardian-border bg-[var(--color-wardian-bg)] px-2 py-1 text-sm text-primary"
+                data-testid="browser-surface-dialog-prompt"
+                onChange={(event) => setPromptDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") answerDialog(true);
+                }}
+                value={promptDraft}
+              />
+            ) : null}
+            <div className="mt-3 flex justify-end gap-2">
+              {/*
+                An `alert` has one button in every browser, because there is
+                nothing to decline.
+              */}
+              {dialog.kind === "alert" ? null : (
+                <button
+                  className="rounded border border-wardian-border px-3 py-1 text-sm text-primary transition-colors hover:bg-[var(--color-wardian-card-bg-muted)] disabled:opacity-40"
+                  data-testid="browser-surface-dialog-dismiss"
+                  disabled={isReadOnly}
+                  onClick={() => answerDialog(false)}
+                  type="button"
+                >
+                  {dialog.kind === "beforeunload" ? "Stay" : "Cancel"}
+                </button>
+              )}
+              <button
+                className="rounded border border-wardian-border bg-[var(--color-wardian-card-bg-muted)] px-3 py-1 text-sm text-primary transition-colors hover:bg-[var(--color-wardian-border)] disabled:opacity-40"
+                data-testid="browser-surface-dialog-accept"
+                disabled={isReadOnly}
+                onClick={() => answerDialog(true)}
+                type="button"
+              >
+                {dialog.kind === "beforeunload" ? "Leave" : "OK"}
+              </button>
+            </div>
+          </div>
+        ) : null}
         {frame ? (
           <img
             alt={summary?.title || "Browser page"}

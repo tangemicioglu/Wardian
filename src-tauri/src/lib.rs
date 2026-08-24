@@ -612,6 +612,8 @@ pub fn run() {
             commands::browser::get_browser_session,
             commands::browser::close_browser_session,
             commands::browser::navigate_browser_session,
+            commands::browser::answer_browser_dialog,
+            commands::browser::close_browser_popup,
             commands::browser::attach_browser_screencast,
             commands::browser::detach_browser_screencast,
             commands::browser::send_browser_pointer,

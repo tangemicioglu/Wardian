@@ -44,6 +44,20 @@ The page is rendered at the size of the pane showing it, so resizing the pane
 relays the page out rather than rescaling a picture of it. Text stays sharp,
 and the site's own responsive breakpoints answer to the pane you sized.
 
+**Windows a page opens.** A pane shows one page, so a popup — a
+`target="_blank"` link, a "Sign in with…" window — takes the place of the page
+that opened it, and a **Close popup** button appears next to the address. Use
+it to go back: the popup has its own history, and there is no Back entry for
+the page behind it. A popup that closes itself, which is what most sign-in
+windows do, returns you there on its own.
+
+**Dialogs.** When a page calls `alert`, `confirm`, or `prompt`, or asks you to
+confirm leaving, the page stops until you answer, and the surface shows the
+message with the buttons that dialog has. Nothing else on the page responds
+until then — that is how dialogs work in any browser. A session no pane is
+watching answers its own dialogs so an agent driving it is never stuck:
+"leave this page" is accepted, everything else is dismissed.
+
 ## Drive the Page from an Agent
 
 Agents use `wardian browser`, which acts on exactly the same session you are

@@ -226,6 +226,7 @@ describe("subscribeToBrowserSurfaceOpens", () => {
       engine: "edge",
       console_error_count: 0,
       network_failure_count: 0,
+      popup: false,
     };
   }
 
