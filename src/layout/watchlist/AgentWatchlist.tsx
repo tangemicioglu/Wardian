@@ -30,6 +30,7 @@ import { ColumnPicker } from "./ColumnPicker";
 import { isUserFacingProviderName, providerDisplayName } from "../../features/agents/providerOptions";
 import { useLayoutStore } from "../../store/useLayoutStore";
 import { SidebarResizeHandle } from "../../components/SidebarResizeHandle";
+import { useDragAutoScroll } from "./dragAutoScroll";
 
 type DragSource =
   | { type: "agent"; agentId: string }
@@ -42,6 +43,23 @@ type DropTarget =
   | { type: "team"; teamId: string; position: "before" | "inside" | "after" };
 
 type TabDropTarget = { listId: string; position: DropPosition };
+
+/** Pointer travel, in pixels, that promotes a press into a drag. */
+const DRAG_ACTIVATION_DISTANCE = 4;
+
+function isSameDropTarget(a: DropTarget | null, b: DropTarget | null): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.type !== b.type) return false;
+  if (a.type === "agent" && b.type === "agent") return a.agentId === b.agentId && a.position === b.position;
+  if (a.type === "team" && b.type === "team") return a.teamId === b.teamId && a.position === b.position;
+  return false;
+}
+
+function isSameTabDropTarget(a: TabDropTarget | null, b: TabDropTarget | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.listId === b.listId && a.position === b.position;
+}
 
 function formatProviderName(provider: string | null | undefined): string {
   if (!provider) return "–";
@@ -207,6 +225,11 @@ export default function AgentWatchlist({
   const [editingTeamName, setEditingTeamName] = useState("");
   const [isRenaming, setIsRenaming] = useState(false);
   const dragSourceRef = useRef<DragSource | null>(null);
+  const dragOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const dragActiveRef = useRef(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isTabDragging, setIsTabDragging] = useState(false);
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
   const dropTargetRef = useRef<DropTarget | null>(null);
   const draggedListIdRef = useRef<string | null>(null);
   const tabDropTargetRef = useRef<TabDropTarget | null>(null);
@@ -216,6 +239,10 @@ export default function AgentWatchlist({
   const [unpersistedCollapsedTeamsByList, setUnpersistedCollapsedTeamsByList] = useState<Record<string, string[]>>({});
   const wasDragging = useRef(false);
   const lastSelectedIdRef = useRef<string | null>(null);
+
+  // Holding a dragged row over the top or bottom edge scrolls the roster, so
+  // off-screen rows stay reachable without releasing the pointer.
+  useDragAutoScroll(listScrollRef, isDragging);
 
   // Navigation is deliberately separate from roster targeting. The deprecated
   // alias keeps the flag-off shell working while callers move to workbench tabs.
@@ -358,24 +385,53 @@ export default function AgentWatchlist({
   };
 
   // ── Mouse-based Drag & Drop (WebView2-compatible) ──────────────────
-  const handleMouseDown = (agentId: string) => {
-    dragSourceRef.current = { type: "agent", agentId };
-    setDraggedAgentId(agentId);
-    setDraggedTeamId(null);
+  // A press only arms a drag. It becomes a live drag once the pointer travels
+  // past DRAG_ACTIVATION_DISTANCE or reaches a drop target other than the row
+  // it started on, so an ordinary click never flashes the dragging treatment.
+  const beginDrag = (source: DragSource, e: React.MouseEvent) => {
+    dragSourceRef.current = source;
+    dragOriginRef.current = { x: e.clientX, y: e.clientY };
+    dragActiveRef.current = false;
+    setDraggedAgentId(source.type === "agent" ? source.agentId : null);
+    setDraggedTeamId(source.type === "team" ? source.teamId : null);
   };
 
+  const activateDrag = () => {
+    if (!dragSourceRef.current || dragActiveRef.current) return;
+    dragActiveRef.current = true;
+    setIsDragging(true);
+  };
+
+  const activateDragIfMoved = (e: React.MouseEvent) => {
+    if (!dragSourceRef.current || dragActiveRef.current) return;
+    const origin = dragOriginRef.current;
+    if (!origin) return;
+    if (Math.hypot(e.clientX - origin.x, e.clientY - origin.y) >= DRAG_ACTIVATION_DISTANCE) activateDrag();
+  };
+
+  const handleMouseDown = (agentId: string, e: React.MouseEvent) => {
+    beginDrag({ type: "agent", agentId }, e);
+  };
+
+  // Rows fire mousemove continuously; re-rendering the roster for a drop target
+  // that has not changed is what made dragging feel sticky.
   const setDropTarget = (target: DropTarget | null) => {
+    if (isSameDropTarget(dropTargetRef.current, target)) return;
     dropTargetRef.current = target;
     setDropTargetState(target);
   };
 
   const setTabDropTarget = (target: TabDropTarget | null) => {
+    if (isSameTabDropTarget(tabDropTargetRef.current, target)) return;
     tabDropTargetRef.current = target;
     setTabDropTargetState(target);
   };
 
   const resetDragState = () => {
     dragSourceRef.current = null;
+    dragOriginRef.current = null;
+    dragActiveRef.current = false;
+    setIsDragging(false);
     setDropTarget(null);
     setDraggedAgentId(null);
     setDraggedTeamId(null);
@@ -384,6 +440,7 @@ export default function AgentWatchlist({
   const resetTabDragState = () => {
     draggedListIdRef.current = null;
     setDraggedListId(null);
+    setIsTabDragging(false);
     setTabDropTarget(null);
   };
 
@@ -406,15 +463,17 @@ export default function AgentWatchlist({
 
   const updateAgentRowDropTarget = (targetAgentId: string, e?: React.MouseEvent) => {
     const source = dragSourceRef.current;
+    if (!source) return;
     const targetTeam = targetTeamForAgent(targetAgentId);
     const position = e ? rowDropPosition(e) : "before";
+    if (!(source.type === "agent" && source.agentId === targetAgentId)) activateDrag();
 
-    if (source?.type === "team") {
+    if (source.type === "team") {
       setDropTarget(targetTeam ? { type: "team", teamId: targetTeam.id, position } : { type: "agent", agentId: targetAgentId, position });
       return;
     }
 
-    if (source?.type === "agent") {
+    if (source.type === "agent") {
       const sourceTeam = targetTeamForAgent(source.agentId);
       if (targetTeam && sourceTeam?.id === targetTeam.id) {
         setDropTarget(source.agentId === targetAgentId ? null : { type: "agent", agentId: targetAgentId, position });
@@ -594,10 +653,8 @@ export default function AgentWatchlist({
     resetDragState();
   };
 
-  const handleTeamMouseDown = (teamId: string) => {
-    dragSourceRef.current = { type: "team", teamId };
-    setDraggedTeamId(teamId);
-    setDraggedAgentId(null);
+  const handleTeamMouseDown = (teamId: string, e: React.MouseEvent) => {
+    beginDrag({ type: "team", teamId }, e);
   };
 
   const handleTeamDropZone = (teamId: string, position: "before" | "inside" | "after") => {
@@ -608,6 +665,7 @@ export default function AgentWatchlist({
       const team = teams.find((candidate) => candidate.id === teamId);
       if (!team || (position === "inside" && team.agentIds.includes(source.agentId))) return;
     }
+    activateDrag();
     setDropTarget({ type: "team", teamId, position });
   };
 
@@ -627,6 +685,7 @@ export default function AgentWatchlist({
       const rect = e.currentTarget.getBoundingClientRect();
       if (rect.width > 0 && e.clientX > rect.left + rect.width / 2) position = "after";
     }
+    setIsTabDragging(true);
     setTabDropTarget({ listId: targetListId, position });
   };
 
@@ -754,15 +813,15 @@ export default function AgentWatchlist({
     const metrics = telemetry[agentId];
     const team = teams.find((candidate) => candidate.agentIds.includes(agentId));
     const isDragTarget = dropTarget?.type === "agent" && dropTarget.agentId === agentId && draggedAgentId !== agentId;
-    const isBeingDragged = draggedAgentId === agentId;
+    const isBeingDragged = isDragging && draggedAgentId === agentId;
     const isNestedTeamDropTarget = options.nested && dropTarget?.type === "team" && team?.id === dropTarget.teamId;
 
     return (
       <div
         key={agentId}
-        onMouseDown={() => handleMouseDown(agentId)}
+        onMouseDown={(e) => handleMouseDown(agentId, e)}
         onMouseEnter={(e) => { e.stopPropagation(); handleMouseEnterRow(agentId, e); }}
-        onMouseMove={(e) => { e.stopPropagation(); updateAgentRowDropTarget(agentId, e); }}
+        onMouseMove={(e) => { e.stopPropagation(); activateDragIfMoved(e); updateAgentRowDropTarget(agentId, e); }}
         onMouseUp={(e) => {
           e.stopPropagation();
           updateAgentRowDropTarget(agentId, e);
@@ -833,7 +892,7 @@ export default function AgentWatchlist({
         aria-label={`Agent ${agent.session_name}`}
         data-selected={isSelected ? "true" : "false"}
         className={`watchlist-row ${isSelected ? "selected" : ""} ${isDragTarget ? `drag-over-${dropTarget?.type === "agent" ? dropTarget.position : "before"}` : ""} ${isNestedTeamDropTarget ? "bg-[var(--color-wardian-accent)]/10" : ""} ${isBeingDragged ? "opacity-50" : ""} ${options.nested ? "ml-2 border-l border-wardian-border/40" : ""} select-none`}
-        style={{ cursor: "grab", gridTemplateColumns: gridTemplate }}
+        style={{ gridTemplateColumns: gridTemplate }}
       >
         <div className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`} />
         <div className="flex-1 min-w-0">
@@ -997,7 +1056,7 @@ export default function AgentWatchlist({
                 }}
                 className={`watchlist-tab ${activeListId === list.id ? "active" : ""} ${
                   tabDropTarget?.listId === list.id ? `drag-over-${tabDropTarget.position}` : ""
-                } ${draggedListId === list.id ? "opacity-50" : ""}`}
+                } ${isTabDragging && draggedListId === list.id ? "opacity-50" : ""}`}
                 title={list.name}
               >
                 {list.name.charAt(0).toUpperCase()}
@@ -1042,7 +1101,9 @@ export default function AgentWatchlist({
 
         {/* ── Agent Rows ─────────────────────────────────── */}
         <div
-          className="flex-1 overflow-y-auto no-scrollbar"
+          ref={listScrollRef}
+          data-testid="watchlist-scroll"
+          className={`flex-1 overflow-y-auto no-scrollbar${isDragging ? " watchlist-dragging" : ""}`}
           onClick={() => onSelectionChange(new Set())}
         >
           {teams.length === 0 || flattenSortedTeams
@@ -1076,7 +1137,7 @@ export default function AgentWatchlist({
                     <div
                       data-testid={`team-header-${item.team.id}`}
                       className="px-2 py-1.5 border-b border-wardian-border/60 bg-wardian-card-bg-muted cursor-grab"
-                      onMouseDown={() => handleTeamMouseDown(item.team.id)}
+                      onMouseDown={(e) => handleTeamMouseDown(item.team.id, e)}
                       onMouseEnter={(e) => { e.stopPropagation(); handleTeamDropZone(item.team.id, "inside"); }}
                       onMouseMove={(e) => { e.stopPropagation(); handleTeamDropZone(item.team.id, "inside"); }}
                       onContextMenu={(e) => handleTeamContextMenu(e, item.team.id)}
