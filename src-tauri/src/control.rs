@@ -1526,6 +1526,36 @@ async fn deliver_message_to_target(
     .await
 }
 
+pub(crate) async fn deliver_prompt_to_agent(
+    app: Option<&AppHandle>,
+    state: &AppState,
+    target: &str,
+    prompt: &str,
+    input_mode: MessageInputMode,
+) -> Result<DeliveryDetail, ControlError> {
+    let delivery = deliver_message_to_target_with_headless_timeout(
+        app,
+        state,
+        target,
+        prompt,
+        None,
+        input_mode,
+        QueuePolicy::QueueIfBusy,
+        None,
+        None,
+        false,
+        crate::manager::DEFAULT_HEADLESS_RUN_TIMEOUT,
+    )
+    .await?;
+
+    record_conversation_delivery(state, &delivery, prompt, None).await;
+    delivery.into_iter().next().ok_or_else(|| {
+        ControlError::request_failed(format!(
+            "prompt delivery produced no result for target: {target}"
+        ))
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn deliver_message_to_target_with_headless_timeout(
     app: Option<&AppHandle>,
@@ -1891,6 +1921,15 @@ fn decide_delivery_route(
                 failure: "target_not_live",
             },
         },
+        "headless" => match queue_policy {
+            QueuePolicy::QueueIfBusy => DeliveryRoute::Mailbox {
+                runtime_state: "conversation_leased",
+            },
+            QueuePolicy::LiveOnly => DeliveryRoute::Reject {
+                failure: "conversation_leased",
+            },
+            QueuePolicy::MailboxOnly => unreachable!("handled above"),
+        },
         _ => DeliveryRoute::Reject {
             failure: "not_input_ready",
         },
@@ -1898,7 +1937,7 @@ fn decide_delivery_route(
 }
 
 fn status_uses_headless_delivery(status: &str) -> bool {
-    matches!(status, "off" | "error")
+    matches!(status, "off" | "error" | "headless")
 }
 
 fn bounded_headless_delivery_timeout(timeout_ms: Option<u64>) -> Duration {
@@ -5055,7 +5094,7 @@ fn error_payload(error: &ControlError) -> Result<String, std::io::Error> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ControlError {
+pub(crate) struct ControlError {
     code: &'static str,
     message: String,
     details: Option<serde_json::Value>,
@@ -6469,6 +6508,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_prompt_entry_starts_headless_execution_for_offline_agent() {
+        if !node_available() {
+            return;
+        }
+        let _home = TestWardianHome::new();
+        let _scenario = ScopedEnvVar::set("WARDIAN_MOCK_SCENARIO", "headless");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").expect("agent");
+            let mut config = agent.config.lock().expect("config");
+            config.provider = "mock".to_string();
+            config.folder = workspace.path().to_string_lossy().to_string();
+            *agent.current_status.lock().expect("status") = "Off".to_string();
+        }
+
+        let detail = deliver_prompt_to_agent(
+            None,
+            &state,
+            "CoderOne",
+            "run offline",
+            MessageInputMode::Message,
+        )
+        .await
+        .expect("offline prompt delivery");
+
+        assert_eq!(detail.runtime_state, "headless_process");
+        assert_eq!(detail.delivery_state, "provider_applied");
+        assert_eq!(detail.queue_policy, QueuePolicy::QueueIfBusy);
+    }
+
+    #[tokio::test]
     async fn successful_headless_target_archives_before_a_mixed_send_reports_failure() {
         if !node_available() {
             return;
@@ -6564,6 +6637,23 @@ mod tests {
 
             assert_eq!(route, DeliveryRoute::Headless, "status={status}");
         }
+    }
+
+    #[test]
+    fn delivery_route_queues_message_for_an_active_headless_turn() {
+        let route = decide_delivery_route(
+            "headless",
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+        );
+
+        assert_eq!(
+            route,
+            DeliveryRoute::Mailbox {
+                runtime_state: "conversation_leased"
+            }
+        );
     }
 
     #[test]
