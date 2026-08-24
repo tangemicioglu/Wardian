@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   sendBrowserPointer: vi.fn(),
   sendBrowserWheel: vi.fn(),
   sendBrowserKey: vi.fn(),
+  setBrowserViewport: vi.fn(),
   subscribeBrowserSession: vi.fn(),
 }));
 
@@ -31,6 +32,7 @@ vi.mock("./browserSessionClient", async () => {
     sendBrowserPointer: mocks.sendBrowserPointer,
     sendBrowserWheel: mocks.sendBrowserWheel,
     sendBrowserKey: mocks.sendBrowserKey,
+    setBrowserViewport: mocks.setBrowserViewport,
     subscribeBrowserSession: mocks.subscribeBrowserSession,
   };
 });
@@ -104,6 +106,7 @@ beforeEach(() => {
   mocks.sendBrowserPointer.mockResolvedValue(undefined);
   mocks.sendBrowserWheel.mockResolvedValue(undefined);
   mocks.sendBrowserKey.mockResolvedValue(undefined);
+  mocks.setBrowserViewport.mockResolvedValue(summary());
   mocks.subscribeBrowserSession.mockImplementation(
     (_id: string, handler: (event: BrowserSessionEvent) => void) => {
       emit = handler;
@@ -475,6 +478,137 @@ describe("BrowserSurface", () => {
     });
     expect(mocks.navigateBrowserSession).not.toHaveBeenCalled();
     expect(mocks.sendBrowserPointer).not.toHaveBeenCalled();
+  });
+
+  it("takes the controls back when the lease is handed to this presentation", async () => {
+    // The pane attached as a mirror. A remount, or the driving pane closing,
+    // moves the lease here — and `can_drive` was answered once, at attach.
+    mocks.attachBrowserScreencast.mockResolvedValue({ token: "lease-2", can_drive: false });
+    await renderSurface();
+    await waitFor(() =>
+      expect(screen.getByTestId("browser-surface-read-only")).toBeInTheDocument(),
+    );
+
+    act(() => {
+      emit?.({
+        kind: "lease",
+        browser_id: "b-1",
+        presentation_id: browserPresentationId("surface-1", "b-1"),
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("browser-surface-read-only")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText("Reload")).toBeEnabled();
+    fireEvent.click(screen.getByLabelText("Reload"));
+    await waitFor(() =>
+      expect(mocks.navigateBrowserSession).toHaveBeenCalledWith("b-1", "reload", "lease-2"),
+    );
+  });
+
+  it("stands down when the lease moves to another presentation", async () => {
+    await renderSurface();
+    expect(screen.queryByTestId("browser-surface-read-only")).not.toBeInTheDocument();
+
+    act(() => {
+      emit?.({ kind: "lease", browser_id: "b-1", presentation_id: "another:browser:b-1" });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("browser-surface-read-only")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByLabelText("Reload"));
+    expect(mocks.navigateBrowserSession).not.toHaveBeenCalled();
+  });
+
+  it("ignores a lease announcement while nothing is attached", async () => {
+    mocks.attachBrowserScreencast.mockImplementation(() => new Promise(() => {}));
+    await renderSurface();
+    act(() => {
+      emit?.({
+        kind: "lease",
+        browser_id: "b-1",
+        presentation_id: browserPresentationId("surface-1", "b-1"),
+      });
+    });
+    // A lease is not an attachment: without a token there is nothing to drive
+    // the page with, whatever the announcement says.
+    expect(screen.getByLabelText("Reload")).toBeDisabled();
+  });
+
+  it("resizes the page to the pane instead of rescaling a fixed viewport", async () => {
+    const observers: ResizeObserverCallback[] = [];
+    vi.stubGlobal("ResizeObserver", class TestResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        observers.push(callback);
+      }
+
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    try {
+      await renderSurface();
+      // Only now: `waitFor` above needs the real clock to settle the attach.
+      vi.useFakeTimers();
+      const pane = screen.getByTestId("browser-surface-viewport");
+      vi.spyOn(pane, "getBoundingClientRect").mockReturnValue({
+        left: 0,
+        top: 0,
+        width: 1412.4,
+        height: 883.6,
+        right: 1412.4,
+        bottom: 883.6,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect);
+
+      act(() => {
+        observers.forEach((observe) => observe([], {} as ResizeObserver));
+      });
+      expect(mocks.setBrowserViewport).not.toHaveBeenCalled();
+      // Debounced: a drag would otherwise relay out the page on every frame.
+      await act(async () => { await vi.runAllTimersAsync(); });
+      expect(mocks.setBrowserViewport).toHaveBeenCalledWith("b-1", 1412, 884, "lease-1");
+
+      // The same size again is not a resize.
+      act(() => {
+        observers.forEach((observe) => observe([], {} as ResizeObserver));
+      });
+      await act(async () => { await vi.runAllTimersAsync(); });
+      expect(mocks.setBrowserViewport).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leaves the shared page's size alone when it is only mirroring", async () => {
+    const observers: ResizeObserverCallback[] = [];
+    vi.stubGlobal("ResizeObserver", class TestResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        observers.push(callback);
+      }
+
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    try {
+      mocks.attachBrowserScreencast.mockResolvedValue({ token: "lease-2", can_drive: false });
+      await renderSurface();
+      vi.useFakeTimers();
+      act(() => {
+        observers.forEach((observe) => observe([], {} as ResizeObserver));
+      });
+      await act(async () => { await vi.runAllTimersAsync(); });
+      expect(mocks.setBrowserViewport).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("detaches a screencast whose attach resolved after the surface was hidden", async () => {

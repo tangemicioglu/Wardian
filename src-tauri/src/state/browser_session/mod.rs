@@ -7,6 +7,7 @@ mod actor;
 mod cdp;
 mod discovery;
 mod engine;
+mod keys;
 mod network;
 mod snapshot;
 

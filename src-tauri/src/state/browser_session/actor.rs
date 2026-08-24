@@ -31,6 +31,7 @@ use uuid::Uuid;
 
 use super::cdp::{required_str, CdpConnection, CdpError, CdpEvent, DISCONNECTED_METHOD};
 use super::engine::{discover_engine, launch_engine, EngineError, EngineKind};
+use super::keys;
 use super::network::NetworkLedger;
 use super::snapshot::{
     action_expression, parse_snapshot, snapshot_expression, PageSnapshot, RefError,
@@ -43,6 +44,13 @@ const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CONSOLE_BUFFER: usize = 200;
 /// Buffered session events. Screencast frames dominate this channel.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
+/// Quality of the screencast's JPEG frames.
+///
+/// A browser surface is mostly small text, which is what JPEG's chroma
+/// subsampling damages first. Frames are only produced when the page changes,
+/// so the idle cost of a higher setting is nothing and the cost while
+/// scrolling buys back legibility that no amount of scaling can recover.
+const SCREENCAST_JPEG_QUALITY: u32 = 85;
 
 /// What a session tells the rest of the app about itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +75,18 @@ pub enum BrowserSessionEvent {
     },
     /// The session's runtime is gone. Surfaces should show the reopen path.
     Closed { browser_id: String, reason: String },
+    /// Which presentation now holds the drive lease, if any holds it.
+    ///
+    /// The lease moves whenever a presentation attaches or leaves, so a
+    /// surface that learned its standing once at attach time would keep
+    /// showing a page it can no longer drive — or, worse, keep its controls
+    /// disabled long after it inherited the lease. This carries the
+    /// presentation id and never the token: the event reaches every listener,
+    /// and the token is the credential that admits input.
+    Lease {
+        browser_id: String,
+        presentation_id: Option<String>,
+    },
 }
 
 impl BrowserSessionEvent {
@@ -75,7 +95,8 @@ impl BrowserSessionEvent {
             BrowserSessionEvent::Frame { browser_id, .. }
             | BrowserSessionEvent::State { browser_id, .. }
             | BrowserSessionEvent::Console { browser_id, .. }
-            | BrowserSessionEvent::Closed { browser_id, .. } => browser_id,
+            | BrowserSessionEvent::Closed { browser_id, .. }
+            | BrowserSessionEvent::Lease { browser_id, .. } => browser_id,
         }
     }
 }
@@ -341,6 +362,8 @@ pub struct BrowserSession {
     /// then fails and rolls back, and a detach's `stopScreencast` can land
     /// after a concurrent attach's `startScreencast`.
     screencast_transition: Mutex<()>,
+    /// The broker's publication channel, so lease changes reach surfaces.
+    events: broadcast::Sender<BrowserSessionEvent>,
 }
 
 impl BrowserSession {
@@ -1030,14 +1053,35 @@ impl BrowserSession {
         let token = Uuid::new_v4().to_string();
         let should_start = {
             let mut state = self.state.write().await;
+            let was_idle = state.screencast_viewers.is_empty();
+            // One presentation streams once. An earlier attachment under the
+            // same id belongs to a presentation that no longer exists — a
+            // reloaded webview, or an effect whose cleanup has not landed yet
+            // — and leaving it registered is what strands a live surface
+            // mirroring a lease that nobody will ever release.
+            let superseded: Vec<String> = state
+                .screencast_viewers
+                .iter()
+                .filter(|attachment| attachment.presentation_id == presentation_id)
+                .map(|attachment| attachment.token.clone())
+                .collect();
+            state
+                .screencast_viewers
+                .retain(|attachment| attachment.presentation_id != presentation_id);
             state.screencast_viewers.push(Attachment {
                 presentation_id: presentation_id.to_string(),
                 token: token.clone(),
             });
-            if state.owner_token.is_none() {
+            // The replacement inherits what it replaced. Anything else would
+            // hand the lease to a bystander every time a surface remounts.
+            let owner_is_vacant = match state.owner_token.as_deref() {
+                None => true,
+                Some(owner) => superseded.iter().any(|stale| stale == owner),
+            };
+            if owner_is_vacant {
                 state.owner_token = Some(token.clone());
             }
-            state.screencast_viewers.len() == 1
+            was_idle
         };
         if should_start {
             // Roll the attachment back if the stream never started, or a later
@@ -1050,18 +1094,43 @@ impl BrowserSession {
                 .call_session(
                     &self.cdp_session_id,
                     "Page.startScreencast",
-                    json!({ "format": "jpeg", "quality": 70, "everyNthFrame": 1 }),
+                    json!({ "format": "jpeg", "quality": SCREENCAST_JPEG_QUALITY, "everyNthFrame": 1 }),
                 )
                 .await
             {
                 self.release_attachment(&token).await;
+                self.announce_lease().await;
                 return Err(error.into());
             }
         }
+        self.announce_lease().await;
         Ok(ScreencastAttachment {
             can_drive: self.token_may_drive(&token).await,
             token,
         })
+    }
+
+    /// Publishes which presentation holds the drive lease right now.
+    ///
+    /// Sent on every attach and detach rather than only on a change: the
+    /// event is rare next to frames, and a surface that missed one would
+    /// otherwise keep a stale idea of whether it may drive the page.
+    async fn announce_lease(&self) {
+        let presentation_id = {
+            let state = self.state.read().await;
+            let owner = state.owner_token.clone();
+            owner.and_then(|owner| {
+                state
+                    .screencast_viewers
+                    .iter()
+                    .find(|attachment| attachment.token == owner)
+                    .map(|attachment| attachment.presentation_id.clone())
+            })
+        };
+        let _ = self.events.send(BrowserSessionEvent::Lease {
+            browser_id: self.browser_id.clone(),
+            presentation_id,
+        });
     }
 
     /// Drops one attachment and hands the lease on if it held it.
@@ -1086,6 +1155,7 @@ impl BrowserSession {
     pub async fn detach_screencast(&self, token: &str) -> Result<(), BrowserError> {
         let _transition = self.screencast_transition.lock().await;
         let should_stop = self.release_attachment(token).await;
+        self.announce_lease().await;
         if should_stop {
             self.connection
                 .call_session(&self.cdp_session_id, "Page.stopScreencast", json!({}))
@@ -1207,7 +1277,17 @@ impl BrowserSession {
             "code": code,
             "modifiers": modifiers,
         });
-        if let Some(text) = text {
+        // Blink reads the *action* of a key off its virtual key code, not off
+        // `key` or `code`. Omitting it leaves Backspace, Delete, the arrows,
+        // Home/End and Enter inert while printable characters keep working,
+        // because those ride in on `text`.
+        if let Some(virtual_key) = keys::virtual_key_code(key, code) {
+            params["windowsVirtualKeyCode"] = json!(virtual_key);
+            params["nativeVirtualKeyCode"] = json!(virtual_key);
+        }
+        // A key-up carries no text: it is the press that inserts.
+        let inserts_text = matches!(event_type, "keyDown" | "char");
+        if let Some(text) = text.or_else(|| inserts_text.then(|| keys::key_text(key)).flatten()) {
             params["text"] = json!(text);
         }
         self.connection
@@ -1553,6 +1633,7 @@ impl BrowserSessionBroker {
                 ..SessionState::default()
             }),
             screencast_transition: Mutex::new(()),
+            events: self.events.clone(),
         });
         // The session owns the child now, so its own teardown does the
         // killing, reaping, and profile removal.
