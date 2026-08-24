@@ -192,6 +192,7 @@ pub fn terminate_active_agent_process(agent: &mut ActiveAgent) {
         let _ = agent.job_object.take();
     }
 
+    let _ = agent.memory_capability.take();
     agent.process_id = None;
 }
 
@@ -723,6 +724,13 @@ pub(crate) fn state_configs_snapshot(
 }
 
 pub(crate) fn try_save_state_snapshot(configs: &[AgentConfig]) -> Result<(), String> {
+    let _barrier = wardian_core::agent_replacement::acquire_agent_roster_barrier(true)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent roster barrier is unavailable".to_string())?;
+    try_save_state_snapshot_unlocked(configs)
+}
+
+pub(crate) fn try_save_state_snapshot_unlocked(configs: &[AgentConfig]) -> Result<(), String> {
     let app_dir = get_wardian_home().ok_or_else(|| "Could not locate Wardian home".to_string())?;
     std::fs::create_dir_all(&app_dir).map_err(|error| error.to_string())?;
     let settings_dir = app_dir.join("settings");
@@ -930,6 +938,22 @@ pub(crate) fn apply_terminal_identity_env(cmd: &mut CommandBuilder) {
         cmd.env("WARDIAN_HOME", home);
     }
     apply_managed_cli_path_to_pty(cmd);
+}
+
+pub(crate) fn issue_memory_capability(
+    agent_id: &str,
+) -> Option<wardian_core::memory::MemoryCapabilityLease> {
+    match wardian_core::memory::MemoryStore::from_default_home()
+        .and_then(|store| store.issue_process_capability(agent_id))
+    {
+        Ok(token) => Some(token),
+        Err(error) => {
+            log_debug(&format!(
+                "[Wardian] memory capability unavailable for {agent_id}: {error}"
+            ));
+            None
+        }
+    }
 }
 
 pub(crate) fn apply_managed_cli_path_to_pty(cmd: &mut CommandBuilder) {
@@ -1668,6 +1692,7 @@ mod tests {
             config: std::sync::Arc::new(std::sync::Mutex::new(AgentConfig::default())),
             child_process: None,
             background_processes: Vec::new(),
+            memory_capability: None,
             runtime_generation: None,
             process_id: None,
             query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),

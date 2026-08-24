@@ -78,6 +78,7 @@ export function ChatTranscriptRow({
 }: ChatTranscriptRowProps) {
   if (row.kind === "turn_change_summary") return <TurnChangeCard onOpenFile={onOpenFile} row={row} />;
   if (row.kind === "work_group") return <WorkGroupRow agentIsWorking={agentIsWorking} row={row} />;
+  if (row.event.kind === "memory") return <MemoryRow event={row.event} />;
   return row.event.kind === "message" ? (
     <MessageRow event={row.event} linkHandling={linkHandling} />
   ) : (
@@ -89,6 +90,39 @@ export function ChatTranscriptRow({
       isSubmitting={isSubmitting}
       onApprovalSubmit={onApprovalSubmit}
     />
+  );
+}
+
+function MemoryRow({ event }: { event: AgentChatEvent }) {
+  const [expanded, setExpanded] = useState(false);
+  const details = event.text?.trim() ?? "";
+  return (
+    <article
+      aria-label={event.title ?? "Memory event"}
+      className="rounded-[var(--density-card-radius)] border border-[var(--color-wardian-border)] bg-[var(--color-wardian-card-bg-muted)] px-3 py-2"
+      data-testid="memory-event"
+    >
+      <button
+        className="flex w-full items-center gap-2 text-left text-[12px] leading-5 text-primary"
+        onClick={() => details && setExpanded((value) => !value)}
+        type="button"
+      >
+        <Check className="h-3.5 w-3.5 text-[var(--color-wardian-idle)]" aria-hidden="true" />
+        <span className="font-medium">{event.title ?? "Memory"}</span>
+        {event.created_at ? <span className="ml-auto text-muted-neutral">{formatTimestamp(event.created_at)}</span> : null}
+        {details ? (
+          <ChevronRight
+            className={`h-3.5 w-3.5 text-muted-neutral transition-transform ${expanded ? "rotate-90" : ""}`}
+            aria-hidden="true"
+          />
+        ) : null}
+      </button>
+      {expanded && details ? (
+        <div className="mt-2 border-t border-[var(--color-wardian-border)] pt-2 text-[12px] text-secondary">
+          <ChatMarkdown source={details} />
+        </div>
+      ) : null}
+    </article>
   );
 }
 

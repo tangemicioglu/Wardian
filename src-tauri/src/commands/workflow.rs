@@ -11,6 +11,52 @@ use wardian_core::engine::RunStatus;
 use wardian_core::models::{
     InvocationKind, WorkflowAssignments, WorkflowRoleAssignment, WorkflowSchedule,
 };
+
+#[tauri::command]
+pub async fn session_close_invoker_list(
+) -> Result<Vec<wardian_core::session_close::WorkflowSessionCloseInvoker>, String> {
+    Ok(wardian_core::session_close::load_invokers())
+}
+
+#[tauri::command]
+pub async fn session_close_invoker_save(
+    invoker: wardian_core::session_close::WorkflowSessionCloseInvoker,
+) -> Result<wardian_core::session_close::WorkflowSessionCloseInvoker, String> {
+    if invoker.id.trim().is_empty()
+        || invoker.name.trim().is_empty()
+        || invoker.blueprint_id.trim().is_empty()
+    {
+        return Err("session-close invoker id, name, and blueprint_id are required".into());
+    }
+    wardian_core::workflow::resolve_blueprint_path(&invoker.blueprint_id)
+        .ok_or_else(|| format!("workflow blueprint not found: {}", invoker.blueprint_id))?;
+    wardian_core::session_close::mutate_invokers(|invokers| {
+        if let Some(existing) = invokers.iter_mut().find(|item| item.id == invoker.id) {
+            *existing = invoker.clone();
+        } else {
+            invokers.push(invoker.clone());
+        }
+        Ok(())
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(invoker)
+}
+
+#[tauri::command]
+pub async fn session_close_invoker_delete(id: String) -> Result<(), String> {
+    wardian_core::session_close::mutate_invokers(|invokers| {
+        let before = invokers.len();
+        invokers.retain(|item| item.id != id);
+        if invokers.len() == before {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session-close invoker not found: {id}"),
+            ));
+        }
+        Ok(())
+    })
+    .map_err(|error| error.to_string())
+}
 use wardian_core::schedule::{
     compute_next_run, load_schedules, resolve_workspace_path, save_schedules,
     validate_schedule_definition,
@@ -276,6 +322,7 @@ pub async fn workflow_run(
         bindings,
         assignments,
         false,
+        None,
     )
     .await
 }
@@ -290,6 +337,7 @@ pub async fn workflow_run_from_control(
     input: Option<Value>,
     bindings: Option<HashMap<String, String>>,
     assignments: Option<WorkflowAssignments>,
+    memory_principal: Option<String>,
 ) -> Result<WorkflowRunResponse, String> {
     workflow_run_impl(
         state,
@@ -301,6 +349,7 @@ pub async fn workflow_run_from_control(
         bindings,
         assignments,
         true,
+        memory_principal,
     )
     .await
 }
@@ -316,6 +365,7 @@ async fn workflow_run_impl(
     bindings: Option<HashMap<String, String>>,
     assignments: Option<WorkflowAssignments>,
     control_origin: bool,
+    memory_principal: Option<String>,
 ) -> Result<WorkflowRunResponse, String> {
     let blueprint = if control_origin {
         parse_control_workflow_blueprint(&path)?
@@ -363,7 +413,7 @@ async fn workflow_run_impl(
     let run_root_for_run = run_root.clone();
     let run_root_for_inbox = run_root.clone();
     let app_for_inbox = app.clone();
-    let run_state = runs::prepare_new_run_with_assignments(
+    let run_state = runs::prepare_new_run_with_assignments_and_memory_principal(
         &blueprint,
         &run_id,
         &run_root,
@@ -372,10 +422,12 @@ async fn workflow_run_impl(
         &bindings,
         &assignments,
         input,
+        memory_principal.clone(),
     )?;
 
     tokio::spawn(async move {
-        if let Err(error) = runs::drive_started_run_with_catalog_and_assignments(
+        if let Err(error) =
+            runs::drive_started_run_with_catalog_assignments_and_memory_principal(
             Some(app),
             blueprint_for_run,
             run_state,
@@ -385,6 +437,7 @@ async fn workflow_run_impl(
             bindings,
             assignments,
             agent_catalog,
+            memory_principal,
         )
         .await
         {
@@ -460,6 +513,9 @@ pub async fn workflow_resume(
         &bindings,
         InvocationKind::Manual,
     );
+    let memory_principal = invocation
+        .as_ref()
+        .and_then(|value| value.memory_principal.clone());
     let agent_catalog = runs::agent_catalog_from_state_with_assignments(
         &state,
         &bindings,
@@ -493,6 +549,10 @@ pub async fn workflow_resume(
             agent_catalog,
         )
         .with_owner_id(owner_id);
+        let exec = match memory_principal {
+            Some(agent_id) => exec.with_memory_principal(agent_id),
+            None => exec,
+        };
         if let Err(error) = wardian_core::engine::Engine::resume(&blueprint, &run_root, &exec)
             .await
             .map(|_| ())
@@ -616,6 +676,10 @@ pub async fn approve_workflow_for_surface(
                 agent_catalog,
             )
             .with_owner_id(owner_id);
+            let exec = match invocation.and_then(|value| value.memory_principal) {
+                Some(agent_id) => exec.with_memory_principal(agent_id),
+                None => exec,
+            };
             if let Err(error) = wardian_core::engine::Engine::drive_from_state(
                 &blueprint, run_state, &run_root, &exec,
             )

@@ -3,13 +3,15 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 use wardian_core::conversations::{
     append_index_upsert, append_jsonl_record, read_jsonl_records, read_jsonl_records_resilient,
     write_json_atomic, write_jsonl_atomic, AgentConversationLoggingSetting,
     ConversationBoundaryReason, ConversationIndexEntry, ConversationLoggingSetting,
-    ConversationManifest, ConversationNarrativeRecord, ConversationSourceRecord,
+    ConversationManifest, ConversationNarrativeRecord, ConversationRecordKind, ConversationSourceRecord,
     ConversationSpeakerType, ConversationTurnRecord,
 };
 use wardian_core::models::chat::AgentChatEvent;
@@ -45,6 +47,8 @@ pub struct ConversationArchiveState {
     #[allow(dead_code)]
     active: Mutex<HashMap<String, ActiveConversationHandle>>,
     agent_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    #[cfg(test)]
+    fail_next_rollover_after_close: AtomicBool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -549,6 +553,30 @@ impl ConversationArchiveState {
         })
     }
 
+    pub fn active_ends_with_lifecycle_boundary(
+        &self,
+        agent_id: &str,
+        reason: ConversationBoundaryReason,
+    ) -> io::Result<bool> {
+        let agent_lock = agent_lock_for(&self.agent_locks, agent_id)?;
+        let _agent_guard = lock_agent_archive(&agent_lock)?;
+        let Some(handle) = lock_active(&self.active)?.get(agent_id).cloned() else {
+            return Ok(false);
+        };
+        let conversation_path =
+            conversation_dir(agent_id, &handle.conversation_id)?.join("conversation.jsonl");
+        let records: Vec<ConversationNarrativeRecord> = read_jsonl_records(&conversation_path)?;
+        let expected_status = serde_json::to_value(reason)
+            .map_err(io::Error::other)?
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| io::Error::other("conversation boundary reason was not a string"))?;
+        Ok(records.last().is_some_and(|record| {
+            record.kind == ConversationRecordKind::Lifecycle
+                && record.status.as_deref() == Some(expected_status.as_str())
+        }))
+    }
+
     fn append_generated_record(
         &self,
         mut context: ConversationArchiveContext,
@@ -639,11 +667,25 @@ impl ConversationArchiveState {
     ) -> io::Result<Option<String>> {
         let agent_lock = agent_lock_for(&self.agent_locks, agent_id)?;
         let _agent_guard = lock_agent_archive(&agent_lock)?;
-        let Some(handle) = lock_active(&self.active)?.remove(agent_id) else {
+        let Some(handle) = lock_active(&self.active)?.get(agent_id).cloned() else {
             return Ok(None);
         };
         let conversation_dir = conversation_dir(agent_id, &handle.conversation_id)?;
         close_conversation_dir(agent_id, &handle.conversation_id, &conversation_dir, reason)?;
+        #[cfg(test)]
+        if self
+            .fail_next_rollover_after_close
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(io::Error::other("injected rollover failure after close"));
+        }
+        let mut active = lock_active(&self.active)?;
+        if active
+            .get(agent_id)
+            .is_some_and(|current| current.conversation_id == handle.conversation_id)
+        {
+            active.remove(agent_id);
+        }
         Ok(Some(handle.conversation_id))
     }
 
@@ -680,8 +722,8 @@ impl ConversationArchiveState {
         let agent_lock = agent_lock_for(&self.agent_locks, agent_id)?;
         let _agent_guard = lock_agent_archive(&agent_lock)?;
         let removed = lock_active(&self.active)?
-            .remove(agent_id)
-            .map(|handle| handle.conversation_id);
+            .get(agent_id)
+            .map(|handle| handle.conversation_id.clone());
         let mut capture_state = read_capture_state(agent_id)?;
         let cutoff = current_rfc3339_millis();
 
@@ -723,6 +765,13 @@ impl ConversationArchiveState {
             }
         }
         write_capture_state(agent_id, &capture_state)?;
+        let mut active = lock_active(&self.active)?;
+        if active
+            .get(agent_id)
+            .is_some_and(|handle| Some(handle.conversation_id.as_str()) == removed.as_deref())
+        {
+            active.remove(agent_id);
+        }
         Ok(removed)
     }
 
@@ -732,6 +781,12 @@ impl ConversationArchiveState {
             .lock()
             .expect("active conversation lock")
             .insert(agent_id.to_string(), handle);
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_rollover_after_close_for_test(&self) {
+        self.fail_next_rollover_after_close
+            .store(true, Ordering::SeqCst);
     }
 
     #[cfg(test)]

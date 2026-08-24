@@ -1,267 +1,205 @@
 # Workflow Node Reference
 
-This page documents the current workflow node surface from a user perspective.
+> Generated from the node type registry. Do not edit by hand.
 
-Two important notes:
+## Task
 
-- the **type system** contains a few node types that are not fully exposed or executed yet
-- the **block names** shown in the UI matter more than the raw internal type names when you are building workflows
+- **id:** `task`
+- **kind:** agent
+- **category:** Agent
+- **version:** 1
 
-## Support Levels
+Delegate work to an agent; returns structured output.
 
-- **Available in the builder and runtime**: you can add the node today and expect user-visible behavior.
-- **Reserved / not fully wired**: the type exists, but the builder and runtime do not yet expose a complete user-facing implementation.
+### Fields
 
-## Trigger and Entry Nodes
+- `agent` — Agent [agentref (required)]
+- `prompt` — Prompt [prompt (required)]
+- `output_schema` — Output schema [jsonschema]
 
-### Manual Trigger
+Outgoing ports: out
 
-**Status:** Available in the builder and runtime
+## Decision
 
-Use it when you want a workflow to run on demand.
+- **id:** `decision`
+- **kind:** agent
+- **category:** Agent
+- **version:** 1
 
-Behavior:
+Agent chooses one of the declared outgoing branches.
 
-- starts the workflow immediately when launched
-- can define an input schema for launch-time parameters
-- outputs trigger context into the workflow registry
+### Fields
 
-Common pitfall:
+- `agent` — Agent [agentref (required)]
+- `prompt` — Prompt [prompt (required)]
+- `choices` — Choices [branchport (required), multiple]
 
-- forgetting that the input schema controls whether the run modal asks for manual parameters
+Outgoing ports are derived from the `choices` field.
 
-### Scheduled Trigger
+## Branch
 
-**Status:** Available in the builder and runtime
+- **id:** `branch`
+- **kind:** engine
+- **category:** Control
+- **version:** 1
 
-Use it when the workflow should create scheduled task instances.
+Deterministic condition on run state.
 
-Behavior:
+### Fields
 
-- supports `Minutes`, `Hours`, `Daily`, `Weekly`, and `One-Time`
-- creates scheduled tasks instead of immediate runs
-- stores schedule metadata that appears in the sidebar
+- `condition` — Condition [text (required)]
 
-Common pitfall:
+Outgoing ports: on_true, on_false
 
-- expecting a scheduled workflow launch to behave like a live listener
+## Loop
 
-### File Watcher
+- **id:** `loop`
+- **kind:** engine
+- **category:** Control
+- **version:** 1
 
-**Status:** Available in the builder and runtime
+Container: repeats its body subgraph until a bound is hit.
 
-Use it when the workflow should react to file events.
+### Fields
 
-Behavior:
+- `max_iterations` — Max iterations [number]
+- `until` — Until condition [text]
 
-- listens for matching file changes
-- activates as a live listener
-- appears in the sidebar under live listeners when active
+Outgoing ports: body, done
 
-Common pitfall:
+## Join
 
-- using it for time-based automation instead of a scheduled trigger
+- **id:** `join`
+- **kind:** engine
+- **category:** Control
+- **version:** 1
 
-## Execution Nodes
+Synchronization barrier; waits for all inbound edges.
 
-### Agent
+_No fields._
 
-**Status:** Available in the builder and runtime
+Outgoing ports: out
 
-Use it to send a prompt into an agent session or run an agent headlessly when the target is off.
+## Approval
 
-Behavior:
+- **id:** `approval`
+- **kind:** engine
+- **category:** Control
+- **version:** 1
 
-- supports direct targeting or role-based assignment
-- supports `ephemeral`, `inherit_fresh`, and `inherit_resume` run modes
-- supports `text` or `json` output formats
-- can require launch-time assignment through the run modal when the run mode inherits from an existing agent
-- skips automatic startup or "introduce yourself" prompts for workflow-spawned runs
+Human-in-the-loop gate; parks the run until a person approves.
 
-Common pitfalls:
+### Fields
 
-- leaving an inherited role unmapped, which prevents execution
-- using `inherit_resume` when you wanted a fresh run with the selected agent's profile
-- assuming JSON mode behaves exactly like an interactive PTY run
+- `prompt` — Approval prompt [prompt]
 
-Run modes:
+Outgoing ports: out
 
-- `ephemeral`: use the selected class and workspace for a fresh workflow-run provider session.
-- `inherit_fresh`: clone settings from the selected agent, read that agent's scoped context, and start a fresh workflow-run provider session.
-- `inherit_resume`: continue the selected agent's provider session and runtime directory.
+## Shell
 
-### Shell Command
+- **id:** `shell`
+- **kind:** engine
+- **category:** Action
+- **version:** 1
 
-**Status:** Available in the builder and runtime
+Run a shell command.
 
-Use it to run a shell command inside the workflow.
+### Fields
 
-Behavior:
+- `command` — Command [longtext (required)]
+- `cwd` — Working directory [path]
 
-- executes in the configured folder
-- can receive interpolated values from upstream nodes
-- returns command result data, including failures
+Outgoing ports: out
 
-Common pitfall:
+## Script
 
-- forgetting to set the execution directory when the command depends on a specific workspace
+- **id:** `script`
+- **kind:** engine
+- **category:** Action
+- **version:** 1
 
-### Script
+Run a local script through a selected runtime.
 
-**Status:** Available in the builder and runtime
+### Fields
 
-Use it to run a local script file through a selected runtime.
+- `runtime` — Runtime [enum:python|node|sh (required)]
+- `path` — Script path [path (required)]
 
-Behavior:
+Outgoing ports: out
 
-- supports `python`, `node`, and `sh`
-- resolves the script path relative to the chosen execution directory
-- passes optional arguments and environment variables
+## State
 
-Common pitfall:
+- **id:** `state`
+- **kind:** engine
+- **category:** State
+- **version:** 1
 
-- confusing a shell command with a script path; use Script for a file and Shell Command for inline command text
+Read or write run or shared storage.
 
-### Tool Call
+### Fields
 
-**Status:** Reserved / not fully wired
+- `op` — Operation [enum:get|set|delete (required)]
+- `entries` — Entries [kvmap]
 
-The node type exists in the workflow model and block library, but the current runtime does not execute a distinct tool-call branch yet.
+Outgoing ports: out
 
-Current behavior:
+## Memory commit
 
-- you may see the node type in the code model
-- the backend does not yet expose full user-facing execution semantics for it
+- **id:** `memory_commit`
+- **kind:** engine
+- **category:** State
+- **version:** 1
 
-### Sub-Flow
+Validate and atomically commit structured agent-memory changes.
 
-**Status:** Reserved / not fully wired
+### Fields
 
-The builder taxonomy includes `Sub-Flow`, but the runtime does not currently execute it as a dedicated node behavior.
+- `source_node` — Source node [text (required)]
+- `agent_id` — Memory agent [text (required)]
 
-Current behavior:
+Outgoing ports: out
 
-- useful as a planned concept in the model
-- not yet a complete nested-workflow feature for users
+## Notify
 
-## Control-Flow Nodes
+- **id:** `notify`
+- **kind:** engine
+- **category:** State
+- **version:** 1
 
-### Branch
+Send an operator-facing notification.
 
-**Status:** Available in the builder and runtime
+### Fields
 
-Use it to split flow based on a condition.
+- `message` — Message [prompt (required)]
 
-Behavior:
+Outgoing ports: out
 
-- evaluates a condition against registry values
-- pulses either `on_true` or `on_false`
+## Sub-workflow
 
-Common pitfall:
+- **id:** `sub_workflow`
+- **kind:** engine
+- **category:** Action
+- **version:** 1
 
-- writing a condition against a value that does not exist yet in the registry
+Call another workflow blueprint.
 
-### Loop
+### Fields
 
-**Status:** Available in the builder and runtime
+- `workflow` — Workflow [workflowref (required)]
 
-Use it for repeated execution.
+Outgoing ports: out
 
-Behavior:
+## Manual Trigger
 
-- supports `count` mode and `conditional` mode
-- accepts `max_iterations` as a positive integer or as a single registry
-  template such as `&#123;&#123;trigger.output.limit&#125;&#125;`
-- resolves `until` as a dot path against the run registry, such as
-  `nodes.review.output.done`
-- treats truthy `until` values as the signal to stop before another body pulse
-- emits `body` while continuing and `done` when finished
-- stores iterator state in workflow runtime data
+- **id:** `manual_trigger`
+- **kind:** trigger
+- **category:** Trigger
+- **version:** 1
 
-Common pitfall:
+Entry point. Runs on demand or when an invoker fires it.
 
-- forgetting to bound the loop correctly, which can create confusing repeated behavior
-- malformed `max_iterations` templates warn during validation and fall back at
-  runtime instead of invalidating the whole blueprint
+### Fields
 
-### Wait
+- `input_schema` — Input schema [jsonschema]
 
-**Status:** Available in the builder and runtime
-
-Use it as a synchronization barrier.
-
-Behavior:
-
-- waits for the required upstream pulses before continuing
-- useful after branches or parallel-looking flows that must rejoin
-
-Common pitfall:
-
-- treating it like a timed sleep; its main purpose is dependency synchronization
-
-### Parallel
-
-**Status:** Reserved / not fully wired
-
-The type exists in the workflow model, but the current builder library and runtime do not expose it as a separate executable node.
-
-## Coordination and State Nodes
-
-### KV Storage
-
-**Status:** Available in the builder and runtime
-
-Use it to read or update shared workflow storage.
-
-Behavior:
-
-- supports `get`, `set`, and `delete`
-- works with workspace-level or run-level state concepts in the UI
-- exposes storage values back to downstream nodes
-
-Common pitfall:
-
-- expecting deep nested object semantics everywhere; keep storage keys simple unless you have confirmed the exact shape you need
-
-### Notify
-
-**Status:** Available in the builder and runtime
-
-Use it to send a UI notification from a workflow.
-
-Behavior:
-
-- emits a Wardian notification message
-- is best for operator-facing alerts
-
-### Broadcast
-
-**Status:** Partially available
-
-Use it when you conceptually want to send a message broadly.
-
-Current behavior:
-
-- it is exposed in the builder
-- the runtime currently treats it as a communication node, but broad agent delivery is still limited compared with the long-term intent
-
-### Governance
-
-**Status:** Reserved / not fully wired
-
-The `governance` node type exists in the workflow model, but it is not currently surfaced as a full builder block with distinct runtime behavior.
-
-## Reading Internal Types vs UI Names
-
-A few nodes share internal types while presenting different names in the builder:
-
-- `Notify` and `Broadcast` both use the `communication` node type
-- all trigger blocks use the `trigger` node type with different names and configs
-
-When in doubt, trust the block name you see in the Workflow Builder first, then use the internal type only when comparing against developer notes or exported JSON.
-
-## Related References
-
-- [Building Workflows](./building-workflows.md)
-- [Triggers](./triggers.md)
-- [Workflow Engine Architecture](../developer/workflow-engine.md)
+Outgoing ports: out

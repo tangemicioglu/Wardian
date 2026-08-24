@@ -38,6 +38,8 @@ export type WorkflowRoleAssignment =
       target_type: 'temporary_provider';
       provider: string;
       workspace?: string;
+      model?: string;
+      effort?: string;
     };
 
 export type WorkflowAssignments = Record<string, WorkflowRoleAssignment>;

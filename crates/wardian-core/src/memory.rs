@@ -1,0 +1,2293 @@
+//! Provider-neutral, agent-owned memory persisted independently from conversation archives.
+
+use chrono::{DateTime, Duration, Utc};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::time::Duration as StdDuration;
+use uuid::Uuid;
+
+const SCHEMA_VERSION: i64 = 4;
+pub const DEFAULT_STALE_DAYS: i64 = 30;
+pub const MEMORY_BUDGET_POLICY_VERSION: u32 = 1;
+pub const MEMORY_CAPABILITY_ENV: &str = "WARDIAN_MEMORY_CAPABILITY";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    Stable,
+    Current,
+}
+
+impl MemoryKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Current => "current",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, MemoryError> {
+        match value {
+            "stable" => Ok(Self::Stable),
+            "current" => Ok(Self::Current),
+            other => Err(MemoryError::Corrupt(format!("unknown memory kind {other}"))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryStatus {
+    Active,
+    Superseded,
+    Removed,
+}
+
+impl MemoryStatus {
+    fn parse(value: &str) -> Result<Self, MemoryError> {
+        match value {
+            "active" => Ok(Self::Active),
+            "superseded" => Ok(Self::Superseded),
+            "removed" => Ok(Self::Removed),
+            other => Err(MemoryError::Corrupt(format!(
+                "unknown memory status {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemorySource {
+    pub source_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
+    #[serde(default)]
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryRecord {
+    pub revision_id: String,
+    pub memory_id: String,
+    pub revision: u32,
+    pub agent_id: String,
+    pub workspace: Option<String>,
+    pub kind: MemoryKind,
+    pub text: String,
+    pub evidence_excerpt: String,
+    pub evidence_hash: String,
+    pub status: MemoryStatus,
+    pub supersedes_revision_id: Option<String>,
+    pub replaced_by_revision_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_verified_at: String,
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub sources: Vec<MemorySource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveMemoryRequest {
+    pub agent_id: String,
+    #[serde(default)]
+    pub workspace: Option<String>,
+    pub kind: MemoryKind,
+    pub text: String,
+    pub evidence_excerpt: String,
+    #[serde(default)]
+    pub sources: Vec<MemorySource>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateMemoryRequest {
+    pub memory_id: String,
+    pub text: String,
+    pub evidence_excerpt: String,
+    #[serde(default)]
+    pub sources: Vec<MemorySource>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecallEntry {
+    #[serde(flatten)]
+    pub record: MemoryRecord,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecallResult {
+    pub agent_id: String,
+    pub workspace: Option<String>,
+    pub stable: Vec<RecallEntry>,
+    pub current: Vec<RecallEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryBriefKind {
+    Fresh,
+    ResumeDelta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledMemoryBrief {
+    pub kind: MemoryBriefKind,
+    pub context_text: String,
+    pub fingerprint: String,
+    pub revision_ids: Vec<String>,
+    pub omitted_count: usize,
+    pub is_empty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryEvent {
+    pub event_id: String,
+    pub agent_id: String,
+    pub memory_id: Option<String>,
+    pub revision_id: Option<String>,
+    pub action: String,
+    pub payload: serde_json::Value,
+    pub occurred_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum MemoryMutation {
+    Save {
+        kind: MemoryKind,
+        text: String,
+        evidence_excerpt: String,
+        #[serde(default)]
+        sources: Vec<MemorySource>,
+    },
+    Update {
+        memory_id: String,
+        text: String,
+        evidence_excerpt: String,
+        #[serde(default)]
+        sources: Vec<MemorySource>,
+    },
+    Remove {
+        memory_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryCommitBatch {
+    pub agent_id: String,
+    #[serde(default)]
+    pub workspace: Option<String>,
+    pub idempotency_key: String,
+    #[serde(default)]
+    pub operations: Vec<MemoryMutation>,
+    #[serde(default)]
+    pub cursor: Option<MemoryCursorUpdate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryCursorUpdate {
+    pub cursor_key: String,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    pub sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryCommitResult {
+    pub idempotency_key: String,
+    pub memory_ids: Vec<String>,
+    pub replayed: bool,
+}
+
+/// Authority presented to the memory store for one operation.
+///
+/// Managed provider processes must use `Agent`; the desktop host may use the
+/// explicit `Operator` variant for user-directed cross-agent administration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryActor {
+    Agent(String),
+    Operator,
+}
+
+impl MemoryActor {
+    pub fn agent(agent_id: impl Into<String>) -> Self {
+        Self::Agent(agent_id.into())
+    }
+
+    fn authorize_subject(&self, subject_agent_id: &str) -> Result<String, MemoryError> {
+        let subject_agent_id = required("agent_id", subject_agent_id)?;
+        if let Self::Agent(actor_agent_id) = self {
+            let actor_agent_id = required("actor agent_id", actor_agent_id)?;
+            if actor_agent_id != subject_agent_id {
+                return Err(MemoryError::AccessDenied {
+                    actor_agent_id,
+                    subject_agent_id,
+                });
+            }
+        }
+        Ok(subject_agent_id)
+    }
+
+    fn agent_id(&self) -> Result<Option<String>, MemoryError> {
+        match self {
+            Self::Agent(agent_id) => Ok(Some(required("actor agent_id", agent_id)?)),
+            Self::Operator => Ok(None),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MemoryError {
+    #[error("memory validation failed: {0}")]
+    Validation(String),
+    #[error("memory record not found: {0}")]
+    NotFound(String),
+    #[error("memory access denied for agent {actor_agent_id} on subject {subject_agent_id}")]
+    AccessDenied {
+        actor_agent_id: String,
+        subject_agent_id: String,
+    },
+    #[error("memory database is unavailable")]
+    HomeUnavailable,
+    #[error("memory database error: {0}")]
+    Database(#[from] rusqlite::Error),
+    #[error("memory database is corrupt: {0}")]
+    Corrupt(String),
+    #[error("memory serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+    #[error("memory filesystem error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+pub struct MemoryStore {
+    path: PathBuf,
+}
+
+pub struct MemoryCapabilityLease {
+    store_path: PathBuf,
+    agent_id: String,
+    token: String,
+}
+
+impl MemoryCapabilityLease {
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+impl Drop for MemoryCapabilityLease {
+    fn drop(&mut self) {
+        if let Ok(store) = MemoryStore::open(&self.store_path) {
+            let _ = store.revoke_capability(&self.agent_id, &self.token);
+        }
+    }
+}
+
+struct StoredInjection {
+    revision_ids: Vec<String>,
+}
+
+impl MemoryStore {
+    pub fn from_default_home() -> Result<Self, MemoryError> {
+        let path = crate::paths::memory_db_path().ok_or(MemoryError::HomeUnavailable)?;
+        Self::open(path)
+    }
+
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, MemoryError> {
+        let store = Self { path: path.into() };
+        if let Some(parent) = store.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let connection = store.connection()?;
+        migrate(&connection)?;
+        Ok(store)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Mint an agent-bound memory capability for one provider process.
+    /// Only the digest is persisted, so changing `WARDIAN_SESSION_ID` cannot
+    /// turn a caller's inherited capability into another agent's authority.
+    /// Multiple provider processes for the same agent remain valid concurrently.
+    pub fn issue_capability(&self, agent_id: &str) -> Result<String, MemoryError> {
+        let agent_id = required("agent_id", agent_id)?;
+        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let token_hash = hash_text(&token);
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO memory_process_capabilities(token_hash, agent_id, created_at) VALUES (?1, ?2, ?3)",
+            params![token_hash, agent_id, Utc::now().to_rfc3339()],
+        )?;
+        transaction.commit()?;
+        Ok(token)
+    }
+
+    pub fn issue_process_capability(
+        &self,
+        agent_id: &str,
+    ) -> Result<MemoryCapabilityLease, MemoryError> {
+        let agent_id = required("agent_id", agent_id)?;
+        let token = self.issue_capability(&agent_id)?;
+        Ok(MemoryCapabilityLease {
+            store_path: self.path.clone(),
+            agent_id,
+            token,
+        })
+    }
+
+    pub fn revoke_capability(&self, agent_id: &str, token: &str) -> Result<bool, MemoryError> {
+        let agent_id = required("agent_id", agent_id)?;
+        let token = required("memory capability", token)?;
+        let token_hash = hash_text(&token);
+        let connection = self.connection()?;
+        Ok(connection.execute(
+            "DELETE FROM memory_process_capabilities WHERE agent_id=?1 AND token_hash=?2",
+            params![agent_id, token_hash],
+        )? > 0)
+    }
+
+    pub fn validate_capability(
+        &self,
+        agent_id: &str,
+        token: &str,
+    ) -> Result<bool, MemoryError> {
+        let agent_id = required("agent_id", agent_id)?;
+        let token = required("memory capability", token)?;
+        let token_hash = hash_text(&token);
+        let connection = self.connection()?;
+        Ok(connection
+            .query_row(
+                "SELECT 1 FROM memory_process_capabilities WHERE agent_id=?1 AND token_hash=?2",
+                params![agent_id, token_hash],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    fn connection(&self) -> Result<Connection, MemoryError> {
+        let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(StdDuration::from_secs(5))?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        Ok(connection)
+    }
+
+    pub fn save(
+        &self,
+        actor: &MemoryActor,
+        request: SaveMemoryRequest,
+    ) -> Result<MemoryRecord, MemoryError> {
+        let agent_id = actor.authorize_subject(&request.agent_id)?;
+        let text = normalize_text(&request.text)?;
+        let evidence = normalize_evidence(&request.evidence_excerpt)?;
+        let workspace = normalize_workspace(request.workspace.as_deref());
+        let idempotency_key = normalize_optional(request.idempotency_key.as_deref());
+        let sources = normalize_sources(&request.sources)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        if let Some(mut existing) =
+            idempotent_record(&transaction, actor, idempotency_key.as_deref())?
+        {
+            existing.sources = sources_for_revision(&transaction, &existing.revision_id)?;
+            if existing.agent_id != agent_id
+                || existing.workspace != workspace
+                || existing.kind != request.kind
+                || existing.text != text
+                || existing.evidence_excerpt != evidence
+                || existing.sources != sources
+            {
+                return Err(MemoryError::Validation(
+                    "idempotency key was already used for a different save request".into(),
+                ));
+            }
+            transaction.commit()?;
+            return self.attach_sources(existing);
+        }
+        let memory_id = Uuid::new_v4().to_string();
+        let revision_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let evidence_hash = hash_text(&evidence);
+        transaction.execute(
+            "INSERT INTO memory_records
+             (revision_id, memory_id, revision, agent_id, workspace, kind, text,
+              evidence_excerpt, evidence_hash, status, created_at, updated_at,
+              last_verified_at, idempotency_key)
+             VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9, ?9, ?9, ?10)",
+            params![
+                revision_id,
+                memory_id,
+                agent_id,
+                workspace,
+                request.kind.as_str(),
+                text,
+                evidence,
+                evidence_hash,
+                now,
+                idempotency_key
+            ],
+        )?;
+        insert_sources(&transaction, &revision_id, &sources)?;
+        insert_event(
+            &transaction,
+            &agent_id,
+            Some(&memory_id),
+            Some(&revision_id),
+            "saved",
+            Some(&serde_json::json!({
+                "text": text,
+                "evidence_excerpt": evidence,
+                "evidence_hash": evidence_hash,
+                "kind": request.kind,
+                "workspace": workspace,
+                "sources": sources
+            })),
+        )?;
+        transaction.commit()?;
+        self.get_revision(&revision_id)
+    }
+
+    pub fn update(
+        &self,
+        actor: &MemoryActor,
+        request: UpdateMemoryRequest,
+    ) -> Result<MemoryRecord, MemoryError> {
+        let memory_id = required("memory_id", &request.memory_id)?;
+        let text = normalize_text(&request.text)?;
+        let evidence = normalize_evidence(&request.evidence_excerpt)?;
+        let idempotency_key = normalize_optional(request.idempotency_key.as_deref());
+        let sources = normalize_sources(&request.sources)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        if let Some(mut existing) =
+            idempotent_record(&transaction, actor, idempotency_key.as_deref())?
+        {
+            existing.sources = sources_for_revision(&transaction, &existing.revision_id)?;
+            if existing.memory_id != memory_id
+                || existing.text != text
+                || existing.evidence_excerpt != evidence
+                || existing.sources != sources
+            {
+                return Err(MemoryError::Validation(
+                    "idempotency key was already used for a different update request".into(),
+                ));
+            }
+            transaction.commit()?;
+            return self.attach_sources(existing);
+        }
+        let previous = query_active_for_actor(&transaction, actor, &memory_id)?
+            .ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
+        let revision_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let evidence_hash = hash_text(&evidence);
+        transaction.execute(
+            "UPDATE memory_records SET status='superseded', replaced_by_revision_id=?1, updated_at=?2
+             WHERE revision_id=?3 AND agent_id=?4",
+            params![revision_id, now, previous.revision_id, previous.agent_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO memory_records
+             (revision_id, memory_id, revision, agent_id, workspace, kind, text,
+              evidence_excerpt, evidence_hash, status, supersedes_revision_id,
+              created_at, updated_at, last_verified_at, idempotency_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10, ?11, ?11, ?11, ?12)",
+            params![
+                revision_id,
+                memory_id,
+                previous.revision + 1,
+                previous.agent_id,
+                previous.workspace,
+                previous.kind.as_str(),
+                text,
+                evidence,
+                evidence_hash,
+                previous.revision_id,
+                now,
+                idempotency_key
+            ],
+        )?;
+        insert_sources(&transaction, &revision_id, &sources)?;
+        insert_event(
+            &transaction,
+            &previous.agent_id,
+            Some(&memory_id),
+            Some(&revision_id),
+            "updated",
+            Some(&serde_json::json!({
+                "text": text,
+                "evidence_excerpt": evidence,
+                "evidence_hash": evidence_hash,
+                "kind": previous.kind,
+                "workspace": previous.workspace,
+                "sources": sources
+            })),
+        )?;
+        transaction.commit()?;
+        self.get_revision(&revision_id)
+    }
+
+    pub fn remove(
+        &self,
+        actor: &MemoryActor,
+        memory_id: &str,
+    ) -> Result<MemoryRecord, MemoryError> {
+        let memory_id = required("memory_id", memory_id)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let mut record = query_active_for_actor(&transaction, actor, &memory_id)?
+            .ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
+        let now = Utc::now().to_rfc3339();
+        transaction.execute(
+            "UPDATE memory_records SET status='removed', updated_at=?1 WHERE revision_id=?2 AND agent_id=?3",
+            params![now, record.revision_id, record.agent_id],
+        )?;
+        insert_event(
+            &transaction,
+            &record.agent_id,
+            Some(&memory_id),
+            Some(&record.revision_id),
+            "removed",
+            None,
+        )?;
+        transaction.commit()?;
+        record.status = MemoryStatus::Removed;
+        record.updated_at = now;
+        self.attach_sources(record)
+    }
+
+    pub fn get(&self, actor: &MemoryActor, memory_id: &str) -> Result<MemoryRecord, MemoryError> {
+        let connection = self.connection()?;
+        let record = match actor.agent_id()? {
+            Some(agent_id) => connection
+                .query_row(
+                    "SELECT * FROM memory_records WHERE memory_id=?1 AND agent_id=?2 ORDER BY revision DESC LIMIT 1",
+                    params![memory_id, agent_id],
+                    row_to_record,
+                )
+                .optional()?,
+            None => connection
+                .query_row(
+                    "SELECT * FROM memory_records WHERE memory_id=?1 ORDER BY revision DESC LIMIT 1",
+                    [memory_id],
+                    row_to_record,
+                )
+                .optional()?,
+        }
+        .ok_or_else(|| MemoryError::NotFound(memory_id.to_string()))?;
+        self.attach_sources(record)
+    }
+
+    pub fn history(
+        &self,
+        actor: &MemoryActor,
+        memory_id: &str,
+    ) -> Result<Vec<MemoryRecord>, MemoryError> {
+        let connection = self.connection()?;
+        let records = match actor.agent_id()? {
+            Some(agent_id) => {
+                let mut statement = connection.prepare(
+                    "SELECT * FROM memory_records WHERE memory_id=?1 AND agent_id=?2 ORDER BY revision ASC",
+                )?;
+                let records = statement
+                    .query_map(params![memory_id, agent_id], row_to_record)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                records
+            }
+            None => {
+                let mut statement = connection.prepare(
+                    "SELECT * FROM memory_records WHERE memory_id=?1 ORDER BY revision ASC",
+                )?;
+                let records = statement
+                    .query_map([memory_id], row_to_record)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                records
+            }
+        };
+        if records.is_empty() {
+            return Err(MemoryError::NotFound(memory_id.to_string()));
+        }
+        records
+            .into_iter()
+            .map(|record| self.attach_sources(record))
+            .collect()
+    }
+
+    pub fn list_active(
+        &self,
+        actor: &MemoryActor,
+        agent_id: &str,
+        workspace: Option<&str>,
+    ) -> Result<Vec<MemoryRecord>, MemoryError> {
+        let agent_id = actor.authorize_subject(agent_id)?;
+        let workspace = normalize_workspace(workspace);
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT * FROM memory_records
+             WHERE agent_id=?1 AND status='active' AND (workspace IS NULL OR workspace=?2)
+             ORDER BY CASE kind WHEN 'stable' THEN 0 ELSE 1 END,
+               CASE WHEN workspace IS NULL THEN 0 ELSE 1 END,
+               last_verified_at DESC, memory_id ASC",
+        )?;
+        let records = statement
+            .query_map(params![agent_id, workspace], row_to_record)?
+            .collect::<Result<Vec<_>, _>>()?;
+        records
+            .into_iter()
+            .map(|record| self.attach_sources(record))
+            .collect()
+    }
+
+    pub fn recall(
+        &self,
+        actor: &MemoryActor,
+        agent_id: &str,
+        workspace: Option<&str>,
+    ) -> Result<RecallResult, MemoryError> {
+        let workspace = normalize_workspace(workspace);
+        let stale_before = Utc::now() - Duration::days(DEFAULT_STALE_DAYS);
+        let mut stable = Vec::new();
+        let mut current = Vec::new();
+        actor.authorize_subject(agent_id)?;
+        for record in self.list_active(actor, agent_id, workspace.as_deref())? {
+            if hash_text(&record.evidence_excerpt) != record.evidence_hash {
+                continue;
+            }
+            let stale = record.kind == MemoryKind::Current
+                && DateTime::parse_from_rfc3339(&record.last_verified_at)
+                    .map(|value| value.with_timezone(&Utc) < stale_before)
+                    .unwrap_or(true);
+            let entry = RecallEntry { record, stale };
+            match entry.record.kind {
+                MemoryKind::Stable => stable.push(entry),
+                MemoryKind::Current => current.push(entry),
+            }
+        }
+        Ok(RecallResult {
+            agent_id: agent_id.to_string(),
+            workspace,
+            stable,
+            current,
+        })
+    }
+
+    /// Compile a deterministic startup brief. A resumed provider process gets
+    /// only revisions that changed since its latest recorded fingerprint.
+    // Keep the authority argument explicit alongside the complete provider
+    // checkpoint identity; collapsing either into ambient state weakens recall
+    // isolation and retry semantics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compile_brief(
+        &self,
+        actor: &MemoryActor,
+        agent_id: &str,
+        workspace: Option<&str>,
+        provider: &str,
+        provider_process_key: &str,
+        resumed: bool,
+        max_chars: usize,
+    ) -> Result<CompiledMemoryBrief, MemoryError> {
+        actor.authorize_subject(agent_id)?;
+        let recall = self.recall(actor, agent_id, workspace)?;
+        let all_active = recall
+            .stable
+            .iter()
+            .chain(recall.current.iter())
+            .map(|entry| entry.record.clone())
+            .collect::<Vec<_>>();
+        let revision_ids = all_active
+            .iter()
+            .map(|record| record.revision_id.clone())
+            .collect::<Vec<_>>();
+        let fingerprint = memory_fingerprint(&all_active);
+        let previous = if resumed {
+            self.latest_injection(agent_id, provider, provider_process_key)?
+        } else {
+            None
+        };
+        let (kind, changed, removed) = if let Some(previous) = previous {
+            let previous_records = self.records_by_revision_ids(&previous.revision_ids)?;
+            let previous_by_memory = previous_records
+                .iter()
+                .map(|record| (record.memory_id.as_str(), record))
+                .collect::<std::collections::HashMap<_, _>>();
+            let active_ids = all_active
+                .iter()
+                .map(|record| record.memory_id.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            let removed = previous_records
+                .iter()
+                .filter(|record| !active_ids.contains(record.memory_id.as_str()))
+                .map(|record| record.memory_id.clone())
+                .collect::<Vec<_>>();
+            let mut changed = all_active
+                .iter()
+                .filter(|record| {
+                    previous_by_memory
+                        .get(record.memory_id.as_str())
+                        .is_none_or(|prior| prior.revision_id != record.revision_id)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            // Every provider process must receive an authoritative checkpoint.
+            // A prior process can exit before it submits a turn, so an audit
+            // record alone does not prove that its model consumed the brief.
+            // Re-send the active set when there is no content delta; changed
+            // resumes still receive only changed and removed revisions.
+            if changed.is_empty() && removed.is_empty() {
+                changed = all_active.clone();
+            }
+            (MemoryBriefKind::ResumeDelta, changed, removed)
+        } else {
+            (MemoryBriefKind::Fresh, all_active, Vec::new())
+        };
+        let (context_text, omitted_count) = render_brief(kind, &changed, &removed, max_chars);
+        Ok(CompiledMemoryBrief {
+            kind,
+            is_empty: context_text.is_empty(),
+            context_text,
+            fingerprint,
+            revision_ids,
+            omitted_count,
+        })
+    }
+
+    pub fn record_injection(
+        &self,
+        actor: &MemoryActor,
+        agent_id: &str,
+        workspace: Option<&str>,
+        provider: &str,
+        provider_process_key: &str,
+        brief: &CompiledMemoryBrief,
+    ) -> Result<Option<String>, MemoryError> {
+        let agent_id = actor.authorize_subject(agent_id)?;
+        if brief.is_empty {
+            return Ok(None);
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let injection_id = Uuid::new_v4().to_string();
+        transaction.execute(
+            "INSERT INTO memory_injections
+             (injection_id, agent_id, workspace, provider, provider_process_key, fingerprint,
+              revision_ids_json, context_text, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                injection_id,
+                agent_id,
+                normalize_workspace(workspace),
+                provider,
+                provider_process_key,
+                brief.fingerprint,
+                serde_json::to_string(&brief.revision_ids)?,
+                brief.context_text,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        insert_event(
+            &transaction,
+            &agent_id,
+            None,
+            None,
+            "loaded",
+            Some(&serde_json::json!({
+                "injection_id": injection_id,
+                "kind": brief.kind,
+                "fingerprint": brief.fingerprint,
+                "revision_ids": brief.revision_ids,
+                "omitted_count": brief.omitted_count,
+                "budget_policy_version": MEMORY_BUDGET_POLICY_VERSION,
+                "injected_context": brief.context_text,
+                "provider": provider,
+                "provider_process_key": provider_process_key
+            })),
+        )?;
+        transaction.commit()?;
+        Ok(Some(injection_id))
+    }
+
+    pub fn list_events(
+        &self,
+        actor: &MemoryActor,
+        agent_id: &str,
+    ) -> Result<Vec<MemoryEvent>, MemoryError> {
+        let agent_id = actor.authorize_subject(agent_id)?;
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT event_id, agent_id, memory_id, revision_id, action, payload_json, occurred_at
+             FROM (
+               SELECT event_id, agent_id, memory_id, revision_id, action, payload_json, occurred_at
+               FROM memory_events WHERE agent_id=?1
+               ORDER BY occurred_at DESC, event_id DESC LIMIT 100
+             ) ORDER BY occurred_at ASC, event_id ASC",
+        )?;
+        let events = statement
+            .query_map([agent_id], |row| {
+                let payload: Option<String> = row.get(5)?;
+                Ok(MemoryEvent {
+                    event_id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    memory_id: row.get(2)?,
+                    revision_id: row.get(3)?,
+                    action: row.get(4)?,
+                    payload: payload
+                        .and_then(|value| serde_json::from_str(&value).ok())
+                        .unwrap_or(serde_json::Value::Null),
+                    occurred_at: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(events)
+    }
+
+    /// Validate and commit a consolidator batch, its cursor, and its durable
+    /// idempotency receipt in one transaction.
+    pub fn commit_batch(
+        &self,
+        actor: &MemoryActor,
+        batch: MemoryCommitBatch,
+    ) -> Result<MemoryCommitResult, MemoryError> {
+        let agent_id = actor.authorize_subject(&batch.agent_id)?;
+        let key = required("idempotency_key", &batch.idempotency_key)?;
+        let workspace = normalize_workspace(batch.workspace.as_deref());
+        let request_hash = hash_text(&serde_json::to_string(&batch)?);
+        let mut connection = self.connection()?;
+        // Acquire the writer lock before reading the idempotency receipt or
+        // cursor so overlapping consolidators observe one serialized order.
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((stored_hash, stored_result)) = transaction
+            .query_row(
+                "SELECT request_hash, result_json FROM memory_commits WHERE idempotency_key=?1",
+                [&key],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        {
+            if stored_hash != request_hash {
+                return Err(MemoryError::Validation(
+                    "idempotency key was already used for a different memory batch".into(),
+                ));
+            }
+            let mut result: MemoryCommitResult = serde_json::from_str(&stored_result)?;
+            result.replayed = true;
+            transaction.commit()?;
+            return Ok(result);
+        }
+
+        if let Some(cursor) = &batch.cursor {
+            advance_consolidation_cursor(
+                &transaction,
+                &agent_id,
+                workspace.as_deref(),
+                cursor,
+            )?;
+        }
+
+        let mut memory_ids = Vec::new();
+        for mutation in &batch.operations {
+            match mutation {
+                MemoryMutation::Save {
+                    kind,
+                    text,
+                    evidence_excerpt,
+                    sources,
+                } => {
+                    let text = normalize_text(text)?;
+                    let evidence = normalize_evidence(evidence_excerpt)?;
+                    let memory_id = Uuid::new_v4().to_string();
+                    let revision_id = Uuid::new_v4().to_string();
+                    let now = Utc::now().to_rfc3339();
+                    transaction.execute(
+                        "INSERT INTO memory_records
+                         (revision_id, memory_id, revision, agent_id, workspace, kind, text,
+                          evidence_excerpt, evidence_hash, status, created_at, updated_at, last_verified_at)
+                         VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9, ?9, ?9)",
+                        params![revision_id, memory_id, agent_id, workspace, kind.as_str(), text,
+                            evidence, hash_text(&evidence), now],
+                    )?;
+                    insert_sources(&transaction, &revision_id, sources)?;
+                    insert_event(
+                        &transaction,
+                        &agent_id,
+                        Some(&memory_id),
+                        Some(&revision_id),
+                        "saved",
+                        Some(&serde_json::json!({
+                            "text": text,
+                            "evidence_excerpt": evidence,
+                            "evidence_hash": hash_text(&evidence),
+                            "kind": kind,
+                            "workspace": workspace,
+                            "sources": sources
+                        })),
+                    )?;
+                    memory_ids.push(memory_id);
+                }
+                MemoryMutation::Update {
+                    memory_id,
+                    text,
+                    evidence_excerpt,
+                    sources,
+                } => {
+                    let prior = query_active_for_agent(&transaction, &agent_id, memory_id)?
+                        .ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
+                    if prior.agent_id != agent_id {
+                        return Err(MemoryError::Validation(format!(
+                            "memory {memory_id} belongs to another agent"
+                        )));
+                    }
+                    let text = normalize_text(text)?;
+                    let evidence = normalize_evidence(evidence_excerpt)?;
+                    let revision_id = Uuid::new_v4().to_string();
+                    let now = Utc::now().to_rfc3339();
+                    transaction.execute(
+                        "UPDATE memory_records SET status='superseded', replaced_by_revision_id=?1, updated_at=?2 WHERE revision_id=?3 AND agent_id=?4",
+                        params![revision_id, now, prior.revision_id, agent_id],
+                    )?;
+                    transaction.execute(
+                        "INSERT INTO memory_records
+                         (revision_id, memory_id, revision, agent_id, workspace, kind, text,
+                          evidence_excerpt, evidence_hash, status, supersedes_revision_id,
+                          created_at, updated_at, last_verified_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10, ?11, ?11, ?11)",
+                        params![
+                            revision_id,
+                            memory_id,
+                            prior.revision + 1,
+                            agent_id,
+                            prior.workspace,
+                            prior.kind.as_str(),
+                            text,
+                            evidence,
+                            hash_text(&evidence),
+                            prior.revision_id,
+                            now
+                        ],
+                    )?;
+                    insert_sources(&transaction, &revision_id, sources)?;
+                    insert_event(
+                        &transaction,
+                        &agent_id,
+                        Some(memory_id),
+                        Some(&revision_id),
+                        "updated",
+                        Some(&serde_json::json!({
+                            "text": text,
+                            "evidence_excerpt": evidence,
+                            "evidence_hash": hash_text(&evidence),
+                            "kind": prior.kind,
+                            "workspace": prior.workspace,
+                            "sources": sources
+                        })),
+                    )?;
+                    memory_ids.push(memory_id.clone());
+                }
+                MemoryMutation::Remove { memory_id } => {
+                    let prior = query_active_for_agent(&transaction, &agent_id, memory_id)?
+                        .ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
+                    if prior.agent_id != agent_id {
+                        return Err(MemoryError::Validation(format!(
+                            "memory {memory_id} belongs to another agent"
+                        )));
+                    }
+                    transaction.execute(
+                        "UPDATE memory_records SET status='removed', updated_at=?1 WHERE revision_id=?2 AND agent_id=?3",
+                        params![Utc::now().to_rfc3339(), prior.revision_id, agent_id],
+                    )?;
+                    insert_event(
+                        &transaction,
+                        &agent_id,
+                        Some(memory_id),
+                        Some(&prior.revision_id),
+                        "removed",
+                        None,
+                    )?;
+                    memory_ids.push(memory_id.clone());
+                }
+            }
+        }
+        let result = MemoryCommitResult {
+            idempotency_key: key.clone(),
+            memory_ids,
+            replayed: false,
+        };
+        transaction.execute(
+            "INSERT INTO memory_commits(idempotency_key, request_hash, result_json, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                key,
+                request_hash,
+                serde_json::to_string(&result)?,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
+    fn get_revision(&self, revision_id: &str) -> Result<MemoryRecord, MemoryError> {
+        let connection = self.connection()?;
+        let record = connection
+            .query_row(
+                "SELECT * FROM memory_records WHERE revision_id=?1",
+                [revision_id],
+                row_to_record,
+            )
+            .optional()?
+            .ok_or_else(|| MemoryError::NotFound(revision_id.to_string()))?;
+        self.attach_sources(record)
+    }
+
+    fn attach_sources(&self, mut record: MemoryRecord) -> Result<MemoryRecord, MemoryError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT source_type, locator, source_hash, is_primary FROM memory_sources
+             WHERE revision_id=?1 ORDER BY is_primary DESC, id ASC",
+        )?;
+        record.sources = statement
+            .query_map([&record.revision_id], |row| {
+                Ok(MemorySource {
+                    source_type: row.get(0)?,
+                    locator: row.get(1)?,
+                    source_hash: row.get(2)?,
+                    primary: row.get::<_, i64>(3)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(record)
+    }
+
+    fn latest_injection(
+        &self,
+        agent_id: &str,
+        provider: &str,
+        process_key: &str,
+    ) -> Result<Option<StoredInjection>, MemoryError> {
+        let connection = self.connection()?;
+        let stored = connection
+            .query_row(
+                "SELECT revision_ids_json FROM memory_injections
+                 WHERE agent_id=?1 AND provider=?2 AND provider_process_key=?3
+                 ORDER BY created_at DESC LIMIT 1",
+                params![agent_id, provider, process_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        stored
+            .map(|value| {
+                Ok(StoredInjection {
+                    revision_ids: serde_json::from_str(&value)?,
+                })
+            })
+            .transpose()
+    }
+
+    fn records_by_revision_ids(
+        &self,
+        revision_ids: &[String],
+    ) -> Result<Vec<MemoryRecord>, MemoryError> {
+        revision_ids
+            .iter()
+            .map(|revision_id| self.get_revision(revision_id))
+            .collect()
+    }
+}
+
+fn migrate(connection: &Connection) -> Result<(), MemoryError> {
+    connection.execute_batch(&format!(r#"
+        CREATE TABLE IF NOT EXISTS memory_schema (version INTEGER NOT NULL);
+        INSERT INTO memory_schema(version) SELECT {SCHEMA_VERSION}
+          WHERE NOT EXISTS (SELECT 1 FROM memory_schema);
+        UPDATE memory_schema SET version={SCHEMA_VERSION};
+        CREATE TABLE IF NOT EXISTS memory_records (
+          revision_id TEXT PRIMARY KEY, memory_id TEXT NOT NULL, revision INTEGER NOT NULL,
+          agent_id TEXT NOT NULL, workspace TEXT, kind TEXT NOT NULL, text TEXT NOT NULL,
+          evidence_excerpt TEXT NOT NULL, evidence_hash TEXT NOT NULL, status TEXT NOT NULL,
+          supersedes_revision_id TEXT, replaced_by_revision_id TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_verified_at TEXT NOT NULL,
+          idempotency_key TEXT UNIQUE,
+          UNIQUE(memory_id, revision)
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_active ON memory_records(agent_id, workspace, status, kind);
+        CREATE TABLE IF NOT EXISTS memory_sources (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, revision_id TEXT NOT NULL,
+          source_type TEXT NOT NULL, locator TEXT, source_hash TEXT, is_primary INTEGER NOT NULL DEFAULT 0,
+          FOREIGN KEY(revision_id) REFERENCES memory_records(revision_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS memory_events (
+          event_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, memory_id TEXT, revision_id TEXT,
+          action TEXT NOT NULL, payload_json TEXT, occurred_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_events_agent ON memory_events(agent_id, occurred_at);
+        CREATE TABLE IF NOT EXISTS memory_injections (
+          injection_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, workspace TEXT, provider TEXT NOT NULL,
+          provider_process_key TEXT NOT NULL, fingerprint TEXT NOT NULL, revision_ids_json TEXT NOT NULL,
+          context_text TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        DROP INDEX IF EXISTS idx_memory_injection_unique;
+        CREATE INDEX IF NOT EXISTS idx_memory_injection_checkpoint
+          ON memory_injections(agent_id, provider, provider_process_key, fingerprint, created_at);
+        CREATE INDEX IF NOT EXISTS idx_memory_injection_process ON memory_injections(agent_id, provider, provider_process_key, created_at);
+        CREATE TABLE IF NOT EXISTS memory_consolidation_cursors (
+          cursor_key TEXT PRIMARY KEY, agent_id TEXT NOT NULL, workspace TEXT,
+          conversation_id TEXT, sequence INTEGER NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS memory_commits (
+          idempotency_key TEXT PRIMARY KEY, request_hash TEXT NOT NULL,
+          result_json TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        DROP TABLE IF EXISTS memory_capabilities;
+        CREATE TABLE IF NOT EXISTS memory_process_capabilities (
+          token_hash TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_process_capabilities_agent
+          ON memory_process_capabilities(agent_id, created_at);
+    "#))?;
+    Ok(())
+}
+
+fn advance_consolidation_cursor(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    workspace: Option<&str>,
+    cursor: &MemoryCursorUpdate,
+) -> Result<(), MemoryError> {
+    required("cursor_key", &cursor.cursor_key)?;
+    let conversation_id = cursor
+        .conversation_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let cursor_key = canonical_consolidation_cursor_key(
+        agent_id,
+        workspace,
+        conversation_id.as_deref(),
+    );
+    let existing = transaction
+        .query_row(
+            "SELECT agent_id, conversation_id, sequence
+             FROM memory_consolidation_cursors WHERE cursor_key=?1",
+            [&cursor_key],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, u64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((existing_owner, _existing_conversation, existing_sequence)) = existing {
+        if existing_owner != agent_id {
+            return Err(MemoryError::AccessDenied {
+                actor_agent_id: agent_id.to_string(),
+                subject_agent_id: existing_owner,
+            });
+        }
+        if cursor.sequence <= existing_sequence {
+            return Err(MemoryError::Validation(format!(
+                "consolidation cursor {cursor_key} cannot move from sequence {existing_sequence} to {}",
+                cursor.sequence
+            )));
+        }
+    }
+    transaction.execute(
+        "INSERT INTO memory_consolidation_cursors
+         (cursor_key, agent_id, workspace, conversation_id, sequence, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(cursor_key) DO UPDATE SET workspace=excluded.workspace,
+           sequence=excluded.sequence, updated_at=excluded.updated_at",
+        params![
+            cursor_key,
+            agent_id,
+            workspace,
+            conversation_id,
+            cursor.sequence,
+            Utc::now().to_rfc3339()
+        ],
+    )?;
+    Ok(())
+}
+
+fn canonical_consolidation_cursor_key(
+    agent_id: &str,
+    workspace: Option<&str>,
+    conversation_id: Option<&str>,
+) -> String {
+    let scope = format!(
+        "{}\0{}\0{}",
+        agent_id,
+        workspace.unwrap_or_default(),
+        conversation_id.unwrap_or_default()
+    );
+    format!("memory-consolidation:{}", hash_text(&scope))
+}
+
+fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
+    let kind: String = row.get("kind")?;
+    let status: String = row.get("status")?;
+    Ok(MemoryRecord {
+        revision_id: row.get("revision_id")?,
+        memory_id: row.get("memory_id")?,
+        revision: row.get("revision")?,
+        agent_id: row.get("agent_id")?,
+        workspace: row.get("workspace")?,
+        kind: MemoryKind::parse(&kind).map_err(to_sql_conversion)?,
+        text: row.get("text")?,
+        evidence_excerpt: row.get("evidence_excerpt")?,
+        evidence_hash: row.get("evidence_hash")?,
+        status: MemoryStatus::parse(&status).map_err(to_sql_conversion)?,
+        supersedes_revision_id: row.get("supersedes_revision_id")?,
+        replaced_by_revision_id: row.get("replaced_by_revision_id")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+        last_verified_at: row.get("last_verified_at")?,
+        idempotency_key: row.get("idempotency_key")?,
+        sources: Vec::new(),
+    })
+}
+
+fn to_sql_conversion(error: MemoryError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+}
+
+fn query_active(
+    transaction: &Transaction<'_>,
+    memory_id: &str,
+) -> Result<Option<MemoryRecord>, MemoryError> {
+    Ok(transaction.query_row(
+        "SELECT * FROM memory_records WHERE memory_id=?1 AND status='active' ORDER BY revision DESC LIMIT 1",
+        [memory_id], row_to_record,
+    ).optional()?)
+}
+
+fn query_active_for_actor(
+    transaction: &Transaction<'_>,
+    actor: &MemoryActor,
+    memory_id: &str,
+) -> Result<Option<MemoryRecord>, MemoryError> {
+    match actor.agent_id()? {
+        Some(agent_id) => query_active_for_agent(transaction, &agent_id, memory_id),
+        None => query_active(transaction, memory_id),
+    }
+}
+
+fn query_active_for_agent(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    memory_id: &str,
+) -> Result<Option<MemoryRecord>, MemoryError> {
+    Ok(transaction
+        .query_row(
+            "SELECT * FROM memory_records WHERE memory_id=?1 AND agent_id=?2 AND status='active' ORDER BY revision DESC LIMIT 1",
+            params![memory_id, agent_id],
+            row_to_record,
+        )
+        .optional()?)
+}
+
+fn idempotent_record(
+    transaction: &Transaction<'_>,
+    actor: &MemoryActor,
+    key: Option<&str>,
+) -> Result<Option<MemoryRecord>, MemoryError> {
+    let Some(key) = key else {
+        return Ok(None);
+    };
+    let record = transaction
+        .query_row(
+            "SELECT * FROM memory_records WHERE idempotency_key=?1",
+            [key],
+            row_to_record,
+        )
+        .optional()?;
+    if let (Some(actor_agent_id), Some(record)) = (actor.agent_id()?, record.as_ref()) {
+        if record.agent_id != actor_agent_id {
+            return Err(MemoryError::Validation(
+                "idempotency key is unavailable".into(),
+            ));
+        }
+    }
+    Ok(record)
+}
+
+fn sources_for_revision(
+    transaction: &Transaction<'_>,
+    revision_id: &str,
+) -> Result<Vec<MemorySource>, MemoryError> {
+    let mut statement = transaction.prepare(
+        "SELECT source_type, locator, source_hash, is_primary FROM memory_sources
+         WHERE revision_id=?1 ORDER BY source_type, locator, source_hash, is_primary",
+    )?;
+    let sources = statement
+        .query_map([revision_id], |row| {
+            Ok(MemorySource {
+                source_type: row.get(0)?,
+                locator: row.get(1)?,
+                source_hash: row.get(2)?,
+                primary: row.get::<_, i64>(3)? != 0,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(sources)
+}
+
+fn normalize_sources(sources: &[MemorySource]) -> Result<Vec<MemorySource>, MemoryError> {
+    let mut normalized = sources
+        .iter()
+        .map(|source| {
+            Ok(MemorySource {
+                source_type: required("source_type", &source.source_type)?,
+                locator: normalize_optional(source.locator.as_deref()),
+                source_hash: normalize_optional(source.source_hash.as_deref()),
+                primary: source.primary,
+            })
+        })
+        .collect::<Result<Vec<_>, MemoryError>>()?;
+    normalized.sort_by(|left, right| {
+        (
+            &left.source_type,
+            &left.locator,
+            &left.source_hash,
+            left.primary,
+        )
+            .cmp(&(
+                &right.source_type,
+                &right.locator,
+                &right.source_hash,
+                right.primary,
+            ))
+    });
+    Ok(normalized)
+}
+
+fn insert_sources(
+    transaction: &Transaction<'_>,
+    revision_id: &str,
+    sources: &[MemorySource],
+) -> Result<(), MemoryError> {
+    for source in sources {
+        let source_type = required("source_type", &source.source_type)?;
+        transaction.execute(
+            "INSERT INTO memory_sources(revision_id, source_type, locator, source_hash, is_primary)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                revision_id,
+                source_type,
+                normalize_optional(source.locator.as_deref()),
+                normalize_optional(source.source_hash.as_deref()),
+                i64::from(source.primary)
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_event(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    memory_id: Option<&str>,
+    revision_id: Option<&str>,
+    action: &str,
+    payload: Option<&serde_json::Value>,
+) -> Result<(), MemoryError> {
+    transaction.execute(
+        "INSERT INTO memory_events(event_id, agent_id, memory_id, revision_id, action, payload_json, occurred_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![Uuid::new_v4().to_string(), agent_id, memory_id, revision_id, action,
+            payload.map(serde_json::to_string).transpose()?, Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+fn required(field: &str, value: &str) -> Result<String, MemoryError> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(MemoryError::Validation(format!("{field} is required")))
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+fn normalize_text(value: &str) -> Result<String, MemoryError> {
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    required("text", &value)
+}
+
+fn normalize_evidence(value: &str) -> Result<String, MemoryError> {
+    let value = value.trim();
+    required("evidence_excerpt", value)
+}
+
+pub fn normalize_workspace(value: Option<&str>) -> Option<String> {
+    normalize_workspace_for(value, cfg!(windows))
+}
+
+fn normalize_workspace_for(value: Option<&str>, windows: bool) -> Option<String> {
+    normalize_optional(value).map(|value| {
+        if !windows {
+            if value == "/" || value == "//" {
+                return value;
+            }
+            return value.trim_end_matches('/').to_string();
+        }
+
+        let normalized = value.replace('\\', "/").to_ascii_lowercase();
+        let normalized = if let Some(path) = normalized.strip_prefix("//?/unc/") {
+            format!("//{path}")
+        } else if let Some(path) = normalized.strip_prefix("//?/") {
+            path.to_string()
+        } else {
+            normalized
+        };
+        if normalized == "/"
+            || (normalized.len() == 3
+                && normalized.as_bytes()[1] == b':'
+                && normalized.ends_with('/'))
+        {
+            return normalized;
+        }
+        let without_trailing = normalized.trim_end_matches('/');
+        let unc_parts = without_trailing
+            .strip_prefix("//")
+            .map(|rest| rest.split('/').filter(|part| !part.is_empty()).count());
+        if unc_parts == Some(2) {
+            format!("{without_trailing}/")
+        } else {
+            without_trailing.to_string()
+        }
+    })
+}
+
+fn normalize_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+pub fn hash_text(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn memory_fingerprint(records: &[MemoryRecord]) -> String {
+    let canonical = records
+        .iter()
+        .map(|record| {
+            let stale = record.kind == MemoryKind::Current
+                && DateTime::parse_from_rfc3339(&record.last_verified_at)
+                    .map(|value| {
+                        value.with_timezone(&Utc) < Utc::now() - Duration::days(DEFAULT_STALE_DAYS)
+                    })
+                    .unwrap_or(true);
+            format!(
+                "{}:{}:{:?}:{}:{}:{}:{}:{}",
+                record.memory_id,
+                record.revision,
+                record.kind,
+                record.workspace.as_deref().unwrap_or("agent-wide"),
+                record.evidence_hash,
+                record.text,
+                stale,
+                MEMORY_BUDGET_POLICY_VERSION
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    hash_text(&canonical)
+}
+
+fn render_brief(
+    kind: MemoryBriefKind,
+    records: &[MemoryRecord],
+    removed: &[String],
+    max_chars: usize,
+) -> (String, usize) {
+    if records.is_empty() && removed.is_empty() {
+        return (String::new(), 0);
+    }
+    let mut output = match kind {
+        MemoryBriefKind::Fresh => "# Wardian memory\n".to_string(),
+        MemoryBriefKind::ResumeDelta => "# Wardian memory changes\n".to_string(),
+    };
+    let mut omitted = 0;
+    for (heading, target_kind) in [
+        ("Stable memory", MemoryKind::Stable),
+        ("Current state", MemoryKind::Current),
+    ] {
+        let entries = records
+            .iter()
+            .filter(|record| record.kind == target_kind)
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
+            continue;
+        }
+        let heading = format!("\n## {heading}\n");
+        if output.len() + heading.len() <= max_chars {
+            output.push_str(&heading);
+        }
+        for record in entries {
+            let scope = record.workspace.as_deref().unwrap_or("agent-wide");
+            let stale = record.kind == MemoryKind::Current
+                && DateTime::parse_from_rfc3339(&record.last_verified_at)
+                    .map(|value| {
+                        value.with_timezone(&Utc) < Utc::now() - Duration::days(DEFAULT_STALE_DAYS)
+                    })
+                    .unwrap_or(true);
+            let stale_label = if stale { " [stale]" } else { "" };
+            let short_id = &record.memory_id[..record.memory_id.len().min(8)];
+            let line = format!(
+                "- [{short_id}]{} {} (scope: {scope}; verified: {})\n",
+                stale_label, record.text, record.last_verified_at
+            );
+            if output.len() + line.len() > max_chars {
+                omitted += 1;
+            } else {
+                output.push_str(&line);
+            }
+        }
+    }
+    if !removed.is_empty() {
+        let heading = "\n## Removed or superseded\n";
+        if output.len() + heading.len() <= max_chars {
+            output.push_str(heading);
+        }
+        for memory_id in removed {
+            let short_id = &memory_id[..memory_id.len().min(8)];
+            let line = format!("- [{short_id}] no longer applies\n");
+            if output.len() + line.len() > max_chars {
+                omitted += 1;
+            } else {
+                output.push_str(&line);
+            }
+        }
+    }
+    if omitted > 0 {
+        let notice = format!("\n_{omitted} additional memories omitted by the startup budget._\n");
+        if output.len() + notice.len() <= max_chars {
+            output.push_str(&notice);
+        }
+    }
+    (output.trim().to_string(), omitted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(agent: &str, workspace: Option<&str>, text: &str) -> SaveMemoryRequest {
+        SaveMemoryRequest {
+            agent_id: agent.into(),
+            workspace: workspace.map(str::to_string),
+            kind: MemoryKind::Stable,
+            text: text.into(),
+            evidence_excerpt: format!("Evidence for {text}"),
+            sources: vec![],
+            idempotency_key: None,
+        }
+    }
+
+    #[test]
+    fn lifecycle_preserves_revision_history_and_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let mut create = request("agent-a", Some("C:\\Work"), "Prefer concise answers");
+        create.sources.push(MemorySource {
+            source_type: "conversation".into(),
+            locator: Some("conv-1#4".into()),
+            source_hash: None,
+            primary: true,
+        });
+        let first = store.save(&MemoryActor::Operator, create).unwrap();
+        let expected_workspace = if cfg!(windows) {
+            "c:/work"
+        } else {
+            "C:\\Work"
+        };
+        assert_eq!(first.workspace.as_deref(), Some(expected_workspace));
+        assert_eq!(first.sources.len(), 1);
+        let second = store
+            .update(
+                &MemoryActor::Operator,
+                UpdateMemoryRequest {
+                    memory_id: first.memory_id.clone(),
+                    text: "Prefer concise technical answers".into(),
+                    evidence_excerpt: "User clarified the preference".into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(second.revision, 2);
+        let history = store
+            .history(&MemoryActor::Operator, &first.memory_id)
+            .unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].status, MemoryStatus::Superseded);
+        assert_eq!(
+            store
+                .remove(&MemoryActor::Operator, &first.memory_id)
+                .unwrap()
+                .status,
+            MemoryStatus::Removed
+        );
+        assert!(store
+            .list_active(&MemoryActor::Operator, "agent-a", Some("C:/Work"))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn recall_isolates_agents_and_workspaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        store
+            .save(
+                &MemoryActor::Operator,
+                request("agent-a", None, "Agent preference"),
+            )
+            .unwrap();
+        store
+            .save(
+                &MemoryActor::Operator,
+                request("agent-a", Some("one"), "Project one"),
+            )
+            .unwrap();
+        store
+            .save(
+                &MemoryActor::Operator,
+                request("agent-a", Some("two"), "Project two"),
+            )
+            .unwrap();
+        store
+            .save(
+                &MemoryActor::Operator,
+                request("agent-b", Some("one"), "Other agent"),
+            )
+            .unwrap();
+        let recall = store
+            .recall(&MemoryActor::agent("agent-a"), "agent-a", Some("one"))
+            .unwrap();
+        let texts = recall
+            .stable
+            .into_iter()
+            .map(|entry| entry.record.text)
+            .collect::<Vec<_>>();
+        assert_eq!(texts.len(), 2);
+        assert!(texts.contains(&"Agent preference".to_string()));
+        assert!(texts.contains(&"Project one".to_string()));
+    }
+
+    #[test]
+    fn workspace_normalization_preserves_platform_roots_and_posix_backslashes() {
+        assert_eq!(normalize_workspace_for(Some("/"), false).as_deref(), Some("/"));
+        assert_eq!(normalize_workspace_for(Some("//"), false).as_deref(), Some("//"));
+        assert_eq!(
+            normalize_workspace_for(Some("project\\data"), false).as_deref(),
+            Some("project\\data")
+        );
+        assert_eq!(
+            normalize_workspace_for(Some("project/data/"), false).as_deref(),
+            Some("project/data")
+        );
+        assert_eq!(
+            normalize_workspace_for(Some("C:\\"), true).as_deref(),
+            Some("c:/")
+        );
+        assert_eq!(
+            normalize_workspace_for(Some("\\\\Server\\Share\\"), true).as_deref(),
+            Some("//server/share/")
+        );
+        assert_eq!(
+            normalize_workspace_for(Some("\\\\Server\\Share\\Folder\\"), true).as_deref(),
+            Some("//server/share/folder")
+        );
+        assert_eq!(
+            normalize_workspace_for(Some("\\\\?\\C:\\Repo\\"), true).as_deref(),
+            Some("c:/repo")
+        );
+        assert_eq!(
+            normalize_workspace_for(Some("\\\\?\\UNC\\Server\\Share\\Folder\\"), true)
+                .as_deref(),
+            Some("//server/share/folder")
+        );
+    }
+
+    #[test]
+    fn idempotency_returns_the_original_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let mut first = request("agent-a", None, "Remember this");
+        first.idempotency_key = Some("run-1:cursor-3".into());
+        let original = store.save(&MemoryActor::Operator, first.clone()).unwrap();
+        let retry = store.save(&MemoryActor::Operator, first.clone()).unwrap();
+        assert_eq!(retry.revision_id, original.revision_id);
+        assert_eq!(
+            store
+                .history(&MemoryActor::Operator, &original.memory_id)
+                .unwrap()
+                .len(),
+            1
+        );
+        first.text = "Different retry payload".into();
+        assert!(matches!(
+            store.save(&MemoryActor::Operator, first),
+            Err(MemoryError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn idempotency_keys_are_global_and_include_source_provenance() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let source = |locator: &str| MemorySource {
+            source_type: "conversation".into(),
+            locator: Some(locator.into()),
+            source_hash: None,
+            primary: true,
+        };
+        let mut first = request("agent-a", None, "Remember provenance");
+        first.idempotency_key = Some("global-save-key".into());
+        first.sources = vec![source("conv-a#1")];
+        let saved = store.save(&MemoryActor::Operator, first.clone()).unwrap();
+
+        let mut changed_source = first.clone();
+        changed_source.sources = vec![source("conv-a#2")];
+        assert!(matches!(
+            store.save(&MemoryActor::Operator, changed_source),
+            Err(MemoryError::Validation(_))
+        ));
+        let mut other_agent = request("agent-b", None, "Independent request");
+        other_agent.idempotency_key = Some("global-save-key".into());
+        assert!(matches!(
+            store.save(&MemoryActor::Operator, other_agent),
+            Err(MemoryError::Validation(_))
+        ));
+
+        let update = UpdateMemoryRequest {
+            memory_id: saved.memory_id.clone(),
+            text: "Remember provenance precisely".into(),
+            evidence_excerpt: "Updated evidence".into(),
+            sources: vec![source("conv-a#3")],
+            idempotency_key: Some("global-update-key".into()),
+        };
+        store
+            .update(&MemoryActor::Operator, update.clone())
+            .unwrap();
+        let mut changed_update_source = update;
+        changed_update_source.sources = vec![source("conv-a#4")];
+        assert!(matches!(
+            store.update(&MemoryActor::Operator, changed_update_source),
+            Err(MemoryError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn fresh_brief_and_resume_delta_are_fingerprinted() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let first = store
+            .save(
+                &MemoryActor::Operator,
+                request("agent-a", Some("one"), "Use the compact layout"),
+            )
+            .unwrap();
+        let fresh = store
+            .compile_brief(
+                &MemoryActor::agent("agent-a"),
+                "agent-a",
+                Some("one"),
+                "codex",
+                "session-1",
+                false,
+                8_000,
+            )
+            .unwrap();
+        assert!(fresh.context_text.contains("Stable memory"));
+        assert!(fresh.context_text.contains("Use the compact layout"));
+        let first_receipt = store
+            .record_injection(
+                &MemoryActor::agent("agent-a"),
+                "agent-a",
+                Some("one"),
+                "codex",
+                "session-1",
+                &fresh,
+            )
+            .unwrap()
+            .expect("first injection receipt");
+        let second_receipt = store
+            .record_injection(
+                &MemoryActor::agent("agent-a"),
+                "agent-a",
+                Some("one"),
+                "codex",
+                "session-1",
+                &fresh,
+            )
+            .unwrap()
+            .expect("second injection receipt");
+        assert_ne!(first_receipt, second_receipt);
+        assert_eq!(
+            store
+                .list_events(&MemoryActor::agent("agent-a"), "agent-a")
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.action == "loaded")
+                .count(),
+            2,
+            "every successful launch injection needs its own audit receipt"
+        );
+        let unchanged = store
+            .compile_brief(
+                &MemoryActor::agent("agent-a"),
+                "agent-a",
+                Some("one"),
+                "codex",
+                "session-1",
+                true,
+                8_000,
+            )
+            .unwrap();
+        assert_eq!(unchanged.kind, MemoryBriefKind::ResumeDelta);
+        assert!(unchanged.context_text.contains("Use the compact layout"));
+
+        store
+            .update(
+                &MemoryActor::Operator,
+                UpdateMemoryRequest {
+                    memory_id: first.memory_id,
+                    text: "Use the extra compact layout".into(),
+                    evidence_excerpt: "Preference was refined".into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+        let delta = store
+            .compile_brief(
+                &MemoryActor::agent("agent-a"),
+                "agent-a",
+                Some("one"),
+                "codex",
+                "session-1",
+                true,
+                8_000,
+            )
+            .unwrap();
+        assert_eq!(delta.kind, MemoryBriefKind::ResumeDelta);
+        assert!(delta.context_text.contains("extra compact"));
+    }
+
+    #[test]
+    fn consolidation_batch_is_atomic_and_idempotent() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let batch = MemoryCommitBatch {
+            agent_id: "agent-a".into(),
+            workspace: Some("one".into()),
+            idempotency_key: "run-1:conv-1:8".into(),
+            operations: vec![MemoryMutation::Save {
+                kind: MemoryKind::Stable,
+                text: "Use metric units".into(),
+                evidence_excerpt: "The user explicitly selected metric units.".into(),
+                sources: vec![MemorySource {
+                    source_type: "conversation".into(),
+                    locator: Some("conv-1#8".into()),
+                    source_hash: None,
+                    primary: true,
+                }],
+            }],
+            cursor: Some(MemoryCursorUpdate {
+                cursor_key: "agent-a:one".into(),
+                conversation_id: Some("conv-1".into()),
+                sequence: 8,
+            }),
+        };
+        let actor = MemoryActor::agent("agent-a");
+        let first = store.commit_batch(&actor, batch.clone()).unwrap();
+        let replay = store.commit_batch(&actor, batch).unwrap();
+        assert!(!first.replayed);
+        assert!(replay.replayed);
+        assert_eq!(first.memory_ids, replay.memory_ids);
+        assert_eq!(
+            store
+                .list_active(&actor, "agent-a", Some("one"))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn recall_labels_stale_current_and_excludes_invalid_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("memory.db");
+        let store = MemoryStore::open(&path).unwrap();
+        let mut current = request("agent-a", Some("one"), "Release is awaiting validation");
+        current.kind = MemoryKind::Current;
+        let stale = store.save(&MemoryActor::Operator, current).unwrap();
+        let invalid = store
+            .save(
+                &MemoryActor::Operator,
+                request("agent-a", Some("one"), "Corrupted evidence"),
+            )
+            .unwrap();
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute(
+                "UPDATE memory_records SET last_verified_at=?1 WHERE revision_id=?2",
+                params![
+                    (Utc::now() - Duration::days(DEFAULT_STALE_DAYS + 1)).to_rfc3339(),
+                    stale.revision_id
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE memory_records SET evidence_hash='invalid' WHERE revision_id=?1",
+                [&invalid.revision_id],
+            )
+            .unwrap();
+
+        let recall = store
+            .recall(&MemoryActor::agent("agent-a"), "agent-a", Some("one"))
+            .unwrap();
+        assert!(recall.stable.is_empty());
+        assert_eq!(recall.current.len(), 1);
+        assert!(recall.current[0].stale);
+        assert_eq!(recall.current[0].record.memory_id, stale.memory_id);
+    }
+
+    #[test]
+    fn bounded_brief_is_deterministic_and_reports_omissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        for index in 0..8 {
+            store
+                .save(
+                    &MemoryActor::Operator,
+                    request(
+                        "agent-a",
+                        Some("one"),
+                        &format!("Preference {index}: {}", "x".repeat(90)),
+                    ),
+                )
+                .unwrap();
+        }
+
+        let first = store
+            .compile_brief(
+                &MemoryActor::agent("agent-a"),
+                "agent-a",
+                Some("one"),
+                "codex",
+                "fresh-a",
+                false,
+                360,
+            )
+            .unwrap();
+        let second = store
+            .compile_brief(
+                &MemoryActor::agent("agent-a"),
+                "agent-a",
+                Some("one"),
+                "codex",
+                "fresh-b",
+                false,
+                360,
+            )
+            .unwrap();
+        assert_eq!(first.context_text, second.context_text);
+        assert_eq!(first.fingerprint, second.fingerprint);
+        assert!(first.omitted_count > 0);
+        assert!(first.context_text.len() <= 360);
+    }
+
+    #[test]
+    fn invalid_batch_rolls_back_operations_and_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("memory.db");
+        let store = MemoryStore::open(&path).unwrap();
+        let batch = MemoryCommitBatch {
+            agent_id: "agent-a".into(),
+            workspace: Some("one".into()),
+            idempotency_key: "bad-batch".into(),
+            operations: vec![
+                MemoryMutation::Save {
+                    kind: MemoryKind::Stable,
+                    text: "Valid first operation".into(),
+                    evidence_excerpt: "Valid evidence".into(),
+                    sources: vec![],
+                },
+                MemoryMutation::Update {
+                    memory_id: "missing-memory".into(),
+                    text: "Cannot update".into(),
+                    evidence_excerpt: "No source record".into(),
+                    sources: vec![],
+                },
+            ],
+            cursor: Some(MemoryCursorUpdate {
+                cursor_key: "agent-a:one".into(),
+                conversation_id: Some("conv-1".into()),
+                sequence: 3,
+            }),
+        };
+
+        assert!(matches!(
+            store.commit_batch(&MemoryActor::agent("agent-a"), batch),
+            Err(MemoryError::NotFound(_))
+        ));
+        assert!(store
+            .list_active(&MemoryActor::agent("agent-a"), "agent-a", Some("one"))
+            .unwrap()
+            .is_empty());
+        let connection = Connection::open(path).unwrap();
+        let cursors: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_consolidation_cursors",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursors, 0);
+    }
+
+    #[test]
+    fn stale_consolidation_batch_cannot_move_cursor_backwards_or_mutate_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("memory.db");
+        let newer_store = MemoryStore::open(&path).unwrap();
+        let stale_store = MemoryStore::open(&path).unwrap();
+        let batch =
+            |idempotency_key: &str, cursor_key: &str, conversation_id: &str, sequence: u64, text: &str| MemoryCommitBatch {
+            agent_id: "agent-a".into(),
+            workspace: Some("one".into()),
+            idempotency_key: idempotency_key.into(),
+            operations: vec![MemoryMutation::Save {
+                kind: MemoryKind::Current,
+                text: text.into(),
+                evidence_excerpt: format!("Evidence at sequence {sequence}"),
+                sources: vec![],
+            }],
+            cursor: Some(MemoryCursorUpdate {
+                cursor_key: cursor_key.into(),
+                conversation_id: Some(conversation_id.into()),
+                sequence,
+            }),
+        };
+        let actor = MemoryActor::agent("agent-a");
+
+        newer_store
+            .commit_batch(
+                &actor,
+                batch(
+                    "newer-boundary",
+                    "documented-key",
+                    "conv-1",
+                    20,
+                    "Authoritative memory",
+                ),
+            )
+            .unwrap();
+        assert!(matches!(
+            stale_store.commit_batch(
+                &actor,
+                batch(
+                    "stale-boundary",
+                    "model-selected-bypass-key",
+                    "conv-1",
+                    10,
+                    "Stale duplicate",
+                ),
+            ),
+            Err(MemoryError::Validation(message)) if message.contains("cannot move")
+        ));
+
+        let memories = newer_store
+            .list_active(&actor, "agent-a", Some("one"))
+            .unwrap();
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].text, "Authoritative memory");
+        let connection = Connection::open(path).unwrap();
+        let canonical_key =
+            canonical_consolidation_cursor_key("agent-a", Some("one"), Some("conv-1"));
+        let sequence: u64 = connection
+            .query_row(
+                "SELECT sequence FROM memory_consolidation_cursors WHERE cursor_key=?1",
+                [canonical_key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sequence, 20);
+        let receipts: i64 = connection
+            .query_row("SELECT COUNT(*) FROM memory_commits", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(receipts, 1);
+    }
+
+    #[test]
+    fn consolidation_cursor_starts_a_distinct_epoch_for_each_conversation() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let actor = MemoryActor::agent("agent-a");
+        for (conversation_id, idempotency_key, text) in [
+            ("conv-1", "boundary-1", "First conversation"),
+            ("conv-2", "boundary-2", "Second conversation"),
+        ] {
+            store
+                .commit_batch(
+                    &actor,
+                    MemoryCommitBatch {
+                        agent_id: "agent-a".into(),
+                        workspace: Some("one".into()),
+                        idempotency_key: idempotency_key.into(),
+                        operations: vec![MemoryMutation::Save {
+                            kind: MemoryKind::Current,
+                            text: text.into(),
+                            evidence_excerpt: format!("Evidence from {conversation_id}"),
+                            sources: vec![],
+                        }],
+                        cursor: Some(MemoryCursorUpdate {
+                            cursor_key: "memory-consolidation".into(),
+                            conversation_id: Some(conversation_id.into()),
+                            sequence: 1,
+                        }),
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .list_active(&actor, "agent-a", Some("one"))
+                .unwrap()
+                .len(),
+            2
+        );
+        let connection = Connection::open(store.path()).unwrap();
+        let cursors: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_consolidation_cursors",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursors, 2);
+    }
+
+    #[test]
+    fn agent_actor_cannot_read_or_mutate_peer_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let mut peer_request = request("agent-b", Some("one"), "Peer-only preference");
+        peer_request.idempotency_key = Some("peer-idempotency-key".into());
+        let peer = store
+            .save(&MemoryActor::Operator, peer_request)
+            .unwrap();
+        let actor = MemoryActor::agent("agent-a");
+
+        assert!(matches!(
+            store.save(&actor, request("agent-b", Some("one"), "Unauthorized save")),
+            Err(MemoryError::AccessDenied { .. })
+        ));
+        assert!(matches!(
+            store.list_active(&actor, "agent-b", Some("one")),
+            Err(MemoryError::AccessDenied { .. })
+        ));
+        assert!(matches!(
+            store.recall(&actor, "agent-b", Some("one")),
+            Err(MemoryError::AccessDenied { .. })
+        ));
+        assert!(matches!(
+            store.get(&actor, &peer.memory_id),
+            Err(MemoryError::NotFound(_))
+        ));
+        assert!(matches!(
+            store.history(&actor, &peer.memory_id),
+            Err(MemoryError::NotFound(_))
+        ));
+        assert!(matches!(
+            store.update(
+                &actor,
+                UpdateMemoryRequest {
+                    memory_id: peer.memory_id.clone(),
+                    text: "Unauthorized update".into(),
+                    evidence_excerpt: "No authority".into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                }
+            ),
+            Err(MemoryError::NotFound(_))
+        ));
+        assert!(matches!(
+            store.update(
+                &actor,
+                UpdateMemoryRequest {
+                    memory_id: peer.memory_id.clone(),
+                    text: peer.text.clone(),
+                    evidence_excerpt: peer.evidence_excerpt.clone(),
+                    sources: vec![],
+                    idempotency_key: Some("peer-idempotency-key".into()),
+                }
+            ),
+            Err(MemoryError::Validation(message)) if message == "idempotency key is unavailable"
+        ));
+        assert!(matches!(
+            store.remove(&actor, &peer.memory_id),
+            Err(MemoryError::NotFound(_))
+        ));
+        assert!(matches!(
+            store.list_events(&actor, "agent-b"),
+            Err(MemoryError::AccessDenied { .. })
+        ));
+
+        let stored = store.get(&MemoryActor::Operator, &peer.memory_id).unwrap();
+        assert_eq!(stored.text, "Peer-only preference");
+        assert_eq!(stored.status, MemoryStatus::Active);
+    }
+
+    #[test]
+    fn capabilities_are_agent_bound_and_support_concurrent_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let first = store.issue_capability("agent-a").unwrap();
+        assert!(store.validate_capability("agent-a", &first).unwrap());
+        assert!(!store.validate_capability("agent-b", &first).unwrap());
+
+        let second = store.issue_capability("agent-a").unwrap();
+        assert_ne!(first, second);
+        assert!(store.validate_capability("agent-a", &first).unwrap());
+        assert!(store.validate_capability("agent-a", &second).unwrap());
+    }
+
+    #[test]
+    fn dropping_one_process_capability_revokes_only_that_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let first = store.issue_process_capability("agent-a").unwrap();
+        let first_token = first.token().to_string();
+        let second = store.issue_process_capability("agent-a").unwrap();
+        let second_token = second.token().to_string();
+
+        drop(first);
+
+        assert!(!store.validate_capability("agent-a", &first_token).unwrap());
+        assert!(store.validate_capability("agent-a", &second_token).unwrap());
+        drop(second);
+        assert!(!store.validate_capability("agent-a", &second_token).unwrap());
+    }
+}

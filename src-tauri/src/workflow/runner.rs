@@ -71,6 +71,7 @@ impl AgentRunner for HeadlessAgentRunner {
                     cwd: &spec.cwd,
                     prompt: &spec.prompt,
                     wardian_session_id: &spec.session_id,
+                    memory_agent_id: spec.agent_session_id.as_deref(),
                     resume_session: spec.resume_session.as_deref(),
                     output_format: "json",
                     provider_name: &spec.provider,
@@ -115,8 +116,7 @@ impl AgentRunner for TauriHeadlessAgentRunner {
             // registered agent rather than `spec.session_id`.
             let _lifecycle_guard = if spec.lease_owner.is_some() {
                 let agent_session_id = registered_agent_session_id.as_deref().ok_or_else(|| {
-                    "registered background workflow run is missing its agent session id"
-                        .to_string()
+                    "registered background workflow run is missing its agent session id".to_string()
                 })?;
                 Some(state.lock_agent_lifecycle(agent_session_id).await)
             } else {
@@ -167,7 +167,8 @@ impl AgentRunner for TauriHeadlessAgentRunner {
                         agent_session_id
                     ));
                 }
-                let emit_headless_status = current_config.is_off || is_offline_agent_status(&current_status);
+                let emit_headless_status =
+                    current_config.is_off || is_offline_agent_status(&current_status);
                 if emit_headless_status {
                     let _ = self.app.emit(
                         "agent-status-updated",
@@ -190,6 +191,7 @@ impl AgentRunner for TauriHeadlessAgentRunner {
                     cwd: spec.cwd,
                     prompt: spec.prompt,
                     session_id: spec.session_id,
+                    memory_agent_id: registered_agent_session_id.clone(),
                     resume_session: spec.resume_session,
                     config_override,
                     interaction_id: None,
@@ -231,10 +233,12 @@ impl AgentRunner for TauriHeadlessAgentRunner {
                             }
                         }
                     }
-                    Err(error) => crate::manager::log_debug(&format!(
+                    Err(error) => {
+                        crate::manager::log_debug(&format!(
                         "[workflow] headless lifecycle-gate lease release failed for {}: {error}",
                         registered_agent_session_id.as_deref().unwrap_or("<ephemeral>")
-                    )),
+                    ))
+                    }
                 }
             }
 

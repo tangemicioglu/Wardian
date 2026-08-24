@@ -53,6 +53,21 @@ pub struct StateRequest {
     pub entries: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct MemoryCommitRequest {
+    pub node: String,
+    /// Engine-rendered mutation principal. Model output cannot choose it.
+    pub agent_id: String,
+    /// Trusted trigger values used to bind model-produced cursor metadata to
+    /// the workflow invocation boundary.
+    pub workspace: Option<String>,
+    pub conversation_id: Option<String>,
+    pub source_sequence: Option<u64>,
+    pub archive_available: Option<bool>,
+    pub idempotency_key: Option<String>,
+    pub payload: serde_json::Value,
+}
+
 /// The dependency-inversion boundary: everything side-effecting goes through
 /// this. `src-tauri` provides the real impl later; tests use `MockExecutor`.
 #[async_trait]
@@ -63,6 +78,7 @@ pub trait StepExecutor: Send + Sync {
     async fn run_script(&self, req: ScriptRequest) -> Result<StepOutput, StepError>;
     async fn notify(&self, req: NotifyRequest) -> Result<(), StepError>;
     async fn state_op(&self, req: StateRequest) -> Result<StepOutput, StepError>;
+    async fn memory_commit(&self, req: MemoryCommitRequest) -> Result<StepOutput, StepError>;
 }
 
 /// Records calls and returns scripted results. Default output is `{}`; default
@@ -166,6 +182,12 @@ impl StepExecutor for MockExecutor {
         self.record(format!("state:{}", req.node));
         self.check_fail(&req.node)?;
         Ok(StepOutput(serde_json::json!({})))
+    }
+
+    async fn memory_commit(&self, req: MemoryCommitRequest) -> Result<StepOutput, StepError> {
+        self.record(format!("memory_commit:{}", req.node));
+        self.check_fail(&req.node)?;
+        Ok(StepOutput(req.payload))
     }
 }
 

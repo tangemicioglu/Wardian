@@ -30,6 +30,23 @@ describe('RunLaunchDialog', () => {
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (command: string) => {
       if (command === 'list_provider_readiness') return providerReadiness;
+      if (command === 'list_provider_model_catalog') {
+        return {
+          provider: 'codex',
+          version: 'test',
+          source: 'test',
+          refresh_error: null,
+          models: [
+            {
+              id: 'gpt-5.6-luna',
+              display_name: 'GPT-5.6-Luna',
+              effort_options: ['low', 'high'],
+              default_effort: 'low',
+              is_default: true,
+            },
+          ],
+        };
+      }
       if (command === 'list_agents') {
         return [
           {
@@ -354,6 +371,48 @@ describe('RunLaunchDialog', () => {
     const temporaryOptions = screen.getByTestId('temporary-provider-options');
     expect(temporaryOptions).toHaveClass('flex-wrap');
     expect(screen.getByRole('button', { name: /new temporary antigravity/i })).toHaveClass('max-w-full');
+  });
+
+  it('persists model and effort on an ordinary temporary-provider assignment', async () => {
+    const blueprint: Blueprint = {
+      schema: 2,
+      id: 'memory-consolidation',
+      name: 'Memory Consolidation',
+      nodes: [
+        { id: 'extract', type: 'task', fields: { agent: 'role:curator', prompt: 'Extract.' } },
+      ],
+      edges: [],
+    };
+
+    render(
+      <RunLaunchDialog
+        path="/x/memory-consolidation.md"
+        blueprint={blueprint}
+        onLaunched={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const model = await screen.findByRole('combobox', { name: /^model$/i });
+    await waitFor(() => expect(model).toBeEnabled());
+    fireEvent.change(model, { target: { value: 'gpt-5.6-luna' } });
+    const effort = await screen.findByRole('combobox', { name: /^effort$/i });
+    fireEvent.change(effort, { target: { value: 'high' } });
+    fireEvent.click(screen.getByRole('button', { name: /^run$/i }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      'workflow_run',
+      expect.objectContaining({
+        assignments: {
+          curator: expect.objectContaining({
+            target_type: 'temporary_provider',
+            provider: 'codex',
+            model: 'gpt-5.6-luna',
+            effort: 'high',
+          }),
+        },
+      }),
+    ));
   });
 
   it('renders the role assignment picker in flow so scrollable dialogs do not clip it', async () => {

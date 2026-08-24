@@ -75,7 +75,89 @@ pub async fn load_agent_chat_transcript_for_state(
     // Provider logs and the watch snapshot are live, bounded sources. Replay
     // only the active durable archive so a restart or log rotation does not
     // erase current chat rows, while a new provider session starts empty.
-    Ok(merge_chat_events(result.events, archived_events))
+    let mut events = merge_chat_events(result.events, archived_events);
+    let memory_events = memory_chat_events(&session_id);
+    if !memory_events.is_empty() {
+        events.extend(memory_events);
+        events.sort_by(|left, right| {
+            left.created_at
+                .as_deref()
+                .unwrap_or_default()
+                .cmp(right.created_at.as_deref().unwrap_or_default())
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        for (index, event) in events.iter_mut().enumerate() {
+            event.sequence = Some(index as u64 + 1);
+        }
+    }
+    Ok(events)
+}
+
+fn memory_chat_events(session_id: &str) -> Vec<AgentChatEvent> {
+    let Ok(store) = wardian_core::memory::MemoryStore::from_default_home() else {
+        return Vec::new();
+    };
+    let Ok(events) = store.list_events(&wardian_core::memory::MemoryActor::Operator, session_id)
+    else {
+        return Vec::new();
+    };
+    events
+        .into_iter()
+        .map(|event| {
+            let (title, text) = match event.action.as_str() {
+                "saved" => (
+                    "Memory saved · This agent",
+                    event
+                        .payload
+                        .get("evidence_excerpt")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                ),
+                "updated" => (
+                    "Memory updated · This agent",
+                    event
+                        .payload
+                        .get("evidence_excerpt")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                ),
+                "removed" => ("Memory removed · This agent", None),
+                "loaded" => (
+                    "Memory loaded",
+                    event
+                        .payload
+                        .get("injected_context")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                ),
+                other => (other, None),
+            };
+            AgentChatEvent {
+                id: format!("memory:{}", event.event_id),
+                session_id: event.agent_id,
+                provider: "wardian".to_string(),
+                kind: AgentChatEventKind::Memory,
+                role: Some(AgentChatRole::System),
+                text,
+                title: Some(title.to_string()),
+                status: Some(AgentChatStatus::Succeeded),
+                turn_id: None,
+                source: Some("wardian_memory".to_string()),
+                command: None,
+                exit_code: None,
+                path: None,
+                language: Some("markdown".to_string()),
+                created_at: Some(event.occurred_at),
+                sequence: None,
+                metadata: serde_json::json!({
+                    "memory_action": event.action,
+                    "memory_id": event.memory_id,
+                    "revision_id": event.revision_id,
+                    "details": event.payload
+                }),
+            }
+        })
+        .collect()
 }
 
 pub(crate) async fn agent_archive_capture_snapshot(
@@ -127,11 +209,15 @@ pub(crate) async fn agent_archive_capture_snapshot(
     // do not fall back to the workspace's current mapping because it can
     // belong to the conversation that a fresh launch deliberately replaced.
     if provider == "antigravity" && log_path.is_none() {
-        if let Some(path) = config.resume_session.as_deref().and_then(|conversation_id| {
-            AntigravityProvider::antigravity_home().and_then(|home| {
-                AntigravityProvider::conversation_log_path(&home, conversation_id)
+        if let Some(path) = config
+            .resume_session
+            .as_deref()
+            .and_then(|conversation_id| {
+                AntigravityProvider::antigravity_home().and_then(|home| {
+                    AntigravityProvider::conversation_log_path(&home, conversation_id)
+                })
             })
-        }) {
+        {
             log_path = Some(path.clone());
             if let Ok(mut agent_log_path) = agent.log_path.lock() {
                 *agent_log_path = Some(path);

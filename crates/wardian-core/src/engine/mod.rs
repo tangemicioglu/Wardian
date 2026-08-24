@@ -16,7 +16,7 @@ pub use driver::Engine;
 pub use error::{EngineError, Result, StepError};
 pub use event::{Event, EventKind};
 pub use executor::{
-    AgentTaskRequest, ChosenPort, DecisionRequest, MockExecutor, NotifyRequest, ScriptRequest,
-    ShellRequest, StateRequest, StepExecutor, StepOutput,
+    AgentTaskRequest, ChosenPort, DecisionRequest, MemoryCommitRequest, MockExecutor,
+    NotifyRequest, ScriptRequest, ShellRequest, StateRequest, StepExecutor, StepOutput,
 };
 pub use state::{NodeStatus, RunState, RunStatus};

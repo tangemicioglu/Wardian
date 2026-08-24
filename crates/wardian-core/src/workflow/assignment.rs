@@ -30,6 +30,8 @@ pub fn normalize_assignments(
                 WorkflowRoleAssignment::TemporaryProvider {
                     provider: target.clone(),
                     workspace: None,
+                    model: None,
+                    effort: None,
                 }
             } else {
                 WorkflowRoleAssignment::Agent {
@@ -58,6 +60,8 @@ pub fn validate_assignments(assignments: &WorkflowAssignments) -> Result<(), Str
             WorkflowRoleAssignment::TemporaryProvider {
                 provider,
                 workspace,
+                model,
+                effort,
             } => {
                 if !is_known_provider(provider) {
                     return Err(format!(
@@ -71,6 +75,16 @@ pub fn validate_assignments(assignments: &WorkflowAssignments) -> Result<(), Str
                     return Err(format!(
                         "assignment `{role}` has an empty temporary-provider workspace"
                     ));
+                }
+                for (label, value) in [("model", model), ("effort", effort)] {
+                    if value
+                        .as_deref()
+                        .is_some_and(|value| value.trim().is_empty())
+                    {
+                        return Err(format!(
+                            "assignment `{role}` has an empty temporary-provider {label}"
+                        ));
+                    }
                 }
             }
         }
@@ -110,6 +124,8 @@ mod tests {
             Some(&WorkflowRoleAssignment::TemporaryProvider {
                 provider: "gemini".to_string(),
                 workspace: None,
+                model: None,
+                effort: None,
             })
         );
     }
@@ -156,6 +172,8 @@ mod tests {
                 WorkflowRoleAssignment::TemporaryProvider {
                     provider: "gemini".to_string(),
                     workspace: Some("<absolute-workspace-path>".to_string()),
+                    model: Some("gemini-light".to_string()),
+                    effort: Some("low".to_string()),
                 },
             ),
         ]);

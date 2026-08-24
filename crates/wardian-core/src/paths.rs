@@ -97,6 +97,11 @@ pub fn state_db_path() -> Option<PathBuf> {
     wardian_home().map(|home| home.join("state.db"))
 }
 
+/// `<wardian-home>/memory.db` — provider-neutral agent memory authority.
+pub fn memory_db_path() -> Option<PathBuf> {
+    wardian_home().map(|home| home.join("memory.db"))
+}
+
 pub fn cli_bin_dir() -> Option<PathBuf> {
     wardian_home().map(|home| home.join("bin"))
 }
@@ -166,6 +171,11 @@ pub fn blueprint_path(blueprint_id: &str) -> Option<PathBuf> {
 /// `<wardian-home>/library/schedules.json` — the workflow schedule index.
 pub fn schedules_path() -> Option<PathBuf> {
     wardian_home().map(|home| home.join("library").join("schedules.json"))
+}
+
+/// `<wardian-home>/library/session-close-invokers.json`.
+pub fn session_close_invokers_path() -> Option<PathBuf> {
+    wardian_home().map(|home| home.join("library").join("session-close-invokers.json"))
 }
 
 /// `<wardian-home>/topology.json` — manual communication-topology edges.

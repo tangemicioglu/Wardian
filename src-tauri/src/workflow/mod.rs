@@ -4,6 +4,7 @@ pub mod resolve;
 pub mod runner;
 pub mod runs;
 pub mod schedule;
+pub mod session_close;
 
 use resolve::{AgentBinding, AgentRouteInput, PlannedAgentRoute};
 use runner::{AgentRunSpec, AgentRunner, LiveAgentRunSpec, LiveAgentRunner};
@@ -13,8 +14,8 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use wardian_core::engine::{
-    AgentTaskRequest, ChosenPort, DecisionRequest, NotifyRequest, ScriptRequest, ShellRequest,
-    StateRequest, StepError, StepExecutor, StepOutput,
+    AgentTaskRequest, ChosenPort, DecisionRequest, MemoryCommitRequest, NotifyRequest,
+    ScriptRequest, ShellRequest, StateRequest, StepError, StepExecutor, StepOutput,
 };
 use wardian_core::models::{InvocationKind, WorkflowAssignments, WorkflowRoleAssignment};
 
@@ -29,6 +30,7 @@ pub struct LiveStepExecutor {
     assignments: WorkflowAssignments,
     agent_catalog: HashMap<String, AgentBinding>,
     owner_id: String,
+    memory_principal: Option<String>,
 }
 
 impl LiveStepExecutor {
@@ -97,11 +99,20 @@ impl LiveStepExecutor {
             assignments,
             agent_catalog,
             owner_id: "workflow/manual".to_string(),
+            memory_principal: None,
         }
     }
 
     pub fn with_owner_id(mut self, owner_id: String) -> Self {
         self.owner_id = owner_id;
+        self
+    }
+
+    /// Authorize memory commits for one invocation-owned agent. The value is
+    /// supplied by a trusted launch boundary, never interpolated model/input
+    /// data.
+    pub fn with_memory_principal(mut self, agent_id: String) -> Self {
+        self.memory_principal = Some(agent_id);
         self
     }
 
@@ -185,11 +196,49 @@ impl LiveStepExecutor {
             WorkflowRoleAssignment::TemporaryProvider {
                 provider,
                 workspace,
+                model,
+                effort,
             } => {
                 let cwd = workspace
                     .as_ref()
                     .map(PathBuf::from)
                     .unwrap_or_else(|| self.workspace.clone());
+                let session_id = temporary_provider_session_id(&self.owner_id, node);
+                let config_override = wardian_core::models::AgentConfig {
+                    session_id: session_id.clone(),
+                    provider: provider.clone(),
+                    folder: cwd.to_string_lossy().to_string(),
+                    model: model.clone(),
+                    provider_config: match provider.as_str() {
+                        "codex" => wardian_core::models::ProviderConfig::Codex(
+                            wardian_core::models::CodexProviderConfig {
+                                reasoning_effort: effort.clone(),
+                                ..Default::default()
+                            },
+                        ),
+                        "claude" => wardian_core::models::ProviderConfig::Claude(
+                            wardian_core::models::ClaudeProviderConfig {
+                                reasoning_effort: effort.clone(),
+                                ..Default::default()
+                            },
+                        ),
+                        "antigravity" => wardian_core::models::ProviderConfig::Antigravity(
+                            wardian_core::models::AntigravityProviderConfig {
+                                reasoning_effort: effort.clone(),
+                                ..Default::default()
+                            },
+                        ),
+                        "gemini" => {
+                            wardian_core::models::ProviderConfig::Gemini(Default::default())
+                        }
+                        "opencode" => {
+                            wardian_core::models::ProviderConfig::OpenCode(Default::default())
+                        }
+                        "mock" => wardian_core::models::ProviderConfig::Mock(Default::default()),
+                        _ => wardian_core::models::ProviderConfig::Unknown(serde_json::json!({})),
+                    },
+                    ..Default::default()
+                };
                 self.runner
                     .run(AgentRunSpec {
                         node: node.to_string(),
@@ -201,10 +250,10 @@ impl LiveStepExecutor {
                         // habitat project its workspace link to this role's
                         // resolved project/folder while keeping it distinct
                         // from registered agents and their conversations.
-                        session_id: temporary_provider_session_id(&self.owner_id, node),
+                        session_id,
                         agent_session_id: None,
                         resume_session: None,
-                        config_override: None,
+                        config_override: Some(config_override),
                         lease_owner: None,
                     })
                     .await
@@ -596,6 +645,107 @@ impl StepExecutor for LiveStepExecutor {
     {
         Box::pin(async move { ops::state_op(&req) })
     }
+
+    fn memory_commit<'life0, 'async_trait>(
+        &'life0 self,
+        req: MemoryCommitRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<StepOutput, StepError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let principal = self.memory_principal.as_deref().ok_or_else(|| {
+                StepError::new(
+                    "memory_commit requires an authenticated invocation memory principal",
+                )
+            })?;
+            if req.agent_id != principal {
+                return Err(StepError::new(format!(
+                    "memory_commit requested agent {} but the invocation authorizes {}",
+                    req.agent_id, principal
+                )));
+            }
+            let batch: wardian_core::memory::MemoryCommitBatch =
+                serde_json::from_value(req.payload).map_err(|error| {
+                    StepError::new(format!("invalid memory_commit payload: {error}"))
+                })?;
+            if batch.agent_id != req.agent_id {
+                return Err(StepError::new(format!(
+                    "memory_commit payload agent_id {} does not match authorized agent {}",
+                    batch.agent_id, req.agent_id
+                )));
+            }
+            if let Some(expected_workspace) = req.workspace.as_deref() {
+                if wardian_core::memory::normalize_workspace(batch.workspace.as_deref())
+                    != wardian_core::memory::normalize_workspace(Some(expected_workspace))
+                {
+                    return Err(StepError::new(
+                        "memory_commit payload workspace does not match the invocation workspace",
+                    ));
+                }
+            }
+            if let Some(expected_key) = req
+                .idempotency_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if batch.idempotency_key.trim() != expected_key {
+                    return Err(StepError::new(
+                        "memory_commit payload idempotency key does not match the invocation boundary",
+                    ));
+                }
+            }
+            match req.archive_available {
+                Some(true) => {
+                    let expected_conversation = req
+                        .conversation_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| {
+                            StepError::new(
+                                "archive-backed memory_commit requires a trusted conversation ID",
+                            )
+                        })?;
+                    let expected_sequence = req.source_sequence.ok_or_else(|| {
+                        StepError::new(
+                            "archive-backed memory_commit requires a trusted source sequence",
+                        )
+                    })?;
+                    let cursor = batch.cursor.as_ref().ok_or_else(|| {
+                        StepError::new("archive-backed memory_commit requires a cursor")
+                    })?;
+                    let payload_conversation = cursor
+                        .conversation_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty());
+                    if payload_conversation != Some(expected_conversation)
+                        || cursor.sequence != expected_sequence
+                    {
+                        return Err(StepError::new(
+                            "memory_commit cursor does not match the invocation boundary",
+                        ));
+                    }
+                }
+                Some(false) if batch.cursor.is_some() => {
+                    return Err(StepError::new(
+                        "archive-less memory_commit must omit the cursor",
+                    ));
+                }
+                _ => {}
+            }
+            let actor = wardian_core::memory::MemoryActor::agent(&req.agent_id);
+            let result = wardian_core::memory::MemoryStore::from_default_home()
+                .and_then(|store| store.commit_batch(&actor, batch))
+                .map_err(|error| StepError::new(error.to_string()))?;
+            serde_json::to_value(result)
+                .map(StepOutput)
+                .map_err(|error| StepError::new(error.to_string()))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -662,6 +812,187 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.0["go"], true);
+    }
+
+    #[tokio::test]
+    async fn memory_commit_rejects_model_selected_agent_identity() {
+        let _home = TestWardianHome::new();
+        let exec = exec_with(FakeAgentRunner::new()).with_memory_principal("agent-a".into());
+        let payload = serde_json::json!({
+            "agent_id": "agent-b",
+            "idempotency_key": "run:boundary:one",
+            "operations": []
+        });
+
+        let error = exec
+            .memory_commit(MemoryCommitRequest {
+                node: "commit".into(),
+                agent_id: "agent-a".into(),
+                workspace: None,
+                conversation_id: None,
+                source_sequence: None,
+                archive_available: None,
+                idempotency_key: None,
+                payload,
+            })
+            .await
+            .expect_err("model-selected peer identity must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("does not match authorized agent"));
+        assert!(wardian_core::memory::MemoryStore::from_default_home()
+            .unwrap()
+            .list_events(&wardian_core::memory::MemoryActor::Operator, "agent-b")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn memory_commit_rejects_model_selected_cursor_epoch() {
+        let home = TestWardianHome::new();
+        let exec = exec_with(FakeAgentRunner::new()).with_memory_principal("agent-a".into());
+        let payload = serde_json::json!({
+            "agent_id": "agent-a",
+            "workspace": "workspace-a",
+            "idempotency_key": "boundary-a",
+            "operations": [{
+                "op": "save",
+                "kind": "current",
+                "text": "Stale duplicate",
+                "evidence_excerpt": "Old evidence",
+                "sources": []
+            }],
+            "cursor": {
+                "cursor_key": "model-bypass",
+                "conversation_id": "conversation-b",
+                "sequence": 1
+            }
+        });
+
+        let error = exec
+            .memory_commit(MemoryCommitRequest {
+                node: "commit".into(),
+                agent_id: "agent-a".into(),
+                workspace: Some("workspace-a".into()),
+                conversation_id: Some("conversation-a".into()),
+                source_sequence: Some(100),
+                archive_available: Some(true),
+                idempotency_key: Some("boundary-a".into()),
+                payload,
+            })
+            .await
+            .expect_err("model-selected cursor epoch must be rejected");
+
+        assert!(error.to_string().contains("cursor does not match"));
+        let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
+        assert!(store
+            .list_active(
+                &wardian_core::memory::MemoryActor::Operator,
+                "agent-a",
+                Some("workspace-a"),
+            )
+            .unwrap()
+            .is_empty());
+        let connection = rusqlite::Connection::open(home._home.path().join("memory.db")).unwrap();
+        let cursors: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_consolidation_cursors",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursors, 0);
+    }
+
+    #[tokio::test]
+    async fn workflow_cannot_commit_for_caller_selected_peer_principal() {
+        let _home = TestWardianHome::new();
+        let run_root = tempfile::tempdir().unwrap();
+        let payload = serde_json::json!({
+            "agent_id": "agent-b",
+            "idempotency_key": "run:boundary:peer",
+            "operations": []
+        });
+        let blueprint = wardian_core::workflow::Blueprint {
+            schema: 2,
+            id: "memory-authority-test".into(),
+            name: "Memory authority test".into(),
+            nodes: vec![
+                wardian_core::workflow::Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                wardian_core::workflow::Node {
+                    id: "extract".into(),
+                    r#type: "task".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({"agent":"role:curator","prompt":"extract"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    position: None,
+                },
+                wardian_core::workflow::Node {
+                    id: "commit".into(),
+                    r#type: "memory_commit".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({
+                        "source_node":"extract",
+                        "agent_id":"{{trigger.output.agent_id}}"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+            ],
+            edges: vec![
+                wardian_core::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "extract".into(),
+                    to_port: "in".into(),
+                },
+                wardian_core::workflow::Edge {
+                    from: "extract".into(),
+                    from_port: "out".into(),
+                    to: "commit".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        let response = payload.to_string();
+        let exec = exec_with(FakeAgentRunner::new().with_response("extract", &response))
+            .with_memory_principal("agent-a".into());
+
+        let state = wardian_core::engine::Engine::start_with_id(
+            &blueprint,
+            "run-peer-spoof",
+            serde_json::json!({"agent_id":"agent-b"}),
+            run_root.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.status, wardian_core::engine::RunStatus::Failed);
+        assert!(state
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("invocation authorizes agent-a")));
+        assert!(wardian_core::memory::MemoryStore::from_default_home()
+            .unwrap()
+            .list_events(&wardian_core::memory::MemoryActor::Operator, "agent-b")
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -879,7 +1210,13 @@ mod tests {
                     );
                     assert!(spec.agent_session_id.is_none());
                     assert!(spec.resume_session.is_none());
-                    assert!(spec.config_override.is_none());
+                    let override_config =
+                        spec.config_override.expect("temporary provider override");
+                    assert_eq!(override_config.model.as_deref(), Some("gpt-5.6-luna"));
+                    assert_eq!(
+                        override_config.codex_config().reasoning_effort.as_deref(),
+                        Some("low")
+                    );
                     assert!(spec.lease_owner.is_none());
                     Ok("{\"ok\":true}".to_string())
                 })
@@ -891,6 +1228,8 @@ mod tests {
             WorkflowRoleAssignment::TemporaryProvider {
                 provider: "codex".to_string(),
                 workspace: Some("/workflow-project".to_string()),
+                model: Some("gpt-5.6-luna".to_string()),
+                effort: Some("low".to_string()),
             },
         )]);
         let exec = LiveStepExecutor::new_with_assignments_and_live_runner(

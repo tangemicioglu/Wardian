@@ -1,6 +1,6 @@
 use serde::Serialize;
 #[cfg(windows)]
-use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+use std::os::windows::ffi::OsStrExt;
 use std::{
     fs,
     io::{self, Write},
@@ -178,8 +178,8 @@ fn replace_file_without_parent_sync(from: &Path, to: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn replace_file_without_parent_sync(from: &Path, to: &Path) -> io::Result<()> {
-    let from = wide_null(from.as_os_str());
-    let to = wide_null(to.as_os_str());
+    let from = wide_path_null(from);
+    let to = wide_path_null(to);
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
     const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
 
@@ -199,8 +199,48 @@ fn replace_file_without_parent_sync(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn wide_null(value: &OsStr) -> Vec<u16> {
-    value.encode_wide().chain(std::iter::once(0)).collect()
+fn wide_path_null(path: &Path) -> Vec<u16> {
+    const VERBATIM_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    const DEVICE_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16];
+    const UNC_PREFIX: &[u16] = &[
+        b'\\' as u16,
+        b'\\' as u16,
+        b'?' as u16,
+        b'\\' as u16,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        b'\\' as u16,
+    ];
+    const UNC_ROOT: &[u16] = &[b'\\' as u16, b'\\' as u16];
+
+    let mut raw = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if path.is_absolute()
+        || raw.starts_with(VERBATIM_PREFIX)
+        || raw.starts_with(DEVICE_PREFIX)
+        || raw.starts_with(UNC_ROOT)
+    {
+        for unit in &mut raw {
+            if *unit == b'/' as u16 {
+                *unit = b'\\' as u16;
+            }
+        }
+    }
+    let mut wide = if raw.starts_with(VERBATIM_PREFIX) || raw.starts_with(DEVICE_PREFIX) {
+        raw
+    } else if raw.starts_with(UNC_ROOT) {
+        UNC_PREFIX
+            .iter()
+            .copied()
+            .chain(raw.into_iter().skip(2))
+            .collect()
+    } else if path.is_absolute() {
+        VERBATIM_PREFIX.iter().copied().chain(raw).collect()
+    } else {
+        raw
+    };
+    wide.push(0);
+    wide
 }
 
 #[cfg(windows)]
@@ -211,6 +251,39 @@ extern "system" {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn atomic_json_replace_supports_extended_length_windows_paths() {
+        let temp = tempfile::tempdir().expect("temporary root");
+        let mut directory = temp.path().to_path_buf();
+        while directory.as_os_str().len() < 270 {
+            directory.push("long-atomic-path-segment");
+        }
+        let path = directory.join("state.json");
+
+        super::write_json_atomic(&path, &serde_json::json!({ "value": 1 }))
+            .expect("write through an extended-length path");
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(path).expect("read extended-length path"),
+        )
+        .expect("parse saved json");
+        assert_eq!(saved["value"], 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_json_replace_supports_absolute_windows_paths_with_forward_separators() {
+        let temp = tempfile::tempdir().expect("temporary root");
+        let path = temp.path().join("settings/app.json");
+
+        super::write_json_atomic(&path, &serde_json::json!({ "value": 1 }))
+            .expect("write through a path containing a forward separator");
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read saved json"),
+            "{\n  \"value\": 1\n}\n"
+        );
+    }
+
     #[test]
     fn workbench_owned_atomic_temp_names_require_the_exact_legacy_or_uuid_grammar() {
         let target = "workbench.json";

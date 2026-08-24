@@ -143,6 +143,54 @@ fn rollover_closes_existing_handle() {
 }
 
 #[test]
+fn failed_rollover_retains_the_active_handle_for_retry() {
+    let (_guard, _temp) = isolated_home();
+    let archive = ConversationArchiveState::default();
+    archive.set_active_for_test(
+        "agent-1",
+        ActiveConversationHandle {
+            conversation_id: "../unsafe-conversation".to_string(),
+            next_seq: 1,
+            provider_source_key: Some("codex:session:old-session".to_string()),
+        },
+    );
+
+    archive
+        .rollover_agent("agent-1", ConversationBoundaryReason::Clear)
+        .expect_err("unsafe archive path must fail rollover");
+
+    assert_eq!(
+        archive.active_conversation_id_for_test("agent-1").as_deref(),
+        Some("../unsafe-conversation")
+    );
+}
+
+#[test]
+fn failed_discard_retains_the_active_handle_for_retry() {
+    let (_guard, _temp) = isolated_home();
+    let archive = ConversationArchiveState::default();
+    archive.set_active_for_test(
+        "../unsafe-agent",
+        ActiveConversationHandle {
+            conversation_id: "conversation-1".to_string(),
+            next_seq: 1,
+            provider_source_key: None,
+        },
+    );
+
+    archive
+        .discard_agent("../unsafe-agent")
+        .expect_err("unsafe capture-state path must fail discard");
+
+    assert_eq!(
+        archive
+            .active_conversation_id_for_test("../unsafe-agent")
+            .as_deref(),
+        Some("conversation-1")
+    );
+}
+
+#[test]
 fn discard_agent_drops_active_handle_without_creating_archive_files() {
     let (_guard, _temp) = isolated_home();
     let archive = ConversationArchiveState::default();

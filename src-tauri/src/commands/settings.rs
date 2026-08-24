@@ -945,6 +945,7 @@ mod settings_path_tests {
             })),
             child_process: None,
             background_processes: Vec::new(),
+            memory_capability: None,
             runtime_generation: None,
             process_id: None,
             query_count: Arc::new(Mutex::new(0)),

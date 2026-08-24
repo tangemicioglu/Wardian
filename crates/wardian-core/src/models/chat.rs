@@ -9,6 +9,7 @@ pub enum AgentChatEventKind {
     Approval,
     Status,
     TerminalOutput,
+    Memory,
     Error,
 }
 

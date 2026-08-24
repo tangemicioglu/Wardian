@@ -13,6 +13,7 @@ pub enum Command {
     Artifact(ArtifactArgs),
     Browser(BrowserArgs),
     Conversation(ConversationArgs),
+    Memory(MemoryArgs),
     Library(LibraryArgs),
     Workflow(WorkflowArgs),
     Team(TeamArgs),
@@ -449,6 +450,81 @@ pub enum ConversationCommand {
 }
 
 // ---------------------------------------------------------------------------
+// wardian memory
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Args)]
+pub struct MemoryArgs {
+    #[command(subcommand)]
+    pub command: MemoryCommand,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum MemoryKindArg {
+    Stable,
+    Current,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum MemoryScopeArg {
+    Workspace,
+    Agent,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MemoryCommand {
+    /// Save an evidence-backed memory for an agent.
+    Save {
+        text: String,
+        #[arg(long)]
+        evidence: String,
+        #[arg(long, value_enum, default_value = "stable")]
+        kind: MemoryKindArg,
+        #[arg(long, value_enum, default_value = "workspace")]
+        scope: MemoryScopeArg,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        source: Vec<String>,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// List active memories available in a workspace.
+    List {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Show the latest revision of a memory.
+    Show { memory_id: String },
+    /// Replace an active memory with a new revision.
+    Update {
+        memory_id: String,
+        text: String,
+        #[arg(long)]
+        evidence: String,
+        #[arg(long)]
+        source: Vec<String>,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Remove the active revision while retaining audit history.
+    Remove { memory_id: String },
+    /// Compile the active stable/current recall set.
+    Recall {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Show every revision of a logical memory.
+    History { memory_id: String },
+}
+
+// ---------------------------------------------------------------------------
 // wardian team / watchlist
 // ---------------------------------------------------------------------------
 
@@ -622,6 +698,48 @@ pub enum WorkflowCommand {
     /// Manage workflow schedules (schedules.json). UI lives in the app; these edit the file.
     #[command(subcommand)]
     Schedule(Box<WorkflowScheduleCommand>),
+    /// Manage generic conversation-boundary workflow invokers.
+    #[command(subcommand)]
+    SessionClose(Box<WorkflowSessionCloseCommand>),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkflowSessionCloseCommand {
+    List,
+    Add {
+        #[arg(long)]
+        blueprint: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        boundary: Vec<String>,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        input: Option<String>,
+        /// Typed assignments JSON; temporary providers may specify model and effort.
+        #[arg(long)]
+        assignments: Option<String>,
+        /// Enable immediately. Invokers are otherwise created disabled.
+        #[arg(long)]
+        enable: bool,
+        /// Do not run when the closing session has no durable conversation archive.
+        #[arg(long)]
+        require_archive: bool,
+    },
+    Enable {
+        id: String,
+    },
+    Disable {
+        id: String,
+    },
+    Remove {
+        id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

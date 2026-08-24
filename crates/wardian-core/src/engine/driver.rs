@@ -504,6 +504,50 @@ async fn run_side_effect(
             })
             .await?
             .0),
+        "memory_commit" => {
+            let source_node = f("source_node")?;
+            let principal_template = node
+                .fields
+                .get("agent_id")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .unwrap_or_default();
+            if principal_template != "{{trigger.output.agent_id}}" {
+                return Err(StepError::new(
+                    "memory_commit agent_id must be the invocation-owned {{trigger.output.agent_id}}",
+                ));
+            }
+            let agent_id = f("agent_id")?;
+            let payload = s.node_output(&source_node).cloned().ok_or_else(|| {
+                StepError::new(format!(
+                    "memory_commit source node `{source_node}` has no output"
+                ))
+            })?;
+            let trigger_output = s.registry.get("trigger").and_then(|value| value.get("output"));
+            let trigger_string = |field: &str| {
+                trigger_output
+                    .and_then(|value| value.get(field))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            };
+            Ok(exec
+                .memory_commit(MemoryCommitRequest {
+                    node: node.id.clone(),
+                    agent_id,
+                    workspace: trigger_string("workspace"),
+                    conversation_id: trigger_string("conversation_id"),
+                    source_sequence: trigger_output
+                        .and_then(|value| value.get("source_sequence"))
+                        .and_then(|value| value.as_u64()),
+                    archive_available: trigger_output
+                        .and_then(|value| value.get("archive_available"))
+                        .and_then(|value| value.as_bool()),
+                    idempotency_key: trigger_string("idempotency_key"),
+                    payload,
+                })
+                .await?
+                .0)
+        }
         other => Err(StepError::new(format!(
             "no executor for node type `{other}`"
         ))),
@@ -803,5 +847,163 @@ mod tests {
         assert!(!events
             .iter()
             .any(|event| matches!(event.kind, EventKind::NodeFailed { .. })));
+    }
+
+    #[tokio::test]
+    async fn memory_commit_receives_the_named_upstream_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = serde_json::json!({
+            "agent_id": "agent-a",
+            "idempotency_key": "run-1:conv-1:4",
+            "operations": []
+        });
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "memory-workflow".into(),
+            name: "Memory workflow".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                Node {
+                    id: "extract".into(),
+                    r#type: "task".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({"agent":"role:curator","prompt":"extract"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    position: None,
+                },
+                Node {
+                    id: "commit".into(),
+                    r#type: "memory_commit".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({"source_node":"extract", "agent_id":"{{trigger.output.agent_id}}"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    position: None,
+                },
+            ],
+            edges: vec![
+                crate::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "extract".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "extract".into(),
+                    from_port: "out".into(),
+                    to: "commit".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        let exec = MockExecutor::new().with_task_output("extract", payload.clone());
+
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-memory",
+            serde_json::json!({"agent_id":"agent-a"}),
+            dir.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.status, RunStatus::Completed);
+        assert_eq!(state.node_output("commit"), Some(&payload));
+        assert_eq!(exec.calls(), vec!["task:extract", "memory_commit:commit"]);
+    }
+
+    #[tokio::test]
+    async fn memory_commit_rejects_a_model_output_principal() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "spoofed-memory-workflow".into(),
+            name: "Spoofed memory workflow".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                Node {
+                    id: "extract".into(),
+                    r#type: "task".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({"agent":"role:curator","prompt":"extract"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    position: None,
+                },
+                Node {
+                    id: "commit".into(),
+                    r#type: "memory_commit".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({
+                        "source_node":"extract",
+                        "agent_id":"{{nodes.extract.output.agent_id}}"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+            ],
+            edges: vec![
+                crate::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "extract".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "extract".into(),
+                    from_port: "out".into(),
+                    to: "commit".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        let exec = MockExecutor::new().with_task_output(
+            "extract",
+            serde_json::json!({"agent_id":"agent-b", "operations": []}),
+        );
+
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-spoofed-memory",
+            serde_json::json!({"agent_id":"agent-a"}),
+            dir.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.status, RunStatus::Failed);
+        assert_eq!(exec.calls(), vec!["task:extract"]);
+        assert!(state
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("invocation-owned")));
     }
 }

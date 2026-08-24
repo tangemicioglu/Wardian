@@ -29,6 +29,11 @@ pub struct WorkflowRunInvocation {
     pub bindings: HashMap<String, String>,
     #[serde(default)]
     pub assignments: WorkflowAssignments,
+    /// Authenticated agent identity allowed to receive `memory_commit`
+    /// mutations for this run. It is durable so approval/resume cannot lose
+    /// the original authority boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_principal: Option<String>,
 }
 
 /// A durable workflow-state change that the Inbox can project immediately.
@@ -293,15 +298,37 @@ pub fn write_run_invocation_with_schedule_id(
     assignments: &WorkflowAssignments,
     schedule_id: Option<String>,
 ) -> Result<(), String> {
+    write_run_invocation_with_authority(
+        run_root,
+        provider,
+        workspace,
+        bindings,
+        assignments,
+        schedule_id,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn write_run_invocation_with_authority(
+    run_root: &Path,
+    provider: &str,
+    workspace: &Path,
+    bindings: &HashMap<String, String>,
+    assignments: &WorkflowAssignments,
+    schedule_id: Option<String>,
+    memory_principal: Option<String>,
+) -> Result<(), String> {
     std::fs::create_dir_all(run_root)
         .map_err(|error| format!("failed to create run directory: {error}"))?;
     let invocation = WorkflowRunInvocation {
-        schema: 1,
+        schema: 2,
         provider: provider.to_string(),
         workspace: workspace.to_string_lossy().to_string(),
         schedule_id,
         bindings: bindings.clone(),
         assignments: assignments.clone(),
+        memory_principal,
     };
     let body = serde_json::to_string_pretty(&invocation)
         .map_err(|error| format!("failed to serialize workflow invocation: {error}"))?;
@@ -544,7 +571,40 @@ pub fn prepare_new_run_with_assignments(
     assignments: &WorkflowAssignments,
     input: Value,
 ) -> Result<wardian_core::engine::RunState, String> {
-    write_run_invocation(run_root, default_provider, workspace, bindings, assignments)?;
+    prepare_new_run_with_assignments_and_memory_principal(
+        blueprint,
+        run_id,
+        run_root,
+        workspace,
+        default_provider,
+        bindings,
+        assignments,
+        input,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_new_run_with_assignments_and_memory_principal(
+    blueprint: &Blueprint,
+    run_id: &str,
+    run_root: &Path,
+    workspace: &Path,
+    default_provider: &str,
+    bindings: &HashMap<String, String>,
+    assignments: &WorkflowAssignments,
+    input: Value,
+    memory_principal: Option<String>,
+) -> Result<wardian_core::engine::RunState, String> {
+    write_run_invocation_with_authority(
+        run_root,
+        default_provider,
+        workspace,
+        bindings,
+        assignments,
+        None,
+        memory_principal,
+    )?;
     Engine::initialize_with_id(blueprint, run_id.to_string(), input, run_root)
         .map_err(|err| err.to_string())
 }
@@ -585,6 +645,34 @@ pub async fn drive_started_run_with_catalog_and_assignments(
     assignments: WorkflowAssignments,
     agent_catalog: HashMap<String, AgentBinding>,
 ) -> Result<(), String> {
+    drive_started_run_with_catalog_assignments_and_memory_principal(
+        app,
+        blueprint,
+        state,
+        run_root,
+        workspace,
+        default_provider,
+        bindings,
+        assignments,
+        agent_catalog,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn drive_started_run_with_catalog_assignments_and_memory_principal(
+    app: Option<tauri::AppHandle>,
+    blueprint: Blueprint,
+    state: wardian_core::engine::RunState,
+    run_root: PathBuf,
+    workspace: PathBuf,
+    default_provider: String,
+    bindings: HashMap<String, String>,
+    assignments: WorkflowAssignments,
+    agent_catalog: HashMap<String, AgentBinding>,
+    memory_principal: Option<String>,
+) -> Result<(), String> {
     let _headless_execution =
         wardian_core::workflow_execution_lock::acquire_headless_execution_guard()?;
     let owner_id = format!("{}/{}", blueprint.id, state.run_id);
@@ -607,6 +695,10 @@ pub async fn drive_started_run_with_catalog_and_assignments(
         )
     }
     .with_owner_id(owner_id);
+    let exec = match memory_principal {
+        Some(agent_id) => exec.with_memory_principal(agent_id),
+        None => exec,
+    };
     Engine::drive_from_state(&blueprint, state, &run_root, &exec)
         .await
         .map(|_| ())
@@ -890,7 +982,7 @@ edges:
     }
 
     #[test]
-    fn run_invocation_round_trips_assignments() {
+    fn run_invocation_round_trips_assignments_and_memory_principal() {
         let dir = tempfile::tempdir().unwrap();
         let run_root = dir.path().join("wf").join("run-1");
         let mut bindings = HashMap::new();
@@ -905,12 +997,14 @@ edges:
             },
         );
 
-        write_run_invocation(
+        write_run_invocation_with_authority(
             &run_root,
             "mock",
             std::path::Path::new("/workspace"),
             &bindings,
             &assignments,
+            None,
+            Some("agent-1".to_string()),
         )
         .unwrap();
 
@@ -918,6 +1012,7 @@ edges:
         assert_eq!(invocation.provider, "mock");
         assert_eq!(invocation.bindings, bindings);
         assert_eq!(invocation.assignments, assignments);
+        assert_eq!(invocation.memory_principal.as_deref(), Some("agent-1"));
     }
 
     #[test]

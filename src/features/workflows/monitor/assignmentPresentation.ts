@@ -36,9 +36,16 @@ export function workflowAssignmentItems(
       .map(([role, assignment]) => {
         const targetLabel = assignment.target_type === 'agent'
           ? labels[assignment.agent_id] ?? assignment.agent_id
-          : `Temporary ${humanize(assignment.provider)}`;
+          : [
+              `Temporary ${humanize(assignment.provider)}`,
+              assignment.model,
+            ].filter(Boolean).join(' · ');
         const detailLabel = assignment.target_type === 'temporary_provider'
-          ? 'Temporary provider · Ephemeral'
+          ? [
+              'Temporary provider',
+              'Ephemeral',
+              assignment.effort ? `${assignment.effort} effort` : null,
+            ].filter(Boolean).join(' · ')
           : assignment.conversation === 'fresh_background'
             ? 'Agent · Fresh background'
             : 'Agent · Current session';
@@ -48,7 +55,7 @@ export function workflowAssignmentItems(
           role,
           targetLabel,
           detailLabel,
-          fullLabel: `${role} · ${targetLabel}`,
+          fullLabel: `${role} · ${targetLabel}${assignment.target_type === 'temporary_provider' && assignment.effort ? ` · ${assignment.effort} effort` : ''}`,
         };
       });
   }

@@ -414,6 +414,7 @@ fn take_agent_runtime_for_termination(agent: &mut ActiveAgent) -> ActiveAgent {
         config: agent.config.clone(),
         child_process: agent.child_process.take(),
         background_processes: std::mem::take(&mut agent.background_processes),
+        memory_capability: agent.memory_capability.take(),
         runtime_generation: agent.runtime_generation.take(),
         process_id: agent.process_id.take(),
         query_count: agent.query_count.clone(),
@@ -450,22 +451,11 @@ fn prepare_agent_for_clear(agent: &mut ActiveAgent) -> PreparedAgentClear {
     let config = agent.config.lock().unwrap().clone();
     let init_timestamp = agent.init_timestamp.lock().unwrap().clone();
 
-    if let Ok(mut title) = agent.terminal_title.lock() {
-        title.clear();
-    }
+    // The replacement ActiveAgent starts with clean runtime telemetry. Keep the
+    // closing agent's title, counters, log path, and watch transcript intact
+    // until replacement succeeds so a failed clear can retry the same archive
+    // boundary without losing evidence.
     let status_arc = replace_agent_status_incarnation(agent, "Processing...");
-    if let Ok(mut count) = agent.query_count.lock() {
-        *count = 0;
-    }
-    if let Ok(mut log_path) = agent.log_path.lock() {
-        *log_path = None;
-    }
-    if let Ok(mut log_last_modified) = agent.log_last_modified.lock() {
-        *log_last_modified = None;
-    }
-    if let Ok(mut watch_state) = agent.watch_state.lock() {
-        watch_state.clear();
-    }
 
     PreparedAgentClear {
         termination,
@@ -473,6 +463,23 @@ fn prepare_agent_for_clear(agent: &mut ActiveAgent) -> PreparedAgentClear {
         init_timestamp,
         status_arc,
     }
+}
+
+fn restore_agent_runtime_after_aborted_clear(
+    agent: &mut ActiveAgent,
+    prepared: &mut PreparedAgentClear,
+) -> std::sync::Arc<std::sync::Mutex<String>> {
+    agent.child_process = prepared.termination.child_process.take();
+    agent.background_processes = std::mem::take(&mut prepared.termination.background_processes);
+    agent.memory_capability = prepared.termination.memory_capability.take();
+    agent.runtime_generation = prepared.termination.runtime_generation.take();
+    agent.process_id = prepared.termination.process_id.take();
+    #[cfg(windows)]
+    {
+        agent.job_object = prepared.termination.job_object.take();
+    }
+    agent.current_status = prepared.termination.current_status.clone();
+    agent.current_status.clone()
 }
 
 fn clone_quote_custom_arg(arg: &str) -> String {
@@ -3127,19 +3134,53 @@ pub async fn resume_agent(
     let status_before_resume = snapshot.current_status.clone();
     let mut config = snapshot.config.clone();
     let starts_fresh = resolved_session_persistence(&config) == AgentSessionPersistence::Fresh;
-    if starts_fresh {
-        if let Err(error) = archive_agent_lifecycle_boundary(
-            &state,
-            &session_id,
-            ConversationBoundaryReason::Clear,
-        )
-        .await
-        {
-            manager::log_debug(&format!(
-                "[WARDIAN] fresh resume conversation boundary failed for {session_id}: {error}"
+    let fresh_pending_boundary = if starts_fresh {
+        let snapshot = match crate::commands::chat::agent_archive_capture_snapshot(&state, &session_id).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                restore_agent_status_after_failed_runtime_start(
+                    &state,
+                    &app,
+                    &session_id,
+                    &status_before_resume,
+                )
+                .await;
+                return Err(format!(
+                    "Failed to capture the closing conversation before fresh resume: {error}"
+                ));
+            }
+        };
+        let pending = match prepare_conversation_boundary(snapshot) {
+            Ok(pending) => pending,
+            Err(error) => {
+                restore_agent_status_after_failed_runtime_start(
+                    &state,
+                    &app,
+                    &session_id,
+                    &status_before_resume,
+                )
+                .await;
+                return Err(format!(
+                    "Failed to prepare the closing conversation before fresh resume: {error}"
+                ));
+            }
+        };
+        if let Err(error) = stage_conversation_boundary(&state, &pending) {
+            restore_agent_status_after_failed_runtime_start(
+                &state,
+                &app,
+                &session_id,
+                &status_before_resume,
+            )
+            .await;
+            return Err(format!(
+                "Failed to stage the closing conversation before fresh resume: {error}"
             ));
         }
-    }
+        Some(pending)
+    } else {
+        None
+    };
     if let Err(error) = prepare_resume_config_for_runtime(&mut config, snapshot.query_count) {
         restore_agent_status_after_failed_runtime_start(
             &state,
@@ -3195,7 +3236,8 @@ pub async fn resume_agent(
     }
     restore_runtime_state_after_resume(&mut new_active, &snapshot, starts_fresh);
     promote_fresh_provider_session_after_resume(&config.provider, &mut new_active);
-
+    let new_config = new_active.config.lock().unwrap().clone();
+    let new_created_at = new_active.init_timestamp.lock().unwrap().clone();
     let new_status_arc = new_active.current_status.clone();
     let mut pending_new_active = Some(new_active);
     if let Err(error) = lifecycle_heartbeat.ensure_active("resume") {
@@ -3211,27 +3253,41 @@ pub async fn resume_agent(
         .await;
         return Err(error);
     }
-    let (mut old_agent, state_snapshot) = {
+    let commit_result = {
         let mut agents = state.agents.lock().await;
         let order = state.agent_order.lock().await;
-        if !agents.contains_key(&session_id) {
-            drop(order);
-            drop(agents);
-            if let Some(mut active) = pending_new_active {
+        lifecycle_heartbeat.ensure_active("resume").and_then(|_| {
+            commit_resume_replacement(
+                &state,
+                &mut agents,
+                &order,
+                &session_id,
+                &mut pending_new_active,
+                &snapshot.config,
+                snapshot.init_timestamp.as_deref(),
+                &new_config,
+                new_created_at.as_deref(),
+                starts_fresh,
+                fresh_pending_boundary.as_ref(),
+            )
+        })
+    };
+    let (mut old_agent, session_close_context, replacement_journal) = match commit_result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(mut active) = pending_new_active.take() {
                 manager::terminate_active_agent_process(&mut active);
             }
-            return Err(format!("Agent {} not found", session_id));
-        };
-        lifecycle_heartbeat.ensure_active("resume")?;
-        let inserted = pending_new_active
-            .take()
-            .expect("new active agent should still be pending");
-        let old_agent = agents
-            .insert(session_id.clone(), inserted)
-            .expect("agent should exist after contains check");
-        (old_agent, manager::state_configs_snapshot(&agents, &order))
+            restore_agent_status_after_failed_runtime_start(
+                &state,
+                &app,
+                &session_id,
+                &status_before_resume,
+            )
+            .await;
+            return Err(error);
+        }
     };
-    manager::save_state_snapshot(&app, &state_snapshot);
     manager::publish_agent_status(&app, &session_id, &new_status_arc);
 
     manager::terminate_active_agent_process(&mut old_agent);
@@ -3245,6 +3301,19 @@ pub async fn resume_agent(
         "agent-pty-output-ready",
         terminal_cleared_payload(&session_id),
     );
+    if let Some(context) = session_close_context {
+        if let Err(error) = crate::workflow::session_close::invoke_matching(app.clone(), context).await
+        {
+            return Err(format!(
+                "The agent resumed, but its session-close workflow was not durably accepted: {error}"
+            ));
+        }
+    }
+    if let Err(error) = replacement_journal.complete() {
+        manager::log_debug(&format!(
+            "[WARDIAN] resume journal cleanup deferred for {session_id}: {error}"
+        ));
+    }
     Ok(())
 }
 
@@ -3258,12 +3327,27 @@ pub async fn clear_agent_session(
     clear_agent_session_with_reason(session_id, reason, state, app).await
 }
 
+#[cfg(test)]
 async fn archive_agent_lifecycle_boundary_from_snapshot(
     state: &AppState,
     session_id: &str,
     boundary_reason: ConversationBoundaryReason,
     snapshot: crate::commands::chat::AgentArchiveCaptureSnapshot,
-) -> Result<(), String> {
+) -> Result<Option<wardian_core::conversations::ConversationIndexEntry>, String> {
+    let pending = prepare_conversation_boundary(snapshot)?;
+    stage_conversation_boundary(state, &pending).map_err(|error| error.to_string())?;
+    finalize_conversation_boundary(state, session_id, boundary_reason, &pending)
+        .map_err(|error| error.to_string())
+}
+
+struct PendingConversationBoundary {
+    effective_logging: ConversationLoggingSetting,
+    capture: crate::commands::chat::ArchiveCaptureResult,
+}
+
+fn prepare_conversation_boundary(
+    snapshot: crate::commands::chat::AgentArchiveCaptureSnapshot,
+) -> Result<PendingConversationBoundary, String> {
     let global_conversation_logging = crate::utils::shell::load_shell_settings()
         .unwrap_or_default()
         .conversation_logging;
@@ -3272,57 +3356,578 @@ async fn archive_agent_lifecycle_boundary_from_snapshot(
         snapshot.agent_conversation_logging,
     );
     let capture = crate::commands::chat::collect_agent_chat_events_for_archive(&snapshot)?;
+    Ok(PendingConversationBoundary {
+        effective_logging,
+        capture,
+    })
+}
 
-    if effective_logging == ConversationLoggingSetting::Enabled {
-        if let Err(error) = state
-            .conversation_archive
-            .append_chat_events_with_context(capture.context.clone(), &capture.events)
-        {
-            manager::log_debug(&format!(
-                "[WARDIAN] conversation archive pre-clear append failed for {session_id}: {error}"
-            ));
-        }
-        if let Err(error) = state
-            .conversation_archive
-            .append_lifecycle_boundary_with_context(capture.context, boundary_reason)
-        {
-            manager::log_debug(&format!(
-                "[WARDIAN] conversation archive lifecycle append failed for {session_id}: {error}"
-            ));
-        }
-        if let Err(error) = state
-            .conversation_archive
-            .rollover_agent(session_id, boundary_reason)
-        {
-            manager::log_debug(&format!(
-                "[WARDIAN] conversation archive rollover failed for {session_id}: {error}"
-            ));
-        }
-    } else if let Err(error) = state
-        .conversation_archive
-        .discard_agent_with_context(capture.context, &capture.events)
-    {
-        manager::log_debug(&format!(
-            "[WARDIAN] conversation archive discard failed for {session_id}: {error}"
-        ));
+fn stage_conversation_boundary(
+    state: &AppState,
+    pending: &PendingConversationBoundary,
+) -> std::io::Result<()> {
+    if pending.effective_logging == ConversationLoggingSetting::Enabled {
+        state.conversation_archive.append_chat_events_with_context(
+            pending.capture.context.clone(),
+            &pending.capture.events,
+        )?;
     }
-
     Ok(())
 }
 
+fn finalize_conversation_boundary(
+    state: &AppState,
+    session_id: &str,
+    boundary_reason: ConversationBoundaryReason,
+    pending: &PendingConversationBoundary,
+) -> std::io::Result<Option<wardian_core::conversations::ConversationIndexEntry>> {
+    if pending.effective_logging == ConversationLoggingSetting::Enabled {
+        if !state
+            .conversation_archive
+            .active_ends_with_lifecycle_boundary(session_id, boundary_reason)
+            .map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("could not inspect the active archive boundary: {error}"),
+                )
+            })?
+        {
+            state
+                .conversation_archive
+                .append_lifecycle_boundary_with_context(
+                    pending.capture.context.clone(),
+                    boundary_reason,
+                )
+                .map_err(|error| {
+                    std::io::Error::new(
+                        error.kind(),
+                        format!("could not append the archive lifecycle boundary: {error}"),
+                    )
+                })?;
+        }
+        let active_conversation_id = state
+            .conversation_archive
+            .active_conversation_id(session_id)
+            .map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("could not resolve the active archive: {error}"),
+                )
+            })?
+            .ok_or_else(|| std::io::Error::other("conversation boundary had no active archive"))?;
+        let closed_conversation = state
+            .conversation_archive
+            .list(Some(session_id), false)
+            .map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("could not read the active archive index: {error}"),
+                )
+            })?
+            .into_iter()
+            .find(|entry| entry.conversation_id == active_conversation_id)
+            .ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "conversation {active_conversation_id} is missing from the archive index"
+                ))
+            })?;
+        let closed_conversation_id = state
+            .conversation_archive
+            .rollover_agent(session_id, boundary_reason)
+            .map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("could not roll over the active archive: {error}"),
+                )
+            })?
+            .ok_or_else(|| std::io::Error::other("conversation boundary had no active archive"))?;
+        debug_assert_eq!(closed_conversation_id, active_conversation_id);
+        return Ok(Some(closed_conversation));
+    }
+
+    state
+        .conversation_archive
+        .discard_agent_with_context(pending.capture.context.clone(), &pending.capture.events)?;
+    Ok(None)
+}
+
+fn state_snapshot_with_replacement(
+    agents: &std::collections::HashMap<String, ActiveAgent>,
+    order: &[String],
+    session_id: &str,
+    replacement: &AgentConfig,
+) -> Result<Vec<AgentConfig>, String> {
+    let mut snapshot = manager::state_configs_snapshot(agents, order);
+    let Some(config) = snapshot
+        .iter_mut()
+        .find(|config| config.session_id == session_id)
+    else {
+        return Err(format!(
+            "Agent {session_id} is missing from the persisted agent order"
+        ));
+    };
+    *config = replacement.clone();
+    Ok(snapshot)
+}
+
+fn persist_agent_config(config: &AgentConfig, created_at: Option<&str>) -> Result<(), String> {
+    let workspace = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id)
+        .to_string_lossy()
+        .to_string();
+    let project = wardian_core::db::project_name_from_workspace(&workspace);
+    wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
+        session_id: &config.session_id,
+        session_name: &config.session_name,
+        description: &config.description,
+        agent_class: &config.agent_class,
+        provider: &config.provider,
+        workspace: Some(&workspace),
+        project: project.as_deref(),
+        is_off: config.is_off,
+        created_at,
+    })
+    .map_err(|error| error.to_string())
+}
+
+fn rollback_agent_replacement(
+    journal: wardian_core::agent_replacement::ReplacementJournalGuard,
+    previous_state_snapshot: &[AgentConfig],
+    original_config: &AgentConfig,
+    original_created_at: Option<&str>,
+) -> String {
+    let state_error = manager::try_save_state_snapshot_unlocked(previous_state_snapshot).err();
+    let metadata_error = persist_agent_config(original_config, original_created_at).err();
+    let mut detail = String::new();
+    if let Some(error) = state_error.as_ref() {
+        detail.push_str(&format!("; state rollback failed: {error}"));
+    }
+    if let Some(error) = metadata_error.as_ref() {
+        detail.push_str(&format!("; metadata rollback failed: {error}"));
+    }
+    if state_error.is_none() && metadata_error.is_none() {
+        if let Err(error) = journal.complete() {
+            detail.push_str(&format!("; replacement journal cleanup failed: {error}"));
+        }
+    }
+    detail
+}
+
+#[allow(clippy::too_many_arguments)]
+fn begin_agent_replacement_journal(
+    state: &AppState,
+    operation: &str,
+    session_id: &str,
+    original_config: &AgentConfig,
+    original_created_at: Option<&str>,
+    new_config: &AgentConfig,
+    new_created_at: Option<&str>,
+    pending_archive: Option<&PendingConversationBoundary>,
+    boundary_reason: Option<ConversationBoundaryReason>,
+) -> Result<
+    (
+        wardian_core::agent_replacement::ReplacementJournalGuard,
+        Option<crate::workflow::session_close::SessionCloseContext>,
+    ),
+    String,
+> {
+    let archive_expected = pending_archive.is_some_and(|pending| {
+        pending.effective_logging == ConversationLoggingSetting::Enabled
+    });
+    let archive_conversation_id = if archive_expected {
+        state
+            .conversation_archive
+            .active_conversation_id(session_id)
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+    let mut journal = wardian_core::agent_replacement::ReplacementJournalGuard::begin(
+        wardian_core::agent_replacement::PendingAgentReplacement::new(
+            operation,
+            session_id,
+            original_config.clone(),
+            new_config.clone(),
+            original_created_at.map(str::to_string),
+            new_created_at.map(str::to_string),
+            archive_conversation_id.clone(),
+            archive_expected,
+        ),
+    )
+    .map_err(|error| format!("Failed to create the agent replacement journal: {error}"))?;
+    let session_close_context = boundary_reason.map(|boundary_reason| {
+        let mut context = build_session_close_context(
+            original_config,
+            session_id,
+            boundary_reason,
+            None,
+        );
+        context.archive_available = archive_expected;
+        context.conversation_id = archive_conversation_id;
+        context
+    });
+    if let Some(context) = session_close_context.as_ref() {
+        journal
+            .set_session_close_intent(context.durable_intent())
+            .map_err(|error| format!("Failed to persist the session-close intent: {error}"))?;
+    }
+    Ok((journal, session_close_context))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_clear_replacement(
+    state: &AppState,
+    agents: &mut HashMap<String, ActiveAgent>,
+    order: &[String],
+    session_id: &str,
+    pending_new_active: &mut Option<ActiveAgent>,
+    original_config: &AgentConfig,
+    original_created_at: Option<&str>,
+    new_config: &AgentConfig,
+    new_created_at: Option<&str>,
+    boundary_reason: ConversationBoundaryReason,
+    pending_archive: &PendingConversationBoundary,
+) -> Result<
+    (
+        ActiveAgent,
+        crate::workflow::session_close::SessionCloseContext,
+        wardian_core::agent_replacement::ReplacementJournalGuard,
+    ),
+    String,
+> {
+    if !agents.contains_key(session_id) {
+        return Err(format!("Agent {session_id} not found"));
+    }
+    let previous_state_snapshot = manager::state_configs_snapshot(agents, order);
+    let proposed_state_snapshot =
+        state_snapshot_with_replacement(agents, order, session_id, new_config)?;
+    let (mut journal, mut session_close_context) = begin_agent_replacement_journal(
+        state,
+        "clear",
+        session_id,
+        original_config,
+        original_created_at,
+        new_config,
+        new_created_at,
+        Some(pending_archive),
+        Some(boundary_reason),
+    )?;
+
+    if let Err(error) = manager::try_save_state_snapshot_unlocked(&proposed_state_snapshot) {
+        let rollback_error = rollback_agent_replacement(
+            journal,
+            &previous_state_snapshot,
+            original_config,
+            original_created_at,
+        );
+        return Err(format!(
+            "Failed to persist replacement agent state: {error}{rollback_error}"
+        ));
+    }
+    if let Err(error) = journal.advance(
+        wardian_core::agent_replacement::ReplacementPhase::StatePersisted,
+    ) {
+        let rollback_error = rollback_agent_replacement(
+            journal,
+            &previous_state_snapshot,
+            original_config,
+            original_created_at,
+        );
+        return Err(format!(
+            "Failed to checkpoint replacement agent state: {error}{rollback_error}"
+        ));
+    }
+    if let Err(error) = persist_agent_config(new_config, new_created_at) {
+        let rollback_error = rollback_agent_replacement(
+            journal,
+            &previous_state_snapshot,
+            original_config,
+            original_created_at,
+        );
+        return Err(format!(
+            "Failed to persist replacement agent metadata: {error}{rollback_error}"
+        ));
+    }
+    if let Err(error) = journal.advance(
+        wardian_core::agent_replacement::ReplacementPhase::MetadataPersisted,
+    ) {
+        let rollback_error = rollback_agent_replacement(
+            journal,
+            &previous_state_snapshot,
+            original_config,
+            original_created_at,
+        );
+        return Err(format!(
+            "Failed to checkpoint replacement agent metadata: {error}{rollback_error}"
+        ));
+    }
+    if let Err(error) = journal.advance(
+        wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitting,
+    ) {
+        let rollback_error = rollback_agent_replacement(
+            journal,
+            &previous_state_snapshot,
+            original_config,
+            original_created_at,
+        );
+        return Err(format!(
+            "Failed to checkpoint the pending conversation boundary: {error}{rollback_error}"
+        ));
+    }
+
+    let closed_conversation = match finalize_conversation_boundary(
+        state,
+        session_id,
+        boundary_reason,
+        pending_archive,
+    ) {
+        Ok(conversation) => conversation,
+        Err(error) => {
+            let rollback_error = rollback_agent_replacement(
+                journal,
+                &previous_state_snapshot,
+                original_config,
+                original_created_at,
+            );
+            return Err(format!(
+                "Failed to commit the conversation boundary: {error}{rollback_error}"
+            ));
+        }
+    };
+    if let Err(error) = journal
+        .advance(wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitted)
+    {
+        manager::log_debug(&format!(
+            "[WARDIAN] boundary checkpoint deferred for {session_id}: {error}"
+        ));
+    }
+    if let Some(context) = session_close_context.as_mut() {
+        context.source_sequence = closed_conversation.as_ref().map(|entry| entry.record_count);
+        if let Err(error) = journal.set_session_close_intent(context.durable_intent()) {
+            manager::log_debug(&format!(
+                "[WARDIAN] finalized session-close intent checkpoint deferred for {session_id}: {error}"
+            ));
+        }
+    }
+    let session_close_context = session_close_context
+        .expect("clear replacement must carry a durable session-close intent");
+
+    let inserted = pending_new_active
+        .take()
+        .expect("new active agent should still be pending");
+    let displaced_agent = agents
+        .insert(session_id.to_string(), inserted)
+        .expect("agent should exist after contains check");
+    if let Err(error) =
+        journal.advance(wardian_core::agent_replacement::ReplacementPhase::LiveInstalled)
+    {
+        manager::log_debug(&format!(
+            "[WARDIAN] live replacement checkpoint deferred for {session_id}: {error}"
+        ));
+    }
+    Ok((displaced_agent, session_close_context, journal))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_resume_replacement(
+    state: &AppState,
+    agents: &mut HashMap<String, ActiveAgent>,
+    order: &[String],
+    session_id: &str,
+    pending_new_active: &mut Option<ActiveAgent>,
+    previous_config: &AgentConfig,
+    previous_created_at: Option<&str>,
+    new_config: &AgentConfig,
+    new_created_at: Option<&str>,
+    starts_fresh: bool,
+    pending_archive: Option<&PendingConversationBoundary>,
+) -> Result<
+    (
+        ActiveAgent,
+        Option<crate::workflow::session_close::SessionCloseContext>,
+        wardian_core::agent_replacement::ReplacementJournalGuard,
+    ),
+    String,
+> {
+    if !agents.contains_key(session_id) {
+        return Err(format!("Agent {session_id} not found"));
+    }
+    if starts_fresh && pending_archive.is_none() {
+        return Err("Fresh resume is missing its staged conversation boundary".to_string());
+    }
+
+    let previous_state_snapshot = manager::state_configs_snapshot(agents, order);
+    let proposed_state_snapshot =
+        state_snapshot_with_replacement(agents, order, session_id, new_config)?;
+    let (mut journal, mut planned_session_close_context) = begin_agent_replacement_journal(
+        state,
+        "resume",
+        session_id,
+        previous_config,
+        previous_created_at,
+        new_config,
+        new_created_at,
+        pending_archive,
+        starts_fresh.then_some(ConversationBoundaryReason::Clear),
+    )?;
+    if let Err(error) = manager::try_save_state_snapshot_unlocked(&proposed_state_snapshot) {
+        let rollback_error = rollback_agent_replacement(
+            journal,
+            &previous_state_snapshot,
+            previous_config,
+            previous_created_at,
+        );
+        return Err(format!(
+            "Failed to persist resumed agent state: {error}{rollback_error}"
+        ));
+    }
+    if let Err(error) = journal.advance(
+        wardian_core::agent_replacement::ReplacementPhase::StatePersisted,
+    ) {
+        let rollback_error = rollback_agent_replacement(
+            journal,
+            &previous_state_snapshot,
+            previous_config,
+            previous_created_at,
+        );
+        return Err(format!(
+            "Failed to checkpoint resumed agent state: {error}{rollback_error}"
+        ));
+    }
+    if let Err(error) = persist_agent_config(new_config, new_created_at) {
+        let rollback_error = rollback_agent_replacement(
+            journal,
+            &previous_state_snapshot,
+            previous_config,
+            previous_created_at,
+        );
+        return Err(format!(
+            "Failed to persist resumed agent metadata: {error}{rollback_error}"
+        ));
+    }
+    if let Err(error) = journal.advance(
+        wardian_core::agent_replacement::ReplacementPhase::MetadataPersisted,
+    ) {
+        let rollback_error = rollback_agent_replacement(
+            journal,
+            &previous_state_snapshot,
+            previous_config,
+            previous_created_at,
+        );
+        return Err(format!(
+            "Failed to checkpoint resumed agent metadata: {error}{rollback_error}"
+        ));
+    }
+    if let Err(error) = journal.advance(
+        wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitting,
+    ) {
+        let rollback_error = rollback_agent_replacement(
+            journal,
+            &previous_state_snapshot,
+            previous_config,
+            previous_created_at,
+        );
+        return Err(format!(
+            "Failed to checkpoint the pending resume boundary: {error}{rollback_error}"
+        ));
+    }
+
+    let session_close_context = if starts_fresh {
+        let pending_archive = pending_archive.expect("fresh resume boundary checked above");
+        let closed_conversation = match finalize_conversation_boundary(
+            state,
+            session_id,
+            ConversationBoundaryReason::Clear,
+            pending_archive,
+        ) {
+            Ok(conversation) => conversation,
+            Err(error) => {
+                let rollback_error = rollback_agent_replacement(
+                    journal,
+                    &previous_state_snapshot,
+                    previous_config,
+                    previous_created_at,
+                );
+                return Err(format!(
+                    "Failed to commit the fresh-resume conversation boundary: {error}{rollback_error}"
+                ));
+            }
+        };
+        let mut context = planned_session_close_context
+            .take()
+            .expect("fresh resume must carry a durable session-close intent");
+        context.source_sequence = closed_conversation.as_ref().map(|entry| entry.record_count);
+        if let Err(error) = journal.set_session_close_intent(context.durable_intent()) {
+            manager::log_debug(&format!(
+                "[WARDIAN] finalized resume intent checkpoint deferred for {session_id}: {error}"
+            ));
+        }
+        Some(context)
+    } else {
+        None
+    };
+    if let Err(error) = journal
+        .advance(wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitted)
+    {
+        manager::log_debug(&format!(
+            "[WARDIAN] resume boundary checkpoint deferred for {session_id}: {error}"
+        ));
+    }
+
+    let inserted = pending_new_active
+        .take()
+        .expect("new active agent should still be pending");
+    let old_agent = agents
+        .insert(session_id.to_string(), inserted)
+        .expect("agent should exist after contains check");
+    if let Err(error) =
+        journal.advance(wardian_core::agent_replacement::ReplacementPhase::LiveInstalled)
+    {
+        manager::log_debug(&format!(
+            "[WARDIAN] live resume checkpoint deferred for {session_id}: {error}"
+        ));
+    }
+    Ok((old_agent, session_close_context, journal))
+}
+
+#[cfg(test)]
 async fn archive_agent_lifecycle_boundary(
     state: &AppState,
     session_id: &str,
     boundary_reason: ConversationBoundaryReason,
-) -> Result<(), String> {
+) -> Result<Option<wardian_core::conversations::ConversationIndexEntry>, String> {
     let snapshot =
         match crate::commands::chat::agent_archive_capture_snapshot(state, session_id).await {
             Ok(snapshot) => snapshot,
-            Err(error) if error.contains("agent not found") => return Ok(()),
+            Err(error) if error.contains("agent not found") => return Ok(None),
             Err(error) => return Err(error),
         };
     archive_agent_lifecycle_boundary_from_snapshot(state, session_id, boundary_reason, snapshot)
         .await
+}
+
+fn build_session_close_context(
+    config: &AgentConfig,
+    agent_id: &str,
+    boundary_reason: ConversationBoundaryReason,
+    closed_conversation: Option<&wardian_core::conversations::ConversationIndexEntry>,
+) -> crate::workflow::session_close::SessionCloseContext {
+    let boundary_reason = serde_json::to_value(boundary_reason)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "clear".to_string());
+    crate::workflow::session_close::SessionCloseContext {
+        boundary_id: uuid::Uuid::new_v4().to_string(),
+        agent_id: agent_id.to_string(),
+        agent_name: config.session_name.clone(),
+        workspace: crate::utils::fs::resolve_cwd(&config.folder, &config.session_id)
+            .to_string_lossy()
+            .to_string(),
+        provider: config.provider.clone(),
+        boundary_reason,
+        archive_available: closed_conversation.is_some(),
+        conversation_id: closed_conversation.map(|entry| entry.conversation_id.clone()),
+        source_sequence: closed_conversation.map(|entry| entry.record_count),
+    }
 }
 
 pub async fn clear_agent_session_with_reason(
@@ -3383,22 +3988,18 @@ async fn clear_agent_session_inner(
     };
     lifecycle_heartbeat.ensure_active("clear")?;
     let boundary_reason = conversation_boundary_for_clear_reason(reason.as_deref());
-    let archive_result = if let Some(snapshot) = archive_snapshot {
-        archive_agent_lifecycle_boundary_from_snapshot(
-            &state,
-            &session_id,
-            boundary_reason,
-            snapshot,
-        )
-        .await
-    } else {
-        archive_agent_lifecycle_boundary(&state, &session_id, boundary_reason).await
+    // Persist the closing evidence while the old runtime is intact, but leave
+    // the archive open until the replacement runtime and metadata commit.
+    let archive_snapshot = match archive_snapshot {
+        Some(snapshot) => snapshot,
+        None => crate::commands::chat::agent_archive_capture_snapshot(&state, &session_id)
+            .await
+            .map_err(|error| format!("Failed to capture the closing conversation: {error}"))?,
     };
-    if let Err(error) = archive_result {
-        manager::log_debug(&format!(
-            "[WARDIAN] conversation archive lifecycle boundary failed for {session_id}: {error}"
-        ));
-    }
+    let pending_archive = prepare_conversation_boundary(archive_snapshot)
+        .map_err(|error| format!("Failed to prepare the closing conversation: {error}"))?;
+    stage_conversation_boundary(&state, &pending_archive)
+        .map_err(|error| format!("Failed to stage the closing conversation: {error}"))?;
 
     // Establish the fresh provider identity before touching the current runtime.
     // If exact bootstrap evidence is unavailable, clear fails with the live agent intact.
@@ -3443,7 +4044,7 @@ async fn clear_agent_session_inner(
     } else {
         Vec::new()
     };
-    let mut config = original_config;
+    let mut config = original_config.clone();
     prepare_clear_config(&mut config)?;
     if config.provider == "codex" {
         config
@@ -3482,8 +4083,19 @@ async fn clear_agent_session_inner(
     manager::publish_agent_status(&app, &session_id, &prepared.status_arc);
 
     // 1. Terminate the old agent's process tree outside the global agent lock.
+    if let Err(error) = lifecycle_heartbeat.ensure_active("clear") {
+        let restored_status = {
+            let mut agents = state.agents.lock().await;
+            agents
+                .get_mut(&session_id)
+                .map(|agent| restore_agent_runtime_after_aborted_clear(agent, &mut prepared))
+        };
+        if let Some(status) = restored_status {
+            manager::publish_agent_status(&app, &session_id, &status);
+        }
+        return Err(error);
+    }
     if let Some(runtime_generation) = prepared.termination.runtime_generation {
-        lifecycle_heartbeat.ensure_active("clear")?;
         if let Err(error) = state
             .terminal_sessions
             .pause_runtime(&session_id, runtime_generation)
@@ -3494,7 +4106,6 @@ async fn clear_agent_session_inner(
             ));
         }
     }
-    lifecycle_heartbeat.ensure_active("clear")?;
     manager::terminate_active_agent_process(&mut prepared.termination);
 
     let _ = app.emit(
@@ -3504,10 +4115,35 @@ async fn clear_agent_session_inner(
 
     // 5. Spawn a FRESH process (is_restored = false) outside the global agent lock.
     // This ensures Claude uses --session-id and others start clean.
-    let mut new_active =
-        manager::spawn_agent(app.clone(), config, false, prepared.init_timestamp.clone()).await?;
+    let mut new_active = match manager::spawn_agent(
+        app.clone(),
+        config,
+        false,
+        prepared.init_timestamp.clone(),
+    )
+    .await
+    {
+        Ok(active) => active,
+        Err(error) => {
+            restore_agent_status_after_failed_runtime_start(
+                &state,
+                &app,
+                &session_id,
+                "Error",
+            )
+            .await;
+            return Err(error);
+        }
+    };
     if let Err(error) = lifecycle_heartbeat.ensure_active("clear") {
         manager::terminate_active_agent_process(&mut new_active);
+        restore_agent_status_after_failed_runtime_start(
+            &state,
+            &app,
+            &session_id,
+            "Error",
+        )
+        .await;
         return Err(error);
     }
 
@@ -3520,67 +4156,53 @@ async fn clear_agent_session_inner(
         }
     }
 
-    let db_snapshot = {
-        let config = new_active.config.lock().unwrap();
-        let born = new_active.init_timestamp.lock().unwrap();
-        let workspace = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id)
-            .to_string_lossy()
-            .to_string();
-        let project = wardian_core::db::project_name_from_workspace(&workspace);
-        (
-            config.session_id.clone(),
-            config.session_name.clone(),
-            config.description.clone(),
-            config.agent_class.clone(),
-            config.provider.clone(),
-            workspace,
-            project,
-            config.is_off,
-            born.clone(),
-        )
-    };
-
+    let new_config = new_active.config.lock().unwrap().clone();
+    let new_created_at = new_active.init_timestamp.lock().unwrap().clone();
     let new_status_arc = new_active.current_status.clone();
     let mut pending_new_active = Some(new_active);
-    lifecycle_heartbeat.ensure_active("clear")?;
-    let (state_snapshot, mut displaced_agent) = {
+    if let Err(error) = lifecycle_heartbeat.ensure_active("clear") {
+        if let Some(mut active) = pending_new_active.take() {
+            manager::terminate_active_agent_process(&mut active);
+        }
+        return Err(error);
+    }
+    let commit_result = {
         let mut agents = state.agents.lock().await;
         let order = state.agent_order.lock().await;
-        let Some(agent) = agents.get_mut(&session_id) else {
-            drop(order);
-            drop(agents);
-            if let Some(mut active) = pending_new_active {
+        lifecycle_heartbeat.ensure_active("clear").and_then(|_| {
+            commit_clear_replacement(
+                &state,
+                &mut agents,
+                &order,
+                &session_id,
+                &mut pending_new_active,
+                &original_config,
+                prepared.init_timestamp.as_deref(),
+                &new_config,
+                new_created_at.as_deref(),
+                boundary_reason,
+                &pending_archive,
+            )
+        })
+    };
+    let (mut displaced_agent, session_close_context, replacement_journal) = match commit_result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(mut active) = pending_new_active.take() {
                 manager::terminate_active_agent_process(&mut active);
             }
-            return Err(format!("Agent {} not found", session_id));
-        };
-        lifecycle_heartbeat.ensure_active("clear")?;
-        let inserted = pending_new_active
-            .take()
-            .expect("new active agent should still be pending");
-        let displaced_agent = std::mem::replace(agent, inserted);
-
-        (
-            manager::state_configs_snapshot(&agents, &order),
-            displaced_agent,
-        )
+            restore_agent_status_after_failed_runtime_start(
+                &state,
+                &app,
+                &session_id,
+                "Error",
+            )
+            .await;
+            return Err(error);
+        }
     };
     manager::terminate_active_agent_process(&mut displaced_agent);
-    manager::save_state_snapshot(&app, &state_snapshot);
     manager::publish_agent_status(&app, &session_id, &new_status_arc);
-
-    // 7. Update agent metadata in SQLite after the replacement is committed.
-    let _ = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
-        session_id: &db_snapshot.0,
-        session_name: &db_snapshot.1,
-        description: &db_snapshot.2,
-        agent_class: &db_snapshot.3,
-        provider: &db_snapshot.4,
-        workspace: Some(&db_snapshot.5),
-        project: db_snapshot.6.as_deref(),
-        is_off: db_snapshot.7,
-        created_at: db_snapshot.8.as_deref(),
-    });
 
     // 9. Force a frontend refresh and terminal resize to clear glitches
     let _ = app.emit("agents-updated", ());
@@ -3592,6 +4214,20 @@ async fn clear_agent_session_inner(
         "agent-pty-output-ready",
         serde_json::json!({ "session_id": session_id }),
     );
+    // A session-close workflow is a post-commit lifecycle effect. Launch only
+    // after the fresh provider is installed and durable metadata is updated.
+    if let Err(error) =
+        crate::workflow::session_close::invoke_matching(app.clone(), session_close_context).await
+    {
+        return Err(format!(
+            "The agent was cleared, but its session-close workflow was not durably accepted: {error}"
+        ));
+    }
+    if let Err(error) = replacement_journal.complete() {
+        manager::log_debug(&format!(
+            "[WARDIAN] replacement journal cleanup deferred for {session_id}: {error}"
+        ));
+    }
     Ok(())
 }
 
@@ -3727,6 +4363,9 @@ async fn persist_agent_config_while_lifecycle_locked(
     new_config.validate_provider_config_matches_provider()?;
     new_config.description = normalize_agent_description(&new_config.description)?;
     new_config.mark_provider_config_nested_for_save();
+    let _roster_barrier = wardian_core::agent_replacement::acquire_agent_roster_barrier(true)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent roster barrier is unavailable".to_string())?;
     let agents = state.agents.lock().await;
     let order = state.agent_order.lock().await;
 
@@ -3760,7 +4399,7 @@ async fn persist_agent_config_while_lifecycle_locked(
             })?;
         *persisted_config = new_config.clone();
 
-        manager::try_save_state_snapshot(&state_snapshot)
+        manager::try_save_state_snapshot_unlocked(&state_snapshot)
             .map_err(|error| format!("Failed to persist agent configuration: {error}"))?;
 
         let workspace = crate::utils::fs::resolve_cwd(&new_config.folder, &new_config.session_id)
@@ -3780,7 +4419,7 @@ async fn persist_agent_config_while_lifecycle_locked(
             created_at: created_at.as_deref(),
         })
         .map_err(|error| {
-            let rollback_error = manager::try_save_state_snapshot(&previous_state_snapshot)
+            let rollback_error = manager::try_save_state_snapshot_unlocked(&previous_state_snapshot)
                 .err()
                 .map(|rollback| format!("; state rollback also failed: {rollback}"))
                 .unwrap_or_default();
@@ -4541,6 +5180,7 @@ mod tests {
         archive_agent_lifecycle_boundary, archive_agent_lifecycle_boundary_from_snapshot,
         assign_worktree_config, build_agent_cli_command_for_session_id_with_shells,
         build_agent_cli_command_with_shells, build_agent_clone_preview,
+        build_session_close_context, commit_clear_replacement, commit_resume_replacement,
         agent_has_running_process, capture_resume_runtime_snapshot,
         clone_cleanup_created_profile_dirs,
         clone_collect_eligible_file_tree, clone_copy_agent_profile_files, clone_copy_profile_plan,
@@ -4562,20 +5202,21 @@ mod tests {
         normalize_discovered_git_worktree_path, normalize_existing_workspace_record_path,
         normalize_spawn_folder, normalize_workspace_record_path,
         persisted_resume_session_for_provider, prepare_agent_for_clear, prepare_clear_config,
-        prepare_restored_config_for_spawn, prepare_resume_config,
+        prepare_conversation_boundary, prepare_restored_config_for_spawn, prepare_resume_config,
         prepare_resume_config_for_runtime, promote_fresh_provider_session_after_resume,
         provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
         replace_agent_status_incarnation, release_spawn_name_reservation, remove_agent,
         reserve_spawn_session_name, reserve_rename_session_name,
-        validate_agent_removal,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
         resolve_external_resume_session, resolve_requested_spawn_session_name, restore_agent_config_in_state,
+        restore_agent_runtime_after_aborted_clear,
         restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
-        restore_runtime_state_snapshot_after_resume, strip_claude_embedded_stream_flags,
+        restore_runtime_state_snapshot_after_resume, stage_conversation_boundary,
+        persist_agent_config, strip_claude_embedded_stream_flags,
         take_agent_runtime_for_termination, terminal_cleared_payload, update_agent_fields_in_state,
         update_agent_model_selection_transaction, AgentModelLiveApplication,
-        AgentModelSelectionUpdateResult,
-        validate_assignable_worktree_for_agent, validate_deletable_agent_worktree,
+        AgentModelSelectionUpdateResult, validate_agent_removal, validate_assignable_worktree_for_agent,
+        validate_deletable_agent_worktree,
         workspace_paths_match, worktree_deletion_is_already_complete, AgentOrderPlacement,
         AgentUpdateFields, AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
         DeletedAgentReferenceCleanup, DiscoveredGitWorktree, ResumeRuntimeSnapshot,
@@ -4612,6 +5253,7 @@ mod tests {
             config: Arc::new(Mutex::new(AgentConfig::default())),
             child_process: None,
             background_processes: Vec::new(),
+            memory_capability: None,
             runtime_generation: None,
             process_id: None,
             query_count: Arc::new(Mutex::new(0)),
@@ -4960,11 +5602,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
                 ..Default::default()
             };
         }
-        state
-            .agents
-            .lock()
-            .await
-            .insert("agent-1".to_string(), agent);
+        state.agents.lock().await.insert("agent-1".to_string(), agent);
 
         let command = build_agent_cli_command_for_session_id_with_shells(
             "agent-1", &state, &settings, &shells,
@@ -6164,7 +6802,11 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             config.session_id = "agent-1".to_string();
             config.session_name = "CoderOne".to_string();
         }
-        state.agents.lock().await.insert("agent-1".to_string(), agent);
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
         state
             .agent_name_reservations
             .lock()
@@ -8008,7 +8650,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[test]
-    fn prepare_agent_for_clear_resets_visible_runtime_without_terminating_inline() {
+    fn prepare_agent_for_clear_preserves_boundary_evidence_until_replacement_commits() {
         let mut active = make_test_agent();
         active.runtime_generation = Some(9);
         active.process_id = Some(12345);
@@ -8031,7 +8673,7 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             });
         }
 
-        let prepared = prepare_agent_for_clear(&mut active);
+        let mut prepared = prepare_agent_for_clear(&mut active);
 
         assert_eq!(prepared.termination.process_id, Some(12345));
         assert_eq!(
@@ -8056,22 +8698,35 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             Arc::ptr_eq(&prepared.status_arc, &active.current_status),
             "the replacement status must be the incarnation installed in the agent map"
         );
-        assert_eq!(active.terminal_title.lock().unwrap().as_str(), "");
+        assert_eq!(active.terminal_title.lock().unwrap().as_str(), "Old Title");
         assert_eq!(
             active.current_status.lock().unwrap().as_str(),
             "Processing..."
         );
-        assert_eq!(*active.query_count.lock().unwrap(), 0);
-        assert!(active.log_path.lock().unwrap().is_none());
-        assert!(active.log_last_modified.lock().unwrap().is_none());
+        assert_eq!(*active.query_count.lock().unwrap(), 5);
+        assert_eq!(
+            active.log_path.lock().unwrap().as_deref(),
+            Some(std::path::Path::new("D:/tmp/agent.log"))
+        );
+        assert!(active.log_last_modified.lock().unwrap().is_some());
         let watch_snapshot = active
             .watch_state
             .lock()
             .unwrap()
             .snapshot_since(None, None)
             .expect("watch snapshot after clear");
-        assert!(watch_snapshot.output.text.is_empty());
-        assert!(watch_snapshot.transcript.messages.is_empty());
+        assert!(watch_snapshot.output.text.contains("old terminal output"));
+        assert_eq!(watch_snapshot.transcript.messages.len(), 1);
+        assert_eq!(
+            watch_snapshot.transcript.messages[0].text,
+            "old chat answer"
+        );
+
+        let restored_status = restore_agent_runtime_after_aborted_clear(&mut active, &mut prepared);
+        assert!(Arc::ptr_eq(&restored_status, &active.current_status));
+        assert_eq!(active.runtime_generation, Some(9));
+        assert_eq!(active.process_id, Some(12345));
+        assert_eq!(active.current_status.lock().unwrap().as_str(), "Idle");
     }
 
     #[test]
@@ -8859,6 +9514,643 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         std::env::remove_var("WARDIAN_HOME");
     }
 
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn pending_clear_boundary_stays_uncommitted_and_retryable_before_replacement() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::env::set_var("WARDIAN_HOME", temp.path());
+        let _home = WardianHomeGuard;
+        wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
+            .expect("initialize isolated state database");
+        crate::utils::save_shell_settings(&crate::utils::ShellSettings {
+            conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Enabled,
+            ..Default::default()
+        })
+        .expect("save shell settings");
+
+        let state = AppState::new();
+        let agent = make_test_agent();
+        {
+            let mut config = agent.config.lock().unwrap();
+            config.session_id = "agent-clear-retry".to_string();
+            config.session_name = "ClearRetry".to_string();
+            config.agent_class = "Coder".to_string();
+            config.provider = "unsupported-provider".to_string();
+            config.folder = temp.path().to_string_lossy().to_string();
+            config.conversation_logging =
+                wardian_core::conversations::AgentConversationLoggingSetting::Default;
+        }
+        let original_config = agent.config.lock().unwrap().clone();
+        agent.watch_state.lock().unwrap().push_transcript(
+            wardian_core::control::WatchTranscriptMessage {
+                role: "user".to_string(),
+                text: "Preserve this conversation across a failed clear.".to_string(),
+                provider: "unsupported-provider".to_string(),
+                turn_id: Some("turn-before-failed-clear".to_string()),
+                source: Some("watch_transcript".to_string()),
+            },
+        );
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-clear-retry".to_string(), agent);
+        state
+            .agent_order
+            .lock()
+            .await
+            .push("agent-clear-retry".to_string());
+
+        let pending_snapshot =
+            crate::commands::chat::agent_archive_capture_snapshot(&state, "agent-clear-retry")
+                .await
+                .expect("capture pending clear boundary");
+        let pending_boundary =
+            prepare_conversation_boundary(pending_snapshot).expect("prepare pending boundary");
+        stage_conversation_boundary(&state, &pending_boundary)
+            .expect("stage pending boundary evidence");
+        let staged_conversation_id = state
+            .conversation_archive
+            .active_conversation_id_for_test("agent-clear-retry")
+            .expect("staged open conversation");
+        let _prepared_runtime = {
+            let mut agents = state.agents.lock().await;
+            prepare_agent_for_clear(
+                agents
+                    .get_mut("agent-clear-retry")
+                    .expect("agent before simulated replacement failure"),
+            )
+        };
+
+        let staged_entries = state
+            .conversation_archive
+            .list(Some("agent-clear-retry"), false)
+            .expect("list conversations after failed clear");
+        assert_eq!(staged_entries.len(), 1);
+        assert_eq!(
+            staged_entries[0].status,
+            wardian_core::conversations::ConversationStatus::Open
+        );
+        let retry_snapshot =
+            crate::commands::chat::agent_archive_capture_snapshot(&state, "agent-clear-retry")
+                .await
+                .expect("failed clear must retain archive evidence");
+        let retry_capture =
+            crate::commands::chat::collect_agent_chat_events_for_archive(&retry_snapshot)
+                .expect("collect retry archive");
+        assert!(retry_capture.events.iter().any(|event| {
+            event.text.as_deref() == Some("Preserve this conversation across a failed clear.")
+        }));
+
+        let replacement_agent = make_test_agent();
+        {
+            let mut config = replacement_agent.config.lock().unwrap();
+            *config = original_config.clone();
+            config.description = "replacement runtime".to_string();
+        }
+        let replacement_config = replacement_agent.config.lock().unwrap().clone();
+        let mut pending_replacement = Some(replacement_agent);
+
+        state
+            .conversation_archive
+            .fail_next_rollover_after_close_for_test();
+        let failed_commit = {
+            let mut agents = state.agents.lock().await;
+            let order = state.agent_order.lock().await;
+            commit_clear_replacement(
+                &state,
+                &mut agents,
+                &order,
+                "agent-clear-retry",
+                &mut pending_replacement,
+                &original_config,
+                None,
+                &replacement_config,
+                None,
+                wardian_core::conversations::ConversationBoundaryReason::Clear,
+                &pending_boundary,
+            )
+        };
+        let failed_commit_error = match failed_commit {
+            Ok(_) => panic!("injected finalization path must fail the replacement commit"),
+            Err(error) => error,
+        };
+        assert!(failed_commit_error.contains("Failed to commit the conversation boundary"));
+        assert!(pending_replacement.is_some());
+        assert_eq!(
+            state
+                .agents
+                .lock()
+                .await
+                .get("agent-clear-retry")
+                .expect("original agent remains installed")
+                .config
+                .lock()
+                .unwrap()
+                .description,
+            original_config.description
+        );
+        assert_eq!(
+            state
+                .conversation_archive
+                .active_conversation_id_for_test("agent-clear-retry")
+                .as_deref(),
+            Some(staged_conversation_id.as_str())
+        );
+        let (_displaced, context, journal) = {
+            let mut agents = state.agents.lock().await;
+            let order = state.agent_order.lock().await;
+            commit_clear_replacement(
+                &state,
+                &mut agents,
+                &order,
+                "agent-clear-retry",
+                &mut pending_replacement,
+                &original_config,
+                None,
+                &replacement_config,
+                None,
+                wardian_core::conversations::ConversationBoundaryReason::Clear,
+                &pending_boundary,
+            )
+            .expect("retry replacement commit")
+        };
+        assert!(journal
+            .session_close_intent()
+            .and_then(|intent| intent.source_sequence)
+            .is_some_and(|sequence| sequence > 0));
+        journal.complete().expect("complete clear replacement journal");
+        assert!(pending_replacement.is_none());
+        assert_eq!(context.conversation_id.as_deref(), Some(staged_conversation_id.as_str()));
+        assert_eq!(
+            state
+                .agents
+                .lock()
+                .await
+                .get("agent-clear-retry")
+                .expect("replacement agent installed")
+                .config
+                .lock()
+                .unwrap()
+                .description,
+            "replacement runtime"
+        );
+        assert_eq!(
+            state
+                .conversation_archive
+                .list(Some("agent-clear-retry"), false)
+                .expect("list retried conversation")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn fresh_resume_boundary_failure_rolls_back_then_retry_converges_all_stores() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::env::set_var("WARDIAN_HOME", temp.path());
+        let _home = WardianHomeGuard;
+        wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
+            .expect("initialize isolated state database");
+        crate::utils::save_shell_settings(&crate::utils::ShellSettings {
+            conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Enabled,
+            ..Default::default()
+        })
+        .expect("save shell settings");
+
+        let state = AppState::new();
+        let original_agent = make_test_agent();
+        {
+            let mut config = original_agent.config.lock().unwrap();
+            config.session_id = "agent-fresh-resume-failure".to_string();
+            config.session_name = "FreshResumeFailure".to_string();
+            config.description = "original runtime".to_string();
+            config.folder = temp.path().to_string_lossy().to_string();
+        }
+        let original_config = original_agent.config.lock().unwrap().clone();
+        persist_agent_config(&original_config, None).expect("persist original metadata");
+        original_agent.watch_state.lock().unwrap().push_transcript(
+            wardian_core::control::WatchTranscriptMessage {
+                role: "user".to_string(),
+                text: "Preserve the fresh-resume boundary.".to_string(),
+                provider: original_config.provider.clone(),
+                turn_id: Some("turn-before-fresh-resume".to_string()),
+                source: Some("watch_transcript".to_string()),
+            },
+        );
+        state.agents.lock().await.insert(
+            "agent-fresh-resume-failure".to_string(),
+            original_agent,
+        );
+        state
+            .agent_order
+            .lock()
+            .await
+            .push("agent-fresh-resume-failure".to_string());
+        crate::manager::try_save_state_snapshot(std::slice::from_ref(&original_config))
+            .expect("persist original state snapshot");
+
+        let snapshot = crate::commands::chat::agent_archive_capture_snapshot(
+            &state,
+            "agent-fresh-resume-failure",
+        )
+        .await
+        .expect("capture fresh-resume boundary");
+        let pending_boundary =
+            prepare_conversation_boundary(snapshot).expect("prepare fresh-resume boundary");
+        stage_conversation_boundary(&state, &pending_boundary)
+            .expect("stage fresh-resume boundary");
+        let staged_conversation_id = state
+            .conversation_archive
+            .active_conversation_id_for_test("agent-fresh-resume-failure")
+            .expect("staged open conversation");
+
+        let replacement_agent = make_test_agent();
+        {
+            let mut config = replacement_agent.config.lock().unwrap();
+            *config = original_config.clone();
+            config.description = "replacement runtime".to_string();
+        }
+        let replacement_config = replacement_agent.config.lock().unwrap().clone();
+        let mut pending_replacement = Some(replacement_agent);
+        state
+            .conversation_archive
+            .fail_next_rollover_after_close_for_test();
+
+        let commit_error = {
+            let mut agents = state.agents.lock().await;
+            let order = state.agent_order.lock().await;
+            match commit_resume_replacement(
+                &state,
+                &mut agents,
+                &order,
+                "agent-fresh-resume-failure",
+                &mut pending_replacement,
+                &original_config,
+                None,
+                &replacement_config,
+                None,
+                true,
+                Some(&pending_boundary),
+            ) {
+                Ok(_) => panic!("boundary failure must abort fresh resume replacement"),
+                Err(error) => error,
+            }
+        };
+
+        assert!(commit_error.contains("Failed to commit the fresh-resume conversation boundary"));
+        assert!(pending_replacement.is_some());
+        assert_eq!(
+            state
+                .agents
+                .lock()
+                .await
+                .get("agent-fresh-resume-failure")
+                .expect("original agent remains installed")
+                .config
+                .lock()
+                .unwrap()
+                .description,
+            "original runtime"
+        );
+        let persisted: Vec<AgentConfig> = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("settings").join("state.json"))
+                .expect("read rolled back state snapshot"),
+        )
+        .expect("parse rolled back state snapshot");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].description, "original runtime");
+
+        assert_eq!(
+            state
+                .conversation_archive
+                .active_conversation_id_for_test("agent-fresh-resume-failure")
+                .as_deref(),
+            Some(staged_conversation_id.as_str())
+        );
+
+        let (_displaced, context, journal) = {
+            let mut agents = state.agents.lock().await;
+            let order = state.agent_order.lock().await;
+            commit_resume_replacement(
+                &state,
+                &mut agents,
+                &order,
+                "agent-fresh-resume-failure",
+                &mut pending_replacement,
+                &original_config,
+                None,
+                &replacement_config,
+                None,
+                true,
+                Some(&pending_boundary),
+            )
+            .expect("retry fresh-resume replacement")
+        };
+        assert!(journal
+            .session_close_intent()
+            .and_then(|intent| intent.source_sequence)
+            .is_some_and(|sequence| sequence > 0));
+        journal.complete().expect("complete resume replacement journal");
+        assert_eq!(
+            context
+                .expect("fresh resume context")
+                .conversation_id
+                .as_deref(),
+            Some(staged_conversation_id.as_str())
+        );
+        assert_eq!(
+            state
+                .agents
+                .lock()
+                .await
+                .get("agent-fresh-resume-failure")
+                .expect("replacement installed")
+                .config
+                .lock()
+                .unwrap()
+                .description,
+            "replacement runtime"
+        );
+        let persisted_state: Vec<AgentConfig> = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("settings").join("state.json"))
+                .expect("read committed state snapshot"),
+        )
+        .expect("parse committed state snapshot");
+        assert_eq!(persisted_state[0].description, "replacement runtime");
+        let persisted_agent = wardian_core::db::get_all_agents()
+            .expect("load committed metadata")
+            .into_iter()
+            .find(|agent| agent.session_id == "agent-fresh-resume-failure")
+            .expect("committed metadata row");
+        assert_eq!(persisted_agent.description, "replacement runtime");
+        let conversation_dir = wardian_core::paths::agent_conversation_dir(
+            "agent-fresh-resume-failure",
+            &staged_conversation_id,
+        )
+        .expect("conversation directory");
+        let records: Vec<wardian_core::conversations::ConversationNarrativeRecord> =
+            wardian_core::conversations::read_jsonl_records(
+                &conversation_dir.join("conversation.jsonl"),
+            )
+            .expect("read retried conversation records");
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| {
+                    record.kind == wardian_core::conversations::ConversationRecordKind::Lifecycle
+                })
+                .count(),
+            1,
+            "retry must not duplicate the lifecycle boundary"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn clear_replacement_state_failure_keeps_original_agent_and_metadata() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::env::set_var("WARDIAN_HOME", temp.path());
+        let _home = WardianHomeGuard;
+        wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
+            .expect("initialize isolated state database");
+        crate::utils::save_shell_settings(&crate::utils::ShellSettings {
+            conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Disabled,
+            ..Default::default()
+        })
+        .expect("save shell settings");
+
+        let state = AppState::new();
+        let original_agent = make_test_agent();
+        {
+            let mut config = original_agent.config.lock().unwrap();
+            config.session_id = "agent-state-failure".to_string();
+            config.session_name = "StateFailure".to_string();
+            config.description = "original metadata".to_string();
+            config.folder = temp.path().to_string_lossy().to_string();
+        }
+        let original_config = original_agent.config.lock().unwrap().clone();
+        persist_agent_config(&original_config, None).expect("persist original metadata");
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-state-failure".to_string(), original_agent);
+        state
+            .agent_order
+            .lock()
+            .await
+            .push("agent-state-failure".to_string());
+
+        let snapshot = crate::commands::chat::agent_archive_capture_snapshot(
+            &state,
+            "agent-state-failure",
+        )
+        .await
+        .expect("capture pending boundary");
+        let pending_boundary =
+            prepare_conversation_boundary(snapshot).expect("prepare pending boundary");
+        stage_conversation_boundary(&state, &pending_boundary).expect("stage pending boundary");
+
+        let replacement_agent = make_test_agent();
+        {
+            let mut config = replacement_agent.config.lock().unwrap();
+            *config = original_config.clone();
+            config.description = "replacement metadata".to_string();
+        }
+        let replacement_config = replacement_agent.config.lock().unwrap().clone();
+        let mut pending_replacement = Some(replacement_agent);
+
+        std::fs::create_dir_all(temp.path().join("settings").join("state.json"))
+            .expect("create state.json failure fixture");
+        let commit_error = {
+            let mut agents = state.agents.lock().await;
+            let order = state.agent_order.lock().await;
+            match commit_clear_replacement(
+                &state,
+                &mut agents,
+                &order,
+                "agent-state-failure",
+                &mut pending_replacement,
+                &original_config,
+                None,
+                &replacement_config,
+                None,
+                wardian_core::conversations::ConversationBoundaryReason::Clear,
+                &pending_boundary,
+            ) {
+                Ok(_) => panic!("state persistence failure must abort replacement"),
+                Err(error) => error,
+            }
+        };
+
+        assert!(commit_error.contains("Failed to persist replacement agent state"));
+        assert!(pending_replacement.is_some());
+        assert_eq!(
+            state
+                .agents
+                .lock()
+                .await
+                .get("agent-state-failure")
+                .expect("original agent remains installed")
+                .config
+                .lock()
+                .unwrap()
+                .description,
+            "original metadata"
+        );
+        let persisted = wardian_core::db::get_all_agents()
+            .expect("load rolled back metadata")
+            .into_iter()
+            .find(|agent| agent.session_id == "agent-state-failure")
+            .expect("persisted original agent");
+        assert_eq!(persisted.description, "original metadata");
+
+        let state_path = temp.path().join("settings").join("state.json");
+        std::fs::remove_dir(&state_path).expect("remove state failure fixture");
+        crate::manager::try_save_state_snapshot(std::slice::from_ref(&replacement_config))
+            .expect("simulate an uncertain replacement state after interruption");
+        let recovered_replacements = match
+            wardian_core::agent_replacement::recover_pending_replacements(true)
+                .expect("recover interrupted replacement")
+        {
+            wardian_core::agent_replacement::RecoveryStatus::Recovered(records) => records,
+            other => panic!("expected recovered replacement, got {other:?}"),
+        };
+        assert_eq!(recovered_replacements.len(), 1);
+        assert_eq!(recovered_replacements[0].session_id, "agent-state-failure");
+        assert!(recovered_replacements[0].session_close_intent.is_none());
+        let recovered: Vec<AgentConfig> = serde_json::from_str(
+            &std::fs::read_to_string(state_path).expect("read recovered state"),
+        )
+        .expect("parse recovered state");
+        assert_eq!(recovered[0].description, "original metadata");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn clear_replacement_sqlite_failure_keeps_original_agent_pending() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::env::set_var("WARDIAN_HOME", temp.path());
+        let _home = WardianHomeGuard;
+        wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
+            .expect("initialize isolated state database");
+        crate::utils::save_shell_settings(&crate::utils::ShellSettings {
+            conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Disabled,
+            ..Default::default()
+        })
+        .expect("save shell settings");
+
+        let state = AppState::new();
+        let original_agent = make_test_agent();
+        {
+            let mut config = original_agent.config.lock().unwrap();
+            config.session_id = "agent-db-failure".to_string();
+            config.session_name = "DatabaseFailure".to_string();
+            config.description = "original metadata".to_string();
+            config.folder = temp.path().to_string_lossy().to_string();
+        }
+        let original_config = original_agent.config.lock().unwrap().clone();
+        persist_agent_config(&original_config, None).expect("persist original metadata");
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-db-failure".to_string(), original_agent);
+        state
+            .agent_order
+            .lock()
+            .await
+            .push("agent-db-failure".to_string());
+
+        let snapshot = crate::commands::chat::agent_archive_capture_snapshot(
+            &state,
+            "agent-db-failure",
+        )
+        .await
+        .expect("capture pending boundary");
+        let pending_boundary =
+            prepare_conversation_boundary(snapshot).expect("prepare pending boundary");
+        stage_conversation_boundary(&state, &pending_boundary).expect("stage pending boundary");
+
+        let replacement_agent = make_test_agent();
+        {
+            let mut config = replacement_agent.config.lock().unwrap();
+            *config = original_config.clone();
+            config.description = "replacement metadata".to_string();
+        }
+        let replacement_config = replacement_agent.config.lock().unwrap().clone();
+        let mut pending_replacement = Some(replacement_agent);
+
+        wardian_core::db::get_db_conn(|connection| {
+            connection.pragma_update(None, "query_only", true)?;
+            Ok(())
+        })
+        .expect("make isolated database read-only");
+        let commit_error = {
+            let mut agents = state.agents.lock().await;
+            let order = state.agent_order.lock().await;
+            match commit_clear_replacement(
+                &state,
+                &mut agents,
+                &order,
+                "agent-db-failure",
+                &mut pending_replacement,
+                &original_config,
+                None,
+                &replacement_config,
+                None,
+                wardian_core::conversations::ConversationBoundaryReason::Clear,
+                &pending_boundary,
+            ) {
+                Ok(_) => panic!("SQLite persistence failure must abort replacement"),
+                Err(error) => error,
+            }
+        };
+        wardian_core::db::get_db_conn(|connection| {
+            connection.pragma_update(None, "query_only", false)?;
+            Ok(())
+        })
+        .expect("restore isolated database writes");
+
+        assert!(commit_error.contains("Failed to persist replacement agent metadata"));
+        assert!(pending_replacement.is_some());
+        assert_eq!(
+            state
+                .agents
+                .lock()
+                .await
+                .get("agent-db-failure")
+                .expect("original agent remains installed")
+                .config
+                .lock()
+                .unwrap()
+                .description,
+            "original metadata"
+        );
+        let recovered_replacements = match
+            wardian_core::agent_replacement::recover_pending_replacements(true)
+                .expect("recover interrupted SQLite replacement")
+        {
+            wardian_core::agent_replacement::RecoveryStatus::Recovered(records) => records,
+            other => panic!("expected recovered replacement, got {other:?}"),
+        };
+        assert_eq!(recovered_replacements.len(), 1);
+        assert_eq!(recovered_replacements[0].session_id, "agent-db-failure");
+        assert!(recovered_replacements[0].session_close_intent.is_none());
+        let recovered: Vec<AgentConfig> = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("settings").join("state.json"))
+                .expect("read recovered state"),
+        )
+        .expect("parse recovered state");
+        assert_eq!(recovered[0].description, "original metadata");
+    }
+
     #[test]
     fn global_fresh_session_persistence_resume_clears_resume_session() {
         let _guard = crate::utils::wardian_test_env_lock();
@@ -8928,6 +10220,36 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert_eq!(*new_active.query_count.lock().unwrap(), 0);
         assert_eq!(*new_active.init_timestamp.lock().unwrap(), None);
         assert_eq!(*new_active.log_path.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn fresh_resume_session_close_context_has_a_unique_boundary_without_an_archive() {
+        let config = AgentConfig {
+            session_id: "agent-a".to_string(),
+            session_name: "Agent A".to_string(),
+            provider: "codex".to_string(),
+            ..Default::default()
+        };
+
+        let first = build_session_close_context(
+            &config,
+            "agent-a",
+            wardian_core::conversations::ConversationBoundaryReason::Clear,
+            None,
+        );
+        let second = build_session_close_context(
+            &config,
+            "agent-a",
+            wardian_core::conversations::ConversationBoundaryReason::Clear,
+            None,
+        );
+
+        assert_ne!(first.boundary_id, second.boundary_id);
+        assert_eq!(first.agent_id, "agent-a");
+        assert_eq!(first.boundary_reason, "clear");
+        assert!(!first.archive_available);
+        assert_eq!(first.conversation_id, None);
+        assert_eq!(first.source_sequence, None);
     }
 
     #[test]

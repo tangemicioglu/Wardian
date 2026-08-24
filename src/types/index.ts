@@ -29,6 +29,7 @@ export type AgentChatEventKind =
     | "approval"
     | "status"
     | "terminal_output"
+    | "memory"
     | "error";
 
 export type AgentChatRole = "user" | "assistant" | "system" | "tool";
