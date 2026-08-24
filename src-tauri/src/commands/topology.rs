@@ -1,5 +1,7 @@
+use fs2::FileExt;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use tauri::{AppHandle, Emitter};
 use wardian_core::topology::{
     load_reconciled_topology, load_topology, pair_activity_from_records, resolve_neighbors,
@@ -34,6 +36,7 @@ pub async fn get_topology(
     state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<TopologySnapshot, String> {
     let home = home()?;
+    let _topology_lock = topology_process_lock(&home)?;
     let refs = agent_refs(&state).await;
     let topology = match wardian_core::db::get_all_agents() {
         Ok(persisted_agents) => {
@@ -135,6 +138,7 @@ pub async fn get_pair_activity() -> Result<Vec<PairActivity>, String> {
 
 fn mutate(app: &AppHandle, apply: impl FnOnce(&mut Topology) -> bool) -> Result<bool, String> {
     let home = home()?;
+    let _topology_lock = topology_process_lock(&home)?;
     let mut topology = load_topology(&home);
     let changed = apply(&mut topology);
     if changed {
@@ -142,6 +146,18 @@ fn mutate(app: &AppHandle, apply: impl FnOnce(&mut Topology) -> bool) -> Result<
         let _ = app.emit("topology-changed", ());
     }
     Ok(changed)
+}
+
+pub(crate) fn topology_process_lock(home: &Path) -> Result<std::fs::File, String> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(home.join("topology.lock"))
+        .map_err(|error| error.to_string())?;
+    lock.lock_exclusive().map_err(|error| error.to_string())?;
+    Ok(lock)
 }
 
 async fn agent_refs(

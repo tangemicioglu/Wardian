@@ -5743,6 +5743,7 @@ version = "0.5.3"
 dependencies = [
  "chrono",
  "clap",
+ "fs2",
  "rusqlite",
  "serde",
  "serde_json",

@@ -1,4 +1,6 @@
+use fs2::FileExt;
 use std::collections::BTreeSet;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use crate::args::{TeamArgs, TeamCommand, WatchlistArgs, WatchlistCommand};
@@ -8,6 +10,8 @@ use crate::{identity_error, live, open_db};
 use wardian_core::identity::{self, AgentIdentity, ListFilters, Scope};
 
 pub fn handle_team(args: TeamArgs) -> Result<String, CliError> {
+    let home = wardian_home()?;
+    let _process_lock = watchlist_process_lock(&home)?;
     let mut state = load_state()?;
     match args.command {
         TeamCommand::List => render_json(serde_json::json!({
@@ -143,6 +147,8 @@ pub fn handle_team(args: TeamArgs) -> Result<String, CliError> {
 }
 
 pub fn handle_watchlist(args: WatchlistArgs) -> Result<String, CliError> {
+    let home = wardian_home()?;
+    let _process_lock = watchlist_process_lock(&home)?;
     let mut state = load_state()?;
     match args.command {
         WatchlistCommand::List => render_json(serde_json::json!({
@@ -275,11 +281,44 @@ fn load_state() -> Result<WatchlistState, CliError> {
 
 fn persist_state(state: &WatchlistState) -> Result<(), CliError> {
     let home = wardian_home()?;
-    let previous_teams = wardian_core::topology::load_team_memberships(&home);
+    let previous_state = load_state()?;
+    let previous_teams = previous_state
+        .teams
+        .iter()
+        .map(|team| wardian_core::topology::TeamMembership {
+            id: team.id.clone(),
+            agent_ids: team.agent_ids.clone(),
+        })
+        .collect::<Vec<_>>();
     save_state(&home, state)?;
-    seed_topology(&home, &previous_teams, state)?;
+    if let Err(topology_error) = seed_topology(&home, &previous_teams, state) {
+        if let Err(restore_error) = save_state(&home, &previous_state) {
+            return Err(CliError::generic(format!(
+                "topology seeding failed: {}; restoring watchlist failed: {}",
+                topology_error.message, restore_error.message
+            )));
+        }
+        return Err(topology_error);
+    }
     let _ = live::notify_watchlists_changed();
     Ok(())
+}
+
+fn watchlist_process_lock(home: &Path) -> Result<File, CliError> {
+    let lock_path = home.join("watchlists").join("index.lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| CliError::generic(error.to_string()))?;
+    }
+    let lock = File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|error| CliError::generic(error.to_string()))?;
+    lock.lock_exclusive()
+        .map_err(|error| CliError::generic(error.to_string()))?;
+    Ok(lock)
 }
 
 fn wardian_home() -> Result<PathBuf, CliError> {
@@ -305,6 +344,7 @@ fn seed_topology(
     previous_teams: &[wardian_core::topology::TeamMembership],
     state: &WatchlistState,
 ) -> Result<(), CliError> {
+    let _topology_lock = crate::graph::topology_process_lock(home)?;
     let mut topology = wardian_core::topology::load_topology(home);
     let before = topology.edges.len();
     let before_suppressed = topology.suppressed_seed_pairs.len();

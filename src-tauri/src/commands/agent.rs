@@ -197,9 +197,11 @@ impl DeletedAgentReferenceCleanup {
             remaining_agent_ids,
         )?;
 
-        let (_, topology_changed) =
+        let (_, topology_changed) = {
+            let _topology_lock = crate::commands::topology::topology_process_lock(home)?;
             wardian_core::topology::load_reconciled_topology(home, remaining_agent_ids)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string())?
+        };
 
         Ok(Self {
             watchlists_changed,
@@ -1348,6 +1350,13 @@ enum AgentOrderPlacement<'a> {
     After(&'a str),
 }
 
+struct AgentRegistrationOptions<'a> {
+    clone_name_base: Option<&'a str>,
+    reserved_session_name: Option<&'a str>,
+    placement: AgentOrderPlacement<'a>,
+    emit_roster_update: bool,
+}
+
 fn new_agent_order_placement_for_setting(value: &str) -> AgentOrderPlacement<'static> {
     match value.trim() {
         "bottom" => AgentOrderPlacement::Bottom,
@@ -2391,9 +2400,7 @@ async fn register_new_agent(
     actual_resume: Option<String>,
     state: &AppState,
     app: &AppHandle,
-    clone_name_base: Option<&str>,
-    reserved_session_name: Option<&str>,
-    placement: AgentOrderPlacement<'_>,
+    options: AgentRegistrationOptions<'_>,
 ) -> Result<AgentConfig, String> {
     let session_id = config.session_id.clone();
     config.system_include_directories = Some(crate::utils::fs::resolve_system_include_directories(
@@ -2434,14 +2441,18 @@ async fn register_new_agent(
         .values()
         .map(|agent| agent.config.lock().unwrap().session_name.clone())
         .collect::<std::collections::HashSet<_>>();
-    match resolve_registered_session_name(&config.session_name, clone_name_base, &existing_names) {
+    match resolve_registered_session_name(
+        &config.session_name,
+        options.clone_name_base,
+        &existing_names,
+    ) {
         Ok(session_name) => config.session_name = session_name,
         Err(error) => {
             manager::terminate_active_agent_process(&mut active_agent);
             return Err(error);
         }
     }
-    if let Some(reserved_session_name) = reserved_session_name {
+    if let Some(reserved_session_name) = options.reserved_session_name {
         let mut reservations = state.agent_name_reservations.lock().await;
         reservations.remove(reserved_session_name);
     }
@@ -2450,12 +2461,14 @@ async fn register_new_agent(
         cfg.session_name = config.session_name.clone();
     }
     agents.insert(session_id.clone(), active_agent);
-    insert_new_agent_order(&mut order, &session_id, placement);
+    insert_new_agent_order(&mut order, &session_id, options.placement);
     manager::save_state(app, &agents, &order);
     drop(order);
     drop(agents);
     state.interactions.clear_deleted_session(&session_id).await;
-    let _ = app.emit("agents-updated", ());
+    if options.emit_roster_update {
+        let _ = app.emit("agents-updated", ());
+    }
 
     Ok(config)
 }
@@ -2556,9 +2569,12 @@ pub async fn spawn_agent(
         actual_resume,
         &state,
         &app,
-        None,
-        Some(&session_name),
-        configured_new_agent_order_placement(),
+        AgentRegistrationOptions {
+            clone_name_base: None,
+            reserved_session_name: Some(&session_name),
+            placement: configured_new_agent_order_placement(),
+            emit_roster_update: true,
+        },
     )
     .await;
     if registered.is_err() {
@@ -2699,9 +2715,12 @@ pub async fn clone_agent(
         actual_resume,
         &state,
         &app,
-        generated_session_name.then_some(source_config.session_name.as_str()),
-        None,
-        AgentOrderPlacement::After(&source_session_id),
+        AgentRegistrationOptions {
+            clone_name_base: generated_session_name.then_some(source_config.session_name.as_str()),
+            reserved_session_name: None,
+            placement: AgentOrderPlacement::After(&source_session_id),
+            emit_roster_update: false,
+        },
     )
     .await;
     match registered {
@@ -2715,7 +2734,22 @@ pub async fn clone_agent(
                     "[WARDIAN] Failed to preserve clone team placement for {} cloned from {}: {}",
                     config.session_id, source_session_id, error
                 ));
+                let cleanup_result = remove_agent(
+                    config.session_id.clone(),
+                    Some(config.session_name.as_str()),
+                    state,
+                    app.clone(),
+                    false,
+                )
+                .await;
+                return Err(match cleanup_result {
+                    Ok(()) => format!("Failed to preserve clone team placement: {error}"),
+                    Err(cleanup_error) => format!(
+                        "Failed to preserve clone team placement: {error}; clone cleanup failed: {cleanup_error}"
+                    ),
+                });
             }
+            let _ = app.emit("agents-updated", ());
             Ok(config)
         }
         Err(error) => {

@@ -118,6 +118,15 @@ workspace contains several parallel efforts. Watchlists decide what is visible
 and targetable now; teams describe the durable work context those agents are
 cooperating inside.
 
+Cloning a team member preserves every team that contains the source, placing
+the clone immediately after the source in each team. The backend also seeds the
+corresponding Graph relationships before the roster refreshes, so the grouped
+watchlist and communication topology stay aligned even when a clone is made
+through the CLI or another control surface.
+Watchlist mutations are serialized across the app and CLI, and index writes
+are atomic. A failed topology save rolls the membership write back so the two
+durable stores do not drift.
+
 ## Session and Lifecycle Actions
 
 Use an agent's open menu to choose the presentation action separately from lifecycle controls:

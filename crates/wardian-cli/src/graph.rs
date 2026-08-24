@@ -1,4 +1,6 @@
+use fs2::FileExt;
 use std::collections::{BTreeSet, HashMap};
+use std::fs::File;
 
 use crate::args::{GraphArgs, GraphCommand};
 use crate::errors::{CliError, ExitCode};
@@ -32,6 +34,19 @@ fn agent_snapshot() -> Result<Vec<AgentIdentity>, CliError> {
 fn wardian_home() -> Result<std::path::PathBuf, CliError> {
     wardian_core::paths::wardian_home()
         .ok_or_else(|| CliError::generic("Could not determine Wardian home"))
+}
+
+pub(crate) fn topology_process_lock(home: &std::path::Path) -> Result<File, CliError> {
+    let lock = File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(home.join("topology.lock"))
+        .map_err(|error| CliError::generic(error.to_string()))?;
+    lock.lock_exclusive()
+        .map_err(|error| CliError::generic(error.to_string()))?;
+    Ok(lock)
 }
 
 /// Reconcile persisted topology against the roster before graph commands
@@ -150,6 +165,8 @@ fn resolve_pair(
 }
 
 pub fn handle_graph(args: GraphArgs) -> Result<String, CliError> {
+    let home = wardian_home()?;
+    let _topology_lock = topology_process_lock(&home)?;
     match args.command {
         GraphCommand::Show => render_graph_show(args.pretty),
         GraphCommand::Neighbors { agent } => render_graph_neighbors(agent.as_deref(), args.pretty),

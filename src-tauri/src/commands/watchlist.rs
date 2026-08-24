@@ -1,8 +1,47 @@
+use fs2::FileExt;
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::state::AppState;
+
+static WATCHLIST_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn watchlist_write_lock() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    WATCHLIST_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "Watchlist state lock is poisoned".to_string())
+}
+
+fn watchlist_process_lock(home: &Path) -> Result<std::fs::File, String> {
+    let lock_path = home.join("watchlists").join("index.lock");
+    std::fs::create_dir_all(lock_path.parent().expect("watchlist lock parent"))
+        .map_err(|error| error.to_string())?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|error| error.to_string())?;
+    lock.lock_exclusive().map_err(|error| error.to_string())?;
+    Ok(lock)
+}
+
+fn topology_process_lock(home: &Path) -> Result<std::fs::File, String> {
+    let lock_path = home.join("topology.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|error| error.to_string())?;
+    lock.lock_exclusive().map_err(|error| error.to_string())?;
+    Ok(lock)
+}
 
 #[tauri::command]
 pub async fn load_watchlists(_app: AppHandle) -> Result<serde_json::Value, String> {
@@ -19,37 +58,53 @@ pub async fn load_watchlists(_app: AppHandle) -> Result<serde_json::Value, Strin
 
 #[tauri::command]
 pub async fn save_watchlists(watchlists: serde_json::Value, app: AppHandle) -> Result<(), String> {
+    let _write_lock = watchlist_write_lock()?;
     let app_dir = crate::utils::fs::get_wardian_home()
         .ok_or_else(|| "Could not find home directory".to_string())?;
     let _ = std::fs::create_dir_all(&app_dir);
     let _ = std::fs::create_dir_all(app_dir.join("watchlists"));
+    let _process_lock = watchlist_process_lock(&app_dir)?;
     let path = app_dir.join("watchlists/index.json");
-    let json = serde_json::to_string_pretty(&watchlists).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    let previous_bytes = std::fs::read(&path).ok();
+    let migration_state = previous_bytes
+        .as_deref()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+        .unwrap_or_else(|| watchlists.clone());
+    wardian_core::conversations::write_json_atomic(&path, &watchlists)
+        .map_err(|error| error.to_string())?;
 
     // Seed team cliques into topology when teams are created or members are
     // added. Save and notify only when seeding actually added edges — plain
     // watchlist saves (reorders, renames) must not churn topology.json or
     // trigger graph refreshes.
-    if let Some(teams) = watchlists.get("teams").and_then(|v| v.as_array()) {
-        let mut topology = wardian_core::topology::load_topology(&app_dir);
-        let now = chrono::Utc::now().to_rfc3339();
-        let mut edges_added = 0;
-        for team in teams {
-            let agent_ids = team_agent_ids(team);
-            if !agent_ids.is_empty() {
-                edges_added +=
-                    wardian_core::topology::seed_team_clique(&mut topology, &agent_ids, &now);
-            }
+    match seed_team_topology_from_watchlist_state_with_migration(
+        &app_dir,
+        &watchlists,
+        &migration_state,
+    ) {
+        Ok(true) => {
+            let _ = app.emit("topology-changed", ());
         }
-        if edges_added > 0 {
-            if let Err(e) = wardian_core::topology::save_topology(&app_dir, &topology) {
-                crate::manager::log_debug(&format!(
-                    "[Wardian] topology seeding on watchlist save failed: {e}"
+        Ok(false) => {}
+        Err(topology_error) => {
+            let restore_result = match previous_bytes {
+                Some(previous_bytes) => {
+                    if let Ok(previous_state) =
+                        serde_json::from_slice::<serde_json::Value>(&previous_bytes)
+                    {
+                        wardian_core::conversations::write_json_atomic(&path, &previous_state)
+                    } else {
+                        std::fs::write(&path, previous_bytes)
+                    }
+                }
+                None => std::fs::remove_file(&path),
+            };
+            if let Err(restore_error) = restore_result {
+                return Err(format!(
+                    "topology seeding failed: {topology_error}; restoring watchlist failed: {restore_error}"
                 ));
-            } else {
-                let _ = app.emit("topology-changed", ());
             }
+            return Err(topology_error);
         }
     }
 
@@ -72,6 +127,61 @@ fn team_agent_ids(team: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn team_memberships(state: &serde_json::Value) -> Vec<wardian_core::topology::TeamMembership> {
+    state
+        .get("teams")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|team| {
+            let id = team.get("id").and_then(|value| value.as_str())?;
+            let agent_ids = team_agent_ids(team);
+            (!id.is_empty() && !agent_ids.is_empty()).then_some(
+                wardian_core::topology::TeamMembership {
+                    id: id.to_string(),
+                    agent_ids,
+                },
+            )
+        })
+        .collect()
+}
+
+fn seed_team_topology_from_watchlist_state_with_migration(
+    home: &Path,
+    state: &serde_json::Value,
+    migration_state: &serde_json::Value,
+) -> Result<bool, String> {
+    let _topology_lock = topology_process_lock(home)?;
+    let mut topology = wardian_core::topology::load_topology(home);
+    let topology_needs_migration =
+        wardian_core::topology::needs_seed_suppression_migration(&topology);
+    let mut topology_changed = false;
+    if topology_needs_migration {
+        let migration_teams = team_memberships(migration_state);
+        wardian_core::topology::suppress_missing_team_seed_pairs(&mut topology, &migration_teams);
+        topology.version = wardian_core::topology::TOPOLOGY_SCHEMA_VERSION;
+        topology_changed = true;
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut edges_added = 0;
+    let Some(teams) = state.get("teams").and_then(|value| value.as_array()) else {
+        return Ok(topology_changed);
+    };
+    for team in teams {
+        let agent_ids = team_agent_ids(team);
+        if !agent_ids.is_empty() {
+            edges_added +=
+                wardian_core::topology::seed_team_clique(&mut topology, &agent_ids, &now);
+        }
+    }
+    if edges_added == 0 && !topology_changed {
+        return Ok(false);
+    }
+
+    wardian_core::topology::save_topology(home, &topology).map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
 pub(crate) fn preserve_clone_team_placement_in_watchlist_state(
     state: &mut serde_json::Value,
     source_agent_id: &str,
@@ -91,12 +201,19 @@ pub(crate) fn preserve_clone_team_placement_in_watchlist_state(
     else {
         return false;
     };
-    let Some(source_team_index) = teams
+    let source_team_indices = teams
         .iter()
-        .position(|team| team_agent_ids(team).iter().any(|id| id == source_agent_id))
-    else {
+        .enumerate()
+        .filter_map(|(index, team)| {
+            team_agent_ids(team)
+                .iter()
+                .any(|id| id == source_agent_id)
+                .then_some(index)
+        })
+        .collect::<BTreeSet<_>>();
+    if source_team_indices.is_empty() {
         return false;
-    };
+    }
 
     let before = serde_json::Value::Array(teams.clone());
     for (index, team) in teams.iter_mut().enumerate() {
@@ -104,7 +221,7 @@ pub(crate) fn preserve_clone_team_placement_in_watchlist_state(
             .into_iter()
             .filter(|id| id != clone_agent_id)
             .collect::<Vec<_>>();
-        if index == source_team_index {
+        if source_team_indices.contains(&index) {
             if let Some(source_index) = agent_ids.iter().position(|id| id == source_agent_id) {
                 agent_ids.insert(source_index + 1, clone_agent_id.to_string());
             }
@@ -133,6 +250,7 @@ pub(crate) fn preserve_clone_team_placement(
     let changed = preserve_clone_team_placement_in_home(&home, source_agent_id, clone_agent_id)?;
     if changed {
         let _ = app.emit("watchlists-updated", ());
+        let _ = app.emit("topology-changed", ());
     }
     Ok(changed)
 }
@@ -142,13 +260,16 @@ pub(crate) fn preserve_clone_team_placement_in_home(
     source_agent_id: &str,
     clone_agent_id: &str,
 ) -> Result<bool, String> {
+    let _write_lock = watchlist_write_lock()?;
     let path = watchlist_index_path(home);
+    let _process_lock = watchlist_process_lock(home)?;
     if !path.exists() {
         return Ok(false);
     }
 
     let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let mut state = serde_json::from_str::<serde_json::Value>(&data).map_err(|e| e.to_string())?;
+    let migration_state = state.clone();
     if !preserve_clone_team_placement_in_watchlist_state(
         &mut state,
         source_agent_id,
@@ -157,8 +278,23 @@ pub(crate) fn preserve_clone_team_placement_in_home(
         return Ok(false);
     }
 
-    let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    wardian_core::conversations::write_json_atomic(&path, &state)
+        .map_err(|error| error.to_string())?;
+    if let Err(topology_error) =
+        seed_team_topology_from_watchlist_state_with_migration(home, &state, &migration_state)
+    {
+        // save_topology is atomic, so a failed topology write leaves the
+        // previous topology intact. Restore the watchlist as well instead of
+        // leaving durable membership ahead of the graph relation state.
+        if let Err(restore_error) =
+            wardian_core::conversations::write_json_atomic(&path, &migration_state)
+        {
+            return Err(format!(
+                "topology seeding failed: {topology_error}; restoring watchlist failed: {restore_error}"
+            ));
+        }
+        return Err(topology_error);
+    }
     Ok(true)
 }
 
@@ -166,7 +302,9 @@ pub(crate) fn retain_known_agent_references_in_home(
     home: &Path,
     known_agent_ids: &BTreeSet<String>,
 ) -> Result<bool, String> {
+    let _write_lock = watchlist_write_lock()?;
     let path = watchlist_index_path(home);
+    let _process_lock = watchlist_process_lock(home)?;
     if !path.exists() {
         return Ok(false);
     }
@@ -177,8 +315,8 @@ pub(crate) fn retain_known_agent_references_in_home(
         return Ok(false);
     }
 
-    let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    wardian_core::conversations::write_json_atomic(&path, &state)
+        .map_err(|error| error.to_string())?;
     Ok(true)
 }
 
@@ -346,6 +484,126 @@ mod tests {
 
         assert!(!changed);
         assert_eq!(state, original);
+    }
+
+    #[test]
+    fn clone_team_placement_preserves_every_source_team_and_seeds_each_clique() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let watchlists_dir = temp.path().join("watchlists");
+        std::fs::create_dir_all(&watchlists_dir).expect("watchlists dir");
+        std::fs::write(
+            watchlists_dir.join("index.json"),
+            serde_json::json!({
+                "version": 2,
+                "teams": [
+                    { "id": "team-a", "name": "Core", "agentIds": ["source", "alpha"] },
+                    { "id": "team-b", "name": "Review", "agentIds": ["beta", "source"] },
+                    { "id": "team-c", "name": "Old clone", "agentIds": ["clone"] }
+                ],
+                "watchlists": []
+            })
+            .to_string(),
+        )
+        .expect("seed watchlist");
+
+        let changed =
+            preserve_clone_team_placement_in_home(temp.path(), "source", "clone").unwrap();
+
+        assert!(changed);
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(watchlists_dir.join("index.json")).expect("saved watchlist"),
+        )
+        .expect("valid watchlist");
+        assert_eq!(
+            state["teams"],
+            serde_json::json!([
+                { "id": "team-a", "name": "Core", "agentIds": ["source", "clone", "alpha"] },
+                { "id": "team-b", "name": "Review", "agentIds": ["beta", "source", "clone"] }
+            ])
+        );
+
+        let topology = wardian_core::topology::load_topology(temp.path());
+        assert!(topology
+            .edges
+            .iter()
+            .any(|edge| edge.a == "alpha" && edge.b == "clone"));
+        assert!(topology
+            .edges
+            .iter()
+            .any(|edge| edge.a == "beta" && edge.b == "clone"));
+        assert!(topology
+            .edges
+            .iter()
+            .any(|edge| edge.a == "clone" && edge.b == "source"));
+    }
+
+    #[test]
+    fn clone_team_placement_rolls_back_membership_when_topology_save_fails() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let watchlists_dir = temp.path().join("watchlists");
+        std::fs::create_dir_all(&watchlists_dir).expect("watchlists dir");
+        let original = serde_json::json!({
+            "version": 2,
+            "teams": [{ "id": "team-a", "name": "Wardian Dev", "agentIds": ["source", "beta"] }],
+            "watchlists": []
+        });
+        std::fs::write(
+            watchlists_dir.join("index.json"),
+            serde_json::to_string_pretty(&original).expect("serialize watchlist"),
+        )
+        .expect("seed watchlist");
+        std::fs::create_dir(temp.path().join("topology.json")).expect("block topology save");
+
+        let error = preserve_clone_team_placement_in_home(temp.path(), "source", "clone")
+            .expect_err("topology failure should be returned");
+        assert!(!error.is_empty());
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(watchlists_dir.join("index.json")).expect("saved watchlist"),
+        )
+        .expect("valid watchlist");
+        assert_eq!(saved, original);
+    }
+
+    #[test]
+    fn clone_team_placement_migrates_old_suppression_before_seeding_clone_edges() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let watchlists_dir = temp.path().join("watchlists");
+        std::fs::create_dir_all(&watchlists_dir).expect("watchlists dir");
+        std::fs::write(
+            watchlists_dir.join("index.json"),
+            serde_json::json!({
+                "version": 2,
+                "teams": [{ "id": "team-a", "name": "Wardian Dev", "agentIds": ["source", "beta"] }],
+                "watchlists": []
+            })
+            .to_string(),
+        )
+        .expect("seed watchlist");
+        std::fs::write(
+            temp.path().join("topology.json"),
+            serde_json::json!({
+                "version": 2,
+                "edges": [],
+                "ignored_pairs": [],
+                "suppressed_seed_pairs": []
+            })
+            .to_string(),
+        )
+        .expect("seed topology");
+
+        preserve_clone_team_placement_in_home(temp.path(), "source", "clone").expect("place clone");
+
+        let topology = wardian_core::topology::load_topology(temp.path());
+        assert_eq!(
+            topology.version,
+            wardian_core::topology::TOPOLOGY_SCHEMA_VERSION
+        );
+        assert!(topology.is_seed_suppressed("source", "beta"));
+        assert!(!topology.is_seed_suppressed("source", "clone"));
+        assert!(topology
+            .edges
+            .iter()
+            .any(|edge| edge.a == "beta" && edge.b == "clone"));
     }
 
     #[test]
