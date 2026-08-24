@@ -24,6 +24,24 @@ const event = (overrides: Partial<AgentChatEvent>): AgentChatEvent => ({
 });
 
 describe("workLogPresentation", () => {
+  it("promotes the actual command over an exec lifecycle title", () => {
+    const rows = derivePresentedChatRows([
+      event({
+        id: "exec-call-1",
+        kind: "tool_call",
+        title: "exec_command_begin",
+        command: "npm test -- chat",
+        status: "running",
+        metadata: { raw_type: "exec_command_begin" },
+        sequence: 1,
+      }),
+    ]);
+
+    if (rows[0].kind !== "event") throw new Error("expected event row");
+    expect(rows[0].entry?.title).toBe("npm test -- chat");
+    expect(rows[0].entry?.summary).toBe("");
+  });
+
   it("drops the work entry summary when it only repeats the title", () => {
     // A tool call whose provider title is generic falls back to the command for
     // its title, and the summary independently falls back to the same command.

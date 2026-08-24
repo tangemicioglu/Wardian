@@ -2043,7 +2043,7 @@ describe("RemoteMobileApp", () => {
                   kind: "tool_call",
                   role: null,
                   text: null,
-                  title: "shell_command",
+                  title: "exec_command_begin",
                   status: "running",
                   turn_id: null,
                   source: "provider_log",
@@ -2053,7 +2053,7 @@ describe("RemoteMobileApp", () => {
                   language: "shell",
                   created_at: "2026-05-21T08:00:00.000Z",
                   sequence: 1,
-                  metadata: { raw_type: "custom_tool_call", tool_name: "shell_command" },
+                  metadata: { raw_type: "exec_command_begin" },
                 },
                 {
                   id: "shell-call-2",
@@ -2062,7 +2062,7 @@ describe("RemoteMobileApp", () => {
                   kind: "tool_call",
                   role: null,
                   text: null,
-                  title: "shell_command",
+                  title: "exec_command_begin",
                   status: "running",
                   turn_id: null,
                   source: "provider_log",
@@ -2072,7 +2072,7 @@ describe("RemoteMobileApp", () => {
                   language: "shell",
                   created_at: "2026-05-21T08:00:01.000Z",
                   sequence: 2,
-                  metadata: { raw_type: "custom_tool_call", tool_name: "shell_command" },
+                  metadata: { raw_type: "exec_command_begin" },
                 },
                 {
                   id: "shell-result-1",
@@ -2100,7 +2100,7 @@ describe("RemoteMobileApp", () => {
                   kind: "tool_call",
                   role: null,
                   text: null,
-                  title: "shell_command",
+                  title: "exec_command_begin",
                   status: "running",
                   turn_id: null,
                   source: "provider_log",
@@ -2110,7 +2110,7 @@ describe("RemoteMobileApp", () => {
                   language: "shell",
                   created_at: "2026-05-21T08:00:03.000Z",
                   sequence: 4,
-                  metadata: { raw_type: "custom_tool_call", tool_name: "shell_command" },
+                  metadata: { raw_type: "exec_command_begin" },
                 },
               ],
             }),
@@ -2140,7 +2140,7 @@ describe("RemoteMobileApp", () => {
     const article = group.closest("article") as HTMLElement;
 
     expect(article).toHaveTextContent("4 events");
-    expect(article).toHaveTextContent("shell_command");
+    expect(article).toHaveTextContent("npm run test -- src/features/grid/AgentChatView.test.tsx");
     await userEvent.click(within(article).getByRole("button", { name: "Show all" }));
 
     expect(article).toHaveTextContent("Get-ChildItem src/features/grid");

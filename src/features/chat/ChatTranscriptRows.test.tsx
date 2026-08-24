@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatEvent } from '../../types';
 import { ChatTranscriptRow } from './ChatTranscriptRows';
+import { derivePresentedChatRows } from '../grid/workLogPresentation';
 
 const memoryEvent: AgentChatEvent = {
   id: 'memory:event-1',
@@ -40,5 +41,73 @@ describe('memory transcript row', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Memory loaded/ }));
     expect(screen.getByText('Prefer compact layouts')).toBeInTheDocument();
+  });
+});
+
+describe('compact tool-call transcript row', () => {
+  it('shows the actual command when the provider title is only an exec lifecycle label', () => {
+    const event: AgentChatEvent = {
+      ...memoryEvent,
+      id: 'exec-call-1',
+      kind: 'tool_call',
+      role: null,
+      text: null,
+      title: 'exec_command_begin',
+      status: 'running',
+      command: 'npm test',
+      language: 'shell',
+      sequence: 1,
+      metadata: { raw_type: 'exec_command_begin' },
+    };
+    const rows = derivePresentedChatRows([event]);
+    const row = rows[0];
+
+    if (row.kind !== 'event') throw new Error('expected event row');
+    render(
+      <ChatTranscriptRow
+        agentIsWorking
+        isSubmitting={false}
+        onApprovalSubmit={vi.fn()}
+        row={row}
+      />,
+    );
+
+    const summary = screen.getByTestId('chat-tool-call-summary');
+    expect(summary).toHaveTextContent('$ npm test');
+    expect(summary).not.toHaveTextContent('exec command begin');
+    expect(summary).not.toHaveTextContent('No activity content');
+    expect(summary).not.toHaveTextContent('1 line');
+  });
+
+  it('keeps a lifecycle-labelled approval in the actionable approval surface', () => {
+    const event: AgentChatEvent = {
+      ...memoryEvent,
+      id: 'exec-approval-1',
+      kind: 'tool_call',
+      role: null,
+      text: 'Do you want to proceed?\n> 1. Yes\n> 2. No',
+      title: 'exec_command_begin',
+      status: 'action_required',
+      command: 'npm test',
+      language: 'shell',
+      sequence: 1,
+      metadata: { raw_type: 'exec_command_begin' },
+    };
+    const rows = derivePresentedChatRows([event]);
+    const row = rows[0];
+
+    if (row.kind !== 'event') throw new Error('expected event row');
+    render(
+      <ChatTranscriptRow
+        agentIsWorking={false}
+        isSubmitting={false}
+        liveApprovalId={event.id}
+        onApprovalSubmit={vi.fn()}
+        row={row}
+      />,
+    );
+
+    expect(screen.queryByTestId('chat-tool-call-summary')).toBeNull();
+    expect(screen.getByTestId('chat-approval-notice')).toHaveTextContent('Action required');
   });
 });

@@ -2,7 +2,12 @@ import { Check, ChevronRight } from "lucide-react";
 import { useState } from "react";
 
 import type { AgentChatEvent, AgentChatRole } from "../../types";
-import { toActivityBlock, type ActivityBlockModel } from "../grid/activityBlocks";
+import {
+  isGenericActivityTitle,
+  isLowSignalActivityTitle,
+  toActivityBlock,
+  type ActivityBlockModel,
+} from "../grid/activityBlocks";
 import { parseApprovalChoices } from "../grid/approvalChoices";
 import { CodePanel, renderHighlightedCode } from "../grid/chatCode";
 import { ChatRowActions } from "../grid/chatCopy";
@@ -204,6 +209,9 @@ export function ActivityEvent({
   if (isThinkingIndicator(event)) return <ThinkingRow />;
   if (event.kind === "status") return <StatusRow event={event} block={block} />;
   if (event.kind === "terminal_output") return <TerminalFallback block={block} />;
+  if (shouldRenderCompactToolCall(event, entry, block)) {
+    return <CompactToolCallRow agentIsWorking={agentIsWorking} block={block} entry={entry} event={event} />;
+  }
   return (
     <ActivityRow
       approvalIsLive={approvalIsLive}
@@ -213,6 +221,57 @@ export function ActivityEvent({
       isSubmitting={isSubmitting}
       onApprovalSubmit={onApprovalSubmit}
     />
+  );
+}
+
+function shouldRenderCompactToolCall(
+  event: AgentChatEvent,
+  entry: PresentedWorkEntry | undefined,
+  block: ActivityBlockModel,
+): boolean {
+  if (event.kind !== "tool_call" || !event.command?.trim()) return false;
+  if (event.status === "action_required") return false;
+  const title = event.title?.trim();
+  if (title && !isGenericActivityTitle(title) && !isLowSignalActivityTitle(title)) return false;
+  if (structuredEditFromEvent(event)) return false;
+  if ((entry?.changed_paths ?? changedPathsFromEvents([event])).length > 0) return false;
+  return !outputWithoutCommandPrefix(withPatchContent(event, block).content, event.command).trim();
+}
+
+export function CompactToolCallRow({
+  event,
+  entry,
+  block,
+  agentIsWorking,
+}: {
+  event: AgentChatEvent;
+  entry?: PresentedWorkEntry;
+  block: ActivityBlockModel;
+  agentIsWorking: boolean;
+}) {
+  const presentation = toolPresentation(event, block);
+  const Icon = presentation.icon;
+  const tone = resolvedActivityTone(block.tone, agentIsWorking);
+  const details = (entry?.details ?? []).filter((detail) => !/^1 line$/i.test(detail));
+  const copyValue = entry ? formatPresentedEntryForCopy(entry) : `$ ${event.command?.trim() ?? ""}`;
+
+  return (
+    <article
+      aria-label={`Tool call: ${event.command?.trim() ?? presentation.title}`}
+      className={`chat-row chat-tool-call-summary relative border-l-2 bg-[var(--color-wardian-card-bg-muted)] px-2.5 py-1.5 ${TONE_CLASSES[tone]}`}
+      data-testid="chat-tool-call-summary"
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border ${toolIconClass(presentation.kind)}`}>
+          <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+        </span>
+        <code className="min-w-0 flex-1 truncate text-[12px] leading-5 text-primary" title={event.command ?? undefined}>
+          $ {event.command}
+        </code>
+        {details.length > 0 ? <span className="shrink-0 truncate text-[11px] text-muted-neutral">{details.join(" - ")}</span> : null}
+      </div>
+      <ChatRowActions actions={[{ label: "Copy tool call", value: copyValue }]} className="chat-row-actions--overlay" label="Tool call actions" />
+    </article>
   );
 }
 

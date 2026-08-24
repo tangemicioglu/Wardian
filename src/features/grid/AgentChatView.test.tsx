@@ -582,6 +582,27 @@ describe("AgentChatView", () => {
     expect(within(article).getByText("Read file")).toBeInTheDocument();
   });
 
+  it("shows a single exec command as a compact row by default", async () => {
+    invokeMock.mockResolvedValue([
+      event({
+        id: "exec-call-1",
+        kind: "tool_call",
+        title: "exec_command_begin",
+        command: "npm test -- chat",
+        status: "running",
+        metadata: { raw_type: "exec_command_begin" },
+        sequence: 1,
+      }),
+    ]);
+
+    render(<AgentChatView sessionId="agent-1" />);
+
+    const summary = await screen.findByTestId("chat-tool-call-summary");
+    expect(summary).toHaveTextContent("$ npm test -- chat");
+    expect(summary).not.toHaveTextContent("exec command begin");
+    expect(summary).not.toHaveTextContent("No activity content");
+  });
+
   it("surfaces concrete shell commands inside grouped work logs", async () => {
     invokeMock.mockResolvedValue([
       event({
