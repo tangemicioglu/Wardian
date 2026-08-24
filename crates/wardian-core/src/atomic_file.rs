@@ -214,7 +214,18 @@ fn wide_path_null(path: &Path) -> Vec<u16> {
     ];
     const UNC_ROOT: &[u16] = &[b'\\' as u16, b'\\' as u16];
 
-    let raw = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let mut raw = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if path.is_absolute()
+        || raw.starts_with(VERBATIM_PREFIX)
+        || raw.starts_with(DEVICE_PREFIX)
+        || raw.starts_with(UNC_ROOT)
+    {
+        for unit in &mut raw {
+            if *unit == b'/' as u16 {
+                *unit = b'\\' as u16;
+            }
+        }
+    }
     let mut wide = if raw.starts_with(VERBATIM_PREFIX) || raw.starts_with(DEVICE_PREFIX) {
         raw
     } else if raw.starts_with(UNC_ROOT) {
@@ -257,6 +268,20 @@ mod tests {
         )
         .expect("parse saved json");
         assert_eq!(saved["value"], 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_json_replace_supports_absolute_windows_paths_with_forward_separators() {
+        let temp = tempfile::tempdir().expect("temporary root");
+        let path = temp.path().join("settings/app.json");
+
+        super::write_json_atomic(&path, &serde_json::json!({ "value": 1 }))
+            .expect("write through a path containing a forward separator");
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read saved json"),
+            "{\n  \"value\": 1\n}\n"
+        );
     }
 
     #[test]
