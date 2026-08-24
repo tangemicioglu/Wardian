@@ -724,6 +724,13 @@ pub(crate) fn state_configs_snapshot(
 }
 
 pub(crate) fn try_save_state_snapshot(configs: &[AgentConfig]) -> Result<(), String> {
+    let _barrier = wardian_core::agent_replacement::acquire_agent_roster_barrier(true)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent roster barrier is unavailable".to_string())?;
+    try_save_state_snapshot_unlocked(configs)
+}
+
+pub(crate) fn try_save_state_snapshot_unlocked(configs: &[AgentConfig]) -> Result<(), String> {
     let app_dir = get_wardian_home().ok_or_else(|| "Could not locate Wardian home".to_string())?;
     std::fs::create_dir_all(&app_dir).map_err(|error| error.to_string())?;
     let settings_dir = app_dir.join("settings");

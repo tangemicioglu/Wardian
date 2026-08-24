@@ -110,11 +110,34 @@ It rejects unauthenticated commits and any rendered request or batch whose agent
 identity differs from that principal. The principal persists with the run so an
 approval resume cannot lose or replace the original authority.
 
-Session-close workflow launch is a post-commit lifecycle effect. Wardian starts
-it only after the clear/rollover succeeds, and every boundary receives a unique
-idempotency component even when no archive is available. Concurrent invoker
-edits are serialized under a filesystem lock so independent CLI and desktop
-writes cannot overwrite one another.
+Session-close workflow launch is a post-commit lifecycle effect. Wardian
+captures the closing conversation while the old runtime is intact, starts the
+replacement as pending, persists the proposed roster, and commits the archive
+boundary before installing that replacement in the live map. Matching workflows
+start only after the entire replacement commit succeeds. A failed step rolls
+back durable metadata where necessary and leaves the original conversation
+available to the next retry. A provider-start failure after the old process has
+stopped leaves the registered agent in `Error` with its configuration and
+boundary evidence intact. Every committed boundary receives a unique idempotency
+component even when no archive is available. Concurrent invoker edits are
+serialized under a filesystem lock so independent CLI and desktop writes cannot
+overwrite one another.
+
+Clear and resume also use a durable replacement journal before their first
+roster mutation. The journal checkpoints proposed state persistence, SQLite
+metadata persistence, boundary commit, and live installation under a
+cross-process lock. Startup rolls pre-boundary phases back to the original agent
+identity and post-boundary phases forward to the replacement identity before it
+restores any provider. Offline memory lookup runs the same reconciliation and
+fails closed while a live replacement still owns the lock.
+
+The roster barrier fences ordinary `state.json` writers as well as replacement
+and recovery code. Recovery uses an expected-config comparison and refuses to
+overwrite a later legitimate update. Disabled-log boundaries persist their
+capture cutoff during the journaled boundary commit. A replayable session-close intent
+remains in the journal through live installation; startup dispatches it with a
+deterministic per-invoker/per-boundary workflow run ID and removes the journal
+only after dispatch is accepted.
 
 Inside a Wardian-managed provider process, `wardian memory` authorizes only the
 agent identified by `WARDIAN_SESSION_ID` and a matching runtime-issued

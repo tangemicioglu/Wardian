@@ -55,8 +55,24 @@ quota.
 Mutate session-close invokers only through
 `wardian_core::session_close::mutate_invokers`; it holds the adjacent `.lock`
 file across reload, mutation, and atomic replacement. A session-close context
-owns a unique `boundary_id`, and lifecycle code must invoke workflows only after
-the clear operation has committed successfully.
+owns a unique `boundary_id`. Lifecycle code may capture the closing transcript
+before replacement. It then starts the replacement as pending, persists the
+proposed roster, commits the archive boundary, and only then installs the new
+runtime. Matching workflows launch after that commit. A failed step must keep
+the prior registered agent record and captured conversation available for
+retry. If provider startup fails after Wardian has stopped the old process, the
+agent enters `Error`; retrying Clear reuses the preserved boundary evidence.
+Before either lifecycle path mutates `state.json`, SQLite, or the archive, it
+writes a cross-process-locked replacement journal. Phase checkpoints let startup
+recover the original identity before boundary commit or roll the replacement
+forward after boundary commit. Offline `wardian memory` resolution performs the
+same recovery and refuses to read the roster while a live replacement owns the
+journal lock.
+All `state.json` writers share that barrier, and recovery applies only when the
+current config still matches the journal's original or replacement fingerprint.
+Disabled logging writes its capture cutoff during journaled boundary commit. The journal
+also retains the session-close intent; restart replay uses a deterministic run
+ID per invoker and boundary before the journal is acknowledged.
 
 The CLI treats a non-empty `WARDIAN_SESSION_ID` as a managed principal. Managed
 callers must also present a matching `WARDIAN_MEMORY_CAPABILITY`, which the

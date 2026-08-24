@@ -169,8 +169,36 @@ fn managed_caller(store: &MemoryStore) -> Result<String, CliError> {
 
 /// Full roster with the persisted database as the offline authority.
 fn agent_snapshot() -> Result<Vec<AgentIdentity>, CliError> {
-    if let Ok(agents) = crate::live::list_agents() {
-        return Ok(agents);
+    let pending = wardian_core::agent_replacement::pending_replacement_status()
+        .map_err(|error| CliError::generic(format!("failed to inspect agent replacement: {error}")))?;
+    match pending {
+        wardian_core::agent_replacement::PendingReplacementStatus::Busy => {
+            return Err(CliError::generic(
+                "agent replacement is still in progress; retry when the desktop operation finishes",
+            ));
+        }
+        wardian_core::agent_replacement::PendingReplacementStatus::Pending(agent_ids) => {
+            if crate::live::list_agents().is_ok() {
+                return Err(CliError::generic(format!(
+                    "agent replacement recovery is pending for {}; restart Wardian before reading memory",
+                    agent_ids.join(", ")
+                )));
+            }
+            let recovered = wardian_core::agent_replacement::recover_pending_replacements(false)
+                .map_err(|error| {
+                    CliError::generic(format!("failed to recover agent replacement: {error}"))
+                })?;
+            if recovered == wardian_core::agent_replacement::RecoveryStatus::Busy {
+                return Err(CliError::generic(
+                    "agent replacement started during recovery; retry when it finishes",
+                ));
+            }
+        }
+        wardian_core::agent_replacement::PendingReplacementStatus::None => {
+            if let Ok(agents) = crate::live::list_agents() {
+                return Ok(agents);
+            }
+        }
     }
     let connection = crate::open_db()?;
     identity::list_agents(
@@ -406,6 +434,34 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.code, "memory_identity_required");
+    }
+
+    #[test]
+    fn offline_memory_resolution_refuses_an_active_replacement() {
+        let _home = TestHome::new();
+        let config = wardian_core::models::AgentConfig {
+            session_id: "agent-a".into(),
+            session_name: "Alpha".into(),
+            folder: "C:/work/alpha".into(),
+            ..Default::default()
+        };
+        let journal = wardian_core::agent_replacement::ReplacementJournalGuard::begin(
+            wardian_core::agent_replacement::PendingAgentReplacement::new(
+                "clear",
+                "agent-a",
+                config.clone(),
+                config,
+                None,
+                None,
+                None,
+                false,
+            ),
+        )
+        .expect("begin active replacement");
+
+        let error = agent_snapshot().expect_err("active replacement must gate offline memory");
+        assert!(error.message.contains("replacement is still in progress"));
+        journal.complete().expect("complete replacement journal");
     }
 
     #[test]

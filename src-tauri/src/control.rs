@@ -39,7 +39,7 @@ async fn rollback_agent_update(
     let snapshot =
         crate::commands::agent::restore_agent_config_in_state(state, session_id, previous_config)
             .await?;
-    manager::try_save_state_snapshot(&snapshot)
+    manager::try_save_state_snapshot_unlocked(&snapshot)
 }
 
 #[cfg(windows)]
@@ -505,6 +505,12 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             }
 
             let state = app.state::<AppState>();
+            let _roster_barrier =
+                wardian_core::agent_replacement::acquire_agent_roster_barrier(true)
+                    .map_err(ControlError::request_failed)?
+                    .ok_or_else(|| {
+                        ControlError::request_failed("agent roster barrier is unavailable")
+                    })?;
             let outcome = crate::commands::agent::update_agent_fields_in_state(
                 state.inner(),
                 &uuid,
@@ -519,7 +525,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             )
             .await
             .map_err(ControlError::bad_request)?;
-            if let Err(error) = manager::try_save_state_snapshot(&outcome.state_snapshot) {
+            if let Err(error) = manager::try_save_state_snapshot_unlocked(&outcome.state_snapshot) {
                 let rollback_error =
                     rollback_agent_update(state.inner(), &uuid, outcome.previous_config.clone())
                         .await

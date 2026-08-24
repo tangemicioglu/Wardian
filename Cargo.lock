@@ -12,6 +12,7 @@ dependencies = [
  "chrono",
  "diffy",
  "dirs 5.0.1",
+ "fs2",
  "futures-util",
  "hmac",
  "libc",

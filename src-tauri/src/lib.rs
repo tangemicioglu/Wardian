@@ -185,6 +185,24 @@ pub fn run() {
     if let Err(e) = db_init_result {
         eprintln!("Failed to initialize database: {}", e);
     }
+    let (replacement_recovery_error, recovered_replacements) = match wardian_core::agent_replacement::recover_pending_replacements(true) {
+        Ok(wardian_core::agent_replacement::RecoveryStatus::Recovered(recovered)) => {
+            eprintln!(
+                "Recovered interrupted agent replacement state for: {}",
+                recovered
+                    .iter()
+                    .map(|record| record.session_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            (None, recovered)
+        }
+        Ok(_) => (None, Vec::new()),
+        Err(error) => {
+            eprintln!("Failed to recover interrupted agent replacement state: {error}");
+            (Some(error.to_string()), Vec::new())
+        }
+    };
 
     // One-time topology migration: seed team cliques as manual edges.
     if let Some(home) = crate::utils::fs::get_wardian_home() {
@@ -254,7 +272,13 @@ pub fn run() {
 
     let app = builder
         .manage(AppState::new())
-        .setup(|app| {
+        .setup(move |app| {
+            if let Some(error) = replacement_recovery_error.as_deref() {
+                return Err(std::io::Error::other(format!(
+                    "Wardian cannot safely restore agents until replacement recovery succeeds: {error}"
+                ))
+                .into());
+            }
             #[cfg(target_os = "macos")]
             crate::macos_window::configure_main_window(app)?;
 
@@ -544,6 +568,33 @@ pub fn run() {
                             drop(order_map);
                             let _ = app_handle.emit("agents-updated", ());
                         }
+                    }
+                }
+                for recovered in recovered_replacements {
+                    if let Some(intent) = recovered.session_close_intent {
+                        if let Err(error) = crate::workflow::session_close::invoke_matching(
+                            app_handle.clone(),
+                            intent.into(),
+                        )
+                        .await
+                        {
+                            crate::utils::logging::log_debug(&format!(
+                                "[WARDIAN] recovered session-close intent remains pending for {}: {error}",
+                                recovered.session_id
+                            ));
+                            continue;
+                        }
+                    }
+                    if let Err(error) =
+                        wardian_core::agent_replacement::complete_recovered_replacement(
+                            &recovered.session_id,
+                            &recovered.generation_id,
+                        )
+                    {
+                        crate::utils::logging::log_debug(&format!(
+                            "[WARDIAN] recovered replacement journal cleanup deferred for {}: {error}",
+                            recovered.session_id
+                        ));
                     }
                 }
             });
