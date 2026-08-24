@@ -86,6 +86,15 @@ When you create a team or add a member to an existing team, Wardian automaticall
 
 On first launch, Wardian seeds all existing team memberships as edges and saves `topology.json` at the current schema version. Existing version 2 topology files are not reseeded only because version 3 exists, so prior deletes stay deleted. The CLI sees the same edges without needing the app to run first.
 
+Cloning a member copies that member's membership in every team it belongs to.
+The backend immediately seeds the clone's team-derived edges and emits a graph
+refresh, so the clone is connected in the Graph view as soon as the clone is
+created. Explicit manual edges outside those teams are not copied: they remain
+user-owned communication intent for the original agent.
+Legacy topology suppression migration runs against the pre-clone memberships,
+so old deleted team edges stay deleted without suppressing newly created clone
+relations.
+
 ## Graph Layout
 
 The graph positions agents using force-directed layout over communication edges: connected agents settle closer together, while disconnected subgraphs are laid out independently and placed side by side, so unrelated clusters never overlap. Agents with no edges at all form an evenly spaced ring around the connected core. To keep editing calm, node positions are **frozen while you work** — drawing or deleting edges updates the edges immediately but never moves nodes. Press the **Re-run layout** button in the toolbar (next to Reset view) when you're done linking to apply your edits to node positions. The layout also re-runs automatically when agents enter or leave the visible scope. Dormant edges remain fully visible so topology structure is always inspectable — only the *activity* state (recency, particles) varies.
