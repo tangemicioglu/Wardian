@@ -2,6 +2,7 @@ import { copyFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { stageZellij } from './stage-zellij.mjs';
 
 const isWindows = process.platform === 'win32';
 const exe = isWindows ? 'wardian-cli.exe' : 'wardian-cli';
@@ -85,7 +86,7 @@ function cargoTargetDirectory(root) {
   }
 }
 
-export function main() {
+export async function main() {
   const root = repoRoot();
   let profile;
   try {
@@ -127,6 +128,15 @@ export function main() {
   copyFileSync(source, stagedResource);
   signMacReleaseResource(stagedResource, profile);
 
+  let stagedZellij;
+  try {
+    stagedZellij = await stageZellij({ root, rustTarget: target });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  signMacReleaseResource(stagedZellij, profile);
+
   if (profile === 'dev') {
     const devResource = resolveDevResourcePath({
       targetDirectory: cargoTargetDirectory(root),
@@ -135,6 +145,13 @@ export function main() {
     });
     mkdirSync(dirname(devResource), { recursive: true });
     copyFileSync(source, devResource);
+    const devZellijResource = resolveDevResourcePath({
+      targetDirectory: cargoTargetDirectory(root),
+      target,
+      exe: isWindows ? 'zellij.exe' : 'zellij',
+    });
+    mkdirSync(dirname(devZellijResource), { recursive: true });
+    copyFileSync(stagedZellij, devZellijResource);
   }
 
   return 0;
@@ -149,5 +166,5 @@ function isDirectRun() {
 }
 
 if (isDirectRun()) {
-  process.exit(main());
+  process.exit(await main());
 }

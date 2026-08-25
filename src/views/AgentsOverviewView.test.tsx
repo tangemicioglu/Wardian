@@ -8,10 +8,10 @@ import { useSettingsStore } from '../store/useSettingsStore';
 
 const terminalRenderSpy = vi.hoisted(() => vi.fn());
 
-vi.mock('../features/terminal/AgentTerminal', async () => {
+vi.mock('../features/terminal/ZellijAgentTerminal', async () => {
   const React = await vi.importActual<typeof import('react')>('react');
   return {
-    AgentTerminal: React.memo((props: {
+    ZellijAgentTerminal: React.memo((props: {
       presentationId: string;
       sessionId: string;
       visibility: "visible" | "hidden";

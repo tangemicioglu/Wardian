@@ -69,6 +69,7 @@ fn restored_agent_without_process(
         background_processes: Vec::new(),
         memory_capability: None,
         runtime_generation: None,
+        zellij_pane: None,
         process_id,
         query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
         init_timestamp: std::sync::Arc::new(std::sync::Mutex::new(born)),
@@ -315,6 +316,27 @@ pub fn run() {
                         crate::utils::logging::log_debug(&format!(
                             "[Wardian] CLI install skipped: {err}"
                         ));
+                    }
+                    match crate::state::zellij_terminal::ZellijTerminalConfig::from_resources(
+                        &resource_dir,
+                        &app_home,
+                    ) {
+                        Ok(config) => {
+                            let engine = std::sync::Arc::new(
+                                crate::state::zellij_terminal::ZellijTerminalEngine::new(config),
+                            );
+                            if let Err(error) = engine.prepare_runtime_directories() {
+                                crate::utils::logging::log_debug(&format!(
+                                    "[Wardian] Zellij terminal engine preparation failed: {error}"
+                                ));
+                            } else {
+                                let state = app.state::<AppState>();
+                                let _ = state.zellij_terminal.set(engine);
+                            }
+                        }
+                        Err(error) => crate::utils::logging::log_debug(&format!(
+                            "[Wardian] Zellij terminal engine unavailable: {error}"
+                        )),
                     }
                 }
             }
@@ -715,6 +737,8 @@ pub fn run() {
             commands::terminal_session::send_terminal_presentation_input,
             commands::terminal_session::send_terminal_presentation_binary,
             commands::terminal_session::resize_terminal_presentation,
+            commands::zellij_terminal::get_zellij_terminal_preview,
+            commands::zellij_terminal::activate_zellij_agent_terminal,
             commands::terminal::ensure_user_terminal,
             commands::terminal::send_input_to_user_terminal,
             commands::terminal::send_binary_input_to_user_terminal,

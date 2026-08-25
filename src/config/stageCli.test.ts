@@ -7,6 +7,7 @@ describe("stage CLI script", () => {
     expect(stageCliScript).toContain("'debug', 'resources', 'bin'");
     expect(stageCliScript).toContain("if (profile === 'dev')");
     expect(stageCliScript).toContain("copyFileSync(source, devResource)");
+    expect(stageCliScript).toContain("copyFileSync(stagedZellij, devZellijResource)");
   });
 
   it("signs the staged macOS release CLI resource when a release identity is available", () => {

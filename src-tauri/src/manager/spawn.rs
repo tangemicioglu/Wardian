@@ -8,8 +8,11 @@ use crate::state::{ActiveAgent, AgentWatchState, AppState};
 use crate::utils::fs::*;
 use crate::utils::logging::{log_debug, log_terminal_trace_bytes, log_terminal_trace_note};
 use crate::utils::PtyUtf8Decoder;
+#[cfg(test)]
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use std::io::{BufRead, Read, Seek, Write};
+use std::io::{BufRead, Read, Seek};
+#[cfg(test)]
+use std::io::Write;
 use tauri::{AppHandle, Emitter, Manager};
 use wardian_core::control::ProviderInputReadiness;
 use wardian_core::models::{AgentConfig, AgentEvent, ProviderConfig};
@@ -27,7 +30,7 @@ use super::session_identity::{
 };
 use super::{
     apply_agent_event, apply_agent_event_with_policy, apply_agent_status_event,
-    apply_agent_status_event_with_policy, apply_terminal_identity_env, debug_preview_bytes,
+    apply_agent_status_event_with_policy, debug_preview_bytes,
     extract_terminal_titles, finalize_interactive_spawn_args, interactive_provider_args,
     interactive_provider_cwd, interactive_provider_launch, set_agent_status,
     ProviderStatusEventPolicy,
@@ -497,10 +500,9 @@ fn codex_cleared_provider_sessions(config: &AgentConfig) -> Vec<String> {
 #[cfg(target_os = "macos")]
 use super::macos_extended_path;
 #[cfg(windows)]
-use super::{
-    app_process_supervisor_active, assign_pid_to_job, cleanup_stale_session_processes,
-    create_kill_on_close_job,
-};
+use super::cleanup_stale_session_processes;
+#[cfg(all(windows, test))]
+use super::{app_process_supervisor_active, assign_pid_to_job, create_kill_on_close_job};
 
 pub(super) fn capture_init_timestamp(
     event: &AgentEvent,
@@ -680,6 +682,7 @@ pub async fn spawn_agent(
             background_processes: Vec::new(),
             memory_capability: None,
             runtime_generation: None,
+            zellij_pane: None,
             process_id: None,
             query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
             init_timestamp: std::sync::Arc::new(std::sync::Mutex::new(Some(born_to_save))),
@@ -718,24 +721,12 @@ pub async fn spawn_agent(
 
     crate::commands::terminal::log_terminal_runtime_diagnostics_once();
 
-    let pty_system = NativePtySystem::default();
-
     let initial_geometry = app_state
         .terminal_sessions
         .spawn_geometry(&config.session_id)
         .await
         .map_err(|error| format!("Failed to read terminal spawn geometry: {error}"))?
         .unwrap_or(wardian_core::models::TerminalGeometry { cols: 80, rows: 24 });
-    let (initial_cols, initial_rows) = (initial_geometry.cols, initial_geometry.rows);
-
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: initial_rows,
-            cols: initial_cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("Failed to open pty: {}", e))?;
 
     let (bin, mut provider_args) = provider.get_executable();
     let claude_hook = if config.provider == "claude" {
@@ -827,7 +818,7 @@ pub async fn spawn_agent(
         }
     }
 
-    let background_processes = Vec::new();
+    let mut background_processes = Vec::new();
     let is_resume = config
         .resume_session
         .as_deref()
@@ -859,49 +850,50 @@ pub async fn spawn_agent(
         launch_spec.args.len(),
         provider_cwd.display()
     ));
-    let mut cmd = CommandBuilder::new(&launch_spec.executable);
-    for arg in &launch_spec.args {
-        cmd.arg(arg);
-    }
-    cmd.cwd(&provider_cwd);
-    apply_terminal_identity_env(&mut cmd);
-    super::apply_managed_cli_path_to_pty(&mut cmd);
-    super::apply_interactive_provider_runtime_env(&config.provider, &mut cmd)?;
-    cmd.env("WARDIAN_SESSION_ID", &config.session_id);
+    let mut launch_env = std::collections::BTreeMap::<String, String>::new();
+    launch_env.extend(super::terminal_identity_env());
+    launch_env.extend(super::interactive_provider_runtime_env(&config.provider)?);
+    launch_env.insert("WARDIAN_SESSION_ID".to_string(), config.session_id.clone());
     let memory_capability = super::issue_memory_capability(&config.session_id);
     if let Some(capability) = memory_capability.as_ref() {
-        cmd.env(
-            wardian_core::memory::MEMORY_CAPABILITY_ENV,
-            capability.token(),
+        launch_env.insert(
+            wardian_core::memory::MEMORY_CAPABILITY_ENV.to_string(),
+            capability.token().to_string(),
         );
     }
     for (key, value) in super::worktree_build_env(&config) {
-        cmd.env(key, value);
+        launch_env.insert(key, value);
     }
 
     if config.provider == "codex" {
         if let Some(root) = habitat_root.as_ref() {
-            cmd.env("CODEX_HOME", habitat_codex_home(root));
+            launch_env.insert(
+                "CODEX_HOME".to_string(),
+                habitat_codex_home(root).to_string_lossy().to_string(),
+            );
         }
     } else if config.provider == "opencode" {
         for (key, value) in opencode_interactive_env(&provider_cwd, &config)? {
-            cmd.env(key, value);
+            launch_env.insert(key, value);
         }
     } else if config.provider == "mock" {
         let provider_session_id = expected_caller_owned_identity(&config).ok_or_else(|| {
             "mock provider launch has no caller-owned session identity".to_string()
         })?;
-        cmd.env("WARDIAN_MOCK_SESSION_ID", provider_session_id);
+        launch_env.insert(
+            "WARDIAN_MOCK_SESSION_ID".to_string(),
+            provider_session_id.to_string(),
+        );
 
         let mut has_config_scenario = false;
         let mut has_config_delay = false;
         if let ProviderConfig::Mock(mock) = &config.provider_config {
             if let Some(scenario) = mock.scenario.as_deref().filter(|value| !value.is_empty()) {
-                cmd.env("WARDIAN_MOCK_SCENARIO", scenario);
+                launch_env.insert("WARDIAN_MOCK_SCENARIO".to_string(), scenario.to_string());
                 has_config_scenario = true;
             }
             if let Some(delay_ms) = mock.delay_ms {
-                cmd.env("WARDIAN_MOCK_DELAY_MS", delay_ms.to_string());
+                launch_env.insert("WARDIAN_MOCK_DELAY_MS".to_string(), delay_ms.to_string());
                 has_config_delay = true;
             }
         }
@@ -916,7 +908,7 @@ pub async fn spawn_agent(
                 continue;
             }
             if let Ok(value) = std::env::var(key) {
-                cmd.env(key, value);
+                launch_env.insert(key.to_string(), value);
             }
         }
 
@@ -927,11 +919,14 @@ pub async fn spawn_agent(
                 let _ = std::fs::create_dir_all(parent);
             }
             let _ = std::fs::remove_file(&path);
-            cmd.env("WARDIAN_MOCK_LOG", &path);
+            launch_env.insert(
+                "WARDIAN_MOCK_LOG".to_string(),
+                path.to_string_lossy().to_string(),
+            );
         }
     }
     #[cfg(target_os = "macos")]
-    cmd.env("PATH", macos_extended_path());
+    launch_env.insert("PATH".to_string(), macos_extended_path());
 
     log_debug(&format!(
         "[Wardian] Spawning {} agent. Session: {}, Resume: {}, Restored: {}",
@@ -949,12 +944,148 @@ pub async fn spawn_agent(
     // unable to write, then start the watcher from that exact byte offset.
     let pi_log_baseline = restored_pi_log_baseline(&config, is_restored);
 
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("Failed to spawn command: {}", e))?;
+    #[cfg(not(test))]
+    let child_process: Option<Box<dyn portable_pty::Child + Send>> = None;
+    #[cfg(test)]
+    let mut child_process: Option<Box<dyn portable_pty::Child + Send>> = None;
+    #[cfg(all(windows, not(test)))]
+    let job_object = None;
+    #[cfg(all(windows, test))]
+    let mut job_object = None;
 
-    let process_id = child.process_id();
+    let (mut reader, terminal_runtime, process_id, zellij_pane, zellij_snapshot_frames) = if let Some(engine) =
+        app_state.zellij_terminal.get().cloned()
+    {
+        engine
+            .start_attached_client(
+                app_state.terminal_sessions.clone(),
+                wardian_core::models::TerminalGeometry { cols: 120, rows: 40 },
+            )
+            .await?;
+        let binding = engine
+            .create_pane(crate::state::zellij_terminal::ZellijLaunchSpec {
+                session_id: config.session_id.clone(),
+                executable: launch_spec.executable.clone(),
+                args: launch_spec.args.clone(),
+                cwd: provider_cwd.clone(),
+                env: launch_env.clone(),
+            })
+            .await?;
+        let transport = engine.open_pane_transport(&binding)?;
+        background_processes.push(transport.subscription);
+        (
+            transport.reader,
+            transport.runtime,
+            None,
+            Some(transport.lease),
+            Some(transport.snapshot_frames),
+        )
+    } else {
+        #[cfg(not(test))]
+        return Err("Bundled Zellij terminal engine is unavailable".to_string());
+
+        #[cfg(test)]
+        {
+        // Unit-test compatibility for isolated AppState fixtures that do not
+        // initialize bundled application resources. Production never falls
+        // back to a Wardian-owned provider PTY.
+        let pty_system = NativePtySystem::default();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: initial_geometry.rows,
+                cols: initial_geometry.cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to open pty: {e}"))?;
+        let mut cmd = CommandBuilder::new(&launch_spec.executable);
+        for arg in &launch_spec.args {
+            cmd.arg(arg);
+        }
+        cmd.cwd(&provider_cwd);
+        for (key, value) in &launch_env {
+            cmd.env(key, value);
+        }
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("Failed to spawn command: {e}"))?;
+        let process_id = child.process_id();
+
+        #[cfg(windows)]
+        {
+            if !app_process_supervisor_active() {
+                if let Ok(job) = create_kill_on_close_job("agent fallback") {
+                    if let Some(pid) = process_id {
+                        if let Err(err) = assign_pid_to_job(&job, pid, "agent fallback") {
+                            log_debug(&format!(
+                                "[Wardian] Failed to assign session {} PID {} to fallback job: {}",
+                                config.session_id, pid, err
+                            ));
+                        }
+                    }
+                    job_object = Some(job);
+                }
+            }
+        }
+
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("Failed to get pty reader: {e}"))?;
+        let mut writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("Failed to get pty writer: {e}"))?;
+        let pty_master: crate::state::terminal_session::SharedPtyMaster =
+            std::sync::Arc::new(std::sync::Mutex::new(pair.master));
+        drop(pair.slave);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<
+            crate::state::terminal_session::NativeTerminalWriteRequest,
+        >(256);
+        let runtime = crate::state::terminal_session::native_terminal_runtime(tx, pty_master);
+        let sid_for_input = config.session_id.clone();
+        let provider_name_for_input = config.provider.clone();
+        std::thread::spawn(move || {
+            while let Some(input) = rx.blocking_recv() {
+                let bytes = input.bytes;
+                if provider_name_for_input == "opencode" {
+                    log_debug(&format!(
+                        "[Wardian] OpenCode PTY input for session {}: {}",
+                        sid_for_input,
+                        debug_preview_bytes(&bytes, 128)
+                    ));
+                }
+                log_terminal_trace_bytes(&sid_for_input, &provider_name_for_input, "IN", &bytes);
+                let write_result = writer
+                    .write_all(&bytes)
+                    .and_then(|_| writer.flush())
+                    .map_err(|error| error.to_string());
+                match write_result {
+                    Ok(()) => {
+                        let _ = input.completion.send(Ok(()));
+                    }
+                    Err(error) => {
+                        let _ = input.completion.send(Err(error.clone()));
+                        log_terminal_trace_note(
+                            &sid_for_input,
+                            &provider_name_for_input,
+                            &format!("PTY input write failed: {error}"),
+                        );
+                        break;
+                    }
+                }
+            }
+            log_terminal_trace_note(
+                &sid_for_input,
+                &provider_name_for_input,
+                "input channel closed",
+            );
+        });
+        child_process = Some(child);
+        (reader, runtime, process_id, None, None)
+        }
+    };
 
     // Phase 2: Record/Update status in SQLite with the real PID
     let _ = wardian_core::db::update_agent_status(
@@ -963,40 +1094,6 @@ pub async fn spawn_agent(
         process_id,
     );
 
-    #[cfg(windows)]
-    let job_object = {
-        if app_process_supervisor_active() {
-            None
-        } else if let Ok(job) = create_kill_on_close_job("agent fallback") {
-            if let Some(pid) = process_id {
-                if let Err(err) = assign_pid_to_job(&job, pid, "agent fallback") {
-                    log_debug(&format!(
-                        "[Wardian] Failed to assign session {} PID {} to fallback job: {}",
-                        config.session_id, pid, err
-                    ));
-                }
-            }
-            Some(job)
-        } else {
-            None
-        }
-    };
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| format!("Failed to get pty reader: {}", e))?;
-    let mut writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| format!("Failed to get pty writer: {}", e))?;
-    let pty_master: crate::state::terminal_session::SharedPtyMaster =
-        std::sync::Arc::new(std::sync::Mutex::new(pair.master));
-    drop(pair.slave);
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<
-        crate::state::terminal_session::NativeTerminalWriteRequest,
-    >(256);
-    let terminal_runtime = crate::state::terminal_session::native_terminal_runtime(tx, pty_master);
     let terminal_runtime = match config.provider.as_str() {
         "codex" => terminal_runtime.ignore_scrollback_erase(),
         "pi" => terminal_runtime.reset_parser_on_scrollback_erase(),
@@ -1007,46 +1104,6 @@ pub async fn spawn_agent(
         .start_or_replace_runtime(&config.session_id, terminal_runtime, initial_geometry)
         .await
         .map_err(|error| format!("Failed to start terminal session broker: {error}"))?;
-    let sid_for_input = config.session_id.clone();
-    let provider_name_for_input = config.provider.clone();
-
-    std::thread::spawn(move || {
-        while let Some(input) = rx.blocking_recv() {
-            let bytes = input.bytes;
-            if provider_name_for_input == "opencode" {
-                log_debug(&format!(
-                    "[Wardian] OpenCode PTY input for session {}: {}",
-                    sid_for_input,
-                    debug_preview_bytes(&bytes, 128)
-                ));
-            }
-            log_terminal_trace_bytes(&sid_for_input, &provider_name_for_input, "IN", &bytes);
-            let write_result = writer
-                .write_all(&bytes)
-                .and_then(|_| writer.flush())
-                .map_err(|error| error.to_string());
-            match write_result {
-                Ok(()) => {
-                    let _ = input.completion.send(Ok(()));
-                }
-                Err(error) => {
-                    let _ = input.completion.send(Err(error.clone()));
-                    log_terminal_trace_note(
-                        &sid_for_input,
-                        &provider_name_for_input,
-                        &format!("PTY input write failed: {error}"),
-                    );
-                    break;
-                }
-            }
-        }
-        log_terminal_trace_note(
-            &sid_for_input,
-            &provider_name_for_input,
-            "input channel closed",
-        );
-    });
-
     let sid_out = config.session_id.clone();
     let provider_name_for_pty = config.provider.clone();
     let query_count = std::sync::Arc::new(std::sync::Mutex::new(0));
@@ -1175,8 +1232,15 @@ pub async fn spawn_agent(
                             response,
                         );
                     }
+                    let latest_snapshot = zellij_snapshot_frames
+                        .as_ref()
+                        .and_then(|frames| frames.try_iter().last());
                     if let Ok(mut watch_state) = watch_state_clone.lock() {
-                        watch_state.push_output(&buf[0..n]);
+                        if let Some(snapshot) = latest_snapshot.as_deref() {
+                            watch_state.replace_output(snapshot);
+                        } else if zellij_snapshot_frames.is_none() {
+                            watch_state.push_output(&buf[0..n]);
+                        }
                     }
                     log_terminal_trace_bytes(
                         &sid_for_pty,
@@ -2251,10 +2315,11 @@ pub async fn spawn_agent(
 
     Ok(ActiveAgent {
         config: config_lock,
-        child_process: Some(child),
+        child_process,
         background_processes,
         memory_capability,
         runtime_generation: Some(runtime_generation),
+        zellij_pane,
         process_id,
         query_count,
         init_timestamp,
@@ -2486,6 +2551,7 @@ mod tests {
             background_processes: Vec::new(),
             memory_capability: None,
             runtime_generation: None,
+            zellij_pane: None,
             process_id: None,
             query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
             init_timestamp: std::sync::Arc::new(std::sync::Mutex::new(None)),

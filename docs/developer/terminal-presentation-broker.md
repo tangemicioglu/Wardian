@@ -1,22 +1,27 @@
 # Terminal Presentation Broker
 
-One agent runtime can appear in Agents, one or more Agent Session
-surfaces, and authenticated remote clients at the same time. The Rust terminal
-session broker makes those views independent presentations of one PTY without
-allowing them to fight over input or geometry.
+> Agent terminals now use one shared xterm.js presentation. The broker remains
+> the ordered transport for each selected Zellij pane and for the standalone
+> user terminal. Inactive cards are snapshots rather than independent xterm.js
+> presentations.
+
+The selected pane can appear in Agents or an Agent Session surface. The Rust
+terminal session broker moves one stable desktop presentation between those
+hosts and between pane sessions without allowing stale surfaces to retain
+input ownership. The engine's attached Zellij client is a hidden lifecycle
+process, not the desktop renderer's stream.
 
 ## Core Invariants
 
 For each live terminal session:
 
-1. At most one presentation owns input and canonical PTY geometry.
-2. Every presentation consumes the same ordered output stream.
+1. At most one presentation owns a selected pane's broker input lease.
+2. Inactive agent cards consume pane snapshots and allocate no xterm.js renderer.
 3. Mount, focus, restore, viewport observation, and visibility changes never
    acquire ownership implicitly.
 4. Mirrors never resize the PTY.
 5. Split, move, hide, suspend, and close affect presentations, not the runtime.
-6. Desktop and remote clients use the same generation, lease, snapshot,
-   sequence, and geometry rules.
+6. Remote terminal attachment is not enabled in the initial Zellij release.
 
 Structured prompt delivery is a separate backend-authorized control path. The
 terminal lease applies to terminal keystrokes and binary input; it must not gate
@@ -203,9 +208,10 @@ client being released or be overtaken by a replacement presentation.
 
 ## Desktop and Remote Consistency
 
-`TerminalSessionClient` owns one ordered desktop subscription per session and
-fans snapshots and events to independent xterms. Each surface/card has a stable
-presentation ID and its own renderer, local scale, pan, and viewport state.
+For Zellij-owned agent terminals, each agent broker receives complete pane
+snapshots. One process-wide desktop xterm host moves between registered
+Workbench slots. Inactive and duplicate slots render read-only text previews.
+The standalone human terminal keeps its independent presentation behavior.
 
 The authenticated remote WebSocket registers a remote presentation and
 consumer, then uses the same activation, input, resize, snapshot, events, ack,
@@ -216,8 +222,10 @@ the socket.
 
 ## Renderer Budgets
 
-The desktop process permits at most 24 mounted xterm renderers and 12 WebGL
-contexts. The pools are independent deterministic LRUs:
+The legacy presentation pool permits at most 24 mounted xterm renderers and 12
+WebGL contexts. Zellij-owned agent terminals do not use that budget: they use
+one xterm host and at most one WebGL context. The standalone human terminal and
+remaining legacy surfaces retain their existing budgets.
 
 - touching a visible or interacted presentation keeps it warm;
 - WebGL eviction falls back to xterm's DOM renderer;

@@ -24,6 +24,17 @@ pub enum Command {
     Notify(NotifyArgs),
     Ask(AskArgs),
     Reply(ReplyArgs),
+    #[command(name = "terminal-host", hide = true)]
+    TerminalHost(TerminalHostArgs),
+}
+
+/// Internal one-use provider launcher for a Zellij-owned pane.
+#[derive(Debug, Args)]
+pub struct TerminalHostArgs {
+    #[arg(long)]
+    pub manifest: std::path::PathBuf,
+    #[arg(long)]
+    pub nonce: String,
 }
 
 // ---------------------------------------------------------------------------

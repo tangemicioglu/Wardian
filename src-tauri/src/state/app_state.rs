@@ -9,7 +9,7 @@ use crate::state::mailbox::MailboxState;
 use crate::state::terminal_session::TerminalSessionBroker;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use tokio::sync::Mutex;
 use wardian_core::control::{
     DeliveryTransportKind, InteractionDeliveryAttemptRecord, InteractionStatus,
@@ -82,6 +82,9 @@ pub struct AppState {
     // Authoritative per-runtime terminal actors. Presentations and feed
     // consumers attach to this broker without owning PTY lifetime or queues.
     pub terminal_sessions: Arc<TerminalSessionBroker>,
+    /// Process-wide Zellij terminal replacement. Resource paths are attached
+    /// during Tauri setup because AppState construction has no AppHandle.
+    pub zellij_terminal: OnceLock<Arc<crate::state::zellij_terminal::ZellijTerminalEngine>>,
     /// Out-of-process browser runtimes backing browser surfaces.
     pub browser_sessions: Arc<BrowserSessionBroker>,
 }
@@ -366,6 +369,7 @@ impl Default for AppState {
             remote_runtime: Mutex::new(crate::remote::models::RemoteRuntimeState::default()),
             terminal_theme: RwLock::new("dark".to_string()),
             terminal_sessions: Arc::new(TerminalSessionBroker::default()),
+            zellij_terminal: OnceLock::new(),
             // Profiles and downloads live under Wardian home so an isolated
             // WARDIAN_HOME test run cannot collide with production browser state.
             browser_sessions: Arc::new(BrowserSessionBroker::new(
@@ -398,6 +402,7 @@ mod tests {
             .try_recv()
             .is_err());
         assert_eq!(state.terminal_theme(), "dark");
+        assert!(state.zellij_terminal.get().is_none());
         assert!(!state
             .workflow_schedules_paused
             .load(std::sync::atomic::Ordering::SeqCst));

@@ -13,16 +13,13 @@ import {
   waitForAppShell,
 } from "../lib/harness.mjs";
 import {
-  readTerminalDebugSnapshot,
-  resolveAgentTerminalPresentationId,
-} from "../lib/terminal-debug.mjs";
-import {
   focusSurfaceTab,
   openWorkbenchSurface,
 } from "../lib/workbench.mjs";
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
+const ZELLIJ_PRESENTATION_ID = "desktop:zellij-habitat-terminal";
 const AGENTS = Array.from({ length: 4 }, (_, index) => ({
   sessionId: `e2e-first-paint-${RUN_ID}-${index + 1}`,
   sessionName: `E2E-First-Paint-${String(index + 1).padStart(2, "0")}-${RUN_ID}`,
@@ -41,8 +38,12 @@ async function invokeTauri(driver, command, args = {}) {
 
 function createQuietMockScript() {
   const scriptPath = path.join(os.tmpdir(), `wardian-first-paint-${RUN_ID}.cjs`);
+  const inputLogPath = path.join(os.tmpdir(), `wardian-first-paint-input-${RUN_ID}.jsonl`);
+  fs.rmSync(inputLogPath, { force: true });
   const script = `
 "use strict";
+const fs = require("node:fs");
+const inputLogPath = ${JSON.stringify(inputLogPath)};
 const providerSessionId = process.env.WARDIAN_MOCK_SESSION_ID;
 if (!providerSessionId) {
   throw new Error("WARDIAN_MOCK_SESSION_ID is required");
@@ -56,10 +57,32 @@ for (let line = 1; line <= 8; line += 1) {
   process.stdout.write("first-paint-row-" + String(line).padStart(2, "0") + "\\r\\n");
 }
 setInterval(() => {}, 1000);
-process.stdin.resume();
+process.stdin.setEncoding("utf8");
+let pendingInput = "";
+process.stdin.on("data", (chunk) => {
+  fs.appendFileSync(inputLogPath, JSON.stringify({ session_id: providerSessionId, chunk }) + "\\n");
+  pendingInput += chunk;
+  const lines = pendingInput.split(/\\r\\n|\\r|\\n/);
+  pendingInput = lines.pop() || "";
+  for (const line of lines) {
+    process.stdout.write("received:" + providerSessionId + ":" + line + "\\r\\n");
+  }
+});
 `;
   fs.writeFileSync(scriptPath, script, "utf8");
-  return scriptPath;
+  return { inputLogPath, scriptPath };
+}
+
+async function spawnAgentsConcurrently(driver, requests) {
+  const result = await driver.executeAsyncScript((spawnRequests, done) => {
+    Promise.all(spawnRequests.map((req) => window.__TAURI_INTERNALS__.invoke("spawn_agent", { req })))
+      .then(
+        (agents) => done({ ok: true, agents }),
+        (error) => done({ ok: false, error: String(error) }),
+      );
+  }, requests);
+  assert.equal(result.ok, true, `concurrent spawn_agent failed: ${result.error}`);
+  return result.agents;
 }
 
 async function selectGridMode(driver) {
@@ -76,63 +99,69 @@ async function selectGridMode(driver) {
   )), 20_000, "Timed out selecting explicit Agents Grid mode");
 }
 
-async function waitForStableRenderers(driver, presentations, expected = null) {
-  return await driver.wait(async () => {
-    const snapshots = {};
-    for (const [sessionId, presentationId] of presentations) {
-      const snapshot = await readTerminalDebugSnapshot(driver, presentationId);
-      if (!snapshot?.renderer) return false;
-      if (!snapshot.renderer.allLines?.join("\n").includes("first-paint-row-08")) return false;
-      snapshots[sessionId] = snapshot;
-    }
-    const hostState = await driver.executeScript((pairs) => pairs.map(([sessionId, presentationId]) => {
-      const host = [...(document.getElementById(`agent-card-${sessionId}`)
-        ?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
-        .find((candidate) => candidate.getAttribute("data-terminal-presentation-id") === presentationId);
-      if (!host) return { sessionId, missing: true };
-      const rect = host.getBoundingClientRect();
-      const physicallyVisible = rect.bottom > 0 && rect.top < window.innerHeight
-        && rect.right > 0 && rect.left < window.innerWidth;
-      return {
-        sessionId,
-        physicallyVisible,
-        cssVisibility: getComputedStyle(host).visibility,
-      };
-    }), presentations);
-    if (hostState.some((host) => host.missing)) return false;
-    for (const host of hostState) {
-      const renderer = snapshots[host.sessionId].renderer;
-      if (host.cssVisibility === "visible" && !renderer.ready) return false;
-      if (host.physicallyVisible && (!renderer.ready || host.cssVisibility !== "visible")) return false;
-      if (expected) {
-        const initial = expected[host.sessionId];
-        if (renderer.instanceId !== initial.instanceId) return false;
-        if (renderer.cols !== initial.cols || renderer.rows !== initial.rows) return false;
+async function waitForZellijTerminalGrid(driver, agents) {
+  let lastState = null;
+  try {
+    return await driver.wait(async () => {
+      const state = await driver.executeScript((sessionIds) => {
+        const live = [...document.querySelectorAll('[data-zellij-presentation="live"]')]
+          .map((node) => node.getAttribute("data-zellij-agent-id"));
+        const previews = [...document.querySelectorAll('[data-zellij-presentation="preview"]')]
+          .map((node) => ({
+            sessionId: node.getAttribute("data-zellij-agent-id"),
+            text: node.textContent || "",
+            disabled: node.disabled,
+          }));
+        return {
+          live,
+          previews,
+          xterms: document.querySelectorAll('[data-testid="agent-terminal-host"] .xterm').length,
+          liveHost: (() => {
+            const host = document.querySelector(
+              '[data-zellij-presentation="live"] [data-testid="agent-terminal-host"]',
+            );
+            return host ? {
+              sessionId: host.getAttribute("data-terminal-session-id"),
+              visibility: getComputedStyle(host).visibility,
+            } : null;
+          })(),
+          allAgentsPresent: sessionIds.every((sessionId) => (
+            document.querySelector(`[data-zellij-agent-id="${CSS.escape(sessionId)}"]`)
+          )),
+        };
+      }, agents.map((agent) => agent.sessionId));
+      lastState = state;
+      if (!state.allAgentsPresent || state.live.length !== 1 || state.xterms !== 1) return false;
+      if (state.previews.length !== agents.length - 1) return false;
+      if (state.previews.some((preview) => (
+        preview.disabled || !preview.text.includes("first-paint-row-08")
+      ))) return false;
+      if (state.liveHost?.sessionId !== state.live[0] || state.liveHost.visibility !== "visible") {
+        return false;
       }
-    }
-    return { snapshots, hostState };
-  }, 30_000, "Timed out waiting for settled terminal renderers");
+      return state;
+    }, 40_000, "Timed out waiting for one live Zellij terminal and broker previews");
+  } catch (error) {
+    throw new Error(`${error.message}; last state: ${JSON.stringify(lastState)}`);
+  }
 }
 
 test(
-  "Agents terminals reuse stable renderers and never expose an unsettled return frame",
+  "Agents share one live Zellij renderer and hand it off between broker previews",
   { timeout: 240_000 },
   async (t) => {
     const harness = await createNativeHarness();
-    const mockScript = createQuietMockScript();
+    const { inputLogPath, scriptPath: mockScript } = createQuietMockScript();
     const previousMockScript = process.env.WARDIAN_MOCK_SCRIPT;
-    const previousTerminalDebug = process.env.VITE_WARDIAN_TERMINAL_DEBUG;
     let session = null;
 
     process.env.WARDIAN_MOCK_SCRIPT = mockScript;
-    process.env.VITE_WARDIAN_TERMINAL_DEBUG = "1";
     t.after(async () => {
       await session?.close();
       fs.rmSync(mockScript, { force: true });
+      fs.rmSync(inputLogPath, { force: true });
       if (previousMockScript === undefined) delete process.env.WARDIAN_MOCK_SCRIPT;
       else process.env.WARDIAN_MOCK_SCRIPT = previousMockScript;
-      if (previousTerminalDebug === undefined) delete process.env.VITE_WARDIAN_TERMINAL_DEBUG;
-      else process.env.VITE_WARDIAN_TERMINAL_DEBUG = previousTerminalDebug;
     });
 
     if (!skipNativeBuild) ensureNativeAppBuilt(harness);
@@ -142,21 +171,23 @@ test(
     await waitForAppShell(driver, 20_000);
     await driver.manage().window().setRect({ width: 1400, height: 900 });
 
-    const spawnedAgents = [];
-    for (const agent of AGENTS) {
-      const spawned = await invokeTauri(driver, "spawn_agent", {
-        req: {
-          sessionName: agent.sessionName,
-          agentClass: "TestClass",
-          folder: harness.repoRoot,
-          resumeSession: agent.sessionId,
-          isOff: false,
-          configOverride: { provider: "mock" },
-        },
-      });
-      assert.notEqual(spawned.session_id, agent.sessionId);
-      spawnedAgents.push({ ...agent, sessionId: spawned.session_id });
-    }
+    const spawned = await spawnAgentsConcurrently(driver, AGENTS.map((agent) => ({
+      sessionName: agent.sessionName,
+      agentClass: "TestClass",
+      folder: harness.repoRoot,
+      resumeSession: agent.sessionId,
+      isOff: false,
+      configOverride: { provider: "mock" },
+    })));
+    const spawnedAgents = spawned.map((spawnedAgent, index) => {
+      const agent = AGENTS[index];
+      assert.notEqual(spawnedAgent.session_id, agent.sessionId);
+      return {
+        ...agent,
+        providerSessionId: agent.sessionId,
+        sessionId: spawnedAgent.session_id,
+      };
+    });
 
     await openWorkbenchSurface(driver, "agents-overview");
     await selectGridMode(driver);
@@ -166,51 +197,129 @@ test(
       ), 20_000, `Timed out locating ${agent.sessionId}`);
     }
 
-    const presentations = [];
-    for (const agent of spawnedAgents) {
-      presentations.push([
-        agent.sessionId,
-        await resolveAgentTerminalPresentationId(driver, agent.sessionId),
-      ]);
+    const initial = await waitForZellijTerminalGrid(driver, spawnedAgents);
+    const initialLiveAgent = initial.live[0];
+    const nextAgent = spawnedAgents.find((agent) => agent.sessionId !== initialLiveAgent);
+    assert.ok(nextAgent, "Expected an inactive agent terminal preview");
+    await driver.executeScript(() => {
+      const xterm = document.querySelector('[data-testid="agent-terminal-host"] .xterm');
+      xterm?.setAttribute("data-e2e-zellij-renderer", "singleton");
+    });
+
+    const activated = await driver.executeScript((sessionId) => {
+      const preview = document.querySelector(
+        `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sessionId)}"]`,
+      );
+      if (!(preview instanceof HTMLButtonElement) || preview.disabled) return false;
+      preview.click();
+      return true;
+    }, nextAgent.sessionId);
+    assert.equal(activated, true, `Could not activate preview ${nextAgent.sessionId}`);
+    await driver.wait(async () => await driver.executeScript((sessionId) => (
+      document.querySelector('[data-zellij-presentation="live"]')
+        ?.getAttribute("data-zellij-agent-id") === sessionId
+      && document.querySelectorAll('[data-testid="agent-terminal-host"] .xterm').length === 1
+      && document.querySelector('[data-testid="agent-terminal-host"] .xterm')
+        ?.getAttribute("data-e2e-zellij-renderer") === "singleton"
+    ), nextAgent.sessionId), 20_000, "Timed out handing the singleton renderer to the selected pane");
+
+    const selectedSnapshot = await invokeTauri(driver, "request_terminal_snapshot", {
+      request: { session_id: nextAgent.sessionId },
+    });
+    let latestBrokerState = null;
+    await driver.wait(async () => {
+      const updated = await invokeTauri(driver, "update_terminal_presentation", {
+        request: {
+          presentation_id: ZELLIJ_PRESENTATION_ID,
+          session_id: nextAgent.sessionId,
+          runtime_generation: selectedSnapshot.runtime_generation,
+          desired_geometry: { cols: 120, rows: 40 },
+          visibility: "visible",
+          render_state: "mounted",
+          requested_interaction: "interactive",
+          observed_lease_epoch: 0,
+        },
+      });
+      latestBrokerState = updated.broker_state;
+      return updated.broker_state.owner_presentation_id === ZELLIJ_PRESENTATION_ID;
+    }, 20_000, `Singleton presentation did not own selected pane: ${JSON.stringify(latestBrokerState)}`);
+
+    const inputDecision = await invokeTauri(driver, "send_terminal_presentation_input", {
+      request: {
+        session_id: nextAgent.sessionId,
+        presentation_id: ZELLIJ_PRESENTATION_ID,
+        runtime_generation: selectedSnapshot.runtime_generation,
+        lease_epoch: latestBrokerState.lease_epoch,
+        input: "handoff-probe\r",
+      },
+    });
+    assert.equal(inputDecision.status, "accepted");
+    let latestReceipts = [];
+    let receipts;
+    try {
+      receipts = await driver.wait(() => {
+        if (!fs.existsSync(inputLogPath)) return false;
+        const records = fs.readFileSync(inputLogPath, "utf8")
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        latestReceipts = records;
+        const selectedInput = records
+          .filter((record) => record.session_id === nextAgent.providerSessionId)
+          .map((record) => record.chunk)
+          .join("");
+        return selectedInput.includes("handoff-probe") ? records : false;
+      }, 20_000, "Selected Zellij provider pane did not receive broker input");
+    } catch (error) {
+      throw new Error(`${error.message}; provider receipts: ${JSON.stringify(latestReceipts)}`);
     }
-    const initial = await waitForStableRenderers(driver, presentations);
-    const initialRenderer = Object.fromEntries(Object.entries(initial.snapshots).map(
-      ([sessionId, snapshot]) => [sessionId, {
-        instanceId: snapshot.renderer.instanceId,
-        cols: snapshot.renderer.cols,
-        rows: snapshot.renderer.rows,
-        fitCount: snapshot.fitCount,
-      }],
-    ));
-    const previousFitCounts = Object.fromEntries(Object.entries(initialRenderer).map(
-      ([sessionId, renderer]) => [sessionId, renderer.fitCount],
-    ));
+    assert.equal(
+      receipts.some((record) => (
+        record.session_id !== nextAgent.providerSessionId && record.chunk.includes("handoff-probe")
+      )),
+      false,
+    );
+    const routedOutput = await driver.wait(async () => {
+      const previews = await Promise.all(spawnedAgents.map(async (agent) => ({
+        sessionId: agent.sessionId,
+        preview: await invokeTauri(driver, "get_zellij_terminal_preview", {
+          sessionId: agent.sessionId,
+        }),
+      })));
+      const target = previews.find((entry) => entry.sessionId === nextAgent.sessionId);
+      if (!target?.preview.content.includes("handoff-probe")) {
+        return false;
+      }
+      return previews;
+    }, 20_000, "Timed out routing input to the activated Zellij pane");
+    for (const entry of routedOutput) {
+      if (entry.sessionId !== nextAgent.sessionId) {
+        assert.equal(entry.preview.content.includes("handoff-probe"), false);
+      }
+    }
 
     await openWorkbenchSurface(driver, "workflows");
-    for (let cycle = 0; cycle < 5; cycle += 1) {
+    for (let cycle = 0; cycle < 3; cycle += 1) {
       await focusSurfaceTab(driver, "workflows");
       await focusSurfaceTab(driver, "agents-overview");
-      const returned = await waitForStableRenderers(driver, presentations, initialRenderer);
-      for (const [sessionId, snapshot] of Object.entries(returned.snapshots)) {
-        const fitDelta = snapshot.fitCount - previousFitCounts[sessionId];
-        assert.ok(
-          fitDelta >= 0 && fitDelta <= 1,
-          `${sessionId} performed too many return fits: ${fitDelta}`,
-        );
-        previousFitCounts[sessionId] = snapshot.fitCount;
-      }
+      const returned = await waitForZellijTerminalGrid(driver, spawnedAgents);
+      assert.equal(returned.live[0], nextAgent.sessionId);
+      const rendererCount = await driver.executeScript(() => (
+        document.querySelectorAll('[data-testid="agent-terminal-host"] .xterm').length
+      ));
+      assert.equal(rendererCount, 1);
     }
 
     const screenshotDirectory = path.join(
       harness.repoRoot,
       "e2e",
       "screenshots",
-      "terminal-first-paint",
-      "2026-07-15",
+      "zellij-terminal",
+      "2026-08-24",
     );
     fs.mkdirSync(screenshotDirectory, { recursive: true });
     fs.writeFileSync(
-      path.join(screenshotDirectory, "agents-settled.png"),
+      path.join(screenshotDirectory, "singleton-grid.png"),
       Buffer.from(await driver.takeScreenshot(), "base64"),
     );
   },

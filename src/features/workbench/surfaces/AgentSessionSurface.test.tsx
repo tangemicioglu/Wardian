@@ -14,8 +14,8 @@ import {
 
 const terminalSpy = vi.hoisted(() => vi.fn());
 
-vi.mock("../../terminal/AgentTerminal", () => ({
-  AgentTerminal: (props: Record<string, unknown>) => {
+vi.mock("../../terminal/ZellijAgentTerminal", () => ({
+  ZellijAgentTerminal: (props: Record<string, unknown>) => {
     terminalSpy(props);
     return <div data-testid="agent-terminal" />;
   },

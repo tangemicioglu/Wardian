@@ -43,8 +43,9 @@ const originalOuterHeight = window.outerHeight;
 const originalInnerWidth = window.innerWidth;
 const graphViewFilteredAgentsSpy = vi.hoisted(() => vi.fn());
 
-vi.mock("../features/terminal/AgentTerminal", () => ({
-  AgentTerminal: ({
+vi.mock("../features/terminal/ZellijAgentTerminal", () => ({
+  ZellijAgentTerminalHost: () => null,
+  ZellijAgentTerminal: ({
     sessionId,
     onTerminalFocus,
   }: {

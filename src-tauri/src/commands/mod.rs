@@ -25,6 +25,7 @@ pub mod topology;
 pub mod watchlist;
 pub mod workbench;
 pub mod workflow;
+pub mod zellij_terminal;
 
 pub use agent::*;
 pub use agent_reach::*;
@@ -49,3 +50,4 @@ pub use topology::*;
 pub use watchlist::*;
 pub use workbench::*;
 pub use workflow::*;
+pub use zellij_terminal::*;

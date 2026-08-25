@@ -14,6 +14,9 @@ pub struct ActiveAgent {
     /// Exact terminal-session broker generation for this native runtime.
     /// Native master/input handles live only inside the broker actor.
     pub runtime_generation: Option<u64>,
+    /// Zellij pane lifetime for this provider generation. Dropping the lease
+    /// closes the pane even if lifecycle teardown exits early.
+    pub zellij_pane: Option<super::zellij_terminal::ZellijPaneLease>,
     pub process_id: Option<u32>,
     pub query_count: Arc<Mutex<usize>>,
     pub init_timestamp: Arc<Mutex<Option<String>>>,

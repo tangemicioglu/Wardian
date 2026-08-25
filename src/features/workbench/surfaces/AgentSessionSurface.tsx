@@ -8,7 +8,7 @@ import type {
   TerminalRequestedInteraction,
   TerminalVisibility,
 } from "../../../types";
-import { AgentTerminal } from "../../terminal/AgentTerminal";
+import { ZellijAgentTerminal } from "../../terminal/ZellijAgentTerminal";
 
 export interface AgentSessionSurfaceProps {
   /** Stable workbench presentation identity. Closing it must not affect the agent runtime. */
@@ -218,7 +218,7 @@ export function AgentSessionSurface({
         </div>
       </header>
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden p-2">
-        <AgentTerminal
+        <ZellijAgentTerminal
           sessionId={resource_key}
           presentationId={presentationId}
           visibility={visibility}
