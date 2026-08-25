@@ -16,6 +16,11 @@ const WINDOWS_ATTACHED_CLIENT_START_ATTEMPTS: usize = 4;
 const PANE_ID_RECONCILIATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(test)]
 const PANE_ID_RECONCILIATION_TIMEOUT: std::time::Duration = std::time::Duration::ZERO;
+#[cfg(not(test))]
+const PANE_CLEANUP_CONFIRMATION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(2);
+#[cfg(test)]
+const PANE_CLEANUP_CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Duration::ZERO;
 
 fn zellij_helper_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
@@ -782,19 +787,39 @@ impl ZellijTerminalEngine {
         Ok(())
     }
 
-    async fn close_unregistered_session_panes(&self, session_id: &str) -> Result<(), String> {
+    async fn session_pane_ids(&self, session_id: &str) -> Result<Vec<ZellijPaneId>, String> {
         let expected_title = format!("wardian:{session_id}");
-        let stale = self
+        Ok(self
             .list_panes()
             .await?
             .into_iter()
             .filter(|pane| pane.title == expected_title)
             .filter_map(|pane| pane.pane_id())
-            .collect::<Vec<_>>();
+            .collect())
+    }
+
+    async fn confirm_session_panes_closed(&self, session_id: &str) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + PANE_CLEANUP_CONFIRMATION_TIMEOUT;
+        loop {
+            if self.session_pane_ids(session_id).await?.is_empty() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("Zellij pane cleanup could not be confirmed".to_string());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn close_unregistered_session_panes(&self, session_id: &str) -> Result<(), String> {
+        let stale = self.session_pane_ids(session_id).await?;
+        if stale.is_empty() {
+            return Ok(());
+        }
         for pane_id in stale {
             self.close_pane_id(&pane_id).await?;
         }
-        Ok(())
+        self.confirm_session_panes_closed(session_id).await
     }
 
     async fn close_pane_id(&self, pane_id: &ZellijPaneId) -> Result<(), String> {
@@ -812,9 +837,7 @@ impl ZellijTerminalEngine {
         let pending_generation = {
             let panes = self.pane_registry();
             match panes.bindings.get(session_id) {
-                Some(binding)
-                    if binding.phase == ZellijPanePhase::Closing && binding.pane_id.is_none() =>
-                {
+                Some(binding) if binding.phase == ZellijPanePhase::Closing => {
                     Some(binding.generation)
                 }
                 Some(_) => {
@@ -985,7 +1008,35 @@ impl ZellijTerminalEngine {
         }
     }
 
-    pub fn open_pane_transport(
+    async fn cleanup_failed_pane_transport(
+        &self,
+        binding: &ZellijPaneBinding,
+        pane_id: &ZellijPaneId,
+    ) -> Result<(), String> {
+        {
+            let mut panes = self.pane_registry();
+            let current = panes
+                .bindings
+                .get_mut(&binding.session_id)
+                .filter(|current| current.generation == binding.generation)
+                .ok_or_else(|| "Agent Zellij pane generation is stale".to_string())?;
+            current.phase = ZellijPanePhase::Closing;
+        }
+        self.close_pane_id(pane_id).await?;
+        self.confirm_session_panes_closed(&binding.session_id)
+            .await?;
+        let mut panes = self.pane_registry();
+        if panes
+            .bindings
+            .get(&binding.session_id)
+            .is_some_and(|current| current.generation == binding.generation)
+        {
+            panes.bindings.remove(&binding.session_id);
+        }
+        Ok(())
+    }
+
+    pub async fn open_pane_transport(
         self: &Arc<Self>,
         binding: &ZellijPaneBinding,
     ) -> Result<ZellijPaneTransport, String> {
@@ -996,8 +1047,6 @@ impl ZellijTerminalEngine {
             .pane_id
             .clone()
             .ok_or_else(|| "Agent Zellij pane is not ready".to_string())?;
-        let lease =
-            ZellijPaneLease::new(self.clone(), binding.session_id.clone(), binding.generation);
         let mut command = zellij_helper_command(&self.config.executable);
         command
             .args([
@@ -1016,17 +1065,38 @@ impl ZellijTerminalEngine {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
-        let mut subscription = command
-            .spawn()
-            .map_err(|error| format!("Zellij pane subscription could not start: {error}"))?;
+        let mut subscription = match command.spawn() {
+            Ok(subscription) => subscription,
+            Err(error) => {
+                let message = format!("Zellij pane subscription could not start: {error}");
+                if self
+                    .cleanup_failed_pane_transport(binding, &pane_id)
+                    .await
+                    .is_err()
+                {
+                    return Err(format!("{message}; pane cleanup is pending"));
+                }
+                return Err(message);
+            }
+        };
         let stdout = match subscription.stdout.take() {
             Some(stdout) => stdout,
             None => {
                 let _ = subscription.kill();
                 let _ = subscription.wait();
-                return Err("Zellij pane subscription has no output stream".to_string());
+                let message = "Zellij pane subscription has no output stream".to_string();
+                if self
+                    .cleanup_failed_pane_transport(binding, &pane_id)
+                    .await
+                    .is_err()
+                {
+                    return Err(format!("{message}; pane cleanup is pending"));
+                }
+                return Err(message);
             }
         };
+        let lease =
+            ZellijPaneLease::new(self.clone(), binding.session_id.clone(), binding.generation);
         let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
         let (snapshot_tx, snapshot_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
         let expected_pane = pane_id.as_str().to_string();
@@ -1807,6 +1877,7 @@ mod tests {
             successful(b"[]"),
             successful(candidate),
             successful(b""),
+            successful(b"[]"),
         ]);
         let engine = ZellijTerminalEngine::with_runner(config(root.path()), runner.clone());
         engine.prepare_runtime_directories().unwrap();
@@ -1855,6 +1926,10 @@ mod tests {
             failed(),
             successful(candidate),
             successful(b""),
+            successful(candidate),
+            successful(candidate),
+            successful(b""),
+            successful(b"[]"),
             successful(b"[]"),
             successful(b"[]"),
             successful(b"terminal_10\n"),
@@ -1881,10 +1956,24 @@ mod tests {
         assert_eq!(pending.phase, ZellijPanePhase::Closing);
         assert!(pending.pane_id.is_none());
 
+        let retry_error = engine
+            .create_pane(launch.clone())
+            .await
+            .expect_err("successful close without confirmed removal must remain pending");
+        assert!(retry_error.contains("cleanup could not be confirmed"));
+        assert_eq!(
+            engine
+                .binding("agent-1")
+                .await
+                .expect("unconfirmed cleanup binding")
+                .phase,
+            ZellijPanePhase::Closing,
+        );
+
         let replacement = engine
             .create_pane(launch)
             .await
-            .expect("retry closes the orphan before replacement");
+            .expect("confirmed retry closes the orphan before replacement");
         assert_eq!(replacement.pane_id.unwrap().as_str(), "terminal_10");
         assert_eq!(replacement.phase, ZellijPanePhase::Running);
         assert_eq!(
@@ -1897,7 +1986,7 @@ mod tests {
                     .windows(2)
                     .any(|args| args == ["--pane-id", "terminal_9"]))
                 .count(),
-            2,
+            3,
         );
     }
 
@@ -1914,6 +2003,10 @@ mod tests {
             successful(b"[]"),
             successful(b"terminal_7\n"),
             successful(b""),
+            successful(b"[]"),
+            successful(b"[]"),
+            successful(b"[]"),
+            successful(b"terminal_8\n"),
         ]);
         let engine = Arc::new(ZellijTerminalEngine::with_runner(
             config(root.path()),
@@ -1933,6 +2026,7 @@ mod tests {
 
         let error = engine
             .open_pane_transport(&binding)
+            .await
             .err()
             .expect("missing subscription executable must fail");
 
@@ -1942,6 +2036,17 @@ mod tests {
             call.windows(2)
                 .any(|args| args == ["--pane-id", "terminal_7"])
         }));
+        let replacement = engine
+            .create_pane(ZellijLaunchSpec {
+                session_id: "agent-1".to_string(),
+                executable: "provider".to_string(),
+                args: Vec::new(),
+                cwd: root.path().to_path_buf(),
+                env: BTreeMap::new(),
+            })
+            .await
+            .expect("confirmed transport rollback must allow replacement");
+        assert_eq!(replacement.pane_id.unwrap().as_str(), "terminal_8");
     }
 
     #[tokio::test]
@@ -2151,7 +2256,7 @@ mod tests {
             runtime,
             mut subscription,
             lease: _lease,
-        } = engine.open_pane_transport(&binding).unwrap();
+        } = engine.open_pane_transport(&binding).await.unwrap();
         let runtime_generation = broker
             .start_or_replace_runtime(
                 "native-agent",
@@ -2308,7 +2413,7 @@ mod tests {
             runtime,
             mut subscription,
             lease,
-        } = recovered.open_pane_transport(&recovered_binding).unwrap();
+        } = recovered.open_pane_transport(&recovered_binding).await.unwrap();
         recovered_broker
             .start_or_replace_runtime(
                 "recovered-agent",

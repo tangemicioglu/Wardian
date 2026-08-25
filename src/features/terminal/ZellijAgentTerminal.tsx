@@ -636,11 +636,14 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
   const [activationError, setActivationError] = useState<string | null>(null);
   const autoActivationAttempted = useRef(false);
   const activationRequested = useRef(false);
-  const canOwnTerminal = visibility === "visible"
+  const lifecycleAllowsInput = visibility === "visible"
     && renderState === "mounted"
     && requestedInteraction === "interactive"
-    && preview?.state === "running"
-    && desktopMayOwnBroker(sessionId, brokerOwners);
+    && preview?.state === "running";
+  const brokerOwner = brokerOwners.get(sessionId)?.owner ?? null;
+  const foreignBrokerOwner = brokerOwner !== null
+    && brokerOwner !== HABITAT_TERMINAL_PRESENTATION_ID;
+  const canOwnTerminal = lifecycleAllowsInput && desktopMayOwnBroker(sessionId, brokerOwners);
   const isLiveTarget = activeTargetId === targetId && canOwnTerminal;
 
   useEffect(() => {
@@ -707,6 +710,12 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
   useEffect(() => {
     if (isLiveTarget) activationRequested.current = false;
   }, [isLiveTarget]);
+
+  useEffect(() => {
+    if (lifecycleAllowsInput && !foreignBrokerOwner) return;
+    activationRequested.current = false;
+    clearPendingInput(targetId);
+  }, [clearPendingInput, foreignBrokerOwner, lifecycleAllowsInput, targetId]);
 
   useEffect(() => {
     autoActivationAttempted.current = false;
@@ -792,6 +801,7 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
       data-testid={`zellij-terminal-preview-${sessionId}`}
       onFocus={requestTerminalFocus}
       onKeyDown={(event) => {
+        if (!interactive) return;
         const input = terminalInputForKeyDown(event);
         if (input === null) return;
         event.preventDefault();
@@ -800,6 +810,7 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
         requestTerminalFocus();
       }}
       onPaste={(event) => {
+        if (!interactive) return;
         const input = event.clipboardData.getData("text");
         if (!input) return;
         event.preventDefault();

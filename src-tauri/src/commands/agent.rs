@@ -1333,6 +1333,11 @@ async fn settle_failed_runtime_replacement(
             "[WARDIAN] failed to persist restart error row for {session_id}: {error}"
         ));
     }
+    if let Err(error) = wardian_core::db::update_agent_status(session_id, "Error", None) {
+        manager::log_debug(&format!(
+            "[WARDIAN] failed to persist restart error status for {session_id}: {error}"
+        ));
+    }
     manager::publish_agent_status(app, session_id, &status);
     let _ = app.emit("agents-updated", ());
 }

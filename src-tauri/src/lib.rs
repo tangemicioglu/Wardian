@@ -85,6 +85,46 @@ fn restored_agent_without_process(
     }
 }
 
+fn inert_restored_agent_status(
+    config: &AgentConfig,
+    last_status: Option<&str>,
+) -> Option<&'static str> {
+    match last_status {
+        Some("Headless") => Some("Headless"),
+        Some("Error") if config.is_off => Some("Error"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod restored_agent_tests {
+    use super::*;
+
+    #[test]
+    fn durable_off_error_restores_without_a_runtime() {
+        let config = AgentConfig {
+            session_id: "failed-replacement".to_string(),
+            is_off: true,
+            ..Default::default()
+        };
+
+        let status = inert_restored_agent_status(&config, Some("Error"));
+        let agent = restored_agent_without_process(
+            config,
+            status.expect("durable Error must remain inert"),
+            String::new(),
+            None,
+            None,
+        );
+
+        assert_eq!(agent.current_status.lock().unwrap().as_str(), "Error");
+        assert!(agent.config.lock().unwrap().is_off);
+        assert!(agent.runtime_generation.is_none());
+        assert!(agent.process_id.is_none());
+        assert!(agent.zellij_pane.is_none());
+    }
+}
+
 pub async fn reconcile_headless_agents() -> std::result::Result<(), Box<dyn std::error::Error>> {
     use sysinfo::System;
 
@@ -432,10 +472,10 @@ pub fn run() {
                                     .collect();
 
                             // Pass 1: prepare every config and publish the full roster
-                            // immediately. Headless agents are final; PTY agents appear
-                            // as inert "Restoring" placeholders so the watchlist shows
-                            // the complete list instead of agents streaming in one by
-                            // one as each provider spawn completes.
+                            // immediately. Headless and durable failed-replacement agents
+                            // are final; runnable PTY agents appear as inert "Restoring"
+                            // placeholders so the watchlist shows the complete list instead
+                            // of agents streaming in one by one as each provider spawn completes.
                             type PendingSpawn = (AgentConfig, Option<String>);
                             let mut pending_spawns: Vec<PendingSpawn> = Vec::new();
                             for mut config in configs {
@@ -482,12 +522,18 @@ pub fn run() {
                                     .cloned()
                                     .unwrap_or((None, None, None));
 
-                                if last_status.as_deref() == Some("Headless") {
+                                if let Some(inert_status) =
+                                    inert_restored_agent_status(&config, last_status.as_deref())
+                                {
                                     let agent = restored_agent_without_process(
                                         config.clone(),
-                                        "Headless",
+                                        inert_status,
                                         String::new(),
-                                        last_pid,
+                                        if inert_status == "Headless" {
+                                            last_pid
+                                        } else {
+                                            None
+                                        },
                                         last_born,
                                     );
                                     insert_restored_agent(config.session_id.clone(), agent).await;

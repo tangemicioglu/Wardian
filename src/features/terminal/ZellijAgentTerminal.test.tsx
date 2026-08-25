@@ -222,6 +222,11 @@ describe("ZellijAgentTerminal", () => {
     expect(screen.getByText("Terminal unavailable — restart the agent")).toBeInTheDocument();
     expect(preview).toHaveAttribute("aria-disabled", "true");
     expect(preview).toHaveAttribute("tabindex", "-1");
+    fireEvent.keyDown(preview, { key: "x" });
+    fireEvent.paste(preview, {
+      clipboardData: { getData: () => "stale command\n" },
+    });
+    expect(useZellijPresentationStore.getState().pendingInputByTarget.size).toBe(0);
     expect(screen.queryByTestId("live-habitat-terminal")).not.toBeInTheDocument();
   });
 
@@ -308,11 +313,16 @@ describe("ZellijAgentTerminal", () => {
     await waitFor(() => expect(preview).toHaveAttribute("aria-disabled", "true"));
     expect(preview).toHaveAttribute("tabindex", "-1");
     fireEvent.pointerDown(preview);
+    fireEvent.keyDown(preview, { key: "x" });
+    fireEvent.paste(preview, {
+      clipboardData: { getData: () => "stale command\n" },
+    });
 
     expect(invokeMock).not.toHaveBeenCalledWith(
       "activate_zellij_agent_terminal",
       expect.anything(),
     );
+    expect(useZellijPresentationStore.getState().pendingInputByTarget.size).toBe(0);
     expect(screen.queryByTestId("live-habitat-terminal")).not.toBeInTheDocument();
   });
 
@@ -364,9 +374,14 @@ describe("ZellijAgentTerminal", () => {
       });
     });
     fireEvent.pointerDown(preview);
+    fireEvent.keyDown(preview, { key: "x" });
+    fireEvent.paste(preview, {
+      clipboardData: { getData: () => "stale command\n" },
+    });
     expect(invokeMock.mock.calls.filter(
       ([command]) => command === "activate_zellij_agent_terminal",
     )).toHaveLength(activationCount);
+    expect(useZellijPresentationStore.getState().pendingInputByTarget.size).toBe(0);
 
     const otherPreview = screen.getByRole("application", { name: "Terminal for agent-2" });
     expect(otherPreview).toHaveAttribute("aria-disabled", "false");

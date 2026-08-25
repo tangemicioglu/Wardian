@@ -980,7 +980,7 @@ pub async fn spawn_agent(
                 env: launch_env.clone(),
             })
             .await?;
-        let transport = engine.open_pane_transport(&binding)?;
+        let transport = engine.open_pane_transport(&binding).await?;
         background_processes.push(transport.subscription);
         (
             transport.reader,

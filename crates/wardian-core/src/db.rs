@@ -315,7 +315,7 @@ pub fn update_agent_status_with_conn(
         .optional()?;
     let (last_status, last_pid) = current.unwrap_or((None, None));
 
-    let should_clear_pid = pid.is_none() && status == "Off";
+    let should_clear_pid = pid.is_none() && matches!(status, "Off" | "Error");
     let pid_changed = pid
         .map(i64::from)
         .is_some_and(|next_pid| Some(next_pid) != last_pid);
@@ -1324,6 +1324,37 @@ mod tests {
             .unwrap();
         assert_eq!(row.last_status.as_deref(), Some("Off"));
         assert_eq!(row.last_pid, None);
+    }
+
+    #[test]
+    fn error_status_clears_stale_pid_and_survives_reload() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        upsert_agent_with_conn(
+            &conn,
+            &AgentUpsert {
+                session_id: "uuid-error",
+                session_name: "coder-error",
+                description: "",
+                agent_class: "Coder",
+                provider: "codex",
+                workspace: None,
+                project: None,
+                is_off: true,
+                created_at: None,
+            },
+        )
+        .unwrap();
+
+        update_agent_status_with_conn(&conn, "uuid-error", "Idle", Some(123)).unwrap();
+        update_agent_status_with_conn(&conn, "uuid-error", "Error", None).unwrap();
+
+        let row = get_agent_by_session_id_with_conn(&conn, "uuid-error")
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.last_status.as_deref(), Some("Error"));
+        assert_eq!(row.last_pid, None);
+        assert!(row.is_off);
     }
 
     #[test]
