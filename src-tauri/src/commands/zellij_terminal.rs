@@ -26,6 +26,18 @@ fn preview_state_for_phase(phase: ZellijPanePhase) -> &'static str {
     }
 }
 
+fn preview_state_without_binding(status: Option<&str>, has_runtime: bool) -> &'static str {
+    if !has_runtime
+        && status.is_some_and(|value| {
+            wardian_core::identity::normalize_status(value).as_str() == "error"
+        })
+    {
+        "error"
+    } else {
+        "starting"
+    }
+}
+
 fn validate_habitat_activation(
     broker_generation: u64,
     observed_broker_generation: Option<u64>,
@@ -76,6 +88,20 @@ pub async fn get_zellij_terminal_preview(
         });
     };
     let Some(binding) = engine.binding(&session_id).await else {
+        let preview_state = {
+            let agents = state.agents.lock().await;
+            agents.get(&session_id).map_or("starting", |agent| {
+                let status = agent
+                    .current_status
+                    .lock()
+                    .map(|value| value.clone())
+                    .unwrap_or_default();
+                preview_state_without_binding(
+                    Some(&status),
+                    agent.runtime_generation.is_some(),
+                )
+            })
+        };
         return Ok(ZellijTerminalPreview {
             terminal_session_id: session_id.clone(),
             session_id,
@@ -84,7 +110,7 @@ pub async fn get_zellij_terminal_preview(
             broker_lease_epoch,
             broker_owner_presentation_id,
             broker_activation_pending,
-            state: "starting",
+            state: preview_state,
             content: String::new(),
         });
     };
@@ -137,6 +163,13 @@ mod tests {
         );
         assert_eq!(preview_state_for_phase(ZellijPanePhase::Running), "running");
         assert_eq!(preview_state_for_phase(ZellijPanePhase::Exited), "exited");
+    }
+
+    #[test]
+    fn missing_binding_exposes_a_runtime_less_restart_failure() {
+        assert_eq!(preview_state_without_binding(Some("Error"), false), "error");
+        assert_eq!(preview_state_without_binding(Some("Starting"), false), "starting");
+        assert_eq!(preview_state_without_binding(Some("Error"), true), "starting");
     }
 
     #[test]

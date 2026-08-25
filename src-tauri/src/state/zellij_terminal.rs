@@ -808,8 +808,52 @@ impl ZellijTerminalEngine {
         .map(|_| ())
     }
 
+    async fn retry_pending_session_cleanup(&self, session_id: &str) -> Result<(), String> {
+        let pending_generation = {
+            let panes = self.pane_registry();
+            match panes.bindings.get(session_id) {
+                Some(binding)
+                    if binding.phase == ZellijPanePhase::Closing && binding.pane_id.is_none() =>
+                {
+                    Some(binding.generation)
+                }
+                Some(_) => {
+                    return Err(
+                        "Agent already has a Zellij pane transition in progress".to_string()
+                    );
+                }
+                None => None,
+            }
+        };
+        let Some(generation) = pending_generation else {
+            return Ok(());
+        };
+        self.close_unregistered_session_panes(session_id).await?;
+        let mut panes = self.pane_registry();
+        if panes.bindings.get(session_id).is_some_and(|binding| {
+            binding.generation == generation && binding.phase == ZellijPanePhase::Closing
+        }) {
+            panes.bindings.remove(session_id);
+        }
+        Ok(())
+    }
+
+    async fn retain_start_cleanup(&self, session_id: &str, generation: u64) {
+        let mut panes = self.pane_registry();
+        if let Some(binding) = panes
+            .bindings
+            .get_mut(session_id)
+            .filter(|binding| binding.generation == generation)
+        {
+            binding.phase = ZellijPanePhase::Closing;
+            binding.pane_id = None;
+        }
+    }
+
     pub async fn create_pane(&self, launch: ZellijLaunchSpec) -> Result<ZellijPaneBinding, String> {
         validate_launch_spec(&launch)?;
+        self.retry_pending_session_cleanup(&launch.session_id)
+            .await?;
         let generation = {
             let mut panes = self.pane_registry();
             if panes.bindings.contains_key(&launch.session_id) {
@@ -890,11 +934,25 @@ impl ZellijTerminalEngine {
                         }
                     }
                     if std::time::Instant::now() >= deadline {
-                        let _ = self
+                        match self
                             .close_unregistered_session_panes(&launch.session_id)
-                            .await;
-                        self.rollback_start(&launch.session_id, generation).await;
-                        return Err("Zellij did not report the created pane identity".to_string());
+                            .await
+                        {
+                            Ok(()) => {
+                                self.rollback_start(&launch.session_id, generation).await;
+                                return Err(
+                                    "Zellij did not report the created pane identity".to_string()
+                                );
+                            }
+                            Err(_) => {
+                                self.retain_start_cleanup(&launch.session_id, generation)
+                                    .await;
+                                return Err(
+                                    "Zellij did not report the created pane identity; pane cleanup is pending"
+                                        .to_string(),
+                                );
+                            }
+                        }
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                 }
@@ -1772,6 +1830,75 @@ mod tests {
             call.windows(2)
                 .any(|args| args == ["--pane-id", "terminal_9"])
         }));
+    }
+
+    #[tokio::test]
+    async fn failed_identity_cleanup_remains_tracked_until_a_retry_closes_the_pane() {
+        let root = tempfile::tempdir().unwrap();
+        let successful = |stdout: &[u8]| Output {
+            status: status(0),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        };
+        let failed = || Output {
+            status: status(1),
+            stdout: Vec::new(),
+            stderr: b"close failed".to_vec(),
+        };
+        let candidate = br#"[{"id":9,"is_plugin":false,"is_fullscreen":false,"title":"wardian:agent-1","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#;
+        let runner = FakeRunner::with_outputs([
+            successful(b"[]"),
+            successful(b"[]"),
+            successful(b"pane created\n"),
+            successful(b"[]"),
+            successful(candidate),
+            failed(),
+            successful(candidate),
+            successful(b""),
+            successful(b"[]"),
+            successful(b"[]"),
+            successful(b"terminal_10\n"),
+        ]);
+        let engine = ZellijTerminalEngine::with_runner(config(root.path()), runner.clone());
+        engine.prepare_runtime_directories().unwrap();
+        let launch = ZellijLaunchSpec {
+            session_id: "agent-1".to_string(),
+            executable: "provider".to_string(),
+            args: Vec::new(),
+            cwd: root.path().to_path_buf(),
+            env: BTreeMap::new(),
+        };
+
+        let error = engine
+            .create_pane(launch.clone())
+            .await
+            .expect_err("failed close must keep a cleanup record");
+        assert!(error.contains("cleanup is pending"));
+        let pending = engine
+            .binding("agent-1")
+            .await
+            .expect("pending cleanup binding");
+        assert_eq!(pending.phase, ZellijPanePhase::Closing);
+        assert!(pending.pane_id.is_none());
+
+        let replacement = engine
+            .create_pane(launch)
+            .await
+            .expect("retry closes the orphan before replacement");
+        assert_eq!(replacement.pane_id.unwrap().as_str(), "terminal_10");
+        assert_eq!(replacement.phase, ZellijPanePhase::Running);
+        assert_eq!(
+            runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call
+                    .windows(2)
+                    .any(|args| args == ["--pane-id", "terminal_9"]))
+                .count(),
+            2,
+        );
     }
 
     #[tokio::test]

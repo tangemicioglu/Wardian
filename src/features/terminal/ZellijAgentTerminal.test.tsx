@@ -11,9 +11,14 @@ import {
 } from "./ZellijAgentTerminal";
 
 const invokeMock = vi.fn();
+const sendTextMock = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+vi.mock("./terminalSessionClient", () => ({
+  terminalSessionClientFor: () => ({ sendText: sendTextMock }),
 }));
 
 vi.mock("./AgentTerminal", () => ({
@@ -68,12 +73,15 @@ function renderTerminals(...terminals: ReactNode[]) {
 describe("ZellijAgentTerminal", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    sendTextMock.mockReset();
+    sendTextMock.mockResolvedValue({ status: "accepted" });
     useZellijPresentationStore.setState({
       activeAgentId: null,
       activeTargetId: null,
       activationSerial: 0,
       brokerOwners: new Map(),
       focusRequestSerial: 0,
+      pendingInputByTarget: new Map(),
       slots: new Map(),
     });
     invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
@@ -131,6 +139,90 @@ describe("ZellijAgentTerminal", () => {
       );
       expect(screen.getByLabelText("Terminal input")).toHaveFocus();
     });
+  });
+
+  it("buffers printable and control input until implicit activation owns the broker", async () => {
+    let resolveActivation: ((sessionId: string) => void) | undefined;
+    sendTextMock
+      .mockResolvedValueOnce({ status: "rejected" })
+      .mockResolvedValue({ status: "accepted" });
+    invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command === "activate_zellij_agent_terminal") {
+        return new Promise<string>((resolve) => { resolveActivation = resolve; });
+      }
+      if (command === "get_zellij_terminal_preview") {
+        return Promise.resolve({
+          session_id: args.sessionId,
+          terminal_session_id: args.sessionId,
+          generation: 1,
+          broker_generation: 1,
+          broker_lease_epoch: 1,
+          broker_owner_presentation_id: null,
+          broker_activation_pending: false,
+          state: "running",
+          content: `${args.sessionId} preview`,
+        });
+      }
+      return Promise.reject(new Error(`Unexpected command ${command}`));
+    });
+    renderTerminals(terminal("agent-1"));
+    const preview = await screen.findByRole("application", { name: "Terminal for agent-1" });
+
+    fireEvent.pointerDown(preview);
+    await waitFor(() => expect(resolveActivation).toBeDefined());
+    fireEvent.keyDown(preview, { key: "a" });
+    fireEvent.keyDown(preview, { key: "c", ctrlKey: true });
+    expect(sendTextMock).not.toHaveBeenCalled();
+
+    await act(async () => { resolveActivation?.("agent-1"); });
+    await waitFor(() => expect(useZellijPresentationStore.getState().activeAgentId)
+      .toBe("agent-1"));
+    act(() => {
+      useZellijPresentationStore.getState().setBrokerOwner(
+        "agent-1",
+        1,
+        2,
+        "desktop:zellij-habitat-terminal",
+        false,
+        "live",
+      );
+    });
+
+    await waitFor(() => expect(sendTextMock).toHaveBeenCalledTimes(2));
+    expect(sendTextMock.mock.calls).toEqual([
+      ["desktop:zellij-habitat-terminal", "a\x03"],
+      ["desktop:zellij-habitat-terminal", "a\x03"],
+    ]);
+    expect(useZellijPresentationStore.getState().pendingInputByTarget.has(
+      "agents:agent-1:agent-1",
+    )).toBe(false);
+  });
+
+  it("shows a restart recovery state and does not promote a failed terminal", async () => {
+    invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command === "get_zellij_terminal_preview") {
+        return Promise.resolve({
+          session_id: args.sessionId,
+          terminal_session_id: args.sessionId,
+          generation: null,
+          broker_generation: null,
+          broker_lease_epoch: null,
+          broker_owner_presentation_id: null,
+          broker_activation_pending: false,
+          state: "error",
+          content: "",
+        });
+      }
+      return Promise.reject(new Error(`Unexpected command ${command}`));
+    });
+
+    renderTerminals(terminal("agent-1"));
+
+    const preview = await screen.findByRole("application", { name: "Terminal for agent-1" });
+    expect(screen.getByText("Terminal unavailable — restart the agent")).toBeInTheDocument();
+    expect(preview).toHaveAttribute("aria-disabled", "true");
+    expect(preview).toHaveAttribute("tabindex", "-1");
+    expect(screen.queryByTestId("live-habitat-terminal")).not.toBeInTheDocument();
   });
 
   it("repositions the singleton after a selected slot moves without resizing", async () => {
@@ -930,8 +1022,8 @@ describe("ZellijAgentTerminal", () => {
       requestedInteraction: "interactive",
     } as never;
     const slots = new Map([
-      ["slot-1", { agentId: "agent-1", node: document.createElement("div"), presentationId: "slot-1", props: ownerProps }],
-      ["slot-2", { agentId: "agent-2", node: document.createElement("div"), presentationId: "slot-2", props: ownerProps }],
+      ["slot-1", { agentId: "agent-1", node: document.createElement("div"), presentationId: "slot-1", props: ownerProps, terminalState: "running" as const }],
+      ["slot-2", { agentId: "agent-2", node: document.createElement("div"), presentationId: "slot-2", props: ownerProps, terminalState: "running" as const }],
     ]);
     useZellijPresentationStore.setState({ slots });
 
@@ -971,8 +1063,8 @@ describe("ZellijAgentTerminal", () => {
       renderState: "mounted",
       requestedInteraction: "interactive",
     } as never;
-    const slot1 = { agentId: "agent-1", node: document.createElement("div"), presentationId: "slot-1", props: ownerProps };
-    const slot2 = { agentId: "agent-2", node: document.createElement("div"), presentationId: "slot-2", props: ownerProps };
+    const slot1 = { agentId: "agent-1", node: document.createElement("div"), presentationId: "slot-1", props: ownerProps, terminalState: "running" as const };
+    const slot2 = { agentId: "agent-2", node: document.createElement("div"), presentationId: "slot-2", props: ownerProps, terminalState: "running" as const };
     useZellijPresentationStore.setState({
       activeAgentId: "agent-1",
       activeTargetId: "slot-1",

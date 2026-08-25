@@ -612,6 +612,32 @@ fn persist_runtime_agent_configs(app: &AppHandle) {
     super::save_state_snapshot(app, &snapshot);
 }
 
+pub(crate) fn persist_agent_record(
+    config: &AgentConfig,
+    created_at: Option<&str>,
+) -> Result<(), String> {
+    let workspace = if config.folder.is_empty() {
+        crate::utils::fs::resolve_cwd(&config.folder, &config.session_id)
+            .to_string_lossy()
+            .to_string()
+    } else {
+        config.folder.clone()
+    };
+    let project = wardian_core::db::project_name_from_workspace(&workspace);
+    wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
+        session_id: &config.session_id,
+        session_name: &config.session_name,
+        description: &config.description,
+        agent_class: &config.agent_class,
+        provider: &config.provider,
+        workspace: Some(&workspace),
+        project: project.as_deref(),
+        is_off: config.is_off,
+        created_at,
+    })
+    .map_err(|error| format!("Failed to persist agent runtime state: {error}"))
+}
+
 pub async fn spawn_agent(
     app: AppHandle,
     mut config: AgentConfig,
@@ -646,25 +672,13 @@ pub async fn spawn_agent(
         config.folder.clone()
     };
 
-    // Phase 2: Record/Update agent in SQLite with explicit ISO 8601 timestamp
     let born_to_save = initial_timestamp
         .clone()
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
-    let project = wardian_core::db::project_name_from_workspace(&expected_folder);
-    let _ = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
-        session_id: &config.session_id,
-        session_name: &config.session_name,
-        description: &config.description,
-        agent_class: &config.agent_class,
-        provider: &config.provider,
-        workspace: Some(&expected_folder),
-        project: project.as_deref(),
-        is_off: config.is_off,
-        created_at: Some(&born_to_save),
-    });
 
     let app_state = app.state::<AppState>();
     if config.is_off {
+        let _ = persist_agent_record(&config, Some(&born_to_save));
         app_state
             .interactions
             .start_provider_input_generation(
@@ -1082,13 +1096,6 @@ pub async fn spawn_agent(
         }
     };
 
-    // Phase 2: Record/Update status in SQLite with the real PID
-    let _ = wardian_core::db::update_agent_status(
-        &config.session_id,
-        if config.is_off { "Off" } else { "Idle" },
-        process_id,
-    );
-
     let terminal_runtime = match config.provider.as_str() {
         "codex" => terminal_runtime.ignore_scrollback_erase(),
         "pi" => terminal_runtime.reset_parser_on_scrollback_erase(),
@@ -1099,6 +1106,12 @@ pub async fn spawn_agent(
         .start_or_replace_runtime(&config.session_id, terminal_runtime, initial_geometry)
         .await
         .map_err(|error| format!("Failed to start terminal session broker: {error}"))?;
+
+    // Do not advertise the replacement as active in SQLite until both its
+    // provider pane/transport and broker runtime exist. A failed restart must
+    // leave the previous durable row intact for coherent recovery.
+    let _ = persist_agent_record(&config, Some(&born_to_save));
+    let _ = wardian_core::db::update_agent_status(&config.session_id, "Idle", process_id);
     let sid_out = config.session_id.clone();
     let provider_name_for_pty = config.provider.clone();
     let query_count = std::sync::Arc::new(std::sync::Mutex::new(0));

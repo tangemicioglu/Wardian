@@ -58,6 +58,7 @@ for (let line = 1; line <= 8; line += 1) {
 }
 setInterval(() => {}, 1000);
 process.stdin.setEncoding("utf8");
+if (process.stdin.isTTY) process.stdin.setRawMode(true);
 let pendingInput = "";
 process.stdin.on("data", (chunk) => {
   fs.appendFileSync(inputLogPath, JSON.stringify({ session_id: providerSessionId, chunk }) + "\\n");
@@ -203,6 +204,18 @@ test(
       ), 20_000, `Timed out locating ${agent.sessionId}`);
     }
 
+    const initiallyActivated = await driver.wait(async () => await driver.executeScript((sessionId) => {
+      const preview = document.querySelector(
+        `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sessionId)}"]`,
+      );
+      if (!(preview instanceof HTMLElement) || preview.getAttribute("aria-disabled") === "true") {
+        return false;
+      }
+      preview.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      return true;
+    }, spawnedAgents[0].sessionId), 20_000, "Timed out selecting the first passive terminal card");
+    assert.equal(initiallyActivated, true);
+
     const initial = await waitForZellijTerminalGrid(driver, spawnedAgents);
     const initialLiveAgent = initial.live[0];
     const nextAgent = spawnedAgents.find((agent) => agent.sessionId !== initialLiveAgent);
@@ -229,22 +242,79 @@ test(
         `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sessionId)}"]`,
       );
       if (!(preview instanceof HTMLElement) || preview.getAttribute("aria-disabled") === "true") {
-        return false;
+        return { activated: false, keyHandled: false };
       }
       preview.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-      return true;
+      const keyHandled = !preview.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "q", bubbles: true, cancelable: true }),
+      );
+      return { activated: true, keyHandled };
     }, nextAgent.sessionId);
-    assert.equal(activated, true, `Could not activate preview ${nextAgent.sessionId}`);
-    await driver.wait(async () => await driver.executeScript((sessionId) => (
-      document.querySelector('[data-zellij-presentation="live"]')
-        ?.getAttribute("data-zellij-agent-id") === sessionId
-      && document.querySelectorAll('[data-testid="agent-terminal-host"] .xterm').length === 1
-      && document.querySelector('[data-testid="agent-terminal-host"] .xterm')
-        ?.getAttribute("data-e2e-zellij-renderer") === "singleton"
-      && document.activeElement?.classList.contains("xterm-helper-textarea") === true
-      && document.activeElement?.closest('[data-testid="agent-terminal-host"]')
-        ?.getAttribute("data-terminal-session-id") === sessionId
-    ), nextAgent.sessionId), 20_000, "Timed out handing the singleton renderer to the selected pane");
+    assert.deepEqual(
+      activated,
+      { activated: true, keyHandled: true },
+      `Could not activate and buffer input for preview ${nextAgent.sessionId}`,
+    );
+    let lastHandoffState = null;
+    try {
+      await driver.wait(async () => {
+        lastHandoffState = await driver.executeScript((sessionId) => {
+          const live = document.querySelector('[data-zellij-presentation="live"]');
+          const xterms = document.querySelectorAll('[data-testid="agent-terminal-host"] .xterm');
+          const xterm = xterms[0];
+          const active = document.activeElement;
+          return {
+            liveAgentId: live?.getAttribute("data-zellij-agent-id") ?? null,
+            xtermCount: xterms.length,
+            stableRenderer: xterm?.getAttribute("data-e2e-zellij-renderer") ?? null,
+            activeClass: active?.className ?? null,
+            activeSessionId: active?.closest('[data-testid="agent-terminal-host"]')
+              ?.getAttribute("data-terminal-session-id") ?? null,
+            ready: live?.getAttribute("data-zellij-agent-id") === sessionId
+              && xterms.length === 1
+              && xterm?.getAttribute("data-e2e-zellij-renderer") === "singleton"
+              && active?.classList.contains("xterm-helper-textarea") === true
+              && active?.closest('[data-testid="agent-terminal-host"]')
+                ?.getAttribute("data-terminal-session-id") === sessionId,
+          };
+        }, nextAgent.sessionId);
+        return lastHandoffState.ready;
+      }, 20_000, "Timed out handing the singleton renderer to the selected pane");
+    } catch (error) {
+      throw new Error(`${error.message}; last handoff state: ${JSON.stringify(lastHandoffState)}`);
+    }
+
+    let bufferedInputReceipts;
+    try {
+      bufferedInputReceipts = await driver.wait(() => {
+        if (!fs.existsSync(inputLogPath)) return false;
+        const records = fs.readFileSync(inputLogPath, "utf8")
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        const selectedInput = records
+          .filter((record) => record.session_id === nextAgent.providerSessionId)
+          .map((record) => record.chunk)
+          .join("");
+        return selectedInput.includes("q") ? records : false;
+      }, 20_000, "First preview keystroke was not buffered through singleton handoff");
+    } catch (error) {
+      const flushState = await driver.executeScript(() => {
+        const viewport = document.querySelector('[data-zellij-singleton-viewport="true"]');
+        return {
+          length: viewport?.getAttribute("data-zellij-pending-input-length") ?? null,
+          status: viewport?.getAttribute("data-zellij-pending-input-status") ?? null,
+        };
+      });
+      throw new Error(`${error.message}; buffered input flush: ${JSON.stringify(flushState)}`);
+    }
+    assert.equal(
+      bufferedInputReceipts.some((record) => (
+        record.session_id !== nextAgent.providerSessionId
+        && record.chunk.includes("q")
+      )),
+      false,
+    );
 
     await driver.actions().sendKeys("focused-handoff", Key.ENTER).perform();
     const focusedInputReceipts = await driver.wait(() => {

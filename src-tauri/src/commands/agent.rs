@@ -1254,6 +1254,89 @@ async fn restore_agent_status_after_failed_runtime_start(
     }
 }
 
+fn prepare_failed_runtime_replacement(
+    agent: &mut crate::state::ActiveAgent,
+) -> (
+    std::sync::Arc<std::sync::Mutex<String>>,
+    AgentConfig,
+    Option<String>,
+) {
+    agent.runtime_generation = None;
+    agent.process_id = None;
+    agent.zellij_pane = None;
+    let config = {
+        let mut config = agent.config.lock().unwrap();
+        config.is_off = true;
+        config.clone()
+    };
+    let created_at = agent
+        .init_timestamp
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
+    let status = replace_agent_status_incarnation(agent, "Error");
+    (status, config, created_at)
+}
+
+async fn remove_failed_runtime_generation(
+    state: &AppState,
+    session_id: &str,
+    runtime_generation: Option<u64>,
+) {
+    let Some(runtime_generation) = runtime_generation else {
+        return;
+    };
+    if let Err(error) = state
+        .terminal_sessions
+        .terminate_and_remove_runtime(session_id, runtime_generation)
+        .await
+    {
+        manager::log_debug(&format!(
+            "[WARDIAN] terminal broker cleanup failed after restart error for {session_id}: {error}"
+        ));
+    }
+}
+
+async fn terminate_uncommitted_runtime(state: &AppState, active: &mut ActiveAgent) {
+    let session_id = active.config.lock().unwrap().session_id.clone();
+    let runtime_generation = active.runtime_generation.take();
+    release_zellij_pane_before_runtime_replacement(active);
+    manager::terminate_active_agent_process(active);
+    remove_failed_runtime_generation(state, &session_id, runtime_generation).await;
+}
+
+async fn settle_failed_runtime_replacement(
+    state: &AppState,
+    app: &AppHandle,
+    session_id: &str,
+    runtime_generation: Option<u64>,
+) {
+    remove_failed_runtime_generation(state, session_id, runtime_generation).await;
+    let (status, config, created_at, state_snapshot) = {
+        let mut agents = state.agents.lock().await;
+        let order = state.agent_order.lock().await;
+        let Some(agent) = agents.get_mut(session_id) else {
+            return;
+        };
+        let (status, config, created_at) = prepare_failed_runtime_replacement(agent);
+        let state_snapshot = manager::state_configs_snapshot(&agents, &order);
+        (status, config, created_at, state_snapshot)
+    };
+    if let Err(error) = manager::try_save_state_snapshot(&state_snapshot) {
+        manager::log_debug(&format!(
+            "[WARDIAN] failed to persist restart error state for {session_id}: {error}"
+        ));
+    }
+    if let Err(error) = crate::manager::spawn::persist_agent_record(&config, created_at.as_deref())
+    {
+        manager::log_debug(&format!(
+            "[WARDIAN] failed to persist restart error row for {session_id}: {error}"
+        ));
+    }
+    manager::publish_agent_status(app, session_id, &status);
+    let _ = app.emit("agents-updated", ());
+}
+
 #[cfg(test)]
 fn mark_agent_paused_off(agent: &mut crate::state::ActiveAgent) {
     agent.runtime_generation = None;
@@ -3213,7 +3296,8 @@ pub async fn resume_agent(
         prepare_runtime_replacement(agent)
     };
     manager::publish_agent_status(&app, &session_id, &prepared_runtime.status_arc);
-    if let Some(runtime_generation) = prepared_runtime.termination.runtime_generation {
+    let displaced_runtime_generation = prepared_runtime.termination.runtime_generation;
+    if let Some(runtime_generation) = displaced_runtime_generation {
         if let Err(error) = state
             .terminal_sessions
             .pause_runtime(&session_id, runtime_generation)
@@ -3239,25 +3323,19 @@ pub async fn resume_agent(
     {
         Ok(active) => active,
         Err(error) => {
-            restore_agent_status_after_failed_runtime_start(
+            settle_failed_runtime_replacement(
                 &state,
                 &app,
                 &session_id,
-                "Error",
+                displaced_runtime_generation,
             )
             .await;
             return Err(error);
         }
     };
     if let Err(error) = lifecycle_heartbeat.ensure_active("resume") {
-        manager::terminate_active_agent_process(&mut new_active);
-        restore_agent_status_after_failed_runtime_start(
-            &state,
-            &app,
-            &session_id,
-            "Error",
-        )
-        .await;
+        terminate_uncommitted_runtime(&state, &mut new_active).await;
+        settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
         return Err(error);
     }
     restore_runtime_state_after_resume(&mut new_active, &snapshot, starts_fresh);
@@ -3268,15 +3346,9 @@ pub async fn resume_agent(
     let mut pending_new_active = Some(new_active);
     if let Err(error) = lifecycle_heartbeat.ensure_active("resume") {
         if let Some(mut active) = pending_new_active.take() {
-            manager::terminate_active_agent_process(&mut active);
+            terminate_uncommitted_runtime(&state, &mut active).await;
         }
-        restore_agent_status_after_failed_runtime_start(
-            &state,
-            &app,
-            &session_id,
-            "Error",
-        )
-        .await;
+        settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
         return Err(error);
     }
     let commit_result = {
@@ -3302,15 +3374,9 @@ pub async fn resume_agent(
         Ok(result) => result,
         Err(error) => {
             if let Some(mut active) = pending_new_active.take() {
-                manager::terminate_active_agent_process(&mut active);
+                terminate_uncommitted_runtime(&state, &mut active).await;
             }
-            restore_agent_status_after_failed_runtime_start(
-                &state,
-                &app,
-                &session_id,
-                "Error",
-            )
-            .await;
+            settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
             return Err(error);
         }
     };
@@ -3497,22 +3563,7 @@ fn state_snapshot_with_replacement(
 }
 
 fn persist_agent_config(config: &AgentConfig, created_at: Option<&str>) -> Result<(), String> {
-    let workspace = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id)
-        .to_string_lossy()
-        .to_string();
-    let project = wardian_core::db::project_name_from_workspace(&workspace);
-    wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
-        session_id: &config.session_id,
-        session_name: &config.session_name,
-        description: &config.description,
-        agent_class: &config.agent_class,
-        provider: &config.provider,
-        workspace: Some(&workspace),
-        project: project.as_deref(),
-        is_off: config.is_off,
-        created_at,
-    })
-    .map_err(|error| error.to_string())
+    crate::manager::spawn::persist_agent_record(config, created_at)
 }
 
 fn rollback_agent_replacement(
@@ -5230,7 +5281,8 @@ mod tests {
         normalize_spawn_folder, normalize_workspace_record_path,
         persisted_resume_session_for_provider, prepare_agent_for_clear, prepare_clear_config,
         prepare_conversation_boundary, prepare_restored_config_for_spawn, prepare_resume_config,
-        prepare_resume_config_for_runtime, prepare_runtime_replacement,
+        prepare_failed_runtime_replacement, prepare_resume_config_for_runtime,
+        prepare_runtime_replacement,
         promote_fresh_provider_session_after_resume,
         provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
         replace_agent_status_incarnation, release_spawn_name_reservation, remove_agent,
@@ -8875,6 +8927,26 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             active.current_status.lock().unwrap().as_str(),
             "Processing..."
         );
+    }
+
+    #[test]
+    fn failed_runtime_replacement_is_a_durable_off_error_shell() {
+        let mut active = make_test_agent();
+        active.runtime_generation = Some(8);
+        active.process_id = Some(12345);
+        active.config.lock().unwrap().is_off = false;
+        let previous_status = active.current_status.clone();
+
+        let (status, config, _) = prepare_failed_runtime_replacement(&mut active);
+
+        assert!(config.is_off);
+        assert!(active.config.lock().unwrap().is_off);
+        assert_eq!(active.runtime_generation, None);
+        assert_eq!(active.process_id, None);
+        assert!(active.zellij_pane.is_none());
+        assert!(!Arc::ptr_eq(&previous_status, &status));
+        assert!(Arc::ptr_eq(&active.current_status, &status));
+        assert_eq!(status.lock().unwrap().as_str(), "Error");
     }
 
     #[test]

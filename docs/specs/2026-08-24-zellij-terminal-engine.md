@@ -201,8 +201,10 @@ is known, revoke the memory capability, and return the agent to `unbound`.
 4. Reposition the lifetime-stable singleton viewport over the selected
    presentation without moving its DOM subtree.
 5. Apply the selected pane's next complete snapshot to that host.
-6. After the replacement frame is visible, focus the retained xterm helper so
-   the next physical keystroke is routed to the pane that completed activation.
+6. Focus the retained xterm helper as soon as the replacement frame is visible.
+   Printable, control, navigation, and paste input received by the focused card
+   while that bounded handoff is pending is buffered and submitted once the
+   singleton owns the selected pane; it is never sent to the previous pane.
 
 The frontend queues activation requests. A later selection cannot overtake an
 earlier in-flight focus command and leave the singleton renderer associated
@@ -263,13 +265,19 @@ manifest.
 Lease teardown removes the generation from Wardian's pane registry before a
 same-session replacement can start. A failed Zellij close cannot authorize the
 old pane: the next spawn reconciles and closes any same-title pane before
-creating its replacement. If clear aborts before termination, Wardian moves
-the original pane lease back with the restored runtime instead of dropping it.
+creating its replacement. If pane creation succeeds but its identity cannot be
+reconciled, a failed cleanup remains registered as `closing`; a later spawn
+must retry and confirm same-title cleanup before it can allocate a replacement
+generation. If clear aborts before termination, Wardian moves the original
+pane lease back with the restored runtime instead of dropping it.
 Restart preflight leaves the old runtime and pane untouched. Once replacement
 spawn begins, Wardian detaches and terminates the complete old runtime, pauses
-its broker generation, and starts the replacement; a later failure leaves a
-clean runtime-less error state that can be retried, never old live metadata
-paired with a closed pane.
+its broker generation, and starts the replacement. Active metadata is not
+written to SQLite until the new pane transport and broker runtime both exist.
+A later failure removes the failed broker generation and durably records an
+off, runtime-less **Error** state; the card shows **Terminal unavailable —
+restart the agent** and never old live metadata, a `starting` preview, or a
+closed pane.
 
 Closing a Workbench surface never closes a pane. Closing the final surface
 keeps the singleton xterm/WebGL allocation mounted but changes its broker
@@ -302,7 +310,9 @@ provider transcript from repaint differences.
   renderer-ownership label or action.
 - Pointer or keyboard focus atomically selects the card's pane and positions
   the single live terminal viewport over that card or Agent Session surface.
-  From the user's perspective, the card is simply the terminal.
+  Input typed during the bounded selection handoff is buffered for that pane,
+  so the first printable or control key is not lost. From the user's
+  perspective, the card is simply the terminal.
 - The active card identifies itself without exposing Zellij implementation
   detail in routine use.
 - If the engine is recovering, previews show **Reconnecting terminal…** and no
