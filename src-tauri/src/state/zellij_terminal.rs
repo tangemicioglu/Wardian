@@ -237,8 +237,20 @@ fn bundled_binary(resources: &Path, name: &str) -> PathBuf {
 }
 
 fn session_name_for_home(home: &Path) -> String {
-    let normalized = home.to_string_lossy().replace('\\', "/").to_lowercase();
-    let digest = Sha256::digest(normalized.as_bytes());
+    #[cfg(windows)]
+    let identity = home
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase()
+        .into_bytes();
+    #[cfg(unix)]
+    let identity = {
+        use std::os::unix::ffi::OsStrExt;
+        home.as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(not(any(windows, unix)))]
+    let identity = home.to_string_lossy().into_owned().into_bytes();
+    let digest = Sha256::digest(identity);
     format!("wardian-{}", hex_prefix(&digest, 12))
 }
 
@@ -1484,6 +1496,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn wardian_home_namespaces_zellij_sessions_deterministically() {
         let first = session_name_for_home(Path::new("C:\\Wardian\\one"));
@@ -1491,6 +1504,19 @@ mod tests {
         assert_ne!(first, session_name_for_home(Path::new("C:\\Wardian\\two")));
         assert!(first.starts_with("wardian-"));
         assert_eq!(first.len(), "wardian-".len() + 12);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn posix_home_namespaces_preserve_case_and_literal_backslashes() {
+        let upper = session_name_for_home(Path::new("/tmp/Wardian/A"));
+        let lower = session_name_for_home(Path::new("/tmp/Wardian/a"));
+        let slash = session_name_for_home(Path::new("/tmp/Wardian/path"));
+        let backslash = session_name_for_home(Path::new("/tmp/Wardian\\path"));
+
+        assert_ne!(upper, lower);
+        assert_ne!(slash, backslash);
+        assert_eq!(upper, session_name_for_home(Path::new("/tmp/Wardian/A")));
     }
 
     #[tokio::test]
