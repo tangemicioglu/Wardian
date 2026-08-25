@@ -484,6 +484,64 @@ describe("RemoteMobileApp", () => {
     expect(screen.getByTestId("remote-watchlist-view")).toBeVisible();
   });
 
+  it("does not treat a transcript text-selection drag as back navigation", async () => {
+    useRemoteStore.setState({
+      agents: [
+        {
+          session_id: "agent-1",
+          session_name: "Alpha",
+          agent_class: "Coder",
+          provider: "codex",
+          workspace: "<absolute-workspace-path>",
+          status: "Idle",
+          latest_text: null,
+        },
+      ],
+      teams: [],
+      watchlists: [],
+      watchlistPrefs: { columns: [], sort: null, preserve_team_grouping_when_sorted: false, collapsed_team_ids: [] },
+      mobileCollapsedTeamIds: [],
+      activeWatchlistId: "all",
+      activeRemoteTab: "watchlist",
+      activeAgentId: "agent-1",
+      activeAgentViewMode: "chat",
+      chatEvents: [
+        {
+          id: "assistant-message",
+          session_id: "agent-1",
+          provider: "codex",
+          kind: "message",
+          role: "assistant",
+          text: "Select this transcript text.",
+          title: null,
+          status: null,
+          turn_id: "turn-1",
+          source: "provider_log",
+          command: null,
+          exit_code: null,
+          path: null,
+          language: null,
+          created_at: "2026-05-21T08:00:00.000Z",
+          sequence: 1,
+          metadata: {},
+        },
+      ],
+      status: "ready",
+      load: vi.fn(async () => {}),
+    });
+
+    render(<RemoteMobileApp />);
+
+    const detail = screen.getByTestId("remote-agent-detail");
+    const transcriptText = within(screen.getByLabelText("assistant message")).getByText("Select this transcript text.");
+    fireEvent.touchStart(transcriptText, { touches: [{ clientX: 12, clientY: 240 }] });
+    fireEvent.touchMove(transcriptText, { touches: [{ clientX: 104, clientY: 246 }] });
+    fireEvent.touchEnd(transcriptText, { changedTouches: [{ clientX: 104, clientY: 246 }], touches: [] });
+
+    expect(useRemoteStore.getState().activeAgentId).toBe("agent-1");
+    expect(detail).toBeVisible();
+  });
+
   it("returns from agent detail to the watchlist when browser history goes back", async () => {
     useRemoteStore.setState({
       agents: [
@@ -1548,6 +1606,9 @@ describe("RemoteMobileApp", () => {
 
     await userEvent.click(within(agentMessage).getByRole("button", { name: "Copy message" }));
     await waitFor(() => expect(clipboardWriteTextMock).toHaveBeenCalledWith("Use **bold** and `npm test`."));
+
+    await userEvent.click(within(agentMessage).getByRole("button", { name: "Message actions" }));
+    expect(await within(agentMessage).findByRole("menuitem", { name: "Copy message" })).toBeVisible();
   });
 
   it("submits remote approval choices through the PWA prompt action", async () => {

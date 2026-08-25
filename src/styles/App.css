@@ -849,8 +849,8 @@ summary,
   opacity: 1;
 }
 
-.chat-row-actions--with-toggle {
-  right: 38px;
+.chat-row-actions--rail {
+  flex-shrink: 0;
 }
 
 .chat-row-actions-direct {
@@ -912,10 +912,23 @@ summary,
   .chat-row .chat-row-actions--inline {
     display: block;
     position: absolute;
-    top: 2px;
+    top: -4px;
     right: 4px;
     margin-top: 0;
     opacity: 1;
+  }
+
+  /* The desktop collapse wrapper clips its child while it is zero-height.
+     Touch menus are pinned open, so let the popup escape that wrapper. */
+  .chat-row-actions--inline > .chat-row-actions {
+    overflow: visible;
+  }
+
+  /* A 44px touch target centered at the row top lands beside the second line
+     when assistant text wraps. Keep the hit area, but align its icon with the
+     first text line like the user bubble action. */
+  .chat-row-actions--inline.chat-row-actions--start {
+    top: -12px;
   }
 
   .chat-message-content {
@@ -927,8 +940,8 @@ summary,
     right: 4px;
   }
 
-  .chat-row-actions--with-toggle {
-    right: 48px;
+  .chat-row-actions--inline > .chat-row-actions {
+    overflow: visible;
   }
 
   .chat-activity-row {
@@ -988,10 +1001,6 @@ summary,
   .chat-row-actions--overlay {
     top: 2px;
     right: 4px;
-  }
-
-  .chat-row-actions--with-toggle {
-    right: 48px;
   }
 
   .chat-work-group-toggle {
