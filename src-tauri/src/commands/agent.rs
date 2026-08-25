@@ -5199,6 +5199,7 @@ pub async fn reorder_agents(
 ) -> Result<(), String> {
     manager::log_debug("[WARDIAN] reorder_agents called");
     let agents = state.agents.lock().await;
+    manager::validate_agent_order(&agents, &session_ids)?;
     let mut order = state.agent_order.lock().await;
     *order = session_ids;
     manager::save_state(&app, &agents, &order);
