@@ -172,7 +172,7 @@ async fn activate(
 }
 
 #[tokio::test]
-async fn fixed_runtime_geometry_ignores_owner_viewport_resizes() {
+async fn fixed_runtime_geometry_rejects_remote_owner_resizes() {
     let broker = Arc::new(TerminalSessionBroker::with_timer(Arc::new(
         ManualTimer::default(),
     )));
@@ -185,10 +185,20 @@ async fn fixed_runtime_geometry_ignores_owner_viewport_resizes() {
         )
         .await
         .expect("start fixed-geometry runtime");
-    let registration = register_desktop(&broker, "owner").await;
+    let registration = broker
+        .register_presentation(
+            registration(
+                "remote-owner",
+                TerminalClientKind::Remote,
+                TerminalRequestedInteraction::Interactive,
+            ),
+            TerminalClientIdentity::authenticated_remote("remote-owner", true),
+        )
+        .await
+        .expect("register remote owner");
     let active = activate(
         &broker,
-        "owner",
+        "remote-owner",
         generation,
         registration.broker_state.lease_epoch,
     )
@@ -198,7 +208,7 @@ async fn fixed_runtime_geometry_ignores_owner_viewport_resizes() {
         .resize(TerminalGeometryRequest {
             lease: TerminalLeaseIdentity {
                 session_id: "session-1".to_string(),
-                presentation_id: "owner".to_string(),
+                presentation_id: "remote-owner".to_string(),
                 runtime_generation: generation,
                 lease_epoch: active.broker_state.lease_epoch,
             },
@@ -210,7 +220,11 @@ async fn fixed_runtime_geometry_ignores_owner_viewport_resizes() {
 
     assert_eq!(
         result.decision.status,
-        TerminalLeaseDecisionStatus::Accepted
+        TerminalLeaseDecisionStatus::Rejected
+    );
+    assert_eq!(
+        result.decision.reason,
+        Some(TerminalLeaseRejectionReason::FixedGeometry)
     );
     assert_eq!(result.geometry, geometry(120, 40));
     assert!(result.snapshot.is_none());

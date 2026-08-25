@@ -216,7 +216,7 @@ Zellij frame locally. The previous frame is hidden during a binding change and
 input remains gated until the selected generation's complete frame is applied.
 Authenticated remote clients may acquire the broker input lease, but they
 cannot focus the desktop singleton or resize the canonical Zellij pane.
-Remote resize requests are rejected.
+Remote resize requests are rejected with `fixed_geometry`.
 
 ### Renderer or Workbench restart
 

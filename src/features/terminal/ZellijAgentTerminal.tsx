@@ -73,6 +73,19 @@ type ZellijBrokerObservation = {
   owner: string | null;
 };
 
+let nextPreviewRequestToken = 0;
+const latestPreviewRequestByAgent = new Map<string, number>();
+
+function beginPreviewRequest(agentId: string): number {
+  const token = ++nextPreviewRequestToken;
+  latestPreviewRequestByAgent.set(agentId, token);
+  return token;
+}
+
+function isCurrentPreviewRequest(agentId: string, token: number): boolean {
+  return latestPreviewRequestByAgent.get(agentId) === token;
+}
+
 function desktopMayOwnBroker(
   agentId: string,
   brokerOwners: Map<string, ZellijBrokerObservation>,
@@ -122,6 +135,9 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
       const removed = state.slots.get(targetId);
       const slots = new Map(state.slots);
       slots.delete(targetId);
+      if (removed && !Array.from(slots.values()).some((slot) => slot.agentId === removed.agentId)) {
+        latestPreviewRequestByAgent.delete(removed.agentId);
+      }
       const invalidatesActivation = pendingTargetId === targetId;
       if (invalidatesActivation) pendingTargetId = null;
       if (state.activeTargetId !== targetId) {
@@ -474,27 +490,25 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
   useEffect(() => {
     if (isLiveTarget || visibility !== "visible" || renderState !== "mounted") return;
     let cancelled = false;
-    let requestedPreviewSerial = 0;
-    let appliedPreviewSerial = 0;
     const refresh = async () => {
-      const serial = ++requestedPreviewSerial;
+      const requestToken = beginPreviewRequest(sessionId);
       try {
         const next = await invoke<ZellijTerminalPreview>("get_zellij_terminal_preview", {
           sessionId,
         });
-        if (!cancelled && serial >= appliedPreviewSerial) {
-          appliedPreviewSerial = serial;
-          setBrokerOwner(
-            sessionId,
-            next.broker_generation,
-            next.broker_lease_epoch,
-            next.broker_owner_presentation_id,
-          );
+        if (!cancelled) {
+          if (isCurrentPreviewRequest(sessionId, requestToken)) {
+            setBrokerOwner(
+              sessionId,
+              next.broker_generation,
+              next.broker_lease_epoch,
+              next.broker_owner_presentation_id,
+            );
+          }
           setPreview(next);
         }
       } catch {
-        if (!cancelled && serial >= appliedPreviewSerial) {
-          appliedPreviewSerial = serial;
+        if (!cancelled) {
           setPreview({
             session_id: sessionId,
             terminal_session_id: sessionId,

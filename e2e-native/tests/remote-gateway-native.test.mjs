@@ -25,14 +25,17 @@ const REMOTE_SESSION_COOKIE_NAME = "__Host-wardian_remote_session";
 const NATIVE_SCRIPT_TIMEOUT_MS = 120000;
 const ZELLIJ_DESKTOP_PRESENTATION_ID = "desktop:zellij-habitat-terminal";
 
-async function invokeTauri(driver, command, args = {}) {
-  const result = await driver.executeAsyncScript((cmd, payload, done) => {
+async function invokeTauriOutcome(driver, command, args = {}) {
+  return await driver.executeAsyncScript((cmd, payload, done) => {
     window.__TAURI_INTERNALS__.invoke(cmd, payload).then(
       (value) => done({ ok: true, value }),
       (error) => done({ ok: false, error: String(error) }),
     );
   }, command, args);
+}
 
+async function invokeTauri(driver, command, args = {}) {
+  const result = await invokeTauriOutcome(driver, command, args);
   assert.equal(result.ok, true, `${command} failed: ${result.error}`);
   return result.value;
 }
@@ -777,6 +780,16 @@ test("remote gateway authenticates broker ownership transitions across desktop a
   assert.equal(remoteBegin.result.decision.status, "accepted");
   assert.ok(remoteBegin.result.activation_id);
   assert.ok(remoteBegin.result.snapshot);
+  const desktopDuringRemoteHandoff = await invokeTauriOutcome(
+    session.driver,
+    "activate_zellij_agent_terminal",
+    {
+      sessionId,
+      brokerGeneration: remoteBegin.result.decision.runtime_generation,
+    },
+  );
+  assert.equal(desktopDuringRemoteHandoff.ok, false);
+  assert.match(desktopDuringRemoteHandoff.error, /ownership transfer is in progress/i);
   terminalSocket.send(JSON.stringify({
     type: "ack_activation",
     runtime_generation: remoteBegin.result.decision.runtime_generation,
@@ -791,6 +804,20 @@ test("remote gateway authenticates broker ownership transitions across desktop a
     { cols: 120, rows: 40 },
     "remote ownership must preserve Zellij's canonical frame geometry",
   );
+  terminalSocket.send(JSON.stringify({
+    type: "resize",
+    runtime_generation: remoteAck.result.broker_state.runtime_generation,
+    lease_epoch: remoteAck.result.broker_state.lease_epoch,
+    geometry_sequence: 3,
+    cols: 210,
+    rows: 65,
+  }));
+  const fixedGeometryResize = await inbox.next(
+    (message) => message.type === "resize_result"
+      && message.result?.decision?.reason === "fixed_geometry",
+  );
+  assert.equal(fixedGeometryResize.result.decision.status, "rejected");
+  assert.deepEqual(fixedGeometryResize.result.geometry, { cols: 120, rows: 40 });
 
   const desktopMirror = await waitFor("read-only desktop singleton during remote ownership", 30000, async () => {
     const value = await session.driver.executeScript((resourceKey, ownerId) => {

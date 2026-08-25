@@ -178,6 +178,7 @@ pub enum TerminalLeaseRejectionReason {
     ResyncNotRequired,
     StaleOwnerResync,
     StaleGeometrySequence,
+    FixedGeometry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

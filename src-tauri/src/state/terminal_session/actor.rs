@@ -2499,6 +2499,17 @@ impl TerminalSessionActor {
         if let Some(reason) = self.validate_active_lease(&request.lease) {
             return Ok(self.rejected_resize(reason, request.geometry_sequence));
         }
+        if self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.fixed_geometry)
+            .is_some()
+        {
+            return Ok(self.rejected_resize(
+                TerminalLeaseRejectionReason::FixedGeometry,
+                request.geometry_sequence,
+            ));
+        }
         let client_kind = self
             .presentations
             .get(&request.lease.presentation_id)

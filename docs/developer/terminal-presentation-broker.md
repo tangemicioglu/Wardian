@@ -22,7 +22,8 @@ For each live terminal session:
 4. Mirrors never resize the PTY.
 5. Split, move, hide, suspend, and close affect presentations, not the runtime.
 6. Authenticated remote terminal attachment uses the same per-agent broker;
-   it cannot focus the desktop viewport or resize canonical Zellij geometry.
+   it cannot focus the desktop viewport, and canonical Zellij resize requests
+   return the `fixed_geometry` lease rejection.
 7. With no open agent-terminal slot, the singleton renderer stays allocated but
    its presentation is hidden, read-only, and ineligible to own input.
 

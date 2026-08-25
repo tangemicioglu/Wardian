@@ -804,7 +804,8 @@ export type TerminalLeaseRejectionReason =
     | "stale_activation"
     | "resync_not_required"
     | "stale_owner_resync"
-    | "stale_geometry_sequence";
+    | "stale_geometry_sequence"
+    | "fixed_geometry";
 
 export type TerminalLeaseDecision = {
     status: TerminalLeaseDecisionStatus;

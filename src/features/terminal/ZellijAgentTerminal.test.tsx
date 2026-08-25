@@ -473,7 +473,7 @@ describe("ZellijAgentTerminal", () => {
     });
   });
 
-  it("ignores an older no-broker preview that completes after a newer generation", async () => {
+  it("orders preview ownership across two slots for the same agent", async () => {
     let resolveFirstPreview: ((preview: Record<string, unknown>) => void) | undefined;
     let previewCalls = 0;
     invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
@@ -496,7 +496,18 @@ describe("ZellijAgentTerminal", () => {
       });
     });
 
-    renderTerminals(terminal("agent-1"));
+    renderTerminals(
+      terminal("agent-1"),
+      <ZellijAgentTerminal
+        sessionId="agent-1"
+        presentationId="agent-session:agent-1"
+        visibility="visible"
+        renderState="mounted"
+        requestedInteraction="interactive"
+        provider="mock"
+        theme="dark"
+      />,
+    );
     await waitFor(() => expect(useZellijPresentationStore.getState().brokerOwners.get("agent-1"))
       .toEqual({
         generation: 5,

@@ -29,12 +29,18 @@ fn validate_habitat_activation(
     broker_generation: u64,
     observed_broker_generation: Option<u64>,
     broker_owner: Option<&str>,
+    broker_activation_pending: bool,
 ) -> Result<(), String> {
     if observed_broker_generation.is_some_and(|observed| observed != broker_generation) {
         return Err("Agent terminal generation changed; retry the selection".to_string());
     }
     if broker_owner.is_some_and(|owner| owner != HABITAT_TERMINAL_PRESENTATION_ID) {
         return Err("Agent terminal is currently controlled from another presentation".to_string());
+    }
+    if broker_activation_pending {
+        return Err(
+            "Agent terminal ownership transfer is in progress; retry the selection".to_string(),
+        );
     }
     Ok(())
 }
@@ -127,12 +133,19 @@ mod tests {
 
     #[test]
     fn habitat_activation_rejects_foreign_owners_and_stale_generations() {
-        assert!(validate_habitat_activation(4, None, None).is_ok());
+        assert!(validate_habitat_activation(4, None, None, false).is_ok());
+        assert!(validate_habitat_activation(
+            4,
+            Some(4),
+            Some(HABITAT_TERMINAL_PRESENTATION_ID),
+            false
+        )
+        .is_ok());
+        assert!(validate_habitat_activation(4, Some(3), None, false).is_err());
         assert!(
-            validate_habitat_activation(4, Some(4), Some(HABITAT_TERMINAL_PRESENTATION_ID)).is_ok()
+            validate_habitat_activation(4, Some(4), Some("remote:paired-device"), false).is_err()
         );
-        assert!(validate_habitat_activation(4, Some(3), None).is_err());
-        assert!(validate_habitat_activation(4, Some(4), Some("remote:paired-device")).is_err());
+        assert!(validate_habitat_activation(4, Some(4), None, true).is_err());
     }
 }
 
@@ -160,6 +173,7 @@ pub async fn activate_zellij_agent_terminal(
         broker_state.runtime_generation,
         broker_generation,
         broker_state.owner_presentation_id.as_deref(),
+        broker_state.pending_activation.is_some(),
     )?;
     engine
         .activate_pane(&session_id, binding.generation)

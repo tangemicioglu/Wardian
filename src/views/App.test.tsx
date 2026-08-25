@@ -44,6 +44,7 @@ const originalInnerWidth = window.innerWidth;
 const graphViewFilteredAgentsSpy = vi.hoisted(() => vi.fn());
 
 vi.mock("../features/terminal/ZellijAgentTerminal", () => ({
+  HABITAT_TERMINAL_PRESENTATION_ID: "desktop:zellij-habitat-terminal",
   ZellijAgentTerminalHost: () => null,
   ZellijAgentTerminal: ({
     sessionId,
@@ -59,7 +60,14 @@ vi.mock("../features/terminal/ZellijAgentTerminal", () => ({
     >
       Terminal {sessionId}
     </div>
-  )
+  ),
+  useZellijPresentationStore: (selector: (state: {
+    activeTargetId: string | null;
+    brokerOwners: Map<string, { owner: string | null }>;
+  }) => unknown) => selector({
+    activeTargetId: null,
+    brokerOwners: new Map<string, { owner: string | null }>(),
+  }),
 }));
 
 vi.mock("../features/terminal/UserTerminalPanel", () => ({
