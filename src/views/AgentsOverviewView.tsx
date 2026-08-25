@@ -132,7 +132,6 @@ const AgentTerminalSlot = React.memo(function AgentTerminalSlot({
       visibility={visibility}
       renderState={renderState}
       requestedInteraction="interactive"
-      autoActivateWhenUnowned
       provider={provider}
       isMaximized={isMaximized}
       theme={theme}

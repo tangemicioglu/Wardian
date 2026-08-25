@@ -415,6 +415,18 @@ test("remote gateway authenticates broker ownership transitions across desktop a
     );
     return { ok: exists };
   });
+  await waitFor("selectable spawned agent terminal", 30000, async () => {
+    const selected = await session.driver.executeScript((resourceKey) => {
+      const card = document.getElementById(`agent-card-${resourceKey}`);
+      const preview = card?.querySelector('[data-zellij-presentation="preview"]');
+      if (!(preview instanceof HTMLElement) || preview.getAttribute("aria-disabled") === "true") {
+        return false;
+      }
+      preview.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      return true;
+    }, sessionId);
+    return { ok: selected };
+  });
   const desktopRenderer = await waitFor("active singleton desktop terminal", 30000, async () => {
     const state = await session.driver.executeScript((resourceKey) => {
       const renderer = document.querySelector(

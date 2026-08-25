@@ -16,6 +16,7 @@ vi.mock('../features/terminal/ZellijAgentTerminal', async () => {
       sessionId: string;
       visibility: "visible" | "hidden";
       renderState: "mounted" | "suspended";
+      autoActivateWhenUnowned?: boolean;
       onTerminalFocus?: () => void;
     }) => {
       terminalRenderSpy(props);
@@ -352,6 +353,15 @@ describe('AgentsOverviewView maximize behavior', () => {
       presentationId: 'overview-surface:agent:agent-2',
       sessionId: 'agent-2',
     }));
+  });
+
+  it('keeps resident grid cards passive until the user selects one', () => {
+    renderGrid(null, agents);
+
+    expect(terminalRenderSpy).toHaveBeenCalled();
+    for (const [props] of terminalRenderSpy.mock.calls) {
+      expect(props).not.toHaveProperty('autoActivateWhenUnowned');
+    }
   });
 
   it('suspends every terminal presentation while the containing surface is hidden', () => {

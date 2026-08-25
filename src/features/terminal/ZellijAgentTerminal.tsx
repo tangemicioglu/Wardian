@@ -212,7 +212,6 @@ export interface ZellijAgentTerminalProps {
     brokerState: TerminalBrokerState,
     presentationState: TerminalPresentationState | null,
   ) => void;
-  autoActivateWhenUnowned?: boolean;
   autoFocus?: boolean;
 }
 
@@ -511,13 +510,13 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
       || visibility !== "visible"
       || renderState !== "mounted"
       || requestedInteraction !== "interactive"
-      || (!props.autoFocus && !props.autoActivateWhenUnowned)
+      || !props.autoFocus
     ) return;
     autoActivationAttempted.current = true;
     void activate(sessionId, targetId).catch((error) => {
       setActivationError(error instanceof Error ? error.message : "Terminal activation failed");
     });
-  }, [activate, isLiveTarget, props.autoActivateWhenUnowned, props.autoFocus, renderState, requestedInteraction, sessionId, targetId, visibility]);
+  }, [activate, isLiveTarget, props.autoFocus, renderState, requestedInteraction, sessionId, targetId, visibility]);
 
   if (isLiveTarget) {
     return (

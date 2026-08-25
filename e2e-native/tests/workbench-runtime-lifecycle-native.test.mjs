@@ -97,17 +97,25 @@ function zellijRendererSelector() {
     + '[data-testid="agent-terminal-host"]';
 }
 
+async function selectTerminalPreview(driver, root) {
+  await driver.wait(async () => (
+    driver.executeScript((node) => {
+      const preview = node.querySelector('[data-zellij-presentation="preview"]');
+      if (!(preview instanceof HTMLElement) || preview.getAttribute("aria-disabled") === "true") {
+        return false;
+      }
+      preview.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      return true;
+    }, root)
+  ), 20000);
+}
+
 async function waitForAgentSessionHost(driver) {
   const surfaceSelector = `[data-testid="agent-session-surface"]`
     + `[data-resource-key=${JSON.stringify(wardianSessionId)}]`;
   try {
     const surface = await driver.wait(until.elementLocated(By.css(surfaceSelector)), 20000);
-    await driver.executeScript((node) => {
-      const preview = node.querySelector('[data-zellij-presentation="preview"]');
-      if (preview instanceof HTMLElement && preview.getAttribute("aria-disabled") !== "true") {
-        preview.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-      }
-    }, surface);
+    await selectTerminalPreview(driver, surface);
     const host = await driver.wait(until.elementLocated(By.css(zellijRendererSelector())), 20000);
     await driver.wait(until.elementIsVisible(host), 20000);
     return host;
@@ -254,7 +262,11 @@ test(
     assert.notEqual(wardianSessionId, PROVIDER_SESSION_ID);
 
     await openWorkbenchSurface(driver, "agents-overview");
-    await driver.wait(until.elementLocated(By.id(`agent-card-${wardianSessionId}`)), 20000);
+    const agentCard = await driver.wait(
+      until.elementLocated(By.id(`agent-card-${wardianSessionId}`)),
+      20000,
+    );
+    await selectTerminalPreview(driver, agentCard);
     const agentsTerminalHost = await driver.wait(until.elementLocated(By.css(
       zellijRendererSelector(),
     )), 20000);

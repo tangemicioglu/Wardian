@@ -100,6 +100,10 @@ describe("ZellijAgentTerminal", () => {
     expect(await screen.findByText("agent-1 preview")).toBeInTheDocument();
     expect(await screen.findByText("agent-2 preview")).toBeInTheDocument();
     expect(screen.queryByTestId("live-habitat-terminal")).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.filter(
+      ([command]) => command === "activate_zellij_agent_terminal",
+    )).toHaveLength(0);
+    expect(useZellijPresentationStore.getState().activeTargetId).toBeNull();
 
     expect(screen.queryByText("Activate terminal")).not.toBeInTheDocument();
     fireEvent.pointerDown(screen.getByRole("application", { name: "Terminal for agent-1" }));
