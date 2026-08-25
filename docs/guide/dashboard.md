@@ -83,7 +83,7 @@ Shown by default:
 | Trend | Sparkline of the measure across the window |
 | Active | Time the agent was actually working in the window |
 | Turns | Completed turns in the window |
-| Tokens | Total tokens in the window |
+| Tokens | New content processed in the window: fresh input, cache writes, and output. Cache reads are excluded — see [Analytics](./analytics.md#reading-the-matrix). |
 | Files | Distinct files touched |
 | Lines | Lines added against removed, as a diverging bar |
 

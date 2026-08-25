@@ -56,7 +56,7 @@ fn the_summary_a_dashboard_asks_for_reaches_the_facts_that_were_ingested() {
 
     // New content processed. The pre-normalization store reported 836,678 for
     // this session — every cache read counted a second time.
-    assert_eq!(totals.tokens.billable_total(), Some(105_798));
+    assert_eq!(totals.tokens.processed_total(), Some(105_798));
 
     // Two real turns across four token_count records: codex emits one record
     // per model call, so this counts distinct `turn_id`, not records.
@@ -163,7 +163,7 @@ fn distinct_counts_survive_an_hour_boundary() {
 }
 
 #[test]
-fn the_series_and_the_summary_report_the_same_billable_total() {
+fn the_series_and_the_summary_report_the_same_processed_total() {
     // These are two implementations of one definition — one in SQL, one in
     // Rust. They have diverged before, and a divergence shows up as a chart
     // that disagrees with the tile directly above it.
@@ -173,9 +173,9 @@ fn the_series_and_the_summary_report_the_same_billable_total() {
 
     let charted: i64 = points
         .iter()
-        .filter_map(|point| point.billable_tokens)
+        .filter_map(|point| point.processed_tokens)
         .sum();
-    assert_eq!(Some(charted), totals.tokens.billable_total());
+    assert_eq!(Some(charted), totals.tokens.processed_total());
 }
 
 #[test]

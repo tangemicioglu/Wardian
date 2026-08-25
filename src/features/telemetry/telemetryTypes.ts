@@ -57,8 +57,9 @@ export interface TelemetryBreakdownRow {
   active: ActiveTime;
   turns: number;
   tokens: TokenCounts;
-  /** Fresh input plus output; excludes cache reads. `null` when unreported. */
-  billable_tokens: number | null;
+  /** New content processed: fresh input, cache writes, and output; excludes
+   * cache reads. `null` when unreported. */
+  processed_tokens: number | null;
   files_touched: number;
   lines_added: number;
   lines_removed: number;
@@ -87,7 +88,7 @@ export interface HorizonWindow {
 export interface TelemetryOverview {
   window: HorizonWindow;
   summary: TelemetrySummary;
-  billable_tokens: number | null;
+  processed_tokens: number | null;
   active_is_mixed: boolean;
   by_provider: TelemetryBreakdownRow[];
   by_agent: TelemetryBreakdownRow[];
@@ -125,9 +126,11 @@ export type TelemetryMeasure =
   | "turns"
   | "fresh_tokens"
   | "cached_tokens"
+  | "cache_write_tokens"
   | "output_tokens"
   | "reasoning_tokens"
   | "total_tokens"
+  | "cache_hit_rate"
   | "files"
   | "lines_added"
   | "lines_removed"
@@ -182,7 +185,8 @@ export interface TelemetryAgentRow {
   /** Measured and inferred durations summed. */
   active_ms: number;
   turns: number;
-  /** Fresh input plus output; cache reads excluded. `null` when unreported. */
+  /** New content processed: fresh input, cache writes, and output. Cache reads
+   * are excluded. `null` when unreported. */
   total_tokens: number | null;
   cached_tokens: number | null;
   files_touched: number;
@@ -215,7 +219,7 @@ export interface FleetRow {
   key: string;
   label: string;
   sublabel: string | null;
-  /** Billable tokens per hour. `null` when the provider reports no tokens. */
+  /** Processed tokens per hour. `null` when the provider reports no tokens. */
   tokens_per_hour: number | null;
   turns_per_hour: number;
   active_ms: number;
@@ -275,7 +279,7 @@ export interface FleetProviderRow {
   active_agent_count: number;
   active_ms: number;
   turns: number;
-  /** Billable tokens. `null` when the provider publishes no token accounting. */
+  /** Processed tokens. `null` when the provider publishes no token accounting. */
   total_tokens: number | null;
   files_touched: number;
   lines_added: number;

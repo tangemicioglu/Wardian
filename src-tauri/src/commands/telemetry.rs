@@ -39,7 +39,7 @@ pub struct TelemetryBreakdownRowDto {
     pub active: ActiveTime,
     pub turns: i64,
     pub tokens: TokenCounts,
-    pub billable_tokens: Option<i64>,
+    pub processed_tokens: Option<i64>,
     pub files_touched: i64,
     pub lines_added: i64,
     pub lines_removed: i64,
@@ -62,7 +62,8 @@ pub struct TelemetryAgentRowDto {
     /// store but is not worth a column.
     pub active_ms: i64,
     pub turns: i64,
-    /// Fresh input plus output — new content processed, cache reads excluded.
+    /// New content processed: fresh input, cache writes, and output. Cache
+    /// reads are excluded; see `TokenCounts::processed_total`.
     pub total_tokens: Option<i64>,
     pub cached_tokens: Option<i64>,
     pub files_touched: i64,
@@ -170,9 +171,10 @@ pub struct TelemetryMatrixDto {
 pub struct TelemetryOverviewDto {
     pub window: HorizonWindow,
     pub summary: TelemetrySummary,
-    /// Fresh input plus output. Computed once here so every surface shows the
-    /// same figure rather than each re-deriving what "tokens used" means.
-    pub billable_tokens: Option<i64>,
+    /// New content processed: fresh input, cache writes, and output. Computed
+    /// once here so every surface shows the same figure rather than each
+    /// re-deriving what "tokens used" means.
+    pub processed_tokens: Option<i64>,
     /// True when measured and clustered durations both contributed, so any
     /// single active-time figure shown is a mixture of a measurement and an
     /// estimate and has to be labelled as one.
@@ -223,7 +225,7 @@ pub fn telemetry_overview(horizon: String) -> Result<TelemetryOverviewDto, Strin
             )?)
         };
         Ok(TelemetryOverviewDto {
-            billable_tokens: summary.tokens.billable_total(),
+            processed_tokens: summary.tokens.processed_total(),
             active_is_mixed: summary.active.is_mixed(),
             by_provider: to_dtos(rows(Dimension::Provider)?, Dimension::Provider, &labels),
             by_agent: to_dtos(rows(Dimension::Agent)?, Dimension::Agent, &labels),
@@ -287,7 +289,7 @@ pub fn telemetry_dashboard(
                 sublabel: sublabel_for(&row.key, Dimension::Agent, &labels),
                 active_ms: row.active.measured_ms + row.active.clustered_ms,
                 turns: row.turns,
-                total_tokens: row.tokens.billable_total(),
+                total_tokens: row.tokens.processed_total(),
                 cached_tokens: row.tokens.cached_input_tokens,
                 files_touched: row.files_touched,
                 lines_added: row.lines_added,
@@ -344,7 +346,7 @@ pub fn telemetry_dashboard(
                 .map(|row| TelemetryProviderRowDto {
                     active_ms: row.active.measured_ms + row.active.clustered_ms,
                     turns: row.turns,
-                    total_tokens: row.tokens.billable_total(),
+                    total_tokens: row.tokens.processed_total(),
                     files_touched: row.files_touched,
                     lines_added: row.lines_added,
                     lines_removed: row.lines_removed,
@@ -1153,7 +1155,7 @@ fn to_dtos(
     rows.into_iter()
         .map(|row| TelemetryBreakdownRowDto {
             label: label_for(&row.key, dimension, labels),
-            billable_tokens: row.tokens.billable_total(),
+            processed_tokens: row.tokens.processed_total(),
             key: row.key,
             active: row.active,
             turns: row.turns,

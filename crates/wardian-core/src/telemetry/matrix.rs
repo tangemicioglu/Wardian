@@ -45,10 +45,21 @@ pub enum Measure {
     /// Prompt tokens served from cache. Its own measure because it dwarfs fresh
     /// input, running roughly 50x on a real habitat.
     CachedTokens,
+    /// Prompt tokens written *into* the cache — content read for the first time
+    /// and billed at or above the fresh-input rate. Distinct from
+    /// [`Measure::CachedTokens`] in every way that matters: that is replayed
+    /// work, this is new work. Claude routes nearly all of its fresh prompt
+    /// content through here, so its absence understated real sessions ~5x.
+    CacheWriteTokens,
     OutputTokens,
     ReasoningTokens,
-    /// Fresh input plus output: new content processed.
+    /// Fresh input, cache writes, and output: new content processed.
     TotalTokens,
+    /// Share of the prompt served from cache, as a percentage.
+    ///
+    /// A ratio, not a count. It cannot be summed across buckets or rows — see
+    /// [`Measure::is_ratio`].
+    CacheHitRate,
     Files,
     LinesAdded,
     LinesRemoved,
@@ -62,9 +73,11 @@ impl Measure {
             Measure::Turns => "turns",
             Measure::FreshTokens => "fresh_tokens",
             Measure::CachedTokens => "cached_tokens",
+            Measure::CacheWriteTokens => "cache_write_tokens",
             Measure::OutputTokens => "output_tokens",
             Measure::ReasoningTokens => "reasoning_tokens",
             Measure::TotalTokens => "total_tokens",
+            Measure::CacheHitRate => "cache_hit_rate",
             Measure::Files => "files",
             Measure::LinesAdded => "lines_added",
             Measure::LinesRemoved => "lines_removed",
@@ -80,9 +93,11 @@ impl Measure {
             "turns" => Measure::Turns,
             "fresh_tokens" => Measure::FreshTokens,
             "cached_tokens" => Measure::CachedTokens,
+            "cache_write_tokens" => Measure::CacheWriteTokens,
             "output_tokens" => Measure::OutputTokens,
             "reasoning_tokens" => Measure::ReasoningTokens,
             "total_tokens" => Measure::TotalTokens,
+            "cache_hit_rate" => Measure::CacheHitRate,
             "files" => Measure::Files,
             "lines_added" => Measure::LinesAdded,
             "lines_removed" => Measure::LinesRemoved,
@@ -97,6 +112,18 @@ impl Measure {
         matches!(self, Measure::Turns | Measure::Files)
     }
 
+    /// Whether this measure is a ratio, and therefore unsummable.
+    ///
+    /// Separate from [`Self::is_distinct_count`] because the two are unsummable
+    /// for different reasons. A distinct count would double count a repeated
+    /// member; a ratio has no meaningful sum at all, and averaging its cells
+    /// weights a quiet bucket the same as a busy one. Both must be recomputed
+    /// for a total rather than accumulated, which the SQL expression does by
+    /// deriving the ratio from the components inside whatever group it is given.
+    pub fn is_ratio(self) -> bool {
+        matches!(self, Measure::CacheHitRate)
+    }
+
     /// Which fact table this measure is drawn from.
     fn source(self) -> MeasureSource {
         match self {
@@ -104,9 +131,11 @@ impl Measure {
             Measure::Turns
             | Measure::FreshTokens
             | Measure::CachedTokens
+            | Measure::CacheWriteTokens
             | Measure::OutputTokens
             | Measure::ReasoningTokens
-            | Measure::TotalTokens => MeasureSource::Turns,
+            | Measure::TotalTokens
+            | Measure::CacheHitRate => MeasureSource::Turns,
             Measure::Files | Measure::LinesAdded | Measure::LinesRemoved | Measure::LinesChanged => {
                 MeasureSource::Edits
             }
@@ -119,9 +148,18 @@ impl Measure {
             Measure::Turns => "COUNT(DISTINCT COALESCE(turn_id, event_key))",
             Measure::FreshTokens => "COALESCE(SUM(input_tokens), 0)",
             Measure::CachedTokens => "COALESCE(SUM(cached_input_tokens), 0)",
+            Measure::CacheWriteTokens => "COALESCE(SUM(cache_write_tokens), 0)",
             Measure::OutputTokens => "COALESCE(SUM(output_tokens), 0)",
             Measure::ReasoningTokens => "COALESCE(SUM(reasoning_tokens), 0)",
-            Measure::TotalTokens => "COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)",
+            Measure::TotalTokens => {
+                "COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(cache_write_tokens), 0)                  + COALESCE(SUM(output_tokens), 0)"
+            }
+            // Recomputed from components rather than averaged, which is what
+            // makes a row total meaningful. Scaled to a percentage; the zero
+            // guard keeps a bucket with no prompt tokens at 0 instead of NULL.
+            Measure::CacheHitRate => {
+                "CASE WHEN COALESCE(SUM(input_tokens), 0)                           + COALESCE(SUM(cache_write_tokens), 0)                           + COALESCE(SUM(cached_input_tokens), 0) = 0                       THEN 0                       ELSE 100 * COALESCE(SUM(cached_input_tokens), 0)                            / (COALESCE(SUM(input_tokens), 0)                               + COALESCE(SUM(cache_write_tokens), 0)                               + COALESCE(SUM(cached_input_tokens), 0)) END"
+            }
             Measure::Files => "COUNT(DISTINCT path)",
             Measure::LinesAdded => "COALESCE(SUM(lines_added), 0)",
             Measure::LinesRemoved => "COALESCE(SUM(lines_removed), 0)",
@@ -408,7 +446,10 @@ pub fn matrix_at(
         buckets,
         rows,
         max_cell,
-        cells_are_not_additive: measure.is_distinct_count(),
+        // A ratio is unsummable for a different reason than a distinct count,
+        // but the surface consequence is the same: its cells do not add up to
+        // its total, and nothing may present them as if they do.
+        cells_are_not_additive: measure.is_distinct_count() || measure.is_ratio(),
     })
 }
 
@@ -844,19 +885,116 @@ mod tests {
         conn
     }
 
-    const EVERY_MEASURE: [Measure; 11] = [
+    const EVERY_MEASURE: [Measure; 13] = [
         Measure::ActiveMs,
         Measure::Turns,
         Measure::FreshTokens,
         Measure::CachedTokens,
+        Measure::CacheWriteTokens,
         Measure::OutputTokens,
         Measure::ReasoningTokens,
         Measure::TotalTokens,
+        Measure::CacheHitRate,
         Measure::Files,
         Measure::LinesAdded,
         Measure::LinesRemoved,
         Measure::LinesChanged,
     ];
+
+    /// A store holding hand-written turns, so a measure's arithmetic can be
+    /// pinned against numbers chosen to make a wrong answer obvious.
+    fn store_with_turns(turns: &[(&str, i64, i64, i64, i64)]) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        for (index, (ended_at, input, cached, cache_write, output)) in turns.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO telemetry_turns
+                   (event_key, session_id, provider, model, ended_at, input_tokens,
+                    cached_input_tokens, cache_write_tokens, output_tokens,
+                    source_key, source_path)
+                 VALUES (?1, 'agent-1', 'claude', 'claude-sonnet-5', ?2, ?3, ?4, ?5, ?6, 'k', 'p')",
+                params![
+                    format!("e{index}"),
+                    ended_at,
+                    input,
+                    cached,
+                    cache_write,
+                    output
+                ],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn the_total_counts_cache_writes_and_still_excludes_cache_reads() {
+        // The real 400-turn claude session these figures come from: claude sends
+        // almost nothing as plain input, so a total of input + output alone
+        // reports 471,400 for work that processed 2,357,271 tokens.
+        let conn = store_with_turns(&[(
+            "2026-08-13T15:00:00.000Z",
+            8_446,
+            80_194_623,
+            1_885_871,
+            462_954,
+        )]);
+        let total = |measure| {
+            matrix_at(&conn, &window(), Dimension::Agent, measure, usize::MAX, None)
+                .unwrap()
+                .rows[0]
+                .total
+        };
+
+        assert_eq!(total(Measure::TotalTokens), 2_357_271);
+        assert_eq!(total(Measure::CacheWriteTokens), 1_885_871);
+        // Neither the old figure nor the sum of every component.
+        assert_ne!(total(Measure::TotalTokens), 471_400);
+        assert_ne!(total(Measure::TotalTokens), 82_551_894);
+    }
+
+    #[test]
+    fn the_hit_rate_is_recomputed_for_row_totals_rather_than_averaged() {
+        // Two buckets with very different hit rates and very different volumes.
+        // The mean of the cells is 50%; the real rate over the window is 99%,
+        // because the busy bucket dwarfs the quiet one. Averaging cells would
+        // let one idle bucket rewrite the window's answer.
+        let conn = store_with_turns(&[
+            ("2026-08-13T14:30:00.000Z", 100, 0, 0, 0),
+            ("2026-08-13T15:30:00.000Z", 100, 99_900, 0, 0),
+        ]);
+        let matrix = matrix_at(
+            &conn,
+            &window(),
+            Dimension::Agent,
+            Measure::CacheHitRate,
+            usize::MAX,
+            None,
+        )
+        .unwrap();
+
+        let row = &matrix.rows[0];
+        assert_eq!(row.total, 99);
+        let mean: i64 = row.cells.iter().sum::<i64>() / row.cells.len() as i64;
+        assert_ne!(row.total, mean);
+        // And the surface must be told not to present the cells as summing.
+        assert!(matrix.cells_are_not_additive);
+    }
+
+    #[test]
+    fn a_window_with_no_prompt_tokens_has_a_hit_rate_of_zero_not_an_error() {
+        let conn = store_with_turns(&[("2026-08-13T15:00:00.000Z", 0, 0, 0, 12)]);
+        let matrix = matrix_at(
+            &conn,
+            &window(),
+            Dimension::Agent,
+            Measure::CacheHitRate,
+            usize::MAX,
+            None,
+        )
+        .unwrap();
+        assert_eq!(matrix.rows[0].total, 0);
+    }
 
     #[test]
     fn batched_totals_agree_with_the_matrix_they_skip_the_axis_for() {

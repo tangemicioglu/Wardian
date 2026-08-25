@@ -110,7 +110,7 @@ export const DASHBOARD_COLUMNS: readonly DashboardColumn[] = [
     visual: "bar",
     sortable: true,
     width: "minmax(88px, 0.7fr)",
-    hint: "Billable tokens in the window — fresh input plus output",
+    hint: "New content processed in the window — fresh input, cache writes, and output. Cache reads excluded.",
   },
   {
     id: "files",
@@ -137,7 +137,7 @@ export const DASHBOARD_COLUMNS: readonly DashboardColumn[] = [
     visual: "bar",
     sortable: true,
     width: "minmax(96px, 0.9fr)",
-    hint: "Billable tokens per hour, for comparing pace rather than volume",
+    hint: "Processed tokens per hour, for comparing pace rather than volume",
   },
   {
     id: "turns_per_hour",
