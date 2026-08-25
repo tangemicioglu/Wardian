@@ -62,11 +62,11 @@ Each card can show either:
 Use the **Terminal** / **Chat** button in the card header for a temporary per-agent override. The default comes from **Settings > Agents > Agent card display**. Unsent Chat text stays with that agent when you switch modes.
 
 Wardian keeps one interactive Habitat terminal renderer. Inactive Terminal cards
-show live, read-only pane previews and an **Activate terminal** action. Activate
-a card before typing; Wardian focuses that agent's Zellij pane and moves the
-shared interactive terminal into the card. Activating another card moves the
-same terminal renderer instead of creating another terminal. Merely tabbing
-through the Workbench does not change the active agent.
+show live, read-only pane previews without exposing renderer ownership. Click or
+keyboard-focus a preview and Wardian selects that agent's Zellij pane before the
+first input is accepted. The lifetime-stable terminal viewport is then positioned
+over the card; its xterm and WebGL objects are not moved, remounted, or recreated.
+From the user's perspective, each card remains its agent's terminal.
 
 ## Arrange and Focus Agents
 

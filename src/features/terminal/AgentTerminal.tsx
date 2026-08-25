@@ -94,6 +94,7 @@ type TerminalRendererEntry = {
   webglAddon: WebglAddon | null;
   webglAttempted: boolean;
   webglActivatedOnce: boolean;
+  webglActivationCount: number;
   host: HTMLDivElement;
   terminalLinkOptions: TerminalLinkProviderOptions;
   // Pixel-perfect still of the last WebGL frame, overlaid while the terminal
@@ -292,6 +293,7 @@ declare global {
           fontSize: number | null;
           webglActive: boolean;
           webglAttempted: boolean;
+          webglActivationCount: number;
           cssCellWidth: number | null;
           cssCellHeight: number | null;
           deviceCellWidth: number | null;
@@ -482,6 +484,7 @@ if (typeof window !== "undefined" && shouldExposeTerminalDebug()) {
                 fontSize: nullableNumber(rendererTerm.options.fontSize),
                 webglActive: renderer.webglAddon !== null,
                 webglAttempted: renderer.webglAttempted,
+                webglActivationCount: renderer.webglActivationCount,
                 cssCellWidth: nullableNumber(renderDimensions?.css?.cell?.width),
                 cssCellHeight: nullableNumber(renderDimensions?.css?.cell?.height),
                 deviceCellWidth: nullableNumber(renderDimensions?.device?.cell?.width),
@@ -984,6 +987,7 @@ function loadWebglForRenderer(renderer: TerminalRendererEntry, sessionId: string
     renderer.term.loadAddon(webglAddon);
     renderer.webglAddon = webglAddon;
     renderer.webglActivatedOnce = true;
+    renderer.webglActivationCount += 1;
     webglPool.add(sessionId);
     removeSnapshotOverlay(renderer);
     renderer.term.refresh(0, Math.max(renderer.term.rows - 1, 0));
@@ -1809,11 +1813,46 @@ async function getOrCreateTerminalSession(
   isCancelled?: () => boolean,
 ) {
   const existing = terminalSessionMap.get(terminalKey);
-  const resolvedProvider = await resolveTerminalProvider(sessionId, provider ?? existing?.provider);
+  const resolvedProvider = await resolveTerminalProvider(
+    sessionId,
+    provider ?? (existing?.sessionId === sessionId ? existing.provider : undefined),
+  );
   if (isCancelled?.()) {
     return null;
   }
   if (existing) {
+    if (existing.sessionId !== sessionId) {
+      existing.outputReadyUnlisten?.();
+      existing.terminalClearedUnlisten?.();
+      existing.outputReadyUnlisten = null;
+      existing.terminalClearedUnlisten = null;
+      existing.sessionId = sessionId;
+      existing.brokerState = null;
+      existing.presentationState = null;
+      existing.geometrySequence = 0;
+      existing.applyingCanonicalGeometry = false;
+      existing.brokerDecoder = new TextDecoder();
+      existing.legacyMode = false;
+      existing.lastReportedSize = null;
+      existing.lastMeasuredHostSize = null;
+      existing.recentWritePreviews = [];
+      existing.recentNormalizedWritePreviews = [];
+      existing.rawOutputLog = [];
+      existing.rawOutputLogChars = 0;
+      existing.latestTitle = null;
+      existing.pendingForceResize = true;
+      existing.generation += 1;
+      existing.terminalOutputFilter.reset();
+      const parserWithReset = existing.parser as HeadlessTerminal & { reset?: () => void };
+      if (typeof parserWithReset.reset === "function") parserWithReset.reset();
+      else existing.parser.write("\x1bc");
+      if (existing.renderer) {
+        existing.renderer.ready = false;
+        existing.renderer.revealGeneration += 1;
+        existing.renderer.term.reset();
+        removeSnapshotOverlay(existing.renderer);
+      }
+    }
     existing.terminalClient = terminalSessionClientFor(sessionId);
     existing.presentationId = presentationId;
     setSessionProvider(existing, resolvedProvider);
@@ -2078,6 +2117,7 @@ function createRenderer(terminalKey: string, entry: TerminalSessionEntry) {
     webglAddon: null,
     webglAttempted: false,
     webglActivatedOnce: false,
+    webglActivationCount: 0,
     host,
     terminalLinkOptions,
     snapshotOverlay: null,
@@ -2259,6 +2299,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   onPresentationStateChange,
   autoActivateWhenUnowned = false,
   autoFocus = false,
+  lifetimeStableRenderer = false,
 }: {
   sessionId: string;
   presentationId: string;
@@ -2279,6 +2320,11 @@ export const AgentTerminal = memo(function AgentTerminal({
   autoActivateWhenUnowned?: boolean;
   /** Focuses and activates this visible presentation once after it becomes ready. */
   autoFocus?: boolean;
+  /**
+   * Keeps the one Habitat renderer and WebGL context alive across agent bindings.
+   * Zellij owns provider terminal state; this renderer is only its stable viewport.
+   */
+  lifetimeStableRenderer?: boolean;
   onPresentationStateChange?: (
     brokerState: TerminalBrokerState,
     presentationState: TerminalPresentationState | null,
@@ -2308,6 +2354,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   const rendererRestoreRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoreEvictedRendererRef = useRef<() => Promise<void>>(async () => undefined);
   const rendererReadyRef = useRef(false);
+  const rendererReadySessionIdRef = useRef<string | null>(null);
   const autoFocusAttemptedRef = useRef(false);
   const revealGenerationRef = useRef(0);
   const physicalIntersectionRef = useRef(typeof IntersectionObserver === "undefined");
@@ -2353,12 +2400,13 @@ export const AgentTerminal = memo(function AgentTerminal({
 
   const markRendererReady = useCallback((ready: boolean) => {
     rendererReadyRef.current = ready;
+    rendererReadySessionIdRef.current = ready ? sessionId : null;
     const renderer = terminalSessionMap.get(terminalKey)?.renderer;
     if (renderer) {
       renderer.ready = ready;
     }
     setRendererReady(ready);
-  }, [terminalKey]);
+  }, [sessionId, terminalKey]);
 
   const invalidateRendererReveal = useCallback(() => {
     revealGenerationRef.current += 1;
@@ -2832,7 +2880,12 @@ export const AgentTerminal = memo(function AgentTerminal({
         session.currentTheme = sessionTermTheme;
         lastThemeSignalRef.current = sessionTermTheme;
 
-        const renderer = mountRenderer(terminalKey, session, terminalRef.current);
+        const renderer = mountRenderer(
+          terminalKey,
+          session,
+          terminalRef.current,
+          lifetimeStableRenderer ? { evictExisting: false } : undefined,
+        );
         if (!renderer) {
           return;
         }
@@ -2903,7 +2956,7 @@ export const AgentTerminal = memo(function AgentTerminal({
               } else {
                 invalidateRendererReveal();
                 settleBackend();
-                if (!visibilityDemoteTimer) {
+                if (!lifetimeStableRenderer && !visibilityDemoteTimer) {
                   visibilityDemoteTimer = setTimeout(() => {
                     visibilityDemoteTimer = null;
                     if (isMounted && !physicalIntersectionRef.current) {
@@ -3164,7 +3217,7 @@ export const AgentTerminal = memo(function AgentTerminal({
           }
           rendererEvictedRef.current = false;
           markRendererReady(false);
-        } else {
+        } else if (!lifetimeStableRenderer) {
           scheduleRendererDisposal(terminalKey);
         }
       }
@@ -3188,6 +3241,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   }, [
     autoActivateWhenUnowned,
     invalidateRendererReveal,
+    lifetimeStableRenderer,
     markRendererReady,
     presentationId,
     prepareRendererForReveal,
@@ -3455,7 +3509,10 @@ export const AgentTerminal = memo(function AgentTerminal({
         }}
         style={{
           visibility:
-            rendererReady && visibility === "visible" && renderState === "mounted"
+            rendererReady &&
+            rendererReadySessionIdRef.current === sessionId &&
+            visibility === "visible" &&
+            renderState === "mounted"
               ? "visible"
               : "hidden",
         }}

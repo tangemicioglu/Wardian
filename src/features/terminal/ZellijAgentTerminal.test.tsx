@@ -73,15 +73,17 @@ describe("ZellijAgentTerminal", () => {
     });
   });
 
-  it("mounts one stable Habitat renderer while every other agent remains a preview", async () => {
+  it("keeps one stable Habitat renderer and focuses previews without an activation mode", async () => {
     renderTerminals(terminal("agent-1"), terminal("agent-2"));
 
     expect(await screen.findByText("agent-1 preview")).toBeInTheDocument();
     expect(await screen.findByText("agent-2 preview")).toBeInTheDocument();
     expect(screen.queryByTestId("live-habitat-terminal")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Activate terminal for agent-1" }));
+    expect(screen.queryByText("Activate terminal")).not.toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole("application", { name: "Terminal for agent-1" }));
     await waitFor(() => expect(screen.getAllByTestId("live-habitat-terminal")).toHaveLength(1));
+    screen.getByTestId("live-habitat-terminal").setAttribute("data-stable-renderer", "true");
     expect(screen.getByTestId("live-habitat-terminal")).toHaveAttribute(
       "data-session-id",
       "agent-1",
@@ -91,10 +93,14 @@ describe("ZellijAgentTerminal", () => {
       "desktop:zellij-habitat-terminal",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Activate terminal for agent-2" }));
+    fireEvent.pointerDown(screen.getByRole("application", { name: "Terminal for agent-2" }));
     await waitFor(() => {
       expect(useZellijPresentationStore.getState().activeAgentId).toBe("agent-2");
       expect(screen.getAllByTestId("live-habitat-terminal")).toHaveLength(1);
+      expect(screen.getByTestId("live-habitat-terminal")).toHaveAttribute(
+        "data-stable-renderer",
+        "true",
+      );
     });
   });
 
@@ -113,13 +119,13 @@ describe("ZellijAgentTerminal", () => {
       />,
     );
 
-    const previews = await screen.findAllByRole("button", {
-      name: "Activate terminal for agent-1",
+    const previews = await screen.findAllByRole("application", {
+      name: "Terminal for agent-1",
     });
-    fireEvent.click(previews[0]);
+    fireEvent.pointerDown(previews[0]);
 
     await waitFor(() => expect(screen.getAllByTestId("live-habitat-terminal")).toHaveLength(1));
-    expect(screen.getAllByRole("button", { name: "Activate terminal for agent-1" })).toHaveLength(1);
+    expect(screen.getAllByRole("application", { name: "Terminal for agent-1" })).toHaveLength(1);
   });
 
   it("serializes rapid activation so the rendered agent matches the last focused pane", async () => {
@@ -220,10 +226,11 @@ describe("ZellijAgentTerminal", () => {
     });
     renderTerminals(terminal("agent-off"));
 
-    const button = await screen.findByRole("button", {
-      name: "Activate terminal for agent-off",
+    const preview = await screen.findByRole("application", {
+      name: "Terminal for agent-off",
     });
-    expect(button).toBeDisabled();
+    expect(preview).toHaveAttribute("aria-disabled", "true");
+    expect(preview).toHaveAttribute("tabindex", "-1");
     expect(screen.getByText("Terminal engine unavailable")).toBeInTheDocument();
   });
 });

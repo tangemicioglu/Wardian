@@ -110,7 +110,7 @@ async function waitForZellijTerminalGrid(driver, agents) {
           .map((node) => ({
             sessionId: node.getAttribute("data-zellij-agent-id"),
             text: node.textContent || "",
-            disabled: node.disabled,
+            disabled: node.getAttribute("aria-disabled") === "true",
           }));
         return {
           live,
@@ -118,9 +118,11 @@ async function waitForZellijTerminalGrid(driver, agents) {
           xterms: document.querySelectorAll('[data-testid="agent-terminal-host"] .xterm').length,
           liveHost: (() => {
             const host = document.querySelector(
-              '[data-zellij-presentation="live"] [data-testid="agent-terminal-host"]',
+              '[data-zellij-singleton-viewport="true"] [data-testid="agent-terminal-host"]',
             );
             return host ? {
+              viewportSessionId: host.closest('[data-zellij-singleton-viewport="true"]')
+                ?.getAttribute("data-zellij-agent-id"),
               sessionId: host.getAttribute("data-terminal-session-id"),
               visibility: getComputedStyle(host).visibility,
             } : null;
@@ -136,7 +138,11 @@ async function waitForZellijTerminalGrid(driver, agents) {
       if (state.previews.some((preview) => (
         preview.disabled || !preview.text.includes("first-paint-row-08")
       ))) return false;
-      if (state.liveHost?.sessionId !== state.live[0] || state.liveHost.visibility !== "visible") {
+      if (
+        state.liveHost?.sessionId !== state.live[0]
+        || state.liveHost.viewportSessionId !== state.live[0]
+        || state.liveHost.visibility !== "visible"
+      ) {
         return false;
       }
       return state;
@@ -201,17 +207,29 @@ test(
     const initialLiveAgent = initial.live[0];
     const nextAgent = spawnedAgents.find((agent) => agent.sessionId !== initialLiveAgent);
     assert.ok(nextAgent, "Expected an inactive agent terminal preview");
-    await driver.executeScript(() => {
+    await driver.wait(async () => await driver.executeScript((presentationId) => (
+      window.__wardianTerminalDebug?.snapshot?.(presentationId)?.renderer?.webglAttempted === true
+    ), ZELLIJ_PRESENTATION_ID), 20_000, "Singleton renderer never completed its WebGL attempt");
+    const initialRendererIdentity = await driver.executeScript((presentationId) => {
       const xterm = document.querySelector('[data-testid="agent-terminal-host"] .xterm');
       xterm?.setAttribute("data-e2e-zellij-renderer", "singleton");
-    });
+      xterm?.querySelector("canvas")?.setAttribute("data-e2e-zellij-canvas", "singleton");
+      const debug = window.__wardianTerminalDebug?.snapshot?.(presentationId)?.renderer ?? null;
+      return debug ? {
+        instanceId: debug.instanceId,
+        webglActivationCount: debug.webglActivationCount,
+      } : null;
+    }, ZELLIJ_PRESENTATION_ID);
+    assert.ok(initialRendererIdentity, "native singleton proof requires terminal debug identity");
 
     const activated = await driver.executeScript((sessionId) => {
       const preview = document.querySelector(
         `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sessionId)}"]`,
       );
-      if (!(preview instanceof HTMLButtonElement) || preview.disabled) return false;
-      preview.click();
+      if (!(preview instanceof HTMLElement) || preview.getAttribute("aria-disabled") === "true") {
+        return false;
+      }
+      preview.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
       return true;
     }, nextAgent.sessionId);
     assert.equal(activated, true, `Could not activate preview ${nextAgent.sessionId}`);
@@ -222,6 +240,53 @@ test(
       && document.querySelector('[data-testid="agent-terminal-host"] .xterm')
         ?.getAttribute("data-e2e-zellij-renderer") === "singleton"
     ), nextAgent.sessionId), 20_000, "Timed out handing the singleton renderer to the selected pane");
+
+    for (let index = 0; index < 20; index += 1) {
+      const targetAgent = spawnedAgents[index % spawnedAgents.length];
+      await driver.executeScript((sessionId) => {
+        const preview = document.querySelector(
+          `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sessionId)}"]`,
+        );
+        preview?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      }, targetAgent.sessionId);
+      await driver.wait(async () => await driver.executeScript((sessionId) => (
+        document.querySelector('[data-zellij-presentation="live"]')
+          ?.getAttribute("data-zellij-agent-id") === sessionId
+      ), targetAgent.sessionId), 20_000, `Timed out focusing ${targetAgent.sessionId}`);
+    }
+
+    // Keep the targeted-input assertions below bound to the originally
+    // selected agent after the repeated identity stress cycle.
+    await driver.executeScript((sessionId) => {
+      const preview = document.querySelector(
+        `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sessionId)}"]`,
+      );
+      preview?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    }, nextAgent.sessionId);
+    await driver.wait(async () => await driver.executeScript((sessionId) => (
+      document.querySelector('[data-zellij-presentation="live"]')
+        ?.getAttribute("data-zellij-agent-id") === sessionId
+    ), nextAgent.sessionId), 20_000, "Timed out restoring the selected pane after identity stress");
+
+    const finalRendererIdentity = await driver.executeScript((presentationId) => {
+      const xterm = document.querySelector('[data-testid="agent-terminal-host"] .xterm');
+      const debug = window.__wardianTerminalDebug?.snapshot?.(presentationId)?.renderer ?? null;
+      return {
+        xtermStable: xterm?.getAttribute("data-e2e-zellij-renderer") === "singleton",
+        canvasStable: !xterm?.querySelector("canvas")
+          || xterm.querySelector("canvas")?.getAttribute("data-e2e-zellij-canvas") === "singleton",
+        instanceId: debug?.instanceId ?? null,
+        webglActivationCount: debug?.webglActivationCount ?? null,
+      };
+    }, ZELLIJ_PRESENTATION_ID);
+    assert.equal(finalRendererIdentity.xtermStable, true);
+    assert.equal(finalRendererIdentity.canvasStable, true);
+    assert.equal(finalRendererIdentity.instanceId, initialRendererIdentity.instanceId);
+    assert.equal(
+      finalRendererIdentity.webglActivationCount,
+      initialRendererIdentity.webglActivationCount,
+      "card focus must not recreate the singleton WebGL addon",
+    );
 
     const selectedSnapshot = await invokeTauri(driver, "request_terminal_snapshot", {
       request: { session_id: nextAgent.sessionId },

@@ -87,10 +87,13 @@ The attached client is a hidden lifecycle process that keeps the Zellij server
 and provider panes alive; it is not a terminal-session broker runtime on any
 platform. Each provider pane has one JSON snapshot subscription and its own
 generation-scoped broker runtime. Exactly one app-level xterm.js host renders
-the selected agent's broker stream. Agent cards that do not own that host show
-read-only broker snapshots and consume no xterm.js or WebGL instance.
-Activating a card focuses and fullscreens its pane before the singleton host
-moves there.
+the selected agent's broker stream. That host remains mounted in one app-root
+viewport for its entire lifetime; card changes reposition the viewport without
+reparenting, remounting, disposing, or recreating its xterm/WebGL objects. Agent
+cards that do not own that viewport show read-only broker snapshots and consume
+no xterm.js or WebGL instance. Pointer or keyboard focus on a card implicitly
+focuses and fullscreens its pane before input is enabled; renderer ownership is
+never a user-visible mode or action.
 At most one xterm.js renderer and one WebGL context are live for agent
 terminals, regardless of agent count.
 
@@ -193,7 +196,8 @@ is known, revoke the memory capability, and return the agent to `unbound`.
 1. Verify the target pane belongs to the requested agent and generation.
 2. Serialize focus handoffs, focus the pane by ID, and make it fullscreen.
 3. Return the selected agent session ID as the broker session to present.
-4. Move the singleton terminal host to the selected presentation.
+4. Reposition the lifetime-stable singleton viewport over the selected
+   presentation without moving its DOM subtree.
 5. Apply the selected pane's next complete snapshot to that host.
 
 The frontend queues activation requests. A later selection cannot overtake an
@@ -204,8 +208,10 @@ target. A removed final target clears its active agent identity, so remounting
 requires a fresh activation instead of silently adopting stale focus.
 
 Snapshot cards never resize panes. The singleton xterm fits the canonical
-Zellij frame locally. Remote clients cannot activate or resize this desktop
-session in the first release.
+Zellij frame locally. The previous frame is hidden during a binding change and
+input remains gated until the selected generation's complete frame is applied.
+Remote clients cannot activate or resize this desktop session in the first
+release.
 
 ### Renderer or Workbench restart
 
@@ -274,10 +280,11 @@ provider transcript from repaint differences.
 ## Desktop UX
 
 - Agent cards retain Terminal and Chat modes.
-- A nonactive Terminal card shows a live, noninteractive pane preview and an
-  explicit **Activate terminal** affordance.
-- Activating a terminal moves the single live terminal presentation to that
-  card or Agent Session surface and preserves keyboard focus.
+- A nonactive Terminal card shows a live, noninteractive pane preview with no
+  renderer-ownership label or action.
+- Pointer or keyboard focus atomically selects the card's pane and positions
+  the single live terminal viewport over that card or Agent Session surface.
+  From the user's perspective, the card is simply the terminal.
 - The active card identifies itself without exposing Zellij implementation
   detail in routine use.
 - If the engine is recovering, previews show **Reconnecting terminal…** and no
@@ -322,7 +329,11 @@ Windows native tests are the first required acceptance gate and must prove:
 - focus and fullscreen actions select the intended pane without changing another pane;
 - pause, restart, clear, and delete do not leave provider descendants;
 - a multi-agent fixture still has one agent xterm.js renderer and one WebGL
-  context, with no terminal event gaps.
+  context, with no terminal event gaps;
+- repeated focus handoffs retain the same xterm instance, WebGL addon, canvas,
+  and app-root DOM host without disposal or promotion churn;
+- loss of the one WebGL context falls back to the DOM renderer and restores the
+  current Zellij frame without restarting or mutating any provider pane.
 
 Frontend lint, unit tests, production build, backend clippy/test/check, browser
 E2E, and native Workbench smoke must pass. A frontend PR must include a

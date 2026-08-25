@@ -116,9 +116,12 @@ Wardian's frontend terminal stack is built on `xterm.js` and is intentionally tr
 
 - Wardian uses xterm's WebGL renderer for mounted terminal views when available. WebGL is preferred because xterm's `customGlyphs` support for block and box-drawing characters does not apply to the DOM renderer, and provider TUIs such as Claude Code rely on those glyphs for mascot/status rendering.
 - If WebGL is unavailable or loses its context, Wardian falls back to xterm's built-in DOM renderer rather than failing terminal initialization.
-- Renderer instances are not the source of runtime truth. One stable agent
-  renderer presents the selected pane's broker stream; inactive agent cards use
-  replacement pane snapshots and allocate no xterm.js or WebGL instance.
+- Renderer instances are not the source of runtime truth. One lifetime-stable
+  app-root renderer presents the selected pane's broker stream; inactive agent
+  cards use replacement pane snapshots and allocate no xterm.js or WebGL
+  instance. Card focus repositions the stable viewport and changes its
+  generation-scoped broker binding without reparenting its DOM, recreating its
+  xterm, or cycling its WebGL addon.
 - Renderer retirement is lease-bound. Output/reset/refresh operations capture
   one renderer identity before awaiting; retirement releases its budget slot
   immediately but defers physical disposal until every in-flight operation

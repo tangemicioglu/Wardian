@@ -10,6 +10,8 @@ use uuid::Uuid;
 use wardian_core::models::{TerminalLaunchManifest, TERMINAL_LAUNCH_MANIFEST_SCHEMA};
 
 pub const ZELLIJ_VERSION: &str = "0.45.0";
+#[cfg(windows)]
+const WINDOWS_ATTACHED_CLIENT_START_ATTEMPTS: usize = 4;
 
 fn zellij_helper_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
@@ -519,11 +521,17 @@ impl ZellijTerminalEngine {
             let pid_path = self.config.attached_pid_path();
             let mut attached_pid = None;
             let mut last_start_error = "Zellij background session did not become ready".to_string();
-            for attempt in 0..2 {
+            for attempt in 0..WINDOWS_ATTACHED_CLIENT_START_ATTEMPTS {
                 let pid = match self.spawn_windows_attached_client(&pid_path) {
                     Ok(pid) => pid,
                     Err(error) => {
                         last_start_error = error;
+                        if attempt + 1 < WINDOWS_ATTACHED_CLIENT_START_ATTEMPTS {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                250 * (1_u64 << attempt),
+                            ))
+                            .await;
+                        }
                         continue;
                     }
                 };
@@ -536,8 +544,11 @@ impl ZellijTerminalEngine {
                         last_start_error = error;
                         let _ = crate::utils::process::force_kill_process_tree(pid);
                         let _ = std::fs::remove_file(&pid_path);
-                        if attempt == 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        if attempt + 1 < WINDOWS_ATTACHED_CLIENT_START_ATTEMPTS {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                250 * (1_u64 << attempt),
+                            ))
+                            .await;
                         }
                     }
                 }

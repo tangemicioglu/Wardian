@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { create } from "zustand";
 import type {
@@ -27,6 +27,13 @@ type ZellijTerminalSlot = {
   agentId: string;
   node: HTMLElement;
   props: LiveTerminalProps;
+};
+
+type ZellijViewportRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
 };
 
 type ZellijPresentationStore = {
@@ -132,33 +139,111 @@ export interface ZellijAgentTerminalProps {
   autoFocus?: boolean;
 }
 
+function viewportRectFor(node: HTMLElement): ZellijViewportRect {
+  const rect = node.getBoundingClientRect();
+  let left = Math.max(0, rect.left);
+  let top = Math.max(0, rect.top);
+  let right = Math.min(window.innerWidth, rect.right);
+  let bottom = Math.min(window.innerHeight, rect.bottom);
+  let ancestor = node.parentElement;
+  while (ancestor && ancestor !== document.body) {
+    const style = window.getComputedStyle(ancestor);
+    if (`${style.overflow} ${style.overflowX} ${style.overflowY}`.match(/auto|scroll|hidden|clip/)) {
+      const bounds = ancestor.getBoundingClientRect();
+      left = Math.max(left, bounds.left);
+      top = Math.max(top, bounds.top);
+      right = Math.min(right, bounds.right);
+      bottom = Math.min(bottom, bounds.bottom);
+    }
+    ancestor = ancestor.parentElement;
+  }
+  return { left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+}
+
 /** Mount once at app level. It is the only agent-facing xterm in the process. */
 export function ZellijAgentTerminalHost() {
   const target = useZellijPresentationStore((state) => {
     if (!state.activeTargetId) return null;
     return state.slots.get(state.activeTargetId) ?? null;
   });
-  if (!target) return null;
+  const [retainedTarget, setRetainedTarget] = useState<ZellijTerminalSlot | null>(null);
+  const [rect, setRect] = useState<ZellijViewportRect | null>(null);
 
-  const props = target.props;
+  useLayoutEffect(() => {
+    if (target) setRetainedTarget(target);
+  }, [target]);
+  const renderedTarget = target ?? retainedTarget;
+
+  useLayoutEffect(() => {
+    if (!target) {
+      setRect(null);
+      return;
+    }
+    let frame: number | null = null;
+    const update = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        setRect(viewportRectFor(target.node));
+      });
+    };
+    update();
+    const resizeObserver = new ResizeObserver(update);
+    let observed: HTMLElement | null = target.node;
+    while (observed && observed !== document.body) {
+      resizeObserver.observe(observed);
+      observed = observed.parentElement;
+    }
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [target]);
+
+  if (!renderedTarget) return null;
+
+  const props = renderedTarget.props;
+  const visible = Boolean(target && rect && rect.width >= 10 && rect.height >= 10);
   return createPortal(
-    <AgentTerminal
-      sessionId={target.agentId}
-      presentationId={HABITAT_TERMINAL_PRESENTATION_ID}
-      visibility={props.visibility}
-      renderState={props.renderState}
-      requestedInteraction={props.requestedInteraction}
-      provider={props.provider}
-      isMaximized={props.isMaximized}
-      theme={props.theme}
-      workspacePath={props.workspacePath}
-      onTitleChange={props.onTitleChange}
-      onTerminalFocus={props.onTerminalFocus}
-      onPresentationStateChange={props.onPresentationStateChange}
-      autoActivateWhenUnowned
-      autoFocus={props.autoFocus}
-    />,
-    target.node,
+    <div
+      className="overflow-hidden bg-[var(--color-wardian-bg)]"
+      data-zellij-agent-id={renderedTarget.agentId}
+      data-zellij-presentation="renderer"
+      data-zellij-singleton-viewport="true"
+      style={{
+        position: "fixed",
+        left: visible ? rect?.left : -10_000,
+        top: visible ? rect?.top : 0,
+        width: visible ? rect?.width : 1,
+        height: visible ? rect?.height : 1,
+        visibility: visible ? "visible" : "hidden",
+        pointerEvents: visible ? "auto" : "none",
+        zIndex: 30,
+      }}
+    >
+      <AgentTerminal
+        sessionId={renderedTarget.agentId}
+        presentationId={HABITAT_TERMINAL_PRESENTATION_ID}
+        visibility="visible"
+        renderState="mounted"
+        requestedInteraction="interactive"
+        provider={props.provider}
+        isMaximized={props.isMaximized}
+        theme={props.theme}
+        workspacePath={props.workspacePath}
+        onTitleChange={props.onTitleChange}
+        onTerminalFocus={props.onTerminalFocus}
+        onPresentationStateChange={props.onPresentationStateChange}
+        autoActivateWhenUnowned
+        autoFocus={props.autoFocus}
+        lifetimeStableRenderer
+      />
+    </div>,
+    document.body,
   );
 }
 
@@ -174,6 +259,7 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
   const [preview, setPreview] = useState<ZellijTerminalPreview | null>(null);
   const [activationError, setActivationError] = useState<string | null>(null);
   const autoActivationAttempted = useRef(false);
+  const activationRequested = useRef(false);
   const isLiveTarget = activeTargetId === targetId;
 
   useEffect(() => {
@@ -213,6 +299,21 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
   }, [isLiveTarget, renderState, sessionId, visibility]);
 
   useEffect(() => {
+    if (isLiveTarget) activationRequested.current = false;
+  }, [isLiveTarget]);
+
+  const requestTerminalFocus = useCallback(() => {
+    if (preview?.state !== "running" || activationRequested.current) return;
+    activationRequested.current = true;
+    setActivationError(null);
+    onTerminalFocus?.();
+    void activate(sessionId, targetId).catch((error) => {
+      activationRequested.current = false;
+      setActivationError(error instanceof Error ? error.message : "Terminal activation failed");
+    });
+  }, [activate, onTerminalFocus, preview?.state, sessionId, targetId]);
+
+  useEffect(() => {
     if (
       autoActivationAttempted.current
       || isLiveTarget
@@ -242,33 +343,37 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
       ? "Agent terminal exited"
       : preview?.state === "unavailable"
         ? "Terminal engine unavailable"
-        : preview?.state === "running"
-          ? "Activate terminal"
-          : "Starting terminal…");
+        : preview?.state === "running" ? null : "Starting terminal…");
+  const interactive = preview?.state === "running";
 
   return (
-    <button
+    <div
       ref={(node) => { hostRef.current = node; }}
-      aria-label={`Activate terminal for ${sessionId}`}
-      className="group relative flex h-full w-full min-h-0 min-w-0 cursor-pointer flex-col overflow-hidden bg-[var(--color-wardian-bg)] text-left"
+      aria-disabled={!interactive}
+      aria-label={`Terminal for ${sessionId}`}
+      className="group relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--color-wardian-bg)] text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-wardian-accent)]"
       data-zellij-agent-id={sessionId}
       data-zellij-presentation="preview"
-      disabled={preview?.state !== "running"}
-      onClick={() => {
-        setActivationError(null);
-        onTerminalFocus?.();
-        void activate(sessionId, targetId).catch((error) => {
-          setActivationError(error instanceof Error ? error.message : "Terminal activation failed");
-        });
+      data-testid={`zellij-terminal-preview-${sessionId}`}
+      onFocus={requestTerminalFocus}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          requestTerminalFocus();
+        }
       }}
-      type="button"
+      onPointerDown={requestTerminalFocus}
+      role="application"
+      tabIndex={interactive ? 0 : -1}
     >
       <pre aria-hidden="true" className="min-h-0 flex-1 overflow-hidden whitespace-pre-wrap p-2 font-mono text-[11px] leading-4 text-[var(--color-wardian-text-muted)]">
         {preview?.content || ""}
       </pre>
-      <span className="absolute inset-x-0 bottom-0 border-t border-wardian-border bg-[var(--color-wardian-sidebar-secondary)] px-2 py-1 text-center text-[11px] font-medium text-primary">
-        {stateCopy}
-      </span>
-    </button>
+      {stateCopy ? (
+        <span className="absolute inset-x-0 bottom-0 border-t border-wardian-border bg-[var(--color-wardian-sidebar-secondary)] px-2 py-1 text-center text-[11px] font-medium text-primary">
+          {stateCopy}
+        </span>
+      ) : null}
+    </div>
   );
 }
