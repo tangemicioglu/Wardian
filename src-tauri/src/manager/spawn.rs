@@ -638,11 +638,12 @@ pub(crate) fn persist_agent_record(
     .map_err(|error| format!("Failed to persist agent runtime state: {error}"))
 }
 
-pub async fn spawn_agent(
+async fn spawn_agent_with_broker_mode(
     app: AppHandle,
     mut config: AgentConfig,
     is_restored: bool,
     initial_timestamp: Option<String>,
+    stage_runtime_replacement: bool,
 ) -> Result<ActiveAgent, String> {
     super::validate_session_values_for_launch(
         &config.session_id,
@@ -678,6 +679,9 @@ pub async fn spawn_agent(
 
     let app_state = app.state::<AppState>();
     if config.is_off {
+        if stage_runtime_replacement {
+            return Err("Cannot stage an off agent runtime replacement".to_string());
+        }
         let _ = persist_agent_record(&config, Some(&born_to_save));
         app_state
             .interactions
@@ -1101,11 +1105,18 @@ pub async fn spawn_agent(
         "pi" => terminal_runtime.reset_parser_on_scrollback_erase(),
         _ => terminal_runtime,
     };
-    let runtime_generation = app_state
-        .terminal_sessions
-        .start_or_replace_runtime(&config.session_id, terminal_runtime, initial_geometry)
-        .await
-        .map_err(|error| format!("Failed to start terminal session broker: {error}"))?;
+    let runtime_generation = if stage_runtime_replacement {
+        app_state
+            .terminal_sessions
+            .stage_runtime_replacement(&config.session_id, terminal_runtime, initial_geometry)
+            .await
+    } else {
+        app_state
+            .terminal_sessions
+            .start_or_replace_runtime(&config.session_id, terminal_runtime, initial_geometry)
+            .await
+    }
+    .map_err(|error| format!("Failed to start terminal session broker: {error}"))?;
 
     // Do not advertise the replacement as active in SQLite until both its
     // provider pane/transport and broker runtime exist. A failed restart must
@@ -2341,6 +2352,24 @@ pub async fn spawn_agent(
         #[cfg(windows)]
         job_object,
     })
+}
+
+pub async fn spawn_agent(
+    app: AppHandle,
+    config: AgentConfig,
+    is_restored: bool,
+    initial_timestamp: Option<String>,
+) -> Result<ActiveAgent, String> {
+    spawn_agent_with_broker_mode(app, config, is_restored, initial_timestamp, false).await
+}
+
+pub async fn spawn_agent_replacement(
+    app: AppHandle,
+    config: AgentConfig,
+    is_restored: bool,
+    initial_timestamp: Option<String>,
+) -> Result<ActiveAgent, String> {
+    spawn_agent_with_broker_mode(app, config, is_restored, initial_timestamp, true).await
 }
 
 pub async fn resize_pty(

@@ -239,6 +239,42 @@ async fn fixed_runtime_geometry_rejects_remote_owner_resizes() {
     );
 }
 
+#[tokio::test]
+async fn staged_runtime_replacement_rolls_back_to_the_usable_displaced_runtime() {
+    let broker = Arc::new(TerminalSessionBroker::with_timer(Arc::new(
+        ManualTimer::default(),
+    )));
+    let (old_runtime, mut old_input, _) = runtime();
+    let old_generation = broker
+        .start_or_replace_runtime("transactional", old_runtime, geometry(120, 40))
+        .await
+        .expect("start displaced runtime");
+    let (replacement_runtime, _replacement_input, _) = runtime();
+    let replacement_generation = broker
+        .stage_runtime_replacement(
+            "transactional",
+            replacement_runtime,
+            geometry(120, 40),
+        )
+        .await
+        .expect("stage replacement runtime");
+    assert!(replacement_generation > old_generation);
+
+    broker
+        .rollback_runtime_replacement("transactional", replacement_generation)
+        .await
+        .expect("roll back replacement runtime");
+    broker
+        .send_privileged_input("transactional", b"old-runtime-still-live".to_vec())
+        .await
+        .expect("write through restored runtime");
+
+    assert_eq!(
+        old_input.recv().await,
+        Some(b"old-runtime-still-live".to_vec())
+    );
+}
+
 fn process_output(
     broker: Arc<TerminalSessionBroker>,
     runtime_generation: u64,

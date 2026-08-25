@@ -20,6 +20,9 @@ import { AgentTerminal } from "./AgentTerminal";
 import { terminalSessionClientFor } from "./terminalSessionClient";
 
 export const HABITAT_TERMINAL_PRESENTATION_ID = "desktop:zellij-habitat-terminal";
+export const ZELLIJ_HANDOFF_MAX_BYTES = 4096;
+export const ZELLIJ_HANDOFF_MAX_EVENTS = 4;
+export const ZELLIJ_HANDOFF_DEADLINE_MS = 5000;
 
 type ZellijTerminalPreview = {
   session_id: string;
@@ -66,6 +69,7 @@ type ZellijPresentationStore = {
   brokerOwners: Map<string, ZellijBrokerObservation>;
   focusRequestSerial: number;
   pendingInputByTarget: Map<string, string>;
+  pendingInputMetaByTarget: Map<string, PendingInputMeta>;
   slots: Map<string, ZellijTerminalSlot>;
   clearPendingInput: (targetId: string) => void;
   consumePendingInput: (targetId: string, sentInput: string) => void;
@@ -89,6 +93,11 @@ type ZellijBrokerObservation = {
   owner: string | null;
   activationPending: boolean;
   source: "live" | "preview";
+};
+
+type PendingInputMeta = {
+  eventCount: number;
+  expiresAt: number;
 };
 
 let nextPreviewRequestToken = 0;
@@ -128,6 +137,21 @@ function terminalInputForKeyDown(event: ReactKeyboardEvent<HTMLElement>): string
   return event.altKey ? `\x1b${input}` : input;
 }
 
+function truncateUtf8(input: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  const encoder = new TextEncoder();
+  if (encoder.encode(input).byteLength <= maxBytes) return input;
+  let result = "";
+  let usedBytes = 0;
+  for (const character of input) {
+    const bytes = encoder.encode(character).byteLength;
+    if (usedBytes + bytes > maxBytes) break;
+    result += character;
+    usedBytes += bytes;
+  }
+  return result;
+}
+
 function beginPreviewRequest(agentId: string): number {
   const token = ++nextPreviewRequestToken;
   latestPreviewRequestByAgent.set(agentId, token);
@@ -160,31 +184,71 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
     brokerOwners: new Map(),
     focusRequestSerial: 0,
     pendingInputByTarget: new Map(),
+    pendingInputMetaByTarget: new Map(),
     slots: new Map(),
     clearPendingInput: (targetId) => set((state) => {
       if (!state.pendingInputByTarget.has(targetId)) return state;
       const pendingInputByTarget = new Map(state.pendingInputByTarget);
+      const pendingInputMetaByTarget = new Map(state.pendingInputMetaByTarget);
       pendingInputByTarget.delete(targetId);
-      return { pendingInputByTarget };
+      pendingInputMetaByTarget.delete(targetId);
+      return { pendingInputByTarget, pendingInputMetaByTarget };
     }),
     consumePendingInput: (targetId, sentInput) => set((state) => {
       const current = state.pendingInputByTarget.get(targetId) ?? "";
       if (!current.startsWith(sentInput)) return state;
       const pendingInputByTarget = new Map(state.pendingInputByTarget);
+      const pendingInputMetaByTarget = new Map(state.pendingInputMetaByTarget);
       const remaining = current.slice(sentInput.length);
       if (remaining) pendingInputByTarget.set(targetId, remaining);
-      else pendingInputByTarget.delete(targetId);
-      return { pendingInputByTarget };
+      else {
+        pendingInputByTarget.delete(targetId);
+        pendingInputMetaByTarget.delete(targetId);
+      }
+      return { pendingInputByTarget, pendingInputMetaByTarget };
     }),
-    queuePendingInput: (targetId, input) => set((state) => {
-      if (!input) return state;
-      const pendingInputByTarget = new Map(state.pendingInputByTarget);
-      pendingInputByTarget.set(
-        targetId,
-        `${pendingInputByTarget.get(targetId) ?? ""}${input}`,
-      );
-      return { pendingInputByTarget };
-    }),
+    queuePendingInput: (targetId, input) => {
+      let expiryToSchedule: number | null = null;
+      set((state) => {
+        if (!input) return state;
+        const now = Date.now();
+        const existingMeta = state.pendingInputMetaByTarget.get(targetId);
+        const existingInput = existingMeta && existingMeta.expiresAt > now
+          ? state.pendingInputByTarget.get(targetId) ?? ""
+          : "";
+        const eventCount = existingMeta && existingMeta.expiresAt > now
+          ? existingMeta.eventCount
+          : 0;
+        if (eventCount >= ZELLIJ_HANDOFF_MAX_EVENTS) return state;
+        const usedBytes = new TextEncoder().encode(existingInput).byteLength;
+        const accepted = truncateUtf8(input, ZELLIJ_HANDOFF_MAX_BYTES - usedBytes);
+        if (!accepted) return state;
+        const expiresAt = eventCount === 0
+          ? now + ZELLIJ_HANDOFF_DEADLINE_MS
+          : existingMeta!.expiresAt;
+        const pendingInputByTarget = new Map(state.pendingInputByTarget);
+        const pendingInputMetaByTarget = new Map(state.pendingInputMetaByTarget);
+        pendingInputByTarget.set(targetId, `${existingInput}${accepted}`);
+        pendingInputMetaByTarget.set(targetId, {
+          eventCount: eventCount + 1,
+          expiresAt,
+        });
+        expiryToSchedule = expiresAt;
+        return { pendingInputByTarget, pendingInputMetaByTarget };
+      });
+      if (expiryToSchedule !== null) {
+        const delay = Math.max(0, expiryToSchedule - Date.now());
+        window.setTimeout(() => set((state) => {
+          const meta = state.pendingInputMetaByTarget.get(targetId);
+          if (!meta || meta.expiresAt > Date.now()) return state;
+          const pendingInputByTarget = new Map(state.pendingInputByTarget);
+          const pendingInputMetaByTarget = new Map(state.pendingInputMetaByTarget);
+          pendingInputByTarget.delete(targetId);
+          pendingInputMetaByTarget.delete(targetId);
+          return { pendingInputByTarget, pendingInputMetaByTarget };
+        }), delay + 1);
+      }
+    },
     setBrokerOwner: (
       agentId,
       generation,
@@ -235,7 +299,9 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
       const slots = new Map(state.slots);
       slots.delete(targetId);
       const pendingInputByTarget = new Map(state.pendingInputByTarget);
+      const pendingInputMetaByTarget = new Map(state.pendingInputMetaByTarget);
       pendingInputByTarget.delete(targetId);
+      pendingInputMetaByTarget.delete(targetId);
       if (removed && !Array.from(slots.values()).some((slot) => slot.agentId === removed.agentId)) {
         latestPreviewRequestByAgent.delete(removed.agentId);
       }
@@ -245,6 +311,7 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
         set({
           slots,
           pendingInputByTarget,
+          pendingInputMetaByTarget,
           ...(invalidatesActivation ? { activationSerial: state.activationSerial + 1 } : {}),
         });
         if (invalidatesActivation) {
@@ -273,6 +340,7 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
       set({
         slots,
         pendingInputByTarget,
+        pendingInputMetaByTarget,
         activeAgentId: fallback && removed ? removed.agentId : null,
         activeTargetId: fallback ?? null,
         ...(invalidatesActivation ? { activationSerial: state.activationSerial + 1 } : {}),
@@ -280,6 +348,9 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
     },
     activate: (agentId, targetId) => {
       const serial = get().activationSerial + 1;
+      if (pendingTargetId && pendingTargetId !== targetId) {
+        get().clearPendingInput(pendingTargetId);
+      }
       pendingTargetId = targetId;
       set({ activationSerial: serial });
       const activation = activationQueue.then(async (): Promise<boolean> => {
@@ -290,10 +361,23 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
             || !slotCanOwnTerminal(slot)
             || !desktopMayOwnBroker(slot.agentId, get().brokerOwners)
           ) return false;
-          await invoke<string>("activate_zellij_agent_terminal", {
-            sessionId: agentId,
-            brokerGeneration: get().brokerOwners.get(agentId)?.generation ?? null,
-          });
+          let timeoutId: number | undefined;
+          try {
+            await Promise.race([
+              invoke<string>("activate_zellij_agent_terminal", {
+                sessionId: agentId,
+                brokerGeneration: get().brokerOwners.get(agentId)?.generation ?? null,
+              }),
+              new Promise<never>((_resolve, reject) => {
+                timeoutId = window.setTimeout(
+                  () => reject(new Error("Terminal handoff timed out")),
+                  ZELLIJ_HANDOFF_DEADLINE_MS,
+                );
+              }),
+            ]);
+          } finally {
+            if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+          }
           if (
             get().activationSerial === serial
             && slotCanOwnTerminal(get().slots.get(targetId))
@@ -371,6 +455,7 @@ export function ZellijAgentTerminalHost() {
     activeTargetId ? state.pendingInputByTarget.get(activeTargetId) ?? "" : ""
   ));
   const consumePendingInput = useZellijPresentationStore((state) => state.consumePendingInput);
+  const clearPendingInput = useZellijPresentationStore((state) => state.clearPendingInput);
   const setBrokerOwner = useZellijPresentationStore((state) => state.setBrokerOwner);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const retainedTargetIdRef = useRef<string | null>(null);
@@ -468,9 +553,14 @@ export function ZellijAgentTerminalHost() {
         setPendingInputFlushStatus(decision.status);
         if (decision.status === "accepted") {
           consumePendingInput(activeTargetId, input);
+        } else {
+          clearPendingInput(activeTargetId);
         }
       })
-      .catch(() => setPendingInputFlushStatus("error"))
+      .catch(() => {
+        setPendingInputFlushStatus("error");
+        clearPendingInput(activeTargetId);
+      })
       .finally(() => {
         if (pendingInputFlushTargetRef.current === activeTargetId) {
           pendingInputFlushTargetRef.current = null;
@@ -482,6 +572,7 @@ export function ZellijAgentTerminalHost() {
   }, [
     activeTargetId,
     brokerOwners,
+    clearPendingInput,
     consumePendingInput,
     pendingInput,
     pendingInputRetrySerial,

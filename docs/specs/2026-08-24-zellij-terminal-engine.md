@@ -208,6 +208,9 @@ is known, revoke the memory capability, and return the agent to `unbound`.
    Buffering starts only for a running, interactive card that is authorized to
    request desktop ownership. A foreign broker owner or a lifecycle transition
    to read-only, suspended, exited, or Error clears unsent input immediately.
+   One handoff retains at most four input events and 4096 UTF-8 bytes for five
+   seconds. A superseding selection, activation timeout, or rejected broker
+   delivery discards the remainder instead of retrying or replaying stale text.
 
 The frontend queues activation requests. A later selection cannot overtake an
 earlier in-flight focus command and leave the singleton renderer associated
@@ -265,24 +268,27 @@ manifest.
   identity unless the existing restart contract requires it.
 - **Delete** closes the pane before removing the agent's durable records.
 
-Lease teardown prevents the generation from authorizing input before a
-same-session replacement can start. A failed or unconfirmed Zellij close stays
-registered as `closing`: the next spawn closes every same-title pane and polls
-the authoritative pane list until none remain before it removes that cleanup
-record or allocates a replacement generation. The same rule covers missing
-pane identity and failures while opening the pane subscription transport. If
-clear aborts before termination, Wardian moves the original pane lease back
-with the restored runtime instead of dropping it.
-Restart preflight leaves the old runtime and pane untouched. Once replacement
-spawn begins, Wardian detaches and terminates the complete old runtime, pauses
-its broker generation, and starts the replacement. Active metadata is not
-written to SQLite until the new pane transport and broker runtime both exist.
-A later failure removes the failed broker generation and records `is_off`,
-`last_status = Error`, and a cleared PID in durable state. Startup rebuilds that
-row as an inert, runtime-less **Error** agent instead of routing it through the
-ordinary Off spawn path. The card therefore continues to show **Terminal
-unavailable — restart the agent** after an app restart and never old live
-metadata, a `starting` preview, or a closed pane.
+Lifecycle teardown awaits the generation-scoped lease close and polls the
+authoritative pane list before a same-session replacement can start. Drop is a
+tracked fallback: it synchronously changes the binding to `closing` and starts
+an isolated cleanup worker, but never removes the binding on command success
+alone. A failed or unconfirmed Zellij close therefore stays registered as
+`closing`; the next spawn closes every same-title pane and confirms that none
+remain before it removes that cleanup record or allocates a replacement
+generation. The same rule covers missing pane identity and failures while
+opening the pane subscription transport. If clear aborts before termination,
+Wardian moves the original pane lease back with the restored runtime instead
+of dropping it.
+Restart preflight leaves the old runtime and pane untouched. A running restart
+reserves a second pane generation and stages its broker actor while the old
+pane, provider, broker actor, and `ActiveAgent` remain alive. The candidate is
+not the active pane until its transport exists and the durable replacement
+journal is ready to install the new `ActiveAgent`. Any spawn, lease, or durable
+commit failure rolls the candidate broker and pane generations back and leaves
+the displaced runtime usable. After the durable state commit, Wardian commits
+the staged broker actor, promotes the candidate pane generation, then closes
+and authoritatively confirms removal of the displaced pane. An Off agent has no
+runtime to preserve and uses the ordinary start path.
 
 Closing a Workbench surface never closes a pane. Closing the final surface
 keeps the singleton xterm/WebGL allocation mounted but changes its broker

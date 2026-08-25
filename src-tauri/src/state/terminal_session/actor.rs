@@ -643,6 +643,7 @@ pub struct TerminalSessionHandle {
 
 pub struct TerminalSessionBroker {
     sessions: RwLock<HashMap<String, TerminalSessionHandle>>,
+    pending_runtime_replacements: AsyncMutex<HashMap<String, PendingRuntimeReplacement>>,
     /// Last runtime generation allocated for each session during this broker lifetime.
     ///
     /// Entries intentionally outlive runtime removal. Native reader tasks can deliver
@@ -653,6 +654,11 @@ pub struct TerminalSessionBroker {
     wake_tx: broadcast::Sender<TerminalEventsReady>,
     lifecycle_tx: broadcast::Sender<TerminalSessionLifecycleNotification>,
     timer: Arc<dyn TerminalTimer>,
+}
+
+struct PendingRuntimeReplacement {
+    candidate_generation: u64,
+    displaced: TerminalSessionHandle,
 }
 
 #[derive(Default)]
@@ -682,6 +688,7 @@ impl TerminalSessionBroker {
         let (lifecycle_tx, _) = broadcast::channel(64);
         Self {
             sessions: RwLock::new(HashMap::new()),
+            pending_runtime_replacements: AsyncMutex::new(HashMap::new()),
             runtime_generation_tombstones: RwLock::new(HashMap::new()),
             deferred_geometries: AsyncMutex::new(DeferredGeometryState::default()),
             wake_tx,
@@ -705,6 +712,16 @@ impl TerminalSessionBroker {
         geometry: TerminalGeometry,
     ) -> Result<u64, TerminalBrokerError> {
         validate_id(session_id, "session_id")?;
+        if self
+            .pending_runtime_replacements
+            .lock()
+            .await
+            .contains_key(session_id)
+        {
+            return Err(TerminalBrokerError::RuntimeIo(
+                "terminal runtime replacement already pending".to_string(),
+            ));
+        }
         let geometry = runtime
             .fixed_geometry
             .unwrap_or_else(|| clamp_geometry(geometry, TerminalClientKind::Desktop));
@@ -764,6 +781,149 @@ impl TerminalSessionBroker {
             .sessions
             .remove(session_id);
         Ok(runtime_generation)
+    }
+
+    /// Installs a replacement actor without terminating the displaced actor.
+    /// Callers must explicitly commit or roll back after their surrounding
+    /// agent-state transaction finishes.
+    pub async fn stage_runtime_replacement(
+        &self,
+        session_id: &str,
+        runtime: TerminalRuntimeHandles,
+        geometry: TerminalGeometry,
+    ) -> Result<u64, TerminalBrokerError> {
+        validate_id(session_id, "session_id")?;
+        let geometry = runtime
+            .fixed_geometry
+            .unwrap_or_else(|| clamp_geometry(geometry, TerminalClientKind::Desktop));
+        let mut pending = self.pending_runtime_replacements.lock().await;
+        if pending.contains_key(session_id) {
+            return Err(TerminalBrokerError::RuntimeIo(
+                "terminal runtime replacement already pending".to_string(),
+            ));
+        }
+        let (displaced, runtime_generation) = {
+            let mut sessions = self.sessions.write().await;
+            let displaced = sessions
+                .get(session_id)
+                .cloned()
+                .ok_or(TerminalBrokerError::RuntimeUnavailable)?;
+            let mut generations = self.runtime_generation_tombstones.write().await;
+            let runtime_generation = generations
+                .get(session_id)
+                .copied()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| {
+                    TerminalBrokerError::RuntimeIo(
+                        "terminal runtime generation exhausted".to_string(),
+                    )
+                })?;
+            generations.insert(session_id.to_string(), runtime_generation);
+            let initial_lease_epoch = displaced
+                .lease_epoch
+                .load(Ordering::SeqCst)
+                .saturating_add(1);
+            let candidate = self.spawn_actor(
+                session_id.to_string(),
+                runtime_generation,
+                initial_lease_epoch,
+                runtime,
+                geometry,
+            );
+            sessions.insert(session_id.to_string(), candidate);
+            (displaced, runtime_generation)
+        };
+        pending.insert(
+            session_id.to_string(),
+            PendingRuntimeReplacement {
+                candidate_generation: runtime_generation,
+                displaced,
+            },
+        );
+        Ok(runtime_generation)
+    }
+
+    pub async fn commit_runtime_replacement(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+    ) -> Result<(), TerminalBrokerError> {
+        let pending = self
+            .pending_runtime_replacements
+            .lock()
+            .await
+            .remove(session_id)
+            .ok_or(TerminalBrokerError::RuntimeUnavailable)?;
+        if pending.candidate_generation != runtime_generation {
+            let expected = pending.candidate_generation;
+            self.pending_runtime_replacements
+                .lock()
+                .await
+                .insert(session_id.to_string(), pending);
+            return Err(TerminalBrokerError::StaleRuntimeGeneration {
+                expected,
+                received: runtime_generation,
+            });
+        }
+        self.shutdown_handle(
+            session_id,
+            pending.displaced,
+            TerminalSessionLifecycleEvent::RuntimeReplaced,
+        )
+        .await;
+        let _ = self.lifecycle_tx.send(TerminalSessionLifecycleNotification {
+            session_id: session_id.to_string(),
+            runtime_generation,
+            lifecycle: TerminalSessionLifecycleEvent::RuntimeReplaced,
+        });
+        self.deferred_geometries
+            .lock()
+            .await
+            .sessions
+            .remove(session_id);
+        Ok(())
+    }
+
+    pub async fn rollback_runtime_replacement(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+    ) -> Result<(), TerminalBrokerError> {
+        let pending = self
+            .pending_runtime_replacements
+            .lock()
+            .await
+            .remove(session_id)
+            .ok_or(TerminalBrokerError::RuntimeUnavailable)?;
+        if pending.candidate_generation != runtime_generation {
+            let expected = pending.candidate_generation;
+            self.pending_runtime_replacements
+                .lock()
+                .await
+                .insert(session_id.to_string(), pending);
+            return Err(TerminalBrokerError::StaleRuntimeGeneration {
+                expected,
+                received: runtime_generation,
+            });
+        }
+        let candidate = {
+            let mut sessions = self.sessions.write().await;
+            let candidate = sessions
+                .get(session_id)
+                .filter(|handle| handle.runtime_generation == runtime_generation)
+                .cloned()
+                .ok_or(TerminalBrokerError::RuntimeUnavailable)?;
+            sessions.insert(session_id.to_string(), pending.displaced);
+            candidate
+        };
+        self.shutdown_handle(
+            session_id,
+            candidate,
+            TerminalSessionLifecycleEvent::RuntimeTerminated,
+        )
+        .await;
+        Ok(())
     }
 
     /// Remembers presentation geometry while no native runtime exists yet.

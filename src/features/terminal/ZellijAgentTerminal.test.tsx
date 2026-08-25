@@ -5,6 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig } from "../../types";
 import { AgentSessionSurface } from "../workbench/surfaces/AgentSessionSurface";
 import {
+  ZELLIJ_HANDOFF_DEADLINE_MS,
+  ZELLIJ_HANDOFF_MAX_BYTES,
+  ZELLIJ_HANDOFF_MAX_EVENTS,
   ZellijAgentTerminal,
   ZellijAgentTerminalHost,
   useZellijPresentationStore,
@@ -82,6 +85,7 @@ describe("ZellijAgentTerminal", () => {
       brokerOwners: new Map(),
       focusRequestSerial: 0,
       pendingInputByTarget: new Map(),
+      pendingInputMetaByTarget: new Map(),
       slots: new Map(),
     });
     invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
@@ -143,9 +147,6 @@ describe("ZellijAgentTerminal", () => {
 
   it("buffers printable and control input until implicit activation owns the broker", async () => {
     let resolveActivation: ((sessionId: string) => void) | undefined;
-    sendTextMock
-      .mockResolvedValueOnce({ status: "rejected" })
-      .mockResolvedValue({ status: "accepted" });
     invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
       if (command === "activate_zellij_agent_terminal") {
         return new Promise<string>((resolve) => { resolveActivation = resolve; });
@@ -188,14 +189,106 @@ describe("ZellijAgentTerminal", () => {
       );
     });
 
-    await waitFor(() => expect(sendTextMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(sendTextMock).toHaveBeenCalledTimes(1));
     expect(sendTextMock.mock.calls).toEqual([
-      ["desktop:zellij-habitat-terminal", "a\x03"],
       ["desktop:zellij-habitat-terminal", "a\x03"],
     ]);
     expect(useZellijPresentationStore.getState().pendingInputByTarget.has(
       "agents:agent-1:agent-1",
     )).toBe(false);
+  });
+
+  it("bounds pending handoff input by bytes and events", async () => {
+    let resolveActivation: ((sessionId: string) => void) | undefined;
+    invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command === "activate_zellij_agent_terminal") {
+        return new Promise<string>((resolve) => { resolveActivation = resolve; });
+      }
+      if (command === "get_zellij_terminal_preview") {
+        return Promise.resolve({
+          session_id: args.sessionId,
+          terminal_session_id: args.sessionId,
+          generation: 1,
+          broker_generation: 1,
+          broker_lease_epoch: 1,
+          broker_owner_presentation_id: null,
+          broker_activation_pending: false,
+          state: "running",
+          content: `${args.sessionId} preview`,
+        });
+      }
+      return Promise.reject(new Error(`Unexpected command ${command}`));
+    });
+    renderTerminals(terminal("agent-1"));
+    const preview = await screen.findByRole("application", { name: "Terminal for agent-1" });
+
+    fireEvent.pointerDown(preview);
+    await waitFor(() => expect(resolveActivation).toBeDefined());
+    fireEvent.paste(preview, {
+      clipboardData: { getData: () => "x".repeat(ZELLIJ_HANDOFF_MAX_BYTES * 2) },
+    });
+    for (let index = 1; index < ZELLIJ_HANDOFF_MAX_EVENTS + 3; index += 1) {
+      fireEvent.keyDown(preview, { key: "y" });
+    }
+
+    const targetId = "agents:agent-1:agent-1";
+    const pending = useZellijPresentationStore.getState().pendingInputByTarget.get(targetId) ?? "";
+    const meta = useZellijPresentationStore.getState().pendingInputMetaByTarget.get(targetId);
+    expect(new TextEncoder().encode(pending).byteLength).toBe(ZELLIJ_HANDOFF_MAX_BYTES);
+    expect(meta?.eventCount).toBe(1);
+    act(() => useZellijPresentationStore.getState().clearPendingInput(targetId));
+    act(() => {
+      for (let index = 0; index < ZELLIJ_HANDOFF_MAX_EVENTS + 3; index += 1) {
+        useZellijPresentationStore.getState().queuePendingInput(targetId, "y");
+      }
+    });
+    expect(useZellijPresentationStore.getState().pendingInputByTarget.get(targetId))
+      .toBe("y".repeat(ZELLIJ_HANDOFF_MAX_EVENTS));
+    expect(useZellijPresentationStore.getState().pendingInputMetaByTarget.get(targetId)?.eventCount)
+      .toBe(ZELLIJ_HANDOFF_MAX_EVENTS);
+    expect(sendTextMock).not.toHaveBeenCalled();
+    act(() => useZellijPresentationStore.getState().clearPendingInput(targetId));
+    await act(async () => { resolveActivation?.("agent-1"); });
+    await waitFor(() => expect(useZellijPresentationStore.getState().activeAgentId)
+      .toBe("agent-1"));
+  });
+
+  it("expires pending input when activation remains unresolved", async () => {
+    invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command === "activate_zellij_agent_terminal") return new Promise(() => undefined);
+      if (command === "get_zellij_terminal_preview") {
+        return Promise.resolve({
+          session_id: args.sessionId,
+          terminal_session_id: args.sessionId,
+          generation: 1,
+          broker_generation: 1,
+          broker_lease_epoch: 1,
+          broker_owner_presentation_id: null,
+          broker_activation_pending: false,
+          state: "running",
+          content: `${args.sessionId} preview`,
+        });
+      }
+      return Promise.reject(new Error(`Unexpected command ${command}`));
+    });
+    renderTerminals(terminal("agent-1"));
+    const preview = await screen.findByRole("application", { name: "Terminal for agent-1" });
+    vi.useFakeTimers();
+    try {
+      fireEvent.pointerDown(preview);
+      fireEvent.keyDown(preview, { key: "x" });
+      expect(useZellijPresentationStore.getState().pendingInputByTarget.size).toBe(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ZELLIJ_HANDOFF_DEADLINE_MS + 2);
+      });
+
+      expect(useZellijPresentationStore.getState().pendingInputByTarget.size).toBe(0);
+      expect(useZellijPresentationStore.getState().pendingInputMetaByTarget.size).toBe(0);
+      expect(sendTextMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows a restart recovery state and does not promote a failed terminal", async () => {
