@@ -51,7 +51,8 @@ function slotCanOwnTerminal(slot: ZellijTerminalSlot | null | undefined): slot i
     slot
     && slot.props.visibility === "visible"
     && slot.props.renderState === "mounted"
-    && slot.props.requestedInteraction === "interactive",
+    && slot.props.requestedInteraction === "interactive"
+    && slot.terminalState === "running",
   );
 }
 
@@ -746,7 +747,7 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
   const canOwnTerminal = lifecycleAllowsInput && desktopMayOwnBroker(sessionId, brokerOwners);
   const isLiveTarget = activeTargetId === targetId && canOwnTerminal;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = hostRef.current;
     if (node) {
       upsertSlot(targetId, {
@@ -770,21 +771,19 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
         const next = await invoke<ZellijTerminalPreview>("get_zellij_terminal_preview", {
           sessionId,
         });
-        if (!cancelled) {
-          if (isCurrentPreviewRequest(sessionId, requestToken)) {
-            setBrokerOwner(
-              sessionId,
-              next.broker_generation,
-              next.broker_lease_epoch,
-              next.broker_owner_presentation_id,
-              next.broker_activation_pending,
-              "preview",
-            );
-          }
+        if (!cancelled && isCurrentPreviewRequest(sessionId, requestToken)) {
+          setBrokerOwner(
+            sessionId,
+            next.broker_generation,
+            next.broker_lease_epoch,
+            next.broker_owner_presentation_id,
+            next.broker_activation_pending,
+            "preview",
+          );
           setPreview(next);
         }
       } catch {
-        if (!cancelled) {
+        if (!cancelled && isCurrentPreviewRequest(sessionId, requestToken)) {
           setPreview({
             session_id: sessionId,
             terminal_session_id: sessionId,

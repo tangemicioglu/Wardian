@@ -30,6 +30,9 @@ For each live terminal session:
    read-only and every card for that agent is disabled. A live broker event is
    authoritative over an equal-generation, equal-lease preview response, so a
    delayed poll cannot reopen input during or after the transfer.
+9. Preview responses are request-ordered per agent. A stale success or failure
+   cannot replace a newer pane state, and card activation rechecks that the
+   selected slot is still `running` before it invokes the native handoff.
 
 Structured prompt delivery is a separate backend-authorized control path. The
 terminal lease applies to terminal keystrokes and binary input; it must not gate

@@ -587,6 +587,7 @@ describe("ZellijAgentTerminal", () => {
     const previews = await screen.findAllByRole("application", {
       name: "Terminal for agent-1",
     });
+    await waitFor(() => expect(previews[0]).toHaveAttribute("aria-disabled", "false"));
     fireEvent.pointerDown(previews[0]);
     await waitFor(() => expect(useZellijPresentationStore.getState().activeTargetId)
       .toBe("agents:agent-1:agent-1"));
@@ -781,6 +782,69 @@ describe("ZellijAgentTerminal", () => {
       activationPending: false,
       source: "preview",
     });
+    expect(screen.queryByText("Terminal engine unavailable")).not.toBeInTheDocument();
+  });
+
+  it("rejects a stale running preview after a newer exited response", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveFirstPreview: ((preview: Record<string, unknown>) => void) | undefined;
+      let previewCalls = 0;
+      invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+        if (command === "activate_zellij_agent_terminal") {
+          return Promise.resolve(args.sessionId);
+        }
+        if (command !== "get_zellij_terminal_preview") {
+          return Promise.reject(new Error(`Unexpected command ${command}`));
+        }
+        previewCalls += 1;
+        if (previewCalls === 1) {
+          return new Promise((resolve) => { resolveFirstPreview = resolve; });
+        }
+        return Promise.resolve({
+          session_id: args.sessionId,
+          terminal_session_id: args.sessionId,
+          generation: 2,
+          broker_generation: null,
+          broker_lease_epoch: null,
+          broker_owner_presentation_id: null,
+          broker_activation_pending: false,
+          state: "exited",
+          content: "new exited state",
+        });
+      });
+
+      renderTerminals(terminal("agent-1"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750);
+      });
+      expect(screen.getByText("Agent terminal exited")).toBeInTheDocument();
+
+      await act(async () => {
+        resolveFirstPreview?.({
+          session_id: "agent-1",
+          terminal_session_id: "agent-1",
+          generation: 1,
+          broker_generation: 1,
+          broker_lease_epoch: 1,
+          broker_owner_presentation_id: null,
+          broker_activation_pending: false,
+          state: "running",
+          content: "stale running state",
+        });
+        await Promise.resolve();
+      });
+
+      const preview = screen.getByRole("application", { name: "Terminal for agent-1" });
+      expect(preview).toHaveAttribute("aria-disabled", "true");
+      expect(screen.queryByText("stale running state")).not.toBeInTheDocument();
+      fireEvent.pointerDown(preview);
+      expect(invokeMock.mock.calls.filter(
+        ([command]) => command === "activate_zellij_agent_terminal",
+      )).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not let a delayed preview overwrite a live owner at the same lease", async () => {

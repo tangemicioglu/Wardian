@@ -227,6 +227,9 @@ cannot focus after a newer request has completed. Removing an in-flight target
 invalidates that activation and queues a focus reconciliation for the still-live
 target. A removed final target clears its active agent identity, so remounting
 requires a fresh activation instead of silently adopting stale focus.
+Preview polls are request-ordered per agent. Only the newest success or failure
+may update card state, and the queued activation preflight independently
+requires the selected slot to remain `running` before native focus begins.
 
 Snapshot cards never resize panes. The singleton xterm fits the canonical
 Zellij frame locally. The previous frame is hidden during a binding change and
@@ -296,12 +299,15 @@ authoritative pane list before a same-session replacement can start. Drop is a
 tracked fallback: it synchronously changes the binding to `closing` and starts
 an isolated cleanup worker, but never removes the binding on command success
 alone. A failed or unconfirmed Zellij close therefore stays registered as
-`closing`; the next spawn closes every same-title pane and confirms that none
-remain before it removes that cleanup record or allocates a replacement
-generation. The same rule covers missing pane identity and failures while
-opening the pane subscription transport. If clear aborts before termination,
-Wardian moves the original pane lease back with the restored runtime instead
-of dropping it.
+`closing`; the next spawn closes every tracked closing generation and confirms
+each pane is absent before it removes that cleanup record or allocates a new
+generation. If a closing generation has no pane identity, Wardian closes every
+unregistered same-title pane while preserving every identified live or retired
+generation. A failed replacement cancellation retains its reservation until
+candidate closure succeeds, so an ordinary start cannot bypass the cleanup
+record. The same rule covers failures while opening the pane subscription
+transport. If clear aborts before termination, Wardian moves the original pane
+lease back with the restored runtime instead of dropping it.
 Restart preflight leaves the old runtime and pane untouched. A running restart
 reserves a second pane generation and stages its broker actor while the old
 pane, provider, broker actor, and `ActiveAgent` remain alive. The candidate is
