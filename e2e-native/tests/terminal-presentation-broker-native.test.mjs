@@ -351,7 +351,8 @@ test(
       10_000,
       OWNER_GEOMETRY,
     );
-    assert.equal(ownerCanonical.decision.status, "accepted");
+    assert.equal(ownerCanonical.decision.status, "rejected");
+    assert.equal(ownerCanonical.decision.reason, "fixed_geometry");
     assert.deepEqual(ownerCanonical.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     brokerState = {
       ...brokerState,
@@ -423,7 +424,8 @@ test(
       20_000,
       { cols: 104, rows: 32 },
     );
-    assert.equal(raceGeometry.decision.status, "accepted");
+    assert.equal(raceGeometry.decision.status, "rejected");
+    assert.equal(raceGeometry.decision.reason, "fixed_geometry");
     assert.deepEqual(raceGeometry.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     brokerState = { ...brokerState, geometry: raceGeometry.geometry };
     const raceMirrorBegin = await beginActivation(driver, mirrorPresentationId, brokerState);
@@ -465,7 +467,8 @@ test(
       30_000,
       { cols: 108, rows: 33 },
     );
-    assert.equal(timeoutGeometry.decision.status, "accepted");
+    assert.equal(timeoutGeometry.decision.status, "rejected");
+    assert.equal(timeoutGeometry.decision.reason, "fixed_geometry");
     assert.deepEqual(timeoutGeometry.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     brokerState = { ...brokerState, geometry: timeoutGeometry.geometry };
     const timeoutBegin = await beginActivation(driver, mirrorPresentationId, brokerState);
@@ -509,7 +512,8 @@ test(
       40_000,
       { cols: 112, rows: 35 },
     );
-    assert.equal(disconnectGeometry.decision.status, "accepted");
+    assert.equal(disconnectGeometry.decision.status, "rejected");
+    assert.equal(disconnectGeometry.decision.reason, "fixed_geometry");
     assert.deepEqual(disconnectGeometry.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     brokerState = { ...brokerState, geometry: disconnectGeometry.geometry };
     const disconnectBegin = await beginActivation(driver, mirrorPresentationId, brokerState);

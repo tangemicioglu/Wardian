@@ -582,6 +582,23 @@ impl ZellijTerminalEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn finish_pane_subscription(
+        &self,
+        session_id: &str,
+        generation: u64,
+        downstream_closed: bool,
+    ) {
+        if downstream_closed {
+            return;
+        }
+        let mut panes = self.pane_registry();
+        if let Some(binding) = panes.binding_for_generation_mut(session_id, generation) {
+            if binding.generation == generation && binding.phase == ZellijPanePhase::Running {
+                binding.phase = ZellijPanePhase::Exited;
+            }
+        }
+    }
+
     pub async fn attached_runtime_generation(&self) -> Option<u64> {
         self.state
             .lock()
@@ -1351,6 +1368,7 @@ impl ZellijTerminalEngine {
         let subscription_generation = binding.generation;
         std::thread::spawn(move || {
             use std::io::BufRead;
+            let mut downstream_closed = false;
             for line in std::io::BufReader::new(stdout).lines() {
                 let Ok(line) = line else {
                     break;
@@ -1363,20 +1381,20 @@ impl ZellijTerminalEngine {
                 }
                 let frame = render_zellij_snapshot(update);
                 if snapshot_tx.send(frame.clone()).is_err() || render_tx.send(frame).is_err() {
+                    // A broker replacement or termination drops Wardian's
+                    // local frame receiver while the provider pane remains
+                    // alive in Zellij. That is not pane-exit evidence and must
+                    // not invalidate a generation-scoped restart reservation.
+                    downstream_closed = true;
                     break;
                 }
             }
             if let Some(engine) = subscription_engine.upgrade() {
-                let mut panes = engine.pane_registry();
-                if let Some(binding) = panes
-                    .binding_for_generation_mut(&subscription_session_id, subscription_generation)
-                {
-                    if binding.generation == subscription_generation
-                        && binding.phase == ZellijPanePhase::Running
-                    {
-                        binding.phase = ZellijPanePhase::Exited;
-                    }
-                }
+                engine.finish_pane_subscription(
+                    &subscription_session_id,
+                    subscription_generation,
+                    downstream_closed,
+                );
             }
         });
 
@@ -2459,6 +2477,36 @@ mod tests {
         assert!(
             runner.calls.lock().unwrap().is_empty(),
             "a superseded request must issue no Zellij focus action"
+        );
+    }
+
+    #[tokio::test]
+    async fn downstream_subscription_close_does_not_mark_a_live_pane_exited() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = ZellijTerminalEngine::with_runner(
+            config(root.path()),
+            FakeRunner::with_outputs([]),
+        );
+        engine.pane_registry().bindings.insert(
+            "agent-1".to_string(),
+            ZellijPaneBinding {
+                session_id: "agent-1".to_string(),
+                pane_id: Some(ZellijPaneId::parse("terminal_1").unwrap()),
+                generation: 1,
+                phase: ZellijPanePhase::Running,
+            },
+        );
+
+        engine.finish_pane_subscription("agent-1", 1, true);
+        assert_eq!(
+            engine.binding("agent-1").await.unwrap().phase,
+            ZellijPanePhase::Running,
+        );
+
+        engine.finish_pane_subscription("agent-1", 1, false);
+        assert_eq!(
+            engine.binding("agent-1").await.unwrap().phase,
+            ZellijPanePhase::Exited,
         );
     }
 

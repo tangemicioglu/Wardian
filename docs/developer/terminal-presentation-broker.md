@@ -242,6 +242,12 @@ mandatory, and existing socket backpressure and rate limits still apply.
 Non-owner or stale requests are nonfatal protocol results, not reasons to close
 the socket.
 
+When a runtime terminates, its remote feed consumer is no longer valid. The
+socket suspends old-generation drains, waits for the broker's replacement
+generation, and registers a fresh presentation and consumer before resuming
+events. A missing old consumer is recovery state, not a client-visible error or
+evidence that the replacement runtime failed.
+
 ## Renderer Budgets
 
 The legacy presentation pool permits at most 24 mounted xterm renderers and 12

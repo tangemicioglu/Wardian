@@ -135,6 +135,7 @@ struct TerminalSocketBinding {
     geometry_sequence: u64,
     desired_geometry: TerminalGeometry,
     drain_continuation_pending: bool,
+    awaiting_runtime: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +153,7 @@ fn should_break_after_send(action: ClientMessageAction) -> bool {
 struct DrainSliceOutcome {
     action: ClientMessageAction,
     more_pending: bool,
+    consumer_missing: bool,
 }
 
 impl DrainSliceOutcome {
@@ -159,6 +161,7 @@ impl DrainSliceOutcome {
         Self {
             action,
             more_pending: false,
+            consumer_missing: false,
         }
     }
 
@@ -166,6 +169,15 @@ impl DrainSliceOutcome {
         Self {
             action: ClientMessageAction::Continue,
             more_pending: true,
+            consumer_missing: false,
+        }
+    }
+
+    fn consumer_missing() -> Self {
+        Self {
+            action: ClientMessageAction::Continue,
+            more_pending: false,
+            consumer_missing: true,
         }
     }
 }
@@ -254,6 +266,7 @@ pub(super) async fn handle_terminal_socket(
         geometry_sequence: 0,
         desired_geometry,
         drain_continuation_pending: false,
+        awaiting_runtime: false,
     };
 
     let registration = match register_binding(&state, &mut binding).await {
@@ -294,7 +307,7 @@ pub(super) async fn handle_terminal_socket(
 
     'stream: loop {
         tokio::select! {
-            _ = tokio::task::yield_now(), if binding.drain_continuation_pending => {
+            _ = tokio::task::yield_now(), if binding.drain_continuation_pending && !binding.awaiting_runtime => {
                 binding.drain_continuation_pending = false;
                 let outcome = drain_event_slice(&state, &mut socket, &mut binding, None).await;
                 if apply_drain_outcome(&mut binding, outcome) != ClientMessageAction::Continue {
@@ -307,10 +320,17 @@ pub(super) async fn handle_terminal_socket(
                     debug_assert!(should_break_after_send(action));
                     break;
                 }
+                if binding.awaiting_runtime
+                    && recover_binding(&state, &mut socket, &mut binding).await
+                        != ClientMessageAction::Continue
+                {
+                    break;
+                }
             }
-            event = wakeups.recv() => {
+            event = wakeups.recv(), if !binding.awaiting_runtime => {
                 match event {
-                    Ok(event) if event.session_id == binding.session_id => {
+                    Ok(event) if event.session_id == binding.session_id
+                        && event.runtime_generation == binding.runtime_generation => {
                         let outcome = drain_event_slice(&state, &mut socket, &mut binding, None).await;
                         if apply_drain_outcome(&mut binding, outcome)
                             != ClientMessageAction::Continue {
@@ -330,29 +350,21 @@ pub(super) async fn handle_terminal_socket(
             event = lifecycle.recv() => {
                 match event {
                     Ok(event) if event.session_id == binding.session_id
-                        && event.runtime_generation > binding.runtime_generation
+                        && (event.runtime_generation > binding.runtime_generation
+                            || (binding.awaiting_runtime
+                                && event.runtime_generation >= binding.runtime_generation))
                         && matches!(event.lifecycle, TerminalSessionLifecycleEvent::RuntimeStarted | TerminalSessionLifecycleEvent::RuntimeReplaced) => {
-                        match register_binding(&state, &mut binding).await {
-                            Ok(registration) => {
-                                if send_registered(&mut socket, &binding, &registration).await.is_err() {
-                                    break;
-                                }
-                                if binding.protocol == TerminalProtocol::V1
-                                    && activate_v1_after_snapshot(&state, &mut socket, &mut binding).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Err(_) => {
-                                let action = send_error(&mut socket, "terminal_runtime_unavailable", false, None).await;
-                                if should_break_after_send(action) {
-                                    break;
-                                }
-                            }
+                        if recover_binding(&state, &mut socket, &mut binding).await
+                            != ClientMessageAction::Continue
+                        {
+                            break;
                         }
                     }
                     Ok(event) if event.session_id == binding.session_id
                         && event.runtime_generation >= binding.runtime_generation
                         && event.lifecycle == TerminalSessionLifecycleEvent::RuntimeTerminated => {
+                        binding.awaiting_runtime = true;
+                        binding.drain_continuation_pending = false;
                         let action = send_error(&mut socket, "terminal_runtime_terminated", false, None).await;
                         if should_break_after_send(action) {
                             break;
@@ -362,40 +374,13 @@ pub(super) async fn handle_terminal_socket(
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         match state.terminal_sessions.broker_state(&binding.session_id).await {
                             Ok(broker_state)
-                                if broker_state.runtime_generation > binding.runtime_generation =>
+                                if broker_state.runtime_generation > binding.runtime_generation
+                                    || binding.awaiting_runtime =>
                             {
-                                match register_binding(&state, &mut binding).await {
-                                    Ok(registration) => {
-                                        if send_registered(&mut socket, &binding, &registration)
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
-                                        if binding.protocol == TerminalProtocol::V1
-                                            && activate_v1_after_snapshot(
-                                                &state,
-                                                &mut socket,
-                                                &mut binding,
-                                            )
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
-                                    }
-                                    Err(_) => {
-                                        let action = send_error(
-                                            &mut socket,
-                                            "terminal_runtime_unavailable",
-                                            false,
-                                            None,
-                                        )
-                                        .await;
-                                        if should_break_after_send(action) {
-                                            break;
-                                        }
-                                    }
+                                if recover_binding(&state, &mut socket, &mut binding).await
+                                    != ClientMessageAction::Continue
+                                {
+                                    break;
                                 }
                             }
                             Ok(_) => {
@@ -501,7 +486,40 @@ async fn register_binding(
             .await;
         return Err(error);
     }
+    binding.awaiting_runtime = false;
     Ok(registration)
+}
+
+async fn recover_binding(
+    state: &crate::state::AppState,
+    socket: &mut WebSocket,
+    binding: &mut TerminalSocketBinding,
+) -> ClientMessageAction {
+    match register_binding(state, binding).await {
+        Ok(registration) => {
+            if send_registered(socket, binding, &registration)
+                .await
+                .is_err()
+            {
+                return ClientMessageAction::Close;
+            }
+            if binding.protocol == TerminalProtocol::V1
+                && activate_v1_after_snapshot(state, socket, binding)
+                    .await
+                    .is_err()
+            {
+                return ClientMessageAction::Close;
+            }
+            ClientMessageAction::Continue
+        }
+        Err(
+            crate::state::terminal_session::TerminalBrokerError::ActorClosed
+            | crate::state::terminal_session::TerminalBrokerError::RuntimeTerminated
+            | crate::state::terminal_session::TerminalBrokerError::RuntimeUnavailable
+            | crate::state::terminal_session::TerminalBrokerError::SessionNotFound,
+        ) => ClientMessageAction::Continue,
+        Err(error) => send_broker_error(socket, error).await,
+    }
 }
 
 async fn detach_binding(state: &crate::state::AppState, binding: &TerminalSocketBinding) {
@@ -1052,6 +1070,9 @@ async fn drain_event_slice_inner(
             .await
         {
             Ok(batch) => batch,
+            Err(crate::state::terminal_session::TerminalBrokerError::ConsumerNotFound) => {
+                return DrainSliceOutcome::consumer_missing();
+            }
             Err(error) => {
                 return DrainSliceOutcome::complete(send_broker_error(socket, error).await);
             }
@@ -1137,7 +1158,10 @@ fn apply_drain_outcome(
     binding: &mut TerminalSocketBinding,
     outcome: DrainSliceOutcome,
 ) -> ClientMessageAction {
-    binding.drain_continuation_pending = outcome.more_pending;
+    if outcome.consumer_missing {
+        binding.awaiting_runtime = true;
+    }
+    binding.drain_continuation_pending = outcome.more_pending && !binding.awaiting_runtime;
     outcome.action
 }
 
@@ -1585,7 +1609,20 @@ mod tests {
             geometry_sequence: 0,
             desired_geometry: TerminalGeometry { cols: 80, rows: 24 },
             drain_continuation_pending: false,
+            awaiting_runtime: false,
         }
+    }
+
+    #[test]
+    fn missing_consumer_suspends_drain_until_runtime_recovery() {
+        let mut binding = v1_binding();
+        binding.drain_continuation_pending = true;
+
+        let action = apply_drain_outcome(&mut binding, DrainSliceOutcome::consumer_missing());
+
+        assert_eq!(action, ClientMessageAction::Continue);
+        assert!(binding.awaiting_runtime);
+        assert!(!binding.drain_continuation_pending);
     }
 
     #[test]

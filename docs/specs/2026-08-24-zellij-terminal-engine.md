@@ -19,6 +19,12 @@ This is a replacement, not an optional terminal provider. The branch is not
 merge-ready while the former per-agent PTY or many-xterm architecture remains
 as a production fallback.
 
+Remote terminal attachments follow runtime generations. Termination suspends
+the old feed cursor; after replacement, the existing authenticated socket
+registers a fresh presentation and consumer before it resumes output. It must
+not poll a removed consumer or expose that internal broker transition as a
+repeating gateway error.
+
 ## Decisions
 
 - Pin and bundle the Zellij 0.45.0 `no-web` executable for Windows x64,
