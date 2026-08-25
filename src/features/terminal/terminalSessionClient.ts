@@ -833,6 +833,7 @@ export class TerminalSessionClient {
         observed_lease_epoch: state.lease_epoch,
       },
     });
+    this.#setBrokerState(begin.broker_state);
     this.#notifyDecision(begin.decision);
     if (begin.decision.status !== "accepted" || !begin.activation_id || !begin.snapshot) {
       return { begin, ack: null };

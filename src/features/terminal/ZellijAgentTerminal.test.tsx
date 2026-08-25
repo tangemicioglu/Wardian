@@ -748,6 +748,83 @@ describe("ZellijAgentTerminal", () => {
     });
   });
 
+  it("retries auto-focus after a queued activation is skipped and becomes eligible again", async () => {
+    let releaseFirstActivation: (() => void) | undefined;
+    invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command === "get_zellij_terminal_preview") {
+        return Promise.resolve({
+          session_id: args.sessionId,
+          terminal_session_id: args.sessionId,
+          generation: 1,
+          broker_generation: 1,
+          broker_lease_epoch: 1,
+          broker_owner_presentation_id: null,
+          broker_activation_pending: false,
+          state: "running",
+          content: `${args.sessionId} preview`,
+        });
+      }
+      if (command === "activate_zellij_agent_terminal" && args.sessionId === "agent-1") {
+        return new Promise((resolve) => {
+          releaseFirstActivation = () => resolve(args.sessionId);
+        });
+      }
+      if (command === "activate_zellij_agent_terminal") return Promise.resolve(args.sessionId);
+      return Promise.reject(new Error(`Unexpected command ${command}`));
+    });
+    const autoTerminal = (interaction: "interactive" | "read_only") => (
+      <ZellijAgentTerminal
+        sessionId="agent-2"
+        presentationId="agents:agent-2"
+        visibility="visible"
+        renderState="mounted"
+        requestedInteraction={interaction}
+        provider="mock"
+        theme="dark"
+        autoFocus
+      />
+    );
+    const view = renderTerminals(terminal("agent-1"));
+    fireEvent.pointerDown(await screen.findByRole("application", {
+      name: "Terminal for agent-1",
+    }));
+    await waitFor(() => expect(releaseFirstActivation).toBeDefined());
+
+    view.rerender(
+      <>
+        <ZellijAgentTerminalHost />
+        {terminal("agent-1")}
+        {autoTerminal("interactive")}
+      </>,
+    );
+    await screen.findByText("agent-2 preview");
+    view.rerender(
+      <>
+        <ZellijAgentTerminalHost />
+        {terminal("agent-1")}
+        {autoTerminal("read_only")}
+      </>,
+    );
+    act(() => releaseFirstActivation?.());
+    await waitFor(() => expect(invokeMock.mock.calls.filter(
+      ([command]) => command === "activate_zellij_agent_terminal",
+    )).toHaveLength(1));
+
+    view.rerender(
+      <>
+        <ZellijAgentTerminalHost />
+        {terminal("agent-1")}
+        {autoTerminal("interactive")}
+      </>,
+    );
+    await waitFor(() => {
+      expect(useZellijPresentationStore.getState().activeAgentId).toBe("agent-2");
+      expect(invokeMock.mock.calls.filter(
+        ([command]) => command === "activate_zellij_agent_terminal",
+      )).toHaveLength(2);
+    });
+  });
+
   it("releases an active owner when its slot becomes read-only or suspended", async () => {
     const view = render(
       <>

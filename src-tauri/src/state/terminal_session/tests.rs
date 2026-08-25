@@ -603,6 +603,23 @@ async fn pending_activation_freezes_input_and_timeout_rolls_back() {
         })
         .await
         .expect("begin transfer");
+    assert!(pending.broker_state.owner_presentation_id.is_none());
+    assert_eq!(
+        pending
+            .broker_state
+            .pending_activation
+            .as_ref()
+            .map(|activation| activation.presentation_id.as_str()),
+        Some("two")
+    );
+    assert_eq!(
+        pending
+            .broker_state
+            .pending_activation
+            .as_ref()
+            .map(|activation| activation.previous_owner_presentation_id.as_deref()),
+        Some(Some("one"))
+    );
     for presentation_id in ["one", "two"] {
         let decision = broker
             .send_input(TerminalInputRequest {

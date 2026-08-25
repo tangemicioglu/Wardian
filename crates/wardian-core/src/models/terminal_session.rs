@@ -224,6 +224,7 @@ impl TerminalLeaseDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalActivationBeginResult {
     pub decision: TerminalLeaseDecision,
+    pub broker_state: TerminalBrokerState,
     pub activation_id: Option<String>,
     pub snapshot: Option<TerminalSnapshot>,
     pub sequence_barrier: u64,

@@ -141,7 +141,10 @@ Activation is a two-phase protocol:
 2. The broker verifies the presentation is visible, mounted, interactive,
    synchronized, and backed by a live runtime. It advances the epoch, records a
    pending activation, removes the active owner for the transfer window, and
-   returns an activation ID plus snapshot/barrier.
+   returns the authoritative pending broker state, activation ID, and
+   snapshot/barrier. Desktop and remote clients publish that broker state before
+   applying the snapshot so every presentation becomes hidden or read-only for
+   the complete transfer window.
 3. After applying the snapshot, acknowledge the exact activation ID,
    generation, and epoch. The broker applies at most one current desired
    geometry and publishes the new owner.

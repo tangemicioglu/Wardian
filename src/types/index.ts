@@ -817,6 +817,7 @@ export type TerminalLeaseDecision = {
 
 export type TerminalActivationBeginResult = {
     decision: TerminalLeaseDecision;
+    broker_state: TerminalBrokerState;
     activation_id: string | null;
     snapshot: TerminalSnapshot | null;
     sequence_barrier: number;

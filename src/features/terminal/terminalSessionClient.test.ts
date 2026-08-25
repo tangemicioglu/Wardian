@@ -48,6 +48,25 @@ function brokerState(generation = 1, sequence = 0): TerminalBrokerState {
   };
 }
 
+function pendingBrokerState(
+  presentationId: string,
+  generation = 1,
+  leaseEpoch = 1,
+): TerminalBrokerState {
+  return {
+    ...brokerState(generation),
+    lease_epoch: leaseEpoch,
+    owner_presentation_id: null,
+    pending_activation: {
+      presentation_id: presentationId,
+      previous_owner_presentation_id: null,
+      runtime_generation: generation,
+      lease_epoch: leaseEpoch,
+      activation_id: `activation-${generation}-${leaseEpoch}`,
+    },
+  };
+}
+
 function snapshot(generation = 1, barrier = 0): TerminalSnapshot {
   return {
     snapshot_id: `snapshot-${generation}-${barrier}`,
@@ -705,6 +724,7 @@ describe("TerminalSessionClient", () => {
       if (command === "begin_terminal_activation") {
         return {
           decision: { status: "accepted", reason: null, runtime_generation: 1, lease_epoch: 1, owner_presentation_id: null },
+          broker_state: pendingBrokerState("pane-a"),
           activation_id: "activation-1",
           snapshot: snapshot(1, 1),
           sequence_barrier: 1,
@@ -763,6 +783,7 @@ describe("TerminalSessionClient", () => {
     const acknowledgementSnapshotGate = deferred<void>();
     const publishedOwners: Array<string | null> = [];
     const decidedOwners: Array<string | null> = [];
+    const publishedPending: Array<string | null> = [];
     let acknowledgementSnapshotStarted = false;
     tauri.invoke.mockImplementation(async (command: string, args?: unknown) => {
       const request = (args as { request?: { presentation_id?: string } } | undefined)?.request;
@@ -775,6 +796,7 @@ describe("TerminalSessionClient", () => {
       if (command === "begin_terminal_activation") {
         return {
           decision: { status: "accepted", reason: null, runtime_generation: 1, lease_epoch: 1, owner_presentation_id: null },
+          broker_state: pendingBrokerState("pane-a"),
           activation_id: "activation-1",
           snapshot: snapshot(1, 1),
           sequence_barrier: 1,
@@ -809,7 +831,10 @@ describe("TerminalSessionClient", () => {
         return undefined;
       },
       applyEvents: () => undefined,
-      onBrokerState: (state) => publishedOwners.push(state.owner_presentation_id),
+      onBrokerState: (state) => {
+        publishedOwners.push(state.owner_presentation_id);
+        publishedPending.push(state.pending_activation?.presentation_id ?? null);
+      },
       onLeaseDecision: (decision) => decidedOwners.push(decision.owner_presentation_id),
     });
 
@@ -817,11 +842,14 @@ describe("TerminalSessionClient", () => {
     await vi.waitFor(() => expect(acknowledgementSnapshotStarted).toBe(true));
 
     expect(client.brokerState?.owner_presentation_id).toBeNull();
+    expect(client.brokerState?.pending_activation?.presentation_id).toBe("pane-a");
     expect(publishedOwners).not.toContain("pane-a");
     expect(decidedOwners).not.toContain("pane-a");
 
     acknowledgementSnapshotGate.resolve();
     await activation;
+    expect(publishedPending).toContain("pane-a");
+    expect(client.brokerState?.pending_activation).toBeNull();
 
     expect(client.brokerState?.owner_presentation_id).toBe("pane-a");
     expect(publishedOwners).toContain("pane-a");
@@ -964,6 +992,7 @@ describe("TerminalSessionClient", () => {
             lease_epoch: 1,
             owner_presentation_id: null,
           },
+          broker_state: pendingBrokerState("pane-owner", 2),
           activation_id: "replacement-owner-activation",
           snapshot: snapshot(2),
           sequence_barrier: 0,
@@ -1078,6 +1107,7 @@ describe("TerminalSessionClient", () => {
             lease_epoch: 1,
             owner_presentation_id: null,
           },
+          broker_state: pendingBrokerState("pane-owner", 2),
           activation_id: "late-lifecycle-activation",
           snapshot: snapshot(2),
           sequence_barrier: 0,
@@ -1208,6 +1238,7 @@ describe("TerminalSessionClient", () => {
             lease_epoch: 1,
             owner_presentation_id: null,
           },
+          broker_state: pendingBrokerState("pane-owner", 2),
           activation_id: "external-owner-replacement-activation",
           snapshot: snapshot(2),
           sequence_barrier: 0,
@@ -1309,6 +1340,7 @@ describe("TerminalSessionClient", () => {
             lease_epoch: 1,
             owner_presentation_id: null,
           },
+          broker_state: pendingBrokerState("pane-owner", 2),
           activation_id: "clear-race-activation",
           snapshot: snapshot(2),
           sequence_barrier: 0,
@@ -1405,6 +1437,7 @@ describe("TerminalSessionClient", () => {
             lease_epoch: 1,
             owner_presentation_id: null,
           },
+          broker_state: pendingBrokerState("pane-owner", 2),
           activation_id: "clear-activation",
           snapshot: snapshot(2),
           sequence_barrier: 0,

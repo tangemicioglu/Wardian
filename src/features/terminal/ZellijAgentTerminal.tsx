@@ -568,6 +568,10 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
     if (isLiveTarget) activationRequested.current = false;
   }, [isLiveTarget]);
 
+  useEffect(() => {
+    autoActivationAttempted.current = false;
+  }, [canOwnTerminal, props.autoFocus, targetId]);
+
   const requestTerminalFocus = useCallback(() => {
     if (!canOwnTerminal || preview?.state !== "running" || activationRequested.current) return;
     activationRequested.current = true;
@@ -585,16 +589,17 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
     if (
       autoActivationAttempted.current
       || isLiveTarget
-      || visibility !== "visible"
-      || renderState !== "mounted"
-      || requestedInteraction !== "interactive"
+      || !canOwnTerminal
       || !props.autoFocus
     ) return;
     autoActivationAttempted.current = true;
-    void activate(sessionId, targetId).catch((error) => {
+    void activate(sessionId, targetId).then((committed) => {
+      if (!committed) autoActivationAttempted.current = false;
+    }).catch((error) => {
+      autoActivationAttempted.current = false;
       setActivationError(error instanceof Error ? error.message : "Terminal activation failed");
     });
-  }, [activate, isLiveTarget, props.autoFocus, renderState, requestedInteraction, sessionId, targetId, visibility]);
+  }, [activate, canOwnTerminal, isLiveTarget, props.autoFocus, sessionId, targetId]);
 
   if (isLiveTarget) {
     return (

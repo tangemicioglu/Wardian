@@ -2265,8 +2265,11 @@ impl TerminalSessionActor {
             pending_activation: Some(pending_state.clone()),
         });
         let snapshot = self.snapshot();
+        let mut broker_state = self.broker_state();
+        broker_state.pending_activation = Some(pending_state.clone());
         let begin_result = TerminalActivationBeginResult {
             decision: self.accepted_decision(),
+            broker_state,
             activation_id: Some(activation_id.clone()),
             sequence_barrier: snapshot.sequence_barrier,
             snapshot: Some(snapshot),
@@ -3079,6 +3082,7 @@ impl TerminalSessionActor {
     ) -> TerminalActivationBeginResult {
         TerminalActivationBeginResult {
             decision: self.rejected_decision(reason),
+            broker_state: self.broker_state(),
             activation_id: None,
             snapshot: None,
             sequence_barrier: self.stream_sequence,
