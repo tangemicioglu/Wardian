@@ -91,6 +91,22 @@ pub struct ConsoleEntry {
     pub text: String,
 }
 
+/// A page dialog waiting to be answered.
+///
+/// `alert`, `confirm`, `prompt`, and `beforeunload` all stop the page until
+/// someone answers. The page cannot proceed while this is set, so it is part
+/// of the session's public description rather than a surface-only concern:
+/// an agent that finds its `wait` timing out deserves to see why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserDialog {
+    /// `alert`, `confirm`, `prompt`, or `beforeunload`.
+    pub kind: String,
+    pub message: String,
+    /// What a `prompt` starts with; empty for every other kind.
+    #[serde(default)]
+    pub default_prompt: String,
+}
+
 /// The externally visible description of a browser session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserSessionSummary {
@@ -111,6 +127,17 @@ pub struct BrowserSessionSummary {
     /// Recorded requests that failed outright or answered 4xx/5xx.
     #[serde(default)]
     pub network_failure_count: usize,
+    /// True while this session is presenting a page it opened in a popup.
+    ///
+    /// The surface has one viewport, so a popup is presented in place of its
+    /// opener rather than beside it. Everything else — `url`, `title`,
+    /// snapshots, actions — already describes whatever is presented, so this
+    /// is the one bit that says the opener is still behind it.
+    #[serde(default)]
+    pub popup: bool,
+    /// The dialog blocking the page, if one is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialog: Option<BrowserDialog>,
 }
 
 /// Hard ceiling on elements in one snapshot, so a pathological page cannot
@@ -743,8 +770,17 @@ pub fn render_session_line(summary: &BrowserSessionSummary) -> String {
     } else {
         String::new()
     };
+    // Both say the address alone is not the whole story: a popup means the
+    // opener is still behind what this line describes, and a dialog means the
+    // page is stopped and every later call will time out until it is answered.
+    let popup = if summary.popup { "  popup" } else { "" };
+    let dialog = summary
+        .dialog
+        .as_ref()
+        .map(|dialog| format!("  dialog={}", dialog.kind))
+        .unwrap_or_default();
     format!(
-        "{}  {}  {}  {}{owner}{errors}{failures}",
+        "{}  {}  {}  {}{owner}{errors}{failures}{popup}{dialog}",
         summary.short_ref,
         summary.load_state.as_str(),
         if summary.url.is_empty() {
@@ -812,6 +848,8 @@ mod tests {
             workspace: None,
             console_error_count: 2,
             network_failure_count: 1,
+            popup: false,
+            dialog: None,
         };
         let encoded = serde_json::to_string(&summary).expect("serialize");
         let decoded: BrowserSessionSummary = serde_json::from_str(&encoded).expect("deserialize");
@@ -833,11 +871,22 @@ mod tests {
             workspace: None,
             console_error_count: 3,
             network_failure_count: 2,
+            popup: true,
+            dialog: Some(BrowserDialog {
+                kind: "confirm".to_string(),
+                message: "proceed?".to_string(),
+                default_prompt: String::new(),
+            }),
         };
         let line = render_session_line(&summary);
         assert!(line.starts_with("browser:2  complete  https://example.com/  Example"));
         assert!(line.contains("agent=agent-1"));
         assert!(line.contains("console_errors=3"));
+        // A line that showed only the popup's address would look like an
+        // ordinary navigation, and one that hid the dialog would leave the
+        // reader to guess why the page stopped answering.
+        assert!(line.contains("  popup"));
+        assert!(line.contains("dialog=confirm"));
     }
 
     #[test]
@@ -854,12 +903,16 @@ mod tests {
             workspace: None,
             console_error_count: 0,
             network_failure_count: 0,
+            popup: false,
+            dialog: None,
         };
         let line = render_session_line(&summary);
         assert!(line.contains("about:blank"));
         assert!(line.contains("(untitled)"));
         assert!(!line.contains("agent="));
         assert!(!line.contains("console_errors"));
+        assert!(!line.contains("popup"));
+        assert!(!line.contains("dialog"));
     }
 
     #[test]

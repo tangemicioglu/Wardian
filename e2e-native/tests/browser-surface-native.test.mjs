@@ -46,6 +46,13 @@ const FIXTURE = `<!doctype html>
   <p id="out"></p>
   <p><a id="next" href="/second">Second page</a></p>
   <!--
+    A window this page opens, and a dialog that stops it. Both used to be
+    dead ends: the popup ran in a target nothing was attached to, and the
+    dialog held the renderer with nobody able to answer it.
+  -->
+  <p><a id="popup" href="/second" target="_blank">Open in a new window</a></p>
+  <p><button id="ask" onclick="document.getElementById('out').textContent = 'confirmed ' + window.confirm('Proceed?')">Ask</button></p>
+  <!--
     One request that 404s, so the ledger has a failure to report and the
     surface footer has something to count. Introspection is the point of the
     phase this fixture now also covers.
@@ -279,6 +286,79 @@ test("browser surface drives a real page and refuses stale refs", async (t) => {
     await driver.takeScreenshot(),
     "base64",
   );
+
+  // A window the page opens. Only this layer can show what used to happen:
+  // the popup ran in a target nothing was attached to, so the surface kept
+  // showing an opener that would never change — which is every OAuth flow.
+  const popupSnapshot = JSON.parse(
+    await runCliOk(cliPath, harness, ["browser", "--json", browserId, "snapshot", "--interactive"]),
+  ).snapshot;
+  const popupLink = popupSnapshot.elements.find(
+    (element) => element.name.trim() === "Open in a new window",
+  );
+  assert.ok(popupLink, `the popup link was not in the snapshot: ${JSON.stringify(popupSnapshot.elements)}`);
+  await runCliOk(cliPath, harness, ["browser", browserId, "click", popupLink.element_ref]);
+
+  const popupChip = await driver.wait(
+    until.elementLocated(By.css('[data-testid="browser-surface-popup"]')),
+    30_000,
+    "the popup was never presented on the surface",
+  );
+  assert.match(await popupChip.getText(), /popup/i);
+  await driver.wait(async () => {
+    const address = await driver.findElement(By.css('[data-testid="browser-surface-address"]'));
+    return (await address.getAttribute("value")).includes("/second");
+  }, 30_000, "the address bar never followed the popup");
+
+  const popupEvidenceDir = path.join(
+    harness.repoRoot,
+    "e2e",
+    "screenshots",
+    "browser-surface-dialogs-and-popups",
+    INPUT_SCREENSHOT_DATE,
+  );
+  fs.mkdirSync(popupEvidenceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(popupEvidenceDir, "popup-presented-over-its-opener.png"),
+    await driver.takeScreenshot(),
+    "base64",
+  );
+
+  // The popup's own history has no entry for its opener, so this button is
+  // the only way back.
+  await driver.findElement(By.css('[aria-label="Close popup"]')).click();
+  await driver.wait(async () => {
+    const chips = await driver.findElements(By.css('[data-testid="browser-surface-popup"]'));
+    return chips.length === 0;
+  }, 30_000, "the surface never returned to the page behind the popup");
+
+  // A dialog stops the renderer. Before it was surfaced, the page simply
+  // stopped answering and there was nothing to click.
+  await runCliOk(cliPath, harness, [
+    "browser", browserId, "eval", "setTimeout(() => document.getElementById('ask').click(), 0)",
+  ]);
+  const dialogMessage = await driver.wait(
+    until.elementLocated(By.css('[data-testid="browser-surface-dialog-message"]')),
+    30_000,
+    "the dialog never reached the surface",
+  );
+  assert.match(await dialogMessage.getText(), /Proceed\?/);
+
+  fs.writeFileSync(
+    path.join(popupEvidenceDir, "page-dialog-waiting-for-an-answer.png"),
+    await driver.takeScreenshot(),
+    "base64",
+  );
+
+  await driver.findElement(By.css('[data-testid="browser-surface-dialog-accept"]')).click();
+  await driver.wait(async () => {
+    const answered = await runCliOk(cliPath, harness, [
+      "browser", browserId, "eval", "document.getElementById('out').textContent",
+    ]);
+    // The page resumed *with the answer it was given*, which is the whole
+    // point of holding the dialog rather than dismissing it unseen.
+    return answered.includes("confirmed true");
+  }, 30_000, "the page never resumed after the dialog was answered");
 
   // The surface holds the lease, so its controls are live rather than inert.
   const reload = await driver.findElement(By.css('[aria-label="Reload"]'));

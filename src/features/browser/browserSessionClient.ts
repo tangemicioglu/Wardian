@@ -252,6 +252,37 @@ export function detachBrowserScreencast(
   return invoke<void>("detach_browser_screencast", { browserId, leaseToken });
 }
 
+/**
+ * Answers the dialog stopping the page.
+ *
+ * `prompt_text` is read only for a `prompt`. Until this lands the page is
+ * stopped, so every other call against the session is waiting on it.
+ */
+export function answerBrowserDialog(
+  browserId: string,
+  accept: boolean,
+  promptText: string | null,
+  leaseToken: string,
+): Promise<BrowserSessionSummary> {
+  return invoke<BrowserSessionSummary>("answer_browser_dialog", {
+    browserId,
+    accept,
+    promptText,
+    leaseToken,
+  });
+}
+
+/** Closes the presented popup and returns to the page that opened it. */
+export function closeBrowserPopup(
+  browserId: string,
+  leaseToken: string,
+): Promise<BrowserSessionSummary> {
+  return invoke<BrowserSessionSummary>("close_browser_popup", {
+    browserId,
+    leaseToken,
+  });
+}
+
 export function setBrowserViewport(
   browserId: string,
   width: number,

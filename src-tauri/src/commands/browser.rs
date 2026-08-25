@@ -618,6 +618,46 @@ pub async fn navigate_browser_session(
         .map_err(command_error)
 }
 
+/// Answers the dialog stopping the page, so it can carry on.
+#[tauri::command]
+pub async fn answer_browser_dialog(
+    browser_id: String,
+    accept: bool,
+    prompt_text: Option<String>,
+    lease_token: String,
+    state: State<'_, AppState>,
+) -> Result<BrowserSessionSummary, String> {
+    let session = state
+        .browser_sessions
+        .resolve(&browser_id)
+        .await
+        .map_err(command_error)?;
+    session
+        .answer_dialog(Some(lease_token.as_str()), accept, prompt_text.as_deref())
+        .await
+        .map_err(command_error)?;
+    Ok(session.summary().await)
+}
+
+/// Closes the popup this session is presenting and returns to its opener.
+#[tauri::command]
+pub async fn close_browser_popup(
+    browser_id: String,
+    lease_token: String,
+    state: State<'_, AppState>,
+) -> Result<BrowserSessionSummary, String> {
+    let session = state
+        .browser_sessions
+        .resolve(&browser_id)
+        .await
+        .map_err(command_error)?;
+    session
+        .close_popup(Some(lease_token.as_str()))
+        .await
+        .map_err(command_error)?;
+    Ok(session.summary().await)
+}
+
 #[tauri::command]
 pub async fn attach_browser_screencast(
     browser_id: String,

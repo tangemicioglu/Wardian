@@ -83,6 +83,47 @@ const NETWORK_PAGE: &str = r##"<!doctype html>
   </body>
 </html>"##;
 
+/// A page that opens a window, both ways a page can.
+///
+/// `target="_blank"` is the case that matters most: modern Chromium implies
+/// `noopener` for it, so the popup arrives with no opener recorded at all.
+const POPUP_HOST: &str = r##"<!doctype html>
+<html>
+  <head><title>Popup Host</title></head>
+  <body>
+    <h1 id="heading">Opener</h1>
+    <a id="blank" href="/second" target="_blank">Open in a new window</a>
+    <button id="scripted" onclick="window.open('/second')">Open by script</button>
+  </body>
+</html>"##;
+
+/// A popup that does its business and closes itself, the way an OAuth window
+/// does.
+const SELF_CLOSING: &str = r##"<!doctype html>
+<html><head><title>Self closing</title></head>
+<body><p id="marker">working</p>
+<script>setTimeout(() => window.close(), 400);</script>
+</body></html>"##;
+
+/// A page that raises each kind of dialog on demand.
+const DIALOG_PAGE: &str = r##"<!doctype html>
+<html>
+  <head><title>Dialogs</title></head>
+  <body>
+    <h1 id="heading">Dialogs</h1>
+    <p id="answer">none</p>
+    <script>
+      window.raise = (kind) => setTimeout(() => {
+        if (kind === 'confirm') {
+          document.getElementById('answer').textContent = String(window.confirm('proceed?'));
+        } else {
+          window.alert('stopped');
+        }
+      }, 0);
+    </script>
+  </body>
+</html>"##;
+
 /// A page whose only job is to start a download with a known filename.
 const DOWNLOAD_PAGE: &str = r##"<!doctype html>
 <html>
@@ -120,6 +161,15 @@ fn fixture_response(request: &str) -> FixtureResponse {
     }
     if request.starts_with("GET /network") {
         return html(NETWORK_PAGE);
+    }
+    if request.starts_with("GET /popup-host") {
+        return html(POPUP_HOST);
+    }
+    if request.starts_with("GET /self-closing") {
+        return html(SELF_CLOSING);
+    }
+    if request.starts_with("GET /dialogs") {
+        return html(DIALOG_PAGE);
     }
     if request.starts_with("GET /download-page") {
         return html(DOWNLOAD_PAGE);
@@ -416,6 +466,203 @@ async fn the_editing_keys_a_surface_forwards_actually_edit() {
         .detach_screencast(&attachment.token)
         .await
         .expect("detach");
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_popup_is_presented_in_place_of_its_opener() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(format!("{base_url}popup-host")),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+    let attachment = session.attach_screencast("pane-1").await.expect("attach");
+    assert!(!session.summary().await.popup);
+
+    // The `target="_blank"` path: Chromium implies `noopener`, so nothing
+    // links the new window back to the page that asked for it.
+    let snapshot = session.snapshot(true).await.expect("snapshot");
+    let link = snapshot
+        .elements
+        .iter()
+        .find(|element| element.name.contains("new window"))
+        .expect("the link should be in the snapshot");
+    session
+        .act(&link.element_ref, &ElementAction::Click)
+        .await
+        .expect("click the link");
+
+    session
+        .wait(&WaitCondition::UrlContains("/second".to_string()), 10_000)
+        .await
+        .expect("the popup should become the presented page");
+    let presenting = session.summary().await;
+    assert!(presenting.popup, "the session must report that a popup is up");
+    assert!(presenting.url.ends_with("/second"), "url was {}", presenting.url);
+
+    // The popup is drivable, not merely visible: a snapshot has to describe
+    // the page that is presented.
+    let popup_snapshot = session.snapshot(true).await.expect("snapshot the popup");
+    assert!(
+        popup_snapshot.title.contains("Second"),
+        "the snapshot described the opener, not the popup: {}",
+        popup_snapshot.title
+    );
+
+    // A popup that will not close itself is a one-way door without this: its
+    // own history has no entry for the opener.
+    session
+        .close_popup(Some(attachment.token.as_str()))
+        .await
+        .expect("close the popup");
+    session
+        .wait(&WaitCondition::UrlContains("/popup-host".to_string()), 10_000)
+        .await
+        .expect("the opener should come back");
+    assert!(!session.summary().await.popup);
+
+    session
+        .detach_screencast(&attachment.token)
+        .await
+        .expect("detach");
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_popup_that_closes_itself_returns_to_its_opener() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(format!("{base_url}popup-host")),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+    let attachment = session.attach_screencast("pane-1").await.expect("attach");
+
+    // The OAuth shape: a window opens, does its business, and closes itself.
+    session
+        .eval("window.open('/self-closing'); 'opened'")
+        .await
+        .expect("open a popup");
+    session
+        .wait(&WaitCondition::UrlContains("/self-closing".to_string()), 10_000)
+        .await
+        .expect("the popup should be presented");
+
+    session
+        .wait(&WaitCondition::UrlContains("/popup-host".to_string()), 10_000)
+        .await
+        .expect("the opener should come back on its own");
+    assert!(!session.summary().await.popup);
+
+    session
+        .detach_screencast(&attachment.token)
+        .await
+        .expect("detach");
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn a_watched_session_holds_its_dialog_until_it_is_answered() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(format!("{base_url}dialogs")),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+    // A surface is watching, so the dialog is the operator's to answer.
+    let attachment = session.attach_screencast("pane-1").await.expect("attach");
+
+    session.eval("window.raise('confirm'); 'queued'").await.expect("queue");
+    let dialog = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(dialog) = session.summary().await.dialog {
+                return dialog;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the dialog should be reported rather than swallowed");
+    assert_eq!(dialog.kind, "confirm");
+    assert_eq!(dialog.message, "proceed?");
+
+    session
+        .answer_dialog(Some(attachment.token.as_str()), true, None)
+        .await
+        .expect("answer the dialog");
+    session
+        .wait(&WaitCondition::Text("true".to_string()), 10_000)
+        .await
+        .expect("the page should resume with the answer it was given");
+    assert!(session.summary().await.dialog.is_none());
+
+    session
+        .detach_screencast(&attachment.token)
+        .await
+        .expect("detach");
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn an_unwatched_session_answers_its_own_dialogs() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(format!("{base_url}dialogs")),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+
+    // No presentation is attached, so nobody could answer. Before this, the
+    // page stopped here for good and every later call timed out.
+    session.eval("window.raise('alert'); 'queued'").await.expect("queue");
+    let responsive = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        session.wait(&WaitCondition::Selector("#heading".to_string()), 8_000),
+    )
+    .await;
+    assert!(
+        matches!(responsive, Ok(Ok(()))),
+        "an unwatched dialog froze the page: {responsive:?}"
+    );
+    assert!(session.summary().await.dialog.is_none());
+
     broker.close(session.browser_id()).await.expect("close");
     server.abort();
 }
