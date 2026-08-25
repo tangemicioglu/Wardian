@@ -70,6 +70,7 @@ enum TerminalRuntimeInput {
 pub struct TerminalRuntimeHandles {
     input_tx: TerminalRuntimeInput,
     resize: Arc<ResizeHandler>,
+    fixed_geometry: Option<TerminalGeometry>,
     ignore_scrollback_erase: bool,
     reset_parser_on_scrollback_erase: bool,
 }
@@ -82,6 +83,7 @@ impl TerminalRuntimeHandles {
         Self {
             input_tx: TerminalRuntimeInput::Legacy(input_tx),
             resize: Arc::new(resize),
+            fixed_geometry: None,
             ignore_scrollback_erase: false,
             reset_parser_on_scrollback_erase: false,
         }
@@ -99,6 +101,7 @@ impl TerminalRuntimeHandles {
         Self {
             input_tx: TerminalRuntimeInput::Acknowledged(input_tx),
             resize: Arc::new(resize),
+            fixed_geometry: None,
             ignore_scrollback_erase: false,
             reset_parser_on_scrollback_erase: false,
         }
@@ -106,6 +109,15 @@ impl TerminalRuntimeHandles {
 
     fn acknowledges_native_writes(&self) -> bool {
         matches!(&self.input_tx, TerminalRuntimeInput::Acknowledged(_))
+    }
+
+    /// Keeps the broker parser at a runtime-owned canonical geometry.
+    ///
+    /// Presentation viewport reports remain useful for local layout, but they
+    /// must not resize or reinterpret complete frames emitted by a multiplexer.
+    pub fn fixed_geometry(mut self, geometry: TerminalGeometry) -> Self {
+        self.fixed_geometry = Some(geometry);
+        self
     }
 
     /// Keeps the broker's canonical history when a provider emits ED3.
@@ -693,7 +705,9 @@ impl TerminalSessionBroker {
         geometry: TerminalGeometry,
     ) -> Result<u64, TerminalBrokerError> {
         validate_id(session_id, "session_id")?;
-        let geometry = clamp_geometry(geometry, TerminalClientKind::Desktop);
+        let geometry = runtime
+            .fixed_geometry
+            .unwrap_or_else(|| clamp_geometry(geometry, TerminalClientKind::Desktop));
         let (replaced, runtime_generation) = {
             let mut sessions = self.sessions.write().await;
             let previous = sessions.get(session_id).cloned();
@@ -2493,12 +2507,12 @@ impl TerminalSessionActor {
             ));
         }
         let geometry = clamp_geometry(request.geometry, client_kind);
-        let geometry_changed = geometry != self.geometry;
+        let previous_geometry = self.geometry;
         self.commit_geometry(geometry, request.geometry_sequence)
             .await?;
         if let Some(record) = self.presentations.get_mut(&request.lease.presentation_id) {
             record.last_geometry_sequence = request.geometry_sequence;
-            record.state.desired_geometry = Some(geometry);
+            record.state.desired_geometry = Some(self.geometry);
         }
         Ok(TerminalGeometryCommitResult {
             decision: self.accepted_decision(),
@@ -2507,7 +2521,7 @@ impl TerminalSessionActor {
             // An unchanged viewport report must not force every presentation
             // to reset and replay a full terminal snapshot. The caller already
             // has the current frame and no canonical geometry changed.
-            snapshot: geometry_changed.then(|| self.snapshot()),
+            snapshot: (previous_geometry != self.geometry).then(|| self.snapshot()),
         })
     }
 
@@ -2850,6 +2864,14 @@ impl TerminalSessionActor {
         geometry: TerminalGeometry,
         geometry_sequence: u64,
     ) -> Result<(), TerminalBrokerError> {
+        if self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.fixed_geometry)
+            .is_some()
+        {
+            return Ok(());
+        }
         if geometry == self.geometry {
             return Ok(());
         }

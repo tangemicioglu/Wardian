@@ -156,7 +156,8 @@ or status event from an older generation is rejected.
 4. Start the attached client with a neutral control pane.
 5. Wait for the named session to answer `list-panes`.
 6. Start each configured live agent once through the existing restore path.
-7. Close the neutral control pane after the first provider pane is running.
+7. Retain one neutral control pane so closing the last provider pane does not
+   terminate the private Zellij session before a same-session restart.
 
 ### Agent spawn
 
@@ -189,9 +190,13 @@ is known, revoke the memory capability, and return the agent to `unbound`.
 ### Focus and fitting
 
 1. Verify the target pane belongs to the requested agent and generation.
-2. Focus the pane by ID and make it fullscreen.
+2. Serialize focus handoffs, focus the pane by ID, and make it fullscreen.
 3. Move the singleton terminal host to the selected presentation.
 4. Apply the selected pane's next complete snapshot to that host.
+
+The frontend queues activation requests. A later selection cannot overtake an
+earlier in-flight focus command and leave the singleton renderer associated
+with a different pane than Zellij has focused.
 
 Snapshot cards never resize panes. The singleton xterm fits the canonical
 Zellij frame locally. Remote clients cannot activate or resize this desktop
@@ -205,8 +210,10 @@ snapshot. Provider and pane generations do not change.
 
 Wardian does not authorize an unregistered pane after a backend process
 restart. The app-lifetime Windows Job Object terminates the old process tree.
-Wardian then starts configured live agents with new pane and memory-capability
-generations.
+If the private Zellij session still answers, startup reconciliation closes
+every `wardian:*` pane that is absent from the process-local generation
+registry before any provider can spawn. Wardian then starts configured live
+agents with new pane and memory-capability generations.
 
 ### Attached client loss
 
@@ -232,6 +239,12 @@ manifest.
 - **Restart** closes and replaces the pane without changing durable provider
   identity unless the existing restart contract requires it.
 - **Delete** closes the pane before removing the agent's durable records.
+
+Lease teardown removes the generation from Wardian's pane registry before a
+same-session replacement can start. A failed Zellij close cannot authorize the
+old pane: the next spawn reconciles and closes any same-title pane before
+creating its replacement. If clear aborts before termination, Wardian moves
+the original pane lease back with the restored runtime instead of dropping it.
 
 Closing a Workbench surface never closes a pane.
 

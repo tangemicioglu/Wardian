@@ -476,6 +476,7 @@ fn restore_agent_runtime_after_aborted_clear(
     agent.background_processes = std::mem::take(&mut prepared.termination.background_processes);
     agent.memory_capability = prepared.termination.memory_capability.take();
     agent.runtime_generation = prepared.termination.runtime_generation.take();
+    agent.zellij_pane = prepared.termination.zellij_pane.take();
     agent.process_id = prepared.termination.process_id.take();
     #[cfg(windows)]
     {
@@ -8763,6 +8764,38 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert_eq!(active.runtime_generation, Some(9));
         assert_eq!(active.process_id, Some(12345));
         assert_eq!(active.current_status.lock().unwrap().as_str(), "Idle");
+    }
+
+    #[test]
+    fn aborted_clear_restores_the_zellij_pane_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = Arc::new(crate::state::zellij_terminal::ZellijTerminalEngine::new(
+            crate::state::zellij_terminal::ZellijTerminalConfig {
+                executable: root.path().join("zellij-test"),
+                wardian_cli: root.path().join("wardian-cli-test"),
+                runtime_root: root.path().join("runtime"),
+                wardian_home: root.path().join("home"),
+                session_name: "wardian-clear-test".to_string(),
+            },
+        ));
+        let mut active = make_test_agent();
+        active.zellij_pane = Some(crate::state::zellij_terminal::ZellijPaneLease::new(
+            engine,
+            "agent-1".to_string(),
+            7,
+        ));
+
+        let mut prepared = prepare_agent_for_clear(&mut active);
+        assert!(active.zellij_pane.is_none());
+        assert!(prepared.termination.zellij_pane.is_some());
+
+        restore_agent_runtime_after_aborted_clear(&mut active, &mut prepared);
+
+        assert_eq!(
+            active.zellij_pane.as_ref().map(|lease| lease.generation()),
+            Some(7)
+        );
+        assert!(prepared.termination.zellij_pane.is_none());
     }
 
     #[test]

@@ -40,40 +40,48 @@ type ZellijPresentationStore = {
   activate: (agentId: string, targetId: string) => Promise<void>;
 };
 
-export const useZellijPresentationStore = create<ZellijPresentationStore>((set, get) => ({
-  activeAgentId: null,
-  activeTargetId: null,
-  activationSerial: 0,
-  slots: new Map(),
-  upsertSlot: (targetId, slot) => {
-    const slots = new Map(get().slots);
-    slots.set(targetId, slot);
-    const adoptTarget = get().activeAgentId === slot.agentId && get().activeTargetId === null;
-    set({ slots, ...(adoptTarget ? { activeTargetId: targetId } : {}) });
-  },
-  removeSlot: (targetId) => {
-    const state = get();
-    const removed = state.slots.get(targetId);
-    const slots = new Map(state.slots);
-    slots.delete(targetId);
-    if (state.activeTargetId !== targetId) {
-      set({ slots });
-      return;
-    }
-    const fallback = removed
-      ? Array.from(slots.entries()).find(([, slot]) => slot.agentId === removed.agentId)?.[0]
-      : undefined;
-    set({ slots, activeTargetId: fallback ?? null });
-  },
-  activate: async (agentId, targetId) => {
-    const serial = get().activationSerial + 1;
-    set({ activationSerial: serial });
-    await invoke<string>("activate_zellij_agent_terminal", { sessionId: agentId });
-    if (get().activationSerial === serial && get().slots.has(targetId)) {
-      set({ activeAgentId: agentId, activeTargetId: targetId });
-    }
-  },
-}));
+export const useZellijPresentationStore = create<ZellijPresentationStore>((set, get) => {
+  let activationQueue = Promise.resolve();
+  return {
+    activeAgentId: null,
+    activeTargetId: null,
+    activationSerial: 0,
+    slots: new Map(),
+    upsertSlot: (targetId, slot) => {
+      const slots = new Map(get().slots);
+      slots.set(targetId, slot);
+      const adoptTarget = get().activeAgentId === slot.agentId && get().activeTargetId === null;
+      set({ slots, ...(adoptTarget ? { activeTargetId: targetId } : {}) });
+    },
+    removeSlot: (targetId) => {
+      const state = get();
+      const removed = state.slots.get(targetId);
+      const slots = new Map(state.slots);
+      slots.delete(targetId);
+      if (state.activeTargetId !== targetId) {
+        set({ slots });
+        return;
+      }
+      const fallback = removed
+        ? Array.from(slots.entries()).find(([, slot]) => slot.agentId === removed.agentId)?.[0]
+        : undefined;
+      set({ slots, activeTargetId: fallback ?? null });
+    },
+    activate: (agentId, targetId) => {
+      const serial = get().activationSerial + 1;
+      set({ activationSerial: serial });
+      const activation = activationQueue.then(async () => {
+        if (get().activationSerial !== serial) return;
+        await invoke<string>("activate_zellij_agent_terminal", { sessionId: agentId });
+        if (get().activationSerial === serial && get().slots.has(targetId)) {
+          set({ activeAgentId: agentId, activeTargetId: targetId });
+        }
+      });
+      activationQueue = activation.catch(() => undefined);
+      return activation;
+    },
+  };
+});
 
 export interface ZellijAgentTerminalProps {
   sessionId: string;

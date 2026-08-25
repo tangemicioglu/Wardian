@@ -98,7 +98,9 @@ Zellij derives provider-pane geometry from its attached client and layout.
 Snapshot cards never resize panes. The active desktop xterm fits the canonical
 Zellij frame locally. Presentation resize requests do not resize a provider
 ConPTY in this replacement, so narrow and duplicate surfaces cannot destabilize
-the provider TUI.
+the provider TUI. The terminal broker keeps its parser at the same canonical
+geometry; viewport reports remain local presentation data and cannot reinterpret
+a complete Zellij frame at a different width.
 
 See [Terminal Presentation Broker](./terminal-presentation-broker.md) for the
 generation, lease, snapshot, and ownership-transfer protocol.

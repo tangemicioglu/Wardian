@@ -122,6 +122,42 @@ describe("ZellijAgentTerminal", () => {
     expect(screen.getAllByRole("button", { name: "Activate terminal for agent-1" })).toHaveLength(1);
   });
 
+  it("serializes rapid activation so the rendered agent matches the last focused pane", async () => {
+    let releaseFirst!: () => void;
+    const firstActivation = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command !== "activate_zellij_agent_terminal") {
+        return Promise.reject(new Error(`Unexpected command ${command}`));
+      }
+      return args.sessionId === "agent-1"
+        ? firstActivation.then(() => "__wardian_habitat_zellij__")
+        : Promise.resolve("__wardian_habitat_zellij__");
+    });
+    const slots = new Map([
+      ["slot-1", { agentId: "agent-1", node: document.createElement("div"), props: {} as never }],
+      ["slot-2", { agentId: "agent-2", node: document.createElement("div"), props: {} as never }],
+    ]);
+    useZellijPresentationStore.setState({ slots });
+
+    const first = useZellijPresentationStore.getState().activate("agent-1", "slot-1");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+    const second = useZellijPresentationStore.getState().activate("agent-2", "slot-2");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    expect(invokeMock.mock.calls.filter(([command]) => command === "activate_zellij_agent_terminal"))
+      .toEqual([
+        ["activate_zellij_agent_terminal", { sessionId: "agent-1" }],
+        ["activate_zellij_agent_terminal", { sessionId: "agent-2" }],
+      ]);
+    expect(useZellijPresentationStore.getState().activeAgentId).toBe("agent-2");
+    expect(useZellijPresentationStore.getState().activeTargetId).toBe("slot-2");
+  });
+
   it("keeps unavailable previews noninteractive and exposes recovery state", async () => {
     invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
       if (command === "get_zellij_terminal_preview") {

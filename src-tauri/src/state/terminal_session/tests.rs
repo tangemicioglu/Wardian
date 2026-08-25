@@ -171,6 +171,60 @@ async fn activate(
         .expect("ack activation")
 }
 
+#[tokio::test]
+async fn fixed_runtime_geometry_ignores_owner_viewport_resizes() {
+    let broker = Arc::new(TerminalSessionBroker::with_timer(Arc::new(
+        ManualTimer::default(),
+    )));
+    let (runtime, _, resizes) = runtime();
+    let generation = broker
+        .start_or_replace_runtime(
+            "session-1",
+            runtime.fixed_geometry(geometry(120, 40)),
+            geometry(80, 24),
+        )
+        .await
+        .expect("start fixed-geometry runtime");
+    let registration = register_desktop(&broker, "owner").await;
+    let active = activate(
+        &broker,
+        "owner",
+        generation,
+        registration.broker_state.lease_epoch,
+    )
+    .await;
+
+    let result = broker
+        .resize(TerminalGeometryRequest {
+            lease: TerminalLeaseIdentity {
+                session_id: "session-1".to_string(),
+                presentation_id: "owner".to_string(),
+                runtime_generation: generation,
+                lease_epoch: active.broker_state.lease_epoch,
+            },
+            geometry_sequence: 1,
+            geometry: geometry(72, 20),
+        })
+        .await
+        .expect("report owner viewport");
+
+    assert_eq!(
+        result.decision.status,
+        TerminalLeaseDecisionStatus::Accepted
+    );
+    assert_eq!(result.geometry, geometry(120, 40));
+    assert!(result.snapshot.is_none());
+    assert!(resizes.lock().expect("resize log").is_empty());
+    assert_eq!(
+        broker
+            .broker_state("session-1")
+            .await
+            .expect("broker state")
+            .geometry,
+        geometry(120, 40)
+    );
+}
+
 fn process_output(
     broker: Arc<TerminalSessionBroker>,
     runtime_generation: u64,

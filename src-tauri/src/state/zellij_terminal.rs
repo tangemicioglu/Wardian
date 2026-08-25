@@ -66,6 +66,18 @@ pub struct ZellijPaneLease {
 }
 
 impl ZellijPaneLease {
+    pub(crate) fn new(
+        engine: Arc<ZellijTerminalEngine>,
+        session_id: String,
+        generation: u64,
+    ) -> Self {
+        Self {
+            engine,
+            session_id,
+            generation,
+        }
+    }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -274,27 +286,24 @@ impl ZellijCommandRunner for ProcessZellijCommandRunner {
         args: &[String],
         env: &[(OsString, OsString)],
     ) -> Result<Output, String> {
-        let status = Command::new(executable)
+        Command::new(executable)
             .args(args)
             .envs(env.iter().cloned())
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|error| format!("Zellij command could not start: {error}"))?;
-        Ok(Output {
-            status,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        })
+            .output()
+            .map_err(|error| format!("Zellij command could not start: {error}"))
     }
 }
 
 struct ZellijEngineState {
     phase: ZellijEnginePhase,
-    next_generation: u64,
-    panes: HashMap<String, ZellijPaneBinding>,
     attached: Option<ZellijAttachedClient>,
+}
+
+#[derive(Default)]
+struct ZellijPaneRegistry {
+    next_generation: u64,
+    bindings: HashMap<String, ZellijPaneBinding>,
 }
 
 struct ZellijAttachedClient {
@@ -313,8 +322,6 @@ impl Default for ZellijEngineState {
     fn default() -> Self {
         Self {
             phase: ZellijEnginePhase::Stopped,
-            next_generation: 0,
-            panes: HashMap::new(),
             attached: None,
         }
     }
@@ -324,7 +331,9 @@ pub struct ZellijTerminalEngine {
     config: ZellijTerminalConfig,
     runner: Arc<dyn ZellijCommandRunner>,
     state: Mutex<ZellijEngineState>,
+    panes: std::sync::Mutex<ZellijPaneRegistry>,
     start_lock: Mutex<()>,
+    activation_lock: Mutex<()>,
 }
 
 impl ZellijTerminalEngine {
@@ -337,7 +346,9 @@ impl ZellijTerminalEngine {
             config,
             runner,
             state: Mutex::new(ZellijEngineState::default()),
+            panes: std::sync::Mutex::new(ZellijPaneRegistry::default()),
             start_lock: Mutex::new(()),
+            activation_lock: Mutex::new(()),
         }
     }
 
@@ -350,7 +361,13 @@ impl ZellijTerminalEngine {
     }
 
     pub async fn binding(&self, session_id: &str) -> Option<ZellijPaneBinding> {
-        self.state.lock().await.panes.get(session_id).cloned()
+        self.pane_registry().bindings.get(session_id).cloned()
+    }
+
+    fn pane_registry(&self) -> std::sync::MutexGuard<'_, ZellijPaneRegistry> {
+        self.panes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub async fn attached_runtime_generation(&self) -> Option<u64> {
@@ -419,6 +436,10 @@ impl ZellijTerminalEngine {
             .and_then(|value| value.trim().parse::<u32>().ok())
         {
             if crate::utils::process::process_exists(pid) && self.list_panes().await.is_ok() {
+                if let Err(error) = self.close_unregistered_managed_panes().await {
+                    self.set_phase(ZellijEnginePhase::Failed).await;
+                    return Err(error);
+                }
                 let mut state = self.state.lock().await;
                 state.attached = Some(ZellijAttachedClient {
                     child: ZellijAttachedProcess::NativeConsole(pid),
@@ -524,6 +545,14 @@ impl ZellijTerminalEngine {
                 .ok_or_else(|| {
                     "Zellij native attached client did not report its process".to_string()
                 })?;
+            if let Err(error) = self.wait_for_session_ready().await {
+                self.set_phase(ZellijEnginePhase::Failed).await;
+                return Err(error);
+            }
+            if let Err(error) = self.close_unregistered_managed_panes().await {
+                self.set_phase(ZellijEnginePhase::Failed).await;
+                return Err(error);
+            }
             let mut state = self.state.lock().await;
             state.attached = Some(ZellijAttachedClient {
                 child: ZellijAttachedProcess::NativeConsole(pid),
@@ -536,6 +565,10 @@ impl ZellijTerminalEngine {
 
         #[cfg(not(windows))]
         {
+            if let Err(error) = self.close_unregistered_managed_panes().await {
+                self.set_phase(ZellijEnginePhase::Failed).await;
+                return Err(error);
+            }
             let pty_system = portable_pty::native_pty_system();
             let pair = match pty_system.openpty(portable_pty::PtySize {
                 rows: initial_geometry.rows,
@@ -702,24 +735,76 @@ impl ZellijTerminalEngine {
             .map_err(|error| format!("Zellij returned invalid pane state: {error}"))
     }
 
+    async fn wait_for_session_ready(&self) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if self.list_panes().await.is_ok() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("Zellij background session did not become ready".to_string());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn close_unregistered_managed_panes(&self) -> Result<(), String> {
+        let registered = self
+            .pane_registry()
+            .bindings
+            .values()
+            .filter_map(|binding| binding.pane_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let stale = self
+            .list_panes()
+            .await?
+            .into_iter()
+            .filter(|pane| pane.title.starts_with("wardian:"))
+            .filter_map(|pane| pane.pane_id())
+            .filter(|pane_id| !registered.contains(pane_id))
+            .collect::<Vec<_>>();
+        for pane_id in stale {
+            self.close_pane_id(&pane_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn close_unregistered_session_panes(&self, session_id: &str) -> Result<(), String> {
+        let expected_title = format!("wardian:{session_id}");
+        let stale = self
+            .list_panes()
+            .await?
+            .into_iter()
+            .filter(|pane| pane.title == expected_title)
+            .filter_map(|pane| pane.pane_id())
+            .collect::<Vec<_>>();
+        for pane_id in stale {
+            self.close_pane_id(&pane_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn close_pane_id(&self, pane_id: &ZellijPaneId) -> Result<(), String> {
+        self.run_status_action(vec![
+            "action".to_string(),
+            "close-pane".to_string(),
+            "--pane-id".to_string(),
+            pane_id.as_str().to_string(),
+        ])
+        .await
+        .map(|_| ())
+    }
+
     pub async fn create_pane(&self, launch: ZellijLaunchSpec) -> Result<ZellijPaneBinding, String> {
         validate_launch_spec(&launch)?;
-        let known_panes = self
-            .list_panes()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|pane| pane.pane_id())
-            .collect::<std::collections::HashSet<_>>();
-        let (generation, first_binding) = {
-            let mut state = self.state.lock().await;
-            if state.panes.contains_key(&launch.session_id) {
+        let generation = {
+            let mut panes = self.pane_registry();
+            if panes.bindings.contains_key(&launch.session_id) {
                 return Err("Agent already has a Zellij pane transition in progress".to_string());
             }
-            let first_binding = state.panes.is_empty();
-            state.next_generation = state.next_generation.saturating_add(1);
-            let generation = state.next_generation;
-            state.panes.insert(
+            panes.next_generation = panes.next_generation.saturating_add(1);
+            let generation = panes.next_generation;
+            panes.bindings.insert(
                 launch.session_id.clone(),
                 ZellijPaneBinding {
                     session_id: launch.session_id.clone(),
@@ -728,8 +813,23 @@ impl ZellijTerminalEngine {
                     phase: ZellijPanePhase::Starting,
                 },
             );
-            (generation, first_binding)
+            generation
         };
+
+        if let Err(error) = self
+            .close_unregistered_session_panes(&launch.session_id)
+            .await
+        {
+            self.rollback_start(&launch.session_id, generation).await;
+            return Err(error);
+        }
+        let known_panes = self
+            .list_panes()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|pane| pane.pane_id())
+            .collect::<std::collections::HashSet<_>>();
 
         let nonce = Uuid::new_v4().simple().to_string();
         let (launch_path, pane_command) = match prepare_pane_launch(&self.config, &launch, &nonce) {
@@ -784,44 +884,19 @@ impl ZellijTerminalEngine {
                 }
             }
         };
-        let mut state = self.state.lock().await;
-        let Some(binding) = state.panes.get_mut(&launch.session_id) else {
-            return Err("Zellij pane start lost its agent binding".to_string());
+        let binding = {
+            let mut panes = self.pane_registry();
+            let Some(binding) = panes.bindings.get_mut(&launch.session_id) else {
+                return Err("Zellij pane start lost its agent binding".to_string());
+            };
+            if binding.generation != generation || binding.phase != ZellijPanePhase::Starting {
+                return Err("Zellij pane start was superseded".to_string());
+            }
+            binding.pane_id = Some(pane_id);
+            binding.phase = ZellijPanePhase::Running;
+            binding.clone()
         };
-        if binding.generation != generation || binding.phase != ZellijPanePhase::Starting {
-            return Err("Zellij pane start was superseded".to_string());
-        }
-        binding.pane_id = Some(pane_id);
-        binding.phase = ZellijPanePhase::Running;
-        let binding = binding.clone();
-        drop(state);
-        if first_binding {
-            self.close_neutral_control_pane(&binding).await;
-        }
         Ok(binding)
-    }
-
-    async fn close_neutral_control_pane(&self, provider: &ZellijPaneBinding) {
-        let Some(provider_pane) = provider.pane_id.as_ref() else {
-            return;
-        };
-        let Ok(panes) = self.list_panes().await else {
-            return;
-        };
-        let Some(control_pane) = panes.into_iter().find_map(|pane| {
-            let pane_id = pane.pane_id()?;
-            (!pane.title.starts_with("wardian:") && pane_id != *provider_pane).then_some(pane_id)
-        }) else {
-            return;
-        };
-        let _ = self
-            .run_status_action(vec![
-                "action".to_string(),
-                "close-pane".to_string(),
-                "--pane-id".to_string(),
-                control_pane.as_str().to_string(),
-            ])
-            .await;
     }
 
     pub fn open_pane_transport(
@@ -884,16 +959,14 @@ impl ZellijTerminalEngine {
                 }
             }
             if let Some(engine) = subscription_engine.upgrade() {
-                tauri::async_runtime::spawn(async move {
-                    let mut state = engine.state.lock().await;
-                    if let Some(binding) = state.panes.get_mut(&subscription_session_id) {
-                        if binding.generation == subscription_generation
-                            && binding.phase == ZellijPanePhase::Running
-                        {
-                            binding.phase = ZellijPanePhase::Exited;
-                        }
+                let mut panes = engine.pane_registry();
+                if let Some(binding) = panes.bindings.get_mut(&subscription_session_id) {
+                    if binding.generation == subscription_generation
+                        && binding.phase == ZellijPanePhase::Running
+                    {
+                        binding.phase = ZellijPanePhase::Exited;
                     }
-                });
+                }
             }
         });
 
@@ -920,17 +993,21 @@ impl ZellijTerminalEngine {
         let runtime = crate::state::terminal_session::TerminalRuntimeHandles::new_with_write_ack(
             input_tx,
             |_geometry| Ok(()),
-        );
+        )
+        .fixed_geometry(wardian_core::models::TerminalGeometry {
+            cols: 120,
+            rows: 40,
+        });
         Ok(ZellijPaneTransport {
             reader: Box::new(ZellijSnapshotReader::new(render_rx)),
             snapshot_frames: snapshot_rx,
             runtime,
             subscription,
-            lease: ZellijPaneLease {
-                engine: self.clone(),
-                session_id: binding.session_id.clone(),
-                generation: binding.generation,
-            },
+            lease: ZellijPaneLease::new(
+                self.clone(),
+                binding.session_id.clone(),
+                binding.generation,
+            ),
         })
     }
 
@@ -963,6 +1040,7 @@ impl ZellijTerminalEngine {
     }
 
     pub async fn activate_pane(&self, session_id: &str, generation: u64) -> Result<(), String> {
+        let _activation_guard = self.activation_lock.lock().await;
         let target = self.live_pane(session_id, generation).await?;
         let panes = self.list_panes().await?;
         if let Some(fullscreen) = panes.iter().find(|pane| {
@@ -1017,9 +1095,9 @@ impl ZellijTerminalEngine {
 
     pub async fn close_pane(&self, session_id: &str, generation: u64) -> Result<(), String> {
         let pane = {
-            let mut state = self.state.lock().await;
-            let binding = state
-                .panes
+            let mut panes = self.pane_registry();
+            let binding = panes
+                .bindings
                 .get_mut(session_id)
                 .ok_or_else(|| "Agent has no Zellij pane".to_string())?;
             if binding.generation != generation
@@ -1030,39 +1108,28 @@ impl ZellijTerminalEngine {
             {
                 return Err("Agent Zellij pane generation is stale".to_string());
             }
-            if binding.phase == ZellijPanePhase::Exited {
-                state.panes.remove(session_id);
-                return Ok(());
-            }
             binding.phase = ZellijPanePhase::Closing;
             binding
                 .pane_id
                 .clone()
                 .ok_or_else(|| "Agent Zellij pane is not ready".to_string())?
         };
-        let result = self
-            .run_status_action(vec![
-                "action".to_string(),
-                "close-pane".to_string(),
-                "--pane-id".to_string(),
-                pane.as_str().to_string(),
-            ])
-            .await;
-        let mut state = self.state.lock().await;
-        if state
-            .panes
+        let result = self.close_pane_id(&pane).await;
+        let mut panes = self.pane_registry();
+        if panes
+            .bindings
             .get(session_id)
             .is_some_and(|binding| binding.generation == generation)
         {
-            state.panes.remove(session_id);
+            panes.bindings.remove(session_id);
         }
-        result.map(|_| ())
+        result
     }
 
     async fn live_pane(&self, session_id: &str, generation: u64) -> Result<ZellijPaneId, String> {
-        let state = self.state.lock().await;
-        let binding = state
-            .panes
+        let panes = self.pane_registry();
+        let binding = panes
+            .bindings
             .get(session_id)
             .ok_or_else(|| "Agent has no Zellij pane".to_string())?;
         if binding.generation != generation || binding.phase != ZellijPanePhase::Running {
@@ -1075,13 +1142,13 @@ impl ZellijTerminalEngine {
     }
 
     async fn rollback_start(&self, session_id: &str, generation: u64) {
-        let mut state = self.state.lock().await;
-        if state
-            .panes
+        let mut panes = self.pane_registry();
+        if panes
+            .bindings
             .get(session_id)
             .is_some_and(|binding| binding.generation == generation)
         {
-            state.panes.remove(session_id);
+            panes.bindings.remove(session_id);
         }
     }
 
@@ -1129,13 +1196,19 @@ impl ZellijTerminalEngine {
     }
 
     fn close_pane_best_effort(&self, session_id: &str, generation: u64) {
-        let binding = match self.state.try_lock() {
-            Ok(state) => state.panes.get(session_id).cloned(),
-            Err(_) => None,
+        let binding = {
+            let mut panes = self.pane_registry();
+            if panes
+                .bindings
+                .get(session_id)
+                .is_some_and(|binding| binding.generation == generation)
+            {
+                panes.bindings.remove(session_id)
+            } else {
+                None
+            }
         };
-        let Some(binding) = binding.filter(|binding| {
-            binding.generation == generation && binding.phase == ZellijPanePhase::Running
-        }) else {
+        let Some(binding) = binding else {
             return;
         };
         let Some(pane_id) = binding.pane_id else {
@@ -1310,10 +1383,22 @@ mod tests {
                     },
                     Output {
                         status: status(0),
+                        stdout: b"[]".to_vec(),
+                        stderr: Vec::new(),
+                    },
+                    Output {
+                        status: status(0),
                         stdout: stdout.as_bytes().to_vec(),
                         stderr: Vec::new(),
                     },
                 ])),
+            })
+        }
+
+        fn with_outputs(outputs: impl IntoIterator<Item = Output>) -> Arc<Self> {
+            Arc::new(Self {
+                calls: StdMutex::new(Vec::new()),
+                outputs: StdMutex::new(outputs.into_iter().collect()),
             })
         }
     }
@@ -1420,7 +1505,11 @@ mod tests {
         assert_eq!(binding.pane_id.unwrap().as_str(), "terminal_7");
         assert_eq!(binding.phase, ZellijPanePhase::Running);
         let calls = runner.calls.lock().unwrap();
-        let command = calls[1].join(" ");
+        let command = calls
+            .iter()
+            .find(|call| call.iter().any(|arg| arg == "new-pane"))
+            .expect("new pane command")
+            .join(" ");
         assert!(command.contains("terminal-host --manifest"));
         assert!(!command.contains("SECRET_TOKEN"));
         assert!(!command.contains("never-on-cli"));
@@ -1457,6 +1546,83 @@ mod tests {
                 .await,
             Err("Agent Zellij pane generation is stale".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn dropped_lease_removes_binding_so_the_same_session_can_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let successful = |stdout: &[u8]| Output {
+            status: status(0),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        };
+        let runner = FakeRunner::with_outputs([
+            successful(b"[]"),
+            successful(b"[]"),
+            successful(b"terminal_3\n"),
+            successful(b"[]"),
+            successful(b"[]"),
+            successful(b"terminal_4\n"),
+        ]);
+        let engine = Arc::new(ZellijTerminalEngine::with_runner(
+            config(root.path()),
+            runner,
+        ));
+        engine.prepare_runtime_directories().unwrap();
+        let first = engine
+            .create_pane(ZellijLaunchSpec {
+                session_id: "agent-1".to_string(),
+                executable: "provider".to_string(),
+                args: Vec::new(),
+                cwd: root.path().to_path_buf(),
+                env: BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+        drop(ZellijPaneLease::new(
+            engine.clone(),
+            first.session_id.clone(),
+            first.generation,
+        ));
+        assert!(engine.binding("agent-1").await.is_none());
+
+        let replacement = engine
+            .create_pane(ZellijLaunchSpec {
+                session_id: "agent-1".to_string(),
+                executable: "provider".to_string(),
+                args: Vec::new(),
+                cwd: root.path().to_path_buf(),
+                env: BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(replacement.pane_id.unwrap().as_str(), "terminal_4");
+        assert!(replacement.generation > first.generation);
+    }
+
+    #[tokio::test]
+    async fn startup_reconciliation_closes_unregistered_managed_panes() {
+        let root = tempfile::tempdir().unwrap();
+        let runner = FakeRunner::with_outputs([
+            Output {
+                status: status(0),
+                stdout: br#"[{"id":9,"is_plugin":false,"is_fullscreen":false,"title":"wardian:stale-agent","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#.to_vec(),
+                stderr: Vec::new(),
+            },
+            Output {
+                status: status(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+        ]);
+        let engine = ZellijTerminalEngine::with_runner(config(root.path()), runner.clone());
+
+        engine.close_unregistered_managed_panes().await.unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        assert!(calls[1]
+            .windows(2)
+            .any(|args| args == ["--pane-id", "terminal_9"]));
     }
 
     #[cfg(windows)]
@@ -1511,7 +1677,7 @@ mod tests {
             wardian_home: isolated.path().to_path_buf(),
             session_name: session_name.clone(),
         };
-        let engine = Arc::new(ZellijTerminalEngine::new(config));
+        let engine = Arc::new(ZellijTerminalEngine::new(config.clone()));
         let broker = Arc::new(crate::state::terminal_session::TerminalSessionBroker::default());
         engine
             .start_attached_client(
@@ -1568,6 +1734,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
+            .filter(|pane| pane.title == "wardian:native-agent")
             .filter_map(|pane| pane.pane_id())
             .collect::<Vec<_>>();
         assert_eq!(terminal_panes, vec![binding.pane_id.clone().unwrap()]);
@@ -1648,5 +1815,74 @@ mod tests {
         let _ = subscription.kill();
         let _ = subscription.wait();
         let _ = reader_thread.join();
+        drop(_lease);
+
+        let replacement = engine
+            .create_pane(ZellijLaunchSpec {
+                session_id: "native-agent".to_string(),
+                executable: "powershell.exe".to_string(),
+                args: vec![
+                    "-NoLogo".to_string(),
+                    "-NoProfile".to_string(),
+                    "-NoExit".to_string(),
+                ],
+                cwd: workspace.to_path_buf(),
+                env: BTreeMap::new(),
+            })
+            .await
+            .expect("same-session replacement pane");
+        assert!(replacement.generation > binding.generation);
+        assert_eq!(
+            engine
+                .list_panes()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|pane| pane.title == "wardian:native-agent")
+                .count(),
+            1,
+            "same-session restart must leave one provider pane"
+        );
+        engine
+            .close_pane("native-agent", replacement.generation)
+            .await
+            .unwrap();
+
+        engine
+            .create_pane(ZellijLaunchSpec {
+                session_id: "stale-after-backend-restart".to_string(),
+                executable: "powershell.exe".to_string(),
+                args: vec![
+                    "-NoLogo".to_string(),
+                    "-NoProfile".to_string(),
+                    "-NoExit".to_string(),
+                ],
+                cwd: workspace.to_path_buf(),
+                env: BTreeMap::new(),
+            })
+            .await
+            .expect("stale pane fixture");
+        drop(engine);
+
+        let recovered = Arc::new(ZellijTerminalEngine::new(config));
+        recovered
+            .start_attached_client(
+                broker,
+                wardian_core::models::TerminalGeometry {
+                    cols: 100,
+                    rows: 30,
+                },
+            )
+            .await
+            .expect("reattach existing Zellij session");
+        assert!(
+            recovered
+                .list_panes()
+                .await
+                .unwrap()
+                .into_iter()
+                .all(|pane| pane.title != "wardian:stale-after-backend-restart"),
+            "backend restart must close unregistered provider panes"
+        );
     }
 }
