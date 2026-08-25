@@ -11,6 +11,12 @@ use wardian_core::models::{TerminalLaunchManifest, TERMINAL_LAUNCH_MANIFEST_SCHE
 
 pub const ZELLIJ_VERSION: &str = "0.45.0";
 
+fn zellij_helper_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    crate::utils::process::apply_silent_std_command_policy(&mut command);
+    command
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ZellijEnginePhase {
@@ -272,7 +278,7 @@ impl ZellijCommandRunner for ProcessZellijCommandRunner {
         args: &[String],
         env: &[(OsString, OsString)],
     ) -> Result<Output, String> {
-        Command::new(executable)
+        zellij_helper_command(executable)
             .args(args)
             .envs(env.iter().cloned())
             .output()
@@ -285,7 +291,7 @@ impl ZellijCommandRunner for ProcessZellijCommandRunner {
         args: &[String],
         env: &[(OsString, OsString)],
     ) -> Result<Output, String> {
-        Command::new(executable)
+        zellij_helper_command(executable)
             .args(args)
             .envs(env.iter().cloned())
             .stdin(std::process::Stdio::null())
@@ -468,7 +474,7 @@ impl ZellijTerminalEngine {
                 (OsString::from("COLORTERM"), OsString::from("truecolor")),
             ];
             let bootstrap = tokio::task::spawn_blocking(move || {
-                Command::new(executable)
+                zellij_helper_command(executable)
                     .args(args)
                     .envs(env)
                     .stdin(std::process::Stdio::null())
@@ -512,7 +518,7 @@ impl ZellijTerminalEngine {
                 .flat_map(u16::to_le_bytes)
                 .collect::<Vec<_>>();
             let encoded = base64::engine::general_purpose::STANDARD.encode(encoded_bytes);
-            let status = Command::new("powershell.exe")
+            let status = zellij_helper_command("powershell.exe")
                 .args([
                     "-NoLogo",
                     "-NoProfile",
@@ -859,7 +865,7 @@ impl ZellijTerminalEngine {
             .pane_id
             .clone()
             .ok_or_else(|| "Agent Zellij pane is not ready".to_string())?;
-        let mut command = Command::new(&self.config.executable);
+        let mut command = zellij_helper_command(&self.config.executable);
         command
             .args([
                 "--session",
@@ -946,7 +952,8 @@ impl ZellijTerminalEngine {
         .fixed_geometry(wardian_core::models::TerminalGeometry {
             cols: 120,
             rows: 40,
-        });
+        })
+        .reset_parser_on_scrollback_erase();
         Ok(ZellijPaneTransport {
             reader: Box::new(ZellijSnapshotReader::new(render_rx)),
             snapshot_frames: snapshot_rx,
@@ -1163,7 +1170,7 @@ impl ZellijTerminalEngine {
         let Some(pane_id) = binding.pane_id else {
             return;
         };
-        let _ = Command::new(&self.config.executable)
+        let _ = zellij_helper_command(&self.config.executable)
             .args([
                 "--session",
                 &self.config.session_name,
@@ -1249,7 +1256,7 @@ fn render_zellij_snapshot(update: ZellijPaneUpdate) -> Vec<u8> {
     while lines.last().is_some_and(|line| line.is_empty()) {
         lines.pop();
     }
-    let mut frame = Vec::from(&b"\x1b[2J\x1b[H"[..]);
+    let mut frame = Vec::from(&b"\x1b[3J\x1b[2J\x1b[H"[..]);
     frame.extend(lines.join("\r\n").as_bytes());
     frame
 }
@@ -1406,7 +1413,59 @@ mod tests {
             viewport: vec!["current".to_string(), String::new()],
         });
 
-        assert_eq!(frame, b"\x1b[2J\x1b[Holder\r\ncurrent");
+        assert_eq!(frame, b"\x1b[3J\x1b[2J\x1b[Holder\r\ncurrent");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_complete_frames_replace_canonical_history() {
+        let broker = Arc::new(crate::state::terminal_session::TerminalSessionBroker::default());
+        let (input_tx, _input_rx) = tokio::sync::mpsc::channel(1);
+        let generation = broker
+            .start_or_replace_runtime(
+                "agent-1",
+                crate::state::terminal_session::TerminalRuntimeHandles::new(
+                    input_tx,
+                    |_geometry| Ok(()),
+                )
+                .fixed_geometry(wardian_core::models::TerminalGeometry {
+                    cols: 120,
+                    rows: 40,
+                })
+                .reset_parser_on_scrollback_erase(),
+                wardian_core::models::TerminalGeometry {
+                    cols: 80,
+                    rows: 24,
+                },
+            )
+            .await
+            .expect("start Zellij frame runtime");
+
+        for viewport in ["first frame", "second frame"] {
+            let frame = render_zellij_snapshot(ZellijPaneUpdate {
+                event: "pane_update".to_string(),
+                pane_id: "terminal_7".to_string(),
+                scrollback: Some(vec!["stable history".to_string()]),
+                viewport: vec![viewport.to_string()],
+            });
+            let reader_broker = broker.clone();
+            std::thread::spawn(move || {
+                crate::state::terminal_session::forward_terminal_output(
+                    &reader_broker,
+                    "agent-1",
+                    generation,
+                    frame,
+                )
+            })
+            .join()
+            .expect("Zellij reader thread")
+            .expect("forward complete Zellij frame");
+        }
+
+        let snapshot = broker.snapshot("agent-1").await.expect("Zellij snapshot");
+        let canonical = format!("{}\n{}", snapshot.scrollback.join("\n"), snapshot.visible_grid);
+        assert_eq!(canonical.matches("stable history").count(), 1);
+        assert!(!canonical.contains("first frame"));
+        assert!(canonical.contains("second frame"));
     }
 
     #[test]

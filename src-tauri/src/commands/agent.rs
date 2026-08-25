@@ -486,6 +486,13 @@ fn restore_agent_runtime_after_aborted_clear(
     agent.current_status.clone()
 }
 
+fn release_zellij_pane_before_runtime_replacement(agent: &mut ActiveAgent) {
+    // Dropping the generation-scoped lease synchronously removes the old
+    // registry binding before replacement spawn. The best-effort pane close is
+    // addressed to the old pane ID and may finish asynchronously.
+    let _ = agent.zellij_pane.take();
+}
+
 fn clone_quote_custom_arg(arg: &str) -> String {
     if !arg.is_empty()
         && arg
@@ -4142,6 +4149,7 @@ async fn clear_agent_session_inner(
             ));
         }
     }
+    release_zellij_pane_before_runtime_replacement(&mut prepared.termination);
     manager::terminate_active_agent_process(&mut prepared.termination);
 
     let _ = app.emit(
@@ -5246,6 +5254,7 @@ mod tests {
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
         resolve_external_resume_session, resolve_requested_spawn_session_name, restore_agent_config_in_state,
         restore_agent_runtime_after_aborted_clear,
+        release_zellij_pane_before_runtime_replacement,
         restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
         restore_runtime_state_snapshot_after_resume, stage_conversation_boundary,
         persist_agent_config, strip_claude_embedded_stream_flags,
@@ -8795,6 +8804,32 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             active.zellij_pane.as_ref().map(|lease| lease.generation()),
             Some(7)
         );
+        assert!(prepared.termination.zellij_pane.is_none());
+    }
+
+    #[test]
+    fn successful_clear_releases_the_old_zellij_lease_before_replacement_spawn() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = Arc::new(crate::state::zellij_terminal::ZellijTerminalEngine::new(
+            crate::state::zellij_terminal::ZellijTerminalConfig {
+                executable: root.path().join("zellij-test"),
+                wardian_cli: root.path().join("wardian-cli-test"),
+                runtime_root: root.path().join("runtime"),
+                wardian_home: root.path().join("home"),
+                session_name: "wardian-clear-test".to_string(),
+            },
+        ));
+        let mut active = make_test_agent();
+        active.zellij_pane = Some(crate::state::zellij_terminal::ZellijPaneLease::new(
+            engine,
+            "agent-1".to_string(),
+            7,
+        ));
+
+        let mut prepared = prepare_agent_for_clear(&mut active);
+        release_zellij_pane_before_runtime_replacement(&mut prepared.termination);
+
+        assert!(active.zellij_pane.is_none());
         assert!(prepared.termination.zellij_pane.is_none());
     }
 
