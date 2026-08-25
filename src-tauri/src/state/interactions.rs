@@ -16,8 +16,16 @@ pub struct InteractionState {
     records: Mutex<HashMap<String, InteractionRecord>>,
     replies: Mutex<HashMap<String, StructuredReply>>,
     provider_generations: Mutex<HashMap<String, u64>>,
+    provider_generation_tombstones: Mutex<HashMap<String, u64>>,
     provider_status_observations: Mutex<HashMap<String, u64>>,
     provider_inputs: Mutex<HashMap<String, ProviderInputState>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderInputRollbackSnapshot {
+    generation: Option<u64>,
+    status_observation: Option<u64>,
+    state: Option<ProviderInputState>,
 }
 
 impl InteractionState {
@@ -497,14 +505,34 @@ impl InteractionState {
         if self.deleted_sessions.lock().await.contains(session_id) {
             return provider_input_state_record(session_id, generation, state, ready_evidence);
         }
-        {
+        let generation_is_current = {
             let mut generations = self.provider_generations.lock().await;
-            let current = generations
-                .entry(session_id.to_string())
-                .or_insert(generation);
-            if generation > *current {
-                *current = generation;
+            let mut tombstones = self.provider_generation_tombstones.lock().await;
+            let current = generations.get(session_id).copied();
+            let high_watermark = tombstones.get(session_id).copied().unwrap_or(0);
+            if current == Some(generation) {
+                true
+            } else if current.is_none() && high_watermark == 0 && generation == 0 {
+                generations.insert(session_id.to_string(), generation);
+                true
+            } else if generation > high_watermark {
+                generations.insert(session_id.to_string(), generation);
+                tombstones.insert(session_id.to_string(), generation);
+                true
+            } else {
+                false
             }
+        };
+        if !generation_is_current {
+            return self
+                .provider_inputs
+                .lock()
+                .await
+                .get(session_id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    provider_input_state_record(session_id, generation, state, ready_evidence)
+                });
         }
 
         let mut inputs = self.provider_inputs.lock().await;
@@ -570,8 +598,15 @@ impl InteractionState {
         let _observations = self.provider_status_observations.lock().await;
         let generation = {
             let mut generations = self.provider_generations.lock().await;
-            let generation = generations.get(session_id).copied().unwrap_or(0) + 1;
+            let mut tombstones = self.provider_generation_tombstones.lock().await;
+            let generation = generations
+                .get(session_id)
+                .copied()
+                .unwrap_or(0)
+                .max(tombstones.get(session_id).copied().unwrap_or(0))
+                .saturating_add(1);
             generations.insert(session_id.to_string(), generation);
+            tombstones.insert(session_id.to_string(), generation);
             generation
         };
         self.record_provider_input_state_inner(session_id, generation, state, ready_evidence)
@@ -586,12 +621,104 @@ impl InteractionState {
             .copied()
     }
 
+    pub async fn capture_provider_input_rollback_snapshot(
+        &self,
+        session_id: &str,
+    ) -> ProviderInputRollbackSnapshot {
+        let _mutation = self.mutation_lock.lock().await;
+        ProviderInputRollbackSnapshot {
+            generation: self
+                .provider_generations
+                .lock()
+                .await
+                .get(session_id)
+                .copied(),
+            status_observation: self
+                .provider_status_observations
+                .lock()
+                .await
+                .get(session_id)
+                .copied(),
+            state: self
+                .provider_inputs
+                .lock()
+                .await
+                .get(session_id)
+                .cloned(),
+        }
+    }
+
+    pub async fn restore_provider_input_rollback_snapshot(
+        &self,
+        session_id: &str,
+        snapshot: &ProviderInputRollbackSnapshot,
+    ) {
+        let _mutation = self.mutation_lock.lock().await;
+        let displaced_generation = self
+            .provider_generations
+            .lock()
+            .await
+            .get(session_id)
+            .copied();
+        {
+            let mut tombstones = self.provider_generation_tombstones.lock().await;
+            let high_watermark = tombstones
+                .get(session_id)
+                .copied()
+                .unwrap_or(0)
+                .max(displaced_generation.unwrap_or(0))
+                .max(snapshot.generation.unwrap_or(0));
+            if high_watermark > 0 {
+                tombstones.insert(session_id.to_string(), high_watermark);
+            }
+        }
+        {
+            let mut generations = self.provider_generations.lock().await;
+            match snapshot.generation {
+                Some(generation) => {
+                    generations.insert(session_id.to_string(), generation);
+                }
+                None => {
+                    generations.remove(session_id);
+                }
+            }
+        }
+        {
+            let mut observations = self.provider_status_observations.lock().await;
+            match snapshot.status_observation {
+                Some(sequence) => {
+                    observations.insert(session_id.to_string(), sequence);
+                }
+                None => {
+                    observations.remove(session_id);
+                }
+            }
+        }
+        {
+            let mut inputs = self.provider_inputs.lock().await;
+            match snapshot.state.as_ref() {
+                Some(state) => {
+                    inputs.insert(session_id.to_string(), state.clone());
+                    let _ = wardian_core::db::upsert_provider_input_state(state);
+                }
+                None => {
+                    inputs.remove(session_id);
+                    let _ = wardian_core::db::delete_provider_input_state(session_id);
+                }
+            }
+        }
+    }
+
     pub async fn clear_provider_input_state_in_memory(&self, session_id: &str) {
         self.provider_status_observations
             .lock()
             .await
             .remove(session_id);
         self.provider_generations.lock().await.remove(session_id);
+        self.provider_generation_tombstones
+            .lock()
+            .await
+            .remove(session_id);
         self.provider_inputs.lock().await.remove(session_id);
     }
 
@@ -615,9 +742,11 @@ impl InteractionState {
         }
         if let Ok(inputs) = wardian_core::db::list_provider_input_states() {
             let mut generations = self.provider_generations.lock().await;
+            let mut tombstones = self.provider_generation_tombstones.lock().await;
             let mut current = self.provider_inputs.lock().await;
             for input in inputs {
                 generations.insert(input.session_id.clone(), input.generation);
+                tombstones.insert(input.session_id.clone(), input.generation);
                 current.insert(input.session_id.clone(), input);
             }
         }
@@ -828,6 +957,10 @@ impl InteractionState {
             .await
             .remove(session_id);
         self.provider_generations.lock().await.remove(session_id);
+        self.provider_generation_tombstones
+            .lock()
+            .await
+            .remove(session_id);
         self.provider_inputs.lock().await.remove(session_id);
         Ok(())
     }
@@ -1351,6 +1484,52 @@ mod tests {
             state.current_provider_input_generation("agent-1").await,
             Some(2)
         );
+    }
+
+    #[tokio::test]
+    async fn failed_replacement_restores_ready_input_and_fences_late_candidate_events() {
+        let state = InteractionState::default();
+        let original = state
+            .start_provider_input_generation(
+                "agent-1",
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        let snapshot = state
+            .capture_provider_input_rollback_snapshot("agent-1")
+            .await;
+        let candidate = state
+            .start_provider_input_generation("agent-1", ProviderInputReadiness::Booting, None)
+            .await;
+
+        state
+            .restore_provider_input_rollback_snapshot("agent-1", &snapshot)
+            .await;
+        state
+            .record_provider_input_state(
+                "agent-1",
+                candidate.generation,
+                ProviderInputReadiness::Busy,
+                None,
+            )
+            .await;
+
+        let restored = state.provider_input_state("agent-1").await.unwrap();
+        assert_eq!(restored.generation, original.generation);
+        assert_eq!(restored.state, ProviderInputReadiness::Ready);
+        assert_eq!(
+            restored.ready_evidence,
+            Some(ProviderReadyEvidence::ProviderEvent)
+        );
+        assert_eq!(
+            state.current_provider_input_generation("agent-1").await,
+            Some(original.generation)
+        );
+        let next = state
+            .start_provider_input_generation("agent-1", ProviderInputReadiness::Booting, None)
+            .await;
+        assert!(next.generation > candidate.generation);
     }
 
     #[tokio::test]

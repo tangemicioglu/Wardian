@@ -1319,6 +1319,7 @@ async fn rollback_running_runtime_replacement(
     state: &AppState,
     engine: &std::sync::Arc<crate::state::zellij_terminal::ZellijTerminalEngine>,
     session_id: &str,
+    provider_input_snapshot: &crate::state::interactions::ProviderInputRollbackSnapshot,
     active: &mut ActiveAgent,
     pane_promoted: bool,
 ) {
@@ -1351,6 +1352,10 @@ async fn rollback_running_runtime_replacement(
             "[WARDIAN] Zellij replacement cancellation remained pending for {session_id}: {error}"
         ));
     }
+    state
+        .interactions
+        .restore_provider_input_rollback_snapshot(session_id, provider_input_snapshot)
+        .await;
 }
 
 async fn settle_failed_runtime_replacement(
@@ -3373,6 +3378,16 @@ pub async fn resume_agent(
     } else {
         None
     };
+    let provider_input_snapshot = if replacement_engine.is_some() {
+        Some(
+            state
+                .interactions
+                .capture_provider_input_rollback_snapshot(&session_id)
+                .await,
+        )
+    } else {
+        None
+    };
 
     // Off agents have no live runtime to preserve and use the ordinary start
     // path. A running restart keeps its old ActiveAgent, pane, and broker actor
@@ -3425,6 +3440,15 @@ pub async fn resume_agent(
         Err(error) => {
             if let Some(engine) = replacement_engine.as_ref() {
                 let _ = engine.cancel_replacement(&session_id).await;
+                state
+                    .interactions
+                    .restore_provider_input_rollback_snapshot(
+                        &session_id,
+                        provider_input_snapshot
+                            .as_ref()
+                            .expect("running replacement has an input snapshot"),
+                    )
+                    .await;
                 return Err(error);
             }
             settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
@@ -3437,6 +3461,9 @@ pub async fn resume_agent(
                 &state,
                 engine,
                 &session_id,
+                provider_input_snapshot
+                    .as_ref()
+                    .expect("running replacement has an input snapshot"),
                 &mut new_active,
                 false,
             )
@@ -3460,6 +3487,9 @@ pub async fn resume_agent(
                     &state,
                     engine,
                     &session_id,
+                    provider_input_snapshot
+                        .as_ref()
+                        .expect("running replacement has an input snapshot"),
                     &mut active,
                     false,
                 )
@@ -3486,6 +3516,9 @@ pub async fn resume_agent(
                         &state,
                         engine,
                         &session_id,
+                        provider_input_snapshot
+                            .as_ref()
+                            .expect("running replacement has an input snapshot"),
                         &mut active,
                         false,
                     )
@@ -3500,6 +3533,9 @@ pub async fn resume_agent(
                     &state,
                     engine,
                     &session_id,
+                    provider_input_snapshot
+                        .as_ref()
+                        .expect("running replacement has an input snapshot"),
                     &mut active,
                     false,
                 )
@@ -3539,6 +3575,9 @@ pub async fn resume_agent(
                         &state,
                         engine,
                         &session_id,
+                        provider_input_snapshot
+                            .as_ref()
+                            .expect("running replacement has an input snapshot"),
                         &mut active,
                         pane_promoted,
                     )

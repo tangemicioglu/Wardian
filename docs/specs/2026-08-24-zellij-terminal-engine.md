@@ -293,8 +293,8 @@ runtime to preserve and uses the ordinary start path.
 Closing a Workbench surface never closes a pane. Closing the final surface
 keeps the singleton xterm/WebGL allocation mounted but changes its broker
 presentation to hidden and read-only, which releases input ownership. Reopening
-a surface requires a fresh pane and broker activation before the retained
-renderer accepts input.
+a surface requires fresh broker presentation registration and activation while
+retaining the existing Zellij pane and singleton renderer.
 
 ## Observation and telemetry
 
