@@ -411,6 +411,11 @@ struct PreparedAgentClear {
     status_arc: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
+struct PreparedRuntimeReplacement {
+    termination: ActiveAgent,
+    status_arc: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
 fn take_agent_runtime_for_termination(agent: &mut ActiveAgent) -> ActiveAgent {
     ActiveAgent {
         config: agent.config.clone(),
@@ -464,6 +469,15 @@ fn prepare_agent_for_clear(agent: &mut ActiveAgent) -> PreparedAgentClear {
         termination,
         config,
         init_timestamp,
+        status_arc,
+    }
+}
+
+fn prepare_runtime_replacement(agent: &mut ActiveAgent) -> PreparedRuntimeReplacement {
+    let termination = take_agent_runtime_for_termination(agent);
+    let status_arc = replace_agent_status_incarnation(agent, "Processing...");
+    PreparedRuntimeReplacement {
+        termination,
         status_arc,
     }
 }
@@ -1197,7 +1211,6 @@ struct ResumeRuntimeSnapshot {
     init_timestamp: Option<String>,
     query_count: usize,
     log_path: Option<std::path::PathBuf>,
-    current_status: String,
 }
 
 fn restore_runtime_state_after_resume(
@@ -1221,11 +1234,6 @@ fn capture_resume_runtime_snapshot(agent: &crate::state::ActiveAgent) -> ResumeR
         init_timestamp: agent.init_timestamp.lock().unwrap().clone(),
         query_count: agent.query_count.lock().map(|count| *count).unwrap_or(0),
         log_path: agent.log_path.lock().ok().and_then(|path| path.clone()),
-        current_status: agent
-            .current_status
-            .lock()
-            .map(|status| status.clone())
-            .unwrap_or_else(|_| "Off".to_string()),
     }
 }
 
@@ -3161,38 +3169,12 @@ pub async fn resume_agent(
     };
     lifecycle_heartbeat.ensure_active("resume")?;
 
-    // Detach the paused runtime's status incarnation before a new provider is
-    // spawned. A late event from the old PTY must not become current while the
-    // replacement is bootstrapping.
-    let staged_status_arc = {
-        let mut agents = state.agents.lock().await;
-        let agent = agents
-            .get_mut(&session_id)
-            .ok_or_else(|| format!("Agent {} not found", session_id))?;
-        lifecycle_heartbeat.ensure_active("resume")?;
-        // A replacement provider must never race the generation-scoped pane
-        // binding retained by the paused or terminated runtime. Dropping the
-        // old lease removes that binding synchronously before spawn_agent asks
-        // Zellij to create the replacement pane for the same Wardian session.
-        release_zellij_pane_before_runtime_replacement(agent);
-        replace_agent_status_incarnation(agent, "Processing...")
-    };
-    manager::publish_agent_status(&app, &session_id, &staged_status_arc);
-
-    let status_before_resume = snapshot.current_status.clone();
     let mut config = snapshot.config.clone();
     let starts_fresh = resolved_session_persistence(&config) == AgentSessionPersistence::Fresh;
     let fresh_pending_boundary = if starts_fresh {
         let snapshot = match crate::commands::chat::agent_archive_capture_snapshot(&state, &session_id).await {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                restore_agent_status_after_failed_runtime_start(
-                    &state,
-                    &app,
-                    &session_id,
-                    &status_before_resume,
-                )
-                .await;
                 return Err(format!(
                     "Failed to capture the closing conversation before fresh resume: {error}"
                 ));
@@ -3201,26 +3183,12 @@ pub async fn resume_agent(
         let pending = match prepare_conversation_boundary(snapshot) {
             Ok(pending) => pending,
             Err(error) => {
-                restore_agent_status_after_failed_runtime_start(
-                    &state,
-                    &app,
-                    &session_id,
-                    &status_before_resume,
-                )
-                .await;
                 return Err(format!(
                     "Failed to prepare the closing conversation before fresh resume: {error}"
                 ));
             }
         };
         if let Err(error) = stage_conversation_boundary(&state, &pending) {
-            restore_agent_status_after_failed_runtime_start(
-                &state,
-                &app,
-                &session_id,
-                &status_before_resume,
-            )
-            .await;
             return Err(format!(
                 "Failed to stage the closing conversation before fresh resume: {error}"
             ));
@@ -3229,26 +3197,36 @@ pub async fn resume_agent(
     } else {
         None
     };
-    if let Err(error) = prepare_resume_config_for_runtime(&mut config, snapshot.query_count) {
-        restore_agent_status_after_failed_runtime_start(
-            &state,
-            &app,
-            &session_id,
-            &status_before_resume,
-        )
-        .await;
-        return Err(error);
+    prepare_resume_config_for_runtime(&mut config, snapshot.query_count)?;
+    prepare_provider_owned_fresh_identity(&mut config).await?;
+    lifecycle_heartbeat.ensure_active("resume")?;
+
+    // Preflight above is non-destructive. Once replacement starts, detach the
+    // complete old runtime so a later failure cannot leave an ActiveAgent that
+    // advertises a closed Zellij pane or dead provider process as live.
+    let mut prepared_runtime = {
+        let mut agents = state.agents.lock().await;
+        let agent = agents
+            .get_mut(&session_id)
+            .ok_or_else(|| format!("Agent {} not found", session_id))?;
+        lifecycle_heartbeat.ensure_active("resume")?;
+        prepare_runtime_replacement(agent)
+    };
+    manager::publish_agent_status(&app, &session_id, &prepared_runtime.status_arc);
+    if let Some(runtime_generation) = prepared_runtime.termination.runtime_generation {
+        if let Err(error) = state
+            .terminal_sessions
+            .pause_runtime(&session_id, runtime_generation)
+            .await
+        {
+            manager::log_debug(&format!(
+                "[WARDIAN] terminal broker pause failed while restarting {session_id}: {error}"
+            ));
+        }
     }
-    if let Err(error) = prepare_provider_owned_fresh_identity(&mut config).await {
-        restore_agent_status_after_failed_runtime_start(
-            &state,
-            &app,
-            &session_id,
-            &status_before_resume,
-        )
-        .await;
-        return Err(error);
-    }
+    release_zellij_pane_before_runtime_replacement(&mut prepared_runtime.termination);
+    manager::terminate_active_agent_process(&mut prepared_runtime.termination);
+
     let mut new_active = match manager::spawn_agent(
         app.clone(),
         config.clone(),
@@ -3265,7 +3243,7 @@ pub async fn resume_agent(
                 &state,
                 &app,
                 &session_id,
-                &status_before_resume,
+                "Error",
             )
             .await;
             return Err(error);
@@ -3277,7 +3255,7 @@ pub async fn resume_agent(
             &state,
             &app,
             &session_id,
-            &status_before_resume,
+            "Error",
         )
         .await;
         return Err(error);
@@ -3296,7 +3274,7 @@ pub async fn resume_agent(
             &state,
             &app,
             &session_id,
-            &status_before_resume,
+            "Error",
         )
         .await;
         return Err(error);
@@ -3330,7 +3308,7 @@ pub async fn resume_agent(
                 &state,
                 &app,
                 &session_id,
-                &status_before_resume,
+                "Error",
             )
             .await;
             return Err(error);
@@ -5252,7 +5230,8 @@ mod tests {
         normalize_spawn_folder, normalize_workspace_record_path,
         persisted_resume_session_for_provider, prepare_agent_for_clear, prepare_clear_config,
         prepare_conversation_boundary, prepare_restored_config_for_spawn, prepare_resume_config,
-        prepare_resume_config_for_runtime, promote_fresh_provider_session_after_resume,
+        prepare_resume_config_for_runtime, prepare_runtime_replacement,
+        promote_fresh_provider_session_after_resume,
         provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
         replace_agent_status_incarnation, release_spawn_name_reservation, remove_agent,
         reserve_spawn_session_name, reserve_rename_session_name,
@@ -8854,6 +8833,51 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[test]
+    fn runtime_replacement_detaches_the_complete_old_runtime_before_spawn() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = Arc::new(crate::state::zellij_terminal::ZellijTerminalEngine::new(
+            crate::state::zellij_terminal::ZellijTerminalConfig {
+                executable: root.path().join("zellij-test"),
+                wardian_cli: root.path().join("wardian-cli-test"),
+                runtime_root: root.path().join("runtime"),
+                wardian_home: root.path().join("home"),
+                session_name: "wardian-restart-test".to_string(),
+            },
+        ));
+        let mut active = make_test_agent();
+        active.runtime_generation = Some(4);
+        active.process_id = Some(12345);
+        active.zellij_pane = Some(crate::state::zellij_terminal::ZellijPaneLease::new(
+            engine,
+            "agent-1".to_string(),
+            9,
+        ));
+        let old_status = active.current_status.clone();
+
+        let prepared = prepare_runtime_replacement(&mut active);
+
+        assert_eq!(prepared.termination.runtime_generation, Some(4));
+        assert_eq!(prepared.termination.process_id, Some(12345));
+        assert_eq!(
+            prepared
+                .termination
+                .zellij_pane
+                .as_ref()
+                .map(|lease| lease.generation()),
+            Some(9)
+        );
+        assert_eq!(active.runtime_generation, None);
+        assert_eq!(active.process_id, None);
+        assert!(active.zellij_pane.is_none());
+        assert!(!Arc::ptr_eq(&old_status, &active.current_status));
+        assert!(Arc::ptr_eq(&prepared.status_arc, &active.current_status));
+        assert_eq!(
+            active.current_status.lock().unwrap().as_str(),
+            "Processing..."
+        );
+    }
+
+    #[test]
     fn agent_status_update_payload_uses_frontend_status_contract() {
         assert_eq!(
             agent_status_update_payload("agent-1", "Idle"),
@@ -8897,7 +8921,6 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             snapshot.log_path.as_deref(),
             Some(std::path::Path::new("D:/tmp/agent.log"))
         );
-        assert_eq!(snapshot.current_status, "Idle");
     }
 
     #[test]
@@ -10321,7 +10344,6 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             init_timestamp: Some("2026-04-12T17:00:00.000Z".to_string()),
             query_count: 3,
             log_path: Some(std::path::PathBuf::from("C:/tmp/old-session.jsonl")),
-            current_status: "Off".to_string(),
         };
 
         restore_runtime_state_after_resume(&mut new_active, &snapshot, true);

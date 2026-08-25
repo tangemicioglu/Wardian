@@ -265,6 +265,11 @@ same-session replacement can start. A failed Zellij close cannot authorize the
 old pane: the next spawn reconciles and closes any same-title pane before
 creating its replacement. If clear aborts before termination, Wardian moves
 the original pane lease back with the restored runtime instead of dropping it.
+Restart preflight leaves the old runtime and pane untouched. Once replacement
+spawn begins, Wardian detaches and terminates the complete old runtime, pauses
+its broker generation, and starts the replacement; a later failure leaves a
+clean runtime-less error state that can be retried, never old live metadata
+paired with a closed pane.
 
 Closing a Workbench surface never closes a pane. Closing the final surface
 keeps the singleton xterm/WebGL allocation mounted but changes its broker
