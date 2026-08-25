@@ -21,7 +21,8 @@ For each live terminal session:
    acquire ownership implicitly.
 4. Mirrors never resize the PTY.
 5. Split, move, hide, suspend, and close affect presentations, not the runtime.
-6. Remote terminal attachment is not enabled in the initial Zellij release.
+6. Authenticated remote terminal attachment uses the same per-agent broker;
+   it cannot focus the desktop viewport or resize canonical Zellij geometry.
 7. With no open agent-terminal slot, the singleton renderer stays allocated but
    its presentation is hidden, read-only, and ineligible to own input.
 

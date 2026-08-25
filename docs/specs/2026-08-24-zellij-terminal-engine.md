@@ -35,9 +35,9 @@ as a production fallback.
 - Use Zellij's documented CLI actions and JSON output as the integration
   boundary. Wardian does not depend on Zellij's private socket or web-client
   protocols.
-- Keep remote terminal transport out of the first desktop/native release, but
-  retain agent-addressed backend operations so a later authenticated remote
-  presentation can attach without changing provider ownership.
+- Keep authenticated remote terminal transport on the existing per-agent
+  broker. Remote clients do not attach to Zellij's private protocol and do not
+  change provider-process ownership.
 - Do not enable Zellij session resurrection. Wardian owns durable agent intent
   and performs explicit reconciliation; it must never replay provider commands
   from Zellij metadata after a reboot.
@@ -214,8 +214,9 @@ requires a fresh activation instead of silently adopting stale focus.
 Snapshot cards never resize panes. The singleton xterm fits the canonical
 Zellij frame locally. The previous frame is hidden during a binding change and
 input remains gated until the selected generation's complete frame is applied.
-Remote clients cannot activate or resize this desktop session in the first
-release.
+Authenticated remote clients may acquire the broker input lease, but they
+cannot focus the desktop singleton or resize the canonical Zellij pane.
+Remote resize requests are rejected.
 
 ### Renderer or Workbench restart
 

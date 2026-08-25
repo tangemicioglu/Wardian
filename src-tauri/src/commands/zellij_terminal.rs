@@ -44,14 +44,22 @@ pub async fn get_zellij_terminal_preview(
     session_id: String,
     state: State<'_, AppState>,
 ) -> Result<ZellijTerminalPreview, String> {
+    let broker_state = state.terminal_sessions.broker_state(&session_id).await.ok();
+    let broker_generation = broker_state
+        .as_ref()
+        .map(|broker| broker.runtime_generation);
+    let broker_lease_epoch = broker_state.as_ref().map(|broker| broker.lease_epoch);
+    let broker_owner_presentation_id = broker_state
+        .as_ref()
+        .and_then(|broker| broker.owner_presentation_id.clone());
     let Some(engine) = state.zellij_terminal.get() else {
         return Ok(ZellijTerminalPreview {
             terminal_session_id: session_id.clone(),
             session_id,
             generation: None,
-            broker_generation: None,
-            broker_lease_epoch: None,
-            broker_owner_presentation_id: None,
+            broker_generation,
+            broker_lease_epoch,
+            broker_owner_presentation_id,
             state: "unavailable",
             content: String::new(),
         });
@@ -61,19 +69,13 @@ pub async fn get_zellij_terminal_preview(
             terminal_session_id: session_id.clone(),
             session_id,
             generation: None,
-            broker_generation: None,
-            broker_lease_epoch: None,
-            broker_owner_presentation_id: None,
+            broker_generation,
+            broker_lease_epoch,
+            broker_owner_presentation_id,
             state: "starting",
             content: String::new(),
         });
     };
-    let broker_state = state.terminal_sessions.broker_state(&session_id).await.ok();
-    let broker_generation = broker_state.as_ref().map(|broker| broker.runtime_generation);
-    let broker_lease_epoch = broker_state.as_ref().map(|broker| broker.lease_epoch);
-    let broker_owner_presentation_id = broker_state
-        .as_ref()
-        .and_then(|broker| broker.owner_presentation_id.clone());
     let preview_state = preview_state_for_phase(binding.phase);
     if preview_state != "running" {
         return Ok(ZellijTerminalPreview {
@@ -126,12 +128,9 @@ mod tests {
     #[test]
     fn habitat_activation_rejects_foreign_owners_and_stale_generations() {
         assert!(validate_habitat_activation(4, None, None).is_ok());
-        assert!(validate_habitat_activation(
-            4,
-            Some(4),
-            Some(HABITAT_TERMINAL_PRESENTATION_ID)
-        )
-        .is_ok());
+        assert!(
+            validate_habitat_activation(4, Some(4), Some(HABITAT_TERMINAL_PRESENTATION_ID)).is_ok()
+        );
         assert!(validate_habitat_activation(4, Some(3), None).is_err());
         assert!(validate_habitat_activation(4, Some(4), Some("remote:paired-device")).is_err());
     }

@@ -334,16 +334,41 @@ export function ZellijAgentTerminalHost() {
     };
     update();
     const resizeObserver = new ResizeObserver(update);
+    const mutationObserver = new MutationObserver(() => {
+      mutationObserver.disconnect();
+      let ancestor: HTMLElement | null = target.node;
+      while (ancestor) {
+        mutationObserver.observe(ancestor, {
+          attributes: true,
+          attributeFilter: ["class", "style", "data-layout-revision"],
+          childList: true,
+        });
+        if (ancestor === document.body) break;
+        ancestor = ancestor.parentElement;
+      }
+      update();
+    });
     let observed: HTMLElement | null = target.node;
     while (observed && observed !== document.body) {
       resizeObserver.observe(observed);
       observed = observed.parentElement;
+    }
+    let mutationAncestor: HTMLElement | null = target.node;
+    while (mutationAncestor) {
+      mutationObserver.observe(mutationAncestor, {
+        attributes: true,
+        attributeFilter: ["class", "style", "data-layout-revision"],
+        childList: true,
+      });
+      if (mutationAncestor === document.body) break;
+      mutationAncestor = mutationAncestor.parentElement;
     }
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
     return () => {
       if (frame !== null) window.cancelAnimationFrame(frame);
       resizeObserver.disconnect();
+      mutationObserver.disconnect();
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
     };
@@ -449,24 +474,27 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
   useEffect(() => {
     if (isLiveTarget || visibility !== "visible" || renderState !== "mounted") return;
     let cancelled = false;
+    let requestedPreviewSerial = 0;
+    let appliedPreviewSerial = 0;
     const refresh = async () => {
+      const serial = ++requestedPreviewSerial;
       try {
         const next = await invoke<ZellijTerminalPreview>("get_zellij_terminal_preview", {
           sessionId,
         });
-        if (!cancelled) {
-          if (next.broker_generation !== null) {
-            setBrokerOwner(
-              sessionId,
-              next.broker_generation,
-              next.broker_lease_epoch,
-              next.broker_owner_presentation_id,
-            );
-          }
+        if (!cancelled && serial >= appliedPreviewSerial) {
+          appliedPreviewSerial = serial;
+          setBrokerOwner(
+            sessionId,
+            next.broker_generation,
+            next.broker_lease_epoch,
+            next.broker_owner_presentation_id,
+          );
           setPreview(next);
         }
       } catch {
-        if (!cancelled) {
+        if (!cancelled && serial >= appliedPreviewSerial) {
+          appliedPreviewSerial = serial;
           setPreview({
             session_id: sessionId,
             terminal_session_id: sessionId,
