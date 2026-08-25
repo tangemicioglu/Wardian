@@ -46,6 +46,7 @@ use turns::{apply_archive_summary_to_manifest, archive_summary, derive_turn_reco
 pub struct ConversationArchiveState {
     #[allow(dead_code)]
     active: Mutex<HashMap<String, ActiveConversationHandle>>,
+    live_started_at: Mutex<HashMap<String, String>>,
     agent_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     #[cfg(test)]
     fail_next_rollover_after_close: AtomicBool,
@@ -143,6 +144,34 @@ pub fn effective_conversation_logging(
 }
 
 impl ConversationArchiveState {
+    /// Records the provider-session boundary before startup events are
+    /// emitted. This remains available when conversation logging is disabled,
+    /// because live Chat still projects memory activity.
+    pub fn begin_live_conversation(&self, agent_id: &str, started_at: &str) -> io::Result<()> {
+        let agent_id = agent_id.trim();
+        let started_at = started_at.trim();
+        if agent_id.is_empty() || started_at.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "agent_id and started_at are required",
+            ));
+        }
+        self.live_started_at
+            .lock()
+            .map_err(|_| io::Error::other("live conversation boundary lock poisoned"))?
+            .insert(agent_id.to_string(), started_at.to_string());
+        Ok(())
+    }
+
+    pub fn live_conversation_started_at(&self, agent_id: &str) -> io::Result<Option<String>> {
+        Ok(self
+            .live_started_at
+            .lock()
+            .map_err(|_| io::Error::other("live conversation boundary lock poisoned"))?
+            .get(agent_id.trim())
+            .cloned())
+    }
+
     pub fn active_conversation_id(&self, agent_id: &str) -> io::Result<Option<String>> {
         Ok(lock_active(&self.active)?
             .get(agent_id)

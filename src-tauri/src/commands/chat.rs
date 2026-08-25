@@ -86,6 +86,12 @@ pub async fn load_agent_chat_transcript_for_state(
 }
 
 fn active_conversation_started_at(state: &AppState, session_id: &str) -> Option<String> {
+    if let Ok(Some(started_at)) = state
+        .conversation_archive
+        .live_conversation_started_at(session_id)
+    {
+        return Some(started_at);
+    }
     let conversation_id = state
         .conversation_archive
         .active_conversation_id(session_id)
@@ -188,8 +194,10 @@ fn memory_event_belongs_to_conversation(
 
 fn sort_chat_events(events: &mut [AgentChatEvent]) {
     events.sort_by(|left, right| {
-        match (left.created_at.as_deref(), right.created_at.as_deref()) {
-            (Some(left), Some(right)) => left.cmp(right),
+        match (chat_event_timestamp(left), chat_event_timestamp(right)) {
+            (Some(left_timestamp), Some(right_timestamp)) => left_timestamp
+                .cmp(&right_timestamp)
+                .then_with(|| left.sequence.cmp(&right.sequence)),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => left.sequence.cmp(&right.sequence),
@@ -199,6 +207,13 @@ fn sort_chat_events(events: &mut [AgentChatEvent]) {
     for (index, event) in events.iter_mut().enumerate() {
         event.sequence = Some(index as u64 + 1);
     }
+}
+
+fn chat_event_timestamp(event: &AgentChatEvent) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    event
+        .created_at
+        .as_deref()
+        .and_then(|created_at| chrono::DateTime::parse_from_rfc3339(created_at).ok())
 }
 
 pub(crate) async fn agent_archive_capture_snapshot(
@@ -2185,13 +2200,54 @@ Do you want to proceed?
                 sequence: Some(2),
                 metadata: serde_json::Value::Null,
             },
+            AgentChatEvent {
+                id: "memory-offset".into(),
+                session_id: "agent-1".into(),
+                provider: "wardian".into(),
+                kind: AgentChatEventKind::Memory,
+                role: Some(AgentChatRole::System),
+                text: None,
+                title: Some("Memory saved".into()),
+                status: Some(AgentChatStatus::Succeeded),
+                turn_id: None,
+                source: Some("wardian_memory".into()),
+                command: None,
+                exit_code: None,
+                path: None,
+                language: Some("markdown".into()),
+                created_at: Some("2026-08-24T08:30:00.000+02:00".into()),
+                sequence: Some(3),
+                metadata: serde_json::Value::Null,
+            },
+            AgentChatEvent {
+                id: "chat-unknown".into(),
+                session_id: "agent-1".into(),
+                provider: "mock".into(),
+                kind: AgentChatEventKind::Status,
+                role: Some(AgentChatRole::System),
+                text: Some("Idle".into()),
+                title: None,
+                status: Some(AgentChatStatus::Succeeded),
+                turn_id: None,
+                source: None,
+                command: None,
+                exit_code: None,
+                path: None,
+                language: None,
+                created_at: None,
+                sequence: Some(4),
+                metadata: serde_json::Value::Null,
+            },
         ];
 
         sort_chat_events(&mut events);
 
-        assert_eq!(events[0].id, "memory-middle");
-        assert_eq!(events[1].id, "chat-late");
+        assert_eq!(events[0].id, "memory-offset");
+        assert_eq!(events[1].id, "memory-middle");
+        assert_eq!(events[2].id, "chat-late");
+        assert_eq!(events[3].id, "chat-unknown");
         assert_eq!(events[0].sequence, Some(1));
         assert_eq!(events[1].sequence, Some(2));
+        assert_eq!(events[3].sequence, Some(4));
     }
 }

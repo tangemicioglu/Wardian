@@ -2248,6 +2248,27 @@ fn discarded_logging_state_skips_disabled_transcript_events_when_reenabled() {
 }
 
 #[test]
+fn live_conversation_boundary_survives_disabled_archive_capture() {
+    let (_guard, _temp) = isolated_home();
+    let archive = ConversationArchiveState::default();
+    archive
+        .begin_live_conversation("agent-1", "2026-01-01T00:00:01.000Z")
+        .expect("begin live conversation");
+
+    archive
+        .discard_agent_with_context(archive_context("session-one"), &[])
+        .expect("discard archive capture");
+
+    assert_eq!(
+        archive
+            .live_conversation_started_at("agent-1")
+            .expect("read live conversation boundary")
+            .as_deref(),
+        Some("2026-01-01T00:00:01.000Z")
+    );
+}
+
+#[test]
 fn disabled_capture_state_skips_observed_events_without_timestamps_when_reenabled() {
     let (_guard, _temp) = isolated_home();
     let archive = ConversationArchiveState::default();
