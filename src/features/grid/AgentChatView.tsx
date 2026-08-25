@@ -789,7 +789,7 @@ function ChatComposer({
           />
           <button
             aria-label={isInterrupting ? "Interrupting agent" : isExecuting ? "Interrupt agent" : isSubmitting ? "Sending message" : "Send message"}
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-transparent disabled:bg-transparent disabled:text-muted-neutral disabled:opacity-60"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-transparent disabled:bg-transparent disabled:text-[var(--color-wardian-text-muted-neutral)] disabled:opacity-50"
             disabled={isInterrupting || isSubmitting || (!isExecuting && !canSubmit)}
             onClick={isExecuting ? onInterrupt : undefined}
             title={isExecuting ? "Interrupt agent" : isSubmitting ? "Sending message" : "Send message"}

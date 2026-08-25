@@ -359,6 +359,8 @@ test("keeps the offline agent composer send button consistent across empty, popu
   await expect(page.getByText("Provider returned an invalid model catalogue.", { exact: true })).toBeHidden();
   await expect(sendButton).toBeDisabled();
   await expect(sendButton).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(sendButton).toHaveCSS("color", "rgb(75, 85, 99)");
+  await expect(sendButton).toHaveCSS("opacity", "0.5");
 
   const emptyPath = process.env.WARDIAN_COMPOSER_EMPTY_SCREENSHOT
     ?? testInfo.outputPath("composer-send-empty.png");

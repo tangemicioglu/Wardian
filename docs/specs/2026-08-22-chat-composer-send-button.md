@@ -14,7 +14,8 @@ surface and made the control look detached from the rest of the toolbar.
 Use one consistent action treatment for the composer:
 
 - Empty and unavailable: transparent disabled ghost control with the muted icon
-  treatment used by the attach action.
+  treatment used by the attach action, at the same 50% disabled opacity as the
+  mobile composer.
 - Text or attachments present: accent-filled send control.
 - Agent executing: the same accent-filled control becomes the interrupt action.
 
