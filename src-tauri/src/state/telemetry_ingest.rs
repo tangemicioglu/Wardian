@@ -107,6 +107,13 @@ pub trait SessionCatalog {
     /// Every Claude Code transcript belonging to this agent.
     fn claude_transcripts(&self, agent: &AgentDescriptor) -> Vec<PathBuf>;
 
+    /// Every pi session log belonging to this agent.
+    ///
+    /// Pi writes into a Wardian-owned directory per agent rather than a shared
+    /// provider home, so everything under it belongs to that agent by
+    /// construction and no session-id attribution is needed.
+    fn pi_sessions(&self, agent: &AgentDescriptor) -> Vec<PathBuf>;
+
     /// Every archived conversation turn file belonging to this agent.
     ///
     /// Used for providers with no native reader, where Wardian's own record of
@@ -205,6 +212,31 @@ impl SessionCatalog for MachineCatalog {
 
     fn claude_transcripts(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
         self.resolve(agent, &[".claude", "projects"], &self.shared_claude)
+    }
+
+    fn pi_sessions(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
+        let Some(home) = get_wardian_home() else {
+            return Vec::new();
+        };
+        let sessions = home
+            .join("agents")
+            .join(&agent.session_id)
+            .join("pi")
+            .join("sessions");
+        let Ok(entries) = std::fs::read_dir(&sessions) else {
+            return Vec::new();
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+            })
+            .collect();
+        // Pi names its logs with a leading timestamp, so sorting is oldest
+        // first, matching the "newest last" order the other readers return.
+        paths.sort();
+        paths
     }
 
     fn archive_turn_files(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
@@ -381,6 +413,11 @@ pub fn discover_sources_with(
                 .collect(),
             "claude" => catalog
                 .claude_transcripts(agent)
+                .into_iter()
+                .map(|path| (path, Vec::new()))
+                .collect(),
+            "pi" => catalog
+                .pi_sessions(agent)
                 .into_iter()
                 .map(|path| (path, Vec::new()))
                 .collect(),
@@ -772,6 +809,13 @@ mod tests {
                 .collect()
         }
 
+        fn pi_sessions(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
+            self.sessions(agent)
+                .into_iter()
+                .map(|id| PathBuf::from(format!("/pi/{id}.jsonl")))
+                .collect()
+        }
+
         fn opencode_sessions(&self, agent: &AgentDescriptor) -> Vec<String> {
             self.sessions(agent)
         }
@@ -878,6 +922,9 @@ mod tests {
         fn claude_transcripts(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
             Vec::new()
         }
+        fn pi_sessions(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
         fn archive_turn_files(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
             Vec::new()
         }
@@ -904,6 +951,9 @@ mod tests {
             Vec::new()
         }
         fn claude_transcripts(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn pi_sessions(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
             Vec::new()
         }
         fn archive_turn_files(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {

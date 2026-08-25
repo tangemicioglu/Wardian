@@ -66,17 +66,24 @@ export function formatLineDelta(added: number, removed: number): string {
 }
 
 /**
- * Cache reads as a multiple of fresh input.
+ * Share of the prompt that was served from cache, as a percentage.
  *
- * Meaningful only because `input_tokens` is normalised to exclude cache reads
- * at ingest. On a real habitat this ran near 50x, which is why the two are
- * never added together.
+ * Measured against the whole prompt — fresh input, cache writes, and cache
+ * reads — rather than against fresh input alone. Dividing by fresh input made
+ * this a multiple rather than a share, and on claude, which sends almost
+ * nothing as plain input, it reached 9,494x: a number whose only real content
+ * was "claude barely uses plain input". As a share it is bounded and means the
+ * same thing for every provider.
+ *
+ * `null` when nothing in the prompt was reported, which is not the same as a
+ * prompt of zero tokens.
  */
 export function cacheReadRatio(tokens: TokenCounts): number | null {
   const cached = tokens.cached_input_tokens;
-  const input = tokens.input_tokens;
-  if (cached === null || input === null || input <= 0) return null;
-  return cached / input;
+  if (cached === null) return null;
+  const prompt = cached + (tokens.input_tokens ?? 0) + (tokens.cache_write_tokens ?? 0);
+  if (prompt <= 0) return null;
+  return (100 * cached) / prompt;
 }
 
 /** A ratio as a multiplier, e.g. `8.8x`. */
@@ -176,9 +183,9 @@ export const MEASURE_GROUPS: { group: string; measures: MeasureOption[] }[] = [
     measures: [
       {
         id: "total_tokens",
-        label: "New input + output",
-        short: "In + out",
-        hint: "What the model actually processed. Cache reads are excluded: they run tens of times larger and would swamp every other row.",
+        label: "New content processed",
+        short: "Processed",
+        hint: "What the model actually read or wrote for the first time: new input, cached input written, and output. Cache reads are excluded — they run tens of times larger and would swamp every other row.",
       },
       {
         id: "fresh_tokens",
@@ -190,7 +197,13 @@ export const MEASURE_GROUPS: { group: string; measures: MeasureOption[] }[] = [
         id: "cached_tokens",
         label: "Cached input",
         short: "Cached",
-        hint: "Prompt tokens served from the provider's cache instead of being reprocessed. Usually the largest figure here by far.",
+        hint: "Prompt tokens served from the provider's cache instead of being reprocessed. Usually the largest figure here by far, and charged at a fraction of the fresh rate.",
+      },
+      {
+        id: "cache_write_tokens",
+        label: "Cache writes",
+        short: "Written",
+        hint: "Prompt tokens stored into the cache for later reuse. The model read these for the first time, so they count as new work. Claude routes nearly all of its fresh prompt content through here; most other providers report none.",
       },
       {
         id: "output_tokens",
@@ -202,7 +215,13 @@ export const MEASURE_GROUPS: { group: string; measures: MeasureOption[] }[] = [
         id: "reasoning_tokens",
         label: "Reasoning",
         short: "Reasoning",
-        hint: "Thinking tokens, where a provider reports them apart from output. Blank for providers that do not.",
+        hint: "Thinking tokens, where a provider reports them apart from output. Already counted inside output, so never added to it. Blank for providers that do not report a breakdown.",
+      },
+      {
+        id: "cache_hit_rate",
+        label: "Cache hit rate",
+        short: "Hit rate",
+        hint: "Share of the prompt served from cache. A ratio, so cells do not add up to the row total — the total is recomputed over the whole window.",
       },
     ],
   },
@@ -267,10 +286,13 @@ export const DIMENSION_LABELS: Record<string, string> = {
  * Render a value in the unit its measure is denominated in.
  *
  * Durations are not counts. Formatting 2,400,000 active milliseconds as "2.4M"
- * would be true and useless.
+ * would be true and useless, and a cache hit rate of 88 without its sign reads
+ * as 88 tokens.
  */
 export function formatMeasureValue(measure: string, value: number): string {
-  return measure === "active_ms" ? formatDuration(value) : formatCount(value);
+  if (measure === "active_ms") return formatDuration(value);
+  if (measure === "cache_hit_rate") return formatPercent(value);
+  return formatCount(value);
 }
 
 /**

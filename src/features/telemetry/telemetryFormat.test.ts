@@ -83,23 +83,42 @@ describe("formatCount", () => {
 });
 
 describe("cacheReadRatio", () => {
-  it("expresses cache reads against fresh input", () => {
+  it("expresses cache reads as a share of the whole prompt", () => {
     // Real figures from a codex session, with `input_tokens` already
-    // normalised to exclude cache reads at ingest. The ratio is only
+    // normalised to exclude cache reads at ingest. The share is only
     // meaningful because of that normalisation.
     const tokens: TokenCounts = {
       ...NO_TOKENS,
       input_tokens: 100_544,
       cached_input_tokens: 730_880,
     };
-    const ratio = cacheReadRatio(tokens);
-    expect(ratio).not.toBeNull();
-    expect(formatRatio(ratio)).toBe("7.3x");
+    expect(formatPercent(cacheReadRatio(tokens))).toBe("88%");
   });
 
-  it("is unknown rather than zero when either side was unreported", () => {
+  it("stays bounded on a provider that sends almost nothing as plain input", () => {
+    // The real 400-turn claude session. Divided by fresh input alone this read
+    // 9,494x, which said nothing except that claude writes its prompt into the
+    // cache. As a share of the prompt it is a number anyone can compare.
+    const tokens: TokenCounts = {
+      ...NO_TOKENS,
+      input_tokens: 8_446,
+      cached_input_tokens: 80_194_623,
+      cache_write_tokens: 1_885_871,
+    };
+    expect(formatPercent(cacheReadRatio(tokens))).toBe("98%");
+  });
+
+  it("counts cache writes as part of the prompt they were read from", () => {
+    // A turn whose whole prompt was new: nothing was served from cache, so the
+    // hit rate is 0%, not undefined.
+    expect(
+      cacheReadRatio({ ...NO_TOKENS, input_tokens: 10, cache_write_tokens: 90, cached_input_tokens: 0 }),
+    ).toBe(0);
+  });
+
+  it("is unknown rather than zero when the prompt was never reported", () => {
     expect(cacheReadRatio(NO_TOKENS)).toBeNull();
-    expect(cacheReadRatio({ ...NO_TOKENS, input_tokens: 0, cached_input_tokens: 10 })).toBeNull();
+    expect(cacheReadRatio({ ...NO_TOKENS, cached_input_tokens: 0 })).toBeNull();
     expect(formatRatio(null)).toBe(UNREPORTED);
   });
 });
@@ -137,6 +156,8 @@ describe("formatMeasureValue", () => {
     expect(formatMeasureValue("active_ms", 2_400_000)).toBe("40m");
     expect(formatMeasureValue("total_tokens", 2_400_000)).toBe("2.4M");
     expect(formatMeasureValue("files", 12)).toBe("12");
+    // A ratio without its sign reads as a count of 88.
+    expect(formatMeasureValue("cache_hit_rate", 88)).toBe("88%");
   });
 });
 
@@ -189,9 +210,11 @@ describe("measure labels", () => {
     "turns",
     "fresh_tokens",
     "cached_tokens",
+    "cache_write_tokens",
     "output_tokens",
     "reasoning_tokens",
     "total_tokens",
+    "cache_hit_rate",
     "files",
     "lines_added",
     "lines_removed",

@@ -32,7 +32,7 @@ pub struct SeriesPoint {
     pub bucket_start: String,
     pub key: String,
     pub active: ActiveTime,
-    pub billable_tokens: Option<i64>,
+    pub processed_tokens: Option<i64>,
 }
 
 /// Grouping dimension for a breakdown.
@@ -311,22 +311,27 @@ pub fn series(
     to: &str,
 ) -> rusqlite::Result<Vec<SeriesPoint>> {
     let column = dimension.column();
-    // Fresh input plus output only. Adding cache reads here would dominate the
-    // series — they ran roughly ten times fresh input on real sessions — and
-    // turn a token chart into a cache-hit chart.
+    // New content processed: fresh input, cache writes, and output. Adding cache
+    // *reads* here would dominate the series — they ran roughly ten times fresh
+    // input on real sessions — and turn a token chart into a cache-hit chart.
+    // Cache writes are the opposite case: content read for the first time, and
+    // on claude they carry nearly all of it.
     //
-    // The CASE mirrors `TokenCounts::billable_total` exactly: NULL when neither
-    // component was reported, and otherwise the sum with an unreported half
+    // The CASE mirrors `TokenCounts::processed_total` exactly: NULL when no
+    // component was reported, and otherwise the sum with unreported parts
     // treated as zero. Writing it as a plain sum of COALESCEd columns would
-    // instead report zero billable tokens for a provider that reported only
+    // instead report zero processed tokens for a provider that reported only
     // cache reads, which is a different claim from reporting none.
     let sql = format!(
         "SELECT bucket_start, {column},
                 COALESCE(SUM(measured_active_ms), 0),
                 COALESCE(SUM(clustered_active_ms), 0),
-                CASE WHEN SUM(input_tokens) IS NULL AND SUM(output_tokens) IS NULL
+                CASE WHEN SUM(input_tokens) IS NULL AND SUM(cache_write_tokens) IS NULL
+                          AND SUM(output_tokens) IS NULL
                      THEN NULL
-                     ELSE COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)
+                     ELSE COALESCE(SUM(input_tokens), 0)
+                          + COALESCE(SUM(cache_write_tokens), 0)
+                          + COALESCE(SUM(output_tokens), 0)
                 END
          FROM telemetry_rollup_hourly
          WHERE bucket_start >= ?1 AND bucket_start < ?2
@@ -342,7 +347,7 @@ pub fn series(
                 measured_ms: row.get(2)?,
                 clustered_ms: row.get(3)?,
             },
-            billable_tokens: row.get(4)?,
+            processed_tokens: row.get(4)?,
         })
     })?;
     rows.collect()
@@ -577,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn breakdown_keeps_cache_reads_out_of_the_billable_total() {
+    fn breakdown_keeps_cache_reads_out_of_the_processed_total() {
         let mut conn = db();
         seed(&mut conn);
         let rows = breakdown(&conn, Dimension::Provider, FROM, TO, 10).unwrap();
@@ -586,7 +591,7 @@ mod tests {
         assert_eq!(codex.tokens.cached_input_tokens, Some(500));
         // Cache reads stay addressable but out of the headline figure; folding
         // them in would make this row read six times busier than it was.
-        assert_eq!(codex.tokens.billable_total(), Some(120));
+        assert_eq!(codex.tokens.processed_total(), Some(120));
     }
 
     #[test]
@@ -608,7 +613,7 @@ mod tests {
         // Null rather than zero, so it cannot be ranked as the cheapest
         // provider by anything that sorts on token counts.
         assert_eq!(row.tokens.input_tokens, None);
-        assert_eq!(row.tokens.billable_total(), None);
+        assert_eq!(row.tokens.processed_total(), None);
     }
 
     #[test]
@@ -642,7 +647,7 @@ mod tests {
 
         let codex = rows.iter().find(|row| row.key == "codex").unwrap();
         assert_eq!(codex.active.clustered_ms, 30 * 60 * 1000);
-        assert_eq!(codex.billable_tokens, Some(120));
+        assert_eq!(codex.processed_tokens, Some(120));
     }
 
     #[test]
@@ -660,14 +665,14 @@ mod tests {
         );
         let rows = series(&conn, Dimension::Provider, FROM, TO).unwrap();
         let row = rows.iter().find(|row| row.key == "antigravity").unwrap();
-        assert_eq!(row.billable_tokens, None);
+        assert_eq!(row.processed_tokens, None);
     }
 
     #[test]
-    fn series_and_breakdown_agree_on_what_billable_means() {
+    fn series_and_breakdown_agree_on_what_processed_means() {
         // Two code paths compute the same quantity, one in SQL and one in Rust.
         // They have to answer identically, including for the awkward case of a
-        // provider that reported cache reads and nothing else — zero billable
+        // provider that reported cache reads and nothing else — zero processed
         // tokens is a different claim from no token accounting.
         let mut conn = db();
         let cache_only = TurnFact {
@@ -702,8 +707,8 @@ mod tests {
 
         assert_eq!(row.tokens.cached_input_tokens, Some(4_096));
         assert!(row.tokens_reported);
-        assert_eq!(row.tokens.billable_total(), None);
-        assert_eq!(point.billable_tokens, row.tokens.billable_total());
+        assert_eq!(row.tokens.processed_total(), None);
+        assert_eq!(point.processed_tokens, row.tokens.processed_total());
     }
 
     #[test]

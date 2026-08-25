@@ -17,7 +17,7 @@ Where [Dashboard](./dashboard.md) answers *is anything wrong right now*, Analyti
 
 1. Open Analytics from `Ctrl+P` / `Cmd+P`, a pane's **+** button, or the empty-pane Home state. `Ctrl+Alt+Y` opens it directly.
 2. Choose what the **rows** are: agent, model, or provider.
-3. Choose the **measure**. Options are grouped as Work (active time, turns), Tokens, and Files.
+3. Choose the **measure**. Options are grouped as Work (active time, turns), Tokens (new content processed, new input, cached input, cache writes, output, reasoning, cache hit rate), and Files.
 4. Choose the **horizon**: today, 24 hours, 7 days, 30 days, or all.
 5. Read the matrix. Hover any cell for its exact value and moment; click an agent row to open that agent.
 
@@ -27,15 +27,18 @@ The bucket size follows the horizon, and the axis labels the start of each day r
 
 **Shading is relative to the busiest cell** in the current view, on a square-rooted ramp so that quiet-but-not-empty periods stay visible next to a peak. The scale legend under the matrix says which end is which.
 
-**Row totals are not always the sum of the cells.** "Files touched" counts distinct files, so a file edited in two different buckets appears in both columns but counts once in the row total. Where that applies, the total carries a tooltip saying so.
+**Row totals are not always the sum of the cells.** "Files touched" counts distinct files, so a file edited in two different buckets appears in both columns but counts once in the row total. "Cache hit rate" is a ratio, so its total is recomputed over the whole window rather than averaged across the columns — otherwise one idle bucket would carry the same weight as a busy one. Where that applies, the total carries a tooltip saying so.
 
-**Cache reads are excluded from token measures.** They run tens of times larger than fresh input and would swamp every other row, making the matrix a picture of caching rather than of work.
+**Cache reads are excluded from the "New content processed" measure; cache writes are not.** The two are different things. A cache read replays content the model already processed once, at a fraction of the price, and it runs tens of times larger than everything else — including it would make the matrix a picture of caching rather than of work. A cache write is content the model read for the *first* time, so it counts. That distinction matters most on Claude, which sends almost nothing as plain input and routes nearly all new prompt content through the cache.
+
+Pick "Cached input" to see the reads on their own, "Cache writes" for the new content, and "Cache hit rate" for the share of the prompt that came from cache.
 
 **Active time is measured where a provider reports durations and inferred from gaps between events where it does not.** The two are kept apart internally and never blended into a single figure that implies more precision than exists.
 
 ## Important Limits
 
-- Analytics reads telemetry derived from provider logs. Providers that publish no token accounting (gemini, antigravity) contribute no token figures.
+- Analytics reads telemetry derived from provider logs. Claude, Codex, OpenCode, and Pi are read from their own session logs. Gemini and antigravity publish no token accounting, so they are read through Wardian's conversation archive and contribute activity and file edits but no token figures. Those appear as blank rather than zero: an agent that reported nothing has not done nothing.
+- Not every provider reports every measure. Cache writes are routine on Claude and Pi, and reported as zero by Codex, whose upstream does not bill for them. "Reasoning" is reported by Codex, Pi, and OpenCode, and is already counted inside output, so it is never added to a total.
 - History begins when telemetry ingest first read a provider's logs. Sessions whose logs have been deleted cannot be recovered.
 - The matrix is a lookup surface. For live state and a monitor you leave open, use [Dashboard](./dashboard.md).
 - For per-conversation detail, open the agent session rather than reading it off the axis.

@@ -1,7 +1,7 @@
 //! Provider source implementations.
 //!
 //! A source is anything that can be advanced from a cursor and asked for facts.
-//! Two kinds exist and they are not interchangeable: codex and claude are
+//! Two kinds exist and they are not interchangeable: codex, claude, and pi are
 //! append-only JSONL files advanced by byte offset, while opencode is a live
 //! SQLite database advanced by row timestamp. The trait is therefore "read
 //! everything after this cursor", not "parse this string".
@@ -10,6 +10,7 @@ pub mod archive;
 pub mod claude;
 pub mod codex;
 pub mod opencode;
+pub mod pi;
 
 use crate::telemetry::models::{Cursor, CursorKind, ParsedFacts, SourceCarry, SourceKind};
 use std::path::{Path, PathBuf};
@@ -117,11 +118,13 @@ pub trait TelemetrySource: Send + Sync {
 
 /// Resolve a provider name to its source implementation.
 ///
-/// The three native readers are not variations on one format. Codex and claude
-/// are both append-only JSONL advanced by byte offset but disagree on what
-/// `input_tokens` counts; opencode is a live database advanced by timestamp.
-/// Normalizing those differences here, at ingest, is what lets a stored column
-/// mean one thing regardless of which provider filled it.
+/// The four native readers are not variations on one format. Codex, claude, and
+/// pi are all append-only JSONL advanced by byte offset but disagree on what
+/// `input_tokens` counts — codex's prompt total includes cache reads and is
+/// corrected at ingest, while claude's and pi's already exclude them and are
+/// stored raw. Opencode is a live database advanced by timestamp. Normalizing
+/// those differences here, at ingest, is what lets a stored column mean one
+/// thing regardless of which provider filled it.
 ///
 /// Everything else falls back to [`archive::ArchiveSource`], which reads
 /// Wardian's own conversation archive. That is how antigravity is covered: it
@@ -138,6 +141,7 @@ pub fn source_for(provider: &str) -> Option<Box<dyn TelemetrySource>> {
         "codex" => Some(Box::new(codex::CodexSource)),
         "claude" => Some(Box::new(claude::ClaudeSource)),
         "opencode" => Some(Box::new(opencode::OpenCodeSource)),
+        "pi" => Some(Box::new(pi::PiSource)),
         _ if uses_archive(provider) => Some(Box::new(archive::ArchiveSource)),
         _ => None,
     }
@@ -167,6 +171,7 @@ mod tests {
         assert!(is_supported("codex"));
         assert!(is_supported("claude"));
         assert!(is_supported("opencode"));
+        assert!(is_supported("pi"));
     }
 
     #[test]
@@ -183,7 +188,7 @@ mod tests {
     fn a_provider_with_a_native_reader_never_falls_back() {
         // Reading one agent through both its own log and the archive would count
         // every turn twice.
-        for provider in ["codex", "claude", "opencode"] {
+        for provider in ["codex", "claude", "opencode", "pi"] {
             assert!(!uses_archive(provider));
             assert_ne!(source_for(provider).unwrap().provider(), "archive");
         }

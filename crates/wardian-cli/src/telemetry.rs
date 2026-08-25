@@ -33,7 +33,7 @@ pub fn handle_telemetry(args: TelemetryArgs) -> Result<String, CliError> {
                     "active": active_json(&totals.active),
                     "turns": totals.turns,
                     "tokens": tokens_json(&totals.tokens),
-                    "billable_tokens": totals.tokens.billable_total(),
+                    "processed_tokens": totals.tokens.processed_total(),
                     "files_touched": totals.files_touched,
                     "lines_added": totals.lines_added,
                     "lines_removed": totals.lines_removed,
@@ -114,7 +114,7 @@ fn row_json(row: &BreakdownRow) -> serde_json::Value {
         "active": active_json(&row.active),
         "turns": row.turns,
         "tokens": tokens_json(&row.tokens),
-        "billable_tokens": row.tokens.billable_total(),
+        "processed_tokens": row.tokens.processed_total(),
         "tokens_reported": row.tokens_reported,
         "files_touched": row.files_touched,
         "lines_added": row.lines_added,
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_reads_stay_out_of_the_billable_total() {
+    fn cache_reads_stay_out_of_the_processed_total() {
         let row = BreakdownRow {
             key: "codex".into(),
             tokens: TokenCounts {
@@ -189,8 +189,30 @@ mod tests {
             ..BreakdownRow::default()
         };
         let json = row_json(&row);
-        assert_eq!(json["billable_tokens"], 105_798);
+        assert_eq!(json["processed_tokens"], 105_798);
         // Still addressable, just not in the headline figure.
         assert_eq!(json["tokens"]["cached_input_tokens"], 730_880);
+    }
+
+    #[test]
+    fn cache_writes_are_inside_the_processed_total() {
+        // Claude-shaped traffic, where nearly all fresh prompt content is
+        // written into the cache rather than sent as plain input. Counting only
+        // input and output would report 471,400 for 2,357,271 tokens of work.
+        let row = BreakdownRow {
+            key: "claude".into(),
+            tokens: TokenCounts {
+                input_tokens: Some(8_446),
+                cached_input_tokens: Some(80_194_623),
+                cache_write_tokens: Some(1_885_871),
+                output_tokens: Some(462_954),
+                reasoning_tokens: None,
+            },
+            tokens_reported: true,
+            ..BreakdownRow::default()
+        };
+        let json = row_json(&row);
+        assert_eq!(json["processed_tokens"], 2_357_271);
+        assert_eq!(json["tokens"]["cache_write_tokens"], 1_885_871);
     }
 }

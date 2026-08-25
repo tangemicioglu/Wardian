@@ -311,19 +311,35 @@ impl TokenCounts {
             || self.reasoning_tokens.is_some()
     }
 
-    /// Fresh input plus output — new content processed, the figure most often
-    /// wanted as "tokens used".
+    /// New content processed: fresh input, cache writes, and output.
     ///
-    /// Cache reads are excluded, and that exclusion is only real because
+    /// **Cache reads are excluded; cache writes are not.** The two are not
+    /// interchangeable. A cache read is content the model already processed
+    /// once, replayed at a tenth of the price. A cache write is content it read
+    /// for the *first* time, billed at or above the fresh-input rate — it is
+    /// work, and omitting it is not a conservative choice.
+    ///
+    /// That distinction is worth more than it looks on claude, which sends
+    /// almost nothing as plain input. Over a real 400-turn session: 8,446 fresh
+    /// input, 1,885,871 cache writes, 462,954 output. Counting only input and
+    /// output reported 471,400 against 2,357,271 actually processed — a 5x
+    /// understatement that hid 99.6% of the session's new prompt content.
+    ///
+    /// Excluding cache reads is only meaningful because
     /// [`TurnFact::input_tokens`] is normalized to be cache-exclusive at
-    /// ingest. On a real habitat cache reads ran roughly 50x fresh input, so a
+    /// ingest. On the same habitat cache reads ran ~50x fresh input, so a
     /// version of this that summed a provider's raw prompt total would report
-    /// 3.6B tokens where 73M were actually processed. `None` when neither
-    /// component was reported.
-    pub fn billable_total(&self) -> Option<i64> {
-        match (self.input_tokens, self.output_tokens) {
-            (None, None) => None,
-            (input, output) => Some(input.unwrap_or(0) + output.unwrap_or(0)),
+    /// 3.6B tokens where 73M were processed.
+    ///
+    /// The name is deliberate. This was `billable_total`, which was false in
+    /// both directions: cache reads are billed too, at 10%, and cache writes
+    /// were billed and not counted. `None` when no component was reported.
+    pub fn processed_total(&self) -> Option<i64> {
+        match (self.input_tokens, self.cache_write_tokens, self.output_tokens) {
+            (None, None, None) => None,
+            (input, write, output) => {
+                Some(input.unwrap_or(0) + write.unwrap_or(0) + output.unwrap_or(0))
+            }
         }
     }
 
@@ -514,11 +530,11 @@ mod tests {
         let mut total = TokenCounts::default();
         total.add(&TokenCounts::default());
         assert!(!total.any_reported());
-        assert_eq!(total.billable_total(), None);
+        assert_eq!(total.processed_total(), None);
     }
 
     #[test]
-    fn billable_total_excludes_cache_reads() {
+    fn processed_total_excludes_cache_reads() {
         // Cache reads ran ~8-10x fresh input on real sessions, so including
         // them would overstate usage by roughly an order of magnitude.
         let tokens = TokenCounts {
@@ -527,7 +543,37 @@ mod tests {
             output_tokens: Some(5_254),
             ..TokenCounts::default()
         };
-        assert_eq!(tokens.billable_total(), Some(105_798));
+        assert_eq!(tokens.processed_total(), Some(105_798));
+    }
+
+    #[test]
+    fn processed_total_includes_cache_writes() {
+        // The real 400-turn claude session this was measured against. Claude
+        // sends almost nothing as plain input, so counting only input and
+        // output reports 471,400 for work that processed 2,357,271 tokens.
+        let tokens = TokenCounts {
+            input_tokens: Some(8_446),
+            cached_input_tokens: Some(80_194_623),
+            cache_write_tokens: Some(1_885_871),
+            output_tokens: Some(462_954),
+            reasoning_tokens: None,
+        };
+        assert_eq!(tokens.processed_total(), Some(2_357_271));
+        // And still nowhere near the raw sum of every component, which is the
+        // figure a cache-inclusive total would have produced.
+        assert_ne!(tokens.processed_total(), Some(82_551_894));
+    }
+
+    #[test]
+    fn a_provider_reporting_only_cache_writes_is_not_unreported() {
+        // Claude-shaped traffic where the whole prompt went into the cache. A
+        // total that only consulted input and output would call this `None` and
+        // render a working agent as publishing no accounting at all.
+        let tokens = TokenCounts {
+            cache_write_tokens: Some(4_096),
+            ..TokenCounts::default()
+        };
+        assert_eq!(tokens.processed_total(), Some(4_096));
     }
 
     #[test]
