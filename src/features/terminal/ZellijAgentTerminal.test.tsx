@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AgentConfig } from "../../types";
+import { AgentSessionSurface } from "../workbench/surfaces/AgentSessionSurface";
 import {
   ZellijAgentTerminal,
   ZellijAgentTerminalHost,
@@ -281,6 +283,58 @@ describe("ZellijAgentTerminal", () => {
       leaseEpoch: 2,
       owner: "remote:paired-device",
     });
+  });
+
+  it("updates an inactive Agent Session surface from shared desktop and remote ownership", async () => {
+    const agent: AgentConfig = {
+      session_id: "agent-1",
+      session_name: "Mendel",
+      agent_class: "Coder",
+      folder: "/workspace/wardian",
+      provider: "mock",
+      is_off: false,
+    };
+    render(
+      <>
+        <ZellijAgentTerminalHost />
+        {terminal("agent-1")}
+        <AgentSessionSurface
+          surface_id="agent-session-1"
+          resource_key="agent-1"
+          agent={agent}
+          theme="dark"
+        />
+      </>,
+    );
+
+    const previews = await screen.findAllByRole("application", {
+      name: "Terminal for agent-1",
+    });
+    fireEvent.pointerDown(previews[0]);
+    await waitFor(() => expect(useZellijPresentationStore.getState().activeTargetId)
+      .toBe("agents:agent-1:agent-1"));
+
+    act(() => {
+      useZellijPresentationStore.getState().setBrokerOwner(
+        "agent-1",
+        1,
+        2,
+        "desktop:zellij-habitat-terminal",
+      );
+    });
+    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Mirror");
+    expect(screen.queryByTestId("agent-session-read-only")).not.toBeInTheDocument();
+
+    act(() => {
+      useZellijPresentationStore.getState().setBrokerOwner(
+        "agent-1",
+        1,
+        3,
+        "remote:paired-device",
+      );
+    });
+    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Mirror");
+    expect(screen.getByTestId("agent-session-read-only")).toHaveTextContent("Read only");
   });
 
   it("clears a stale remote owner when the broker advances to a replacement generation", async () => {

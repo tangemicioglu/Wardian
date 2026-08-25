@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   AgentConfig,
@@ -13,9 +13,23 @@ import {
 } from "./AgentSessionSurface";
 
 const terminalSpy = vi.hoisted(() => vi.fn());
+const zellijStoreState = vi.hoisted((): {
+  activeTargetId: string | null;
+  brokerOwners: Map<string, {
+    generation: number | null;
+    leaseEpoch: number | null;
+    owner: string | null;
+  }>;
+} => ({
+  activeTargetId: null,
+  brokerOwners: new Map(),
+}));
 
 vi.mock("../../terminal/ZellijAgentTerminal", () => ({
   HABITAT_TERMINAL_PRESENTATION_ID: "desktop:zellij-habitat-terminal",
+  useZellijPresentationStore: (selector: (state: typeof zellijStoreState) => unknown) => (
+    selector(zellijStoreState)
+  ),
   ZellijAgentTerminal: (props: Record<string, unknown>) => {
     terminalSpy(props);
     return <div data-testid="agent-terminal" />;
@@ -78,8 +92,10 @@ function surfaceProps(overrides: Partial<AgentSessionSurfaceProps> = {}): AgentS
   };
 }
 
-afterEach(() => {
+beforeEach(() => {
   terminalSpy.mockClear();
+  zellijStoreState.activeTargetId = null;
+  zellijStoreState.brokerOwners = new Map();
 });
 
 describe("AgentSessionSurface", () => {
@@ -187,17 +203,87 @@ describe("AgentSessionSurface", () => {
       .toMatchObject({ requestedInteraction: "read_only" });
   });
 
-  it("keeps the shared Habitat owner selectable until the local slot is bound", () => {
+  it("shows another Habitat slot as a selectable mirror until the local slot is bound", () => {
     render(<AgentSessionSurface {...surfaceProps({
       broker_state: brokerState({
         owner_presentation_id: "desktop:zellij-habitat-terminal",
       }),
     })} />);
 
-    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Connecting");
+    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Mirror");
     expect(screen.queryByTestId("agent-session-read-only")).not.toBeInTheDocument();
     expect(terminalSpy.mock.calls[terminalSpy.mock.calls.length - 1]?.[0])
       .toMatchObject({ requestedInteraction: "interactive" });
+  });
+
+  it("updates an inactive surface from shared desktop and remote ownership", () => {
+    const view = render(<AgentSessionSurface {...surfaceProps()} />);
+    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Connecting");
+
+    zellijStoreState.brokerOwners = new Map([[
+      "agent-1",
+      {
+        generation: 1,
+        leaseEpoch: 3,
+        owner: "desktop:zellij-habitat-terminal",
+      },
+    ]]);
+    view.rerender(<AgentSessionSurface {...surfaceProps()} />);
+
+    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Mirror");
+    expect(screen.queryByTestId("agent-session-read-only")).not.toBeInTheDocument();
+    expect(terminalSpy.mock.calls[terminalSpy.mock.calls.length - 1]?.[0])
+      .toMatchObject({ requestedInteraction: "interactive" });
+
+    zellijStoreState.brokerOwners = new Map([[
+      "agent-1",
+      {
+        generation: 1,
+        leaseEpoch: 4,
+        owner: "remote:paired-device",
+      },
+    ]]);
+    view.rerender(<AgentSessionSurface {...surfaceProps()} />);
+
+    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Mirror");
+    expect(screen.getByTestId("agent-session-read-only")).toHaveTextContent("Read only");
+    expect(terminalSpy.mock.calls[terminalSpy.mock.calls.length - 1]?.[0])
+      .toMatchObject({ requestedInteraction: "read_only" });
+  });
+
+  it("replaces a selected slot's stale local owner when a remote owner takes over", () => {
+    const presentationId = "surface-7:agent:agent-1";
+    zellijStoreState.activeTargetId = `${presentationId}:agent-1`;
+    zellijStoreState.brokerOwners = new Map([[
+      "agent-1",
+      {
+        generation: 1,
+        leaseEpoch: 3,
+        owner: "desktop:zellij-habitat-terminal",
+      },
+    ]]);
+    const props = surfaceProps({
+      broker_state: brokerState({ owner_presentation_id: presentationId }),
+      presentation_state: presentationState(presentationId),
+    });
+    const view = render(<AgentSessionSurface {...props} />);
+
+    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Owner");
+
+    zellijStoreState.brokerOwners = new Map([[
+      "agent-1",
+      {
+        generation: 1,
+        leaseEpoch: 4,
+        owner: "remote:paired-device",
+      },
+    ]]);
+    view.rerender(<AgentSessionSurface {...props} />);
+
+    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Mirror");
+    expect(screen.getByTestId("agent-session-read-only")).toHaveTextContent("Read only");
+    expect(terminalSpy.mock.calls[terminalSpy.mock.calls.length - 1]?.[0])
+      .toMatchObject({ requestedInteraction: "read_only" });
   });
 
   it("updates badges from the live terminal observation callback", () => {
