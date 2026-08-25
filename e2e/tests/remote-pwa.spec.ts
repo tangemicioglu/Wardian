@@ -539,6 +539,9 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await expect(page.getByLabel("user message")).toHaveClass(/\bitems-end\b/);
   await expect(page.getByLabel("assistant message")).toHaveClass(/\bw-full\b/);
   await expect(page.getByTestId("chat-work-group")).toHaveAttribute("data-expanded", "false");
+  await expect
+    .poll(() => page.getByLabel("user message").locator(".chat-row-actions--inline").evaluate((element) => getComputedStyle(element).top))
+    .toBe("-4px");
   const workGroup = page.getByTestId("chat-work-group");
   const workActions = workGroup.locator(".chat-row-actions--rail");
   const workToggle = workGroup.getByRole("button", { name: "Show all" });
