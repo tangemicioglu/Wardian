@@ -22,6 +22,7 @@ function readProtected(item: QueueItem) {
 
 interface QueueState {
   items: QueueItem[];
+  inboxNotificationsTruncated: boolean;
   preferences: QueuePreferences;
   _agentBuffers: Record<string, string>;
   _workflowLastOutput: Record<string, string>;
@@ -109,29 +110,38 @@ interface InboxNotificationDto {
   decision?: { choice: string };
 }
 
-async function loadInboxNotificationItems(readNotificationIds: Set<string>): Promise<QueueItem[]> {
+interface InboxNotificationListResult {
+  notifications: InboxNotificationDto[];
+  truncated: boolean;
+}
+
+async function loadInboxNotificationItems(readNotificationIds: Set<string>): Promise<{ items: QueueItem[]; truncated: boolean }> {
   try {
-    const notifications = await invoke<InboxNotificationDto[]>("list_inbox_notifications");
-    return notifications.map((notification) => ({
-      id: `notification:${notification.id}`,
-      type: notification.kind === "approval" ? "approval_request" : "agent_update",
-      timestamp: Date.parse(notification.created_at) || Date.now(),
-      read: notification.kind === "update"
-        ? readNotificationIds.has(notification.id)
-        : notification.status !== "awaiting_reply",
-      agent_session_id: notification.sender_session_id,
-      notification_title: notification.title,
-      inbox_notification_id: notification.id,
-      notification_status: notification.status,
-      summary: notification.body,
-      proposed_action: notification.proposed_action,
-      risk: notification.risk,
-      approval_choices: notification.choices,
-      approval_decision: notification.decision?.choice,
-      expires_at: notification.expires_at,
-    }));
+    const result = await invoke<InboxNotificationListResult | InboxNotificationDto[]>("list_inbox_notifications");
+    const notifications = Array.isArray(result) ? result : result.notifications;
+    return {
+      items: notifications.map((notification) => ({
+        id: `notification:${notification.id}`,
+        type: notification.kind === "approval" ? "approval_request" : "agent_update",
+        timestamp: Date.parse(notification.created_at) || Date.now(),
+        read: notification.kind === "update"
+          ? readNotificationIds.has(notification.id)
+          : notification.status !== "awaiting_reply",
+        agent_session_id: notification.sender_session_id,
+        notification_title: notification.title,
+        inbox_notification_id: notification.id,
+        notification_status: notification.status,
+        summary: notification.body,
+        proposed_action: notification.proposed_action,
+        risk: notification.risk,
+        approval_choices: notification.choices,
+        approval_decision: notification.decision?.choice,
+        expires_at: notification.expires_at,
+      })),
+      truncated: !Array.isArray(result) && result.truncated,
+    };
   } catch {
-    return [];
+    return { items: [], truncated: false };
   }
 }
 
@@ -239,6 +249,7 @@ function matchesActionNeededEvidence(
 
 export const useQueueStore = create<QueueState>((set, get) => ({
   items: [],
+  inboxNotificationsTruncated: false,
   preferences: DEFAULT_QUEUE_PREFERENCES,
   _agentBuffers: {},
   _workflowLastOutput: {},
@@ -255,7 +266,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
           .map((item) => item.inbox_notification_id!),
       );
       const legacyItems = persistedItems.filter((item) => !item.inbox_notification_id && !item.workflow_approval);
-      const [notifications, workflowApprovals, workflowTerminals] = await Promise.all([
+      const [notificationResult, workflowApprovals, workflowTerminals] = await Promise.all([
         loadInboxNotificationItems(readNotificationIds),
         loadWorkflowApprovalItems(),
         loadWorkflowTerminalItems(),
@@ -267,9 +278,13 @@ export const useQueueStore = create<QueueState>((set, get) => ({
         const key = workflowRunKey(item);
         return !key || !persistedWorkflowRuns.has(key);
       });
-      const items = [...notifications, ...workflowApprovals, ...reconciledTerminals, ...legacyItems]
+      const items = [...notificationResult.items, ...workflowApprovals, ...reconciledTerminals, ...legacyItems]
         .sort((left, right) => right.timestamp - left.timestamp);
-      set({ items, _readNotificationIds: [...readNotificationIds] });
+      set({
+        items,
+        inboxNotificationsTruncated: notificationResult.truncated,
+        _readNotificationIds: [...readNotificationIds],
+      });
       if (reconciledTerminals.length > 0) {
         persistItems(items, [...readNotificationIds]);
       }

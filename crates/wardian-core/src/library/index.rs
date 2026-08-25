@@ -19,6 +19,32 @@ enum SectionShape {
     MarkdownFiles,
 }
 
+const MAX_LIBRARY_NODES_PER_SECTION: usize = 1_000;
+const MAX_LIBRARY_DEPTH: usize = 64;
+
+struct LibraryBuildBudget {
+    remaining: usize,
+    truncated: bool,
+}
+
+impl LibraryBuildBudget {
+    fn new() -> Self {
+        Self {
+            remaining: MAX_LIBRARY_NODES_PER_SECTION,
+            truncated: false,
+        }
+    }
+
+    fn take(&mut self) -> bool {
+        if self.remaining == 0 {
+            self.truncated = true;
+            return false;
+        }
+        self.remaining -= 1;
+        true
+    }
+}
+
 /// Build the full metadata-only library index: one tree per section, the
 /// deployment map (section-qualified), and any orphaned deployment
 /// directories. Content is only ever read to extract a description; it is
@@ -37,17 +63,16 @@ pub fn build_library_index(home: &Path) -> Result<LibraryIndex, String> {
     let no_deployment_count = |_: &str| -> u32 { 0 };
 
     let mut sections = HashMap::new();
-    sections.insert(
-        "skills".to_string(),
-        build_section(
+    let mut skills_section = build_section(
             home,
             LibrarySectionId::Skills,
             SectionShape::SkillDirs,
             "skill",
             &metadata,
             &skill_deployment_count,
-        )?,
-    );
+        )?;
+    skills_section.truncated |= scan.truncated;
+    sections.insert("skills".to_string(), skills_section);
     sections.insert(
         "prompts".to_string(),
         build_section(
@@ -70,10 +95,9 @@ pub fn build_library_index(home: &Path) -> Result<LibraryIndex, String> {
             &no_deployment_count,
         )?,
     );
-    sections.insert(
-        "classes".to_string(),
-        build_classes_section(home, &metadata, &scan)?,
-    );
+    let mut classes_section = build_classes_section(home, &metadata, &scan)?;
+    classes_section.truncated |= scan.truncated;
+    sections.insert("classes".to_string(), classes_section);
     sections.insert(
         "mcps".to_string(),
         LibrarySection {
@@ -83,6 +107,7 @@ pub fn build_library_index(home: &Path) -> Result<LibraryIndex, String> {
                 children: Vec::new(),
             },
             stubbed: true,
+            truncated: false,
         },
     );
 
@@ -111,6 +136,7 @@ fn build_section(
 ) -> Result<LibrarySection, String> {
     let root = section.root_for_home(home);
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let mut budget = LibraryBuildBudget::new();
     let tree = build_folder(
         &root,
         "",
@@ -120,10 +146,13 @@ fn build_section(
         &shape,
         metadata,
         deployment_count_for,
+        &mut budget,
+        0,
     );
     Ok(LibrarySection {
         tree,
         stubbed: false,
+        truncated: budget.truncated,
     })
 }
 
@@ -139,6 +168,8 @@ fn build_folder(
     shape: &SectionShape,
     metadata: &MetadataStore,
     deployment_count_for: &dyn Fn(&str) -> u32,
+    budget: &mut LibraryBuildBudget,
+    depth: usize,
 ) -> LibraryIndexFolder {
     let mut children = Vec::new();
     if let Ok(entries) = fs::read_dir(dir) {
@@ -153,6 +184,9 @@ fn build_folder(
                     let skill_md = path.join("SKILL.md");
                     let child_rel = join_rel(rel_path, &entry_name);
                     if skill_md.is_file() {
+                        if !budget.take() {
+                            break;
+                        }
                         children.push(LibraryIndexNode::Entry(build_entry(
                             &skill_md,
                             &child_rel,
@@ -163,6 +197,10 @@ fn build_folder(
                             deployment_count_for,
                         )));
                     } else {
+                        if depth >= MAX_LIBRARY_DEPTH || !budget.take() {
+                            budget.truncated = true;
+                            break;
+                        }
                         children.push(LibraryIndexNode::Folder(build_folder(
                             &path,
                             &child_rel,
@@ -172,12 +210,18 @@ fn build_folder(
                             shape,
                             metadata,
                             deployment_count_for,
+                            budget,
+                            depth + 1,
                         )));
                     }
                 }
                 SectionShape::MarkdownFiles => {
                     if path.is_dir() {
                         let child_rel = join_rel(rel_path, &entry_name);
+                        if depth >= MAX_LIBRARY_DEPTH || !budget.take() {
+                            budget.truncated = true;
+                            break;
+                        }
                         children.push(LibraryIndexNode::Folder(build_folder(
                             &path,
                             &child_rel,
@@ -187,6 +231,8 @@ fn build_folder(
                             shape,
                             metadata,
                             deployment_count_for,
+                            budget,
+                            depth + 1,
                         )));
                     } else {
                         let is_markdown = Path::new(&entry_name)
@@ -201,6 +247,9 @@ fn build_folder(
                             .file_stem()
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_else(|| entry_name.clone());
+                        if !budget.take() {
+                            break;
+                        }
                         children.push(LibraryIndexNode::Entry(build_entry(
                             &path,
                             &child_rel,
@@ -263,12 +312,16 @@ fn build_classes_section(
     let root = LibrarySectionId::Classes.root_for_home(home);
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
 
+    let mut budget = LibraryBuildBudget::new();
     let mut children = Vec::new();
     if let Ok(entries) = fs::read_dir(&root) {
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
                 continue;
+            }
+            if !budget.take() {
+                break;
             }
             let name = entry.file_name().to_string_lossy().to_string();
             let (description, error) = read_description(&path.join("AGENTS.md"), true);
@@ -301,6 +354,7 @@ fn build_classes_section(
             children,
         },
         stubbed: false,
+        truncated: budget.truncated,
     })
 }
 
@@ -451,5 +505,20 @@ mod tests {
             round_tripped.deployments["skills/planner"].len(),
             index.deployments["skills/planner"].len()
         );
+    }
+
+    #[test]
+    fn library_section_reports_truncation_at_the_node_budget() {
+        let temp = tempfile::tempdir().expect("temp");
+        let prompts = temp.path().join("library").join("prompts");
+        fs::create_dir_all(&prompts).unwrap();
+        for index in 0..=MAX_LIBRARY_NODES_PER_SECTION {
+            fs::write(prompts.join(format!("prompt-{index:04}.md")), "# Prompt").unwrap();
+        }
+
+        let index = build_library_index(temp.path()).expect("index");
+        let section = &index.sections["prompts"];
+        assert!(section.truncated);
+        assert_eq!(section.tree.children.len(), MAX_LIBRARY_NODES_PER_SECTION);
     }
 }

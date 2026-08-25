@@ -93,6 +93,22 @@ describe('LibraryList', () => {
     expect(screen.getByTestId('library-star-skills/dev/planner')).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('shows when the active library section is partial', () => {
+    useLibraryStore.setState({
+      index: {
+        ...index,
+        sections: {
+          ...index.sections,
+          skills: { ...index.sections.skills, truncated: true },
+        },
+      },
+    });
+
+    render(<LibraryList />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('first 1,000 items');
+  });
+
   it('shows the warning badge for entries with an error or a related orphan', () => {
     render(<LibraryList />);
     expect(screen.getByTestId('library-warn-badge-skills/reviewer')).toBeInTheDocument();

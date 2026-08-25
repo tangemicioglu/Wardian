@@ -25,6 +25,41 @@ pub fn list_blueprint_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Recursively collect at most `limit` blueprint files under `dir`.
+///
+/// The boolean reports that another matching file was encountered after the
+/// returned prefix. This is used by public catalog commands so a large
+/// workflow library is bounded before it is parsed or serialized.
+pub fn list_blueprint_files_bounded(dir: &Path, limit: usize) -> (Vec<PathBuf>, bool) {
+    fn visit(dir: &Path, limit: usize, files: &mut Vec<PathBuf>) -> bool {
+        if files.len() >= limit {
+            return false;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if visit(&path, limit, files) {
+                    return true;
+                }
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                if files.len() >= limit {
+                    return true;
+                }
+                files.push(path);
+            }
+        }
+        false
+    }
+
+    let mut files = Vec::new();
+    let truncated = visit(dir, limit, &mut files);
+    files.sort();
+    (files, truncated)
+}
+
 /// Find the blueprint whose frontmatter `id` matches `id`, searching
 /// `<wardian-home>/library/workflows` recursively so blueprints nested in
 /// subfolders resolve the same way flat ones always have.
@@ -132,5 +167,22 @@ edges: []
 
         let resolved = resolve_blueprint_path_in(dir.path(), "dup-id").unwrap();
         assert!(resolved == first || resolved == second);
+    }
+
+    #[test]
+    fn bounded_listing_reports_files_beyond_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..=3 {
+            write_blueprint(
+                &dir.path().join(format!("workflow-{index}.md")),
+                &format!("workflow-{index}"),
+                &format!("Workflow {index}"),
+            );
+        }
+
+        let (files, truncated) = list_blueprint_files_bounded(dir.path(), 3);
+
+        assert_eq!(files.len(), 3);
+        assert!(truncated);
     }
 }

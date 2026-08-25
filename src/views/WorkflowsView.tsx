@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import type { BlueprintListResult, BlueprintRef } from '../features/workflows/workflowTypes';
 import { RefreshCw, X } from 'lucide-react';
 import { BlueprintSelector } from '../features/workflows/BlueprintSelector';
 import { RunLaunchDialog, type RunInputParam } from '../features/workflows/RunLaunchDialog';
@@ -56,6 +57,7 @@ export function WorkflowsView({ theme }: WorkflowsViewProps) {
   const diagnostics = useBuilderStore((state) => state.diagnostics);
 
   const runs = useRunStore((state) => state.runs);
+  const runsTruncated = useRunStore((state) => state.runsTruncated);
   const runState = useRunStore((state) => state.state);
   const runBlueprint = useRunStore((state) => state.blueprint);
   const loadRuns = useRunStore((state) => state.loadRuns);
@@ -364,6 +366,7 @@ export function WorkflowsView({ theme }: WorkflowsViewProps) {
             </div>
             <RunList
               runs={filteredRuns}
+              truncated={runsTruncated}
               selectedRunId={activeBlueprintId
                 ? selectedRunIdsByBlueprint[activeBlueprintId] ?? (runState?.blueprint_id === activeBlueprintId ? runState.run_id : null)
                 : selectedRunId ?? runState?.run_id ?? null}
@@ -671,7 +674,8 @@ async function resolveScheduleBlueprint(schedule: WorkflowSchedule, currentBluep
   }
 
   try {
-    const refs = await invoke<Array<{ id: string; path: string }>>('workflow_list_blueprints');
+    const result = await invoke<BlueprintListResult | BlueprintRef[]>('workflow_list_blueprints');
+    const refs = Array.isArray(result) ? result : result.blueprints;
     const ref = refs.find((candidate) => candidate.id === schedule.blueprint_id) ?? null;
     if (!ref) {
       return { blueprint: null, path: null };

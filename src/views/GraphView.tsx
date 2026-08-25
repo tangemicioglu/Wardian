@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PanelRightOpen, Plus, RotateCcw, Waypoints, X } from "lucide-react";
-import type { AgentConfig, AgentTelemetry, CloneMode, TopologySnapshot, PairActivityEntry } from "../types";
+import type { AgentConfig, AgentTelemetry, CloneMode, TopologySnapshot, PairActivityEntry, PairActivityResult } from "../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlist/types";
 import { AgentContextMenu } from "../components/AgentContextMenu";
 import { DocsLink } from "../components/DocsLink";
@@ -78,6 +78,7 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
   );
   const [topology, setTopology] = useState<TopologySnapshot | null>(null);
   const [pairActivity, setPairActivity] = useState<PairActivityEntry[]>([]);
+  const [pairActivityTruncated, setPairActivityTruncated] = useState(false);
   const [inspectedAgentId, setInspectedAgentId] = useState<string | null>(
     initialSurfaceState?.inspected_agent_id ?? Array.from(props.selectedAgentIds)[0] ?? null,
   );
@@ -125,8 +126,11 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
     };
     const refreshActivity = async () => {
       try {
-        const a = await invoke<PairActivityEntry[]>("get_pair_activity");
-        if (!cancelled) setPairActivity(a);
+        const result = await invoke<PairActivityResult | PairActivityEntry[]>("get_pair_activity");
+        if (!cancelled) {
+          setPairActivity(Array.isArray(result) ? result : result.pairs);
+          setPairActivityTruncated(Array.isArray(result) ? false : result.truncated);
+        }
       } catch {
         // Silently ignore errors
       }
@@ -354,6 +358,11 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
           )}
         </div>
       </div>
+      {pairActivityTruncated && (
+        <div className="mx-3 mt-2 rounded border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)]" role="status">
+          Showing recent communication activity only; older activity is omitted from this graph.
+        </div>
+      )}
 
       <div className={`graph-body ${inspectorOpen ? "graph-body--inspector-open" : "graph-body--inspector-hidden"}`}>
         <div className="graph-canvas-shell" data-tour-target="graph-canvas">

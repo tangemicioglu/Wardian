@@ -166,6 +166,7 @@ export const LibraryList: React.FC = () => {
     }
 
     const tree = index?.sections[activeSection]?.tree ?? null;
+    const sectionTruncated = Boolean(index?.sections[activeSection]?.truncated);
     const searching = searchQuery.trim() !== '';
     // Starred filtering is a query over the whole tree, not a browse of the
     // user's current expansion state — folders default to collapsed, and a
@@ -267,6 +268,11 @@ export const LibraryList: React.FC = () => {
                 }}
                 onReveal={() => void openLibraryFolder(activeSection)}
             />
+            {sectionTruncated && (
+                <div className="mx-3 mt-2 rounded border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)]" role="status">
+                    Showing the first 1,000 items in this section.
+                </div>
+            )}
             <div className="flex-1 overflow-y-auto">
                 {rows.length === 0 ? (
                     <div data-testid="library-list-empty" className="px-4 py-8 text-center text-xs text-muted">

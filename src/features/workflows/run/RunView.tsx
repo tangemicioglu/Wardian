@@ -11,6 +11,7 @@ interface RunViewProps {
 
 export function RunView({ theme }: RunViewProps) {
   const runs = useRunStore((store) => store.runs);
+  const runsTruncated = useRunStore((store) => store.runsTruncated);
   const state = useRunStore((store) => store.state);
   const events = useRunStore((store) => store.events);
   const blueprint = useRunStore((store) => store.blueprint);
@@ -45,7 +46,7 @@ export function RunView({ theme }: RunViewProps) {
             Refresh
           </button>
         </div>
-        <RunList runs={runs} selectedRunId={state?.run_id ?? null} onOpen={(blueprintId, runId) => void handleOpen(blueprintId, runId)} />
+        <RunList runs={runs} truncated={runsTruncated} selectedRunId={state?.run_id ?? null} onOpen={(blueprintId, runId) => void handleOpen(blueprintId, runId)} />
       </aside>
 
       <section className="grid min-h-0 grid-rows-[minmax(0,1fr)_220px]">

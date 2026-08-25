@@ -27,7 +27,11 @@ pub struct SkillSource {
 pub struct DeploymentScan {
     pub deployments: HashMap<String, Vec<DeploymentTarget>>,
     pub orphans: Vec<OrphanDeployment>,
+    pub truncated: bool,
 }
+
+pub const MAX_LIBRARY_SKILL_SOURCES: usize = 1_000;
+pub const MAX_LIBRARY_DEPLOYMENTS: usize = 2_000;
 
 /// Recursively walk `library/skills` collecting every directory containing
 /// a `SKILL.md`. Port of `collect_library_skill_sources` from
@@ -39,12 +43,15 @@ pub fn collect_skill_sources(home: &Path) -> Vec<SkillSource> {
     sources
 }
 
-fn collect_skill_sources_inner(dir: &Path, base_dir: &Path, sources: &mut Vec<SkillSource>) {
+fn collect_skill_sources_inner(dir: &Path, base_dir: &Path, sources: &mut Vec<SkillSource>) -> bool {
     let Ok(entries) = fs::read_dir(dir) else {
-        return;
+        return false;
     };
 
     for entry in entries.flatten() {
+        if sources.len() >= MAX_LIBRARY_SKILL_SOURCES {
+            return true;
+        }
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -71,8 +78,11 @@ fn collect_skill_sources_inner(dir: &Path, base_dir: &Path, sources: &mut Vec<Sk
             continue;
         }
 
-        collect_skill_sources_inner(&path, base_dir, sources);
+        if collect_skill_sources_inner(&path, base_dir, sources) {
+            return true;
+        }
     }
+    false
 }
 
 /// Read and normalize the `.wardian-skill-source` marker file left behind
@@ -156,12 +166,19 @@ pub fn get_target_skills_dir(
 pub fn scan_deployments(home: &Path, sources: &[SkillSource]) -> DeploymentScan {
     let mut deployments: HashMap<String, Vec<DeploymentTarget>> = HashMap::new();
     let mut orphans = Vec::new();
+    let mut scanned = 0;
+    let mut truncated = false;
 
     let mut scan_target_dir = |target_type: &str, target_id: &str, skills_dir: &Path| {
         let Ok(entries) = fs::read_dir(skills_dir) else {
             return;
         };
         for entry in entries.flatten() {
+            if scanned >= MAX_LIBRARY_DEPLOYMENTS {
+                truncated = true;
+                return;
+            }
+            scanned += 1;
             let path = entry.path();
             if !path.is_dir() {
                 continue;
@@ -199,7 +216,11 @@ pub fn scan_deployments(home: &Path, sources: &[SkillSource]) -> DeploymentScan 
         }
     }
 
-    DeploymentScan { deployments, orphans }
+    DeploymentScan {
+        deployments,
+        orphans,
+        truncated,
+    }
 }
 
 /// The final path component of a section-relative skill path, used as the

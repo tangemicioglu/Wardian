@@ -10,6 +10,7 @@ vi.mocked(invoke).mockResolvedValue([]);
 function resetStore() {
   useQueueStore.setState({
     items: [],
+    inboxNotificationsTruncated: false,
     _agentBuffers: {},
     _workflowLastOutput: {},
     _readNotificationIds: [],
@@ -31,6 +32,14 @@ describe("InboxView", () => {
       "href",
       "https://docs.wardian.org/guide/inbox",
     );
+  });
+
+  it("shows when the notification projection is partial", () => {
+    useQueueStore.setState({ inboxNotificationsTruncated: true });
+
+    render(<InboxView />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("200 newest Inbox notifications");
   });
 
   it("renders an agent completion item", () => {

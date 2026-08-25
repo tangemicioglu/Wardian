@@ -113,7 +113,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const visitUnit = useGardenStore((s) => s.visit);
   const adoptScene = useGardenStore((s) => s.adoptScene);
   const resetLayout = useGardenStore((s) => s.reset);
-  const workflowInputs = useGardenWorkflows(visibility === "visible");
+  const { workflows: workflowInputs, truncated: workflowsTruncated } = useGardenWorkflows(visibility === "visible");
   const skillInputs = useGardenSkills(visibility === "visible");
   // Deep-links into the Library the same way the agent config panel's "Manage
   // skills" affordance does, so the Garden does not invent a second navigation
@@ -399,6 +399,16 @@ export const GardenView: React.FC<GardenViewProps> = ({
           <span className="text-muted">Select a unit to view its status.</span>
         )}
       </div>
+      {terrain.truncatedRoots.size > 0 && (
+        <div className="absolute bottom-3 right-3 z-10 rounded-md border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)] shadow-sm" role="status">
+          Some folder contents are limited to the first 500 items.
+        </div>
+      )}
+      {workflowsTruncated && (
+        <div className="absolute bottom-14 right-3 z-10 rounded-md border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)] shadow-sm" role="status">
+          Some workflows are omitted because the catalog is limited to the first 500.
+        </div>
+      )}
       {rendererActive ? <GardenCanvas
         agentUnits={agentUnits}
         workflowUnits={workflowUnits}

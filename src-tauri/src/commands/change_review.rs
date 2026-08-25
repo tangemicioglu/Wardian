@@ -912,6 +912,7 @@ mod tests {
                 status: status.to_string(),
                 is_staged: false,
             }],
+            files_truncated: false,
             ahead: 0,
             behind: 0,
             rebase_in_progress: false,

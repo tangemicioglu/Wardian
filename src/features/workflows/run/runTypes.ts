@@ -46,6 +46,11 @@ export interface RunSummary {
   completed_at?: string | null;
 }
 
+export interface RunSummaryListResult {
+  runs: RunSummary[];
+  truncated: boolean;
+}
+
 export interface RunReadResult {
   state: RunState | null;
   events: RunEvent[];

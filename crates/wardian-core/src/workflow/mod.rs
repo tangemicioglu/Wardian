@@ -20,7 +20,7 @@ pub use blueprint::{Blueprint, Edge, Node, Position};
 pub use diff::{diff, BlueprintDiff};
 pub use error::{Result, WorkflowError};
 pub use field_type::{FieldDef, FieldType};
-pub use locate::{list_blueprint_files, resolve_blueprint_path};
+pub use locate::{list_blueprint_files, list_blueprint_files_bounded, resolve_blueprint_path};
 pub use normalize::normalize;
 pub use parse::{parse_file, parse_str, to_string};
 pub use projections::reference_doc::reference_doc;

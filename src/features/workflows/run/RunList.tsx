@@ -4,11 +4,12 @@ import { formatRunStatus, workflowRunStatusColor } from './statusLabels';
 
 interface RunListProps {
   runs: RunSummary[];
+  truncated?: boolean;
   selectedRunId: string | null;
   onOpen: (blueprintId: string, runId: string) => void;
 }
 
-export function RunList({ runs, selectedRunId, onOpen }: RunListProps) {
+export function RunList({ runs, truncated = false, selectedRunId, onOpen }: RunListProps) {
   if (runs.length === 0) {
     return (
       <div className="select-text rounded-lg border border-dashed border-wardian-border p-4 text-center text-xs text-[var(--color-wardian-text-muted)]">
@@ -19,6 +20,11 @@ export function RunList({ runs, selectedRunId, onOpen }: RunListProps) {
 
   return (
     <div className="flex flex-col gap-2">
+      {truncated && (
+        <div className="rounded border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)]" role="status">
+          Showing the 200 most recent runs.
+        </div>
+      )}
       {runs.map((run) => {
         const color = workflowRunStatusColor(run.status);
         const selected = selectedRunId === run.run_id;

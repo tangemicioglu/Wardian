@@ -7,3 +7,9 @@ pub struct FileNode {
     pub is_dir: bool,
     pub extension: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DirectoryTreeResult {
+    pub nodes: Vec<FileNode>,
+    pub truncated: bool,
+}

@@ -46,6 +46,17 @@ describe('FileTree Component', () => {
     });
   });
 
+  it('shows when a directory listing is partial', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      nodes: [{ name: 'file.txt', path: '/test/file.txt', is_dir: false, extension: 'txt' }],
+      truncated: true,
+    });
+
+    render(<FileTree path="/test" />);
+
+    expect(await screen.findByRole('status')).toHaveTextContent('first 500 items');
+  });
+
   it('calls onContextMenu when an item is right-clicked', async () => {
     const mockNodes = [
       { name: 'fileC.png', path: '/test/fileC.png', is_dir: false, extension: 'png' }

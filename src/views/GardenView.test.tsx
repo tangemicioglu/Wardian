@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 
 const gardenWorkflowSpy = vi.hoisted(() => vi.fn(() => (
-  [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }]
+  { workflows: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }], truncated: false }
 )));
 
 vi.mock("../features/garden/useGardenWorkflows", () => ({
@@ -52,6 +52,11 @@ import { COMMONS_DISTRICT_ID, MAX_DISTRICT_RADIUS } from "../features/garden/dis
 beforeEach(() => {
   useGardenStore.getState().reset();
   canvasRenders.count = 0;
+  gardenWorkflowSpy.mockReset();
+  gardenWorkflowSpy.mockReturnValue({
+    workflows: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
+    truncated: false,
+  });
 });
 
 describe("GardenView", () => {
@@ -73,6 +78,30 @@ describe("GardenView", () => {
     expect(screen.getByTestId("garden-canvas")).toHaveTextContent("1:1");
     expect(screen.getByRole("region", { name: "Garden status legend" })).toHaveTextContent("Action Required");
     expect(screen.getByTestId("garden-selection-summary")).toHaveTextContent("Select a unit to view its status.");
+  });
+
+  it("shows when the workflow catalog is partial", () => {
+    gardenWorkflowSpy.mockReturnValue({
+      workflows: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
+      truncated: true,
+    });
+    const agents = [{ session_id: "a1", session_name: "Alpha" } as AgentConfig];
+
+    render(
+      <GardenView
+        filteredAgents={agents}
+        telemetry={{}}
+        teams={[]}
+        activeList={null}
+        interactions={{}}
+        selectedAgentIds={new Set()}
+        offAgentIds={new Set()}
+        onSelectionChange={vi.fn()}
+        onOpenAgent={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("catalog is limited to the first 500");
   });
 
 

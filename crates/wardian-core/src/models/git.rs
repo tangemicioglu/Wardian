@@ -14,6 +14,7 @@ pub struct GitStatusResult {
     pub upstream: Option<String>,
     pub has_upstream: bool,
     pub files: Vec<GitFileEntry>,
+    pub files_truncated: bool,
     pub ahead: u32,
     pub behind: u32,
     pub rebase_in_progress: bool,

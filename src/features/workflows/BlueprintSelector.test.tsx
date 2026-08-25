@@ -36,4 +36,15 @@ describe('BlueprintSelector', () => {
 
     expect(onNew).toHaveBeenCalled();
   });
+
+  it('marks a partial workflow catalog', async () => {
+    invokeMock.mockResolvedValueOnce({
+      blueprints: [{ id: 'wf', name: 'WF', path: '/x/wf.md' }],
+      truncated: true,
+    });
+
+    render(<BlueprintSelector onOpen={() => {}} onNew={() => {}} />);
+
+    expect(await screen.findByRole('status')).toHaveTextContent('first 500');
+  });
 });

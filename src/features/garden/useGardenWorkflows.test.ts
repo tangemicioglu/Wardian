@@ -74,8 +74,9 @@ describe("loadGardenWorkflowInputs", () => {
     const first = await loadGardenWorkflowInputs(invoke);
     const second = await loadGardenWorkflowInputs(invoke);
 
-    expect(first.find((workflow) => workflow.id === "w1")?.runStatus).toBe("completed");
-    expect(second.find((workflow) => workflow.id === "w1")?.runStatus).toBe("running");
+    expect(first.workflows.find((workflow) => workflow.id === "w1")?.runStatus).toBe("completed");
+    expect(second.workflows.find((workflow) => workflow.id === "w1")?.runStatus).toBe("running");
+    expect(first.truncated).toBe(false);
     expect(invoke.mock.calls.filter(([command]) => command === "workflow_parse")).toHaveLength(2);
     expect(invoke.mock.calls.filter(([command]) => command === "workflow_list_runs")).toHaveLength(2);
   });

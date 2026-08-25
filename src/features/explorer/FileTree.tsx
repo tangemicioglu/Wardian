@@ -11,6 +11,11 @@ export interface FileNode {
   extension: string | null;
 }
 
+export interface DirectoryTreeResult {
+  nodes: FileNode[];
+  truncated: boolean;
+}
+
 export interface FileTreeProps {
   path: string;
   /** `open_in_new_tab` is set for the platform-standard Ctrl/Cmd-click gesture. */
@@ -82,6 +87,7 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
 }) => {
   const interaction = useFileTreeInteraction();
   const [nodes, setNodes] = useState<FileNode[]>([]);
+  const [listingTruncated, setListingTruncated] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,9 +97,10 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
       setLoading(true);
     }
     try {
-      const result = await invoke<FileNode[]>('get_directory_tree', { path });
+      const result = await invoke<DirectoryTreeResult | FileNode[]>('get_directory_tree', { path });
       if (isMounted()) {
-        setNodes(result);
+        setNodes(Array.isArray(result) ? result : result.nodes);
+        setListingTruncated(Array.isArray(result) ? false : result.truncated);
         setError(null);
       }
     } catch (err) {
@@ -350,6 +357,11 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
           </div>
         );
       })}
+      {listingTruncated && (
+        <div className="px-2 py-1 text-[11px] text-wardian-text-muted italic" role="status">
+          Showing the first 500 items in this folder.
+        </div>
+      )}
     </>
   );
 };

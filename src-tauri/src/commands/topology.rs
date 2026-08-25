@@ -129,11 +129,29 @@ pub async fn unignore_topology_pair(app: AppHandle, a: String, b: String) -> Res
     mutate(&app, |topology| topology.unignore_pair(&a, &b))
 }
 
+const MAX_ACTIVITY_RECORDS: usize = 5_000;
+const MAX_ACTIVITY_PAIRS: usize = 1_000;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PairActivityResult {
+    pub pairs: Vec<PairActivity>,
+    pub truncated: bool,
+}
+
 #[tauri::command]
-pub async fn get_pair_activity() -> Result<Vec<PairActivity>, String> {
-    let records = wardian_core::db::list_interaction_records().map_err(|e| e.to_string())?;
+pub async fn get_pair_activity() -> Result<PairActivityResult, String> {
+    let mut records = wardian_core::db::list_recent_interaction_records(MAX_ACTIVITY_RECORDS + 1)
+        .map_err(|e| e.to_string())?;
+    let mut truncated = records.len() > MAX_ACTIVITY_RECORDS;
+    records.truncate(MAX_ACTIVITY_RECORDS);
     let now_ms = chrono::Utc::now().timestamp_millis();
-    Ok(pair_activity_from_records(&records, now_ms))
+    let mut pairs = pair_activity_from_records(&records, now_ms);
+    pairs.sort_by(|left, right| right.last_message_at.cmp(&left.last_message_at));
+    if pairs.len() > MAX_ACTIVITY_PAIRS {
+        pairs.truncate(MAX_ACTIVITY_PAIRS);
+        truncated = true;
+    }
+    Ok(PairActivityResult { pairs, truncated })
 }
 
 fn mutate(app: &AppHandle, apply: impl FnOnce(&mut Topology) -> bool) -> Result<bool, String> {
@@ -189,5 +207,28 @@ mod tests {
         assert_eq!(edges[0].a, "a");
         assert_eq!(edges[0].b, "b");
         assert_eq!(edges[0].origin, "manual");
+    }
+
+    #[test]
+    fn pair_activity_result_caps_pair_rows_and_marks_partial() {
+        let pairs = (0..=MAX_ACTIVITY_PAIRS)
+            .map(|index| PairActivity {
+                a: format!("a-{index}"),
+                b: format!("b-{index}"),
+                last_message_at: format!("2026-08-25T00:{:02}:00Z", index % 60),
+                active_ask: false,
+                awaiting_reply_from: None,
+            })
+            .collect::<Vec<_>>();
+
+        let mut bounded = pairs;
+        let mut truncated = false;
+        if bounded.len() > MAX_ACTIVITY_PAIRS {
+            bounded.truncate(MAX_ACTIVITY_PAIRS);
+            truncated = true;
+        }
+
+        assert_eq!(bounded.len(), MAX_ACTIVITY_PAIRS);
+        assert!(truncated);
     }
 }

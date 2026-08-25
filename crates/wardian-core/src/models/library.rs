@@ -87,6 +87,7 @@ pub enum LibraryIndexNode {
 pub struct LibrarySection {
     pub tree: LibraryIndexFolder,
     pub stubbed: bool,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

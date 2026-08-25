@@ -151,6 +151,23 @@ describe("GraphView", () => {
     expect(screen.getByTestId("mock-graph-node")).toBeInTheDocument();
   });
 
+  it("shows when communication activity is partial", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "get_topology") {
+        return { edges: [], ignored_pairs: [], fallback_groups: [] };
+      }
+      if (command === "get_pair_activity") {
+        return { pairs: [], truncated: true };
+      }
+      return undefined;
+    });
+
+    render(<GraphView {...defaultProps} />);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("recent communication activity only");
+  });
+
   it("shows a first-use tip for deliberate topology changes", () => {
     render(<GraphView {...defaultProps} />);
 

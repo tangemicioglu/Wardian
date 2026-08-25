@@ -2287,6 +2287,14 @@ export const GitPanel: React.FC<GitPanelProps> = ({
 
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto no-scrollbar min-h-0 flex flex-col gap-2">
+        {status.files_truncated && (
+          <div
+            className="rounded border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)]"
+            role="status"
+          >
+            Showing the first 1,000 changed files. Refresh in a smaller workspace to see omitted changes.
+          </div>
+        )}
         {/* Staged Changes */}
         {stagedFiles.length > 0 && (
           <section>

@@ -2,10 +2,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
 import { nodeStatusesAt } from './replay';
 import type { Blueprint } from '../builder/blueprintTypes';
-import type { NodeStatusKind, RunEvent, RunReadResult, RunState, RunSummary } from './runTypes';
+import type { NodeStatusKind, RunEvent, RunReadResult, RunState, RunSummary, RunSummaryListResult } from './runTypes';
 
 interface RunStoreState {
   runs: RunSummary[];
+  runsTruncated: boolean;
   state: RunState | null;
   events: RunEvent[];
   blueprint: Blueprint | null;
@@ -21,6 +22,7 @@ interface RunStoreState {
 
 const initialState = {
   runs: [],
+  runsTruncated: false,
   state: null,
   events: [],
   blueprint: null,
@@ -31,9 +33,11 @@ const initialState = {
 export const useRunStore = create<RunStoreState>((set, get) => ({
   ...initialState,
   async loadRuns() {
-    const runs = await invoke<RunSummary[]>('workflow_list_runs');
-    if (runSummariesEqual(get().runs, runs)) return;
-    set({ runs });
+    const result = await invoke<RunSummaryListResult | RunSummary[]>('workflow_list_runs');
+    const runs = Array.isArray(result) ? result : result.runs;
+    const runsTruncated = Array.isArray(result) ? false : result.truncated;
+    if (runSummariesEqual(get().runs, runs) && get().runsTruncated === runsTruncated) return;
+    set({ runs, runsTruncated });
   },
   async openRun(blueprintId, runId) {
     const result = await invoke<RunReadResult>('workflow_read_run', { blueprintId, runId });

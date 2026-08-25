@@ -564,6 +564,22 @@ pub fn list_interaction_records() -> Result<Vec<InteractionRecord>, Box<dyn std:
     })
 }
 
+pub fn list_recent_interaction_records(
+    limit: usize,
+) -> Result<Vec<InteractionRecord>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, sender_session_id, target_session_ids, status, trigger_policy,
+                body_ref, parent_interaction_id, created_at, updated_at, completed_at
+             FROM interactions
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], row_to_interaction_record)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    })
+}
+
 pub fn list_interaction_records_with_conn(
     conn: &Connection,
 ) -> rusqlite::Result<Vec<InteractionRecord>> {

@@ -18,7 +18,7 @@ import {
   staleListings,
   type TerrainViewport,
 } from "./terrainFrontier";
-import type { FileNode } from "../explorer/FileTree";
+import type { DirectoryTreeResult, FileNode } from "../explorer/FileTree";
 
 interface ExplorerChangedEvent {
   root_path: string;
@@ -87,6 +87,8 @@ export interface GardenTerrainResult {
    * should not cost a `git status` on the other thirty-six.
    */
   visibleRoots: string[];
+  /** Directory listings that reached the Explorer child limit. */
+  truncatedRoots: ReadonlySet<string>;
 }
 
 /**
@@ -203,8 +205,13 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
     const results = await Promise.all(
       wanted.map(async (path): Promise<TerrainListing | null> => {
         try {
-          const nodes = await invoke<FileNode[]>("get_directory_tree", { path });
-          return { path, children: toChildren(nodes ?? []) };
+          const result = await invoke<DirectoryTreeResult | FileNode[]>("get_directory_tree", { path });
+          const nodes = Array.isArray(result) ? result : result.nodes;
+          return {
+            path,
+            children: toChildren(nodes ?? []),
+            truncated: Array.isArray(result) ? false : result.truncated,
+          };
         } catch {
           failed.current.add(path);
           return null;
@@ -336,7 +343,12 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
     return [...new Set(visible)].sort();
   }, [cells, viewport]);
 
-  return { cells, pending, visibleRoots };
+  const truncatedRoots = useMemo(
+    () => new Set([...listings.values()].filter((listing) => listing.truncated).map((listing) => listing.path)),
+    [listings],
+  );
+
+  return { cells, pending, visibleRoots, truncatedRoots };
 }
 
 /**

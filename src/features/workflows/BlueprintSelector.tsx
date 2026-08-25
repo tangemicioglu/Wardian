@@ -1,11 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-
-interface BlueprintRef {
-  id: string;
-  name: string;
-  path: string;
-}
+import type { BlueprintListResult, BlueprintRef } from './workflowTypes';
 
 interface BlueprintSelectorProps {
   selectedPath?: string | null;
@@ -15,15 +10,27 @@ interface BlueprintSelectorProps {
 
 export function BlueprintSelector({ selectedPath, onOpen, onNew }: BlueprintSelectorProps) {
   const [blueprints, setBlueprints] = useState<BlueprintRef[]>([]);
+  const [blueprintsTruncated, setBlueprintsTruncated] = useState(false);
 
   useEffect(() => {
-    void invoke<BlueprintRef[]>('workflow_list_blueprints')
-      .then(setBlueprints)
-      .catch(() => setBlueprints([]));
+    void invoke<BlueprintListResult | BlueprintRef[]>('workflow_list_blueprints')
+      .then((result) => {
+        setBlueprints(Array.isArray(result) ? result : result.blueprints);
+        setBlueprintsTruncated(!Array.isArray(result) && result.truncated);
+      })
+      .catch(() => {
+        setBlueprints([]);
+        setBlueprintsTruncated(false);
+      });
   }, []);
 
   return (
     <div className="blueprint-selector flex items-center gap-2" data-testid="blueprint-selector" data-tour-target="workflow-blueprint-selector">
+      {blueprintsTruncated && (
+        <span role="status" className="text-[10px] text-[var(--color-wardian-warning)]">
+          Showing the first 500 workflows.
+        </span>
+      )}
       <select
         className="rounded border border-wardian-border bg-[var(--color-wardian-bg)] px-2 py-1 text-xs text-wardian-text"
         value={selectedPath ?? ''}
