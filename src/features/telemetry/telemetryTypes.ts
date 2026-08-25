@@ -170,7 +170,14 @@ export interface TelemetryMatrix {
   rows: TelemetryMatrixRow[];
   /** Largest single cell, for heatmap normalisation. */
   max_cell: number;
-  /** True when cells do not sum to the row total (distinct-count measures). */
+  /**
+   * True when cells do not sum to the row total.
+   *
+   * Two kinds of measure set this, for different reasons. A distinct count
+   * would double count a member appearing in two buckets; a ratio has no
+   * meaningful sum at all. Both are recomputed for the total rather than
+   * accumulated.
+   */
   cells_are_not_additive: boolean;
 }
 
