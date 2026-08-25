@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use wardian_core::control::{
     DeliveryErrorDetail, DeliveryTransportKind, InboxNotificationDecision, InboxNotificationKind,
@@ -21,11 +22,79 @@ pub struct InteractionState {
     provider_inputs: Mutex<HashMap<String, ProviderInputState>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProviderInputRollbackSnapshot {
     generation: Option<u64>,
     status_observation: Option<u64>,
     state: Option<ProviderInputState>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct ProviderInputRollbackRecovery {
+    snapshot: ProviderInputRollbackSnapshot,
+    discarded_generation: Option<u64>,
+}
+
+type ProviderInputRollbackRecoveries = HashMap<String, ProviderInputRollbackRecovery>;
+
+fn provider_input_rollback_recovery_path() -> Result<std::path::PathBuf, String> {
+    let state_db_path = wardian_core::paths::state_db_path()
+        .ok_or_else(|| "Could not resolve the provider-input recovery path".to_string())?;
+    let parent = state_db_path
+        .parent()
+        .ok_or_else(|| "Provider-input recovery path has no parent".to_string())?;
+    Ok(parent.join("provider-input-rollbacks.json"))
+}
+
+fn load_provider_input_rollback_recoveries() -> Result<ProviderInputRollbackRecoveries, String> {
+    let path = provider_input_rollback_recovery_path()?;
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "Failed to read provider-input rollback recovery {}: {error}",
+                path.display()
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(format!(
+            "Failed to read provider-input rollback recovery {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn save_provider_input_rollback_recoveries(
+    recoveries: &ProviderInputRollbackRecoveries,
+) -> Result<(), String> {
+    let path = provider_input_rollback_recovery_path()?;
+    wardian_core::conversations::write_json_atomic(&path, recoveries).map_err(|error| {
+        format!(
+            "Failed to persist provider-input rollback recovery {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn clear_provider_input_rollback_recovery(session_id: &str) -> Result<(), String> {
+    let mut recoveries = load_provider_input_rollback_recoveries()?;
+    if recoveries.remove(session_id).is_some() {
+        save_provider_input_rollback_recoveries(&recoveries)?;
+    }
+    Ok(())
+}
+
+fn persist_provider_input_rollback_snapshot(
+    session_id: &str,
+    snapshot: &ProviderInputRollbackSnapshot,
+) -> Result<(), String> {
+    match snapshot.state.as_ref() {
+        Some(state) => wardian_core::db::upsert_provider_input_state(state).map_err(|error| {
+            format!("Failed to restore provider-input readiness for {session_id}: {error}")
+        }),
+        None => wardian_core::db::delete_provider_input_state(session_id).map_err(|error| {
+            format!("Failed to remove candidate provider-input readiness for {session_id}: {error}")
+        }),
+    }
 }
 
 impl InteractionState {
@@ -652,7 +721,7 @@ impl InteractionState {
         &self,
         session_id: &str,
         snapshot: &ProviderInputRollbackSnapshot,
-    ) {
+    ) -> Result<(), String> {
         let _mutation = self.mutation_lock.lock().await;
         let displaced_generation = self
             .provider_generations
@@ -660,21 +729,43 @@ impl InteractionState {
             .await
             .get(session_id)
             .copied();
+        let recovery = ProviderInputRollbackRecovery {
+            snapshot: snapshot.clone(),
+            discarded_generation: displaced_generation,
+        };
+        let mut recoveries = load_provider_input_rollback_recoveries()?;
+        recoveries.insert(session_id.to_string(), recovery.clone());
+        save_provider_input_rollback_recoveries(&recoveries)?;
+
+        self.apply_provider_input_rollback_recovery_in_memory(session_id, &recovery, true)
+            .await;
+        persist_provider_input_rollback_snapshot(session_id, snapshot)?;
+
+        recoveries.remove(session_id);
+        save_provider_input_rollback_recoveries(&recoveries)
+    }
+
+    async fn apply_provider_input_rollback_recovery_in_memory(
+        &self,
+        session_id: &str,
+        recovery: &ProviderInputRollbackRecovery,
+        restore_status_observation: bool,
+    ) {
         {
             let mut tombstones = self.provider_generation_tombstones.lock().await;
             let high_watermark = tombstones
                 .get(session_id)
                 .copied()
                 .unwrap_or(0)
-                .max(displaced_generation.unwrap_or(0))
-                .max(snapshot.generation.unwrap_or(0));
+                .max(recovery.discarded_generation.unwrap_or(0))
+                .max(recovery.snapshot.generation.unwrap_or(0));
             if high_watermark > 0 {
                 tombstones.insert(session_id.to_string(), high_watermark);
             }
         }
         {
             let mut generations = self.provider_generations.lock().await;
-            match snapshot.generation {
+            match recovery.snapshot.generation {
                 Some(generation) => {
                     generations.insert(session_id.to_string(), generation);
                 }
@@ -685,27 +776,65 @@ impl InteractionState {
         }
         {
             let mut observations = self.provider_status_observations.lock().await;
-            match snapshot.status_observation {
-                Some(sequence) => {
+            match (
+                restore_status_observation,
+                recovery.snapshot.status_observation,
+            ) {
+                (true, Some(sequence)) => {
                     observations.insert(session_id.to_string(), sequence);
                 }
-                None => {
+                _ => {
                     observations.remove(session_id);
                 }
             }
         }
         {
             let mut inputs = self.provider_inputs.lock().await;
-            match snapshot.state.as_ref() {
+            match recovery.snapshot.state.as_ref() {
                 Some(state) => {
                     inputs.insert(session_id.to_string(), state.clone());
-                    let _ = wardian_core::db::upsert_provider_input_state(state);
                 }
                 None => {
                     inputs.remove(session_id);
-                    let _ = wardian_core::db::delete_provider_input_state(session_id);
                 }
             }
+        }
+    }
+
+    async fn recover_provider_input_rollbacks(&self) {
+        let _mutation = self.mutation_lock.lock().await;
+        let Ok(mut recoveries) = load_provider_input_rollback_recoveries() else {
+            return;
+        };
+        let mut resolved = Vec::new();
+        for (session_id, recovery) in &recoveries {
+            let hydrated_generation = self
+                .provider_inputs
+                .lock()
+                .await
+                .get(session_id)
+                .map(|state| state.generation);
+            if hydrated_generation.is_some_and(|generation| {
+                generation > recovery.discarded_generation.unwrap_or(0)
+            }) {
+                resolved.push(session_id.clone());
+                continue;
+            }
+
+            // Status-observation sequences are process-local and are not
+            // hydrated during ordinary startup. Restore them only in the live
+            // rollback path, never from the cross-process recovery record.
+            self.apply_provider_input_rollback_recovery_in_memory(session_id, recovery, false)
+                .await;
+            if persist_provider_input_rollback_snapshot(session_id, &recovery.snapshot).is_ok() {
+                resolved.push(session_id.clone());
+            }
+        }
+        if !resolved.is_empty() {
+            for session_id in resolved {
+                recoveries.remove(&session_id);
+            }
+            let _ = save_provider_input_rollback_recoveries(&recoveries);
         }
     }
 
@@ -750,6 +879,7 @@ impl InteractionState {
                 current.insert(input.session_id.clone(), input);
             }
         }
+        self.recover_provider_input_rollbacks().await;
     }
 
     pub async fn interaction(&self, id: &str) -> Option<InteractionRecord> {
@@ -903,6 +1033,9 @@ impl InteractionState {
         let _mutation = self.mutation_lock.lock().await;
         wardian_core::db::delete_agent(session_id)
             .map_err(|error| format!("Failed to delete agent state: {error}"))?;
+        clear_provider_input_rollback_recovery(session_id).map_err(|error| {
+            format!("Agent state was deleted, but readiness recovery cleanup failed: {error}")
+        })?;
         self.deleted_sessions
             .lock()
             .await
@@ -1133,6 +1266,27 @@ fn keep_existing_provider_input_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct WardianHomeOverride {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl WardianHomeOverride {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("WARDIAN_HOME");
+            unsafe { std::env::set_var("WARDIAN_HOME", path) };
+            Self { previous }
+        }
+    }
+
+    impl Drop for WardianHomeOverride {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => unsafe { std::env::set_var("WARDIAN_HOME", value) },
+                None => unsafe { std::env::remove_var("WARDIAN_HOME") },
+            }
+        }
+    }
 
     #[tokio::test]
     async fn task_interaction_starts_awaiting_reply() {
@@ -1488,6 +1642,11 @@ mod tests {
 
     #[tokio::test]
     async fn failed_replacement_restores_ready_input_and_fences_late_candidate_events() {
+        let _env_lock = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home_override = WardianHomeOverride::set(home.path());
+        wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
+
         let state = InteractionState::default();
         let original = state
             .start_provider_input_generation(
@@ -1505,7 +1664,8 @@ mod tests {
 
         state
             .restore_provider_input_rollback_snapshot("agent-1", &snapshot)
-            .await;
+            .await
+            .expect("restore provider input snapshot");
         state
             .record_provider_input_state(
                 "agent-1",
@@ -1533,6 +1693,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_rollback_marker_recovers_failed_sqlite_restore_and_delete() {
+        let _env_lock = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home_override = WardianHomeOverride::set(home.path());
+        wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
+
+        let session_id = "durable-readiness-rollback";
+        let state = InteractionState::default();
+        let original = state
+            .start_provider_input_generation(
+                session_id,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        let snapshot = state
+            .capture_provider_input_rollback_snapshot(session_id)
+            .await;
+        let candidate = state
+            .start_provider_input_generation(session_id, ProviderInputReadiness::Booting, None)
+            .await;
+
+        wardian_core::db::get_db_conn(|conn| {
+            conn.pragma_update(None, "query_only", true)?;
+            Ok(())
+        })
+        .unwrap();
+        let error = state
+            .restore_provider_input_rollback_snapshot(session_id, &snapshot)
+            .await
+            .expect_err("query-only SQLite must reject the rollback write");
+        assert!(error.contains("Failed to restore provider-input readiness"));
+        assert_eq!(
+            wardian_core::db::list_provider_input_states()
+                .unwrap()
+                .into_iter()
+                .find(|input| input.session_id == session_id)
+                .unwrap()
+                .generation,
+            candidate.generation
+        );
+
+        let recovered_while_read_only = InteractionState::default();
+        recovered_while_read_only.hydrate_from_persistence().await;
+        let recovered = recovered_while_read_only
+            .provider_input_state(session_id)
+            .await
+            .expect("recovery marker overlays the stale SQLite candidate");
+        assert_eq!(recovered.generation, original.generation);
+        assert_eq!(recovered.state, ProviderInputReadiness::Ready);
+
+        wardian_core::db::get_db_conn(|conn| {
+            conn.pragma_update(None, "query_only", false)?;
+            Ok(())
+        })
+        .unwrap();
+        let repair = InteractionState::default();
+        repair.hydrate_from_persistence().await;
+        let clean_hydration = InteractionState::default();
+        clean_hydration.hydrate_from_persistence().await;
+        let hydrated = clean_hydration
+            .provider_input_state(session_id)
+            .await
+            .expect("repaired durable readiness survives another hydration");
+        assert_eq!(hydrated.generation, original.generation);
+        assert_eq!(hydrated.state, ProviderInputReadiness::Ready);
+
+        let empty_session_id = "durable-readiness-delete";
+        let empty_snapshot = state
+            .capture_provider_input_rollback_snapshot(empty_session_id)
+            .await;
+        let empty_candidate = state
+            .start_provider_input_generation(
+                empty_session_id,
+                ProviderInputReadiness::Booting,
+                None,
+            )
+            .await;
+        wardian_core::db::get_db_conn(|conn| {
+            conn.pragma_update(None, "query_only", true)?;
+            Ok(())
+        })
+        .unwrap();
+        let error = state
+            .restore_provider_input_rollback_snapshot(empty_session_id, &empty_snapshot)
+            .await
+            .expect_err("query-only SQLite must reject the rollback delete");
+        assert!(error.contains("Failed to remove candidate provider-input readiness"));
+        assert_eq!(
+            wardian_core::db::list_provider_input_states()
+                .unwrap()
+                .into_iter()
+                .find(|input| input.session_id == empty_session_id)
+                .unwrap()
+                .generation,
+            empty_candidate.generation
+        );
+
+        let recovered_delete_while_read_only = InteractionState::default();
+        recovered_delete_while_read_only
+            .hydrate_from_persistence()
+            .await;
+        assert!(
+            recovered_delete_while_read_only
+                .provider_input_state(empty_session_id)
+                .await
+                .is_none(),
+            "the recovery marker hides the candidate row until deletion can be retried"
+        );
+
+        wardian_core::db::get_db_conn(|conn| {
+            conn.pragma_update(None, "query_only", false)?;
+            Ok(())
+        })
+        .unwrap();
+        let delete_repair = InteractionState::default();
+        delete_repair.hydrate_from_persistence().await;
+        let clean_delete_hydration = InteractionState::default();
+        clean_delete_hydration.hydrate_from_persistence().await;
+        assert!(
+            clean_delete_hydration
+                .provider_input_state(empty_session_id)
+                .await
+                .is_none(),
+            "the repaired delete survives another hydration"
+        );
+    }
+
+    #[tokio::test]
     async fn interactions_and_provider_state_hydrate_from_persistence() {
         struct TestEnvLock {
             _lock: std::sync::MutexGuard<'static, ()>,
@@ -1542,6 +1831,7 @@ mod tests {
             _lock: crate::utils::wardian_test_env_lock(),
         };
         let home = tempfile::tempdir().unwrap();
+        let _home_override = WardianHomeOverride::set(home.path());
         wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
 
         let session_id = "hydrate-provider-agent-1";

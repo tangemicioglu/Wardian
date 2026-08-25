@@ -230,6 +230,12 @@ read-only, and disables every card for the agent until commit or rollback. Live
 broker observations take precedence over preview polls at the same runtime
 generation and lease epoch.
 
+A failed running-agent restart restores its previous provider-input generation
+and readiness as part of the same rollback. Wardian writes an atomic recovery
+record before changing SQLite. If SQLite restoration fails, startup hydration
+applies that record ahead of the stale candidate generation and retries the
+write or deletion; it never advertises the candidate as recovered readiness.
+
 ### Renderer or Workbench restart
 
 Zellij and the backend subscriptions remain alive. The singleton renderer

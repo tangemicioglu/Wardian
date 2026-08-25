@@ -1322,7 +1322,7 @@ async fn rollback_running_runtime_replacement(
     provider_input_snapshot: &crate::state::interactions::ProviderInputRollbackSnapshot,
     active: &mut ActiveAgent,
     pane_promoted: bool,
-) {
+) -> Result<(), String> {
     if let Some(runtime_generation) = active.runtime_generation {
         if let Err(error) = state
             .terminal_sessions
@@ -1355,7 +1355,16 @@ async fn rollback_running_runtime_replacement(
     state
         .interactions
         .restore_provider_input_rollback_snapshot(session_id, provider_input_snapshot)
-        .await;
+        .await
+}
+
+fn append_runtime_rollback_error(error: String, rollback: Result<(), String>) -> String {
+    match rollback {
+        Ok(()) => error,
+        Err(rollback_error) => {
+            format!("{error}; provider-input rollback remains recoverable: {rollback_error}")
+        }
+    }
 }
 
 async fn settle_failed_runtime_replacement(
@@ -3440,7 +3449,7 @@ pub async fn resume_agent(
         Err(error) => {
             if let Some(engine) = replacement_engine.as_ref() {
                 let _ = engine.cancel_replacement(&session_id).await;
-                state
+                let rollback = state
                     .interactions
                     .restore_provider_input_rollback_snapshot(
                         &session_id,
@@ -3449,7 +3458,7 @@ pub async fn resume_agent(
                             .expect("running replacement has an input snapshot"),
                     )
                     .await;
-                return Err(error);
+                return Err(append_runtime_rollback_error(error, rollback));
             }
             settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
             return Err(error);
@@ -3457,7 +3466,7 @@ pub async fn resume_agent(
     };
     if let Err(error) = lifecycle_heartbeat.ensure_active("resume") {
         if let Some(engine) = replacement_engine.as_ref() {
-            rollback_running_runtime_replacement(
+            let rollback = rollback_running_runtime_replacement(
                 &state,
                 engine,
                 &session_id,
@@ -3468,6 +3477,7 @@ pub async fn resume_agent(
                 false,
             )
             .await;
+            return Err(append_runtime_rollback_error(error, rollback));
         } else {
             terminate_uncommitted_runtime(&state, &mut new_active).await;
             settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
@@ -3483,7 +3493,7 @@ pub async fn resume_agent(
     if let Err(error) = lifecycle_heartbeat.ensure_active("resume") {
         if let Some(mut active) = pending_new_active.take() {
             if let Some(engine) = replacement_engine.as_ref() {
-                rollback_running_runtime_replacement(
+                let rollback = rollback_running_runtime_replacement(
                     &state,
                     engine,
                     &session_id,
@@ -3494,6 +3504,7 @@ pub async fn resume_agent(
                     false,
                 )
                 .await;
+                return Err(append_runtime_rollback_error(error, rollback));
             } else {
                 terminate_uncommitted_runtime(&state, &mut active).await;
             }
@@ -3512,7 +3523,7 @@ pub async fn resume_agent(
             Some(generation) => generation,
             None => {
                 if let Some(mut active) = pending_new_active.take() {
-                    rollback_running_runtime_replacement(
+                    let rollback = rollback_running_runtime_replacement(
                         &state,
                         engine,
                         &session_id,
@@ -3523,13 +3534,17 @@ pub async fn resume_agent(
                         false,
                     )
                     .await;
+                    return Err(append_runtime_rollback_error(
+                        "Staged replacement has no Zellij pane lease".to_string(),
+                        rollback,
+                    ));
                 }
                 return Err("Staged replacement has no Zellij pane lease".to_string());
             }
         };
         if let Err(error) = engine.promote_replacement(&session_id, generation).await {
             if let Some(mut active) = pending_new_active.take() {
-                rollback_running_runtime_replacement(
+                let rollback = rollback_running_runtime_replacement(
                     &state,
                     engine,
                     &session_id,
@@ -3540,6 +3555,7 @@ pub async fn resume_agent(
                     false,
                 )
                 .await;
+                return Err(append_runtime_rollback_error(error, rollback));
             }
             return Err(error);
         }
@@ -3571,7 +3587,7 @@ pub async fn resume_agent(
         Err(error) => {
             if let Some(mut active) = pending_new_active.take() {
                 if let Some(engine) = replacement_engine.as_ref() {
-                    rollback_running_runtime_replacement(
+                    let rollback = rollback_running_runtime_replacement(
                         &state,
                         engine,
                         &session_id,
@@ -3582,6 +3598,7 @@ pub async fn resume_agent(
                         pane_promoted,
                     )
                     .await;
+                    return Err(append_runtime_rollback_error(error, rollback));
                 } else {
                     terminate_uncommitted_runtime(&state, &mut active).await;
                 }

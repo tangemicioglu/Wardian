@@ -8016,7 +8016,8 @@ mod tests {
         state
             .interactions
             .restore_provider_input_rollback_snapshot("agent-1", &readiness_snapshot)
-            .await;
+            .await
+            .expect("restore provider readiness");
         {
             let agents = state.agents.lock().await;
             let agent = agents.get("agent-1").unwrap();
