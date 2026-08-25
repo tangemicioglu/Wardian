@@ -516,53 +516,36 @@ impl ZellijTerminalEngine {
 
         #[cfg(windows)]
         {
-            use base64::Engine as _;
-
             let pid_path = self.config.attached_pid_path();
-            let script = format!(
-                "$client = Start-Process -FilePath {} -ArgumentList @('attach', '--create', {}) -WindowStyle Hidden -PassThru; Set-Content -LiteralPath {} -Value $client.Id -Encoding ascii -NoNewline",
-                powershell_single_quoted(&self.config.executable.to_string_lossy()),
-                powershell_single_quoted(&self.config.session_name),
-                powershell_single_quoted(&pid_path.to_string_lossy()),
-            );
-            let encoded_bytes = script
-                .encode_utf16()
-                .flat_map(u16::to_le_bytes)
-                .collect::<Vec<_>>();
-            let encoded = base64::engine::general_purpose::STANDARD.encode(encoded_bytes);
-            let status = zellij_helper_command("powershell.exe")
-                .args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-EncodedCommand",
-                    &encoded,
-                ])
-                .env("ZELLIJ_CONFIG_DIR", self.config.config_dir())
-                .env("WARDIAN_HOME", &self.config.wardian_home)
-                .env("TERM", "xterm-256color")
-                .env("COLORTERM", "truecolor")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map_err(|error| {
-                    format!("Zellij native attached client could not start: {error}")
-                })?;
-            if !status.success() {
-                self.set_phase(ZellijEnginePhase::Failed).await;
-                return Err("Zellij native attached client could not start".to_string());
+            let mut attached_pid = None;
+            let mut last_start_error = "Zellij background session did not become ready".to_string();
+            for attempt in 0..2 {
+                let pid = match self.spawn_windows_attached_client(&pid_path) {
+                    Ok(pid) => pid,
+                    Err(error) => {
+                        last_start_error = error;
+                        continue;
+                    }
+                };
+                match self.wait_for_windows_session_ready(pid).await {
+                    Ok(()) => {
+                        attached_pid = Some(pid);
+                        break;
+                    }
+                    Err(error) => {
+                        last_start_error = error;
+                        let _ = crate::utils::process::force_kill_process_tree(pid);
+                        let _ = std::fs::remove_file(&pid_path);
+                        if attempt == 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        }
+                    }
+                }
             }
-            let pid = std::fs::read_to_string(&pid_path)
-                .ok()
-                .and_then(|value| value.trim().parse::<u32>().ok())
-                .ok_or_else(|| {
-                    "Zellij native attached client did not report its process".to_string()
-                })?;
-            if let Err(error) = self.wait_for_session_ready().await {
+            let Some(pid) = attached_pid else {
                 self.set_phase(ZellijEnginePhase::Failed).await;
-                return Err(error);
-            }
+                return Err(last_start_error);
+            };
             if let Err(error) = self.close_unregistered_managed_panes().await {
                 self.set_phase(ZellijEnginePhase::Failed).await;
                 return Err(error);
@@ -702,11 +685,59 @@ impl ZellijTerminalEngine {
             .map_err(|error| format!("Zellij returned invalid pane state: {error}"))
     }
 
-    async fn wait_for_session_ready(&self) -> Result<(), String> {
+    #[cfg(windows)]
+    fn spawn_windows_attached_client(&self, pid_path: &Path) -> Result<u32, String> {
+        use base64::Engine as _;
+
+        let _ = std::fs::remove_file(pid_path);
+        let script = format!(
+            "$client = Start-Process -FilePath {} -ArgumentList @('attach', '--create', {}) -WindowStyle Hidden -PassThru; Set-Content -LiteralPath {} -Value $client.Id -Encoding ascii -NoNewline",
+            powershell_single_quoted(&self.config.executable.to_string_lossy()),
+            powershell_single_quoted(&self.config.session_name),
+            powershell_single_quoted(&pid_path.to_string_lossy()),
+        );
+        let encoded_bytes = script
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(encoded_bytes);
+        let status = zellij_helper_command("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                &encoded,
+            ])
+            .env("ZELLIJ_CONFIG_DIR", self.config.config_dir())
+            .env("WARDIAN_HOME", &self.config.wardian_home)
+            .env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|error| format!("Zellij native attached client could not start: {error}"))?;
+        if !status.success() {
+            return Err("Zellij native attached client could not start".to_string());
+        }
+        std::fs::read_to_string(pid_path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .ok_or_else(|| "Zellij native attached client did not report its process".to_string())
+    }
+
+    #[cfg(windows)]
+    async fn wait_for_windows_session_ready(&self, pid: u32) -> Result<(), String> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             if self.list_panes().await.is_ok() {
                 return Ok(());
+            }
+            if !crate::utils::process::process_exists(pid) {
+                return Err(
+                    "Zellij native attached client exited before its session was ready".to_string(),
+                );
             }
             if std::time::Instant::now() >= deadline {
                 return Err("Zellij background session did not become ready".to_string());
