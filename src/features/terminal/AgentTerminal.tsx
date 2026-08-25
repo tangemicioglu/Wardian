@@ -93,8 +93,10 @@ type TerminalRendererEntry = {
   serializeAddon: SerializeAddon;
   webglAddon: WebglAddon | null;
   webglAttempted: boolean;
+  webglAttemptCount: number;
   webglActivatedOnce: boolean;
   webglActivationCount: number;
+  lifetimeStable: boolean;
   host: HTMLDivElement;
   terminalLinkOptions: TerminalLinkProviderOptions;
   // Pixel-perfect still of the last WebGL frame, overlaid while the terminal
@@ -293,6 +295,7 @@ declare global {
           fontSize: number | null;
           webglActive: boolean;
           webglAttempted: boolean;
+          webglAttemptCount: number;
           webglActivationCount: number;
           cssCellWidth: number | null;
           cssCellHeight: number | null;
@@ -484,6 +487,7 @@ if (typeof window !== "undefined" && shouldExposeTerminalDebug()) {
                 fontSize: nullableNumber(rendererTerm.options.fontSize),
                 webglActive: renderer.webglAddon !== null,
                 webglAttempted: renderer.webglAttempted,
+                webglAttemptCount: renderer.webglAttemptCount,
                 webglActivationCount: renderer.webglActivationCount,
                 cssCellWidth: nullableNumber(renderDimensions?.css?.cell?.width),
                 cssCellHeight: nullableNumber(renderDimensions?.css?.cell?.height),
@@ -979,6 +983,7 @@ function loadWebglForRenderer(renderer: TerminalRendererEntry, sessionId: string
       // Clear ownership before disposal so a synchronous/repeated loss signal
       // cannot release a newer lease for this presentation.
       renderer.webglAddon = null;
+      renderer.host.dataset.terminalWebglActive = "false";
       webglAddon.dispose();
       webglPool.delete(sessionId);
       terminalRendererBudget.release("webgl", sessionId);
@@ -988,12 +993,17 @@ function loadWebglForRenderer(renderer: TerminalRendererEntry, sessionId: string
     renderer.webglAddon = webglAddon;
     renderer.webglActivatedOnce = true;
     renderer.webglActivationCount += 1;
+    renderer.host.dataset.terminalWebglActive = "true";
+    renderer.host.dataset.terminalWebglActivationCount = String(
+      renderer.webglActivationCount,
+    );
     webglPool.add(sessionId);
     removeSnapshotOverlay(renderer);
     renderer.term.refresh(0, Math.max(renderer.term.rows - 1, 0));
   } catch (error) {
     terminalRendererBudget.release("webgl", sessionId);
     renderer.webglAddon = null;
+    renderer.host.dataset.terminalWebglActive = "false";
     console.warn("WebGL terminal renderer unavailable; using DOM renderer.", error);
   }
 }
@@ -1009,7 +1019,13 @@ function promoteSessionToWebgl(sessionId: string) {
     touchWebglPool(sessionId);
     return;
   }
+  if (renderer.lifetimeStable && renderer.webglAttempted) {
+    return;
+  }
   renderer.webglAttempted = true;
+  renderer.webglAttemptCount += 1;
+  renderer.host.dataset.terminalWebglAttempted = "true";
+  renderer.host.dataset.terminalWebglAttemptCount = String(renderer.webglAttemptCount);
   loadWebglForRenderer(renderer, sessionId);
 }
 
@@ -2086,11 +2102,17 @@ function createRenderer(terminalKey: string, entry: TerminalSessionEntry) {
   }
 
   const host = document.createElement("div");
+  const instanceId = nextTerminalRendererInstanceId++;
   host.className = "w-full h-full";
   host.style.width = "100%";
   host.style.height = "100%";
   // Anchor for the absolute-positioned snapshot overlay.
   host.style.position = "relative";
+  host.dataset.terminalRendererInstanceId = String(instanceId);
+  host.dataset.terminalWebglActive = "false";
+  host.dataset.terminalWebglAttempted = "false";
+  host.dataset.terminalWebglAttemptCount = "0";
+  host.dataset.terminalWebglActivationCount = "0";
   const wheelRowRemainder = { current: 0 };
   host.addEventListener(
     "wheel",
@@ -2103,7 +2125,7 @@ function createRenderer(terminalKey: string, entry: TerminalSessionEntry) {
   );
 
   const renderer: TerminalRendererEntry = {
-    instanceId: nextTerminalRendererInstanceId++,
+    instanceId,
     ready: false,
     revealGeneration: 0,
     resizeTimeout: null,
@@ -2116,8 +2138,10 @@ function createRenderer(terminalKey: string, entry: TerminalSessionEntry) {
     serializeAddon,
     webglAddon: null,
     webglAttempted: false,
+    webglAttemptCount: 0,
     webglActivatedOnce: false,
     webglActivationCount: 0,
+    lifetimeStable: false,
     host,
     terminalLinkOptions,
     snapshotOverlay: null,
@@ -2192,6 +2216,9 @@ function activateWebglRenderer(renderer: TerminalRendererEntry, sessionId: strin
     return;
   }
   renderer.webglAttempted = true;
+  renderer.webglAttemptCount += 1;
+  renderer.host.dataset.terminalWebglAttempted = "true";
+  renderer.host.dataset.terminalWebglAttemptCount = String(renderer.webglAttemptCount);
   loadWebglForRenderer(renderer, sessionId);
 }
 
@@ -2897,6 +2924,10 @@ export const AgentTerminal = memo(function AgentTerminal({
         fitAddonRef.current = renderer.fitAddon;
         rendererEvictedRef.current = false;
         setRendererEvicted(false);
+        if (lifetimeStableRenderer) {
+          renderer.lifetimeStable = true;
+          activateWebglRenderer(renderer, terminalKey);
+        }
 
         const checkSizing = async (options?: { force?: boolean; reportUnchanged?: boolean }) => {
           if (!isMounted || !terminalRef.current) {

@@ -40,6 +40,7 @@ type ZellijPresentationStore = {
   activeAgentId: string | null;
   activeTargetId: string | null;
   activationSerial: number;
+  focusRequestSerial: number;
   slots: Map<string, ZellijTerminalSlot>;
   upsertSlot: (targetId: string, slot: ZellijTerminalSlot) => void;
   removeSlot: (targetId: string) => void;
@@ -53,6 +54,7 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
     activeAgentId: null,
     activeTargetId: null,
     activationSerial: 0,
+    focusRequestSerial: 0,
     slots: new Map(),
     upsertSlot: (targetId, slot) => {
       const slots = new Map(get().slots);
@@ -107,7 +109,11 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
           if (get().activationSerial !== serial || !get().slots.has(targetId)) return;
           await invoke<string>("activate_zellij_agent_terminal", { sessionId: agentId });
           if (get().activationSerial === serial && get().slots.has(targetId)) {
-            set({ activeAgentId: agentId, activeTargetId: targetId });
+            set((state) => ({
+              activeAgentId: agentId,
+              activeTargetId: targetId,
+              focusRequestSerial: state.focusRequestSerial + 1,
+            }));
           }
         } finally {
           if (pendingTargetId === targetId) pendingTargetId = null;
@@ -162,16 +168,80 @@ function viewportRectFor(node: HTMLElement): ZellijViewportRect {
 
 /** Mount once at app level. It is the only agent-facing xterm in the process. */
 export function ZellijAgentTerminalHost() {
+  const activeTargetId = useZellijPresentationStore((state) => state.activeTargetId);
   const target = useZellijPresentationStore((state) => {
     if (!state.activeTargetId) return null;
     return state.slots.get(state.activeTargetId) ?? null;
   });
   const [retainedTarget, setRetainedTarget] = useState<ZellijTerminalSlot | null>(null);
   const [rect, setRect] = useState<ZellijViewportRect | null>(null);
+  const [brokerOwner, setBrokerOwner] = useState<string | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const retainedTargetIdRef = useRef<string | null>(null);
+  const handledFocusRequestRef = useRef(0);
+  const focusRequestSerial = useZellijPresentationStore((state) => state.focusRequestSerial);
 
   useLayoutEffect(() => {
-    if (target) setRetainedTarget(target);
-  }, [target]);
+    if (!target) {
+      retainedTargetIdRef.current = null;
+      return;
+    }
+    setRetainedTarget(target);
+    if (retainedTargetIdRef.current !== activeTargetId) {
+      retainedTargetIdRef.current = activeTargetId;
+      setBrokerOwner(null);
+    }
+  }, [activeTargetId, target]);
+
+  useEffect(() => {
+    if (
+      !target
+      || focusRequestSerial === 0
+      || handledFocusRequestRef.current === focusRequestSerial
+    ) return;
+    let cancelled = false;
+    let frame: number | null = null;
+    const focusWhenReady = () => {
+      if (cancelled) return true;
+      const terminalHost = viewportRef.current?.querySelector<HTMLElement>(
+        '[data-testid="agent-terminal-host"]',
+      );
+      const helper = terminalHost?.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      if (
+        terminalHost?.dataset.terminalSessionId !== target.agentId
+        || !helper
+        || window.getComputedStyle(terminalHost).visibility !== "visible"
+      ) {
+        return false;
+      }
+      helper.focus({ preventScroll: true });
+      const focused = document.activeElement === helper;
+      if (focused) handledFocusRequestRef.current = focusRequestSerial;
+      return focused;
+    };
+    const observer = new MutationObserver(() => {
+      if (focusWhenReady()) observer.disconnect();
+    });
+    if (!focusWhenReady() && viewportRef.current) {
+      observer.observe(viewportRef.current, {
+        attributes: true,
+        attributeFilter: ["style", "data-terminal-session-id"],
+        childList: true,
+        subtree: true,
+      });
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        if (focusWhenReady()) observer.disconnect();
+      });
+    }
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [focusRequestSerial, target]);
   const renderedTarget = target ?? retainedTarget;
 
   useLayoutEffect(() => {
@@ -210,8 +280,10 @@ export function ZellijAgentTerminalHost() {
   const visible = Boolean(target && rect && rect.width >= 10 && rect.height >= 10);
   return createPortal(
     <div
+      ref={viewportRef}
       className="overflow-hidden bg-[var(--color-wardian-bg)]"
       data-zellij-agent-id={renderedTarget.agentId}
+      data-terminal-broker-owner={brokerOwner ?? ""}
       data-zellij-presentation="renderer"
       data-zellij-singleton-viewport="true"
       style={{
@@ -228,17 +300,20 @@ export function ZellijAgentTerminalHost() {
       <AgentTerminal
         sessionId={renderedTarget.agentId}
         presentationId={HABITAT_TERMINAL_PRESENTATION_ID}
-        visibility="visible"
+        visibility={target ? "visible" : "hidden"}
         renderState="mounted"
-        requestedInteraction="interactive"
+        requestedInteraction={target ? "interactive" : "read_only"}
         provider={props.provider}
         isMaximized={props.isMaximized}
         theme={props.theme}
         workspacePath={props.workspacePath}
         onTitleChange={props.onTitleChange}
         onTerminalFocus={props.onTerminalFocus}
-        onPresentationStateChange={props.onPresentationStateChange}
-        autoActivateWhenUnowned
+        onPresentationStateChange={(brokerState, presentationState) => {
+          setBrokerOwner(brokerState.owner_presentation_id);
+          props.onPresentationStateChange?.(brokerState, presentationState);
+        }}
+        autoActivateWhenUnowned={Boolean(target)}
         autoFocus={props.autoFocus}
         lifetimeStableRenderer
       />

@@ -2129,6 +2129,13 @@ impl TerminalSessionActor {
         {
             self.pending_owner_resync = None;
         }
+        if self.owner_presentation_id.as_deref() == Some(&request.presentation_id)
+            && !self.presentation_is_eligible(&request.presentation_id)
+        {
+            self.owner_presentation_id = None;
+            self.advance_lease_epoch();
+            self.promote_latest_eligible().await?;
+        }
         Ok(TerminalPresentationUpdateResult {
             presentation,
             broker_state: self.broker_state(),

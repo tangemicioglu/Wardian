@@ -122,6 +122,9 @@ Wardian's frontend terminal stack is built on `xterm.js` and is intentionally tr
   instance. Card focus repositions the stable viewport and changes its
   generation-scoped broker binding without reparenting its DOM, recreating its
   xterm, or cycling its WebGL addon.
+- The singleton attempts WebGL once. If creation fails or the context is lost,
+  it keeps the same xterm instance on the DOM renderer and does not retry on
+  later card focus or visibility changes.
 - Renderer retirement is lease-bound. Output/reset/refresh operations capture
   one renderer identity before awaiting; retirement releases its budget slot
   immediately but defers physical disposal until every in-flight operation

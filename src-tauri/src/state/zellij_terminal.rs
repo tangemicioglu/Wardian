@@ -12,6 +12,10 @@ use wardian_core::models::{TerminalLaunchManifest, TERMINAL_LAUNCH_MANIFEST_SCHE
 pub const ZELLIJ_VERSION: &str = "0.45.0";
 #[cfg(windows)]
 const WINDOWS_ATTACHED_CLIENT_START_ATTEMPTS: usize = 4;
+#[cfg(not(test))]
+const PANE_ID_RECONCILIATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(test)]
+const PANE_ID_RECONCILIATION_TIMEOUT: std::time::Duration = std::time::Duration::ZERO;
 
 fn zellij_helper_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
@@ -874,7 +878,7 @@ impl ZellijTerminalEngine {
             Ok(pane_id) => pane_id,
             Err(_) => {
                 let expected_title = format!("wardian:{}", launch.session_id);
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                let deadline = std::time::Instant::now() + PANE_ID_RECONCILIATION_TIMEOUT;
                 loop {
                     if let Ok(panes) = self.list_panes().await {
                         if let Some(pane_id) = panes.into_iter().find_map(|pane| {
@@ -886,6 +890,9 @@ impl ZellijTerminalEngine {
                         }
                     }
                     if std::time::Instant::now() >= deadline {
+                        let _ = self
+                            .close_unregistered_session_panes(&launch.session_id)
+                            .await;
                         self.rollback_start(&launch.session_id, generation).await;
                         return Err("Zellij did not report the created pane identity".to_string());
                     }
@@ -895,17 +902,29 @@ impl ZellijTerminalEngine {
         };
         let binding = {
             let mut panes = self.pane_registry();
-            let Some(binding) = panes.bindings.get_mut(&launch.session_id) else {
-                return Err("Zellij pane start lost its agent binding".to_string());
-            };
-            if binding.generation != generation || binding.phase != ZellijPanePhase::Starting {
-                return Err("Zellij pane start was superseded".to_string());
+            match panes.bindings.get_mut(&launch.session_id) {
+                None => Err("Zellij pane start lost its agent binding".to_string()),
+                Some(binding)
+                    if binding.generation != generation
+                        || binding.phase != ZellijPanePhase::Starting =>
+                {
+                    Err("Zellij pane start was superseded".to_string())
+                }
+                Some(binding) => {
+                    binding.pane_id = Some(pane_id.clone());
+                    binding.phase = ZellijPanePhase::Running;
+                    Ok(binding.clone())
+                }
             }
-            binding.pane_id = Some(pane_id);
-            binding.phase = ZellijPanePhase::Running;
-            binding.clone()
         };
-        Ok(binding)
+        match binding {
+            Ok(binding) => Ok(binding),
+            Err(error) => {
+                let _ = self.close_pane_id(&pane_id).await;
+                self.rollback_start(&launch.session_id, generation).await;
+                Err(error)
+            }
+        }
     }
 
     pub fn open_pane_transport(
@@ -919,6 +938,8 @@ impl ZellijTerminalEngine {
             .pane_id
             .clone()
             .ok_or_else(|| "Agent Zellij pane is not ready".to_string())?;
+        let lease =
+            ZellijPaneLease::new(self.clone(), binding.session_id.clone(), binding.generation);
         let mut command = zellij_helper_command(&self.config.executable);
         command
             .args([
@@ -940,10 +961,14 @@ impl ZellijTerminalEngine {
         let mut subscription = command
             .spawn()
             .map_err(|error| format!("Zellij pane subscription could not start: {error}"))?;
-        let stdout = subscription
-            .stdout
-            .take()
-            .ok_or_else(|| "Zellij pane subscription has no output stream".to_string())?;
+        let stdout = match subscription.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                let _ = subscription.kill();
+                let _ = subscription.wait();
+                return Err("Zellij pane subscription has no output stream".to_string());
+            }
+        };
         let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
         let (snapshot_tx, snapshot_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
         let expected_pane = pane_id.as_str().to_string();
@@ -1013,11 +1038,7 @@ impl ZellijTerminalEngine {
             snapshot_frames: snapshot_rx,
             runtime,
             subscription,
-            lease: ZellijPaneLease::new(
-                self.clone(),
-                binding.session_id.clone(),
-                binding.generation,
-            ),
+            lease,
         })
     }
 
@@ -1224,20 +1245,19 @@ impl ZellijTerminalEngine {
         let Some(pane_id) = binding.pane_id else {
             return;
         };
-        let _ = zellij_helper_command(&self.config.executable)
-            .args([
-                "--session",
-                &self.config.session_name,
-                "action",
-                "close-pane",
-                "--pane-id",
-                pane_id.as_str(),
-            ])
-            .env("ZELLIJ_CONFIG_DIR", self.config.config_dir())
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        let args = vec![
+            "--session".to_string(),
+            self.config.session_name.clone(),
+            "action".to_string(),
+            "close-pane".to_string(),
+            "--pane-id".to_string(),
+            pane_id.as_str().to_string(),
+        ];
+        let env = vec![(
+            OsString::from("ZELLIJ_CONFIG_DIR"),
+            self.config.config_dir().into_os_string(),
+        )];
+        let _ = self.runner.run_status(&self.config.executable, &args, &env);
     }
 }
 
@@ -1714,6 +1734,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_created_pane_identity_closes_the_unregistered_candidate() {
+        let root = tempfile::tempdir().unwrap();
+        let successful = |stdout: &[u8]| Output {
+            status: status(0),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        };
+        let candidate = br#"[{"id":9,"is_plugin":false,"is_fullscreen":false,"title":"wardian:agent-1","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#;
+        let runner = FakeRunner::with_outputs([
+            successful(b"[]"),
+            successful(b"[]"),
+            successful(b"pane created\n"),
+            successful(b"[]"),
+            successful(candidate),
+            successful(b""),
+        ]);
+        let engine = ZellijTerminalEngine::with_runner(config(root.path()), runner.clone());
+        engine.prepare_runtime_directories().unwrap();
+
+        let result = engine
+            .create_pane(ZellijLaunchSpec {
+                session_id: "agent-1".to_string(),
+                executable: "provider".to_string(),
+                args: Vec::new(),
+                cwd: root.path().to_path_buf(),
+                env: BTreeMap::new(),
+            })
+            .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            "Zellij did not report the created pane identity"
+        );
+        assert!(engine.binding("agent-1").await.is_none());
+        assert!(runner.calls.lock().unwrap().iter().any(|call| {
+            call.windows(2)
+                .any(|args| args == ["--pane-id", "terminal_9"])
+        }));
+    }
+
+    #[tokio::test]
+    async fn subscription_spawn_failure_closes_the_pane_and_removes_its_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let successful = |stdout: &[u8]| Output {
+            status: status(0),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        };
+        let runner = FakeRunner::with_outputs([
+            successful(b"[]"),
+            successful(b"[]"),
+            successful(b"terminal_7\n"),
+            successful(b""),
+        ]);
+        let engine = Arc::new(ZellijTerminalEngine::with_runner(
+            config(root.path()),
+            runner.clone(),
+        ));
+        engine.prepare_runtime_directories().unwrap();
+        let binding = engine
+            .create_pane(ZellijLaunchSpec {
+                session_id: "agent-1".to_string(),
+                executable: "provider".to_string(),
+                args: Vec::new(),
+                cwd: root.path().to_path_buf(),
+                env: BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+
+        let error = engine
+            .open_pane_transport(&binding)
+            .err()
+            .expect("missing subscription executable must fail");
+
+        assert!(error.contains("subscription could not start"));
+        assert!(engine.binding("agent-1").await.is_none());
+        assert!(runner.calls.lock().unwrap().iter().any(|call| {
+            call.windows(2)
+                .any(|args| args == ["--pane-id", "terminal_7"])
+        }));
+    }
+
+    #[tokio::test]
     async fn stale_generation_cannot_write_to_replacement_pane() {
         let root = tempfile::tempdir().unwrap();
         let runner = FakeRunner::succeeding("terminal_3\n");
@@ -1749,6 +1853,7 @@ mod tests {
             successful(b"[]"),
             successful(b"[]"),
             successful(b"terminal_3\n"),
+            successful(b"[]"),
             successful(b"[]"),
             successful(b"[]"),
             successful(b"terminal_4\n"),

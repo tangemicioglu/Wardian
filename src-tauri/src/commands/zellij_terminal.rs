@@ -12,6 +12,14 @@ pub struct ZellijTerminalPreview {
     pub content: String,
 }
 
+fn preview_state_for_phase(phase: ZellijPanePhase) -> &'static str {
+    match phase {
+        ZellijPanePhase::Starting | ZellijPanePhase::Closing => "starting",
+        ZellijPanePhase::Running => "running",
+        ZellijPanePhase::Exited => "exited",
+    }
+}
+
 #[tauri::command]
 pub async fn get_zellij_terminal_preview(
     session_id: String,
@@ -35,12 +43,13 @@ pub async fn get_zellij_terminal_preview(
             content: String::new(),
         });
     };
-    if binding.phase == ZellijPanePhase::Exited {
+    let preview_state = preview_state_for_phase(binding.phase);
+    if preview_state != "running" {
         return Ok(ZellijTerminalPreview {
             terminal_session_id: session_id.clone(),
             session_id,
             generation: Some(binding.generation),
-            state: "exited",
+            state: preview_state,
             content: String::new(),
         });
     }
@@ -54,9 +63,28 @@ pub async fn get_zellij_terminal_preview(
         terminal_session_id: session_id.clone(),
         session_id,
         generation: Some(binding.generation),
-        state: "running",
+        state: preview_state,
         content,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_phase_mapping_only_advertises_running_panes_as_interactive() {
+        assert_eq!(
+            preview_state_for_phase(ZellijPanePhase::Starting),
+            "starting"
+        );
+        assert_eq!(
+            preview_state_for_phase(ZellijPanePhase::Closing),
+            "starting"
+        );
+        assert_eq!(preview_state_for_phase(ZellijPanePhase::Running), "running");
+        assert_eq!(preview_state_for_phase(ZellijPanePhase::Exited), "exited");
+    }
 }
 
 #[tauri::command]

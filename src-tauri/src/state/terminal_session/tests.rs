@@ -740,6 +740,51 @@ async fn hidden_read_only_and_suspended_presentations_are_not_promoted() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_becoming_hidden_and_read_only_releases_its_input_lease() {
+    let timer = Arc::new(ManualTimer::default());
+    let (broker, generation) = start(timer).await;
+    register_desktop(&broker, "owner").await;
+    let active = activate(&broker, "owner", generation, 0).await;
+
+    let updated = broker
+        .update_presentation(
+            TerminalPresentationUpdateRequest {
+                presentation_id: "owner".to_string(),
+                session_id: "session-1".to_string(),
+                runtime_generation: generation,
+                desired_geometry: Some(geometry(80, 24)),
+                visibility: TerminalVisibility::Hidden,
+                render_state: TerminalRenderState::Mounted,
+                requested_interaction: TerminalRequestedInteraction::ReadOnly,
+                observed_lease_epoch: active.broker_state.lease_epoch,
+            },
+            TerminalClientIdentity::trusted_desktop(),
+        )
+        .await
+        .expect("hide owner");
+
+    assert!(updated.broker_state.owner_presentation_id.is_none());
+    assert!(updated.broker_state.lease_epoch > active.broker_state.lease_epoch);
+    let rejected = broker
+        .send_input(TerminalInputRequest {
+            lease: TerminalLeaseIdentity {
+                session_id: "session-1".to_string(),
+                presentation_id: "owner".to_string(),
+                runtime_generation: generation,
+                lease_epoch: active.broker_state.lease_epoch,
+            },
+            bytes: b"stale hidden input".to_vec(),
+        })
+        .await
+        .expect("stale input decision");
+    assert_eq!(rejected.status, TerminalLeaseDecisionStatus::Rejected);
+    assert_eq!(
+        rejected.reason,
+        Some(TerminalLeaseRejectionReason::LeaseEpochChanged)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn suspended_owner_must_apply_activation_snapshot_before_input_resumes() {
     let timer = Arc::new(ManualTimer::default());
     let broker = Arc::new(TerminalSessionBroker::with_timer(timer));

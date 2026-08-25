@@ -95,7 +95,9 @@ no xterm.js or WebGL instance. Pointer or keyboard focus on a card implicitly
 focuses and fullscreens its pane before input is enabled; renderer ownership is
 never a user-visible mode or action.
 At most one xterm.js renderer and one WebGL context are live for agent
-terminals, regardless of agent count.
+terminals, regardless of agent count. The singleton makes one WebGL attempt
+for its lifetime. If WebGL is unavailable or its context is lost, the same
+xterm instance remains on the DOM renderer instead of cycling GPU contexts.
 
 The standalone human terminal is a separate product surface and is not part of
 this replacement.
@@ -199,6 +201,8 @@ is known, revoke the memory capability, and return the agent to `unbound`.
 4. Reposition the lifetime-stable singleton viewport over the selected
    presentation without moving its DOM subtree.
 5. Apply the selected pane's next complete snapshot to that host.
+6. After the replacement frame is visible, focus the retained xterm helper so
+   the next physical keystroke is routed to the pane that completed activation.
 
 The frontend queues activation requests. A later selection cannot overtake an
 earlier in-flight focus command and leave the singleton renderer associated
@@ -257,7 +261,11 @@ old pane: the next spawn reconciles and closes any same-title pane before
 creating its replacement. If clear aborts before termination, Wardian moves
 the original pane lease back with the restored runtime instead of dropping it.
 
-Closing a Workbench surface never closes a pane.
+Closing a Workbench surface never closes a pane. Closing the final surface
+keeps the singleton xterm/WebGL allocation mounted but changes its broker
+presentation to hidden and read-only, which releases input ownership. Reopening
+a surface requires a fresh pane and broker activation before the retained
+renderer accepts input.
 
 ## Observation and telemetry
 

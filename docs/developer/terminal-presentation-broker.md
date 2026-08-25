@@ -22,6 +22,8 @@ For each live terminal session:
 4. Mirrors never resize the PTY.
 5. Split, move, hide, suspend, and close affect presentations, not the runtime.
 6. Remote terminal attachment is not enabled in the initial Zellij release.
+7. With no open agent-terminal slot, the singleton renderer stays allocated but
+   its presentation is hidden, read-only, and ineligible to own input.
 
 Structured prompt delivery is a separate backend-authorized control path. The
 terminal lease applies to terminal keystrokes and binary input; it must not gate

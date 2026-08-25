@@ -15,12 +15,26 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("./AgentTerminal", () => ({
-  AgentTerminal: (props: { sessionId: string; presentationId: string }) => (
+  AgentTerminal: (props: {
+    sessionId: string;
+    presentationId: string;
+    visibility: "visible" | "hidden";
+    requestedInteraction: "interactive" | "read_only";
+  }) => (
     <div
       data-presentation-id={props.presentationId}
+      data-requested-interaction={props.requestedInteraction}
       data-session-id={props.sessionId}
       data-testid="live-habitat-terminal"
-    />
+    >
+      <div
+        data-terminal-session-id={props.sessionId}
+        data-testid="agent-terminal-host"
+        style={{ visibility: props.visibility }}
+      >
+        <textarea aria-label="Terminal input" className="xterm-helper-textarea" />
+      </div>
+    </div>
   ),
 }));
 
@@ -54,6 +68,7 @@ describe("ZellijAgentTerminal", () => {
       activeAgentId: null,
       activeTargetId: null,
       activationSerial: 0,
+      focusRequestSerial: 0,
       slots: new Map(),
     });
     invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
@@ -101,6 +116,27 @@ describe("ZellijAgentTerminal", () => {
         "data-stable-renderer",
         "true",
       );
+      expect(screen.getByLabelText("Terminal input")).toHaveFocus();
+    });
+  });
+
+  it("keeps the renderer mounted but releases interaction when the final card closes", async () => {
+    const view = render(
+      <>
+        <ZellijAgentTerminalHost />
+        {terminal("agent-1")}
+      </>,
+    );
+    fireEvent.pointerDown(await screen.findByRole("application", { name: "Terminal for agent-1" }));
+    await waitFor(() => expect(screen.getByTestId("live-habitat-terminal")).toBeInTheDocument());
+    const renderer = screen.getByTestId("live-habitat-terminal");
+
+    view.rerender(<ZellijAgentTerminalHost />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("live-habitat-terminal")).toBe(renderer);
+      expect(renderer).toHaveAttribute("data-requested-interaction", "read_only");
+      expect(screen.getByTestId("agent-terminal-host")).toHaveStyle({ visibility: "hidden" });
     });
   });
 
@@ -232,5 +268,30 @@ describe("ZellijAgentTerminal", () => {
     expect(preview).toHaveAttribute("aria-disabled", "true");
     expect(preview).toHaveAttribute("tabindex", "-1");
     expect(screen.getByText("Terminal engine unavailable")).toBeInTheDocument();
+  });
+
+  it("keeps starting previews noninteractive until the pane is running", async () => {
+    invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command === "get_zellij_terminal_preview") {
+        return Promise.resolve({
+          session_id: args.sessionId,
+          terminal_session_id: args.sessionId,
+          generation: 1,
+          state: "starting",
+          content: "",
+        });
+      }
+      return Promise.reject(new Error("should not activate"));
+    });
+    renderTerminals(terminal("agent-starting"));
+
+    const preview = await screen.findByRole("application", {
+      name: "Terminal for agent-starting",
+    });
+    expect(preview).toHaveAttribute("aria-disabled", "true");
+    expect(preview).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByText("Starting terminal…")).toBeInTheDocument();
+    fireEvent.pointerDown(preview);
+    expect(invokeMock).not.toHaveBeenCalledWith("activate_zellij_agent_terminal", expect.anything());
   });
 });

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { By } from "selenium-webdriver";
+import { By, Key } from "selenium-webdriver";
 
 import {
   createNativeHarness,
@@ -207,19 +207,21 @@ test(
     const initialLiveAgent = initial.live[0];
     const nextAgent = spawnedAgents.find((agent) => agent.sessionId !== initialLiveAgent);
     assert.ok(nextAgent, "Expected an inactive agent terminal preview");
-    await driver.wait(async () => await driver.executeScript((presentationId) => (
-      window.__wardianTerminalDebug?.snapshot?.(presentationId)?.renderer?.webglAttempted === true
-    ), ZELLIJ_PRESENTATION_ID), 20_000, "Singleton renderer never completed its WebGL attempt");
-    const initialRendererIdentity = await driver.executeScript((presentationId) => {
+    await driver.wait(async () => await driver.executeScript(() => (
+      document.querySelector('[data-terminal-renderer-instance-id]')
+        ?.getAttribute("data-terminal-webgl-attempted") === "true"
+    )), 20_000, "Singleton renderer never completed its one WebGL attempt");
+    const initialRendererIdentity = await driver.executeScript(() => {
       const xterm = document.querySelector('[data-testid="agent-terminal-host"] .xterm');
+      const renderer = document.querySelector('[data-terminal-renderer-instance-id]');
       xterm?.setAttribute("data-e2e-zellij-renderer", "singleton");
       xterm?.querySelector("canvas")?.setAttribute("data-e2e-zellij-canvas", "singleton");
-      const debug = window.__wardianTerminalDebug?.snapshot?.(presentationId)?.renderer ?? null;
-      return debug ? {
-        instanceId: debug.instanceId,
-        webglActivationCount: debug.webglActivationCount,
+      return renderer ? {
+        instanceId: renderer.getAttribute("data-terminal-renderer-instance-id"),
+        webglAttemptCount: renderer.getAttribute("data-terminal-webgl-attempt-count"),
+        webglActivationCount: renderer.getAttribute("data-terminal-webgl-activation-count"),
       } : null;
-    }, ZELLIJ_PRESENTATION_ID);
+    });
     assert.ok(initialRendererIdentity, "native singleton proof requires terminal debug identity");
 
     const activated = await driver.executeScript((sessionId) => {
@@ -239,7 +241,31 @@ test(
       && document.querySelectorAll('[data-testid="agent-terminal-host"] .xterm').length === 1
       && document.querySelector('[data-testid="agent-terminal-host"] .xterm')
         ?.getAttribute("data-e2e-zellij-renderer") === "singleton"
+      && document.activeElement?.classList.contains("xterm-helper-textarea") === true
+      && document.activeElement?.closest('[data-testid="agent-terminal-host"]')
+        ?.getAttribute("data-terminal-session-id") === sessionId
     ), nextAgent.sessionId), 20_000, "Timed out handing the singleton renderer to the selected pane");
+
+    await driver.actions().sendKeys("focused-handoff", Key.ENTER).perform();
+    const focusedInputReceipts = await driver.wait(() => {
+      if (!fs.existsSync(inputLogPath)) return false;
+      const records = fs.readFileSync(inputLogPath, "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      const selectedInput = records
+        .filter((record) => record.session_id === nextAgent.providerSessionId)
+        .map((record) => record.chunk)
+        .join("");
+      return selectedInput.includes("focused-handoff") ? records : false;
+    }, 20_000, "Focused singleton xterm did not route the immediate key to the selected pane");
+    assert.equal(
+      focusedInputReceipts.some((record) => (
+        record.session_id !== nextAgent.providerSessionId
+        && record.chunk.includes("focused-handoff")
+      )),
+      false,
+    );
 
     for (let index = 0; index < 20; index += 1) {
       const targetAgent = spawnedAgents[index % spawnedAgents.length];
@@ -268,20 +294,27 @@ test(
         ?.getAttribute("data-zellij-agent-id") === sessionId
     ), nextAgent.sessionId), 20_000, "Timed out restoring the selected pane after identity stress");
 
-    const finalRendererIdentity = await driver.executeScript((presentationId) => {
+    const finalRendererIdentity = await driver.executeScript(() => {
       const xterm = document.querySelector('[data-testid="agent-terminal-host"] .xterm');
-      const debug = window.__wardianTerminalDebug?.snapshot?.(presentationId)?.renderer ?? null;
+      const renderer = document.querySelector('[data-terminal-renderer-instance-id]');
       return {
         xtermStable: xterm?.getAttribute("data-e2e-zellij-renderer") === "singleton",
         canvasStable: !xterm?.querySelector("canvas")
           || xterm.querySelector("canvas")?.getAttribute("data-e2e-zellij-canvas") === "singleton",
-        instanceId: debug?.instanceId ?? null,
-        webglActivationCount: debug?.webglActivationCount ?? null,
+        instanceId: renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
+        webglAttemptCount: renderer?.getAttribute("data-terminal-webgl-attempt-count") ?? null,
+        webglActivationCount:
+          renderer?.getAttribute("data-terminal-webgl-activation-count") ?? null,
       };
-    }, ZELLIJ_PRESENTATION_ID);
+    });
     assert.equal(finalRendererIdentity.xtermStable, true);
     assert.equal(finalRendererIdentity.canvasStable, true);
     assert.equal(finalRendererIdentity.instanceId, initialRendererIdentity.instanceId);
+    assert.equal(
+      finalRendererIdentity.webglAttemptCount,
+      initialRendererIdentity.webglAttemptCount,
+      "card focus must not retry or recreate the singleton WebGL addon",
+    );
     assert.equal(
       finalRendererIdentity.webglActivationCount,
       initialRendererIdentity.webglActivationCount,

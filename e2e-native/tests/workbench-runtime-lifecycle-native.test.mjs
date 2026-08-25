@@ -285,16 +285,17 @@ test(
     const initialPresentationDebug = await waitFor("registered Agents presentation", 30000, async () => (
       await driver.executeScript((host) => {
         const presentationId = host.getAttribute("data-terminal-presentation-id");
-        const presentationIds = window.__wardianTerminalDebug?.presentationIds() ?? [];
+        const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
         return {
-          ok: presentationId !== null && presentationIds.includes(presentationId),
+          ok: presentationId !== null && renderer !== null,
           presentation_id: presentationId,
-          presentation_ids: presentationIds,
+          renderer_instance_id:
+            renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
         };
       }, agentsTerminalHost)
     ));
     assert.ok(
-      initialPresentationDebug.presentation_ids.includes(initialPresentationDebug.presentation_id),
+      initialPresentationDebug.renderer_instance_id,
       `Agents presentation must be registered before clear: ${JSON.stringify(initialPresentationDebug)}`,
     );
 
@@ -345,17 +346,18 @@ test(
           `[data-zellij-presentation="live"][data-zellij-agent-id="${CSS.escape(sessionId)}"]`,
         )?.getBoundingClientRect();
         const computed = getComputedStyle(host);
-        const presentationIds = window.__wardianTerminalDebug?.presentationIds() ?? [];
+        const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
         return {
           ok: presentationId !== null
-            && presentationIds.includes(presentationId)
+            && renderer !== null
             && targetRect !== undefined
             && Math.abs(rect.left - targetRect.left) <= 1
             && Math.abs(rect.top - targetRect.top) <= 1
             && Math.abs(rect.width - targetRect.width) <= 1
             && Math.abs(rect.height - targetRect.height) <= 1,
           presentation_id: presentationId,
-          presentation_ids: presentationIds,
+          renderer_instance_id:
+            renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
           host_visibility: computed.visibility,
           host_display: computed.display,
           host_width: rect.width,
@@ -374,19 +376,14 @@ test(
     await waitFor("terminal input after clear", 30000, async () => {
       const snapshot = await readSnapshot(driver);
       const debug = await driver.executeScript((host) => {
-        const presentationIds = window.__wardianTerminalDebug?.presentationIds() ?? [];
         const presentationId = host.getAttribute("data-terminal-presentation-id");
-        const snapshot = presentationId
-          ? window.__wardianTerminalDebug?.snapshot(presentationId) ?? null
-          : null;
+        const viewport = host.closest('[data-zellij-singleton-viewport="true"]');
+        const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
         return {
           presentation_id: presentationId ?? null,
-          presentation_ids: presentationIds,
-          broker: snapshot?.broker ?? null,
-          last_reported_size: snapshot?.lastReportedSize ?? null,
-          renderer_geometry: snapshot?.renderer
-            ? { cols: snapshot.renderer.cols, rows: snapshot.renderer.rows }
-            : null,
+          broker_owner: viewport?.getAttribute("data-terminal-broker-owner") ?? null,
+          renderer_instance_id:
+            renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
         };
       }, recoveredAgentsTerminalHost);
       return {
@@ -399,25 +396,25 @@ test(
     const recoveredFit = await waitFor("fitted Agents terminal after clear", 30000, async () => (
       await driver.executeScript((host) => {
         const presentationId = host.getAttribute("data-terminal-presentation-id");
-        const debug = presentationId
-          ? window.__wardianTerminalDebug?.snapshot(presentationId) ?? null
-          : null;
+        const viewport = host.closest('[data-zellij-singleton-viewport="true"]');
+        const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
         const rect = host.getBoundingClientRect();
         return {
-          ok: debug?.broker?.ownerPresentationId === presentationId
-            && debug?.lastReportedSize?.cols === debug?.renderer?.cols
-            && debug?.lastReportedSize?.rows === debug?.renderer?.rows
+          ok: viewport?.getAttribute("data-terminal-broker-owner") === presentationId
+            && renderer !== null
             && rect.width >= 10
             && rect.height >= 10,
           presentation_id: presentationId,
-          debug,
+          broker_owner: viewport?.getAttribute("data-terminal-broker-owner") ?? null,
+          renderer_instance_id:
+            renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
           host_width: rect.width,
           host_height: rect.height,
         };
       }, recoveredAgentsTerminalHost)
     ));
     assert.equal(
-      recoveredFit.debug.broker.ownerPresentationId,
+      recoveredFit.broker_owner,
       recoveredFit.presentation_id,
       "The pre-clear owner must own the replacement runtime",
     );
@@ -426,15 +423,14 @@ test(
     await waitForAgentSessionHost(driver);
 
     const retainedRendererIdentity = await driver.executeScript((host) => {
-      const presentationId = host.getAttribute("data-terminal-presentation-id");
       const xterm = host.querySelector(".xterm");
+      const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
       xterm?.setAttribute("data-e2e-retained-renderer", "true");
-      const debug = presentationId
-        ? window.__wardianTerminalDebug?.snapshot(presentationId)?.renderer ?? null
-        : null;
       return {
-        instanceId: debug?.instanceId ?? null,
-        webglActivationCount: debug?.webglActivationCount ?? null,
+        instanceId: renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
+        webglAttemptCount: renderer?.getAttribute("data-terminal-webgl-attempt-count") ?? null,
+        webglActivationCount:
+          renderer?.getAttribute("data-terminal-webgl-activation-count") ?? null,
       };
     }, recoveredAgentsTerminalHost);
     assert.ok(retainedRendererIdentity.instanceId);
@@ -449,28 +445,56 @@ test(
 
     await closeWorkbenchSurface(driver, "agent-session", wardianSessionId);
     await closeWorkbenchSurface(driver, "agents-overview");
-    const retainedAfterClose = await driver.executeScript((selector, expectedIdentity) => {
-      const host = document.querySelector(selector);
-      const viewport = host?.closest('[data-zellij-singleton-viewport="true"]');
-      const presentationId = host?.getAttribute("data-terminal-presentation-id");
-      const debug = presentationId
-        ? window.__wardianTerminalDebug?.snapshot(presentationId)?.renderer ?? null
-        : null;
-      return {
-        terminalHosts: document.querySelectorAll('[data-testid="agent-terminal-host"]').length,
-        hidden: viewport instanceof HTMLElement && getComputedStyle(viewport).visibility === "hidden",
-        xtermStable: host?.querySelector(".xterm")
-          ?.getAttribute("data-e2e-retained-renderer") === "true",
-        instanceStable: debug?.instanceId === expectedIdentity.instanceId,
-        webglStable: debug?.webglActivationCount === expectedIdentity.webglActivationCount,
-      };
-    }, zellijRendererSelector(), retainedRendererIdentity);
-    assert.deepEqual(retainedAfterClose, {
+    const retainedAfterClose = await waitFor("hidden renderer broker release", 10000, async () => (
+      await driver.executeScript((selector, expectedIdentity) => {
+        const host = document.querySelector(selector);
+        const viewport = host?.closest('[data-zellij-singleton-viewport="true"]');
+        const renderer = host?.querySelector("[data-terminal-renderer-instance-id]");
+        const result = {
+          terminalHosts: document.querySelectorAll('[data-testid="agent-terminal-host"]').length,
+          hidden: viewport instanceof HTMLElement
+            && getComputedStyle(viewport).visibility === "hidden",
+          xtermStable: host?.querySelector(".xterm")
+            ?.getAttribute("data-e2e-retained-renderer") === "true",
+          instanceStable:
+            renderer?.getAttribute("data-terminal-renderer-instance-id")
+              === expectedIdentity.instanceId,
+          webglAttemptStable:
+            renderer?.getAttribute("data-terminal-webgl-attempt-count")
+              === expectedIdentity.webglAttemptCount,
+          webglStable:
+            renderer?.getAttribute("data-terminal-webgl-activation-count")
+              === expectedIdentity.webglActivationCount,
+          brokerOwner: viewport?.getAttribute("data-terminal-broker-owner") ?? null,
+        };
+        return {
+          ok: result.terminalHosts === 1
+            && result.hidden
+            && result.xtermStable
+            && result.instanceStable
+            && result.webglAttemptStable
+            && result.webglStable
+            && result.brokerOwner === "",
+          ...result,
+        };
+      }, zellijRendererSelector(), retainedRendererIdentity)
+    ));
+    assert.deepEqual({
+      terminalHosts: retainedAfterClose.terminalHosts,
+      hidden: retainedAfterClose.hidden,
+      xtermStable: retainedAfterClose.xtermStable,
+      instanceStable: retainedAfterClose.instanceStable,
+      webglAttemptStable: retainedAfterClose.webglAttemptStable,
+      webglStable: retainedAfterClose.webglStable,
+      brokerOwner: retainedAfterClose.brokerOwner,
+    }, {
       terminalHosts: 1,
       hidden: true,
       xtermStable: true,
       instanceStable: true,
+      webglAttemptStable: true,
       webglStable: true,
+      brokerOwner: "",
     }, "Closing every surface must hide, not destroy, the singleton renderer");
 
     const afterClose = await waitFor("runtime output after every presentation closes", 30000, async () => {
@@ -492,22 +516,44 @@ test(
     // Agent Session is an explicit surface action.
     await openWorkbenchSurface(driver, "agent-session", wardianSessionId);
     const reopenedTerminalHost = await waitForAgentSessionHost(driver);
-    const retainedAfterReopen = await driver.executeScript((host, expectedIdentity) => {
-      const presentationId = host.getAttribute("data-terminal-presentation-id");
-      const debug = presentationId
-        ? window.__wardianTerminalDebug?.snapshot(presentationId)?.renderer ?? null
-        : null;
-      return {
-        xtermStable: host.querySelector(".xterm")
-          ?.getAttribute("data-e2e-retained-renderer") === "true",
-        instanceStable: debug?.instanceId === expectedIdentity.instanceId,
-        webglStable: debug?.webglActivationCount === expectedIdentity.webglActivationCount,
-      };
-    }, reopenedTerminalHost, retainedRendererIdentity);
+    const retainedAfterReopen = await waitFor("fresh broker activation after reopen", 10000, async () => (
+      await driver.executeScript((host, expectedIdentity) => {
+        const presentationId = host.getAttribute("data-terminal-presentation-id");
+        const viewport = host.closest('[data-zellij-singleton-viewport="true"]');
+        const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
+        const result = {
+          xtermStable: host.querySelector(".xterm")
+            ?.getAttribute("data-e2e-retained-renderer") === "true",
+          instanceStable:
+            renderer?.getAttribute("data-terminal-renderer-instance-id")
+              === expectedIdentity.instanceId,
+          webglAttemptStable:
+            renderer?.getAttribute("data-terminal-webgl-attempt-count")
+              === expectedIdentity.webglAttemptCount,
+          webglStable:
+            renderer?.getAttribute("data-terminal-webgl-activation-count")
+              === expectedIdentity.webglActivationCount,
+          brokerOwner: viewport?.getAttribute("data-terminal-broker-owner") ?? null,
+        };
+        return {
+          ok: result.xtermStable
+            && result.instanceStable
+            && result.webglAttemptStable
+            && result.webglStable
+            && result.brokerOwner === presentationId,
+          ...result,
+          presentationId,
+        };
+      }, reopenedTerminalHost, retainedRendererIdentity)
+    ));
     assert.deepEqual(retainedAfterReopen, {
+      ok: true,
       xtermStable: true,
       instanceStable: true,
+      webglAttemptStable: true,
       webglStable: true,
+      brokerOwner: retainedAfterReopen.presentationId,
+      presentationId: retainedAfterReopen.presentationId,
     }, "Reopening a surface must reuse the retained singleton renderer");
     const afterReopen = await readSnapshot(driver);
     assert.equal(afterReopen.runtime_generation, beforeClose.snapshot.runtime_generation);

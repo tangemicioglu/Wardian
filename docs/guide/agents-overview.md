@@ -67,6 +67,9 @@ keyboard-focus a preview and Wardian selects that agent's Zellij pane before the
 first input is accepted. The lifetime-stable terminal viewport is then positioned
 over the card; its xterm and WebGL objects are not moved, remounted, or recreated.
 From the user's perspective, each card remains its agent's terminal.
+When no terminal card is open, Wardian retains that renderer allocation but
+releases terminal input ownership. Opening a card activates its pane again
+before keyboard focus moves into the terminal.
 
 ## Arrange and Focus Agents
 
