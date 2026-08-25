@@ -2800,13 +2800,7 @@ pub async fn list_agents(state: State<'_, AppState>) -> Result<Vec<AgentConfig>,
     manager::log_debug("[WARDIAN] list_agents called");
     let agents = state.agents.lock().await;
     let order = state.agent_order.lock().await;
-    let mut list: Vec<AgentConfig> = Vec::new();
-    for id in order.iter() {
-        if let Some(agent) = agents.get(id) {
-            list.push(agent.config.lock().unwrap().clone());
-        }
-    }
-    Ok(list)
+    Ok(manager::state_configs_snapshot(&agents, &order))
 }
 
 #[tauri::command]
@@ -5191,6 +5185,16 @@ pub async fn disable_agent_worktree(
     .await
 }
 
+fn apply_agent_order(
+    agents: &std::collections::HashMap<String, ActiveAgent>,
+    order: &mut Vec<String>,
+    session_ids: Vec<String>,
+) -> Result<(), String> {
+    manager::validate_agent_order(agents, &session_ids)?;
+    *order = session_ids;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn reorder_agents(
     session_ids: Vec<String>,
@@ -5199,9 +5203,8 @@ pub async fn reorder_agents(
 ) -> Result<(), String> {
     manager::log_debug("[WARDIAN] reorder_agents called");
     let agents = state.agents.lock().await;
-    manager::validate_agent_order(&agents, &session_ids)?;
     let mut order = state.agent_order.lock().await;
-    *order = session_ids;
+    apply_agent_order(&agents, &mut order, session_ids)?;
     manager::save_state(&app, &agents, &order);
     Ok(())
 }
@@ -8511,6 +8514,99 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         let state = app.state::<AppState>();
         assert!(state.agents.lock().await.contains_key("agent-1"));
         assert_eq!(state.agent_order.lock().await.as_slice(), ["agent-1"]);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn list_agents_returns_all_live_agents_when_order_is_incomplete() {
+        let _lock = crate::utils::wardian_test_env_lock();
+        let app = tauri::test::mock_app();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+
+        let first = make_test_agent();
+        first.config.lock().unwrap().session_id = "agent-1".to_string();
+        let second = make_test_agent();
+        second.config.lock().unwrap().session_id = "agent-2".to_string();
+        state.agents.lock().await.insert("agent-1".to_string(), first);
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-2".to_string(), second);
+        state.agent_order.lock().await.push("agent-2".to_string());
+
+        let listed = super::list_agents(app.state::<AppState>())
+            .await
+            .expect("list_agents should repair an incomplete live order");
+
+        assert_eq!(
+            listed
+                .iter()
+                .map(|config| config.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["agent-2", "agent-1"]
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn reorder_agents_rejects_invalid_orders_without_mutating_state_or_disk() {
+        let _lock = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp wardian home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        let _home = WardianHomeGuard;
+
+        let app = tauri::test::mock_app();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+
+        let first = make_test_agent();
+        first.config.lock().unwrap().session_id = "agent-1".to_string();
+        let second = make_test_agent();
+        second.config.lock().unwrap().session_id = "agent-2".to_string();
+        state.agents.lock().await.insert("agent-1".to_string(), first);
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-2".to_string(), second);
+        let initial_order = vec!["agent-1".to_string(), "agent-2".to_string()];
+        *state.agent_order.lock().await = initial_order.clone();
+
+        {
+            let agents = state.agents.lock().await;
+            let order = state.agent_order.lock().await;
+            let snapshot = crate::manager::state_configs_snapshot(&agents, &order);
+            crate::manager::try_save_state_snapshot(&snapshot)
+                .expect("persist initial state snapshot");
+        }
+        let state_path = temp.path().join("settings").join("state.json");
+        let persisted_before = std::fs::read(&state_path).expect("read initial state snapshot");
+
+        let invalid_orders = [
+            vec!["agent-1".to_string()],
+            vec!["agent-1".to_string(), "unknown".to_string()],
+            vec!["agent-1".to_string(), "agent-1".to_string()],
+        ];
+        for invalid_order in invalid_orders {
+            let error = {
+                let state = app.state::<AppState>();
+                let agents = state.agents.lock().await;
+                let mut order = state.agent_order.lock().await;
+                super::apply_agent_order(&agents, &mut order, invalid_order)
+                    .expect_err("invalid permutations must be rejected")
+            };
+            assert!(error.contains("Agent order must contain each live agent exactly once"));
+            assert_eq!(
+                app.state::<AppState>().agent_order.lock().await.as_slice(),
+                initial_order.as_slice()
+            );
+            assert_eq!(
+                std::fs::read(&state_path).expect("read state snapshot after rejection"),
+                persisted_before
+            );
+        }
     }
 
     #[tokio::test]
