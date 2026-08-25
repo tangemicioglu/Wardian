@@ -21,6 +21,7 @@ const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
 const PROVIDER_SESSION_ID = `e2e-workbench-runtime-${RUN_ID}`;
 const SESSION_NAME = `E2E-Workbench-Runtime-${RUN_ID}`;
+const NATIVE_SCRIPT_TIMEOUT_MS = 120000;
 let wardianSessionId = null;
 
 async function invokeTauri(driver, command, args = {}) {
@@ -224,6 +225,7 @@ test(
 
     normalSession = await startNativeSession(harness);
     const { driver } = normalSession;
+    await driver.manage().setTimeouts({ script: NATIVE_SCRIPT_TIMEOUT_MS });
     await waitForAppShell(driver, 20000);
     await driver.manage().window().setRect({ width: 1400, height: 900 });
 

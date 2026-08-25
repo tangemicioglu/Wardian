@@ -158,6 +158,10 @@ describe("ZellijAgentTerminal", () => {
     const previews = await screen.findAllByRole("application", {
       name: "Terminal for agent-1",
     });
+    await waitFor(() => {
+      expect(previews).toHaveLength(2);
+      expect(previews[0]).toHaveAttribute("aria-disabled", "false");
+    });
     fireEvent.pointerDown(previews[0]);
 
     await waitFor(() => expect(screen.getAllByTestId("live-habitat-terminal")).toHaveLength(1));
