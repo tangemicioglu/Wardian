@@ -539,6 +539,16 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await expect(page.getByLabel("user message")).toHaveClass(/\bitems-end\b/);
   await expect(page.getByLabel("assistant message")).toHaveClass(/\bw-full\b/);
   await expect(page.getByTestId("chat-work-group")).toHaveAttribute("data-expanded", "false");
+  const workGroup = page.getByTestId("chat-work-group");
+  const workActions = workGroup.locator(".chat-row-actions--rail");
+  const workToggle = workGroup.getByRole("button", { name: "Show all" });
+  await expect(workActions).toBeVisible();
+  await expect(workToggle).toBeVisible();
+  const [workActionsBox, workToggleBox] = await Promise.all([workActions.boundingBox(), workToggle.boundingBox()]);
+  expect(workActionsBox).not.toBeNull();
+  expect(workToggleBox).not.toBeNull();
+  expect(workActionsBox!.y + workActionsBox!.height / 2).toBeCloseTo(workToggleBox!.y + workToggleBox!.height / 2, 0);
+  expect(workActionsBox!.x + workActionsBox!.width).toBeLessThanOrEqual(workToggleBox!.x);
   await captureFeatureScreenshot("chat-collapsed-work.png", page.locator('[data-testid="remote-agent-detail"]'));
   await page.getByRole("button", { name: "Message actions" }).last().click();
   await expect(page.getByRole("menuitem", { name: "Copy message" }).last()).toBeVisible();

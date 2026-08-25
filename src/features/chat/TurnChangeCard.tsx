@@ -159,7 +159,7 @@ export function TurnChangeCard({
         <button
           type="button"
           aria-expanded={expanded}
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          className="flex min-w-0 flex-1 items-center gap-1.5 pr-12 text-left"
           onClick={() => setExpanded((value) => !value)}
         >
           <ChevronRight
@@ -187,7 +187,7 @@ export function TurnChangeCard({
       </div>
       <ChatRowActions
         actions={[{ label: "Copy changed file paths", value: files.map((file) => file.path).join("\n") }]}
-        className="chat-row-actions--overlay chat-row-actions--with-toggle"
+        className="chat-row-actions--overlay"
         label="Change summary actions"
       />
 

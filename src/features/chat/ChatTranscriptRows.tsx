@@ -660,6 +660,16 @@ export function WorkGroupRow({
           ) : null}
         </button>
         <div className="flex shrink-0 items-center gap-1.5">
+          <ChatRowActions
+            actions={[
+              { label: "Copy work log", value: copyValue },
+              ...(row.changedPaths.length > 0
+                ? [{ label: "Copy changed file paths", value: row.changedPaths.join("\n") }]
+                : []),
+            ]}
+            className="chat-row-actions--rail"
+            label="Work log actions"
+          />
           <button
             type="button"
             aria-expanded={expanded}
@@ -672,17 +682,6 @@ export function WorkGroupRow({
           </button>
         </div>
       </div>
-      <ChatRowActions
-        actions={[
-          { label: "Copy work log", value: copyValue },
-          ...(row.changedPaths.length > 0
-            ? [{ label: "Copy changed file paths", value: row.changedPaths.join("\n") }]
-            : []),
-        ]}
-        className="chat-row-actions--overlay chat-row-actions--with-toggle"
-        label="Work log actions"
-      />
-
       {expanded ? (
         <>
           {row.changedPaths.length > 0 ? <ChangedFiles paths={row.changedPaths} /> : null}
