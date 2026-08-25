@@ -780,6 +780,32 @@ test("remote gateway authenticates broker ownership transitions across desktop a
   assert.equal(remoteBegin.result.decision.status, "accepted");
   assert.ok(remoteBegin.result.activation_id);
   assert.ok(remoteBegin.result.snapshot);
+  const pendingPreview = await invokeTauri(
+    session.driver,
+    "get_zellij_terminal_preview",
+    { sessionId },
+  );
+  assert.equal(pendingPreview.broker_activation_pending, true);
+  assert.equal(pendingPreview.broker_owner_presentation_id, null);
+  await waitFor("disabled desktop singleton during ownership transfer", 30000, async () => {
+    return await session.driver.executeScript((resourceKey) => {
+      const renderer = document.querySelector(
+        `[data-zellij-presentation="renderer"][data-zellij-agent-id="${CSS.escape(resourceKey)}"]`,
+      );
+      const preview = document.querySelector(
+        `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(resourceKey)}"]`,
+      );
+      const style = renderer instanceof HTMLElement ? window.getComputedStyle(renderer) : null;
+      return {
+        ok: style?.visibility === "hidden"
+          && style.pointerEvents === "none"
+          && preview?.getAttribute("aria-disabled") === "true",
+        rendererVisibility: style?.visibility ?? null,
+        rendererPointerEvents: style?.pointerEvents ?? null,
+        previewDisabled: preview?.getAttribute("aria-disabled") ?? null,
+      };
+    }, sessionId);
+  });
   const desktopDuringRemoteHandoff = await invokeTauriOutcome(
     session.driver,
     "activate_zellij_agent_terminal",
@@ -834,6 +860,10 @@ test("remote gateway authenticates broker ownership transitions across desktop a
           && style.pointerEvents === "none"
           && preview?.getAttribute("aria-disabled") === "true",
         previewPresent: preview !== null,
+        rendererOwner: renderer?.getAttribute("data-terminal-broker-owner") ?? null,
+        rendererVisibility: style?.visibility ?? null,
+        rendererPointerEvents: style?.pointerEvents ?? null,
+        previewDisabled: preview?.getAttribute("aria-disabled") ?? null,
       };
     }, sessionId, remotePresentationId);
     return value;

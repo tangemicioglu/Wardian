@@ -324,6 +324,7 @@ pub enum TerminalBrokerEventKind {
         owner_presentation_id: Option<String>,
         lease_epoch: u64,
         activation_id: Option<String>,
+        pending_activation: Option<TerminalPendingActivationState>,
     },
     Lifecycle {
         lifecycle: TerminalSessionLifecycleEvent,

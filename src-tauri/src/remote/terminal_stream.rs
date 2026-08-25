@@ -1246,6 +1246,7 @@ fn wire_event(event: &TerminalBrokerEvent) -> serde_json::Value {
             owner_presentation_id,
             lease_epoch,
             activation_id,
+            pending_activation,
         } => serde_json::json!({
             "sequence": event.sequence,
             "runtime_generation": event.runtime_generation,
@@ -1253,6 +1254,7 @@ fn wire_event(event: &TerminalBrokerEvent) -> serde_json::Value {
             "owner_presentation_id": owner_presentation_id,
             "lease_epoch": lease_epoch,
             "activation_id": activation_id,
+            "pending_activation": pending_activation,
         }),
         TerminalBrokerEventKind::Lifecycle { lifecycle } => serde_json::json!({
             "sequence": event.sequence,
@@ -1686,6 +1688,7 @@ mod tests {
                     owner_presentation_id: Some("remote-v1".to_string()),
                     lease_epoch: 2,
                     activation_id: Some("activation".to_string()),
+                    pending_activation: None,
                 },
             },
         )

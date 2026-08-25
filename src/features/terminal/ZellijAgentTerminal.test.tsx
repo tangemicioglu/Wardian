@@ -88,6 +88,7 @@ describe("ZellijAgentTerminal", () => {
           broker_generation: 1,
           broker_lease_epoch: 1,
           broker_owner_presentation_id: null,
+          broker_activation_pending: false,
           state: "running",
           content: `${args.sessionId} preview`,
         });
@@ -244,6 +245,7 @@ describe("ZellijAgentTerminal", () => {
           broker_owner_presentation_id: args.sessionId === "agent-1"
             ? "remote:paired-device"
             : null,
+          broker_activation_pending: false,
           state: "running",
           content: `${args.sessionId} preview`,
         });
@@ -285,6 +287,34 @@ describe("ZellijAgentTerminal", () => {
     });
   });
 
+  it("hides the singleton and disables its card while ownership is transferring", async () => {
+    renderTerminals(terminal("agent-1"));
+    const preview = await screen.findByRole("application", { name: "Terminal for agent-1" });
+    fireEvent.pointerDown(preview);
+    const renderer = await screen.findByTestId("live-habitat-terminal");
+
+    act(() => {
+      useZellijPresentationStore.getState().setBrokerOwner(
+        "agent-1",
+        1,
+        2,
+        null,
+        true,
+        "live",
+      );
+    });
+
+    const transferPreview = await screen.findByRole("application", {
+      name: "Terminal for agent-1",
+    });
+    expect(transferPreview).toHaveAttribute("aria-disabled", "true");
+    expect(renderer).toHaveAttribute("data-requested-interaction", "read_only");
+    expect(document.querySelector('[data-zellij-presentation="renderer"]')).toHaveStyle({
+      pointerEvents: "none",
+      visibility: "hidden",
+    });
+  });
+
   it("retains remote ownership for an inactive card across other-agent selections", async () => {
     invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
       if (command === "activate_zellij_agent_terminal") return Promise.resolve(args.sessionId);
@@ -298,6 +328,7 @@ describe("ZellijAgentTerminal", () => {
           broker_owner_presentation_id: args.sessionId === "agent-2"
             ? "remote:paired-device"
             : null,
+          broker_activation_pending: false,
           state: "running",
           content: `${args.sessionId} preview`,
         });
@@ -326,6 +357,8 @@ describe("ZellijAgentTerminal", () => {
       generation: 1,
       leaseEpoch: 2,
       owner: "remote:paired-device",
+      activationPending: false,
+      source: "preview",
     });
   });
 
@@ -393,6 +426,7 @@ describe("ZellijAgentTerminal", () => {
           broker_generation: previewGeneration,
           broker_lease_epoch: previewGeneration,
           broker_owner_presentation_id: null,
+          broker_activation_pending: false,
           state: "running",
           content: `${args.sessionId} generation ${previewGeneration}`,
         });
@@ -416,6 +450,8 @@ describe("ZellijAgentTerminal", () => {
         generation: 2,
         leaseEpoch: 2,
         owner: null,
+        activationPending: false,
+        source: "preview",
       });
       expect(renderer).toHaveAttribute("data-requested-interaction", "interactive");
     }, { timeout: 3000 });
@@ -431,6 +467,7 @@ describe("ZellijAgentTerminal", () => {
           broker_generation: null,
           broker_lease_epoch: null,
           broker_owner_presentation_id: null,
+          broker_activation_pending: false,
           state: "unavailable",
           content: "",
         });
@@ -451,6 +488,8 @@ describe("ZellijAgentTerminal", () => {
       generation: null,
       leaseEpoch: null,
       owner: null,
+      activationPending: false,
+      source: "preview",
     });
   });
 
@@ -470,6 +509,8 @@ describe("ZellijAgentTerminal", () => {
       generation: 4,
       leaseEpoch: 8,
       owner: "remote:paired-device",
+      activationPending: false,
+      source: "live",
     });
   });
 
@@ -491,6 +532,7 @@ describe("ZellijAgentTerminal", () => {
         broker_generation: 5,
         broker_lease_epoch: 9,
         broker_owner_presentation_id: "remote:new-generation",
+        broker_activation_pending: false,
         state: "running",
         content: "new generation",
       });
@@ -513,6 +555,8 @@ describe("ZellijAgentTerminal", () => {
         generation: 5,
         leaseEpoch: 9,
         owner: "remote:new-generation",
+        activationPending: false,
+        source: "preview",
       }), { timeout: 2500 });
 
     await act(async () => {
@@ -523,6 +567,7 @@ describe("ZellijAgentTerminal", () => {
         broker_generation: null,
         broker_lease_epoch: null,
         broker_owner_presentation_id: null,
+        broker_activation_pending: false,
         state: "unavailable",
         content: "",
       });
@@ -533,6 +578,173 @@ describe("ZellijAgentTerminal", () => {
       generation: 5,
       leaseEpoch: 9,
       owner: "remote:new-generation",
+      activationPending: false,
+      source: "preview",
+    });
+  });
+
+  it("does not let a delayed preview overwrite a live owner at the same lease", async () => {
+    let resolveLatestPreview: ((preview: Record<string, unknown>) => void) | undefined;
+    let previewCalls = 0;
+    invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command !== "get_zellij_terminal_preview") {
+        return Promise.reject(new Error(`Unexpected command ${command}`));
+      }
+      previewCalls += 1;
+      if (previewCalls === 2) {
+        return new Promise((resolve) => { resolveLatestPreview = resolve; });
+      }
+      return Promise.resolve({
+        session_id: args.sessionId,
+        terminal_session_id: args.sessionId,
+        generation: 5,
+        broker_generation: 5,
+        broker_lease_epoch: 9,
+        broker_owner_presentation_id: null,
+        broker_activation_pending: false,
+        state: "running",
+        content: "first slot",
+      });
+    });
+
+    renderTerminals(
+      terminal("agent-1"),
+      <ZellijAgentTerminal
+        sessionId="agent-1"
+        presentationId="agent-session:agent-1"
+        visibility="visible"
+        renderState="mounted"
+        requestedInteraction="interactive"
+        provider="mock"
+        theme="dark"
+      />,
+    );
+    await waitFor(() => expect(previewCalls).toBe(2));
+    act(() => {
+      useZellijPresentationStore.getState().setBrokerOwner(
+        "agent-1",
+        5,
+        9,
+        "remote:committed-owner",
+        false,
+        "live",
+      );
+    });
+
+    await act(async () => {
+      resolveLatestPreview?.({
+        session_id: "agent-1",
+        terminal_session_id: "agent-1",
+        generation: 5,
+        broker_generation: 5,
+        broker_lease_epoch: 9,
+        broker_owner_presentation_id: null,
+        broker_activation_pending: true,
+        state: "running",
+        content: "stale pending frame",
+      });
+      await Promise.resolve();
+    });
+
+    expect(useZellijPresentationStore.getState().brokerOwners.get("agent-1")).toEqual({
+      generation: 5,
+      leaseEpoch: 9,
+      owner: "remote:committed-owner",
+      activationPending: false,
+      source: "live",
+    });
+  });
+
+  it("allows a current preview to resolve a paused live transfer", () => {
+    useZellijPresentationStore.getState().setBrokerOwner(
+      "agent-1",
+      5,
+      9,
+      null,
+      true,
+      "live",
+    );
+    useZellijPresentationStore.getState().setBrokerOwner(
+      "agent-1",
+      5,
+      9,
+      "remote:committed-owner",
+      false,
+      "preview",
+    );
+
+    expect(useZellijPresentationStore.getState().brokerOwners.get("agent-1")).toEqual({
+      generation: 5,
+      leaseEpoch: 9,
+      owner: "remote:committed-owner",
+      activationPending: false,
+      source: "preview",
+    });
+  });
+
+  it("releases a card latch when its queued activation is skipped", async () => {
+    let releaseFirstActivation: (() => void) | undefined;
+    invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command === "get_zellij_terminal_preview") {
+        return Promise.resolve({
+          session_id: args.sessionId,
+          terminal_session_id: args.sessionId,
+          generation: 1,
+          broker_generation: 1,
+          broker_lease_epoch: 1,
+          broker_owner_presentation_id: null,
+          broker_activation_pending: false,
+          state: "running",
+          content: `${args.sessionId} preview`,
+        });
+      }
+      if (command === "activate_zellij_agent_terminal" && args.sessionId === "agent-1") {
+        return new Promise((resolve) => {
+          releaseFirstActivation = () => resolve(args.sessionId);
+        });
+      }
+      if (command === "activate_zellij_agent_terminal") return Promise.resolve(args.sessionId);
+      return Promise.reject(new Error(`Unexpected command ${command}`));
+    });
+    renderTerminals(terminal("agent-1"), terminal("agent-2"));
+    const first = await screen.findByRole("application", { name: "Terminal for agent-1" });
+    const second = await screen.findByRole("application", { name: "Terminal for agent-2" });
+
+    fireEvent.pointerDown(first);
+    await waitFor(() => expect(releaseFirstActivation).toBeDefined());
+    fireEvent.pointerDown(second);
+    act(() => {
+      useZellijPresentationStore.getState().setBrokerOwner(
+        "agent-2",
+        1,
+        2,
+        "remote:paired-device",
+        false,
+        "live",
+      );
+      releaseFirstActivation?.();
+    });
+    await waitFor(() => expect(invokeMock.mock.calls.filter(
+      ([command]) => command === "activate_zellij_agent_terminal",
+    )).toHaveLength(1));
+
+    act(() => {
+      useZellijPresentationStore.getState().setBrokerOwner(
+        "agent-2",
+        1,
+        3,
+        null,
+        false,
+        "live",
+      );
+    });
+    fireEvent.pointerDown(screen.getByRole("application", { name: "Terminal for agent-2" }));
+
+    await waitFor(() => {
+      expect(useZellijPresentationStore.getState().activeAgentId).toBe("agent-2");
+      expect(invokeMock.mock.calls.filter(
+        ([command]) => command === "activate_zellij_agent_terminal",
+      )).toHaveLength(2);
     });
   });
 
@@ -725,6 +937,7 @@ describe("ZellijAgentTerminal", () => {
           broker_generation: null,
           broker_lease_epoch: null,
           broker_owner_presentation_id: null,
+          broker_activation_pending: false,
           state: "unavailable",
           content: "",
         });
@@ -751,6 +964,7 @@ describe("ZellijAgentTerminal", () => {
           broker_generation: 1,
           broker_lease_epoch: 1,
           broker_owner_presentation_id: null,
+          broker_activation_pending: false,
           state: "starting",
           content: "",
         });

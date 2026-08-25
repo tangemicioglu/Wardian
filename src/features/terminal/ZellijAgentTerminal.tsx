@@ -20,6 +20,7 @@ type ZellijTerminalPreview = {
   broker_generation: number | null;
   broker_lease_epoch: number | null;
   broker_owner_presentation_id: string | null;
+  broker_activation_pending: boolean;
   state: "starting" | "running" | "exited" | "unavailable";
   content: string;
 };
@@ -61,16 +62,20 @@ type ZellijPresentationStore = {
     runtimeGeneration: number | null,
     leaseEpoch: number | null,
     presentationId: string | null,
+    activationPending?: boolean,
+    source?: "live" | "preview",
   ) => void;
   upsertSlot: (targetId: string, slot: ZellijTerminalSlot) => void;
   removeSlot: (targetId: string) => void;
-  activate: (agentId: string, targetId: string) => Promise<void>;
+  activate: (agentId: string, targetId: string) => Promise<boolean>;
 };
 
 type ZellijBrokerObservation = {
   generation: number | null;
   leaseEpoch: number | null;
   owner: string | null;
+  activationPending: boolean;
+  source: "live" | "preview";
 };
 
 let nextPreviewRequestToken = 0;
@@ -92,8 +97,10 @@ function desktopMayOwnBroker(
 ): boolean {
   const observation = brokerOwners.get(agentId);
   return observation === undefined
-    || observation.owner === null
-    || observation.owner === HABITAT_TERMINAL_PRESENTATION_ID;
+    || (!observation.activationPending && (
+      observation.owner === null
+      || observation.owner === HABITAT_TERMINAL_PRESENTATION_ID
+    ));
 }
 
 export const useZellijPresentationStore = create<ZellijPresentationStore>((set, get) => {
@@ -106,7 +113,14 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
     brokerOwners: new Map(),
     focusRequestSerial: 0,
     slots: new Map(),
-    setBrokerOwner: (agentId, generation, leaseEpoch, owner) => set((state) => {
+    setBrokerOwner: (
+      agentId,
+      generation,
+      leaseEpoch,
+      owner,
+      activationPending = false,
+      source = "live",
+    ) => set((state) => {
       const existing = state.brokerOwners.get(agentId);
       if (
         existing?.generation !== null
@@ -120,8 +134,21 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
         && leaseEpoch !== null
         && leaseEpoch < existing.leaseEpoch
       ) return state;
+      if (
+        existing?.generation === generation
+        && existing.leaseEpoch === leaseEpoch
+        && existing.source === "live"
+        && source === "preview"
+        && !(existing.activationPending && !activationPending)
+      ) return state;
       const brokerOwners = new Map(state.brokerOwners);
-      brokerOwners.set(agentId, { generation, leaseEpoch, owner });
+      brokerOwners.set(agentId, {
+        generation,
+        leaseEpoch,
+        owner,
+        activationPending,
+        source,
+      });
       return { brokerOwners };
     }),
     upsertSlot: (targetId, slot) => {
@@ -179,14 +206,14 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
       const serial = get().activationSerial + 1;
       pendingTargetId = targetId;
       set({ activationSerial: serial });
-      const activation = activationQueue.then(async () => {
+      const activation = activationQueue.then(async (): Promise<boolean> => {
         try {
           const slot = get().slots.get(targetId);
           if (
             get().activationSerial !== serial
             || !slotCanOwnTerminal(slot)
             || !desktopMayOwnBroker(slot.agentId, get().brokerOwners)
-          ) return;
+          ) return false;
           await invoke<string>("activate_zellij_agent_terminal", {
             sessionId: agentId,
             brokerGeneration: get().brokerOwners.get(agentId)?.generation ?? null,
@@ -201,12 +228,14 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
               activeTargetId: targetId,
               focusRequestSerial: state.focusRequestSerial + 1,
             }));
+            return true;
           }
+          return false;
         } finally {
           if (pendingTargetId === targetId) pendingTargetId = null;
         }
       });
-      activationQueue = activation.catch(() => undefined);
+      activationQueue = activation.then(() => undefined, () => undefined);
       return activation;
     },
   };
@@ -438,6 +467,8 @@ export function ZellijAgentTerminalHost() {
             brokerState.runtime_generation,
             brokerState.lease_epoch,
             brokerState.owner_presentation_id,
+            brokerState.pending_activation !== null,
+            "live",
           );
           const singletonPresentationId = presentationState?.presentation_id
             ?? HABITAT_TERMINAL_PRESENTATION_ID;
@@ -503,6 +534,8 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
               next.broker_generation,
               next.broker_lease_epoch,
               next.broker_owner_presentation_id,
+              next.broker_activation_pending,
+              "preview",
             );
           }
           setPreview(next);
@@ -516,6 +549,7 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
             broker_generation: null,
             broker_lease_epoch: null,
             broker_owner_presentation_id: null,
+            broker_activation_pending: false,
             state: "unavailable",
             content: "",
           });
@@ -539,7 +573,9 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
     activationRequested.current = true;
     setActivationError(null);
     onTerminalFocus?.();
-    void activate(sessionId, targetId).catch((error) => {
+    void activate(sessionId, targetId).then((committed) => {
+      if (!committed) activationRequested.current = false;
+    }).catch((error) => {
       activationRequested.current = false;
       setActivationError(error instanceof Error ? error.message : "Terminal activation failed");
     });

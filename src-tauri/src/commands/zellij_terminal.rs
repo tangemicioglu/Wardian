@@ -13,6 +13,7 @@ pub struct ZellijTerminalPreview {
     pub broker_generation: Option<u64>,
     pub broker_lease_epoch: Option<u64>,
     pub broker_owner_presentation_id: Option<String>,
+    pub broker_activation_pending: bool,
     pub state: &'static str,
     pub content: String,
 }
@@ -58,6 +59,9 @@ pub async fn get_zellij_terminal_preview(
     let broker_owner_presentation_id = broker_state
         .as_ref()
         .and_then(|broker| broker.owner_presentation_id.clone());
+    let broker_activation_pending = broker_state
+        .as_ref()
+        .is_some_and(|broker| broker.pending_activation.is_some());
     let Some(engine) = state.zellij_terminal.get() else {
         return Ok(ZellijTerminalPreview {
             terminal_session_id: session_id.clone(),
@@ -66,6 +70,7 @@ pub async fn get_zellij_terminal_preview(
             broker_generation,
             broker_lease_epoch,
             broker_owner_presentation_id,
+            broker_activation_pending,
             state: "unavailable",
             content: String::new(),
         });
@@ -78,6 +83,7 @@ pub async fn get_zellij_terminal_preview(
             broker_generation,
             broker_lease_epoch,
             broker_owner_presentation_id,
+            broker_activation_pending,
             state: "starting",
             content: String::new(),
         });
@@ -91,6 +97,7 @@ pub async fn get_zellij_terminal_preview(
             broker_generation,
             broker_lease_epoch,
             broker_owner_presentation_id,
+            broker_activation_pending,
             state: preview_state,
             content: String::new(),
         });
@@ -108,6 +115,7 @@ pub async fn get_zellij_terminal_preview(
         broker_generation,
         broker_lease_epoch,
         broker_owner_presentation_id,
+        broker_activation_pending,
         state: preview_state,
         content,
     })

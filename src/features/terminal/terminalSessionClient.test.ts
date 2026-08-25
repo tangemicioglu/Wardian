@@ -566,6 +566,79 @@ describe("TerminalSessionClient", () => {
     }
   });
 
+  it("projects pending ownership from live broker events until acknowledgement", async () => {
+    let serveAcknowledgement = false;
+    const observedPending: Array<string | null> = [];
+    tauri.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      const request = (args as { request?: { after_sequence?: number } } | undefined)?.request;
+      if (command === "register_terminal_presentation") return registeredResult("pane-a");
+      if (command === "subscribe_terminal_events") {
+        return { broker_state: brokerState(), initial_snapshot: snapshot() };
+      }
+      if (command === "read_terminal_events") {
+        if ((request?.after_sequence ?? 0) === 0) {
+          return eventsBatch([{
+            sequence: 1,
+            runtime_generation: 1,
+            type: "ownership",
+            owner_presentation_id: null,
+            lease_epoch: 1,
+            activation_id: "remote-activation",
+            pending_activation: {
+              presentation_id: "remote:paired-device",
+              previous_owner_presentation_id: "pane-a",
+              runtime_generation: 1,
+              lease_epoch: 1,
+              activation_id: "remote-activation",
+            },
+          }], 1, 1);
+        }
+        if (serveAcknowledgement && request?.after_sequence === 1) {
+          return eventsBatch([{
+            sequence: 2,
+            runtime_generation: 1,
+            type: "ownership",
+            owner_presentation_id: "remote:paired-device",
+            lease_epoch: 1,
+            activation_id: "remote-activation",
+            pending_activation: null,
+          }], 2, 2);
+        }
+        return eventsBatch([], 1, 1);
+      }
+      if (command === "ack_terminal_events") {
+        return { runtime_generation: 1, acknowledged_sequence: request?.after_sequence ?? 0 };
+      }
+      if (command === "unsubscribe_terminal_events") return undefined;
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const client = terminalSessionClientFor("agent-1");
+    await client.registerPresentation(registration("pane-a"), {
+      applySnapshot: () => undefined,
+      applyEvents: () => undefined,
+      onBrokerState: (state) => observedPending.push(
+        state.pending_activation?.activation_id ?? null,
+      ),
+    });
+    emit("terminal-session-events-ready", {
+      session_id: "agent-1",
+      runtime_generation: 1,
+      latest_sequence: 1,
+    });
+    await vi.waitFor(() => expect(observedPending).toContain("remote-activation"));
+
+    serveAcknowledgement = true;
+    emit("terminal-session-events-ready", {
+      session_id: "agent-1",
+      runtime_generation: 1,
+      latest_sequence: 2,
+    });
+    await vi.waitFor(() => expect(client.brokerState?.owner_presentation_id)
+      .toBe("remote:paired-device"));
+    expect(client.brokerState?.pending_activation).toBeNull();
+  });
+
   it("applies a gap snapshot barrier before replaying later events", async () => {
     const order: string[] = [];
     let readCount = 0;

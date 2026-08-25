@@ -1027,7 +1027,7 @@ export class TerminalSessionClient {
           ...next,
           lease_epoch: event.lease_epoch,
           owner_presentation_id: event.owner_presentation_id,
-          pending_activation: event.activation_id === null ? null : next.pending_activation,
+          pending_activation: event.pending_activation ?? null,
           stream_sequence: event.sequence,
         };
       } else if (event.type === "lifecycle") {

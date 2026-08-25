@@ -217,6 +217,10 @@ input remains gated until the selected generation's complete frame is applied.
 Authenticated remote clients may acquire the broker input lease, but they
 cannot focus the desktop singleton or resize the canonical Zellij pane.
 Remote resize requests are rejected with `fixed_geometry`.
+During the two-phase lease transfer, Wardian hides the singleton, makes it
+read-only, and disables every card for the agent until commit or rollback. Live
+broker observations take precedence over preview polls at the same runtime
+generation and lease epoch.
 
 ### Renderer or Workbench restart
 

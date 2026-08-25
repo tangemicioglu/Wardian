@@ -26,6 +26,10 @@ For each live terminal session:
    return the `fixed_geometry` lease rejection.
 7. With no open agent-terminal slot, the singleton renderer stays allocated but
    its presentation is hidden, read-only, and ineligible to own input.
+8. While a two-phase ownership transfer is pending, the singleton is hidden and
+   read-only and every card for that agent is disabled. A live broker event is
+   authoritative over an equal-generation, equal-lease preview response, so a
+   delayed poll cannot reopen input during or after the transfer.
 
 Structured prompt delivery is a separate backend-authorized control path. The
 terminal lease applies to terminal keystrokes and binary input; it must not gate

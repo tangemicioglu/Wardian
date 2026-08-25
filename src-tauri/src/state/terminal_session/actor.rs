@@ -2262,6 +2262,7 @@ impl TerminalSessionActor {
             owner_presentation_id: None,
             lease_epoch: self.lease_epoch,
             activation_id: Some(activation_id.clone()),
+            pending_activation: Some(pending_state.clone()),
         });
         let snapshot = self.snapshot();
         let begin_result = TerminalActivationBeginResult {
@@ -2347,6 +2348,7 @@ impl TerminalSessionActor {
             owner_presentation_id: self.owner_presentation_id.clone(),
             lease_epoch: self.lease_epoch,
             activation_id: Some(request.activation_id.clone()),
+            pending_activation: None,
         });
         let snapshot = self.snapshot();
         let result = TerminalActivationAckResult {
@@ -2852,6 +2854,7 @@ impl TerminalSessionActor {
             owner_presentation_id: self.owner_presentation_id.clone(),
             lease_epoch: self.lease_epoch,
             activation_id: None,
+            pending_activation: None,
         });
         Ok(())
     }
@@ -2875,6 +2878,7 @@ impl TerminalSessionActor {
             owner_presentation_id: self.owner_presentation_id.clone(),
             lease_epoch: self.lease_epoch,
             activation_id: None,
+            pending_activation: None,
         });
         Ok(())
     }
