@@ -687,44 +687,44 @@ impl ZellijTerminalEngine {
 
     #[cfg(windows)]
     fn spawn_windows_attached_client(&self, pid_path: &Path) -> Result<u32, String> {
-        use base64::Engine as _;
-
-        let _ = std::fs::remove_file(pid_path);
-        let script = format!(
-            "$client = Start-Process -FilePath {} -ArgumentList @('attach', '--create', {}) -WindowStyle Hidden -PassThru; Set-Content -LiteralPath {} -Value $client.Id -Encoding ascii -NoNewline",
-            powershell_single_quoted(&self.config.executable.to_string_lossy()),
-            powershell_single_quoted(&self.config.session_name),
-            powershell_single_quoted(&pid_path.to_string_lossy()),
-        );
-        let encoded_bytes = script
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect::<Vec<_>>();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(encoded_bytes);
-        let status = zellij_helper_command("powershell.exe")
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-EncodedCommand",
-                &encoded,
-            ])
-            .env("ZELLIJ_CONFIG_DIR", self.config.config_dir())
-            .env("WARDIAN_HOME", &self.config.wardian_home)
-            .env("TERM", "xterm-256color")
-            .env("COLORTERM", "truecolor")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|error| format!("Zellij native attached client could not start: {error}"))?;
-        if !status.success() {
-            return Err("Zellij native attached client could not start".to_string());
+        match std::fs::remove_file(pid_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return Err(
+                    "Zellij native attached client PID handoff could not be prepared".to_string(),
+                )
+            }
         }
-        std::fs::read_to_string(pid_path)
+        let output = windows_attached_client_launcher_command(
+            &self.config.executable,
+            &[
+                "attach".to_string(),
+                "--create".to_string(),
+                self.config.session_name.clone(),
+            ],
+            pid_path,
+        )
+        .env("ZELLIJ_CONFIG_DIR", self.config.config_dir())
+        .env("WARDIAN_HOME", &self.config.wardian_home)
+        .env("TERM", "xterm-256color")
+        .env("COLORTERM", "truecolor")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("Zellij native attached client could not start: {error}"))?;
+
+        let reported_pid = parse_windows_attached_client_pid(&output.stdout);
+        let published_pid = std::fs::read_to_string(pid_path)
             .ok()
-            .and_then(|value| value.trim().parse::<u32>().ok())
-            .ok_or_else(|| "Zellij native attached client did not report its process".to_string())
+            .and_then(|value| value.trim().parse::<u32>().ok());
+        if !output.status.success() || reported_pid.is_none() || reported_pid != published_pid {
+            if let Some(pid) = reported_pid.or(published_pid) {
+                let _ = crate::utils::process::force_kill_process_tree(pid);
+            }
+            let _ = std::fs::remove_file(pid_path);
+            return Err("Zellij native attached client PID handoff failed".to_string());
+        }
+        Ok(reported_pid.expect("validated attached-client PID"))
     }
 
     #[cfg(windows)]
@@ -1345,6 +1345,49 @@ fn powershell_single_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+#[cfg(windows)]
+fn windows_attached_client_launcher_command(
+    executable: &Path,
+    args: &[String],
+    pid_path: &Path,
+) -> Command {
+    use base64::Engine as _;
+
+    let argument_list = args
+        .iter()
+        .map(|argument| powershell_single_quoted(argument))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let quoted_pid_path = powershell_single_quoted(&pid_path.to_string_lossy());
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'; $client = $null; try {{ $client = Start-Process -FilePath {} -ArgumentList @({argument_list}) -WindowStyle Hidden -PassThru; [Console]::Out.WriteLine(('WARDIAN_STARTED_PID=' + $client.Id)); [Console]::Out.Flush(); [System.IO.File]::WriteAllText({quoted_pid_path}, [string]$client.Id, [System.Text.Encoding]::ASCII); $published = [System.IO.File]::ReadAllText({quoted_pid_path}).Trim(); [uint32]$publishedPid = 0; if ((-not [uint32]::TryParse($published, [ref]$publishedPid)) -or $publishedPid -ne $client.Id) {{ throw 'PID publication validation failed' }} }} catch {{ if ($null -ne $client -and -not $client.HasExited) {{ & taskkill.exe /PID $client.Id /T /F *> $null }}; Remove-Item -LiteralPath {quoted_pid_path} -Force -ErrorAction SilentlyContinue; exit 1 }}",
+        powershell_single_quoted(&executable.to_string_lossy()),
+    );
+    let encoded_bytes = script
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(encoded_bytes);
+    let mut command = zellij_helper_command("powershell.exe");
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        &encoded,
+    ]);
+    command
+}
+
+#[cfg(windows)]
+fn parse_windows_attached_client_pid(stdout: &[u8]) -> Option<u32> {
+    String::from_utf8_lossy(stdout).lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("WARDIAN_STARTED_PID=")
+            .and_then(|value| value.parse::<u32>().ok())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1535,6 +1578,76 @@ mod tests {
         assert_ne!(first, session_name_for_home(Path::new("C:\\Wardian\\two")));
         assert!(first.starts_with("wardian-"));
         assert_eq!(first.len(), "wardian-".len() + 12);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_windows_pid_publication_kills_client_before_retry_is_adopted() {
+        struct ProcessGuard(Vec<u32>);
+
+        impl Drop for ProcessGuard {
+            fn drop(&mut self) {
+                for pid in self.0.drain(..) {
+                    let _ = crate::utils::process::force_kill_process_tree(pid);
+                }
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let arguments = vec!["-t".to_string(), "127.0.0.1".to_string()];
+        let failed_pid_path = root.path().join("missing").join("attached-client.pid");
+        let mut failed_command = windows_attached_client_launcher_command(
+            Path::new("ping.exe"),
+            &arguments,
+            &failed_pid_path,
+        );
+        let failed_output = failed_command
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run failed-publication launcher");
+        let failed_pid = parse_windows_attached_client_pid(&failed_output.stdout)
+            .expect("failed launcher must report the started client");
+        let mut guard = ProcessGuard(vec![failed_pid]);
+        assert!(!failed_output.status.success());
+        assert!(!failed_pid_path.exists());
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while crate::utils::process::process_exists(failed_pid)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            !crate::utils::process::process_exists(failed_pid),
+            "failed PID publication must not orphan its attached client"
+        );
+
+        let adopted_pid_path = root.path().join("attached-client.pid");
+        let mut retry_command = windows_attached_client_launcher_command(
+            Path::new("ping.exe"),
+            &arguments,
+            &adopted_pid_path,
+        );
+        let retry_output = retry_command
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run successful retry launcher");
+        let adopted_pid = parse_windows_attached_client_pid(&retry_output.stdout)
+            .expect("successful launcher must report the started client");
+        guard.0.push(adopted_pid);
+
+        assert!(retry_output.status.success());
+        assert_ne!(adopted_pid, failed_pid);
+        assert_eq!(
+            std::fs::read_to_string(&adopted_pid_path)
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap(),
+            adopted_pid
+        );
+        assert!(crate::utils::process::process_exists(adopted_pid));
+        assert!(!crate::utils::process::process_exists(failed_pid));
     }
 
     #[cfg(unix)]
