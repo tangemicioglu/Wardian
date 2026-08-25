@@ -15,7 +15,6 @@ import {
   waitForAppShell,
 } from "../lib/harness.mjs";
 import {
-  closeWorkbenchSurface,
   openWorkbenchSurface,
   waitForWorkbenchReady,
 } from "../lib/workbench.mjs";
@@ -23,6 +22,8 @@ import {
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
 const REMOTE_SESSION_COOKIE_NAME = "__Host-wardian_remote_session";
+const NATIVE_SCRIPT_TIMEOUT_MS = 120000;
+const ZELLIJ_DESKTOP_PRESENTATION_ID = "desktop:zellij-habitat-terminal";
 
 async function invokeTauri(driver, command, args = {}) {
   const result = await driver.executeAsyncScript((cmd, payload, done) => {
@@ -360,6 +361,7 @@ test("remote gateway authenticates broker ownership transitions across desktop a
   });
 
   await waitForAppShell(session.driver, 20000);
+  await session.driver.manage().setTimeouts({ script: NATIVE_SCRIPT_TIMEOUT_MS });
   await waitForGateway(baseUrl);
   await assertStatusStreamClosesWithoutTicket(baseUrl, canonicalOrigin, gatewayPort);
 
@@ -402,68 +404,47 @@ test("remote gateway authenticates broker ownership transitions across desktop a
   assert.equal(result.agent.session_name, sessionName);
 
   await waitForWorkbenchReady(session.driver);
-  // Agents auto-owns an otherwise unowned runtime for click-free first paint.
-  // This test establishes its own explicit Agent Session desktop owner before
-  // handing the lease to the authenticated remote client.
-  await closeWorkbenchSurface(session.driver, "agents-overview");
-  await openWorkbenchSurface(session.driver, "agent-session", sessionId);
-  const desktopSurface = await waitFor("desktop agent presentation", 30000, async () => {
-    const tabs = await session.driver.executeScript((resourceKey) => {
-      return Array.from(
-        document.querySelectorAll(
-          '[role="tab"][data-surface-type="agent-session"][data-resource-key]',
-        ),
-      )
-        .filter((tab) => tab.getAttribute("data-resource-key") === resourceKey)
-        .map((tab) => ({ surfaceId: tab.getAttribute("data-surface-id") }));
-    }, sessionId);
-    return { ok: tabs.length === 1 && Boolean(tabs[0].surfaceId), tabs };
+  // The card grid owns no terminal renderers. Its active card positions the
+  // app-lifetime Zellij renderer, which is the desktop broker owner handed off
+  // to the authenticated remote client below.
+  await openWorkbenchSurface(session.driver, "agents-overview");
+  await waitFor("spawned agent card", 30000, async () => {
+    const exists = await session.driver.executeScript(
+      (id) => Boolean(document.getElementById(`agent-card-${id}`)),
+      sessionId,
+    );
+    return { ok: exists };
   });
-  const desktopPresentationId = `${desktopSurface.tabs[0].surfaceId}:agent:${sessionId}`;
+  const desktopRenderer = await waitFor("active singleton desktop terminal", 30000, async () => {
+    const state = await session.driver.executeScript((resourceKey) => {
+      const renderer = document.querySelector(
+        `[data-zellij-presentation="renderer"][data-zellij-agent-id="${CSS.escape(resourceKey)}"]`,
+      );
+      const terminal = renderer?.querySelector("[data-terminal-presentation-id]");
+      return {
+        presentationId: terminal?.getAttribute("data-terminal-presentation-id") ?? null,
+        brokerOwner: renderer?.getAttribute("data-terminal-broker-owner") ?? null,
+      };
+    }, sessionId);
+    return {
+      ok: state.presentationId === ZELLIJ_DESKTOP_PRESENTATION_ID
+        && state.brokerOwner === ZELLIJ_DESKTOP_PRESENTATION_ID,
+      state,
+    };
+  });
+  const desktopPresentationId = desktopRenderer.state.presentationId;
 
   const terminalSnapshot = await invokeTauri(session.driver, "request_terminal_snapshot", {
     request: { session_id: sessionId },
   });
-  const desktopRegistered = await waitFor("registered desktop terminal presentation", 30000, async () => {
-    const value = await invokeTauri(session.driver, "update_terminal_presentation", {
-      request: {
-        presentation_id: desktopPresentationId,
-        session_id: sessionId,
-        runtime_generation: terminalSnapshot.runtime_generation,
-        desired_geometry: { cols: 96, rows: 28 },
-        visibility: "visible",
-        render_state: "mounted",
-        requested_interaction: "interactive",
-        observed_lease_epoch: 0,
-      },
-    });
-    return { ok: value.presentation.presentation_id === desktopPresentationId, value };
-  });
-  assert.equal(desktopRegistered.value.broker_state.owner_presentation_id, null);
-  assert.equal(desktopRegistered.value.broker_state.pending_activation, null);
-
-  const desktopBegin = await invokeTauri(session.driver, "begin_terminal_activation", {
-    request: {
-      session_id: sessionId,
-      presentation_id: desktopPresentationId,
-      runtime_generation: terminalSnapshot.runtime_generation,
-      observed_lease_epoch: desktopRegistered.value.broker_state.lease_epoch,
-    },
-  });
-  assert.equal(desktopBegin.decision.status, "accepted");
-  assert.ok(desktopBegin.activation_id);
-  assert.ok(desktopBegin.snapshot);
-  const desktopAck = await invokeTauri(session.driver, "ack_terminal_activation", {
-    request: {
-      session_id: sessionId,
-      presentation_id: desktopPresentationId,
-      runtime_generation: desktopBegin.decision.runtime_generation,
-      lease_epoch: desktopBegin.decision.lease_epoch,
-      activation_id: desktopBegin.activation_id,
-    },
-  });
-  assert.equal(desktopAck.decision.status, "accepted");
-  assert.equal(desktopAck.broker_state.owner_presentation_id, desktopPresentationId);
+  const desktopRegistered = await readDesktopBrokerState(
+    session.driver,
+    sessionId,
+    desktopPresentationId,
+    terminalSnapshot.runtime_generation,
+  );
+  assert.equal(desktopRegistered.broker_state.owner_presentation_id, desktopPresentationId);
+  assert.equal(desktopRegistered.broker_state.pending_activation, null);
 
   const keys = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   const publicKeySpkiDer = keys.publicKey.export({ type: "spki", format: "der" });
@@ -793,7 +774,11 @@ test("remote gateway authenticates broker ownership transitions across desktop a
   const remoteAck = await inbox.next((message) => message.type === "activation_ack");
   assert.equal(remoteAck.result.decision.status, "accepted");
   assert.equal(remoteAck.result.broker_state.owner_presentation_id, remotePresentationId);
-  assert.deepEqual(remoteAck.result.broker_state.geometry, { cols: 220, rows: 70 });
+  assert.deepEqual(
+    remoteAck.result.broker_state.geometry,
+    { cols: 120, rows: 40 },
+    "remote ownership must preserve Zellij's canonical frame geometry",
+  );
 
   terminalSocket.send(JSON.stringify({
     type: "input",

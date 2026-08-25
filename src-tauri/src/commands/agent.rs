@@ -3170,6 +3170,11 @@ pub async fn resume_agent(
             .get_mut(&session_id)
             .ok_or_else(|| format!("Agent {} not found", session_id))?;
         lifecycle_heartbeat.ensure_active("resume")?;
+        // A replacement provider must never race the generation-scoped pane
+        // binding retained by the paused or terminated runtime. Dropping the
+        // old lease removes that binding synchronously before spawn_agent asks
+        // Zellij to create the replacement pane for the same Wardian session.
+        release_zellij_pane_before_runtime_replacement(agent);
         replace_agent_status_incarnation(agent, "Processing...")
     };
     manager::publish_agent_status(&app, &session_id, &staged_status_arc);
