@@ -924,6 +924,13 @@ summary,
     overflow: visible;
   }
 
+  /* A 44px touch target centered at the row top lands beside the second line
+     when assistant text wraps. Keep the hit area, but align its icon with the
+     first text line like the user bubble action. */
+  .chat-row-actions--inline.chat-row-actions--start {
+    top: -10px;
+  }
+
   .chat-message-content {
     padding-right: 2.75rem;
   }
