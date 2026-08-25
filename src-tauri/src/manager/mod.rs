@@ -38,7 +38,7 @@ pub use crate::utils::shell::build_program_launch;
 
 use crate::state::{ActiveAgent, AppState};
 use portable_pty::CommandBuilder;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use tauri::{AppHandle, Emitter, Manager};
 use wardian_core::control::{ProviderInputReadiness, ProviderReadyEvidence};
 use wardian_core::conversations::write_json_atomic;
@@ -714,13 +714,77 @@ pub(crate) fn state_configs_snapshot(
     agents: &HashMap<String, ActiveAgent>,
     order: &[String],
 ) -> Vec<AgentConfig> {
-    let mut configs = Vec::new();
+    let mut ordered_ids = Vec::with_capacity(agents.len());
+    let mut seen = BTreeSet::new();
     for id in order {
-        if let Some(agent) = agents.get(id) {
-            configs.push(agent.config.lock().unwrap().clone());
+        if agents.contains_key(id) && seen.insert(id.clone()) {
+            ordered_ids.push(id.clone());
         }
     }
-    configs
+
+    let mut missing_ids = agents
+        .keys()
+        .filter(|id| !seen.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    missing_ids.sort();
+
+    if ordered_ids.len() != order.len() || !missing_ids.is_empty() {
+        log_debug(&format!(
+            "[WARDIAN] Repaired incomplete agent order while snapshotting: requested={}, live={}, missing={}",
+            order.len(),
+            agents.len(),
+            missing_ids.len(),
+        ));
+    }
+
+    ordered_ids.extend(missing_ids);
+    ordered_ids
+        .into_iter()
+        .filter_map(|id| agents.get(&id))
+        .map(|agent| agent.config.lock().unwrap().clone())
+        .collect()
+}
+
+pub(crate) fn validate_agent_order(
+    agents: &HashMap<String, ActiveAgent>,
+    order: &[String],
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    let mut duplicate_ids = BTreeSet::new();
+    let mut unknown_ids = BTreeSet::new();
+    for id in order {
+        if !agents.contains_key(id) {
+            unknown_ids.insert(id.clone());
+        }
+        if !seen.insert(id.clone()) {
+            duplicate_ids.insert(id.clone());
+        }
+    }
+
+    let missing_ids = agents
+        .keys()
+        .filter(|id| !seen.contains(*id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    if duplicate_ids.is_empty() && unknown_ids.is_empty() && missing_ids.is_empty() {
+        return Ok(());
+    }
+
+    let format_ids = |ids: &BTreeSet<String>| {
+        if ids.is_empty() {
+            "none".to_string()
+        } else {
+            ids.iter().cloned().collect::<Vec<_>>().join(", ")
+        }
+    };
+    Err(format!(
+        "Agent order must contain each live agent exactly once (missing: {}; unknown: {}; duplicates: {})",
+        format_ids(&missing_ids),
+        format_ids(&unknown_ids),
+        format_ids(&duplicate_ids),
+    ))
 }
 
 pub(crate) fn try_save_state_snapshot(configs: &[AgentConfig]) -> Result<(), String> {
@@ -1712,7 +1776,7 @@ mod tests {
     }
 
     #[test]
-    fn state_configs_snapshot_uses_order_without_writing_state() {
+    fn state_configs_snapshot_preserves_all_live_agents() {
         let mut agents = HashMap::new();
         let first = test_active_agent("Idle");
         {
@@ -1732,9 +1796,81 @@ mod tests {
         let snapshot =
             state_configs_snapshot(&agents, &["agent-2".to_string(), "missing".to_string()]);
 
-        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot.len(), 2);
         assert_eq!(snapshot[0].session_id, "agent-2");
         assert_eq!(snapshot[0].session_name, "Second");
+        assert_eq!(snapshot[1].session_id, "agent-1");
+        assert_eq!(snapshot[1].session_name, "First");
+    }
+
+    #[test]
+    fn persisted_snapshot_repairs_incomplete_agent_order() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let home = temp.path().join("wardian-home");
+        std::fs::create_dir_all(home.join("settings")).expect("create settings dir");
+        let previous_home = std::env::var_os("WARDIAN_HOME");
+        unsafe { std::env::set_var("WARDIAN_HOME", &home) };
+
+        let mut agents = HashMap::new();
+        let first = test_active_agent("Idle");
+        first.config.lock().unwrap().session_id = "agent-1".to_string();
+        let second = test_active_agent("Idle");
+        second.config.lock().unwrap().session_id = "agent-2".to_string();
+        agents.insert("agent-1".to_string(), first);
+        agents.insert("agent-2".to_string(), second);
+
+        let snapshot = state_configs_snapshot(&agents, &["agent-2".to_string()]);
+        try_save_state_snapshot(&snapshot).expect("persist repaired snapshot");
+
+        let persisted: Vec<AgentConfig> = serde_json::from_str(
+            &std::fs::read_to_string(home.join("settings/state.json"))
+                .expect("read persisted snapshot"),
+        )
+        .expect("parse persisted snapshot");
+        assert_eq!(
+            persisted
+                .iter()
+                .map(|config| config.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["agent-2", "agent-1"]
+        );
+
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("WARDIAN_HOME", value) },
+            None => unsafe { std::env::remove_var("WARDIAN_HOME") },
+        }
+    }
+
+    #[test]
+    fn validate_agent_order_rejects_missing_unknown_and_duplicate_ids() {
+        let mut agents = HashMap::new();
+        agents.insert("agent-1".to_string(), test_active_agent("Idle"));
+        agents.insert("agent-2".to_string(), test_active_agent("Idle"));
+
+        let error = validate_agent_order(
+            &agents,
+            &[
+                "agent-2".to_string(),
+                "agent-2".to_string(),
+                "unknown".to_string(),
+            ],
+        )
+        .expect_err("incomplete agent order must be rejected");
+
+        assert!(error.contains("missing: agent-1"));
+        assert!(error.contains("unknown: unknown"));
+        assert!(error.contains("duplicates: agent-2"));
+    }
+
+    #[test]
+    fn validate_agent_order_accepts_each_live_agent_once() {
+        let mut agents = HashMap::new();
+        agents.insert("agent-1".to_string(), test_active_agent("Idle"));
+        agents.insert("agent-2".to_string(), test_active_agent("Idle"));
+
+        validate_agent_order(&agents, &["agent-2".to_string(), "agent-1".to_string()])
+            .expect("complete agent order should be accepted");
     }
 
     #[test]
