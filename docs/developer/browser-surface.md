@@ -268,6 +268,25 @@ effect was already torn down detaches immediately, or the stream would outlive
 the surface that asked for it. `Ctrl`/`Cmd` chords are left to the workbench so
 a focused page cannot swallow tab switching or the palette.
 
+**Keys carry a virtual key code.** `key` and `code` describe a keystroke to the
+page; `windowsVirtualKeyCode` is what Blink reads to decide what the keystroke
+*does*. Without it Backspace deletes nothing, the arrows do not move the caret,
+and Enter neither submits nor inserts a newline — while printable characters
+keep working, because a `keyDown` carrying `text` synthesises its own character
+event. That asymmetry is why the gap reads as "typing works, editing does not".
+`browser_session::keys` maps a DOM key identity onto the US-layout code the
+protocol's own tooling sends: named keys resolve from `key`, shifted printables
+from `code`, and a bare character as a last resort.
+
+**The page is rendered at the size of the pane.** A browser surface observes
+its viewport element and pushes the settled size through `set_browser_viewport`
+(debounced by `VIEWPORT_SETTLE_MS`, because `Emulation.setDeviceMetricsOverride`
+relays out the document). Otherwise the page renders at a fixed 1280×800 and
+the frame is rescaled into whatever the pane measures — a resampled screenshot
+of a layout nobody chose. Only the driving presentation resizes: the viewport
+belongs to the shared page, so a mirror reflowing it would move the page under
+the pane that owns it.
+
 **One driver at a time.** `attach_browser_screencast` mints an opaque lease
 token and returns it with `can_drive`. The first attachment holds the lease and
 later ones mirror it read-only, the same arrangement the terminal broker uses.
@@ -285,6 +304,19 @@ and silently does nothing is worse than one that is visibly inert.
 Detach is keyed on the token, so a cleanup racing a re-attach releases only its
 own attachment and never the newer one. The lease passes to the
 longest-attached survivor when the holder leaves.
+
+One presentation streams once. A second attach under the same presentation id
+supersedes the first and inherits whatever it held, because the earlier
+attachment belongs to a presentation that no longer exists — a reloaded
+webview, or an effect whose cleanup has not landed yet. Without that, a
+remounted surface mirrors a lease that nobody will ever release and the pane is
+stuck showing **Read only** over a page it is the only viewer of.
+
+`can_drive` is an answer, not a fact: it describes the lease at the moment of
+attach, and the lease moves. `BrowserSessionEvent::Lease` republishes the
+holder on every attach and detach so a surface follows the handover — it names
+the *presentation id*, never the token, because the event reaches every
+listener and the token is the credential that admits input.
 
 Attach and detach hold a per-session transition lock across their CDP
 start/stop. The viewer list and the stream have to move together: without it a
@@ -348,8 +380,8 @@ width the operator never chose.
 | Layer | What it covers | How to run |
 | --- | --- | --- |
 | Rust unit | URL normalization, wait predicates, ref staleness, snapshot parsing, network event folding, filters, storage and download bounds, CLI arg parsing, error codes | `cargo test --lib browser_session` |
-| Engine-backed | Real Edge: navigate, snapshot, fill, click, stale refusal, screenshot, viewport, short refs, the network ledger, cookies, storage, a real download | `cargo test --lib browser_session::tests -- --ignored --test-threads=1` |
-| Frontend | Coordinate mapping, input forwarding, read-only mode, screencast attach/detach, reopen path, footer counts | `npx vitest run src/features/browser` |
+| Engine-backed | Real Edge: navigate, snapshot, fill, click, stale refusal, screenshot, viewport, editing keys, lease handover, short refs, the network ledger, cookies, storage, a real download | `cargo test --lib browser_session::tests -- --ignored --test-threads=1` |
+| Frontend | Coordinate mapping, input forwarding, read-only mode, lease handover, viewport tracking, screencast attach/detach, reopen path, footer counts | `npx vitest run src/features/browser` |
 
 The engine-backed tests are `#[ignore]`d so a machine without a Chromium still
 runs a green suite. They serve a fixture over an ephemeral loopback port rather

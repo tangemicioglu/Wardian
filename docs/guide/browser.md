@@ -36,7 +36,13 @@ browser costs nothing to leave open.
 
 **One driver at a time.** If you open the same session in two panes, the first
 one drives and the rest mirror it read-only, with their controls visibly
-disabled. This prevents two views of one page from fighting over it.
+disabled. This prevents two views of one page from fighting over it. Close the
+driving pane and the lease moves to a pane that is still watching, which takes
+its controls back without being reopened.
+
+The page is rendered at the size of the pane showing it, so resizing the pane
+relays the page out rather than rescaling a picture of it. Text stays sharp,
+and the site's own responsive breakpoints answer to the pane you sized.
 
 ## Drive the Page from an Agent
 

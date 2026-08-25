@@ -5,7 +5,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { By, until } from "selenium-webdriver";
+import { By, Key, until } from "selenium-webdriver";
 
 import {
   createNativeHarness,
@@ -29,6 +29,7 @@ import { openWorkbenchSurface, waitForWorkbenchReady } from "../lib/workbench.mj
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const SCREENSHOT_DATE = "2026-08-09";
+const INPUT_SCREENSHOT_DATE = "2026-08-24";
 
 const FIXTURE = `<!doctype html>
 <html><head><title>Wardian Browser Surface</title>
@@ -217,6 +218,67 @@ test("browser surface drives a real page and refuses stale refs", async (t) => {
 
   const shortRef = await driver.findElement(By.css('[data-testid="browser-surface-short-ref"]'));
   assert.match(await shortRef.getText(), /^browser:\d+$/);
+
+  // The page is rendered at the size of the pane showing it. Without this the
+  // browser stays at its 1280x800 default and every frame is a rescaled
+  // picture of a layout nobody chose.
+  const pane = await driver.findElement(By.css('[data-testid="browser-surface-viewport"]'));
+  const [paneWidth, paneHeight] = await driver.executeScript(
+    "const rect = arguments[0].getBoundingClientRect();"
+    + " return [Math.round(rect.width), Math.round(rect.height)];",
+    pane,
+  );
+  assert.ok(paneWidth > 0 && paneHeight > 0, "the pane had no size to match");
+  await driver.wait(async () => {
+    const reported = await driver.findElement(
+      By.css('[data-testid="browser-surface-viewport-size"]'),
+    );
+    return (await reported.getText()) === `${paneWidth}×${paneHeight}`;
+  }, 30_000, `the page was never resized to the pane (${paneWidth}x${paneHeight})`);
+
+  // Keystrokes forwarded by the surface, including the editing keys that
+  // carry no text. Only this layer covers the whole path: a real DOM key
+  // event, the surface's forwarder, the Tauri command, and CDP's own
+  // synthesis inside a real renderer. The click is not decoration — it is
+  // what gives the pane DOM focus, and keys reach the forwarder only then.
+  await driver
+    .actions()
+    .move({
+      origin: pane,
+      x: -Math.round(paneWidth / 3),
+      y: -Math.round(paneHeight / 3),
+    })
+    .click()
+    .perform();
+  await runCliOk(cliPath, harness, [
+    "browser", browserId, "eval", "document.getElementById('q').focus()",
+  ]);
+  await driver.actions().sendKeys("wardiann", Key.BACK_SPACE).perform();
+  await driver.wait(async () => {
+    const typed = await runCliOk(cliPath, harness, [
+      "browser", browserId, "eval", "document.getElementById('q').value",
+    ]);
+    // The trailing character is the one Backspace has to remove; a surface
+    // that forwards keys without a virtual key code leaves it there.
+    return typed.includes("wardian") && !typed.includes("wardiann");
+  }, 20_000, "typing and Backspace did not reach the page through the surface");
+
+  // PR evidence for the input and fidelity fixes: live controls, a page laid
+  // out at the pane's own size, and a field holding what was typed *after* a
+  // correction.
+  const inputEvidenceDir = path.join(
+    harness.repoRoot,
+    "e2e",
+    "screenshots",
+    "browser-surface-input",
+    INPUT_SCREENSHOT_DATE,
+  );
+  fs.mkdirSync(inputEvidenceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(inputEvidenceDir, "editing-keys-and-pane-sized-viewport.png"),
+    await driver.takeScreenshot(),
+    "base64",
+  );
 
   // The surface holds the lease, so its controls are live rather than inert.
   const reload = await driver.findElement(By.css('[aria-label="Reload"]'));

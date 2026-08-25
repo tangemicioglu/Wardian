@@ -27,8 +27,18 @@ import {
   sendBrowserKey,
   sendBrowserPointer,
   sendBrowserWheel,
+  setBrowserViewport,
   subscribeBrowserSession,
 } from "./browserSessionClient";
+
+/**
+ * How long a pane must hold still before its browser is resized.
+ *
+ * `Emulation.setDeviceMetricsOverride` relays out the page, so following a
+ * drag frame by frame would reflow the document dozens of times for one
+ * resize the operator experiences as a single gesture.
+ */
+const VIEWPORT_SETTLE_MS = 150;
 
 export interface BrowserSurfaceProps {
   /** Stable workbench presentation identity. */
@@ -202,6 +212,18 @@ export function BrowserSurface({
           setClosedReason(event.reason);
           setMissing(true);
           break;
+        case "lease":
+          // `can_drive` is answered once, at attach. The lease outlives that
+          // answer: it passes on when the driving pane leaves, and a
+          // remounting pane reclaims it from the attachment it replaced.
+          // Without following it here a surface that holds the lease keeps
+          // its controls disabled and refuses its own keystrokes.
+          setLease((current) => (
+            current === null || current.can_drive === (event.presentation_id === presentationId)
+              ? current
+              : { ...current, can_drive: event.presentation_id === presentationId }
+          ));
+          break;
       }
     }).then((dispose) => {
       if (cancelled) {
@@ -224,7 +246,7 @@ export function BrowserSurface({
       cancelled = true;
       unlisten?.();
     };
-  }, [resource_key]);
+  }, [presentationId, resource_key]);
 
   // The screencast is the expensive part of a browser surface, so a hidden
   // presentation stops streaming while the page itself keeps running.
@@ -302,6 +324,57 @@ export function BrowserSurface({
   // live but does nothing is worse than one that is visibly disabled. An
   // unattached surface has no lease and so cannot drive at all.
   const isReadOnly = read_only || lease === null || !lease.can_drive;
+
+  /**
+   * Keeps the page's own viewport the size of the pane showing it.
+   *
+   * Without this the browser renders at a fixed 1280×800 whatever the pane
+   * measures, and the frame is then letterboxed and rescaled into place — a
+   * resampled screenshot of a page laid out for a window nobody is looking
+   * at. Matching the two makes the frame land pixel for pixel, and makes the
+   * page's own breakpoints answer to the pane the operator actually sized.
+   *
+   * Only the driving presentation resizes: the viewport belongs to the shared
+   * page, so a mirror reflowing it would move the page under the pane that
+   * owns it.
+   */
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element || isReadOnly || missing || !lease) return undefined;
+    if (typeof ResizeObserver === "undefined") return undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    let requested: BrowserViewport | null = null;
+    const apply = () => {
+      const rect = element.getBoundingClientRect();
+      const width = Math.round(rect.width);
+      const height = Math.round(rect.height);
+      // A collapsed pane is a layout in progress, not a viewport anyone wants
+      // the page relaid out for.
+      if (width < 1 || height < 1) return;
+      if (requested && requested.width === width && requested.height === height) return;
+      requested = { width, height };
+      void setBrowserViewport(resource_key, width, height, lease.token)
+        .then((nextSummary) => {
+          if (!cancelled) setSummary(nextSummary);
+        })
+        .catch(() => {
+          // Let the next resize try again rather than pinning a size the
+          // session never adopted.
+          requested = null;
+        });
+    };
+    const observer = new ResizeObserver(() => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(apply, VIEWPORT_SETTLE_MS);
+    });
+    observer.observe(element);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, [isReadOnly, lease, missing, resource_key]);
 
   const runNavigation = useCallback(
     (action: string) => {

@@ -364,6 +364,64 @@ async fn navigation_still_completes_while_a_screencast_is_streaming() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a Chromium-based browser on the host"]
+async fn the_editing_keys_a_surface_forwards_actually_edit() {
+    let (base_url, server) = serve_fixture().await;
+    let broker = broker();
+    let session = broker
+        .open(OpenBrowserRequest {
+            url: Some(base_url.clone()),
+            ..OpenBrowserRequest::default()
+        })
+        .await
+        .expect("open");
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+    let attachment = session.attach_screencast("pane-1").await.expect("attach");
+    let lease = Some(attachment.token.as_str());
+    session
+        .eval("document.getElementById('search').focus()")
+        .await
+        .expect("focus");
+
+    // Exactly what a surface sends: printable keys carry their text, editing
+    // keys carry none and are meaningless to Blink without a virtual key code.
+    for (key, code, text) in [
+        ("a", "KeyA", Some("a")),
+        ("b", "KeyB", Some("b")),
+        ("Backspace", "Backspace", None),
+    ] {
+        session
+            .dispatch_key(lease, "keyDown", key, code, text, 0)
+            .await
+            .expect("key down");
+        session
+            .dispatch_key(lease, "keyUp", key, code, None, 0)
+            .await
+            .expect("key up");
+    }
+
+    let value = session
+        .eval("document.getElementById('search').value")
+        .await
+        .expect("read the field back");
+    assert_eq!(
+        value.as_str(),
+        Some("a"),
+        "Backspace deleted nothing: the key event carried no virtual key code"
+    );
+
+    session
+        .detach_screencast(&attachment.token)
+        .await
+        .expect("detach");
+    broker.close(session.browser_id()).await.expect("close");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
 async fn waits_report_a_timeout_rather_than_hanging() {
     let (base_url, server) = serve_fixture().await;
     let broker = broker();
@@ -808,15 +866,26 @@ async fn navigation_and_viewport_also_require_the_lease() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a Chromium-based browser on the host"]
-async fn re_attaching_the_same_presentation_does_not_release_the_newer_attachment() {
+async fn re_attaching_the_same_presentation_supersedes_the_older_attachment() {
     let broker = broker();
     let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
 
-    // A hidden/shown race produces two attachments for one presentation. The
-    // stale cleanup must release only its own.
+    // A hidden/shown race, or a reloaded webview, produces a second attach for
+    // one presentation. The newer one replaces the older and inherits the
+    // lease: leaving the older registered is what leaves a live surface
+    // mirroring a lease nobody will ever release.
     let first = session.attach_screencast("pane-a").await.expect("first");
     let second = session.attach_screencast("pane-a").await.expect("second");
-    assert_eq!(session.attachment_count().await, 2);
+    assert_eq!(
+        session.attachment_count().await,
+        1,
+        "one presentation streams once"
+    );
+    assert!(
+        second.can_drive,
+        "a replacement attachment must inherit the lease it replaced"
+    );
+    assert!(!session.token_may_drive(&first.token).await);
 
     session.detach_screencast(&first.token).await.expect("stale detach");
     assert_eq!(
@@ -826,10 +895,50 @@ async fn re_attaching_the_same_presentation_does_not_release_the_newer_attachmen
     );
     assert!(
         session.token_may_drive(&second.token).await,
-        "the lease must pass to the surviving attachment"
+        "the lease must stay with the surviving attachment"
     );
 
     session.detach_screencast(&second.token).await.expect("detach");
+    broker.close(session.browser_id()).await.expect("close");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a Chromium-based browser on the host"]
+async fn the_lease_moves_to_the_remaining_presentation_when_the_driver_leaves() {
+    let broker = broker();
+    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let mut events = broker.subscribe();
+
+    let driver = session.attach_screencast("pane-a").await.expect("first");
+    let mirror = session.attach_screencast("pane-b").await.expect("second");
+    assert!(driver.can_drive);
+    assert!(!mirror.can_drive);
+
+    session.detach_screencast(&driver.token).await.expect("detach");
+    assert!(
+        session.token_may_drive(&mirror.token).await,
+        "the mirror inherits the lease once the driver leaves"
+    );
+
+    // The mirror learned it could not drive at attach time, so the handover
+    // has to reach it as an event or its controls stay disabled forever.
+    let announced = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Ok(super::actor::BrowserSessionEvent::Lease {
+                presentation_id: Some(presentation_id),
+                ..
+            }) = events.recv().await
+            {
+                if presentation_id == "pane-b" {
+                    return true;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(announced.is_ok(), "the handover was never announced");
+
+    session.detach_screencast(&mirror.token).await.expect("detach");
     broker.close(session.browser_id()).await.expect("close");
 }
 

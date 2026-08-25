@@ -65,7 +65,14 @@ export type BrowserSessionEvent =
   | { kind: "frame"; browser_id: string; data: string; width: number; height: number }
   | { kind: "state"; browser_id: string; summary: BrowserSessionSummary }
   | { kind: "console"; browser_id: string; entry: BrowserConsoleEntry }
-  | { kind: "closed"; browser_id: string; reason: string };
+  | { kind: "closed"; browser_id: string; reason: string }
+  /**
+   * Which presentation holds the drive lease now.
+   *
+   * A presentation id, never a token: this reaches every listener, and the
+   * token is the credential the backend checks before it accepts input.
+   */
+  | { kind: "lease"; browser_id: string; presentation_id: string | null };
 
 /**
  * Persisted browser surface state.
