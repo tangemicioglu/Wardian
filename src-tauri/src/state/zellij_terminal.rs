@@ -432,6 +432,7 @@ pub struct ZellijTerminalEngine {
     panes: std::sync::Mutex<ZellijPaneRegistry>,
     start_lock: Mutex<()>,
     activation_lock: Mutex<()>,
+    latest_activation_request: std::sync::Mutex<Option<String>>,
 }
 
 impl ZellijTerminalEngine {
@@ -447,6 +448,7 @@ impl ZellijTerminalEngine {
             panes: std::sync::Mutex::new(ZellijPaneRegistry::default()),
             start_lock: Mutex::new(()),
             activation_lock: Mutex::new(()),
+            latest_activation_request: std::sync::Mutex::new(None),
         }
     }
 
@@ -1444,8 +1446,26 @@ impl ZellijTerminalEngine {
         .map(|_| ())
     }
 
-    pub async fn activate_pane(&self, session_id: &str, generation: u64) -> Result<(), String> {
-        let _activation_guard = self.activation_lock.lock().await;
+    pub fn register_activation_request(&self, request_id: &str) {
+        *self
+            .latest_activation_request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request_id.to_string());
+    }
+
+    fn activation_request_is_current(&self, request_id: &str) -> bool {
+        self.latest_activation_request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_deref()
+            == Some(request_id)
+    }
+
+    async fn activate_pane_locked(
+        &self,
+        session_id: &str,
+        generation: u64,
+    ) -> Result<(), String> {
         let target = self.live_pane(session_id, generation).await?;
         let panes = self.list_panes().await?;
         if let Some(fullscreen) = panes.iter().find(|pane| {
@@ -1476,6 +1496,24 @@ impl ZellijTerminalEngine {
             .await?;
         }
         Ok(())
+    }
+
+    pub async fn activate_pane(&self, session_id: &str, generation: u64) -> Result<(), String> {
+        let _activation_guard = self.activation_lock.lock().await;
+        self.activate_pane_locked(session_id, generation).await
+    }
+
+    pub async fn activate_pane_for_request(
+        &self,
+        session_id: &str,
+        generation: u64,
+        request_id: &str,
+    ) -> Result<(), String> {
+        let _activation_guard = self.activation_lock.lock().await;
+        if !self.activation_request_is_current(request_id) {
+            return Err("Terminal handoff was superseded".to_string());
+        }
+        self.activate_pane_locked(session_id, generation).await
     }
 
     pub async fn dump_pane(
@@ -2401,6 +2439,26 @@ mod tests {
                 .write_to_pane("agent-1", binding.generation + 1, b"unsafe")
                 .await,
             Err("Agent Zellij pane generation is stale".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn newer_activation_request_supersedes_an_unsettled_request() {
+        let root = tempfile::tempdir().unwrap();
+        let runner = FakeRunner::succeeding("terminal_3\n");
+        let engine = ZellijTerminalEngine::with_runner(config(root.path()), runner.clone());
+
+        engine.register_activation_request("handoff-a");
+        engine.register_activation_request("handoff-b");
+        assert_eq!(
+            engine
+                .activate_pane_for_request("agent-1", 1, "handoff-a")
+                .await,
+            Err("Terminal handoff was superseded".to_string())
+        );
+        assert!(
+            runner.calls.lock().unwrap().is_empty(),
+            "a superseded request must issue no Zellij focus action"
         );
     }
 

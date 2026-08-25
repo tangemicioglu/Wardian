@@ -194,12 +194,14 @@ mod tests {
 pub async fn activate_zellij_agent_terminal(
     session_id: String,
     broker_generation: Option<u64>,
+    activation_request_id: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let engine = state
         .zellij_terminal
         .get()
         .ok_or_else(|| "Terminal engine is unavailable".to_string())?;
+    engine.register_activation_request(&activation_request_id);
     let binding = engine
         .binding(&session_id)
         .await
@@ -217,7 +219,11 @@ pub async fn activate_zellij_agent_terminal(
         broker_state.pending_activation.is_some(),
     )?;
     engine
-        .activate_pane(&session_id, binding.generation)
+        .activate_pane_for_request(
+            &session_id,
+            binding.generation,
+            &activation_request_id,
+        )
         .await?;
     Ok(session_id)
 }

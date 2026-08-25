@@ -275,6 +275,71 @@ async fn staged_runtime_replacement_rolls_back_to_the_usable_displaced_runtime()
     );
 }
 
+#[tokio::test]
+async fn staged_runtime_replacement_without_a_displaced_actor_rolls_back_to_absence() {
+    let broker = Arc::new(TerminalSessionBroker::with_timer(Arc::new(
+        ManualTimer::default(),
+    )));
+    let (replacement_runtime, _replacement_input, _) = runtime();
+    let replacement_generation = broker
+        .stage_runtime_replacement(
+            "missing-actor",
+            replacement_runtime,
+            geometry(120, 40),
+        )
+        .await
+        .expect("stage replacement without a displaced actor");
+
+    broker
+        .rollback_runtime_replacement("missing-actor", replacement_generation)
+        .await
+        .expect("roll back replacement to no actor");
+
+    assert_eq!(
+        broker.broker_state("missing-actor").await,
+        Err(TerminalBrokerError::SessionNotFound)
+    );
+}
+
+#[tokio::test]
+async fn staged_runtime_replacement_without_a_displaced_actor_commits_as_started() {
+    let broker = Arc::new(TerminalSessionBroker::with_timer(Arc::new(
+        ManualTimer::default(),
+    )));
+    let mut lifecycle = broker.subscribe_lifecycle();
+    let (replacement_runtime, mut replacement_input, _) = runtime();
+    let replacement_generation = broker
+        .stage_runtime_replacement(
+            "missing-actor",
+            replacement_runtime,
+            geometry(120, 40),
+        )
+        .await
+        .expect("stage replacement without a displaced actor");
+
+    broker
+        .commit_runtime_replacement("missing-actor", replacement_generation)
+        .await
+        .expect("commit replacement as the new actor");
+    broker
+        .send_privileged_input("missing-actor", b"replacement-live".to_vec())
+        .await
+        .expect("write through committed replacement");
+
+    assert_eq!(
+        replacement_input.recv().await,
+        Some(b"replacement-live".to_vec())
+    );
+    assert_eq!(
+        lifecycle.recv().await.expect("replacement lifecycle"),
+        TerminalSessionLifecycleNotification {
+            session_id: "missing-actor".to_string(),
+            runtime_generation: replacement_generation,
+            lifecycle: TerminalSessionLifecycleEvent::RuntimeStarted,
+        }
+    );
+}
+
 fn process_output(
     broker: Arc<TerminalSessionBroker>,
     runtime_generation: u64,

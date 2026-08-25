@@ -67,6 +67,13 @@ fn save_provider_input_rollback_recoveries(
     recoveries: &ProviderInputRollbackRecoveries,
 ) -> Result<(), String> {
     let path = provider_input_rollback_recovery_path()?;
+    #[cfg(test)]
+    if path
+        .parent()
+        .is_some_and(|parent| parent.join(".fail-provider-input-recovery-write").exists())
+    {
+        return Err("Injected provider-input rollback recovery write failure".to_string());
+    }
     wardian_core::conversations::write_json_atomic(&path, recoveries).map_err(|error| {
         format!(
             "Failed to persist provider-input rollback recovery {}: {error}",
@@ -95,6 +102,13 @@ fn persist_provider_input_rollback_snapshot(
             format!("Failed to remove candidate provider-input readiness for {session_id}: {error}")
         }),
     }
+}
+
+fn persisted_agent_exists(session_id: &str) -> Result<bool, String> {
+    wardian_core::db::get_db_conn(|conn| {
+        Ok(wardian_core::db::get_agent_by_session_id_with_conn(conn, session_id)?.is_some())
+    })
+    .map_err(|error| format!("Failed to verify durable agent identity for {session_id}: {error}"))
 }
 
 impl InteractionState {
@@ -808,6 +822,22 @@ impl InteractionState {
         };
         let mut resolved = Vec::new();
         for (session_id, recovery) in &recoveries {
+            match persisted_agent_exists(session_id) {
+                Ok(true) => {}
+                Ok(false) => {
+                    // Agent deletion is committed in the same SQLite
+                    // transaction that removes provider readiness. A stale
+                    // rollback marker must never recreate readiness after that
+                    // durable identity has disappeared.
+                    resolved.push(session_id.clone());
+                    continue;
+                }
+                Err(_) => {
+                    // If durable identity cannot be checked, retain the marker
+                    // for a later retry without applying it in memory.
+                    continue;
+                }
+            }
             let hydrated_generation = self
                 .provider_inputs
                 .lock()
@@ -1033,9 +1063,6 @@ impl InteractionState {
         let _mutation = self.mutation_lock.lock().await;
         wardian_core::db::delete_agent(session_id)
             .map_err(|error| format!("Failed to delete agent state: {error}"))?;
-        clear_provider_input_rollback_recovery(session_id).map_err(|error| {
-            format!("Agent state was deleted, but readiness recovery cleanup failed: {error}")
-        })?;
         self.deleted_sessions
             .lock()
             .await
@@ -1095,6 +1122,11 @@ impl InteractionState {
             .await
             .remove(session_id);
         self.provider_inputs.lock().await.remove(session_id);
+        // Marker cleanup is retryable housekeeping after the authoritative
+        // SQLite deletion and live invalidation have committed. Hydration
+        // consults durable agent existence before applying any marker, so a
+        // failed cleanup cannot resurrect this agent or its readiness.
+        let _ = clear_provider_input_rollback_recovery(session_id);
         Ok(())
     }
 }
@@ -1286,6 +1318,21 @@ mod tests {
                 None => unsafe { std::env::remove_var("WARDIAN_HOME") },
             }
         }
+    }
+
+    fn upsert_test_agent(session_id: &str) {
+        wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
+            session_id,
+            session_name: session_id,
+            description: "",
+            agent_class: "Coder",
+            provider: "mock",
+            workspace: None,
+            project: None,
+            is_off: false,
+            created_at: Some("2026-08-25T00:00:00.000Z"),
+        })
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1700,6 +1747,7 @@ mod tests {
         wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
 
         let session_id = "durable-readiness-rollback";
+        upsert_test_agent(session_id);
         let state = InteractionState::default();
         let original = state
             .start_provider_input_generation(
@@ -1761,6 +1809,7 @@ mod tests {
         assert_eq!(hydrated.state, ProviderInputReadiness::Ready);
 
         let empty_session_id = "durable-readiness-delete";
+        upsert_test_agent(empty_session_id);
         let empty_snapshot = state
             .capture_provider_input_rollback_snapshot(empty_session_id)
             .await;
@@ -1819,6 +1868,88 @@ mod tests {
                 .is_none(),
             "the repaired delete survives another hydration"
         );
+    }
+
+    #[tokio::test]
+    async fn deleted_agent_stays_deleted_when_rollback_marker_cleanup_cannot_write() {
+        let _env_lock = crate::utils::wardian_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home_override = WardianHomeOverride::set(home.path());
+        wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
+
+        let session_id = "deleted-readiness-recovery";
+        upsert_test_agent(session_id);
+
+        let state = InteractionState::default();
+        state
+            .start_provider_input_generation(
+                session_id,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        let snapshot = state
+            .capture_provider_input_rollback_snapshot(session_id)
+            .await;
+        let candidate = state
+            .start_provider_input_generation(session_id, ProviderInputReadiness::Booting, None)
+            .await;
+        wardian_core::db::get_db_conn(|conn| {
+            conn.pragma_update(None, "query_only", true)?;
+            Ok(())
+        })
+        .unwrap();
+        state
+            .restore_provider_input_rollback_snapshot(session_id, &snapshot)
+            .await
+            .expect_err("read-only SQLite leaves a valid recovery marker");
+        wardian_core::db::get_db_conn(|conn| {
+            conn.pragma_update(None, "query_only", false)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let failure_marker = home.path().join(".fail-provider-input-recovery-write");
+        std::fs::write(&failure_marker, b"fail recovery writes").unwrap();
+        state
+            .delete_agent_durable_state(session_id)
+            .await
+            .expect("marker cleanup failure must not roll back committed deletion");
+        state
+            .record_provider_input_state(
+                session_id,
+                candidate.generation,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        assert!(state.provider_input_state(session_id).await.is_none());
+        assert!(wardian_core::db::get_all_agents()
+            .unwrap()
+            .iter()
+            .all(|agent| agent.session_id != session_id));
+        assert!(wardian_core::db::list_provider_input_states()
+            .unwrap()
+            .iter()
+            .all(|input| input.session_id != session_id));
+
+        let recovered_while_cleanup_fails = InteractionState::default();
+        recovered_while_cleanup_fails.hydrate_from_persistence().await;
+        assert!(
+            recovered_while_cleanup_fails
+                .provider_input_state(session_id)
+                .await
+                .is_none(),
+            "a stale rollback marker cannot resurrect readiness for a deleted agent"
+        );
+
+        std::fs::remove_file(failure_marker).unwrap();
+        let cleanup_retry = InteractionState::default();
+        cleanup_retry.hydrate_from_persistence().await;
+        assert!(cleanup_retry.provider_input_state(session_id).await.is_none());
+        assert!(!load_provider_input_rollback_recoveries()
+            .unwrap()
+            .contains_key(session_id));
     }
 
     #[tokio::test]

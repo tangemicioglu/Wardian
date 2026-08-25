@@ -812,6 +812,7 @@ test("remote gateway authenticates broker ownership transitions across desktop a
     {
       sessionId,
       brokerGeneration: remoteBegin.result.decision.runtime_generation,
+      activationRequestId: "native-remote-handoff-rejection",
     },
   );
   assert.equal(desktopDuringRemoteHandoff.ok, false);

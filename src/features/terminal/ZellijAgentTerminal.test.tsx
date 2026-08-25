@@ -1135,18 +1135,39 @@ describe("ZellijAgentTerminal", () => {
     ]);
     useZellijPresentationStore.setState({ slots });
 
-    const first = useZellijPresentationStore.getState().activate("agent-1", "slot-1");
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
-    const second = useZellijPresentationStore.getState().activate("agent-2", "slot-2");
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
+    try {
+      const first = useZellijPresentationStore.getState().activate("agent-1", "slot-1");
+      const firstResult = first.catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      const second = useZellijPresentationStore.getState().activate("agent-2", "slot-2");
+      expect(invokeMock).toHaveBeenCalledTimes(1);
 
-    releaseFirst();
-    await Promise.all([first, second]);
+      await vi.advanceTimersByTimeAsync(ZELLIJ_HANDOFF_DEADLINE_MS + 2);
+      expect(invokeMock).toHaveBeenCalledTimes(2);
+      await second;
+      expect(useZellijPresentationStore.getState().activeAgentId).toBe("agent-2");
+
+      releaseFirst();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await firstResult).toBeInstanceOf(Error);
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(invokeMock.mock.calls.filter(([command]) => command === "activate_zellij_agent_terminal"))
       .toEqual([
-        ["activate_zellij_agent_terminal", { sessionId: "agent-1", brokerGeneration: null }],
-        ["activate_zellij_agent_terminal", { sessionId: "agent-2", brokerGeneration: null }],
+        ["activate_zellij_agent_terminal", {
+          sessionId: "agent-1",
+          brokerGeneration: null,
+          activationRequestId: expect.any(String),
+        }],
+        ["activate_zellij_agent_terminal", {
+          sessionId: "agent-2",
+          brokerGeneration: null,
+          activationRequestId: expect.any(String),
+        }],
       ]);
     expect(useZellijPresentationStore.getState().activeAgentId).toBe("agent-2");
     expect(useZellijPresentationStore.getState().activeTargetId).toBe("slot-2");
@@ -1187,8 +1208,16 @@ describe("ZellijAgentTerminal", () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
 
     expect(invokeMock.mock.calls.slice(0, 2)).toEqual([
-      ["activate_zellij_agent_terminal", { sessionId: "agent-2", brokerGeneration: null }],
-      ["activate_zellij_agent_terminal", { sessionId: "agent-1", brokerGeneration: null }],
+      ["activate_zellij_agent_terminal", {
+        sessionId: "agent-2",
+        brokerGeneration: null,
+        activationRequestId: expect.any(String),
+      }],
+      ["activate_zellij_agent_terminal", {
+        sessionId: "agent-1",
+        brokerGeneration: null,
+        activationRequestId: expect.any(String),
+      }],
     ]);
     expect(useZellijPresentationStore.getState().activeAgentId).toBe("agent-1");
     expect(useZellijPresentationStore.getState().activeTargetId).toBe("slot-1");
@@ -1200,7 +1229,11 @@ describe("ZellijAgentTerminal", () => {
     expect(useZellijPresentationStore.getState().activeTargetId).toBe("slot-2");
     expect(invokeMock).toHaveBeenLastCalledWith(
       "activate_zellij_agent_terminal",
-      { sessionId: "agent-2", brokerGeneration: null },
+      {
+        sessionId: "agent-2",
+        brokerGeneration: null,
+        activationRequestId: expect.any(String),
+      },
     );
   });
 

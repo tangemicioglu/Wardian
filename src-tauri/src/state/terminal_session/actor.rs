@@ -658,7 +658,7 @@ pub struct TerminalSessionBroker {
 
 struct PendingRuntimeReplacement {
     candidate_generation: u64,
-    displaced: TerminalSessionHandle,
+    displaced: Option<TerminalSessionHandle>,
 }
 
 #[derive(Default)]
@@ -804,10 +804,7 @@ impl TerminalSessionBroker {
         }
         let (displaced, runtime_generation) = {
             let mut sessions = self.sessions.write().await;
-            let displaced = sessions
-                .get(session_id)
-                .cloned()
-                .ok_or(TerminalBrokerError::RuntimeUnavailable)?;
+            let displaced = sessions.get(session_id).cloned();
             let mut generations = self.runtime_generation_tombstones.write().await;
             let runtime_generation = generations
                 .get(session_id)
@@ -820,10 +817,9 @@ impl TerminalSessionBroker {
                     )
                 })?;
             generations.insert(session_id.to_string(), runtime_generation);
-            let initial_lease_epoch = displaced
-                .lease_epoch
-                .load(Ordering::SeqCst)
-                .saturating_add(1);
+            let initial_lease_epoch = displaced.as_ref().map_or(0, |handle| {
+                handle.lease_epoch.load(Ordering::SeqCst).saturating_add(1)
+            });
             let candidate = self.spawn_actor(
                 session_id.to_string(),
                 runtime_generation,
@@ -866,16 +862,21 @@ impl TerminalSessionBroker {
                 received: runtime_generation,
             });
         }
-        self.shutdown_handle(
-            session_id,
-            pending.displaced,
-            TerminalSessionLifecycleEvent::RuntimeReplaced,
-        )
-        .await;
+        let lifecycle = if let Some(displaced) = pending.displaced {
+            self.shutdown_handle(
+                session_id,
+                displaced,
+                TerminalSessionLifecycleEvent::RuntimeReplaced,
+            )
+            .await;
+            TerminalSessionLifecycleEvent::RuntimeReplaced
+        } else {
+            TerminalSessionLifecycleEvent::RuntimeStarted
+        };
         let _ = self.lifecycle_tx.send(TerminalSessionLifecycleNotification {
             session_id: session_id.to_string(),
             runtime_generation,
-            lifecycle: TerminalSessionLifecycleEvent::RuntimeReplaced,
+            lifecycle,
         });
         self.deferred_geometries
             .lock()
@@ -914,7 +915,11 @@ impl TerminalSessionBroker {
                 .filter(|handle| handle.runtime_generation == runtime_generation)
                 .cloned()
                 .ok_or(TerminalBrokerError::RuntimeUnavailable)?;
-            sessions.insert(session_id.to_string(), pending.displaced);
+            if let Some(displaced) = pending.displaced {
+                sessions.insert(session_id.to_string(), displaced);
+            } else {
+                sessions.remove(session_id);
+            }
             candidate
         };
         self.shutdown_handle(

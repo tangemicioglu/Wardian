@@ -101,7 +101,14 @@ type PendingInputMeta = {
 };
 
 let nextPreviewRequestToken = 0;
+let nextActivationRequestToken = 0;
 const latestPreviewRequestByAgent = new Map<string, number>();
+
+function nextActivationRequestId(): string {
+  nextActivationRequestToken += 1;
+  const randomId = globalThis.crypto?.randomUUID?.();
+  return randomId ?? `zellij-handoff-${Date.now()}-${nextActivationRequestToken}`;
+}
 
 function terminalInputForKeyDown(event: ReactKeyboardEvent<HTMLElement>): string | null {
   if (event.nativeEvent.isComposing || event.key === "Dead" || event.metaKey) return null;
@@ -327,6 +334,7 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
               await invoke<string>("activate_zellij_agent_terminal", {
                 sessionId: active.agentId,
                 brokerGeneration: current.brokerOwners.get(active.agentId)?.generation ?? null,
+                activationRequestId: nextActivationRequestId(),
               });
             }
           });
@@ -367,6 +375,7 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
               invoke<string>("activate_zellij_agent_terminal", {
                 sessionId: agentId,
                 brokerGeneration: get().brokerOwners.get(agentId)?.generation ?? null,
+                activationRequestId: nextActivationRequestId(),
               }),
               new Promise<never>((_resolve, reject) => {
                 timeoutId = window.setTimeout(

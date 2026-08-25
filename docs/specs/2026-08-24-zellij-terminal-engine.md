@@ -209,12 +209,15 @@ is known, revoke the memory capability, and return the agent to `unbound`.
    request desktop ownership. A foreign broker owner or a lifecycle transition
    to read-only, suspended, exited, or Error clears unsent input immediately.
    One handoff retains at most four input events and 4096 UTF-8 bytes for five
-   seconds. A superseding selection, activation timeout, or rejected broker
+   seconds. A superseding selection, input-buffer expiry, or rejected broker
    delivery discards the remainder instead of retrying or replaying stale text.
 
 The frontend queues activation requests. A later selection cannot overtake an
 earlier in-flight focus command and leave the singleton renderer associated
-with a different pane than Zellij has focused. Removing an in-flight target
+with a different pane than Zellij has focused. Every native focus request has a
+unique handoff token. The engine records each request before attached-client
+startup and rechecks that token under the focus lock, so a timed-out request
+cannot focus after a newer request has completed. Removing an in-flight target
 invalidates that activation and queues a focus reconciliation for the still-live
 target. A removed final target clears its active agent identity, so remounting
 requires a fresh activation instead of silently adopting stale focus.
@@ -235,6 +238,14 @@ and readiness as part of the same rollback. Wardian writes an atomic recovery
 record before changing SQLite. If SQLite restoration fails, startup hydration
 applies that record ahead of the stale candidate generation and retries the
 write or deletion; it never advertises the candidate as recovered readiness.
+Hydration first verifies that the durable agent still exists. A rollback marker
+whose agent was deleted is inert and removed on the next successful recovery
+file write, so cleanup failure cannot recreate the agent's readiness.
+
+If the provider pane survives but its broker actor has terminated, restart still
+uses the replacement transaction. Staging records that there is no displaced
+actor; rollback returns to that actor-less state, while commit publishes the
+candidate as a newly started runtime before retiring the old provider pane.
 
 ### Renderer or Workbench restart
 
