@@ -2130,7 +2130,9 @@ impl TerminalSessionActor {
             self.pending_owner_resync = None;
         }
         if self.owner_presentation_id.as_deref() == Some(&request.presentation_id)
-            && !self.presentation_is_eligible(&request.presentation_id)
+            && (presentation.visibility == TerminalVisibility::Hidden
+                || presentation.interaction_capability
+                    != TerminalInteractionCapability::Interactive)
         {
             self.owner_presentation_id = None;
             self.advance_lease_epoch();
