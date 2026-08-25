@@ -1,4 +1,4 @@
-use crate::state::zellij_terminal::{ZellijPanePhase, HABITAT_TERMINAL_SESSION_ID};
+use crate::state::zellij_terminal::ZellijPanePhase;
 use crate::state::AppState;
 use serde::Serialize;
 use tauri::State;
@@ -6,7 +6,7 @@ use tauri::State;
 #[derive(Debug, Serialize)]
 pub struct ZellijTerminalPreview {
     pub session_id: String,
-    pub habitat_terminal_session_id: &'static str,
+    pub terminal_session_id: String,
     pub generation: Option<u64>,
     pub state: &'static str,
     pub content: String,
@@ -19,8 +19,8 @@ pub async fn get_zellij_terminal_preview(
 ) -> Result<ZellijTerminalPreview, String> {
     let Some(engine) = state.zellij_terminal.get() else {
         return Ok(ZellijTerminalPreview {
+            terminal_session_id: session_id.clone(),
             session_id,
-            habitat_terminal_session_id: HABITAT_TERMINAL_SESSION_ID,
             generation: None,
             state: "unavailable",
             content: String::new(),
@@ -28,8 +28,8 @@ pub async fn get_zellij_terminal_preview(
     };
     let Some(binding) = engine.binding(&session_id).await else {
         return Ok(ZellijTerminalPreview {
+            terminal_session_id: session_id.clone(),
             session_id,
-            habitat_terminal_session_id: HABITAT_TERMINAL_SESSION_ID,
             generation: None,
             state: "starting",
             content: String::new(),
@@ -37,8 +37,8 @@ pub async fn get_zellij_terminal_preview(
     };
     if binding.phase == ZellijPanePhase::Exited {
         return Ok(ZellijTerminalPreview {
+            terminal_session_id: session_id.clone(),
             session_id,
-            habitat_terminal_session_id: HABITAT_TERMINAL_SESSION_ID,
             generation: Some(binding.generation),
             state: "exited",
             content: String::new(),
@@ -51,8 +51,8 @@ pub async fn get_zellij_terminal_preview(
         .map(|snapshot| snapshot.visible_grid)
         .unwrap_or_default();
     Ok(ZellijTerminalPreview {
+        terminal_session_id: session_id.clone(),
         session_id,
-        habitat_terminal_session_id: HABITAT_TERMINAL_SESSION_ID,
         generation: Some(binding.generation),
         state: "running",
         content,
@@ -63,20 +63,12 @@ pub async fn get_zellij_terminal_preview(
 pub async fn activate_zellij_agent_terminal(
     session_id: String,
     state: State<'_, AppState>,
-) -> Result<&'static str, String> {
+) -> Result<String, String> {
     let engine = state
         .zellij_terminal
         .get()
         .ok_or_else(|| "Terminal engine is unavailable".to_string())?;
-    engine
-        .start_attached_client(
-            state.terminal_sessions.clone(),
-            wardian_core::models::TerminalGeometry {
-                cols: 120,
-                rows: 40,
-            },
-        )
-        .await?;
+    engine.start_attached_client().await?;
     let binding = engine
         .binding(&session_id)
         .await
@@ -84,5 +76,5 @@ pub async fn activate_zellij_agent_terminal(
     engine
         .activate_pane(&session_id, binding.generation)
         .await?;
-    Ok(HABITAT_TERMINAL_SESSION_ID)
+    Ok(session_id)
 }

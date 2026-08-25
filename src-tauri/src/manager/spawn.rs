@@ -956,12 +956,7 @@ pub async fn spawn_agent(
     let (mut reader, terminal_runtime, process_id, zellij_pane, zellij_snapshot_frames) = if let Some(engine) =
         app_state.zellij_terminal.get().cloned()
     {
-        engine
-            .start_attached_client(
-                app_state.terminal_sessions.clone(),
-                wardian_core::models::TerminalGeometry { cols: 120, rows: 40 },
-            )
-            .await?;
+        engine.start_attached_client().await?;
         let binding = engine
             .create_pane(crate::state::zellij_terminal::ZellijLaunchSpec {
                 session_id: config.session_id.clone(),

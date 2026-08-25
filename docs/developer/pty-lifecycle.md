@@ -33,7 +33,8 @@ At startup, Wardian also sweeps stale persisted interactive sessions before rest
 ## 🔁 Spawning Lifecycle
 Spawning an agent follows a deterministic sequence in `manager::spawn_agent`:
 
-1. **Ensure engine**: Start or reattach the one Wardian-owned Zellij client.
+1. **Ensure engine**: Start or reattach the one Wardian-owned hidden Zellij
+   lifecycle client. It does not register a desktop broker session.
 2. **Build provider command**: Assemble the executable, exact argument vector,
    working directory, and per-agent environment.
 3. **Create one-use manifest**: Persist a nonce-bound JSON manifest containing
@@ -42,7 +43,9 @@ Spawning an agent follows a deterministic sequence in `manager::spawn_agent`:
    terminal host. The host validates and deletes the manifest before it starts
    the provider.
 5. **Subscribe**: Observe replacement pane frames and provider-native logs.
-6. **Register**: Store the generation-scoped agent-to-pane binding in
+6. **Register runtime**: Register the pane-addressed transport under the agent's
+   existing terminal session ID in the terminal-session broker.
+7. **Register binding**: Store the generation-scoped agent-to-pane binding in
    `AppState`.
 
 ### Shell-hosted Launch Notes

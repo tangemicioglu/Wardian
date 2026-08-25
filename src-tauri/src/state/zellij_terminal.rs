@@ -10,7 +10,6 @@ use uuid::Uuid;
 use wardian_core::models::{TerminalLaunchManifest, TERMINAL_LAUNCH_MANIFEST_SCHEMA};
 
 pub const ZELLIJ_VERSION: &str = "0.45.0";
-pub const HABITAT_TERMINAL_SESSION_ID: &str = "__wardian_habitat_zellij__";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -309,6 +308,8 @@ struct ZellijPaneRegistry {
 struct ZellijAttachedClient {
     child: ZellijAttachedProcess,
     runtime_generation: u64,
+    #[cfg(not(windows))]
+    _master: crate::state::terminal_session::SharedPtyMaster,
 }
 
 enum ZellijAttachedProcess {
@@ -397,11 +398,7 @@ impl ZellijTerminalEngine {
         }
     }
 
-    pub async fn start_attached_client(
-        self: &Arc<Self>,
-        broker: Arc<crate::state::terminal_session::TerminalSessionBroker>,
-        initial_geometry: wardian_core::models::TerminalGeometry,
-    ) -> Result<u64, String> {
+    pub async fn start_attached_client(self: &Arc<Self>) -> Result<u64, String> {
         let _start_guard = self.start_lock.lock().await;
         {
             let mut state = self.state.lock().await;
@@ -446,7 +443,6 @@ impl ZellijTerminalEngine {
                     runtime_generation: 1,
                 });
                 state.phase = ZellijEnginePhase::Running;
-                let _ = (broker, initial_geometry);
                 return Ok(1);
             }
         }
@@ -559,7 +555,6 @@ impl ZellijTerminalEngine {
                 runtime_generation: 1,
             });
             state.phase = ZellijEnginePhase::Running;
-            let _ = (broker, initial_geometry);
             Ok(1)
         }
 
@@ -571,8 +566,8 @@ impl ZellijTerminalEngine {
             }
             let pty_system = portable_pty::native_pty_system();
             let pair = match pty_system.openpty(portable_pty::PtySize {
-                rows: initial_geometry.rows,
-                cols: initial_geometry.cols,
+                rows: 40,
+                cols: 120,
                 pixel_width: 0,
                 pixel_height: 0,
             }) {
@@ -602,65 +597,18 @@ impl ZellijTerminalEngine {
             let mut reader = pair.master.try_clone_reader().map_err(|error| {
                 format!("Zellij attached client reader is unavailable: {error}")
             })?;
-            let mut writer = pair.master.take_writer().map_err(|error| {
-                format!("Zellij attached client writer is unavailable: {error}")
-            })?;
             let master: crate::state::terminal_session::SharedPtyMaster =
                 Arc::new(std::sync::Mutex::new(pair.master));
             drop(pair.slave);
 
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<
-                crate::state::terminal_session::NativeTerminalWriteRequest,
-            >(256);
-            let runtime = crate::state::terminal_session::native_terminal_runtime(tx, master);
-            let runtime_generation = match broker
-                .start_or_replace_runtime(HABITAT_TERMINAL_SESSION_ID, runtime, initial_geometry)
-                .await
-            {
-                Ok(generation) => generation,
-                Err(error) => {
-                    self.set_phase(ZellijEnginePhase::Failed).await;
-                    return Err(format!(
-                        "Zellij presentation runtime could not start: {error}"
-                    ));
-                }
-            };
-
-            std::thread::spawn(move || {
-                use std::io::Write;
-                while let Some(request) = rx.blocking_recv() {
-                    let result = writer
-                        .write_all(&request.bytes)
-                        .and_then(|_| writer.flush())
-                        .map_err(|error| error.to_string());
-                    let failed = result.is_err();
-                    let _ = request.completion.send(result);
-                    if failed {
-                        break;
-                    }
-                }
-            });
-
             let weak_engine = Arc::downgrade(self);
-            let reader_broker = broker.clone();
+            let runtime_generation = 1;
             std::thread::spawn(move || {
                 let mut buffer = [0u8; 8192];
-                loop {
-                    match std::io::Read::read(&mut reader, &mut buffer) {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => {
-                            if crate::state::terminal_session::forward_terminal_output(
-                                &reader_broker,
-                                HABITAT_TERMINAL_SESSION_ID,
-                                runtime_generation,
-                                &buffer[..read],
-                            )
-                            .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
+                while std::io::Read::read(&mut reader, &mut buffer).is_ok_and(|read| read > 0) {
+                    // The attached client is a hidden lifecycle process. Agent
+                    // presentation data comes from generation-scoped pane
+                    // subscriptions, so this stream only needs to be drained.
                 }
                 if let Some(engine) = weak_engine.upgrade() {
                     tauri::async_runtime::spawn(async move {
@@ -681,6 +629,7 @@ impl ZellijTerminalEngine {
             state.attached = Some(ZellijAttachedClient {
                 child: ZellijAttachedProcess::Portable(child),
                 runtime_generation,
+                _master: master,
             });
             state.phase = ZellijEnginePhase::Running;
             Ok(runtime_generation)
@@ -736,7 +685,7 @@ impl ZellijTerminalEngine {
     }
 
     async fn wait_for_session_ready(&self) -> Result<(), String> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             if self.list_panes().await.is_ok() {
                 return Ok(());
@@ -948,7 +897,7 @@ impl ZellijTerminalEngine {
                     break;
                 };
                 let Ok(update) = serde_json::from_str::<ZellijPaneUpdate>(&line) else {
-                    break;
+                    continue;
                 };
                 if update.event != "pane_update" || update.pane_id != expected_pane {
                     continue;
@@ -1679,16 +1628,7 @@ mod tests {
         };
         let engine = Arc::new(ZellijTerminalEngine::new(config.clone()));
         let broker = Arc::new(crate::state::terminal_session::TerminalSessionBroker::default());
-        engine
-            .start_attached_client(
-                broker.clone(),
-                wardian_core::models::TerminalGeometry {
-                    cols: 100,
-                    rows: 30,
-                },
-            )
-            .await
-            .unwrap();
+        engine.start_attached_client().await.unwrap();
 
         let start_deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         loop {
@@ -1699,15 +1639,10 @@ mod tests {
             };
             assert!(
                 std::time::Instant::now() < start_deadline,
-                "Zellij session did not start: {}; phase={:?}; exit={:?}; screen={}",
+                "Zellij session did not start: {}; phase={:?}; exit={:?}",
                 last_start_error,
                 engine.phase().await,
                 engine.attached_exit_status().await,
-                broker
-                    .snapshot(HABITAT_TERMINAL_SESSION_ID)
-                    .await
-                    .map(|snapshot| snapshot.visible_grid)
-                    .unwrap_or_default(),
             );
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
@@ -1865,14 +1800,10 @@ mod tests {
         drop(engine);
 
         let recovered = Arc::new(ZellijTerminalEngine::new(config));
+        let recovered_broker =
+            Arc::new(crate::state::terminal_session::TerminalSessionBroker::default());
         recovered
-            .start_attached_client(
-                broker,
-                wardian_core::models::TerminalGeometry {
-                    cols: 100,
-                    rows: 30,
-                },
-            )
+            .start_attached_client()
             .await
             .expect("reattach existing Zellij session");
         assert!(
@@ -1884,5 +1815,77 @@ mod tests {
                 .all(|pane| pane.title != "wardian:stale-after-backend-restart"),
             "backend restart must close unregistered provider panes"
         );
+
+        let recovered_binding = recovered
+            .create_pane(ZellijLaunchSpec {
+                session_id: "recovered-agent".to_string(),
+                executable: "powershell.exe".to_string(),
+                args: vec![
+                    "-NoLogo".to_string(),
+                    "-NoProfile".to_string(),
+                    "-NoExit".to_string(),
+                ],
+                cwd: workspace.to_path_buf(),
+                env: BTreeMap::new(),
+            })
+            .await
+            .expect("provider pane after backend recovery");
+        let ZellijPaneTransport {
+            reader: _reader,
+            snapshot_frames: _snapshot_frames,
+            runtime,
+            mut subscription,
+            lease,
+        } = recovered.open_pane_transport(&recovered_binding).unwrap();
+        recovered_broker
+            .start_or_replace_runtime(
+                "recovered-agent",
+                runtime,
+                wardian_core::models::TerminalGeometry {
+                    cols: 100,
+                    rows: 30,
+                },
+            )
+            .await
+            .expect("register recovered provider runtime in a fresh broker");
+        if let Err(error) = recovered
+            .activate_pane("recovered-agent", recovered_binding.generation)
+            .await
+        {
+            panic!(
+                "focus recovered provider pane: {error}; binding={:?}; subscription={:?}; panes={:?}",
+                recovered.binding("recovered-agent").await,
+                subscription.try_wait(),
+                recovered.list_panes().await,
+            );
+        }
+        let recovered_input = isolated.path().join("recovered-input.txt");
+        recovered_broker
+            .send_privileged_input(
+                "recovered-agent",
+                format!(
+                    "Set-Content -LiteralPath {} -Value recovered\r",
+                    powershell_single_quoted(&recovered_input.to_string_lossy()),
+                )
+                .into_bytes(),
+            )
+            .await
+            .expect("route input through the fresh broker");
+        let recovered_deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while std::fs::read_to_string(&recovered_input).ok().as_deref() != Some("recovered\r\n") {
+            assert!(
+                std::time::Instant::now() < recovered_deadline,
+                "fresh broker input did not reach the recovered pane"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        recovered
+            .close_pane("recovered-agent", recovered_binding.generation)
+            .await
+            .unwrap();
+        let _ = subscription.kill();
+        let _ = subscription.wait();
+        drop(lease);
     }
 }

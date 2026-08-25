@@ -83,10 +83,11 @@ Wardian AppState
              agent ID, pane ID, generation, launch identity
 ```
 
-The attached client keeps the Zellij server and provider panes alive. The
-desktop does not render that client on Windows. Each provider pane has one JSON
-snapshot subscription, and exactly one app-level xterm.js host renders the
-selected agent's broker stream. Agent cards that do not own that host show
+The attached client is a hidden lifecycle process that keeps the Zellij server
+and provider panes alive; it is not a terminal-session broker runtime on any
+platform. Each provider pane has one JSON snapshot subscription and its own
+generation-scoped broker runtime. Exactly one app-level xterm.js host renders
+the selected agent's broker stream. Agent cards that do not own that host show
 read-only broker snapshots and consume no xterm.js or WebGL instance.
 Activating a card focuses and fullscreens its pane before the singleton host
 moves there.
@@ -191,12 +192,16 @@ is known, revoke the memory capability, and return the agent to `unbound`.
 
 1. Verify the target pane belongs to the requested agent and generation.
 2. Serialize focus handoffs, focus the pane by ID, and make it fullscreen.
-3. Move the singleton terminal host to the selected presentation.
-4. Apply the selected pane's next complete snapshot to that host.
+3. Return the selected agent session ID as the broker session to present.
+4. Move the singleton terminal host to the selected presentation.
+5. Apply the selected pane's next complete snapshot to that host.
 
 The frontend queues activation requests. A later selection cannot overtake an
 earlier in-flight focus command and leave the singleton renderer associated
-with a different pane than Zellij has focused.
+with a different pane than Zellij has focused. Removing an in-flight target
+invalidates that activation and queues a focus reconciliation for the still-live
+target. A removed final target clears its active agent identity, so remounting
+requires a fresh activation instead of silently adopting stale focus.
 
 Snapshot cards never resize panes. The singleton xterm fits the canonical
 Zellij frame locally. Remote clients cannot activate or resize this desktop

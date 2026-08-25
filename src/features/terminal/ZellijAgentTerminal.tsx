@@ -11,12 +11,11 @@ import type {
 } from "../../types";
 import { AgentTerminal } from "./AgentTerminal";
 
-const HABITAT_TERMINAL_SESSION_ID = "__wardian_habitat_zellij__";
 const HABITAT_TERMINAL_PRESENTATION_ID = "desktop:zellij-habitat-terminal";
 
 type ZellijTerminalPreview = {
   session_id: string;
-  habitat_terminal_session_id: string;
+  terminal_session_id: string;
   generation: number | null;
   state: "starting" | "running" | "exited" | "unavailable";
   content: string;
@@ -42,6 +41,7 @@ type ZellijPresentationStore = {
 
 export const useZellijPresentationStore = create<ZellijPresentationStore>((set, get) => {
   let activationQueue = Promise.resolve();
+  let pendingTargetId: string | null = null;
   return {
     activeAgentId: null,
     activeTargetId: null,
@@ -58,23 +58,52 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
       const removed = state.slots.get(targetId);
       const slots = new Map(state.slots);
       slots.delete(targetId);
+      const invalidatesActivation = pendingTargetId === targetId;
+      if (invalidatesActivation) pendingTargetId = null;
       if (state.activeTargetId !== targetId) {
-        set({ slots });
+        set({
+          slots,
+          ...(invalidatesActivation ? { activationSerial: state.activationSerial + 1 } : {}),
+        });
+        if (invalidatesActivation) {
+          const reconciliation = activationQueue.then(async () => {
+            const current = get();
+            const active = current.activeTargetId
+              ? current.slots.get(current.activeTargetId)
+              : undefined;
+            if (active) {
+              await invoke<string>("activate_zellij_agent_terminal", {
+                sessionId: active.agentId,
+              });
+            }
+          });
+          activationQueue = reconciliation.catch(() => undefined);
+        }
         return;
       }
       const fallback = removed
         ? Array.from(slots.entries()).find(([, slot]) => slot.agentId === removed.agentId)?.[0]
         : undefined;
-      set({ slots, activeTargetId: fallback ?? null });
+      set({
+        slots,
+        activeAgentId: fallback && removed ? removed.agentId : null,
+        activeTargetId: fallback ?? null,
+        ...(invalidatesActivation ? { activationSerial: state.activationSerial + 1 } : {}),
+      });
     },
     activate: (agentId, targetId) => {
       const serial = get().activationSerial + 1;
+      pendingTargetId = targetId;
       set({ activationSerial: serial });
       const activation = activationQueue.then(async () => {
-        if (get().activationSerial !== serial) return;
-        await invoke<string>("activate_zellij_agent_terminal", { sessionId: agentId });
-        if (get().activationSerial === serial && get().slots.has(targetId)) {
-          set({ activeAgentId: agentId, activeTargetId: targetId });
+        try {
+          if (get().activationSerial !== serial || !get().slots.has(targetId)) return;
+          await invoke<string>("activate_zellij_agent_terminal", { sessionId: agentId });
+          if (get().activationSerial === serial && get().slots.has(targetId)) {
+            set({ activeAgentId: agentId, activeTargetId: targetId });
+          }
+        } finally {
+          if (pendingTargetId === targetId) pendingTargetId = null;
         }
       });
       activationQueue = activation.catch(() => undefined);
@@ -167,7 +196,7 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
         if (!cancelled) {
           setPreview({
             session_id: sessionId,
-            habitat_terminal_session_id: HABITAT_TERMINAL_SESSION_ID,
+            terminal_session_id: sessionId,
             generation: null,
             state: "unavailable",
             content: "",
