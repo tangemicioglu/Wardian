@@ -357,4 +357,39 @@ test.describe("Inbox", () => {
         .screenshot({ path: process.env.WARDIAN_WORKFLOW_INBOX_RECONCILIATION_SCREENSHOT, animations: "disabled" });
     }
   });
+
+  test("keeps workflow read and clear actions stable across Inbox refreshes", async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as Window & { __WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__?: Array<Record<string, unknown>> })
+        .__WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__ = [{
+          workflow_id: "release-workflow",
+          run_instance_id: "run-triage",
+          workflow_name: "Release workflow",
+          status: "completed",
+          summary: "The release workflow completed successfully.",
+          updated_at: new Date().toISOString(),
+        }];
+    });
+    await installQueueV2IpcMock(page);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+    await openSurface(page, "inbox");
+
+    const workflowCard = page.locator(".group").filter({ hasText: "Release workflow" }).first();
+    await expect(workflowCard).toBeVisible();
+    await workflowCard.click();
+    await expect(page.getByRole("button", { name: /clear read/i })).toBeEnabled();
+
+    if (process.env.WARDIAN_WORKFLOW_TRIAGE_SCREENSHOT) {
+      await page
+        .locator('[data-testid="surface-panel"][data-surface-type="inbox"]')
+        .screenshot({ path: process.env.WARDIAN_WORKFLOW_TRIAGE_SCREENSHOT, animations: "disabled" });
+    }
+
+    await page.getByRole("button", { name: /clear read/i }).click();
+    await expect(page.getByText("Release workflow", { exact: true })).toBeHidden();
+
+    await page.waitForTimeout(5_500);
+    await expect(page.getByText("Release workflow", { exact: true })).toBeHidden();
+  });
 });

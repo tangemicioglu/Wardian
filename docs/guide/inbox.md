@@ -72,9 +72,11 @@ If the desktop Inbox saves before its load baseline is available, Wardian keeps
 the latest persisted projection authoritative. This prevents a stale desktop
 snapshot from resurrecting an item dismissed from another surface.
 
-**Clear read** removes only read legacy completion items. Durable notification
-history and read **Action needed** prompts remain visible, and the control is
-disabled when there are no completion items to clear.
+**Clear read** removes read completion items, including workflow outcomes. A
+cleared workflow run keeps a small local triage marker so the durable workflow
+history remains intact without recreating the Inbox card on the next refresh.
+Durable notification history and read **Action needed** prompts remain visible,
+and the control is disabled when there are no completion items to clear.
 
 ## Agent Notifications
 
@@ -116,7 +118,7 @@ Inbox alert preferences live in **Settings > Inbox** and are per event type. Des
 - Items older than seven days are ignored by the legacy completion projection when it loads.
 - Automatic completion cards use only a canonical final provider response. Open the source session or ask the agent for a summary when no automatic card appears.
 - Provider approval-looking text does not create generic manual choices. Wardian shows buttons only for explicit provider choices or a structured `notify approval` request.
-- Clearing read items removes only the legacy completion projection for the active Wardian home. Durable notify history and workflow state retain their own lifecycle.
+- Clearing read items removes the completion projection for the active Wardian home. Durable notify history and workflow state retain their own lifecycle; cleared workflow run identities are retained only as Inbox triage markers.
 
 ## Related Links
 

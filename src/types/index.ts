@@ -321,6 +321,8 @@ export interface QueueItem {
     type: "action_needed" | "agent_completed" | "workflow_completed" | "agent_update" | "approval_request";
     timestamp: number;
     read: boolean;
+    /** Internal durable marker used to keep cleared workflow runs out of Inbox. */
+    dismissed?: boolean;
     evidence_id?: string;
     evidence_source?: "provider_runtime" | "interaction_store" | "live_runtime";
     // agent fields
