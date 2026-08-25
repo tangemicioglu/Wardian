@@ -557,7 +557,7 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
     .toBe("visible");
   await expect
     .poll(() => page.locator(".chat-row-actions--inline.chat-row-actions--start").last().evaluate((element) => getComputedStyle(element).top))
-    .toBe("-10px");
+    .toBe("-12px");
   await captureFeatureScreenshot("chat-message-actions-menu.png", page.locator('[data-testid="remote-agent-detail"]'));
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Show all" }).click();

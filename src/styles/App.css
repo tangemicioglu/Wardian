@@ -912,7 +912,7 @@ summary,
   .chat-row .chat-row-actions--inline {
     display: block;
     position: absolute;
-    top: 2px;
+    top: -4px;
     right: 4px;
     margin-top: 0;
     opacity: 1;
@@ -928,7 +928,7 @@ summary,
      when assistant text wraps. Keep the hit area, but align its icon with the
      first text line like the user bubble action. */
   .chat-row-actions--inline.chat-row-actions--start {
-    top: -10px;
+    top: -12px;
   }
 
   .chat-message-content {
