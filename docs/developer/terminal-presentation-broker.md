@@ -6,10 +6,10 @@
 > presentations.
 
 The selected pane can appear in Agents or an Agent Session surface. The Rust
-terminal session broker moves one stable desktop presentation between those
-hosts and between pane sessions without allowing stale surfaces to retain
-input ownership. The engine's attached Zellij client is a hidden lifecycle
-process, not the desktop renderer's stream.
+terminal session broker binds one stable desktop presentation to the selected
+pane while the app-root viewport is positioned over the selected slot, without
+allowing stale surfaces to retain input ownership. The engine's attached
+Zellij client is a hidden lifecycle process, not the desktop renderer's stream.
 
 ## Core Invariants
 
@@ -212,8 +212,19 @@ client being released or be overtaken by a replacement presentation.
 
 For Zellij-owned agent terminals, each agent broker receives complete pane
 snapshots. One process-wide desktop xterm host moves between registered
-Workbench slots. Inactive and duplicate slots render read-only text previews.
+Workbench slots visually by positioning its app-root viewport over the selected
+slot; its DOM subtree does not move. Inactive and duplicate slots render
+read-only text previews.
 The standalone human terminal keeps its independent presentation behavior.
+
+The process-wide host keeps the stable broker identity
+`desktop:zellij-habitat-terminal`. Card and Agent Session presentation IDs are
+local slot identities only: the host translates its ownership observation back
+to the selected slot so that surface UI can report owner or mirror state without
+registering another xterm. Hiding, suspending, making a slot read-only, or
+closing the last slot hides and releases input from the retained host; none of
+those transitions unmounts, reparents, disposes, or recreates its xterm or
+WebGL objects.
 
 The authenticated remote WebSocket registers a remote presentation and
 consumer, then uses the same activation, input, resize, snapshot, events, ack,

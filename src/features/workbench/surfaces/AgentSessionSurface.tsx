@@ -8,7 +8,10 @@ import type {
   TerminalRequestedInteraction,
   TerminalVisibility,
 } from "../../../types";
-import { ZellijAgentTerminal } from "../../terminal/ZellijAgentTerminal";
+import {
+  HABITAT_TERMINAL_PRESENTATION_ID,
+  ZellijAgentTerminal,
+} from "../../terminal/ZellijAgentTerminal";
 
 export interface AgentSessionSurfaceProps {
   /** Stable workbench presentation identity. Closing it must not affect the agent runtime. */
@@ -47,6 +50,8 @@ function presentationMode(
   brokerState: TerminalBrokerState | null | undefined,
 ): PresentationMode {
   if (!brokerState || brokerState.session_id !== agentId) return "connecting";
+  if (brokerState.owner_presentation_id === null) return "connecting";
+  if (brokerState.owner_presentation_id === HABITAT_TERMINAL_PRESENTATION_ID) return "connecting";
   return brokerState.owner_presentation_id === presentationId ? "owner" : "mirror";
 }
 

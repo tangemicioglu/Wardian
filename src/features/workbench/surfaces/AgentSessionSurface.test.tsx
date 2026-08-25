@@ -15,6 +15,7 @@ import {
 const terminalSpy = vi.hoisted(() => vi.fn());
 
 vi.mock("../../terminal/ZellijAgentTerminal", () => ({
+  HABITAT_TERMINAL_PRESENTATION_ID: "desktop:zellij-habitat-terminal",
   ZellijAgentTerminal: (props: Record<string, unknown>) => {
     terminalSpy(props);
     return <div data-testid="agent-terminal" />;
@@ -180,10 +181,23 @@ describe("AgentSessionSurface", () => {
       }),
     })} />);
 
-    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Mirror");
+    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Connecting");
     expect(screen.getByTestId("agent-session-read-only")).toHaveTextContent("Read only");
     expect(terminalSpy.mock.calls[terminalSpy.mock.calls.length - 1]?.[0])
       .toMatchObject({ requestedInteraction: "read_only" });
+  });
+
+  it("keeps the shared Habitat owner selectable until the local slot is bound", () => {
+    render(<AgentSessionSurface {...surfaceProps({
+      broker_state: brokerState({
+        owner_presentation_id: "desktop:zellij-habitat-terminal",
+      }),
+    })} />);
+
+    expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Connecting");
+    expect(screen.queryByTestId("agent-session-read-only")).not.toBeInTheDocument();
+    expect(terminalSpy.mock.calls[terminalSpy.mock.calls.length - 1]?.[0])
+      .toMatchObject({ requestedInteraction: "interactive" });
   });
 
   it("updates badges from the live terminal observation callback", () => {

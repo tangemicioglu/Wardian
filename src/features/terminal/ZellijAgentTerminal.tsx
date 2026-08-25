@@ -11,12 +11,15 @@ import type {
 } from "../../types";
 import { AgentTerminal } from "./AgentTerminal";
 
-const HABITAT_TERMINAL_PRESENTATION_ID = "desktop:zellij-habitat-terminal";
+export const HABITAT_TERMINAL_PRESENTATION_ID = "desktop:zellij-habitat-terminal";
 
 type ZellijTerminalPreview = {
   session_id: string;
   terminal_session_id: string;
   generation: number | null;
+  broker_generation: number | null;
+  broker_lease_epoch: number | null;
+  broker_owner_presentation_id: string | null;
   state: "starting" | "running" | "exited" | "unavailable";
   content: string;
 };
@@ -26,6 +29,7 @@ type LiveTerminalProps = Omit<ZellijAgentTerminalProps, "presentationId">;
 type ZellijTerminalSlot = {
   agentId: string;
   node: HTMLElement;
+  presentationId: string;
   props: LiveTerminalProps;
 };
 
@@ -49,14 +53,13 @@ type ZellijPresentationStore = {
   activeAgentId: string | null;
   activeTargetId: string | null;
   activationSerial: number;
-  brokerAgentId: string | null;
-  brokerGeneration: number | null;
-  brokerOwner: string | null;
+  brokerOwners: Map<string, ZellijBrokerObservation>;
   focusRequestSerial: number;
   slots: Map<string, ZellijTerminalSlot>;
   setBrokerOwner: (
     agentId: string,
     runtimeGeneration: number | null,
+    leaseEpoch: number | null,
     presentationId: string | null,
   ) => void;
   upsertSlot: (targetId: string, slot: ZellijTerminalSlot) => void;
@@ -64,14 +67,20 @@ type ZellijPresentationStore = {
   activate: (agentId: string, targetId: string) => Promise<void>;
 };
 
+type ZellijBrokerObservation = {
+  generation: number | null;
+  leaseEpoch: number | null;
+  owner: string | null;
+};
+
 function desktopMayOwnBroker(
   agentId: string,
-  brokerAgentId: string | null,
-  brokerOwner: string | null,
+  brokerOwners: Map<string, ZellijBrokerObservation>,
 ): boolean {
-  return brokerAgentId !== agentId
-    || brokerOwner === null
-    || brokerOwner === HABITAT_TERMINAL_PRESENTATION_ID;
+  const observation = brokerOwners.get(agentId);
+  return observation === undefined
+    || observation.owner === null
+    || observation.owner === HABITAT_TERMINAL_PRESENTATION_ID;
 }
 
 export const useZellijPresentationStore = create<ZellijPresentationStore>((set, get) => {
@@ -81,15 +90,26 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
     activeAgentId: null,
     activeTargetId: null,
     activationSerial: 0,
-    brokerAgentId: null,
-    brokerGeneration: null,
-    brokerOwner: null,
+    brokerOwners: new Map(),
     focusRequestSerial: 0,
     slots: new Map(),
-    setBrokerOwner: (brokerAgentId, brokerGeneration, brokerOwner) => set({
-      brokerAgentId,
-      brokerGeneration,
-      brokerOwner,
+    setBrokerOwner: (agentId, generation, leaseEpoch, owner) => set((state) => {
+      const existing = state.brokerOwners.get(agentId);
+      if (
+        existing?.generation !== null
+        && existing?.generation !== undefined
+        && generation !== null
+        && generation < existing.generation
+      ) return state;
+      if (
+        existing?.generation === generation
+        && existing.leaseEpoch !== null
+        && leaseEpoch !== null
+        && leaseEpoch < existing.leaseEpoch
+      ) return state;
+      const brokerOwners = new Map(state.brokerOwners);
+      brokerOwners.set(agentId, { generation, leaseEpoch, owner });
+      return { brokerOwners };
     }),
     upsertSlot: (targetId, slot) => {
       const slots = new Map(get().slots);
@@ -117,14 +137,11 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
               : undefined;
             if (
               slotCanOwnTerminal(active)
-              && desktopMayOwnBroker(
-                active.agentId,
-                current.brokerAgentId,
-                current.brokerOwner,
-              )
+              && desktopMayOwnBroker(active.agentId, current.brokerOwners)
             ) {
               await invoke<string>("activate_zellij_agent_terminal", {
                 sessionId: active.agentId,
+                brokerGeneration: current.brokerOwners.get(active.agentId)?.generation ?? null,
               });
             }
           });
@@ -152,13 +169,16 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
           if (
             get().activationSerial !== serial
             || !slotCanOwnTerminal(slot)
-            || !desktopMayOwnBroker(slot.agentId, get().brokerAgentId, get().brokerOwner)
+            || !desktopMayOwnBroker(slot.agentId, get().brokerOwners)
           ) return;
-          await invoke<string>("activate_zellij_agent_terminal", { sessionId: agentId });
+          await invoke<string>("activate_zellij_agent_terminal", {
+            sessionId: agentId,
+            brokerGeneration: get().brokerOwners.get(agentId)?.generation ?? null,
+          });
           if (
             get().activationSerial === serial
             && slotCanOwnTerminal(get().slots.get(targetId))
-            && desktopMayOwnBroker(agentId, get().brokerAgentId, get().brokerOwner)
+            && desktopMayOwnBroker(agentId, get().brokerOwners)
           ) {
             set((state) => ({
               activeAgentId: agentId,
@@ -226,8 +246,7 @@ export function ZellijAgentTerminalHost() {
   });
   const [retainedTarget, setRetainedTarget] = useState<ZellijTerminalSlot | null>(null);
   const [rect, setRect] = useState<ZellijViewportRect | null>(null);
-  const brokerAgentId = useZellijPresentationStore((state) => state.brokerAgentId);
-  const brokerOwner = useZellijPresentationStore((state) => state.brokerOwner);
+  const brokerOwners = useZellijPresentationStore((state) => state.brokerOwners);
   const setBrokerOwner = useZellijPresentationStore((state) => state.setBrokerOwner);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const retainedTargetIdRef = useRef<string | null>(null);
@@ -242,14 +261,13 @@ export function ZellijAgentTerminalHost() {
     setRetainedTarget(target);
     if (retainedTargetIdRef.current !== activeTargetId) {
       retainedTargetIdRef.current = activeTargetId;
-      setBrokerOwner(target.agentId, null, null);
     }
   }, [activeTargetId, target]);
 
   useEffect(() => {
     if (
       !slotCanOwnTerminal(target)
-      || !desktopMayOwnBroker(target.agentId, brokerAgentId, brokerOwner)
+      || !desktopMayOwnBroker(target.agentId, brokerOwners)
       || focusRequestSerial === 0
       || handledFocusRequestRef.current === focusRequestSerial
     ) return;
@@ -258,7 +276,7 @@ export function ZellijAgentTerminalHost() {
     const focusWhenReady = () => {
       if (cancelled) return true;
       const broker = useZellijPresentationStore.getState();
-      if (!desktopMayOwnBroker(target.agentId, broker.brokerAgentId, broker.brokerOwner)) {
+      if (!desktopMayOwnBroker(target.agentId, broker.brokerOwners)) {
         return true;
       }
       const terminalHost = viewportRef.current?.querySelector<HTMLElement>(
@@ -299,7 +317,7 @@ export function ZellijAgentTerminalHost() {
       observer.disconnect();
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [brokerAgentId, brokerOwner, focusRequestSerial, target]);
+  }, [brokerOwners, focusRequestSerial, target]);
   const renderedTarget = target ?? retainedTarget;
 
   useLayoutEffect(() => {
@@ -335,11 +353,11 @@ export function ZellijAgentTerminalHost() {
   if (!renderedTarget) return null;
 
   const props = renderedTarget.props;
-  const relevantBrokerOwner = brokerAgentId === renderedTarget.agentId ? brokerOwner : null;
+  const relevantBrokerOwner = brokerOwners.get(renderedTarget.agentId)?.owner ?? null;
   const eligibleTarget = slotCanOwnTerminal(target)
-    && desktopMayOwnBroker(target.agentId, brokerAgentId, brokerOwner);
+    && desktopMayOwnBroker(target.agentId, brokerOwners);
   const effectiveInteraction = target
-    && !desktopMayOwnBroker(target.agentId, brokerAgentId, brokerOwner)
+    && !desktopMayOwnBroker(target.agentId, brokerOwners)
     ? "read_only"
     : target ? props.requestedInteraction : "read_only";
   const visible = Boolean(eligibleTarget && rect && rect.width >= 10 && rect.height >= 10);
@@ -365,8 +383,8 @@ export function ZellijAgentTerminalHost() {
       <AgentTerminal
         sessionId={renderedTarget.agentId}
         presentationId={HABITAT_TERMINAL_PRESENTATION_ID}
-        visibility={target ? props.visibility : "hidden"}
-        renderState={target ? props.renderState : "mounted"}
+        visibility={eligibleTarget ? props.visibility : "hidden"}
+        renderState="mounted"
         requestedInteraction={effectiveInteraction}
         provider={props.provider}
         isMaximized={props.isMaximized}
@@ -378,9 +396,19 @@ export function ZellijAgentTerminalHost() {
           setBrokerOwner(
             renderedTarget.agentId,
             brokerState.runtime_generation,
+            brokerState.lease_epoch,
             brokerState.owner_presentation_id,
           );
-          props.onPresentationStateChange?.(brokerState, presentationState);
+          const singletonPresentationId = presentationState?.presentation_id
+            ?? HABITAT_TERMINAL_PRESENTATION_ID;
+          const localBrokerState = brokerState.owner_presentation_id
+            === singletonPresentationId
+            ? { ...brokerState, owner_presentation_id: renderedTarget.presentationId }
+            : brokerState;
+          const localPresentationState = presentationState
+            ? { ...presentationState, presentation_id: renderedTarget.presentationId }
+            : null;
+          props.onPresentationStateChange?.(localBrokerState, localPresentationState);
         }}
         autoActivateWhenUnowned={eligibleTarget}
         autoFocus={props.autoFocus}
@@ -397,8 +425,7 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
   const targetId = `${presentationId}:${sessionId}`;
   const hostRef = useRef<HTMLElement | null>(null);
   const activeTargetId = useZellijPresentationStore((state) => state.activeTargetId);
-  const brokerAgentId = useZellijPresentationStore((state) => state.brokerAgentId);
-  const brokerOwner = useZellijPresentationStore((state) => state.brokerOwner);
+  const brokerOwners = useZellijPresentationStore((state) => state.brokerOwners);
   const activate = useZellijPresentationStore((state) => state.activate);
   const setBrokerOwner = useZellijPresentationStore((state) => state.setBrokerOwner);
   const upsertSlot = useZellijPresentationStore((state) => state.upsertSlot);
@@ -410,12 +437,12 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
   const canOwnTerminal = visibility === "visible"
     && renderState === "mounted"
     && requestedInteraction === "interactive"
-    && desktopMayOwnBroker(sessionId, brokerAgentId, brokerOwner);
+    && desktopMayOwnBroker(sessionId, brokerOwners);
   const isLiveTarget = activeTargetId === targetId && canOwnTerminal;
 
   useEffect(() => {
     const node = hostRef.current;
-    if (node) upsertSlot(targetId, { agentId: sessionId, node, props });
+    if (node) upsertSlot(targetId, { agentId: sessionId, node, presentationId, props });
   });
 
   useEffect(() => () => removeSlot(targetId), [removeSlot, targetId]);
@@ -429,14 +456,13 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
           sessionId,
         });
         if (!cancelled) {
-          const broker = useZellijPresentationStore.getState();
-          if (
-            next.generation !== null
-            && broker.brokerAgentId === sessionId
-            && broker.brokerGeneration !== null
-            && next.generation > broker.brokerGeneration
-          ) {
-            setBrokerOwner(sessionId, next.generation, null);
+          if (next.broker_generation !== null) {
+            setBrokerOwner(
+              sessionId,
+              next.broker_generation,
+              next.broker_lease_epoch,
+              next.broker_owner_presentation_id,
+            );
           }
           setPreview(next);
         }
@@ -446,6 +472,9 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
             session_id: sessionId,
             terminal_session_id: sessionId,
             generation: null,
+            broker_generation: null,
+            broker_lease_epoch: null,
+            broker_owner_presentation_id: null,
             state: "unavailable",
             content: "",
           });

@@ -125,6 +125,13 @@ async function waitForAgentSessionHost(driver) {
       })),
       agentSessions: document.querySelectorAll('[data-testid="agent-session-surface"]').length,
       terminalHosts: document.querySelectorAll('[data-testid="agent-terminal-host"]').length,
+      viewportOwner: document.querySelector('[data-zellij-singleton-viewport="true"]')
+        ?.getAttribute("data-terminal-broker-owner") ?? null,
+      sessionPresentation: document.querySelector('[data-testid="agent-session-surface"]')
+        ?.getAttribute("data-presentation-id") ?? null,
+      previewDisabled: document.querySelector(
+        '[data-testid="agent-session-surface"] [data-zellij-presentation="preview"]',
+      )?.getAttribute("aria-disabled") ?? null,
     }));
     throw new Error(`Agent Session terminal did not mount: ${JSON.stringify(diagnostic)}\n${error}`);
   }
