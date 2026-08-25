@@ -704,6 +704,13 @@ pub async fn spawn_agent(
 
     let config_lock = std::sync::Arc::new(std::sync::Mutex::new(config.clone()));
 
+    let live_conversation_started_at =
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    app_state
+        .conversation_archive
+        .begin_live_conversation(&config.session_id, &live_conversation_started_at)
+        .map_err(|error| format!("Failed to establish chat conversation boundary: {error}"))?;
+
     #[cfg(windows)]
     if should_cleanup_stale_session_processes_before_spawn(is_restored) {
         cleanup_stale_session_processes(&config.session_id, &config.provider);

@@ -109,6 +109,7 @@ bash -lc "wardian --version"
 ### Chat history
 
 - Codex emits a lightweight `agent_message` and a completed `response_item` for the same visible assistant response. The completed record can append an internal `<oai-mem-citation>` block. Wardian removes that block before storing or rendering the message, and applies the same normalization while replaying older archived rows, so one user-visible answer appears once.
+- Wardian memory rows are filtered to the active conversation boundary before they are merged into Chat, then receive the same chronological sequence assignment as provider and watch events. Agent-wide memory history must not be replayed into a later conversation.
 
 ### Working-root model
 
