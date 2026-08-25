@@ -223,7 +223,7 @@ export function AgentSessionSurface({
           presentationId={presentationId}
           visibility={visibility}
           renderState={render_state}
-          requestedInteraction={requested_interaction}
+          requestedInteraction={isReadOnly ? "read_only" : requested_interaction}
           provider={resolvedAgent.provider}
           isMaximized={is_maximized}
           theme={theme}

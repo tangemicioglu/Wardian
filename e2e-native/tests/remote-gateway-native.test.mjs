@@ -780,6 +780,33 @@ test("remote gateway authenticates broker ownership transitions across desktop a
     "remote ownership must preserve Zellij's canonical frame geometry",
   );
 
+  const desktopMirror = await waitFor("read-only desktop singleton during remote ownership", 30000, async () => {
+    const value = await session.driver.executeScript((resourceKey, ownerId) => {
+      const renderer = document.querySelector(
+        `[data-zellij-presentation="renderer"][data-zellij-agent-id="${CSS.escape(resourceKey)}"]`,
+      );
+      const preview = document.querySelector(
+        `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(resourceKey)}"]`,
+      );
+      const style = renderer instanceof HTMLElement ? window.getComputedStyle(renderer) : null;
+      return {
+        ok: renderer?.getAttribute("data-terminal-broker-owner") === ownerId
+          && style?.visibility === "hidden"
+          && style.pointerEvents === "none"
+          && preview?.getAttribute("aria-disabled") === "true",
+        previewPresent: preview !== null,
+      };
+    }, sessionId, remotePresentationId);
+    return value;
+  });
+  assert.equal(desktopMirror.previewPresent, true);
+  await session.driver.executeScript((resourceKey) => {
+    const preview = document.querySelector(
+      `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(resourceKey)}"]`,
+    );
+    preview?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  }, sessionId);
+
   terminalSocket.send(JSON.stringify({
     type: "input",
     runtime_generation: remoteAck.result.broker_state.runtime_generation,

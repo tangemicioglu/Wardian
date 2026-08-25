@@ -29,6 +29,15 @@ type ZellijTerminalSlot = {
   props: LiveTerminalProps;
 };
 
+function slotCanOwnTerminal(slot: ZellijTerminalSlot | null | undefined): slot is ZellijTerminalSlot {
+  return Boolean(
+    slot
+    && slot.props.visibility === "visible"
+    && slot.props.renderState === "mounted"
+    && slot.props.requestedInteraction === "interactive",
+  );
+}
+
 type ZellijViewportRect = {
   left: number;
   top: number;
@@ -40,12 +49,30 @@ type ZellijPresentationStore = {
   activeAgentId: string | null;
   activeTargetId: string | null;
   activationSerial: number;
+  brokerAgentId: string | null;
+  brokerGeneration: number | null;
+  brokerOwner: string | null;
   focusRequestSerial: number;
   slots: Map<string, ZellijTerminalSlot>;
+  setBrokerOwner: (
+    agentId: string,
+    runtimeGeneration: number | null,
+    presentationId: string | null,
+  ) => void;
   upsertSlot: (targetId: string, slot: ZellijTerminalSlot) => void;
   removeSlot: (targetId: string) => void;
   activate: (agentId: string, targetId: string) => Promise<void>;
 };
+
+function desktopMayOwnBroker(
+  agentId: string,
+  brokerAgentId: string | null,
+  brokerOwner: string | null,
+): boolean {
+  return brokerAgentId !== agentId
+    || brokerOwner === null
+    || brokerOwner === HABITAT_TERMINAL_PRESENTATION_ID;
+}
 
 export const useZellijPresentationStore = create<ZellijPresentationStore>((set, get) => {
   let activationQueue = Promise.resolve();
@@ -54,8 +81,16 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
     activeAgentId: null,
     activeTargetId: null,
     activationSerial: 0,
+    brokerAgentId: null,
+    brokerGeneration: null,
+    brokerOwner: null,
     focusRequestSerial: 0,
     slots: new Map(),
+    setBrokerOwner: (brokerAgentId, brokerGeneration, brokerOwner) => set({
+      brokerAgentId,
+      brokerGeneration,
+      brokerOwner,
+    }),
     upsertSlot: (targetId, slot) => {
       const slots = new Map(get().slots);
       slots.set(targetId, slot);
@@ -80,7 +115,14 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
             const active = current.activeTargetId
               ? current.slots.get(current.activeTargetId)
               : undefined;
-            if (active) {
+            if (
+              slotCanOwnTerminal(active)
+              && desktopMayOwnBroker(
+                active.agentId,
+                current.brokerAgentId,
+                current.brokerOwner,
+              )
+            ) {
               await invoke<string>("activate_zellij_agent_terminal", {
                 sessionId: active.agentId,
               });
@@ -106,9 +148,18 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
       set({ activationSerial: serial });
       const activation = activationQueue.then(async () => {
         try {
-          if (get().activationSerial !== serial || !get().slots.has(targetId)) return;
+          const slot = get().slots.get(targetId);
+          if (
+            get().activationSerial !== serial
+            || !slotCanOwnTerminal(slot)
+            || !desktopMayOwnBroker(slot.agentId, get().brokerAgentId, get().brokerOwner)
+          ) return;
           await invoke<string>("activate_zellij_agent_terminal", { sessionId: agentId });
-          if (get().activationSerial === serial && get().slots.has(targetId)) {
+          if (
+            get().activationSerial === serial
+            && slotCanOwnTerminal(get().slots.get(targetId))
+            && desktopMayOwnBroker(agentId, get().brokerAgentId, get().brokerOwner)
+          ) {
             set((state) => ({
               activeAgentId: agentId,
               activeTargetId: targetId,
@@ -175,7 +226,9 @@ export function ZellijAgentTerminalHost() {
   });
   const [retainedTarget, setRetainedTarget] = useState<ZellijTerminalSlot | null>(null);
   const [rect, setRect] = useState<ZellijViewportRect | null>(null);
-  const [brokerOwner, setBrokerOwner] = useState<string | null>(null);
+  const brokerAgentId = useZellijPresentationStore((state) => state.brokerAgentId);
+  const brokerOwner = useZellijPresentationStore((state) => state.brokerOwner);
+  const setBrokerOwner = useZellijPresentationStore((state) => state.setBrokerOwner);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const retainedTargetIdRef = useRef<string | null>(null);
   const handledFocusRequestRef = useRef(0);
@@ -189,13 +242,14 @@ export function ZellijAgentTerminalHost() {
     setRetainedTarget(target);
     if (retainedTargetIdRef.current !== activeTargetId) {
       retainedTargetIdRef.current = activeTargetId;
-      setBrokerOwner(null);
+      setBrokerOwner(target.agentId, null, null);
     }
   }, [activeTargetId, target]);
 
   useEffect(() => {
     if (
-      !target
+      !slotCanOwnTerminal(target)
+      || !desktopMayOwnBroker(target.agentId, brokerAgentId, brokerOwner)
       || focusRequestSerial === 0
       || handledFocusRequestRef.current === focusRequestSerial
     ) return;
@@ -203,6 +257,10 @@ export function ZellijAgentTerminalHost() {
     let frame: number | null = null;
     const focusWhenReady = () => {
       if (cancelled) return true;
+      const broker = useZellijPresentationStore.getState();
+      if (!desktopMayOwnBroker(target.agentId, broker.brokerAgentId, broker.brokerOwner)) {
+        return true;
+      }
       const terminalHost = viewportRef.current?.querySelector<HTMLElement>(
         '[data-testid="agent-terminal-host"]',
       );
@@ -241,7 +299,7 @@ export function ZellijAgentTerminalHost() {
       observer.disconnect();
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [focusRequestSerial, target]);
+  }, [brokerAgentId, brokerOwner, focusRequestSerial, target]);
   const renderedTarget = target ?? retainedTarget;
 
   useLayoutEffect(() => {
@@ -277,13 +335,20 @@ export function ZellijAgentTerminalHost() {
   if (!renderedTarget) return null;
 
   const props = renderedTarget.props;
-  const visible = Boolean(target && rect && rect.width >= 10 && rect.height >= 10);
+  const relevantBrokerOwner = brokerAgentId === renderedTarget.agentId ? brokerOwner : null;
+  const eligibleTarget = slotCanOwnTerminal(target)
+    && desktopMayOwnBroker(target.agentId, brokerAgentId, brokerOwner);
+  const effectiveInteraction = target
+    && !desktopMayOwnBroker(target.agentId, brokerAgentId, brokerOwner)
+    ? "read_only"
+    : target ? props.requestedInteraction : "read_only";
+  const visible = Boolean(eligibleTarget && rect && rect.width >= 10 && rect.height >= 10);
   return createPortal(
     <div
       ref={viewportRef}
       className="overflow-hidden bg-[var(--color-wardian-bg)]"
       data-zellij-agent-id={renderedTarget.agentId}
-      data-terminal-broker-owner={brokerOwner ?? ""}
+      data-terminal-broker-owner={relevantBrokerOwner ?? ""}
       data-zellij-presentation="renderer"
       data-zellij-singleton-viewport="true"
       style={{
@@ -300,9 +365,9 @@ export function ZellijAgentTerminalHost() {
       <AgentTerminal
         sessionId={renderedTarget.agentId}
         presentationId={HABITAT_TERMINAL_PRESENTATION_ID}
-        visibility={target ? "visible" : "hidden"}
-        renderState="mounted"
-        requestedInteraction={target ? "interactive" : "read_only"}
+        visibility={target ? props.visibility : "hidden"}
+        renderState={target ? props.renderState : "mounted"}
+        requestedInteraction={effectiveInteraction}
         provider={props.provider}
         isMaximized={props.isMaximized}
         theme={props.theme}
@@ -310,10 +375,14 @@ export function ZellijAgentTerminalHost() {
         onTitleChange={props.onTitleChange}
         onTerminalFocus={props.onTerminalFocus}
         onPresentationStateChange={(brokerState, presentationState) => {
-          setBrokerOwner(brokerState.owner_presentation_id);
+          setBrokerOwner(
+            renderedTarget.agentId,
+            brokerState.runtime_generation,
+            brokerState.owner_presentation_id,
+          );
           props.onPresentationStateChange?.(brokerState, presentationState);
         }}
-        autoActivateWhenUnowned={Boolean(target)}
+        autoActivateWhenUnowned={eligibleTarget}
         autoFocus={props.autoFocus}
         lifetimeStableRenderer
       />
@@ -324,18 +393,25 @@ export function ZellijAgentTerminalHost() {
 
 /** A terminal slot. Only the selected slot receives the singleton host. */
 export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTerminalProps) {
-  const { sessionId, visibility, renderState, onTerminalFocus } = props;
+  const { sessionId, visibility, renderState, requestedInteraction, onTerminalFocus } = props;
   const targetId = `${presentationId}:${sessionId}`;
   const hostRef = useRef<HTMLElement | null>(null);
   const activeTargetId = useZellijPresentationStore((state) => state.activeTargetId);
+  const brokerAgentId = useZellijPresentationStore((state) => state.brokerAgentId);
+  const brokerOwner = useZellijPresentationStore((state) => state.brokerOwner);
   const activate = useZellijPresentationStore((state) => state.activate);
+  const setBrokerOwner = useZellijPresentationStore((state) => state.setBrokerOwner);
   const upsertSlot = useZellijPresentationStore((state) => state.upsertSlot);
   const removeSlot = useZellijPresentationStore((state) => state.removeSlot);
   const [preview, setPreview] = useState<ZellijTerminalPreview | null>(null);
   const [activationError, setActivationError] = useState<string | null>(null);
   const autoActivationAttempted = useRef(false);
   const activationRequested = useRef(false);
-  const isLiveTarget = activeTargetId === targetId;
+  const canOwnTerminal = visibility === "visible"
+    && renderState === "mounted"
+    && requestedInteraction === "interactive"
+    && desktopMayOwnBroker(sessionId, brokerAgentId, brokerOwner);
+  const isLiveTarget = activeTargetId === targetId && canOwnTerminal;
 
   useEffect(() => {
     const node = hostRef.current;
@@ -352,7 +428,18 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
         const next = await invoke<ZellijTerminalPreview>("get_zellij_terminal_preview", {
           sessionId,
         });
-        if (!cancelled) setPreview(next);
+        if (!cancelled) {
+          const broker = useZellijPresentationStore.getState();
+          if (
+            next.generation !== null
+            && broker.brokerAgentId === sessionId
+            && broker.brokerGeneration !== null
+            && next.generation > broker.brokerGeneration
+          ) {
+            setBrokerOwner(sessionId, next.generation, null);
+          }
+          setPreview(next);
+        }
       } catch {
         if (!cancelled) {
           setPreview({
@@ -371,14 +458,14 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [isLiveTarget, renderState, sessionId, visibility]);
+  }, [isLiveTarget, renderState, sessionId, setBrokerOwner, visibility]);
 
   useEffect(() => {
     if (isLiveTarget) activationRequested.current = false;
   }, [isLiveTarget]);
 
   const requestTerminalFocus = useCallback(() => {
-    if (preview?.state !== "running" || activationRequested.current) return;
+    if (!canOwnTerminal || preview?.state !== "running" || activationRequested.current) return;
     activationRequested.current = true;
     setActivationError(null);
     onTerminalFocus?.();
@@ -386,7 +473,7 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
       activationRequested.current = false;
       setActivationError(error instanceof Error ? error.message : "Terminal activation failed");
     });
-  }, [activate, onTerminalFocus, preview?.state, sessionId, targetId]);
+  }, [activate, canOwnTerminal, onTerminalFocus, preview?.state, sessionId, targetId]);
 
   useEffect(() => {
     if (
@@ -394,13 +481,14 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
       || isLiveTarget
       || visibility !== "visible"
       || renderState !== "mounted"
+      || requestedInteraction !== "interactive"
       || (!props.autoFocus && !props.autoActivateWhenUnowned)
     ) return;
     autoActivationAttempted.current = true;
     void activate(sessionId, targetId).catch((error) => {
       setActivationError(error instanceof Error ? error.message : "Terminal activation failed");
     });
-  }, [activate, isLiveTarget, props.autoActivateWhenUnowned, props.autoFocus, renderState, sessionId, targetId, visibility]);
+  }, [activate, isLiveTarget, props.autoActivateWhenUnowned, props.autoFocus, renderState, requestedInteraction, sessionId, targetId, visibility]);
 
   if (isLiveTarget) {
     return (
@@ -419,7 +507,7 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
       : preview?.state === "unavailable"
         ? "Terminal engine unavailable"
         : preview?.state === "running" ? null : "Starting terminal…");
-  const interactive = preview?.state === "running";
+  const interactive = canOwnTerminal && preview?.state === "running";
 
   return (
     <div

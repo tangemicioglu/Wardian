@@ -19,10 +19,12 @@ vi.mock("./AgentTerminal", () => ({
     sessionId: string;
     presentationId: string;
     visibility: "visible" | "hidden";
+    renderState: "mounted" | "suspended";
     requestedInteraction: "interactive" | "read_only";
   }) => (
     <div
       data-presentation-id={props.presentationId}
+      data-render-state={props.renderState}
       data-requested-interaction={props.requestedInteraction}
       data-session-id={props.sessionId}
       data-testid="live-habitat-terminal"
@@ -68,6 +70,9 @@ describe("ZellijAgentTerminal", () => {
       activeAgentId: null,
       activeTargetId: null,
       activationSerial: 0,
+      brokerAgentId: null,
+      brokerGeneration: null,
+      brokerOwner: null,
       focusRequestSerial: 0,
       slots: new Map(),
     });
@@ -140,6 +145,166 @@ describe("ZellijAgentTerminal", () => {
     });
   });
 
+  it("keeps read-only previews from claiming the singleton broker owner", async () => {
+    renderTerminals(
+      <ZellijAgentTerminal
+        sessionId="agent-mirror"
+        presentationId="agent-session:mirror"
+        visibility="visible"
+        renderState="mounted"
+        requestedInteraction="read_only"
+        provider="mock"
+        theme="dark"
+      />,
+    );
+
+    const preview = await screen.findByRole("application", {
+      name: "Terminal for agent-mirror",
+    });
+    await waitFor(() => expect(preview).toHaveAttribute("aria-disabled", "true"));
+    expect(preview).toHaveAttribute("tabindex", "-1");
+    fireEvent.pointerDown(preview);
+
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "activate_zellij_agent_terminal",
+      expect.anything(),
+    );
+    expect(screen.queryByTestId("live-habitat-terminal")).not.toBeInTheDocument();
+  });
+
+  it("makes only the remotely owned agent read-only in the card grid", async () => {
+    renderTerminals(terminal("agent-1"), terminal("agent-2"));
+    fireEvent.pointerDown(await screen.findByRole("application", { name: "Terminal for agent-1" }));
+    const renderer = await screen.findByTestId("live-habitat-terminal");
+    const activationCount = invokeMock.mock.calls.filter(
+      ([command]) => command === "activate_zellij_agent_terminal",
+    ).length;
+
+    useZellijPresentationStore.getState().setBrokerOwner(
+      "agent-1",
+      1,
+      "remote:paired-device",
+    );
+
+    const preview = await screen.findByRole("application", { name: "Terminal for agent-1" });
+    await waitFor(() => {
+      expect(renderer).toHaveAttribute("data-requested-interaction", "read_only");
+      expect(preview).toHaveAttribute("aria-disabled", "true");
+      expect(document.querySelector('[data-zellij-presentation="renderer"]')).toHaveStyle({
+        pointerEvents: "none",
+        visibility: "hidden",
+      });
+    });
+    fireEvent.pointerDown(preview);
+    expect(invokeMock.mock.calls.filter(
+      ([command]) => command === "activate_zellij_agent_terminal",
+    )).toHaveLength(activationCount);
+
+    const otherPreview = screen.getByRole("application", { name: "Terminal for agent-2" });
+    expect(otherPreview).toHaveAttribute("aria-disabled", "false");
+    fireEvent.pointerDown(otherPreview);
+    await waitFor(() => {
+      expect(useZellijPresentationStore.getState().activeAgentId).toBe("agent-2");
+      expect(invokeMock.mock.calls.filter(
+        ([command]) => command === "activate_zellij_agent_terminal",
+      )).toHaveLength(activationCount + 1);
+    });
+  });
+
+  it("clears a stale remote owner when the pane advances to a replacement generation", async () => {
+    let previewGeneration = 1;
+    invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command === "activate_zellij_agent_terminal") return Promise.resolve(args.sessionId);
+      if (command === "get_zellij_terminal_preview") {
+        return Promise.resolve({
+          session_id: args.sessionId,
+          terminal_session_id: args.sessionId,
+          generation: previewGeneration,
+          state: "running",
+          content: `${args.sessionId} generation ${previewGeneration}`,
+        });
+      }
+      return Promise.reject(new Error(`Unexpected command ${command}`));
+    });
+    renderTerminals(terminal("agent-1"));
+    fireEvent.pointerDown(await screen.findByRole("application", { name: "Terminal for agent-1" }));
+    const renderer = await screen.findByTestId("live-habitat-terminal");
+
+    useZellijPresentationStore.getState().setBrokerOwner(
+      "agent-1",
+      1,
+      "remote:old-generation",
+    );
+    previewGeneration = 2;
+
+    await waitFor(() => {
+      expect(useZellijPresentationStore.getState()).toMatchObject({
+        brokerAgentId: "agent-1",
+        brokerGeneration: 2,
+        brokerOwner: null,
+      });
+      expect(renderer).toHaveAttribute("data-requested-interaction", "interactive");
+    }, { timeout: 3000 });
+  });
+
+  it("releases an active owner when its slot becomes read-only or suspended", async () => {
+    const view = render(
+      <>
+        <ZellijAgentTerminalHost />
+        {terminal("agent-1")}
+      </>,
+    );
+    fireEvent.pointerDown(await screen.findByRole("application", { name: "Terminal for agent-1" }));
+    const renderer = await screen.findByTestId("live-habitat-terminal");
+
+    view.rerender(
+      <>
+        <ZellijAgentTerminalHost />
+        <ZellijAgentTerminal
+          sessionId="agent-1"
+          presentationId="agents:agent-1"
+          visibility="visible"
+          renderState="mounted"
+          requestedInteraction="read_only"
+          provider="mock"
+          theme="dark"
+        />
+      </>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("live-habitat-terminal")).toBe(renderer);
+      expect(renderer).toHaveAttribute("data-requested-interaction", "read_only");
+      expect(screen.getByTestId("agent-terminal-host")).toHaveStyle({ visibility: "visible" });
+      expect(document.querySelector('[data-zellij-presentation="renderer"]')).toHaveStyle({
+        pointerEvents: "none",
+        visibility: "hidden",
+      });
+      expect(screen.getByRole("application", { name: "Terminal for agent-1" }))
+        .toHaveAttribute("aria-disabled", "true");
+    });
+
+    view.rerender(
+      <>
+        <ZellijAgentTerminalHost />
+        <ZellijAgentTerminal
+          sessionId="agent-1"
+          presentationId="agents:agent-1"
+          visibility="hidden"
+          renderState="suspended"
+          requestedInteraction="read_only"
+          provider="mock"
+          theme="dark"
+        />
+      </>,
+    );
+
+    await waitFor(() => {
+      expect(renderer).toHaveAttribute("data-render-state", "suspended");
+      expect(screen.getByTestId("agent-terminal-host")).toHaveStyle({ visibility: "hidden" });
+    });
+  });
+
   it("keeps duplicate surfaces for the active agent to one live renderer", async () => {
     renderTerminals(
       terminal("agent-1"),
@@ -181,9 +346,14 @@ describe("ZellijAgentTerminal", () => {
         ? firstActivation.then(() => args.sessionId)
         : Promise.resolve(args.sessionId);
     });
+    const ownerProps = {
+      visibility: "visible",
+      renderState: "mounted",
+      requestedInteraction: "interactive",
+    } as never;
     const slots = new Map([
-      ["slot-1", { agentId: "agent-1", node: document.createElement("div"), props: {} as never }],
-      ["slot-2", { agentId: "agent-2", node: document.createElement("div"), props: {} as never }],
+      ["slot-1", { agentId: "agent-1", node: document.createElement("div"), props: ownerProps }],
+      ["slot-2", { agentId: "agent-2", node: document.createElement("div"), props: ownerProps }],
     ]);
     useZellijPresentationStore.setState({ slots });
 
@@ -218,8 +388,13 @@ describe("ZellijAgentTerminal", () => {
       }
       return Promise.resolve(args.sessionId);
     });
-    const slot1 = { agentId: "agent-1", node: document.createElement("div"), props: {} as never };
-    const slot2 = { agentId: "agent-2", node: document.createElement("div"), props: {} as never };
+    const ownerProps = {
+      visibility: "visible",
+      renderState: "mounted",
+      requestedInteraction: "interactive",
+    } as never;
+    const slot1 = { agentId: "agent-1", node: document.createElement("div"), props: ownerProps };
+    const slot2 = { agentId: "agent-2", node: document.createElement("div"), props: ownerProps };
     useZellijPresentationStore.setState({
       activeAgentId: "agent-1",
       activeTargetId: "slot-1",

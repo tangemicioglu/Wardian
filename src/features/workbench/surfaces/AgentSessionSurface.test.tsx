@@ -170,6 +170,8 @@ describe("AgentSessionSurface", () => {
 
     expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Mirror");
     expect(screen.getByTestId("agent-session-read-only")).toHaveTextContent("Read only");
+    expect(terminalSpy.mock.calls[terminalSpy.mock.calls.length - 1]?.[0])
+      .toMatchObject({ requestedInteraction: "read_only" });
 
     view.rerender(<AgentSessionSurface {...surfaceProps({
       broker_state: brokerState({ owner_presentation_id: null }),
@@ -180,6 +182,8 @@ describe("AgentSessionSurface", () => {
 
     expect(screen.getByTestId("agent-session-presentation-mode")).toHaveTextContent("Mirror");
     expect(screen.getByTestId("agent-session-read-only")).toHaveTextContent("Read only");
+    expect(terminalSpy.mock.calls[terminalSpy.mock.calls.length - 1]?.[0])
+      .toMatchObject({ requestedInteraction: "read_only" });
   });
 
   it("updates badges from the live terminal observation callback", () => {
