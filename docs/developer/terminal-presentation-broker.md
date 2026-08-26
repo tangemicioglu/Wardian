@@ -233,7 +233,9 @@ read-only text previews.
 The Zellij subscription is not handed to an active agent until broker runtime
 registration succeeds. A failed registration tears down the subscription
 process, frame channels, workers, and candidate pane as one uncommitted
-transport.
+transport. Failed termination confirmation retains that transport and its pane
+lease in a backend retry task; cleanup never becomes a detached child process
+or an untracked pane generation.
 The standalone human terminal keeps its independent presentation behavior.
 
 The process-wide host keeps the stable broker identity
@@ -255,6 +257,9 @@ An unconfirmed termination fences the engine in `failed`. The actor authorizatio
 has its own bounded backstop, so a hung helper cannot indefinitely block
 terminal output or a remote ownership transition; timeout leaves the broker
 responsive and marks the engine for reattachment.
+Ordinary Zellij lifecycle helpers use the same process-group or job ownership,
+file-backed output capture, confirmed termination, and a fixed backend deadline;
+the four-second deadline remains specific to interactive handoff cancellation.
 
 The authenticated remote WebSocket registers a remote presentation and
 consumer, then uses the same activation, input, resize, snapshot, events, ack,

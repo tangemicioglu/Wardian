@@ -1186,7 +1186,12 @@ async fn spawn_agent_with_broker_mode(
             if let Some(mut transport) = pending_zellij_transport.take() {
                 return match transport.shutdown().await {
                     Ok(()) => Err(message),
-                    Err(cleanup_error) => Err(format!("{message}; {cleanup_error}")),
+                    Err(cleanup_error) => {
+                        transport.schedule_shutdown_retry();
+                        Err(format!(
+                            "{message}; {cleanup_error}; cleanup retry scheduled"
+                        ))
+                    }
                 };
             }
             return Err(message);

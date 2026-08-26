@@ -29,6 +29,11 @@ const ACTIVATION_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::fro
 const ACTIVATION_COMMAND_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 const ACTIVATION_PROCESS_TERMINATION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(2);
+#[cfg(not(test))]
+const ZELLIJ_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const ZELLIJ_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+const FAILED_TRANSPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 const MANAGED_PANE_MARKER_SCHEMA: u32 = 1;
 const MANAGED_PANE_MARKER_MAX_BYTES: u64 = 16 * 1024;
 
@@ -112,7 +117,7 @@ impl ZellijPaneLease {
 
     /// Closes this generation and confirms that its provider pane disappeared.
     /// A failed confirmation remains registered as `Closing` for retry.
-    pub async fn close(mut self) -> Result<(), String> {
+    pub async fn close_confirmed(&mut self) -> Result<(), String> {
         self.cleanup_scheduled = true;
         let result = self
             .engine
@@ -122,6 +127,10 @@ impl ZellijPaneLease {
             self.cleanup_scheduled = false;
         }
         result
+    }
+
+    pub async fn close(mut self) -> Result<(), String> {
+        self.close_confirmed().await
     }
 }
 
@@ -145,6 +154,16 @@ pub struct ZellijPaneTransport {
     subscription_reader: Option<std::thread::JoinHandle<()>>,
     input_worker: Option<std::thread::JoinHandle<()>>,
     handed_off: bool,
+    #[cfg(test)]
+    shutdown_failure: Option<TransportShutdownFailure>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportShutdownFailure {
+    Subscription,
+    SubscriptionReader,
+    InputWorker,
 }
 
 pub struct ZellijPaneActiveTransport {
@@ -194,17 +213,34 @@ impl ZellijPaneTransport {
     /// Tears down a transport that never committed to the terminal broker.
     /// Every step is idempotent so callers can retry cleanup after an error.
     pub async fn shutdown(&mut self) -> Result<(), String> {
-        let mut errors = self.shutdown_local_resources();
-        if let Some(lease) = self.lease.take() {
-            if let Err(error) = lease.close().await {
-                errors.push(error);
+        let errors = self.shutdown_local_resources();
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+        if let Some(lease) = self.lease.as_mut() {
+            lease.close_confirmed().await?;
+            self.lease.take();
+        }
+        Ok(())
+    }
+
+    /// Retains every unconfirmed process, worker, and pane lease until cleanup
+    /// succeeds. This is used when broker registration fails after transport
+    /// creation, where dropping the guard would otherwise lose retry state.
+    pub fn schedule_shutdown_retry(mut self) {
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match self.shutdown().await {
+                    Ok(()) => break,
+                    Err(error) => {
+                        crate::utils::logging::log_debug(&format!(
+                            "[Wardian] Retrying failed Zellij pane transport cleanup: {error}"
+                        ));
+                        tokio::time::sleep(FAILED_TRANSPORT_RETRY_DELAY).await;
+                    }
+                }
             }
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
-        }
+        });
     }
 
     fn shutdown_local_resources(&mut self) -> Vec<String> {
@@ -218,20 +254,49 @@ impl ZellijPaneTransport {
         self.snapshot_frames.take();
 
         let mut errors = Vec::new();
-        if let Some(mut subscription) = self.subscription.take() {
-            if let Err(error) = terminate_subscription_process(&mut subscription) {
+        #[cfg(test)]
+        let fail_subscription = self
+            .shutdown_failure
+            .take_if(|failure| *failure == TransportShutdownFailure::Subscription)
+            .is_some();
+        #[cfg(not(test))]
+        let fail_subscription = false;
+        if fail_subscription {
+            errors.push("forced Zellij pane subscription cleanup failure".to_string());
+        } else if let Some(subscription) = self.subscription.as_mut() {
+            if let Err(error) = terminate_subscription_process(subscription) {
                 errors.push(error);
+            } else {
+                self.subscription.take();
             }
         }
-        if let Some(reader) = self.subscription_reader.take() {
-            if let Err(error) = join_transport_worker(reader, "subscription reader") {
-                errors.push(error);
-            }
+
+        #[cfg(test)]
+        let fail_subscription_reader = self
+            .shutdown_failure
+            .take_if(|failure| *failure == TransportShutdownFailure::SubscriptionReader)
+            .is_some();
+        #[cfg(not(test))]
+        let fail_subscription_reader = false;
+        if fail_subscription_reader {
+            errors.push("forced Zellij pane subscription reader cleanup failure".to_string());
+        } else if let Err(error) =
+            join_transport_worker(&mut self.subscription_reader, "subscription reader")
+        {
+            errors.push(error);
         }
-        if let Some(worker) = self.input_worker.take() {
-            if let Err(error) = join_transport_worker(worker, "input worker") {
-                errors.push(error);
-            }
+
+        #[cfg(test)]
+        let fail_input_worker = self
+            .shutdown_failure
+            .take_if(|failure| *failure == TransportShutdownFailure::InputWorker)
+            .is_some();
+        #[cfg(not(test))]
+        let fail_input_worker = false;
+        if fail_input_worker {
+            errors.push("forced Zellij pane input worker cleanup failure".to_string());
+        } else if let Err(error) = join_transport_worker(&mut self.input_worker, "input worker") {
+            errors.push(error);
         }
         errors
     }
@@ -274,16 +339,25 @@ fn terminate_subscription_process(subscription: &mut std::process::Child) -> Res
     }
 }
 
-fn join_transport_worker(worker: std::thread::JoinHandle<()>, label: &str) -> Result<(), String> {
+fn join_transport_worker(
+    worker: &mut Option<std::thread::JoinHandle<()>>,
+    label: &str,
+) -> Result<(), String> {
+    let Some(worker_ref) = worker.as_ref() else {
+        return Ok(());
+    };
     let deadline = std::time::Instant::now() + ACTIVATION_PROCESS_TERMINATION_TIMEOUT;
-    while !worker.is_finished() && std::time::Instant::now() < deadline {
+    while !worker_ref.is_finished() && std::time::Instant::now() < deadline {
         std::thread::sleep(ACTIVATION_COMMAND_POLL_INTERVAL);
     }
-    if !worker.is_finished() {
+    if !worker_ref.is_finished() {
         return Err(format!(
             "Zellij pane {label} termination could not be confirmed"
         ));
     }
+    let worker = worker
+        .take()
+        .expect("finished Zellij transport worker must remain registered");
     worker
         .join()
         .map_err(|_| format!("Zellij pane {label} terminated with a panic"))
@@ -538,6 +612,13 @@ pub trait ZellijCommandRunner: Send + Sync {
 #[derive(Debug, Default)]
 pub struct ProcessZellijCommandRunner;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlledProcessOwnership {
+    HelperTree,
+    #[cfg(windows)]
+    PreserveStartedDescendants,
+}
+
 impl ZellijCommandRunner for ProcessZellijCommandRunner {
     fn run(
         &self,
@@ -545,11 +626,7 @@ impl ZellijCommandRunner for ProcessZellijCommandRunner {
         args: &[String],
         env: &[(OsString, OsString)],
     ) -> Result<Output, String> {
-        zellij_helper_command(executable)
-            .args(args)
-            .envs(env.iter().cloned())
-            .output()
-            .map_err(|error| format!("Zellij command could not start: {error}"))
+        run_bounded_zellij_process(executable, args, env)
     }
 
     fn run_status(
@@ -558,12 +635,7 @@ impl ZellijCommandRunner for ProcessZellijCommandRunner {
         args: &[String],
         env: &[(OsString, OsString)],
     ) -> Result<Output, String> {
-        zellij_helper_command(executable)
-            .args(args)
-            .envs(env.iter().cloned())
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|error| format!("Zellij command could not start: {error}"))
+        run_bounded_zellij_process(executable, args, env)
     }
 
     fn run_controlled(
@@ -596,14 +668,57 @@ fn run_controlled_zellij_process(
     cancelled: Arc<AtomicBool>,
     deadline: std::time::Instant,
 ) -> Result<Output, String> {
+    let mut command = zellij_helper_command(executable);
+    command.args(args).envs(env.iter().cloned());
+    run_controlled_command(
+        command,
+        cancelled,
+        deadline,
+        "Terminal handoff was superseded",
+        "Terminal handoff timed out",
+        "Zellij activation helper",
+        "Terminal handoff helper",
+        ControlledProcessOwnership::HelperTree,
+        None,
+    )
+}
+
+fn run_bounded_zellij_process(
+    executable: &Path,
+    args: &[String],
+    env: &[(OsString, OsString)],
+) -> Result<Output, String> {
+    let mut command = zellij_helper_command(executable);
+    command.args(args).envs(env.iter().cloned());
+    run_controlled_command(
+        command,
+        Arc::new(AtomicBool::new(false)),
+        std::time::Instant::now() + ZELLIJ_COMMAND_TIMEOUT,
+        "Zellij command was cancelled",
+        "Zellij command timed out",
+        "Zellij lifecycle helper",
+        "Zellij lifecycle helper",
+        ControlledProcessOwnership::HelperTree,
+        None,
+    )
+}
+
+fn run_controlled_command(
+    mut command: Command,
+    cancelled: Arc<AtomicBool>,
+    deadline: std::time::Instant,
+    cancelled_message: &'static str,
+    timeout_message: &'static str,
+    job_label: &'static str,
+    termination_label: &'static str,
+    ownership: ControlledProcessOwnership,
+    started_pid_path: Option<&Path>,
+) -> Result<Output, String> {
     let mut stdout_file = tempfile::tempfile()
         .map_err(|error| format!("Zellij command stdout capture failed: {error}"))?;
     let mut stderr_file = tempfile::tempfile()
         .map_err(|error| format!("Zellij command stderr capture failed: {error}"))?;
-    let mut command = zellij_helper_command(executable);
     command
-        .args(args)
-        .envs(env.iter().cloned())
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout_file.try_clone().map_err(|error| {
             format!("Zellij command stdout capture failed: {error}")
@@ -617,18 +732,21 @@ fn run_controlled_zellij_process(
         command.process_group(0);
     }
     #[cfg(windows)]
-    let mut child_job = Some(crate::utils::process::create_kill_on_close_job(
-        "Zellij activation helper",
-    )?);
+    let mut child_job = match ownership {
+        ControlledProcessOwnership::HelperTree => {
+            Some(crate::utils::process::create_kill_on_close_job(job_label)?)
+        }
+        ControlledProcessOwnership::PreserveStartedDescendants => None,
+    };
+    #[cfg(not(windows))]
+    let _ = (job_label, ownership);
     let mut child = command
         .spawn()
         .map_err(|error| format!("Zellij command could not start: {error}"))?;
     let child_pid = child.id();
     #[cfg(windows)]
     if let Some(job) = child_job.as_ref() {
-        if let Err(error) =
-            crate::utils::process::assign_pid_to_job(job, child_pid, "Zellij activation helper")
-        {
+        if let Err(error) = crate::utils::process::assign_pid_to_job(job, child_pid, job_label) {
             if !child.try_wait().is_ok_and(|status| status.is_some()) {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -640,10 +758,10 @@ fn run_controlled_zellij_process(
 
     let outcome = loop {
         if cancelled.load(Ordering::Acquire) {
-            break Err("Terminal handoff was superseded".to_string());
+            break Err(cancelled_message.to_string());
         }
         if std::time::Instant::now() >= deadline {
-            break Err("Terminal handoff timed out".to_string());
+            break Err(timeout_message.to_string());
         }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
@@ -658,6 +776,7 @@ fn run_controlled_zellij_process(
             child_pid,
             #[cfg(windows)]
             &mut child_job,
+            termination_label,
         )?;
     }
     stdout_file
@@ -674,6 +793,21 @@ fn run_controlled_zellij_process(
     stderr_file
         .read_to_end(&mut stderr)
         .map_err(|error| format!("Zellij command stderr failed: {error}"))?;
+    #[cfg(windows)]
+    if outcome.is_err() {
+        if let Some(pid_path) = started_pid_path {
+            if let Some(pid) = parse_windows_attached_client_pid(&stdout).or_else(|| {
+                std::fs::read_to_string(pid_path)
+                    .ok()
+                    .and_then(|value| value.trim().parse::<u32>().ok())
+            }) {
+                let _ = crate::utils::process::force_kill_process_tree(pid);
+            }
+            let _ = std::fs::remove_file(pid_path);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = started_pid_path;
     outcome.map(|status| Output {
         status,
         stdout,
@@ -685,6 +819,7 @@ fn terminate_controlled_zellij_process(
     child: &mut std::process::Child,
     child_pid: u32,
     #[cfg(windows)] child_job: &mut Option<win32job::Job>,
+    label: &str,
 ) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -711,12 +846,10 @@ fn terminate_controlled_zellij_process(
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(ACTIVATION_COMMAND_POLL_INTERVAL);
             }
-            Ok(None) => {
-                return Err("Terminal handoff helper termination could not be confirmed".to_string())
-            }
+            Ok(None) => return Err(format!("{label} termination could not be confirmed")),
             Err(error) => {
                 return Err(format!(
-                    "Terminal handoff helper termination could not be confirmed: {error}"
+                    "{label} termination could not be confirmed: {error}"
                 ))
             }
         }
@@ -1121,6 +1254,7 @@ impl ZellijTerminalEngine {
         #[cfg(not(windows))]
         if self.list_panes().await.is_err() {
             let executable = self.config.executable.clone();
+            let runner = self.runner.clone();
             let args = vec![
                 "attach".to_string(),
                 "--create-background".to_string(),
@@ -1138,19 +1272,11 @@ impl ZellijTerminalEngine {
                 (OsString::from("TERM"), OsString::from("xterm-256color")),
                 (OsString::from("COLORTERM"), OsString::from("truecolor")),
             ];
-            let bootstrap = tokio::task::spawn_blocking(move || {
-                zellij_helper_command(executable)
-                    .args(args)
-                    .envs(env)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .map_err(|error| error.to_string())
-            })
-            .await
-            .map_err(|error| format!("Zellij bootstrap task failed: {error}"))??;
-            if !bootstrap.success() {
+            let bootstrap =
+                tokio::task::spawn_blocking(move || runner.run_status(&executable, &args, &env))
+                    .await
+                    .map_err(|error| format!("Zellij bootstrap task failed: {error}"))??;
+            if !bootstrap.status.success() {
                 self.set_phase(ZellijEnginePhase::Failed).await;
                 return Err("Zellij background session could not start".to_string());
             }
@@ -1375,7 +1501,7 @@ impl ZellijTerminalEngine {
                 )
             }
         }
-        let output = windows_attached_client_launcher_command(
+        let mut launcher = windows_attached_client_launcher_command(
             &self.config.executable,
             &[
                 "attach".to_string(),
@@ -1383,14 +1509,35 @@ impl ZellijTerminalEngine {
                 self.config.session_name.clone(),
             ],
             pid_path,
-        )
-        .env("ZELLIJ_CONFIG_DIR", self.config.config_dir())
-        .env("WARDIAN_HOME", &self.config.wardian_home)
-        .env("TERM", "xterm-256color")
-        .env("COLORTERM", "truecolor")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|error| format!("Zellij native attached client could not start: {error}"))?;
+        );
+        launcher
+            .env("ZELLIJ_CONFIG_DIR", self.config.config_dir())
+            .env("WARDIAN_HOME", &self.config.wardian_home)
+            .env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor");
+        let output = match run_controlled_command(
+            launcher,
+            Arc::new(AtomicBool::new(false)),
+            std::time::Instant::now() + ZELLIJ_COMMAND_TIMEOUT,
+            "Zellij native attached-client launch was cancelled",
+            "Zellij native attached-client launch timed out",
+            "Zellij attached-client launcher",
+            "Zellij attached-client launcher",
+            ControlledProcessOwnership::PreserveStartedDescendants,
+            Some(pid_path),
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(pid) = std::fs::read_to_string(pid_path)
+                    .ok()
+                    .and_then(|value| value.trim().parse::<u32>().ok())
+                {
+                    let _ = crate::utils::process::force_kill_process_tree(pid);
+                }
+                let _ = std::fs::remove_file(pid_path);
+                return Err(error);
+            }
+        };
 
         let reported_pid = parse_windows_attached_client_pid(&output.stdout);
         let published_pid = std::fs::read_to_string(pid_path)
@@ -2062,6 +2209,8 @@ impl ZellijTerminalEngine {
             subscription_reader: Some(subscription_reader),
             input_worker: Some(input_worker),
             handed_off: false,
+            #[cfg(test)]
+            shutdown_failure: None,
         })
     }
 
@@ -2759,6 +2908,19 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_process_runner_terminates_helper_at_lifecycle_deadline() {
+        let (executable, args) = sleeping_helper();
+        let started = std::time::Instant::now();
+        let result = ProcessZellijCommandRunner.run_status(&executable, &args, &[]);
+
+        assert_eq!(result, Err("Zellij command timed out".to_string()));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "a blocked lifecycle helper must be killed at its command deadline"
+        );
+    }
+
+    #[test]
     fn controlled_process_runner_terminates_helper_when_cancelled() {
         let (executable, args) = sleeping_helper();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -2869,29 +3031,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn failed_broker_transport_shutdown_terminates_subscription_and_workers() {
-        let temp = tempfile::tempdir().unwrap();
-        let successful = |stdout: &[u8]| Output {
-            status: status(0),
-            stdout: stdout.to_vec(),
-            stderr: Vec::new(),
-        };
-        let engine = Arc::new(ZellijTerminalEngine::with_runner(
-            config(temp.path()),
-            FakeRunner::with_outputs([successful(b""), successful(b"[]")]),
-        ));
-        let binding = ZellijPaneBinding {
-            session_id: "failed-broker".to_string(),
-            pane_id: Some(ZellijPaneId::parse("terminal_7").unwrap()),
-            generation: 1,
-            phase: ZellijPanePhase::Running,
-        };
-        engine
-            .pane_registry()
-            .bindings
-            .insert(binding.session_id.clone(), binding.clone());
-
+    fn test_pending_transport(
+        engine: Arc<ZellijTerminalEngine>,
+        binding: &ZellijPaneBinding,
+    ) -> (
+        ZellijPaneTransport,
+        u32,
+        crate::state::terminal_session::TerminalRuntimeHandles,
+    ) {
         let (executable, args) = sleeping_helper();
         let mut command = zellij_helper_command(executable);
         let mut subscription = command
@@ -2931,7 +3078,7 @@ mod tests {
             input_tx,
             |_geometry| Ok(()),
         );
-        let mut transport = ZellijPaneTransport {
+        let transport = ZellijPaneTransport {
             reader: Some(Box::new(ZellijSnapshotReader::new(render_rx))),
             snapshot_frames: Some(snapshot_rx),
             runtime: Some(runtime),
@@ -2946,20 +3093,124 @@ mod tests {
             subscription_reader: Some(subscription_reader),
             input_worker: Some(input_worker),
             handed_off: false,
+            shutdown_failure: None,
         };
         drop(render_tx);
         drop(snapshot_tx);
+        let retained_runtime = transport.runtime();
+        (transport, subscription_pid, retained_runtime)
+    }
+
+    fn pending_transport_fixture(
+        session_id: &str,
+    ) -> (Arc<ZellijTerminalEngine>, ZellijPaneBinding) {
+        let temp = tempfile::tempdir().unwrap();
+        let successful = |stdout: &[u8]| Output {
+            status: status(0),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        };
+        let engine = Arc::new(ZellijTerminalEngine::with_runner(
+            config(temp.path()),
+            FakeRunner::with_outputs([successful(b""), successful(b"[]")]),
+        ));
+        let binding = ZellijPaneBinding {
+            session_id: session_id.to_string(),
+            pane_id: Some(ZellijPaneId::parse("terminal_7").unwrap()),
+            generation: 1,
+            phase: ZellijPanePhase::Running,
+        };
+        engine
+            .pane_registry()
+            .bindings
+            .insert(binding.session_id.clone(), binding.clone());
+        (engine, binding)
+    }
+
+    #[tokio::test]
+    async fn failed_broker_transport_shutdown_terminates_subscription_and_workers() {
+        let (engine, binding) = pending_transport_fixture("failed-broker");
+        let (mut transport, subscription_pid, retained_runtime) =
+            test_pending_transport(engine.clone(), &binding);
 
         // Model a broker-start failure that still holds the runtime clone used
         // for the attempted registration. Explicit cancellation must stop the
         // input worker without relying on every sender having been dropped.
-        let retained_runtime = transport.runtime();
         transport.shutdown().await.unwrap();
         transport.shutdown().await.unwrap();
         drop(retained_runtime);
 
         assert!(!crate::utils::process::process_exists(subscription_pid));
         assert!(engine.binding("failed-broker").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_transport_cleanup_retains_every_unconfirmed_resource_for_retry() {
+        for (index, failure) in [
+            TransportShutdownFailure::Subscription,
+            TransportShutdownFailure::SubscriptionReader,
+            TransportShutdownFailure::InputWorker,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let session_id = format!("retryable-cleanup-{index}");
+            let (engine, binding) = pending_transport_fixture(&session_id);
+            let (mut transport, subscription_pid, retained_runtime) =
+                test_pending_transport(engine.clone(), &binding);
+            transport.shutdown_failure = Some(failure);
+
+            assert!(transport.shutdown().await.is_err());
+            assert!(
+                transport.lease.is_some(),
+                "pane lease must remain retryable"
+            );
+            match failure {
+                TransportShutdownFailure::Subscription => {
+                    assert!(transport.subscription.is_some())
+                }
+                TransportShutdownFailure::SubscriptionReader => {
+                    assert!(transport.subscription_reader.is_some())
+                }
+                TransportShutdownFailure::InputWorker => {
+                    assert!(transport.input_worker.is_some())
+                }
+            }
+            assert!(engine.binding(&session_id).await.is_some());
+
+            transport.shutdown().await.unwrap();
+            drop(retained_runtime);
+            assert!(transport.subscription.is_none());
+            assert!(transport.subscription_reader.is_none());
+            assert!(transport.input_worker.is_none());
+            assert!(transport.lease.is_none());
+            assert!(!crate::utils::process::process_exists(subscription_pid));
+            assert!(engine.binding(&session_id).await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_transport_cleanup_supervisor_finishes_the_broker_failure() {
+        let session_id = "supervised-cleanup";
+        let (engine, binding) = pending_transport_fixture(session_id);
+        let (mut transport, subscription_pid, retained_runtime) =
+            test_pending_transport(engine.clone(), &binding);
+        transport.shutdown_failure = Some(TransportShutdownFailure::InputWorker);
+
+        assert!(transport.shutdown().await.is_err());
+        assert!(transport.input_worker.is_some());
+        assert!(transport.lease.is_some());
+        assert!(engine.binding(session_id).await.is_some());
+        transport.schedule_shutdown_retry();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while engine.binding(session_id).await.is_some() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(FAILED_TRANSPORT_RETRY_DELAY).await;
+        }
+        drop(retained_runtime);
+
+        assert!(engine.binding(session_id).await.is_none());
+        assert!(!crate::utils::process::process_exists(subscription_pid));
     }
 
     struct BlockingActivationRunner {

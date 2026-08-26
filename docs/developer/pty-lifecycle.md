@@ -54,7 +54,10 @@ The pane transport is a pending cleanup guard through step 6. If broker
 registration fails, Wardian cancels frame publication, closes the frame and
 input channels, kills and waits for the subscription process, confirms its
 reader and input workers exited, and closes the uncommitted pane generation
-before returning the spawn error.
+before returning the spawn error. Any unconfirmed process, worker, or pane
+closure remains inside the generation-scoped guard and is retried by a backend
+cleanup task; the pane lease is not released while local transport cleanup is
+still pending.
 
 Running restart holds the agent's delivery gate from preflight through broker
 and pane promotion. While a replacement reservation exists, previews are
@@ -73,6 +76,15 @@ before returning from cancellation. If termination cannot be confirmed, the
 engine enters `failed` and refuses further native handoffs. Each replacement attached client also receives a unique
 engine generation; delayed exit callbacks from older clients cannot clear the
 replacement.
+
+Every other Zellij lifecycle CLI action, including session bootstrap and the
+Windows attached-client launcher wrapper, also has a fixed backend deadline.
+Ordinary helpers run in the same Unix process-group or Windows kill-on-close
+job boundary and confirm termination before returning a timeout, so start,
+close, reconcile, write, and status operations cannot block the engine
+indefinitely. The Windows launcher is the deliberate exception to the helper
+job: its started Zellij client remains in Wardian's app-lifetime supervisor job,
+while a failed or timed-out wrapper kills any client PID it published.
 
 Rendered Zellij frames are complete screen snapshots, not the provider's raw
 PTY protocol. They update the broker/parser and may prove a visible startup

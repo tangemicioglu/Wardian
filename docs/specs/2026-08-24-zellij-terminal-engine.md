@@ -201,6 +201,10 @@ subscription transport remains an uncommitted cleanup guard until broker runtime
 registration succeeds. A broker-start failure cancels its frame producer, drops
 its frame and input channels, kills and waits for the subscription process,
 confirms both transport workers exited, and then closes the pane generation.
+If any local termination or pane-close confirmation fails, the guard retains
+the exact child, worker handle, and lease and moves into a backend retry loop.
+It releases the pane lease only after local transport cleanup has completed, so
+a failed broker start cannot create an untracked subscription or provider pane.
 
 A running restart holds the per-agent delivery gate across the complete staged
 transaction. The replacement reservation makes previews noninteractive and
@@ -214,6 +218,15 @@ that agent. The terminal broker actor validates those values, the current
 owner, and pending-transfer state, then executes the native Zellij focus action
 before processing another ownership transition. A stale or remotely owned
 request therefore performs no native focus or fullscreen action.
+
+All Zellij lifecycle helper processes are bounded. Interactive pane handoff has
+its cancellation-aware four-second deadline; ordinary start, close, list,
+write, reconcile, session bootstrap, and attached-client launcher commands use
+a fixed lifecycle deadline. Ordinary helpers own descendants through a Unix
+process group or Windows kill-on-close job and confirm exit after forced
+termination. The Windows launcher wrapper instead leaves the intentionally
+long-lived attached client in Wardian's app supervisor job and kills a
+published client PID if the wrapper fails or times out.
 
 ### Input and delivery
 
