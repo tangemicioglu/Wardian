@@ -448,43 +448,7 @@ describe("RemoteMobileApp", () => {
     expect(useRemoteStore.getState().activeAgentId).toBe("agent-1");
   });
 
-  it("returns from agent detail to the watchlist when swiping from the left edge", async () => {
-    useRemoteStore.setState({
-      agents: [
-        {
-          session_id: "agent-1",
-          session_name: "Alpha",
-          agent_class: "Coder",
-          provider: "codex",
-          workspace: "<absolute-workspace-path>",
-          status: "Idle",
-          latest_text: null,
-        },
-      ],
-      teams: [],
-      watchlists: [],
-      watchlistPrefs: { columns: [], sort: null, preserve_team_grouping_when_sorted: false, collapsed_team_ids: [] },
-      mobileCollapsedTeamIds: [],
-      activeWatchlistId: "all",
-      activeRemoteTab: "watchlist",
-      activeAgentId: "agent-1",
-      activeAgentViewMode: "chat",
-      status: "ready",
-      load: vi.fn(async () => {}),
-    });
-
-    render(<RemoteMobileApp />);
-
-    const detail = screen.getByTestId("remote-agent-detail");
-    fireEvent.touchStart(detail, { touches: [{ clientX: 12, clientY: 240 }] });
-    fireEvent.touchMove(detail, { touches: [{ clientX: 104, clientY: 246 }] });
-    fireEvent.touchEnd(detail, { changedTouches: [{ clientX: 104, clientY: 246 }], touches: [] });
-
-    expect(useRemoteStore.getState().activeAgentId).toBeNull();
-    expect(screen.getByTestId("remote-watchlist-view")).toBeVisible();
-  });
-
-  it("does not treat a transcript text-selection drag as back navigation", async () => {
+  it("leaves transcript touch selection entirely to the browser", async () => {
     useRemoteStore.setState({
       agents: [
         {
@@ -535,7 +499,7 @@ describe("RemoteMobileApp", () => {
     const detail = screen.getByTestId("remote-agent-detail");
     const transcriptText = within(screen.getByLabelText("assistant message")).getByText("Select this transcript text.");
     fireEvent.touchStart(transcriptText, { touches: [{ clientX: 12, clientY: 240 }] });
-    fireEvent.touchMove(transcriptText, { touches: [{ clientX: 104, clientY: 246 }] });
+    expect(fireEvent.touchMove(transcriptText, { touches: [{ clientX: 104, clientY: 246 }] })).toBe(true);
     fireEvent.touchEnd(transcriptText, { changedTouches: [{ clientX: 104, clientY: 246 }], touches: [] });
 
     expect(useRemoteStore.getState().activeAgentId).toBe("agent-1");
