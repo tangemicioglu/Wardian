@@ -359,6 +359,7 @@ pub(crate) fn opencode_log_dirs() -> Vec<std::path::PathBuf> {
 pub(crate) struct OpenCodeLogMetrics {
     query_count: usize,
     init_timestamp: Option<String>,
+    last_query_timestamp: Option<String>,
     status: Option<String>,
 }
 
@@ -400,6 +401,16 @@ pub(crate) fn opencode_metrics_from_log(content: &str, session_id: &str) -> Open
                 open_loops.insert(loop_owner.clone());
                 if loop_owner == session_id {
                     metrics.query_count += 1;
+                    metrics.last_query_timestamp = line
+                        .split_whitespace()
+                        .find_map(|token| token.strip_prefix("timestamp="))
+                        .filter(|value| value.ends_with('Z'))
+                        .map(str::to_string)
+                        .or_else(|| {
+                            line.split_whitespace()
+                                .nth(1)
+                                .and_then(opencode_log_timestamp_to_rfc3339)
+                        });
                     last_prompt_exited = false;
                     saw_prompt = true;
                     pending_ask = false;
@@ -441,6 +452,10 @@ pub(crate) fn opencode_metrics_from_log(content: &str, session_id: &str) -> Open
                 saw_prompt = true;
             } else if line.contains(" step=") {
                 metrics.query_count += 1;
+                metrics.last_query_timestamp = line
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(opencode_log_timestamp_to_rfc3339);
                 last_prompt_exited = false;
                 saw_prompt = true;
             }
@@ -480,6 +495,7 @@ pub(crate) fn apply_opencode_log_metrics(
     session_id: &str,
     query_count: &mut usize,
     init_timestamp: &mut Option<String>,
+    last_query_timestamp: &mut Option<String>,
     current_status: &mut String,
 ) {
     let metrics = opencode_metrics_from_log(content, session_id);
@@ -488,6 +504,9 @@ pub(crate) fn apply_opencode_log_metrics(
     }
     if init_timestamp.is_none() && metrics.init_timestamp.is_some() {
         *init_timestamp = metrics.init_timestamp;
+    }
+    if metrics.last_query_timestamp.is_some() {
+        *last_query_timestamp = metrics.last_query_timestamp;
     }
     if let Some(status) = metrics.status {
         *current_status = status;
@@ -805,6 +824,7 @@ mod tests {
 
         let mut query_count = 0;
         let mut init_timestamp = None;
+        let mut last_query_timestamp = None;
         let mut current_status = "Processing...".to_string();
 
         apply_opencode_log_metrics(
@@ -812,6 +832,7 @@ mod tests {
             "ses_target",
             &mut query_count,
             &mut init_timestamp,
+            &mut last_query_timestamp,
             &mut current_status,
         );
 
@@ -828,6 +849,17 @@ mod tests {
             "2026-04-26T04:28:39"
         );
         assert_eq!(current_status, "Idle");
+        let parsed_last_query = last_query_timestamp
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .expect("OpenCode last query timestamp should be normalized to RFC3339");
+        assert_eq!(
+            parsed_last_query
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string(),
+            "2026-04-26T04:28:42"
+        );
     }
 
     #[test]
@@ -839,6 +871,7 @@ mod tests {
 
         let mut query_count = 0;
         let mut init_timestamp = Some("2026-04-26T04:20:00.000Z".to_string());
+        let mut last_query_timestamp = None;
         let mut current_status = "Processing...".to_string();
 
         apply_opencode_log_metrics(
@@ -846,6 +879,7 @@ mod tests {
             "ses_target",
             &mut query_count,
             &mut init_timestamp,
+            &mut last_query_timestamp,
             &mut current_status,
         );
 

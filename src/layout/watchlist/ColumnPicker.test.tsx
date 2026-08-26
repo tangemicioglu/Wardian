@@ -23,10 +23,15 @@ describe('ColumnPicker', () => {
     expect(onPrefsChange).toHaveBeenCalledWith({
       ...DEFAULT_WATCHLIST_PREFS,
       columns: DEFAULT_WATCHLIST_PREFS.columns.map((column) =>
-        column.id === 'status_label' ? { ...column, visible: false } : column,
+        column.id === 'status_label' ? { ...column, visible: true } : column,
       ),
     });
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('defaults to only the Last Queried column', () => {
+    expect(DEFAULT_WATCHLIST_PREFS.columns.filter((column) => column.visible).map((column) => column.id))
+      .toEqual(['last_queried']);
   });
 
   it('toggles sorted team grouping and closes on outside click', async () => {

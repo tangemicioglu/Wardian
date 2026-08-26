@@ -965,7 +965,7 @@ export default function AgentWatchlist({
           }
           if (col.id === 'last_queried') return (
             <span key="last_queried" className="label-small tabular-nums text-muted">
-              {formatRelativeTime(interactions[agentId])}
+              {formatRelativeTime(metrics?.last_query_timestamp ?? interactions[agentId])}
             </span>
           );
           return null;

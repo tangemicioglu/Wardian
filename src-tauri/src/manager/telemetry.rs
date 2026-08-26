@@ -12,9 +12,11 @@ use super::codex::{codex_log_lookup_session_id, codex_session_file_path, codex_s
 use super::display_log_path;
 use super::opencode::{
     apply_opencode_log_metrics, opencode_last_assistant_text, opencode_log_dirs,
-    opencode_log_path_in, opencode_session_diff_path, provider_should_fallback_to_idle_after_quiet_period,
+    opencode_log_path_in, opencode_session_diff_path,
+    provider_should_fallback_to_idle_after_quiet_period,
 };
 use crate::providers::antigravity::AntigravityProvider;
+use crate::providers::pi::PiProvider;
 use wardian_core::control::{ProviderInputReadiness, ProviderReadyEvidence};
 
 const TELEMETRY_SLOW_PASS_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
@@ -176,8 +178,9 @@ fn discover_gemini_log_in_tmp(
 /// megabytes for long-lived codex sessions. Status is derived from the most
 /// recent lines, so parsing is capped to this tail; files under the cap are
 /// read whole (gemini legacy logs are a single JSON document and stay intact).
-/// For capped files the query count is tail-bounded and the init timestamp
-/// falls back to the persisted Born time.
+/// For capped files the query count and last-query timestamp are derived from
+/// the retained tail, while the init timestamp falls back to persisted Born
+/// time.
 const LOG_PARSE_TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
 fn read_log_bounded(path: &std::path::Path) -> std::io::Result<String> {
@@ -219,9 +222,14 @@ fn should_run_provider_log_telemetry(
     _provider: &str,
     current_status: &str,
     process_alive: Option<bool>,
+    has_persisted_query: bool,
+    has_parsed_log: bool,
 ) -> bool {
     if process_alive == Some(false) {
-        return false;
+        // A stopped agent still has useful historical transcript data. Read
+        // it once when the durable interaction ledger has no answer; after a
+        // successful parse, the mtime cache prevents repeated work.
+        return !has_persisted_query && !has_parsed_log;
     }
     !(wardian_core::identity::normalize_status(current_status) == "off"
         && process_alive != Some(true))
@@ -257,10 +265,87 @@ fn bytes_to_mib(bytes: u64) -> f64 {
     bytes as f64 / 1_048_576.0
 }
 
+fn query_timestamp_from_value(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    if let Some(timestamp) = value.as_str() {
+        let timestamp = timestamp.trim();
+        if timestamp.is_empty() {
+            return None;
+        }
+        if chrono::DateTime::parse_from_rfc3339(timestamp).is_ok() {
+            return Some(timestamp.to_string());
+        }
+        // SQLite's CURRENT_TIMESTAMP is UTC but uses a space separator.
+        let sqlite_timestamp = format!("{}Z", timestamp.replace(' ', "T"));
+        return chrono::DateTime::parse_from_rfc3339(&sqlite_timestamp)
+            .ok()
+            .map(|parsed| parsed.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    }
+    value.as_i64().and_then(|millis| {
+        chrono::DateTime::from_timestamp_millis(millis)
+            .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    })
+}
+
+fn query_timestamp_millis(timestamp: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|parsed| parsed.timestamp_millis())
+}
+
+fn update_latest_query_timestamp(latest: &mut Option<String>, candidate: Option<String>) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    let should_replace = latest.as_deref().is_none_or(|current| {
+        match (
+            query_timestamp_millis(current),
+            query_timestamp_millis(&candidate),
+        ) {
+            (Some(current), Some(candidate)) => candidate > current,
+            _ => candidate.as_str() > current,
+        }
+    });
+    if should_replace {
+        *latest = Some(candidate);
+    }
+}
+
+fn latest_user_query_timestamps() -> HashMap<String, String> {
+    let Ok(records) = wardian_core::db::list_interaction_records() else {
+        return HashMap::new();
+    };
+    let mut timestamps = HashMap::new();
+    for record in records {
+        if record.kind != wardian_core::control::InteractionKind::Message
+            || record.sender_session_id.is_some()
+        {
+            continue;
+        }
+        let Some(timestamp) =
+            query_timestamp_from_value(Some(&serde_json::Value::String(record.created_at)))
+        else {
+            continue;
+        };
+        for session_id in record.target_session_ids {
+            let entry = timestamps
+                .entry(session_id)
+                .or_insert_with(|| timestamp.clone());
+            let mut latest = Some(entry.clone());
+            update_latest_query_timestamp(&mut latest, Some(timestamp.clone()));
+            if let Some(latest) = latest {
+                *entry = latest;
+            }
+        }
+    }
+    timestamps
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct GeminiLogMetrics {
     query_count: usize,
     init_timestamp: Option<String>,
+    last_query_timestamp: Option<String>,
     status: Option<&'static str>,
 }
 
@@ -337,6 +422,16 @@ fn parse_gemini_log_metrics(content: &str) -> Option<GeminiLogMetrics> {
                     .get("startTime")
                     .and_then(|v| v.as_str())
                     .map(str::to_string),
+                last_query_timestamp: messages
+                    .iter()
+                    .filter(|message| gemini_message_kind(message) == Some("user"))
+                    .fold(None, |mut latest, message| {
+                        update_latest_query_timestamp(
+                            &mut latest,
+                            query_timestamp_from_value(message.get("timestamp")),
+                        );
+                        latest
+                    }),
                 status,
             });
         }
@@ -344,6 +439,7 @@ fn parse_gemini_log_metrics(content: &str) -> Option<GeminiLogMetrics> {
 
     let mut query_count = 0usize;
     let mut init_timestamp = None;
+    let mut last_query_timestamp = None;
     let mut status = None;
     let mut saw_gemini_record = false;
 
@@ -367,6 +463,10 @@ fn parse_gemini_log_metrics(content: &str) -> Option<GeminiLogMetrics> {
             match kind {
                 "user" => {
                     query_count += 1;
+                    update_latest_query_timestamp(
+                        &mut last_query_timestamp,
+                        query_timestamp_from_value(record.get("timestamp")),
+                    );
                     status = Some("Processing...");
                     saw_gemini_record = true;
                 }
@@ -388,8 +488,58 @@ fn parse_gemini_log_metrics(content: &str) -> Option<GeminiLogMetrics> {
     Some(GeminiLogMetrics {
         query_count,
         init_timestamp,
+        last_query_timestamp,
         status,
     })
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PiLogMetrics {
+    query_count: usize,
+    init_timestamp: Option<String>,
+    last_query_timestamp: Option<String>,
+}
+
+fn parse_pi_log_metrics(content: &str) -> Option<PiLogMetrics> {
+    let mut metrics = PiLogMetrics::default();
+    let mut saw_record = false;
+
+    for line in content.lines() {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        saw_record = true;
+
+        if record.get("type").and_then(|value| value.as_str()) == Some("session") {
+            if metrics.init_timestamp.is_none() {
+                metrics.init_timestamp = record
+                    .get("timestamp")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+            }
+            continue;
+        }
+
+        if record.get("type").and_then(|value| value.as_str()) != Some("message") {
+            continue;
+        }
+        let Some(message) = record.get("message") else {
+            continue;
+        };
+        if message.get("role").and_then(|value| value.as_str()) != Some("user") {
+            continue;
+        }
+
+        metrics.query_count += 1;
+        update_latest_query_timestamp(
+            &mut metrics.last_query_timestamp,
+            query_timestamp_from_value(
+                record.get("timestamp").or_else(|| message.get("timestamp")),
+            ),
+        );
+    }
+
+    (saw_record && (metrics.init_timestamp.is_some() || metrics.query_count > 0)).then_some(metrics)
 }
 
 struct AgentSnapshot {
@@ -964,9 +1114,12 @@ fn record_latest_antigravity_assistant_text(snap: &AgentSnapshot, content: &str)
     }
 }
 
-fn parse_antigravity_log_metrics(content: &str) -> (usize, Option<String>, Option<&'static str>) {
+fn parse_antigravity_log_metrics(
+    content: &str,
+) -> (usize, Option<String>, Option<&'static str>, Option<String>) {
     let mut query_count = 0;
     let mut init_timestamp = None;
+    let mut last_query_timestamp = None;
     let mut status = None;
 
     for line in content.lines() {
@@ -986,6 +1139,10 @@ fn parse_antigravity_log_metrics(content: &str) -> (usize, Option<String>, Optio
         ) {
             (Some("USER_EXPLICIT"), Some("USER_INPUT"), _) => {
                 query_count += 1;
+                update_latest_query_timestamp(
+                    &mut last_query_timestamp,
+                    query_timestamp_from_value(parsed.get("created_at")),
+                );
                 status = Some("Processing...");
             }
             (Some("MODEL"), Some("PLANNER_RESPONSE"), Some("DONE")) => {
@@ -998,7 +1155,7 @@ fn parse_antigravity_log_metrics(content: &str) -> (usize, Option<String>, Optio
         }
     }
 
-    (query_count, init_timestamp, status)
+    (query_count, init_timestamp, status, last_query_timestamp)
 }
 
 fn collect_descendant_pids(
@@ -1096,6 +1253,7 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
         let pass_started = std::time::Instant::now();
         let mut results = Vec::new();
         let mut provider_statuses = Vec::new();
+        let mut last_user_query_timestamps = latest_user_query_timestamps();
         let agent_roots = snapshots
             .iter()
             .map(|snap| (snap.session_id.clone(), snap.process_id))
@@ -1177,10 +1335,16 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                 .filter(|value| value.starts_with("ses_"));
             let gemini_session_id = snap.resume_session.as_deref();
             let status_before_log_work = snap.current_status.lock().unwrap().clone();
+            let mut last_query_timestamp = last_user_query_timestamps.remove(&snap.session_id);
             let run_provider_log_work = should_run_provider_log_telemetry(
                 &snap.provider,
                 &status_before_log_work,
                 process_alive,
+                last_query_timestamp.is_some(),
+                snap.log_last_modified
+                    .lock()
+                    .map(|last| last.is_some())
+                    .unwrap_or(false),
             );
 
             if run_provider_log_work {
@@ -1258,6 +1422,16 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                                 .join(format!("{}.jsonl", session_id_to_find));
                             if candidate.exists() {
                                 *log_path_lock = Some(candidate);
+                            }
+                        }
+                    } else if snap.provider == "pi" {
+                        if let Some(provider_session_id) = snap.resume_session.as_deref() {
+                            if let Some(session_dir) = PiProvider::session_dir(&snap.session_id) {
+                                if let Some(path) =
+                                    PiProvider::session_file(&session_dir, provider_session_id)
+                                {
+                                    *log_path_lock = Some(path);
+                                }
                             }
                         }
                     } else if log_path_lock.is_none() {
@@ -1359,6 +1533,27 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                                             }
                                         }
 
+                                        for line in lines.iter().filter(|line| {
+                                            line.get("type").and_then(|value| value.as_str())
+                                                == Some("event_msg")
+                                                && line
+                                                    .get("payload")
+                                                    .and_then(|value| value.get("type"))
+                                                    .and_then(|value| value.as_str())
+                                                    == Some("user_message")
+                                        }) {
+                                            update_latest_query_timestamp(
+                                                &mut last_query_timestamp,
+                                                query_timestamp_from_value(
+                                                    line.get("timestamp").or_else(|| {
+                                                        line.get("payload").and_then(|payload| {
+                                                            payload.get("timestamp")
+                                                        })
+                                                    }),
+                                                ),
+                                            );
+                                        }
+
                                         if let Some(status) = codex_status_from_log(&lines) {
                                             set_snapshot_status_from_log(
                                                 snap,
@@ -1403,6 +1598,17 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                                             }
                                         }
 
+                                        for line in lines.iter().filter(|line| {
+                                            line.get("type").and_then(|value| value.as_str())
+                                                == Some("user")
+                                                && claude_is_real_user_query(line)
+                                        }) {
+                                            update_latest_query_timestamp(
+                                                &mut last_query_timestamp,
+                                                query_timestamp_from_value(line.get("timestamp")),
+                                            );
+                                        }
+
                                         apply_claude_log_status(
                                             snap,
                                             &lines,
@@ -1420,6 +1626,7 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                                             effective_session_id,
                                             &mut q_count,
                                             &mut i_ts,
+                                            &mut last_query_timestamp,
                                             &mut status,
                                         );
                                         status = reconcile_live_opencode_log_status(
@@ -1444,9 +1651,13 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                                         );
                                     }
                                     "antigravity" => {
-                                        let (queries, start_time, status) =
+                                        let (queries, start_time, status, latest_query) =
                                             parse_antigravity_log_metrics(&content);
                                         q_count = queries;
+                                        update_latest_query_timestamp(
+                                            &mut last_query_timestamp,
+                                            latest_query,
+                                        );
                                         if let Some(status) = status {
                                             set_snapshot_status_from_log(
                                                 snap,
@@ -1458,6 +1669,18 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                                             i_ts = start_time;
                                         }
                                         record_latest_antigravity_assistant_text(snap, &content);
+                                    }
+                                    "pi" => {
+                                        if let Some(metrics) = parse_pi_log_metrics(&content) {
+                                            q_count = metrics.query_count;
+                                            if let Some(start_time) = metrics.init_timestamp {
+                                                i_ts = Some(start_time);
+                                            }
+                                            update_latest_query_timestamp(
+                                                &mut last_query_timestamp,
+                                                metrics.last_query_timestamp,
+                                            );
+                                        }
                                     }
                                     _ => {
                                         if let Some(metrics) = parse_gemini_log_metrics(&content) {
@@ -1472,6 +1695,10 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                                             if let Some(start_time) = metrics.init_timestamp {
                                                 i_ts = Some(start_time);
                                             }
+                                            update_latest_query_timestamp(
+                                                &mut last_query_timestamp,
+                                                metrics.last_query_timestamp,
+                                            );
                                         }
                                         if snap.provider == "gemini" {
                                             record_latest_gemini_assistant_text(snap, &content);
@@ -1551,6 +1778,7 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                 uptime_seconds: uptime,
                 query_count: *snap.query_count.lock().unwrap(),
                 init_timestamp: snap.init_timestamp.lock().unwrap().clone(),
+                last_query_timestamp,
                 current_status,
                 log_path: log_path_display,
             });
@@ -2181,7 +2409,7 @@ mod tests {
           "sessionId": "gemini-session-1",
           "startTime": "2026-05-14T12:00:00.000Z",
           "messages": [
-            { "type": "user", "content": "hello" },
+            { "type": "user", "timestamp": "2026-05-14T12:00:01.000Z", "content": "hello" },
             { "type": "gemini", "content": "hi" }
           ]
         }"#;
@@ -2193,7 +2421,35 @@ mod tests {
             metrics.init_timestamp.as_deref(),
             Some("2026-05-14T12:00:00.000Z")
         );
+        assert_eq!(
+            metrics.last_query_timestamp.as_deref(),
+            Some("2026-05-14T12:00:01.000Z")
+        );
         assert_eq!(metrics.status, Some("Idle"));
+    }
+
+    #[test]
+    fn pi_log_metrics_parse_latest_user_message_timestamp() {
+        let content = concat!(
+            r#"{"type":"session","id":"pi-session-1","timestamp":"2026-05-14T12:00:00.000Z"}"#,
+            "\n",
+            r#"{"type":"message","timestamp":"2026-05-14T12:00:01.000Z","message":{"role":"user","content":"first"}}"#,
+            "\n",
+            r#"{"type":"message","timestamp":"2026-05-14T12:00:03.000Z","message":{"role":"user","content":"latest"}}"#,
+            "\n"
+        );
+
+        let metrics = super::parse_pi_log_metrics(content).expect("metrics");
+
+        assert_eq!(metrics.query_count, 2);
+        assert_eq!(
+            metrics.init_timestamp.as_deref(),
+            Some("2026-05-14T12:00:00.000Z")
+        );
+        assert_eq!(
+            metrics.last_query_timestamp.as_deref(),
+            Some("2026-05-14T12:00:03.000Z")
+        );
     }
 
     #[test]
@@ -2216,6 +2472,10 @@ mod tests {
             metrics.init_timestamp.as_deref(),
             Some("2026-05-14T12:00:00.000Z")
         );
+        assert_eq!(
+            metrics.last_query_timestamp.as_deref(),
+            Some("2026-05-14T12:00:01.000Z")
+        );
         assert_eq!(metrics.status, Some("Idle"));
     }
 
@@ -2233,6 +2493,10 @@ mod tests {
         let metrics = super::parse_gemini_log_metrics(content).expect("metrics");
 
         assert_eq!(metrics.query_count, 1);
+        assert_eq!(
+            metrics.last_query_timestamp.as_deref(),
+            Some("2026-05-14T12:00:01.000Z")
+        );
         assert_eq!(metrics.status, Some("Processing..."));
     }
 

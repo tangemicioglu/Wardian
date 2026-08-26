@@ -148,6 +148,10 @@ describe('AgentWatchlist', () => {
           ...sampleTelemetry,
           'agent-1': { ...sampleTelemetry['agent-1'], current_status: 'processing' },
         }}
+        prefs={{
+          ...defaultPrefs,
+          columns: [{ id: 'status_label', visible: true }, ...defaultPrefs.columns],
+        }}
         currentThoughts={{ 'agent-1': 'Running command npm test' }}
       />,
     );

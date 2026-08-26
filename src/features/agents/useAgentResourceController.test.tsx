@@ -62,6 +62,7 @@ function metric(
   current_status: string,
   query_count = 0,
   log_path: string | null = null,
+  last_query_timestamp?: string,
 ): AgentTelemetry {
   return {
     session_id,
@@ -70,6 +71,7 @@ function metric(
     uptime_seconds: 3,
     query_count,
     init_timestamp: null,
+    last_query_timestamp,
     current_status,
     log_path,
   };
@@ -278,6 +280,22 @@ describe("useAgentResourceController", () => {
     act(() => emit("agent-metrics", [metric("agent-2", "Processing", 0)]));
     act(() => emit("agent-metrics", [metric("agent-2", "Idle", 3, "agent-2.jsonl")]));
     expect(on_agent_interactions).not.toHaveBeenCalled();
+  });
+
+  it("uses the provider timestamp when telemetry is hydrated after launch", async () => {
+    const on_agent_interactions = vi.fn();
+    const { result } = renderHook(() => useAgentResourceController({ on_agent_interactions }));
+    await waitFor(() => expect(result.current.agents).toHaveLength(2));
+
+    act(() => emit("agent-metrics", [
+      metric("agent-1", "Idle", 4, "agent-1.jsonl", "2026-08-20T15:30:00.000Z"),
+    ]));
+
+    expect(result.current.telemetry["agent-1"].last_query_timestamp)
+      .toBe("2026-08-20T15:30:00.000Z");
+    expect(on_agent_interactions).toHaveBeenCalledWith({
+      "agent-1": "2026-08-20T15:30:00.000Z",
+    });
   });
 
   it("coalesces all interaction changes from one metrics payload", async () => {

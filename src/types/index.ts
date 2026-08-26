@@ -406,6 +406,7 @@ export interface AgentTelemetry {
     uptime_seconds: number;
     query_count: number;
     init_timestamp: string | null;
+    last_query_timestamp?: string | null;
     current_status: string;
     log_path: string | null;
 }

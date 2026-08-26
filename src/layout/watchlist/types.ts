@@ -46,7 +46,7 @@ export interface ContextMenuState {
   agentIds?: string[];
 }
 
-// All toggleable columns (status_label and query_count are on by default)
+// All toggleable columns. New watchlists show only the recency signal by default.
 export type OptionalColumnId =
   | 'status_label'
   | 'query_count'
@@ -79,8 +79,8 @@ export type AgentInteractions = Record<string, string>;
 
 export const DEFAULT_WATCHLIST_PREFS: WatchlistPrefs = {
   columns: [
-    { id: 'status_label', visible: true },
-    { id: 'query_count', visible: true },
+    { id: 'status_label', visible: false },
+    { id: 'query_count', visible: false },
     { id: 'uptime', visible: false },
     { id: 'provider_model', visible: false },
     { id: 'last_queried', visible: true },

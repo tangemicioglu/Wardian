@@ -10,6 +10,12 @@ import type {
 } from "./types";
 import type { AgentConfig, AgentTelemetry } from "../../types";
 
+function timestampSortValue(timestamp: string | undefined): number {
+  if (!timestamp) return Number.NEGATIVE_INFINITY;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
 function isWatchlistState(value: unknown): value is WatchlistState {
   return Boolean(
     value &&
@@ -703,8 +709,12 @@ export function sortAgents(
         bv = `${b.provider} ${b.model ?? ''}`.toLowerCase();
         break;
       case 'last_queried':
-        av = interactions[a.session_id] ?? '';
-        bv = interactions[b.session_id] ?? '';
+        av = timestampSortValue(
+          telemetry[a.session_id]?.last_query_timestamp ?? interactions[a.session_id],
+        );
+        bv = timestampSortValue(
+          telemetry[b.session_id]?.last_query_timestamp ?? interactions[b.session_id],
+        );
         break;
       case 'status_label':
         av = telemetry[a.session_id]?.current_status ?? '';

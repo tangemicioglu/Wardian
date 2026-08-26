@@ -1995,6 +1995,41 @@ describe("Agent Watchlist Sidebar", () => {
     );
   });
 
+  it("keeps the historical telemetry timestamp when hydrating the roster", async () => {
+    setupDefaultMocksWithInteractions(sampleAgents, defaultClasses, {});
+    const emitAgentMetrics = captureAgentMetricsListener();
+
+    await act(async () => {
+      render(<App />);
+    });
+    await screen.findByText("Agent List");
+
+    await act(async () => {
+      emitAgentMetrics([
+        {
+          session_id: "agent-1",
+          current_status: "Idle",
+          cpu_usage: 0,
+          memory_mb: 0,
+          uptime_seconds: 0,
+          query_count: 3,
+          init_timestamp: null,
+          last_query_timestamp: "2026-04-29T12:00:00.000Z",
+          log_path: "C:/Users/example/.claude/projects/workspace/session.jsonl",
+        },
+      ]);
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "save_agent_interactions",
+      expect.objectContaining({
+        interactions: expect.objectContaining({
+          "agent-1": "2026-04-29T12:00:00.000Z",
+        }),
+      }),
+    );
+  });
+
   it("does not overwrite persisted last queried timestamps when Claude transcript count is rehydrated after an initial zero sample", async () => {
     setupDefaultMocksWithInteractions(sampleAgents, defaultClasses, {
       "agent-1": "2026-04-29T12:00:00.000Z",
@@ -2491,15 +2526,16 @@ describe("Agent Watchlist Sidebar", () => {
     });
   });
 
-  it("shows column headers", async () => {
+  it("shows the default column headers", async () => {
     setupDefaultMocks(sampleAgents, defaultClasses);
     await act(async () => {
       render(<App />);
     });
     await waitFor(() => {
       expect(screen.getByText("Agent")).toBeInTheDocument();
-      expect(screen.getByText("Status")).toBeInTheDocument();
-      expect(screen.getByText("Qry")).toBeInTheDocument();
+      expect(screen.getByText("Last")).toBeInTheDocument();
+      expect(screen.queryByText("Status")).not.toBeInTheDocument();
+      expect(screen.queryByText("Qry")).not.toBeInTheDocument();
     });
   });
 
