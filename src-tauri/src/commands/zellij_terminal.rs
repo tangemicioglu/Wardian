@@ -18,7 +18,14 @@ pub struct ZellijTerminalPreview {
     pub content: String,
 }
 
-fn preview_state_for_phase(phase: ZellijPanePhase, broker_available: bool) -> &'static str {
+fn preview_state_for_phase(
+    phase: ZellijPanePhase,
+    broker_available: bool,
+    replacement_pending: bool,
+) -> &'static str {
+    if replacement_pending {
+        return "starting";
+    }
     match phase {
         ZellijPanePhase::Starting | ZellijPanePhase::Closing => "starting",
         ZellijPanePhase::Running if broker_available => "running",
@@ -88,6 +95,7 @@ pub async fn get_zellij_terminal_preview(
             content: String::new(),
         });
     };
+    let replacement_pending = engine.replacement_pending(&session_id);
     let Some(binding) = engine.binding(&session_id).await else {
         let preview_state = {
             let agents = state.agents.lock().await;
@@ -115,7 +123,11 @@ pub async fn get_zellij_terminal_preview(
             content: String::new(),
         });
     };
-    let preview_state = preview_state_for_phase(binding.phase, broker_state.is_some());
+    let preview_state = preview_state_for_phase(
+        binding.phase,
+        broker_state.is_some(),
+        replacement_pending,
+    );
     if preview_state != "running" {
         return Ok(ZellijTerminalPreview {
             terminal_session_id: session_id.clone(),
@@ -155,24 +167,28 @@ mod tests {
     #[test]
     fn preview_phase_mapping_only_advertises_running_panes_as_interactive() {
         assert_eq!(
-            preview_state_for_phase(ZellijPanePhase::Starting, true),
+            preview_state_for_phase(ZellijPanePhase::Starting, true, false),
             "starting"
         );
         assert_eq!(
-            preview_state_for_phase(ZellijPanePhase::Closing, true),
+            preview_state_for_phase(ZellijPanePhase::Closing, true, false),
             "starting"
         );
         assert_eq!(
-            preview_state_for_phase(ZellijPanePhase::Running, true),
+            preview_state_for_phase(ZellijPanePhase::Running, true, false),
             "running"
         );
         assert_eq!(
-            preview_state_for_phase(ZellijPanePhase::Running, false),
+            preview_state_for_phase(ZellijPanePhase::Running, false, false),
             "starting"
         );
         assert_eq!(
-            preview_state_for_phase(ZellijPanePhase::Exited, true),
+            preview_state_for_phase(ZellijPanePhase::Exited, true, false),
             "exited"
+        );
+        assert_eq!(
+            preview_state_for_phase(ZellijPanePhase::Running, true, true),
+            "starting"
         );
     }
 
@@ -213,6 +229,9 @@ pub async fn activate_zellij_agent_terminal(
         .get()
         .ok_or_else(|| "Terminal engine is unavailable".to_string())?;
     engine.register_activation_request(&activation_request_id);
+    if engine.replacement_pending(&session_id) {
+        return Err("Agent terminal restart is still settling".to_string());
+    }
     let binding = engine
         .binding(&session_id)
         .await

@@ -464,11 +464,19 @@ impl ZellijTerminalEngine {
         self.pane_registry().bindings.get(session_id).cloned()
     }
 
+    /// Returns whether pane and broker generations are inside one replacement transaction.
+    pub fn replacement_pending(&self, session_id: &str) -> bool {
+        self.pane_registry()
+            .replacement_reservations
+            .contains_key(session_id)
+    }
+
     pub async fn reserve_replacement(
         &self,
         session_id: &str,
         generation: u64,
     ) -> Result<(), String> {
+        let _activation_guard = self.activation_lock.lock().await;
         self.retry_pending_session_cleanup(session_id).await?;
         let mut panes = self.pane_registry();
         let active = panes
@@ -1612,6 +1620,9 @@ impl ZellijTerminalEngine {
         if !self.activation_request_is_current(request_id) {
             return Err("Terminal handoff was superseded".to_string());
         }
+        if self.replacement_pending(session_id) {
+            return Err("Agent terminal restart is still settling".to_string());
+        }
         self.activate_pane_locked(session_id, generation, Some(request_id))
             .await
     }
@@ -1639,21 +1650,41 @@ impl ZellijTerminalEngine {
     pub async fn close_pane(&self, session_id: &str, generation: u64) -> Result<(), String> {
         let pane = {
             let mut panes = self.pane_registry();
-            let binding = panes
-                .binding_for_generation_mut(session_id, generation)
-                .ok_or_else(|| "Agent has no Zellij pane".to_string())?;
-            if !matches!(
-                    binding.phase,
-                    ZellijPanePhase::Running | ZellijPanePhase::Exited | ZellijPanePhase::Closing
-                ) {
-                return Err("Agent Zellij pane generation is stale".to_string());
+            match panes.binding_for_generation_mut(session_id, generation) {
+                None => None,
+                Some(binding) => {
+                    if !matches!(
+                        binding.phase,
+                        ZellijPanePhase::Running
+                            | ZellijPanePhase::Exited
+                            | ZellijPanePhase::Closing
+                    ) {
+                        return Err("Agent Zellij pane generation is stale".to_string());
+                    }
+                    let previous_phase = binding.phase;
+                    binding.phase = ZellijPanePhase::Closing;
+                    Some((binding.pane_id.clone(), previous_phase))
+                }
             }
-            binding.phase = ZellijPanePhase::Closing;
-            binding.pane_id.clone()
+        };
+        let Some((pane, previous_phase)) = pane else {
+            return self.close_unregistered_session_panes(session_id).await;
         };
         let pane = pane.ok_or_else(|| {
             "Agent Zellij pane identity is unavailable; cleanup is pending".to_string()
         })?;
+        if previous_phase == ZellijPanePhase::Exited {
+            let pane_is_present = self
+                .list_panes()
+                .await?
+                .into_iter()
+                .filter_map(|candidate| candidate.pane_id())
+                .any(|candidate| candidate == pane);
+            if !pane_is_present {
+                self.remove_binding_generation(session_id, generation);
+                return Ok(());
+            }
+        }
         self.close_pane_id(&pane).await?;
         self.confirm_pane_closed(&pane).await?;
         self.remove_binding_generation(session_id, generation);
@@ -2883,15 +2914,18 @@ mod tests {
             config(root.path()),
             runner.clone(),
         ));
-        engine.pane_registry().bindings.insert(
-            "agent-1".to_string(),
-            ZellijPaneBinding {
-                session_id: "agent-1".to_string(),
-                pane_id: Some(ZellijPaneId::parse("terminal_1").unwrap()),
-                generation: 1,
-                phase: ZellijPanePhase::Running,
-            },
-        );
+        {
+            let mut panes = engine.pane_registry();
+            panes.bindings.insert(
+                "agent-1".to_string(),
+                ZellijPaneBinding {
+                    session_id: "agent-1".to_string(),
+                    pane_id: Some(ZellijPaneId::parse("terminal_1").unwrap()),
+                    generation: 1,
+                    phase: ZellijPanePhase::Running,
+                },
+            );
+        }
         engine.register_activation_request("handoff-a");
         let activation = {
             let engine = Arc::clone(&engine);
@@ -2945,6 +2979,91 @@ mod tests {
             engine.binding("agent-1").await.unwrap().phase,
             ZellijPanePhase::Exited,
         );
+    }
+
+    #[tokio::test]
+    async fn replacement_pending_rejects_focus_before_any_zellij_action() {
+        let root = tempfile::tempdir().unwrap();
+        let runner = FakeRunner::with_outputs([]);
+        let engine = ZellijTerminalEngine::with_runner(config(root.path()), runner.clone());
+        {
+            let mut panes = engine.pane_registry();
+            panes.bindings.insert(
+                "agent-1".to_string(),
+                ZellijPaneBinding {
+                    session_id: "agent-1".to_string(),
+                    pane_id: Some(ZellijPaneId::parse("terminal_1").unwrap()),
+                    generation: 1,
+                    phase: ZellijPanePhase::Running,
+                },
+            );
+            panes
+                .replacement_reservations
+                .insert("agent-1".to_string(), 1);
+        }
+        engine.register_activation_request("handoff-a");
+
+        assert_eq!(
+            engine
+                .activate_pane_for_request("agent-1", 1, "handoff-a")
+                .await,
+            Err("Agent terminal restart is still settling".to_string())
+        );
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn exited_subscription_can_be_closed_before_same_session_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let successful = |stdout: &[u8]| Output {
+            status: status(0),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        };
+        let runner = FakeRunner::with_outputs([
+            successful(b"[]"),
+            successful(b"[]"),
+            successful(b"[]"),
+            successful(b"terminal_2\n"),
+        ]);
+        let engine = Arc::new(ZellijTerminalEngine::with_runner(
+            config(root.path()),
+            runner,
+        ));
+        engine.prepare_runtime_directories().unwrap();
+        {
+            let mut panes = engine.pane_registry();
+            panes.next_generation = 1;
+            panes.bindings.insert(
+                "agent-1".to_string(),
+                ZellijPaneBinding {
+                    session_id: "agent-1".to_string(),
+                    pane_id: Some(ZellijPaneId::parse("terminal_1").unwrap()),
+                    generation: 1,
+                    phase: ZellijPanePhase::Running,
+                },
+            );
+        }
+        engine.finish_pane_subscription("agent-1", 1, false);
+        ZellijPaneLease::new(engine.clone(), "agent-1".to_string(), 1)
+            .close()
+            .await
+            .unwrap();
+
+        let replacement = engine
+            .create_pane(ZellijLaunchSpec {
+                session_id: "agent-1".to_string(),
+                executable: "provider".to_string(),
+                args: Vec::new(),
+                cwd: root.path().to_path_buf(),
+                env: BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(replacement.generation, 2);
+        assert_eq!(replacement.phase, ZellijPanePhase::Running);
+        assert_eq!(replacement.pane_id.unwrap().as_str(), "terminal_2");
     }
 
     #[tokio::test]

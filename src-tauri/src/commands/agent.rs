@@ -1270,6 +1270,39 @@ struct ResumeRuntimeSnapshot {
     zellij_generation: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeZellijMode {
+    ReplaceRunning,
+    RecoverStale,
+}
+
+fn classify_resume_zellij_mode(
+    expected_generation: u64,
+    binding: Option<&crate::state::zellij_terminal::ZellijPaneBinding>,
+) -> Result<ResumeZellijMode, String> {
+    let Some(binding) = binding else {
+        return Ok(ResumeZellijMode::RecoverStale);
+    };
+    if binding.generation != expected_generation {
+        return Err(
+            "Agent runtime and Zellij pane generations are inconsistent; restart was not started"
+                .to_string(),
+        );
+    }
+    match binding.phase {
+        crate::state::zellij_terminal::ZellijPanePhase::Running => {
+            Ok(ResumeZellijMode::ReplaceRunning)
+        }
+        crate::state::zellij_terminal::ZellijPanePhase::Exited
+        | crate::state::zellij_terminal::ZellijPanePhase::Closing => {
+            Ok(ResumeZellijMode::RecoverStale)
+        }
+        crate::state::zellij_terminal::ZellijPanePhase::Starting => Err(
+            "Agent Zellij pane transition is still in progress; restart was not started".to_string(),
+        ),
+    }
+}
+
 fn restore_runtime_state_after_resume(
     new_active: &mut crate::state::ActiveAgent,
     snapshot: &ResumeRuntimeSnapshot,
@@ -3374,6 +3407,9 @@ pub async fn resume_agent(
         acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "resume").await?;
     let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(_lifecycle_lease.owner().clone());
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
+    // Every external terminal writer takes this same gate. Holding it through
+    // pane and broker promotion prevents input from observing split generations.
+    let _delivery_guard = state.lock_agent_delivery(&session_id).await;
     let snapshot = {
         let agents = state.agents.lock().await;
         let agent = agents
@@ -3415,7 +3451,7 @@ pub async fn resume_agent(
     prepare_provider_owned_fresh_identity(&mut config).await?;
     lifecycle_heartbeat.ensure_active("resume")?;
 
-    let running_replacement = match (snapshot.runtime_generation, snapshot.zellij_generation) {
+    let running_runtime = match (snapshot.runtime_generation, snapshot.zellij_generation) {
         (Some(runtime_generation), Some(zellij_generation)) => {
             Some((runtime_generation, zellij_generation))
         }
@@ -3427,16 +3463,25 @@ pub async fn resume_agent(
             )
         }
     };
-    let replacement_engine = if let Some((_, zellij_generation)) = running_replacement {
+    let mut running_replacement = None;
+    let replacement_engine = if let Some((runtime_generation, zellij_generation)) = running_runtime
+    {
         let engine = state
             .zellij_terminal
             .get()
             .cloned()
             .ok_or_else(|| "Bundled Zellij terminal engine is unavailable".to_string())?;
-        engine
-            .reserve_replacement(&session_id, zellij_generation)
-            .await?;
-        Some(engine)
+        let binding = engine.binding(&session_id).await;
+        match classify_resume_zellij_mode(zellij_generation, binding.as_ref())? {
+            ResumeZellijMode::ReplaceRunning => {
+                engine
+                    .reserve_replacement(&session_id, zellij_generation)
+                    .await?;
+                running_replacement = Some((runtime_generation, zellij_generation));
+                Some(engine)
+            }
+            ResumeZellijMode::RecoverStale => None,
+        }
     } else {
         None
     };
@@ -5552,10 +5597,10 @@ mod tests {
         acquire_agent_lifecycle_transition_lease_for_session, agent_status_update_payload,
         apply_agent_model_selection_update, apply_agent_update_fields,
         archive_agent_lifecycle_boundary, archive_agent_lifecycle_boundary_from_snapshot,
-        assign_worktree_config, build_agent_cli_command_for_session_id_with_shells,
-        build_agent_cli_command_with_shells, build_agent_clone_preview,
-        build_session_close_context, commit_clear_replacement, commit_resume_replacement,
-        agent_has_running_process, capture_resume_runtime_snapshot,
+        agent_has_running_process, assign_worktree_config,
+        build_agent_cli_command_for_session_id_with_shells, build_agent_cli_command_with_shells,
+        build_agent_clone_preview, build_session_close_context, capture_resume_runtime_snapshot,
+        classify_resume_zellij_mode, commit_clear_replacement, commit_resume_replacement,
         clone_cleanup_created_profile_dirs,
         clone_collect_eligible_file_tree, clone_copy_agent_profile_files, clone_copy_profile_plan,
         clone_copy_selected_agent_profile_files, clone_copy_selected_agent_skills,
@@ -5597,6 +5642,7 @@ mod tests {
         workspace_paths_match, worktree_deletion_is_already_complete, AgentOrderPlacement,
         AgentUpdateFields, AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
         DeletedAgentReferenceCleanup, DiscoveredGitWorktree, ResumeRuntimeSnapshot,
+        ResumeZellijMode,
         GIT_WORKTREE_DISCOVERY_CONCURRENCY, MAX_AGENT_DESCRIPTION_CHARS,
     };
     use crate::commands::terminal_session::{
@@ -9291,6 +9337,39 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             snapshot.log_path.as_deref(),
             Some(std::path::Path::new("D:/tmp/agent.log"))
         );
+    }
+
+    #[test]
+    fn resume_recreates_exited_closing_and_missing_zellij_generations() {
+        use crate::state::zellij_terminal::{
+            ZellijPaneBinding, ZellijPaneId, ZellijPanePhase,
+        };
+
+        let binding = |phase| ZellijPaneBinding {
+            session_id: "agent-1".to_string(),
+            pane_id: Some(ZellijPaneId::parse("terminal_1").unwrap()),
+            generation: 7,
+            phase,
+        };
+
+        assert_eq!(
+            classify_resume_zellij_mode(7, Some(&binding(ZellijPanePhase::Running))).unwrap(),
+            ResumeZellijMode::ReplaceRunning
+        );
+        assert_eq!(
+            classify_resume_zellij_mode(7, Some(&binding(ZellijPanePhase::Exited))).unwrap(),
+            ResumeZellijMode::RecoverStale
+        );
+        assert_eq!(
+            classify_resume_zellij_mode(7, Some(&binding(ZellijPanePhase::Closing))).unwrap(),
+            ResumeZellijMode::RecoverStale
+        );
+        assert_eq!(
+            classify_resume_zellij_mode(7, None).unwrap(),
+            ResumeZellijMode::RecoverStale
+        );
+        assert!(classify_resume_zellij_mode(6, Some(&binding(ZellijPanePhase::Exited))).is_err());
+        assert!(classify_resume_zellij_mode(7, Some(&binding(ZellijPanePhase::Starting))).is_err());
     }
 
     #[test]

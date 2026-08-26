@@ -49,6 +49,12 @@ Spawning an agent follows a deterministic sequence in `manager::spawn_agent`:
 7. **Register binding**: Store the generation-scoped agent-to-pane binding in
    `AppState`.
 
+Running restart holds the agent's delivery gate from preflight through broker
+and pane promotion. While a replacement reservation exists, previews are
+noninteractive and focus handoffs are rejected. An exited, closing, or missing
+old pane is first reconciled and removed, then restarted through the ordinary
+single-pane creation path instead of being treated as a live replacement.
+
 ### Shell-hosted Launch Notes
 - Workflow shell-command nodes and headless provider runs use the same shell resolver as interactive PTY sessions.
 - On Windows, provider shims are host-aware: PowerShell hosts invoke `.cmd` and `.bat` shims directly through PowerShell, while POSIX-like hosts such as Git Bash or WSL may route Windows shims through `cmd.exe` for compatibility.

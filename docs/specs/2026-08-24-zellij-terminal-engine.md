@@ -190,6 +190,13 @@ or status event from an older generation is rejected.
 If any step fails, remove the launch file, close a newly created pane when its ID
 is known, revoke the memory capability, and return the agent to `unbound`.
 
+A running restart holds the per-agent delivery gate across the complete staged
+transaction. The replacement reservation makes previews noninteractive and
+rejects focus handoffs until both the pane and broker generations commit or
+roll back. If the old subscription has exited, is closing, or has lost its
+binding, restart reconciles that stale generation and creates a fresh pane
+through the ordinary path; it does not require a `running` replacement source.
+
 ### Input and delivery
 
 - Human input goes through the active agent's broker runtime. The runtime uses
