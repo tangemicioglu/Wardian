@@ -128,7 +128,34 @@ type AdapterRuntime = Pick<
   ) => void;
 };
 
+/**
+ * What a tab header needs, and deliberately nothing more.
+ *
+ * Tab headers used to read the whole adapter runtime, whose identity turns over
+ * whenever the app supplies a new `render_surface` — which is every app render.
+ * That re-rendered all twenty headers about eight times per tab click and was
+ * the single largest cost in a switch. Nothing here changes when the active
+ * surface changes: Dockview owns the selected state on the tab container, so a
+ * plain activation re-renders no header at all.
+ */
+type TabRuntime = {
+  root: DeepReadonly<WorkbenchNodeV1>;
+  surface_title?: WorkbenchSurfaceTitle;
+  surface_icon?: WorkbenchSurfaceIcon;
+  surface_badges?: WorkbenchSurfaceBadges;
+  on_close_surface: (surfaceId: string) => void;
+  on_pointer_drag_start: (identity: WorkbenchPointerDragIdentity) => void;
+  on_pointer_drag_end: (identity: WorkbenchPointerDragIdentity) => void;
+  on_move_surface: (surfaceId: string, targetGroupId: string) => void;
+  on_split_surface: (
+    surfaceId: string,
+    groupId: string,
+    direction: "horizontal" | "vertical",
+  ) => void;
+};
+
 const AdapterRuntimeContext = createContext<AdapterRuntime | null>(null);
+const TabRuntimeContext = createContext<TabRuntime | null>(null);
 const WARDIAN_DOCKVIEW_THEME = {
   name: "wardian",
   className: "dockview-theme-wardian",
@@ -244,6 +271,12 @@ function useAdapterRuntime(): AdapterRuntime {
   return runtime;
 }
 
+function useTabRuntime(): TabRuntime {
+  const runtime = useContext(TabRuntimeContext);
+  if (!runtime) throw new Error("workbench tab runtime is unavailable");
+  return runtime;
+}
+
 function groupIdsInTreeOrder(node: ReadonlyWorkbenchDocumentV1["root"]): string[] {
   return node.kind === "group"
     ? [node.group_id]
@@ -251,20 +284,39 @@ function groupIdsInTreeOrder(node: ReadonlyWorkbenchDocumentV1["root"]): string[
 }
 
 /** Names the immediate spatially valid pane before and after a group without leaking group IDs. */
+/**
+ * Adjacent panes a surface can be moved to, cached per layout tree.
+ *
+ * Every tab header asks for this on every render, and each answer walks the tree
+ * twice and allocates a fresh array — which also denied the tab any chance to
+ * memoize on the result. The tree is frozen and replaced whenever the layout
+ * changes, so its identity is a sound cache key.
+ */
+const paneTargetCache = new WeakMap<object, Map<string, WorkbenchPaneTarget[]>>();
+
 export function workbenchPaneTargets(
   root: DeepReadonly<WorkbenchNodeV1>,
   groupId: string,
 ): WorkbenchPaneTarget[] {
+  let byGroup = paneTargetCache.get(root);
+  if (byGroup === undefined) {
+    byGroup = new Map();
+    paneTargetCache.set(root, byGroup);
+  }
+  const cached = byGroup.get(groupId);
+  if (cached !== undefined) return cached;
+
   const ordered = groupIdsInTreeOrder(root);
   const index = ordered.indexOf(groupId);
-  if (index < 0) return [];
-  return ([
+  const targets = index < 0 ? [] : ([
     { group_id: ordered[index - 1], position: "previous" as const },
     { group_id: ordered[index + 1], position: "next" as const },
   ]).filter((target): target is WorkbenchPaneTarget => (
     target.group_id !== undefined
     && groupsAreWorkbenchAdjacent(root, groupId, target.group_id)
   ));
+  byGroup.set(groupId, targets);
+  return targets;
 }
 
 /** Reports whether a group header contributes to the window's top chrome. */
@@ -622,7 +674,7 @@ function DockviewSurfacePanel({ params }: IDockviewPanelProps<WorkbenchPanelPara
 }
 
 function DockviewSurfaceTab({ params, api }: IDockviewPanelHeaderProps<WorkbenchPanelParams>) {
-  const runtime = useAdapterRuntime();
+  const runtime = useTabRuntime();
   const groupId = api.group.id;
   return (
     <WorkbenchTab
@@ -631,7 +683,7 @@ function DockviewSurfaceTab({ params, api }: IDockviewPanelHeaderProps<Workbench
       icon={runtime.surface_icon?.(params.surface) ?? params.surface.surface_type}
       badges={runtime.surface_badges?.(params.surface) ?? []}
       group_id={groupId}
-      pane_targets={workbenchPaneTargets(runtime.document.root, groupId)}
+      pane_targets={workbenchPaneTargets(runtime.root, groupId)}
       on_close={() => runtime.on_close_surface(params.surface.surface_id)}
       on_split={(direction) => runtime.on_split_surface(
         params.surface.surface_id,
@@ -1082,10 +1134,12 @@ export function DockviewLayoutAdapter(props: DockviewLayoutAdapterProps) {
   const onCommandRef = useRef(on_command);
   const renderSurfaceRef = useRef(render_surface);
   const surfaceTitleRef = useRef(surface_title);
+  const onSurfaceDropRef = useRef(props.on_surface_drop);
   documentRef.current = document;
   onCommandRef.current = on_command;
   renderSurfaceRef.current = render_surface;
   surfaceTitleRef.current = surface_title;
+  onSurfaceDropRef.current = props.on_surface_drop;
 
   const renderSurfaceProxy = useCallback<WorkbenchSurfaceRenderer>(
     (surface, lifecycle) => renderSurfaceRef.current?.(surface, lifecycle),
@@ -1158,6 +1212,53 @@ export function DockviewLayoutAdapter(props: DockviewLayoutAdapterProps) {
     props.on_close_surface?.(surfaceId);
   }, [props.on_close_surface]);
 
+  // Read the document from its ref rather than closing over it, so a tab header
+  // does not have to re-render just because the active surface moved.
+  const moveSurface = useCallback((surfaceId: string, targetGroupId: string): void => {
+    emitCommand({
+      type: "move_surface",
+      surface_id: surfaceId,
+      group_id: targetGroupId,
+      index: documentRef.current.groups[targetGroupId]?.surface_ids.length ?? 0,
+    });
+  }, [emitCommand]);
+  const activateSurface = useCallback((groupId: string, surfaceId: string): void => {
+    emitCommand({ type: "set_active_surface", group_id: groupId, surface_id: surfaceId });
+  }, [emitCommand]);
+  const splitSurface = useCallback((
+    surfaceId: string,
+    groupId: string,
+    direction: "horizontal" | "vertical",
+  ): void => {
+    onSurfaceDropRef.current?.(
+      surfaceId,
+      groupId,
+      direction === "horizontal" ? "right" : "bottom",
+    );
+  }, []);
+
+  const tabRuntime = useMemo<TabRuntime>(() => ({
+    root: document.root,
+    surface_title,
+    surface_icon,
+    surface_badges,
+    on_close_surface: requestSurfaceClose,
+    on_pointer_drag_start: beginPointerDrag,
+    on_pointer_drag_end: endPointerDrag,
+    on_move_surface: moveSurface,
+    on_split_surface: splitSurface,
+  }), [
+    document.root,
+    surface_title,
+    surface_icon,
+    surface_badges,
+    requestSurfaceClose,
+    beginPointerDrag,
+    endPointerDrag,
+    moveSurface,
+    splitSurface,
+  ]);
+
   const runtime = useMemo<AdapterRuntime>(() => ({
     document,
     render_surface,
@@ -1174,38 +1275,24 @@ export function DockviewLayoutAdapter(props: DockviewLayoutAdapterProps) {
     on_join_group: props.on_join_group,
     render_home: props.render_home,
     zoomed_group_id,
-    on_move_surface: (surfaceId, targetGroupId) => {
-      emitCommand({
-        type: "move_surface",
-        surface_id: surfaceId,
-        group_id: targetGroupId,
-        index: document.groups[targetGroupId]?.surface_ids.length ?? 0,
-      });
-    },
-    on_activate_surface: (groupId, surfaceId) => {
-      emitCommand({ type: "set_active_surface", group_id: groupId, surface_id: surfaceId });
-    },
-    on_split_surface: (surfaceId, groupId, direction) => {
-      props.on_surface_drop?.(
-        surfaceId,
-        groupId,
-        direction === "horizontal" ? "right" : "bottom",
-      );
-    },
+    on_move_surface: moveSurface,
+    on_activate_surface: activateSurface,
+    on_split_surface: splitSurface,
   }), [
     document,
+    activateSurface,
     beginPointerDrag,
-    emitCommand,
     endPointerDrag,
+    moveSurface,
     render_surface,
     props.on_close_group,
     props.on_join_group,
     props.on_open_surface,
-    props.on_surface_drop,
     props.on_split_group,
     props.on_toggle_zoom,
     props.render_home,
     requestSurfaceClose,
+    splitSurface,
     surface_icon,
     surface_badges,
     surface_title,
@@ -1416,6 +1503,7 @@ export function DockviewLayoutAdapter(props: DockviewLayoutAdapterProps) {
 
   return (
     <AdapterRuntimeContext.Provider value={runtime}>
+      <TabRuntimeContext.Provider value={tabRuntime}>
       <div
         className="wardian-workbench-layout"
         data-layout-source="wardian-model"
@@ -1465,6 +1553,7 @@ export function DockviewLayoutAdapter(props: DockviewLayoutAdapterProps) {
           />
         ))}
       </div>
+      </TabRuntimeContext.Provider>
     </AdapterRuntimeContext.Provider>
   );
 }

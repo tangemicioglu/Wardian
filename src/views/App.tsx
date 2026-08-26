@@ -121,6 +121,8 @@ import type {
   OpenFileResourceRequestV1,
 } from "../types";
 import type { SurfaceResourceProvision } from "../features/workbench/coreSurfaceRegistry";
+import type { DeepReadonly } from "../features/workbench/useWorkbenchStore";
+import type { WorkbenchSurfaceV1 } from "../types";
 
 declare global {
   interface Window {
@@ -1462,6 +1464,16 @@ function AppBody() {
     });
   }, [workbenchNavigation, workbenchReady]);
 
+  // The tab strip reads this for every tab. Keeping its identity stable across
+  // unrelated app state means activating a tab re-renders no tab header at all.
+  const workbenchSurfaceTitle = useCallback((surface: DeepReadonly<WorkbenchSurfaceV1>) => {
+    if (surface.surface_type === "agent-session" && surface.resource_key) {
+      return agents.find((agent) => agent.session_id === surface.resource_key)
+        ?.session_name ?? `Agent Session: ${surface.resource_key}`;
+    }
+    return workbenchRegistry.presentation(surface).title;
+  }, [agents, workbenchRegistry]);
+
   const renderWorkbenchSurface: WorkbenchSurfaceRenderer = (surface, lifecycle) => {
     const resolvedSurface = workbenchRegistry.resolve_surface(surface);
     const restoreResult = resolvedSurface.restore_result;
@@ -1965,13 +1977,7 @@ function AppBody() {
               resource_key={selectedWorkbenchResourceKey}
               render_surface={renderWorkbenchSurface}
               provision_surface_resource={provisionWorkbenchSurfaceResource}
-              surface_title={(surface) => {
-                if (surface.surface_type === "agent-session" && surface.resource_key) {
-                  return agents.find((agent) => agent.session_id === surface.resource_key)
-                    ?.session_name ?? `Agent Session: ${surface.resource_key}`;
-                }
-                return workbenchRegistry.presentation(surface).title;
-              }}
+              surface_title={workbenchSurfaceTitle}
             />
           )}
           mainOverlays={<>
