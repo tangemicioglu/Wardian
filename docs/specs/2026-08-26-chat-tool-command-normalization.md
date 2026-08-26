@@ -25,7 +25,8 @@ provider details remain unnormalized, mobile work logs show `exec` and
 1. A shell invocation remains visible as its concrete command on desktop and
    remote mobile, regardless of the provider's command-key alias.
 2. Provider-only labels such as `exec`, `output`, and `Script completed` do not
-   become standalone work-log content.
+   become standalone work-log content, even when a provider omits explicit
+   success metadata. Meaningful output remains visible.
 3. A successful result with meaningful output is not suppressed.
 4. The backend emits one canonical command field for all clients.
 

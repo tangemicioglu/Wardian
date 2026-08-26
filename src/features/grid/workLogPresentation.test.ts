@@ -71,6 +71,53 @@ describe("workLogPresentation", () => {
     expect(rows[0].entry?.content).not.toContain("Script completed");
   });
 
+  it("hides completion-only output even when the provider omits success metadata", () => {
+    const rows = derivePresentedChatRows([
+      event({
+        id: "exec-call-1",
+        kind: "tool_call",
+        title: "exec",
+        command: "npm test -- chat",
+        status: "running",
+        sequence: 1,
+      }),
+      event({
+        id: "exec-result-1",
+        kind: "tool_result",
+        title: "output",
+        text: "Script completed.",
+        status: "unknown",
+        sequence: 2,
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("event");
+    if (rows[0].kind !== "event") throw new Error("expected event row");
+    expect(rows[0].entry?.title).toBe("npm test -- chat");
+    expect(rows[0].entry?.content).not.toContain("Script completed");
+  });
+
+  it("hides an unpaired output label without discarding meaningful output", () => {
+    const rows = derivePresentedChatRows([
+      event({ id: "empty-output", kind: "tool_result", title: "output", status: "unknown" }),
+      event({
+        id: "meaningful-output",
+        kind: "tool_result",
+        title: "output",
+        text: "3 tests passed",
+        status: "unknown",
+        sequence: 2,
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("event");
+    if (rows[0].kind !== "event") throw new Error("expected event row");
+    expect(rows[0].event.id).toBe("meaningful-output");
+    expect(rows[0].entry?.content).toContain("3 tests passed");
+  });
+
   it("drops the work entry summary when it only repeats the title", () => {
     // A tool call whose provider title is generic falls back to the command for
     // its title, and the summary independently falls back to the same command.
@@ -244,7 +291,7 @@ describe("workLogPresentation", () => {
     expect(rows).toEqual([]);
   });
 
-  it("keeps boilerplate result text visible without explicit success evidence", () => {
+  it("hides boilerplate result text without explicit success evidence", () => {
     const rows = derivePresentedChatRows([
       event({
         id: "result-1",
@@ -255,10 +302,7 @@ describe("workLogPresentation", () => {
       }),
     ]);
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0].kind).toBe("event");
-    if (rows[0].kind !== "event") throw new Error("expected event row");
-    expect(rows[0].event.id).toBe("result-1");
+    expect(rows).toEqual([]);
   });
 
   it("keeps nonzero exits visible", () => {

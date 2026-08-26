@@ -10,8 +10,8 @@ import { isLowSignalActivityTitle, toActivityBlock, type ActivityBlockModel } fr
  * the answer off screen in a grid cell.
  */
 const WORK_GROUP_MIN_ENTRIES = 3;
-const NON_MEANINGFUL_TEXT = /^(succeeded|success|ok|done|exit code:\s*0|script\s+(?:complete|completed|finish|finished)(?:\s+successfully)?|output\s+script\s+(?:complete|completed|finish|finished)(?:\s+successfully)?)$/i;
-const NON_MEANINGFUL_RESULT_LINE = /^(succeeded|success|ok|done|exit code:\s*0|script\s+(?:complete|completed|finish|finished)(?:\s+successfully)?|output\s+script\s+(?:complete|completed|finish|finished)(?:\s+successfully)?|wall time:\s*\d+(?:\.\d+)?\s*(?:ms|s|seconds?)|output:)$/i;
+const NON_MEANINGFUL_TEXT = /^(succeeded|success|ok|done|exit code:\s*0|(?:output\s*:?\s*)?script\s+(?:complete|completed|finish|finished)(?:\s+successfully)?[.!]?)$/i;
+const NON_MEANINGFUL_RESULT_LINE = /^(succeeded|success|ok|done|exit code:\s*0|(?:output\s*:?\s*)?script\s+(?:complete|completed|finish|finished)(?:\s+successfully)?[.!]?|output:?|wall time:\s*\d+(?:\.\d+)?\s*(?:ms|s|seconds?))$/i;
 
 export type PresentedChatRow =
   | { kind: "event"; event: AgentChatEvent; entry?: PresentedWorkEntry }
@@ -86,7 +86,7 @@ export function derivePresentedChatRows(events: AgentChatEvent[]): PresentedChat
       return;
     }
 
-    if (event.kind === "tool_result" && isEmptySuccessfulResult(event)) {
+    if (event.kind === "tool_result" && isSuppressibleToolResult(event)) {
       const linkedEntry = findLinkedPendingCall(event);
       if (linkedEntry) {
         mergeResultIntoEntry(linkedEntry, event);
@@ -125,19 +125,25 @@ export function isWorkEvent(event: AgentChatEvent): boolean {
   return event.kind === "tool_call" || event.kind === "tool_result" || event.kind === "error";
 }
 
-export function isEmptySuccessfulResult(event: AgentChatEvent): boolean {
+export function isSuppressibleToolResult(event: AgentChatEvent): boolean {
   if (event.kind !== "tool_result") return false;
   if (event.status === "failed" || event.status === "cancelled" || event.status === "action_required") return false;
   if (typeof event.exit_code === "number" && event.exit_code !== 0) return false;
   if (changedPathsFromEvents([event]).length > 0) return false;
   if (event.language === "diff" || event.language === "json") return false;
 
+  const text = event.text?.trim() ?? "";
+  if (text && isNonMeaningfulResultText(text)) return true;
+  if (!text) {
+    const title = event.title?.trim() ?? "";
+    if (!title || /^tool result$/i.test(title) || isLowSignalActivityTitle(title)) return true;
+  }
+
   const hasSuccessEvidence = event.status === "succeeded" || event.exit_code === 0;
   if (!hasSuccessEvidence) return false;
 
-  const text = event.text?.trim() ?? "";
   if (!text) return true;
-  return isNonMeaningfulResultText(text);
+  return false;
 }
 
 function isNonMeaningfulResultText(text: string): boolean {
