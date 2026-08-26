@@ -75,13 +75,13 @@ export function isGenericActivityTitle(title: string | null | undefined): boolea
  * Provider lifecycle labels describe the transport transition, not the tool
  * invocation an operator needs to inspect. When a command is present, the
  * command should become the visible title instead of labels such as
- * `exec_command_begin` or `exec running`.
+ * `exec_command_begin`, `exec starting`, or `exec running`.
  */
 export function isLowSignalActivityTitle(title: string | null | undefined): boolean {
   const normalized = title?.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
   return Boolean(
     normalized &&
-      /^(?:exec(?: command)?|command|task|tool)\s+(?:start|started|begin|began|running|run|end|ended|finish|finished|complete|completed|result)$/.test(
+      /^(?:exec(?: command)?|command|task|tool)\s+(?:start|starting|started|begin|began|running|run|end|ended|finish|finishing|finished|complete|completing|completed|result)$/.test(
         normalized,
       ),
   );
