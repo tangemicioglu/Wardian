@@ -22,7 +22,7 @@ workflows, and project context.
 
 ---
 
-> 🚧 **Early development.** Wardian is under active construction. Expect rough edges: APIs, on-disk formats, and UI layouts can change between releases without notice. Pin a version if you depend on it, and please [file an issue](https://github.com/wardian-app/Wardian/issues) when something breaks.
+> 🚧 **Early development.** Wardian is under active construction. Expect rough edges: CLIs, on-disk formats, and UI layouts can change between releases without notice. Pin a version if you depend on it, and please [file an issue](https://github.com/wardian-app/Wardian/issues) when something breaks.
 
 Wardian gives the agent tools you already run durable identity, live terminals, scoped skills, workflow runs, queue evidence, and workspace context in one GUI-first habitat.
 
@@ -141,7 +141,7 @@ gives that work a durable local home: run the CLI agents you already use, see
 what happened and what needs attention, and keep the useful parts as reusable
 practice rather than repeating them from scratch.
 
-- **GUI-first, terminal-real.** Wardian gives each managed provider a real PTY
+- **GUI-first, with observable terminal agents.** Wardian gives each managed provider a real PTY
   while projecting status, telemetry, output, queue evidence, workflows, and
   source control into a desktop interface.
 - **Durable agent work.** Agents have durable roster identity, class, provider,
