@@ -469,6 +469,7 @@ impl ZellijTerminalEngine {
         session_id: &str,
         generation: u64,
     ) -> Result<(), String> {
+        self.retry_pending_session_cleanup(session_id).await?;
         let mut panes = self.pane_registry();
         let active = panes
             .bindings
@@ -477,10 +478,15 @@ impl ZellijTerminalEngine {
         if active.generation != generation || active.phase != ZellijPanePhase::Running {
             return Err("Agent Zellij pane generation is stale".to_string());
         }
-        if panes.replacement_reservations.contains_key(session_id)
-            || panes.replacement_bindings.contains_key(session_id)
-        {
+        if panes.replacement_bindings.contains_key(session_id) {
             return Err("Agent already has a Zellij replacement pending".to_string());
+        }
+        if panes
+            .replacement_reservations
+            .get(session_id)
+            .is_some_and(|reserved_generation| *reserved_generation == generation)
+        {
+            return Ok(());
         }
         panes
             .replacement_reservations
@@ -558,7 +564,7 @@ impl ZellijTerminalEngine {
         Ok(())
     }
 
-    pub async fn finalize_replacement(&self, session_id: &str) {
+    pub fn finalize_replacement(&self, session_id: &str) {
         self.pane_registry()
             .replacement_reservations
             .remove(session_id);
@@ -1518,6 +1524,18 @@ impl ZellijTerminalEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request_id.to_string());
     }
 
+    pub fn cancel_activation_request(&self, request_id: &str) -> bool {
+        let mut latest = self
+            .latest_activation_request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if latest.as_deref() != Some(request_id) {
+            return false;
+        }
+        *latest = None;
+        true
+    }
+
     fn activation_request_is_current(&self, request_id: &str) -> bool {
         self.latest_activation_request
             .lock()
@@ -1526,10 +1544,18 @@ impl ZellijTerminalEngine {
             == Some(request_id)
     }
 
+    fn ensure_activation_request_is_current(&self, request_id: Option<&str>) -> Result<(), String> {
+        if request_id.is_some_and(|request_id| !self.activation_request_is_current(request_id)) {
+            return Err("Terminal handoff was superseded".to_string());
+        }
+        Ok(())
+    }
+
     async fn activate_pane_locked(
         &self,
         session_id: &str,
         generation: u64,
+        request_id: Option<&str>,
     ) -> Result<(), String> {
         let target = self.live_pane(session_id, generation).await?;
         let panes = self.list_panes().await?;
@@ -1539,6 +1565,7 @@ impl ZellijTerminalEngine {
                 && pane.is_fullscreen
         }) {
             let fullscreen_id = fullscreen.pane_id().expect("terminal pane checked above");
+            self.ensure_activation_request_is_current(request_id)?;
             self.run_status_action(vec![
                 "action".to_string(),
                 "toggle-no-ui-fullscreen".to_string(),
@@ -1547,11 +1574,18 @@ impl ZellijTerminalEngine {
             ])
             .await?;
         }
-        self.focus_pane(session_id, generation).await?;
+        self.ensure_activation_request_is_current(request_id)?;
+        self.run_status_action(vec![
+            "action".to_string(),
+            "focus-pane-id".to_string(),
+            target.as_str().to_string(),
+        ])
+        .await?;
         let target_is_fullscreen = panes.iter().any(|pane| {
             pane.pane_id().is_some_and(|pane_id| pane_id == target) && pane.is_fullscreen
         });
         if !target_is_fullscreen {
+            self.ensure_activation_request_is_current(request_id)?;
             self.run_status_action(vec![
                 "action".to_string(),
                 "toggle-no-ui-fullscreen".to_string(),
@@ -1565,7 +1599,7 @@ impl ZellijTerminalEngine {
 
     pub async fn activate_pane(&self, session_id: &str, generation: u64) -> Result<(), String> {
         let _activation_guard = self.activation_lock.lock().await;
-        self.activate_pane_locked(session_id, generation).await
+        self.activate_pane_locked(session_id, generation, None).await
     }
 
     pub async fn activate_pane_for_request(
@@ -1578,7 +1612,8 @@ impl ZellijTerminalEngine {
         if !self.activation_request_is_current(request_id) {
             return Err("Terminal handoff was superseded".to_string());
         }
-        self.activate_pane_locked(session_id, generation).await
+        self.activate_pane_locked(session_id, generation, Some(request_id))
+            .await
     }
 
     pub async fn dump_pane(
@@ -1891,7 +1926,8 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::process::ExitStatus;
-    use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::sync::{Condvar, Mutex as StdMutex};
 
     #[cfg(windows)]
     fn status(code: i32) -> ExitStatus {
@@ -1956,6 +1992,57 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .ok_or_else(|| "missing fake output".to_string())
+        }
+    }
+
+    struct BlockingActivationRunner {
+        calls: StdMutex<Vec<Vec<String>>>,
+        list_started: AtomicBool,
+        release_list: (StdMutex<bool>, Condvar),
+    }
+
+    impl BlockingActivationRunner {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                calls: StdMutex::new(Vec::new()),
+                list_started: AtomicBool::new(false),
+                release_list: (StdMutex::new(false), Condvar::new()),
+            })
+        }
+
+        fn release(&self) {
+            let (released, signal) = &self.release_list;
+            *released.lock().unwrap() = true;
+            signal.notify_all();
+        }
+    }
+
+    impl ZellijCommandRunner for BlockingActivationRunner {
+        fn run(
+            &self,
+            _executable: &Path,
+            args: &[String],
+            _env: &[(OsString, OsString)],
+        ) -> Result<Output, String> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            if args.iter().any(|arg| arg == "list-panes") {
+                self.list_started.store(true, AtomicOrdering::Release);
+                let (released, signal) = &self.release_list;
+                let mut released = released.lock().unwrap();
+                while !*released {
+                    released = signal.wait(released).unwrap();
+                }
+                return Ok(Output {
+                    status: status(0),
+                    stdout: br#"[{"id":1,"is_plugin":false,"is_fullscreen":false,"title":"wardian:agent-1","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#.to_vec(),
+                    stderr: Vec::new(),
+                });
+            }
+            Ok(Output {
+                status: status(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
         }
     }
 
@@ -2178,6 +2265,98 @@ mod tests {
                 .count(),
             1,
         );
+    }
+
+    #[tokio::test]
+    async fn failed_replacement_cancel_is_retried_before_the_next_resume_reservation() {
+        let temp = tempfile::tempdir().unwrap();
+        let runner = FakeRunner::with_outputs([
+            Output {
+                status: status(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+            Output {
+                status: status(0),
+                stdout: b"[]".to_vec(),
+                stderr: Vec::new(),
+            },
+        ]);
+        let engine = ZellijTerminalEngine::with_runner(config(temp.path()), runner);
+        {
+            let mut panes = engine.pane_registry();
+            panes.bindings.insert(
+                "agent-1".to_string(),
+                ZellijPaneBinding {
+                    session_id: "agent-1".to_string(),
+                    pane_id: Some(ZellijPaneId::parse("terminal_1").unwrap()),
+                    generation: 1,
+                    phase: ZellijPanePhase::Running,
+                },
+            );
+            panes.replacement_reservations.insert("agent-1".to_string(), 1);
+            panes.replacement_bindings.insert(
+                "agent-1".to_string(),
+                ZellijPaneBinding {
+                    session_id: "agent-1".to_string(),
+                    pane_id: Some(ZellijPaneId::parse("terminal_2").unwrap()),
+                    generation: 2,
+                    phase: ZellijPanePhase::Closing,
+                },
+            );
+        }
+
+        engine.reserve_replacement("agent-1", 1).await.unwrap();
+
+        let panes = engine.pane_registry();
+        assert!(!panes.replacement_bindings.contains_key("agent-1"));
+        assert_eq!(panes.replacement_reservations.get("agent-1"), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn stale_post_commit_reservation_is_replaced_after_retired_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let runner = FakeRunner::with_outputs([
+            Output {
+                status: status(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+            Output {
+                status: status(0),
+                stdout: b"[]".to_vec(),
+                stderr: Vec::new(),
+            },
+        ]);
+        let engine = ZellijTerminalEngine::with_runner(config(temp.path()), runner);
+        {
+            let mut panes = engine.pane_registry();
+            panes.bindings.insert(
+                "agent-1".to_string(),
+                ZellijPaneBinding {
+                    session_id: "agent-1".to_string(),
+                    pane_id: Some(ZellijPaneId::parse("terminal_2").unwrap()),
+                    generation: 2,
+                    phase: ZellijPanePhase::Running,
+                },
+            );
+            panes.retired_bindings.insert(
+                ("agent-1".to_string(), 1),
+                ZellijPaneBinding {
+                    session_id: "agent-1".to_string(),
+                    pane_id: Some(ZellijPaneId::parse("terminal_1").unwrap()),
+                    generation: 1,
+                    phase: ZellijPanePhase::Closing,
+                },
+            );
+            panes.replacement_reservations.insert("agent-1".to_string(), 1);
+        }
+
+        engine.reserve_replacement("agent-1", 2).await.unwrap();
+
+        let panes = engine.pane_registry();
+        assert!(panes.retired_bindings.is_empty());
+        assert_eq!(panes.replacement_reservations.get("agent-1"), Some(&2));
     }
 
     #[tokio::test]
@@ -2694,6 +2873,48 @@ mod tests {
             runner.calls.lock().unwrap().is_empty(),
             "a superseded request must issue no Zellij focus action"
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_pane_discovery_prevents_a_late_focus_action() {
+        let root = tempfile::tempdir().unwrap();
+        let runner = BlockingActivationRunner::new();
+        let engine = Arc::new(ZellijTerminalEngine::with_runner(
+            config(root.path()),
+            runner.clone(),
+        ));
+        engine.pane_registry().bindings.insert(
+            "agent-1".to_string(),
+            ZellijPaneBinding {
+                session_id: "agent-1".to_string(),
+                pane_id: Some(ZellijPaneId::parse("terminal_1").unwrap()),
+                generation: 1,
+                phase: ZellijPanePhase::Running,
+            },
+        );
+        engine.register_activation_request("handoff-a");
+        let activation = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .activate_pane_for_request("agent-1", 1, "handoff-a")
+                    .await
+            })
+        };
+        while !runner.list_started.load(AtomicOrdering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        assert!(engine.cancel_activation_request("handoff-a"));
+        runner.release();
+
+        assert_eq!(
+            activation.await.unwrap(),
+            Err("Terminal handoff was superseded".to_string())
+        );
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].iter().any(|arg| arg == "list-panes"));
+        assert!(!calls.iter().flatten().any(|arg| arg == "focus-pane-id"));
     }
 
     #[tokio::test]

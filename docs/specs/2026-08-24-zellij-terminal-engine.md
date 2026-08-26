@@ -222,14 +222,20 @@ The frontend queues activation requests. A later selection cannot overtake an
 earlier in-flight focus command and leave the singleton renderer associated
 with a different pane than Zellij has focused. Every native focus request has a
 unique handoff token. The engine records each request before attached-client
-startup and rechecks that token under the focus lock, so a timed-out request
-cannot focus after a newer request has completed. Removing an in-flight target
-invalidates that activation and queues a focus reconciliation for the still-live
-target. A removed final target clears its active agent identity, so remounting
-requires a fresh activation instead of silently adopting stale focus.
+startup and rechecks that token before each native unfullscreen, focus, and
+fullscreen action under the focus lock. A superseding selection or the
+five-second frontend deadline explicitly cancels the matching native token, so
+the expired request cannot continue with another pane mutation. Removing an
+in-flight target invalidates that activation and queues a focus reconciliation
+for the still-live target. A removed final target clears its active agent
+identity, so remounting requires a fresh activation instead of silently
+adopting stale focus.
 Preview polls are request-ordered per agent. Only the newest success or failure
 may update card state, and the queued activation preflight independently
-requires the selected slot to remain `running` before native focus begins.
+requires the selected slot to remain `running` before native focus begins. A
+running pane without a live broker actor is reported as starting/recovering and
+remains noninteractive. A preview without broker generation and lease metadata
+cannot erase a newer live ownership observation.
 
 Snapshot cards never resize panes. The singleton xterm fits the canonical
 Zellij frame locally. The previous frame is hidden during a binding change and
@@ -304,10 +310,12 @@ each pane is absent before it removes that cleanup record or allocates a new
 generation. If a closing generation has no pane identity, Wardian closes every
 unregistered same-title pane while preserving every identified live or retired
 generation. A failed replacement cancellation retains its reservation until
-candidate closure succeeds, so an ordinary start cannot bypass the cleanup
-record. The same rule covers failures while opening the pane subscription
-transport. If clear aborts before termination, Wardian moves the original pane
-lease back with the restored runtime instead of dropping it.
+candidate closure succeeds. Both an ordinary start and the next restart retry
+that cleanup before inspecting or creating a reservation, so user-facing
+recovery cannot remain blocked behind a failed cancellation. The same rule
+covers failures while opening the pane subscription transport. If clear aborts
+before termination, Wardian moves the original pane lease back with the
+restored runtime instead of dropping it.
 Restart preflight leaves the old runtime and pane untouched. A running restart
 reserves a second pane generation and stages its broker actor while the old
 pane, provider, broker actor, and `ActiveAgent` remain alive. The candidate is
@@ -316,8 +324,11 @@ journal is ready to install the new `ActiveAgent`. Any spawn, lease, or durable
 commit failure rolls the candidate broker and pane generations back and leaves
 the displaced runtime usable. After the durable state commit, Wardian commits
 the staged broker actor, promotes the candidate pane generation, then closes
-and authoritatively confirms removal of the displaced pane. An Off agent has no
-runtime to preserve and uses the ordinary start path.
+and authoritatively confirms removal of the displaced pane. Post-commit broker
+or retired-pane cleanup errors remain reportable and retryable, but reservation
+finalization and old-process termination run unconditionally so a later restart
+is never rejected by a leaked transition. An Off agent has no runtime to
+preserve and uses the ordinary start path.
 
 Closing a Workbench surface never closes a pane. Closing the final surface
 keeps the singleton xterm/WebGL allocation mounted but changes its broker

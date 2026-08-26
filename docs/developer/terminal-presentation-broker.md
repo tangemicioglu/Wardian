@@ -33,6 +33,9 @@ For each live terminal session:
 9. Preview responses are request-ordered per agent. A stale success or failure
    cannot replace a newer pane state, and card activation rechecks that the
    selected slot is still `running` before it invokes the native handoff.
+10. A pane is interactive only when both its Zellij generation and broker actor
+    are live. Missing broker metadata keeps the preview in recovery and cannot
+    clear a newer live owner observation.
 
 Structured prompt delivery is a separate backend-authorized control path. The
 terminal lease applies to terminal keystrokes and binary input; it must not gate
@@ -237,6 +240,10 @@ registering another xterm. Hiding, suspending, making a slot read-only, or
 closing the last slot hides and releases input from the retained host; none of
 those transitions unmounts, reparents, disposes, or recreates its xterm or
 WebGL objects.
+Native pane handoffs are request-token fenced before every Zellij focus or
+fullscreen mutation. Superseding a card selection, removing its slot, or
+reaching the bounded handoff deadline cancels the matching token before the
+frontend permits another activation to settle.
 
 The authenticated remote WebSocket registers a remote presentation and
 consumer, then uses the same activation, input, resize, snapshot, events, ack,

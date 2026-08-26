@@ -658,7 +658,7 @@ describe("ZellijAgentTerminal", () => {
     }, { timeout: 3000 });
   });
 
-  it("clears a known remote owner after an authoritative no-broker preview", async () => {
+  it("keeps a known remote owner when a preview has no broker metadata", async () => {
     invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
       if (command === "get_zellij_terminal_preview") {
         return Promise.resolve({
@@ -686,11 +686,11 @@ describe("ZellijAgentTerminal", () => {
 
     await screen.findByText("Terminal engine unavailable");
     expect(useZellijPresentationStore.getState().brokerOwners.get("agent-1")).toEqual({
-      generation: null,
-      leaseEpoch: null,
-      owner: null,
+      generation: 4,
+      leaseEpoch: 8,
+      owner: "remote:paired-device",
       activationPending: false,
-      source: "preview",
+      source: "live",
     });
   });
 
@@ -1181,6 +1181,9 @@ describe("ZellijAgentTerminal", () => {
       releaseFirst = resolve;
     });
     invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command === "cancel_zellij_agent_terminal_activation") {
+        return Promise.resolve(true);
+      }
       if (command !== "activate_zellij_agent_terminal") {
         return Promise.reject(new Error(`Unexpected command ${command}`));
       }
@@ -1204,12 +1207,22 @@ describe("ZellijAgentTerminal", () => {
       const first = useZellijPresentationStore.getState().activate("agent-1", "slot-1");
       const firstResult = first.catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(0);
-      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls.filter(([command]) => (
+        command === "activate_zellij_agent_terminal"
+      ))).toHaveLength(1);
       const second = useZellijPresentationStore.getState().activate("agent-2", "slot-2");
-      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock).toHaveBeenCalledWith(
+        "cancel_zellij_agent_terminal_activation",
+        { activationRequestId: expect.any(String) },
+      );
+      expect(invokeMock.mock.calls.filter(([command]) => (
+        command === "activate_zellij_agent_terminal"
+      ))).toHaveLength(1);
 
       await vi.advanceTimersByTimeAsync(ZELLIJ_HANDOFF_DEADLINE_MS + 2);
-      expect(invokeMock).toHaveBeenCalledTimes(2);
+      expect(invokeMock.mock.calls.filter(([command]) => (
+        command === "activate_zellij_agent_terminal"
+      ))).toHaveLength(2);
       await second;
       expect(useZellijPresentationStore.getState().activeAgentId).toBe("agent-2");
 
@@ -1243,6 +1256,9 @@ describe("ZellijAgentTerminal", () => {
       releaseActivation = resolve;
     });
     invokeMock.mockImplementation((command: string, args: { sessionId: string }) => {
+      if (command === "cancel_zellij_agent_terminal_activation") {
+        return Promise.resolve(true);
+      }
       if (command !== "activate_zellij_agent_terminal") {
         return Promise.reject(new Error(`Unexpected command ${command}`));
       }
@@ -1269,9 +1285,13 @@ describe("ZellijAgentTerminal", () => {
     useZellijPresentationStore.getState().removeSlot("slot-2");
     releaseActivation();
     await staleActivation;
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(invokeMock.mock.calls.filter(
+      ([command]) => command === "activate_zellij_agent_terminal",
+    )).toHaveLength(2));
 
-    expect(invokeMock.mock.calls.slice(0, 2)).toEqual([
+    expect(invokeMock.mock.calls.filter(
+      ([command]) => command === "activate_zellij_agent_terminal",
+    ).slice(0, 2)).toEqual([
       ["activate_zellij_agent_terminal", {
         sessionId: "agent-2",
         brokerGeneration: null,

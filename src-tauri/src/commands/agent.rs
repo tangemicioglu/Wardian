@@ -509,6 +509,59 @@ async fn release_zellij_pane_before_runtime_replacement(
     lease.close().await
 }
 
+struct CommittedZellijReplacementFinalizer<'a> {
+    engine: &'a crate::state::zellij_terminal::ZellijTerminalEngine,
+    session_id: &'a str,
+}
+
+impl Drop for CommittedZellijReplacementFinalizer<'_> {
+    fn drop(&mut self) {
+        self.engine.finalize_replacement(self.session_id);
+    }
+}
+
+async fn settle_committed_running_replacement(
+    state: &AppState,
+    engine: &std::sync::Arc<crate::state::zellij_terminal::ZellijTerminalEngine>,
+    session_id: &str,
+    old_agent: &mut ActiveAgent,
+) -> Result<(), String> {
+    let _reservation_finalizer = CommittedZellijReplacementFinalizer {
+        engine,
+        session_id,
+    };
+    let mut errors = Vec::new();
+    let runtime_generation = state
+        .agents
+        .lock()
+        .await
+        .get(session_id)
+        .and_then(|agent| agent.runtime_generation);
+    match runtime_generation {
+        Some(runtime_generation) => {
+            if let Err(error) = state
+                .terminal_sessions
+                .commit_runtime_replacement(session_id, runtime_generation)
+                .await
+            {
+                errors.push(format!(
+                    "Failed to commit terminal runtime replacement: {error}"
+                ));
+            }
+        }
+        None => errors.push("Committed replacement has no terminal runtime".to_string()),
+    }
+    if let Err(error) = release_zellij_pane_before_runtime_replacement(old_agent).await {
+        errors.push(format!("Failed to retire the previous agent terminal: {error}"));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 fn clone_quote_custom_arg(arg: &str) -> String {
     if !arg.is_empty()
         && arg
@@ -3611,25 +3664,13 @@ pub async fn resume_agent(
     };
     manager::publish_agent_status(&app, &session_id, &new_status_arc);
 
-    if let Some(engine) = replacement_engine.as_ref() {
-        let runtime_generation = state
-            .agents
-            .lock()
-            .await
-            .get(&session_id)
-            .and_then(|agent| agent.runtime_generation)
-            .ok_or_else(|| "Committed replacement has no terminal runtime".to_string())?;
-        state
-            .terminal_sessions
-            .commit_runtime_replacement(&session_id, runtime_generation)
-            .await
-            .map_err(|error| format!("Failed to commit terminal runtime replacement: {error}"))?;
-        release_zellij_pane_before_runtime_replacement(&mut old_agent)
-            .await
-            .map_err(|error| format!("Failed to retire the previous agent terminal: {error}"))?;
-        engine.finalize_replacement(&session_id).await;
-    }
+    let replacement_settlement = if let Some(engine) = replacement_engine.as_ref() {
+        settle_committed_running_replacement(&state, engine, &session_id, &mut old_agent).await
+    } else {
+        Ok(())
+    };
     manager::terminate_active_agent_process(&mut old_agent);
+    replacement_settlement?;
 
     let _ = app.emit(
         "agent-terminal-cleared",

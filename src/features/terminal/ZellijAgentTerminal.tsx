@@ -184,6 +184,7 @@ function desktopMayOwnBroker(
 
 export const useZellijPresentationStore = create<ZellijPresentationStore>((set, get) => {
   let activationQueue = Promise.resolve();
+  let pendingActivationRequestId: string | null = null;
   let pendingTargetId: string | null = null;
   return {
     activeAgentId: null,
@@ -314,7 +315,15 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
         latestPreviewRequestByAgent.delete(removed.agentId);
       }
       const invalidatesActivation = pendingTargetId === targetId;
-      if (invalidatesActivation) pendingTargetId = null;
+      if (invalidatesActivation) {
+        pendingTargetId = null;
+        if (pendingActivationRequestId) {
+          void invoke<boolean>("cancel_zellij_agent_terminal_activation", {
+            activationRequestId: pendingActivationRequestId,
+          }).catch(() => false);
+          pendingActivationRequestId = null;
+        }
+      }
       if (state.activeTargetId !== targetId) {
         set({
           slots,
@@ -359,7 +368,14 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
       const serial = get().activationSerial + 1;
       if (pendingTargetId && pendingTargetId !== targetId) {
         get().clearPendingInput(pendingTargetId);
+        if (pendingActivationRequestId) {
+          void invoke<boolean>("cancel_zellij_agent_terminal_activation", {
+            activationRequestId: pendingActivationRequestId,
+          }).catch(() => false);
+        }
       }
+      const activationRequestId = nextActivationRequestId();
+      pendingActivationRequestId = activationRequestId;
       pendingTargetId = targetId;
       set({ activationSerial: serial });
       const activation = activationQueue.then(async (): Promise<boolean> => {
@@ -372,19 +388,26 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
           ) return false;
           let timeoutId: number | undefined;
           try {
-            await Promise.race([
-              invoke<string>("activate_zellij_agent_terminal", {
-                sessionId: agentId,
-                brokerGeneration: get().brokerOwners.get(agentId)?.generation ?? null,
-                activationRequestId: nextActivationRequestId(),
-              }),
-              new Promise<never>((_resolve, reject) => {
-                timeoutId = window.setTimeout(
-                  () => reject(new Error("Terminal handoff timed out")),
-                  ZELLIJ_HANDOFF_DEADLINE_MS,
-                );
-              }),
-            ]);
+            try {
+              await Promise.race([
+                invoke<string>("activate_zellij_agent_terminal", {
+                  sessionId: agentId,
+                  brokerGeneration: get().brokerOwners.get(agentId)?.generation ?? null,
+                  activationRequestId,
+                }),
+                new Promise<never>((_resolve, reject) => {
+                  timeoutId = window.setTimeout(
+                    () => reject(new Error("Terminal handoff timed out")),
+                    ZELLIJ_HANDOFF_DEADLINE_MS,
+                  );
+                }),
+              ]);
+            } catch (error) {
+              await invoke<boolean>("cancel_zellij_agent_terminal_activation", {
+                activationRequestId,
+              }).catch(() => false);
+              throw error;
+            }
           } finally {
             if (timeoutId !== undefined) window.clearTimeout(timeoutId);
           }
@@ -403,6 +426,9 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
           return false;
         } finally {
           if (pendingTargetId === targetId) pendingTargetId = null;
+          if (pendingActivationRequestId === activationRequestId) {
+            pendingActivationRequestId = null;
+          }
         }
       });
       activationQueue = activation.then(() => undefined, () => undefined);
@@ -772,14 +798,16 @@ export function ZellijAgentTerminal({ presentationId, ...props }: ZellijAgentTer
           sessionId,
         });
         if (!cancelled && isCurrentPreviewRequest(sessionId, requestToken)) {
-          setBrokerOwner(
-            sessionId,
-            next.broker_generation,
-            next.broker_lease_epoch,
-            next.broker_owner_presentation_id,
-            next.broker_activation_pending,
-            "preview",
-          );
+          if (next.broker_generation !== null && next.broker_lease_epoch !== null) {
+            setBrokerOwner(
+              sessionId,
+              next.broker_generation,
+              next.broker_lease_epoch,
+              next.broker_owner_presentation_id,
+              next.broker_activation_pending,
+              "preview",
+            );
+          }
           setPreview(next);
         }
       } catch {

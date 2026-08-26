@@ -18,10 +18,11 @@ pub struct ZellijTerminalPreview {
     pub content: String,
 }
 
-fn preview_state_for_phase(phase: ZellijPanePhase) -> &'static str {
+fn preview_state_for_phase(phase: ZellijPanePhase, broker_available: bool) -> &'static str {
     match phase {
         ZellijPanePhase::Starting | ZellijPanePhase::Closing => "starting",
-        ZellijPanePhase::Running => "running",
+        ZellijPanePhase::Running if broker_available => "running",
+        ZellijPanePhase::Running => "starting",
         ZellijPanePhase::Exited => "exited",
     }
 }
@@ -114,7 +115,7 @@ pub async fn get_zellij_terminal_preview(
             content: String::new(),
         });
     };
-    let preview_state = preview_state_for_phase(binding.phase);
+    let preview_state = preview_state_for_phase(binding.phase, broker_state.is_some());
     if preview_state != "running" {
         return Ok(ZellijTerminalPreview {
             terminal_session_id: session_id.clone(),
@@ -154,15 +155,25 @@ mod tests {
     #[test]
     fn preview_phase_mapping_only_advertises_running_panes_as_interactive() {
         assert_eq!(
-            preview_state_for_phase(ZellijPanePhase::Starting),
+            preview_state_for_phase(ZellijPanePhase::Starting, true),
             "starting"
         );
         assert_eq!(
-            preview_state_for_phase(ZellijPanePhase::Closing),
+            preview_state_for_phase(ZellijPanePhase::Closing, true),
             "starting"
         );
-        assert_eq!(preview_state_for_phase(ZellijPanePhase::Running), "running");
-        assert_eq!(preview_state_for_phase(ZellijPanePhase::Exited), "exited");
+        assert_eq!(
+            preview_state_for_phase(ZellijPanePhase::Running, true),
+            "running"
+        );
+        assert_eq!(
+            preview_state_for_phase(ZellijPanePhase::Running, false),
+            "starting"
+        );
+        assert_eq!(
+            preview_state_for_phase(ZellijPanePhase::Exited, true),
+            "exited"
+        );
     }
 
     #[test]
@@ -226,4 +237,15 @@ pub async fn activate_zellij_agent_terminal(
         )
         .await?;
     Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn cancel_zellij_agent_terminal_activation(
+    activation_request_id: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let Some(engine) = state.zellij_terminal.get() else {
+        return Ok(false);
+    };
+    Ok(engine.cancel_activation_request(&activation_request_id))
 }

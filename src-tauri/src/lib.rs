@@ -785,6 +785,7 @@ pub fn run() {
             commands::terminal_session::resize_terminal_presentation,
             commands::zellij_terminal::get_zellij_terminal_preview,
             commands::zellij_terminal::activate_zellij_agent_terminal,
+            commands::zellij_terminal::cancel_zellij_agent_terminal_activation,
             commands::terminal::ensure_user_terminal,
             commands::terminal::send_input_to_user_terminal,
             commands::terminal::send_binary_input_to_user_terminal,
