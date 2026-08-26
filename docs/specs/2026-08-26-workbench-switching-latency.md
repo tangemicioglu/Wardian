@@ -13,9 +13,10 @@ React commits, and roughly half of that work is the workbench tab strip
 re-deriving titles and badges for all twenty tabs on every one of those
 commits.**
 
-Phases 1 to 3 of the plan below are implemented on this branch; a tab switch
-now costs 44% less wall time and 60% less React work. See
-[Measured outcome](#measured-outcome-of-phases-1-to-3). Phase 4 remains open.
+All four phases below are implemented on this branch. A tab switch costs 32%
+less wall time and 55% less React work than `main`, and a telemetry tick no
+longer re-renders the application at all. See
+[Measured outcome](#measured-outcome).
 
 ## Method
 
@@ -194,6 +195,8 @@ visibility.
 
 ### 3. `App` re-renders about three times per tab switch, and owns everything
 
+Fixed in phases 1 and 4. `App` no longer re-renders for telemetry at all.
+
 `App` is the single orchestrator: 19 `useState` hooks, 23 store selectors, and
 the entire tree — watchlist, sidebar, workbench host, every mounted surface —
 constructed in one JSX expression. Anything that sets state in `App` re-renders
@@ -311,7 +314,7 @@ Deferring a reveal is a visible behaviour change, so each deferred surface needs
 a skeleton that occupies its final geometry. A tab that switches instantly and
 then reflows is not an improvement over one that switches in 200 ms.
 
-### Phase 4 — Move surface data out of `App`
+### Phase 4 — Move surface data out of `App` (landed)
 
 The structural fix behind causes 2 through 4. Surfaces should subscribe to the
 roster, telemetry, and watchlist state they need rather than receiving it as
@@ -321,7 +324,7 @@ the existing `memo()` boundaries start working as written. This is a refactor
 rather than a patch, and should follow phases 1 through 3 rather than block
 them.
 
-## Measured outcome of phases 1 to 3
+## Measured outcome
 
 Both phases are implemented. Base and candidate were measured from two
 worktrees on an idle machine with the same repaired harness, so the pair is
@@ -357,7 +360,7 @@ which is roughly 2.8 renders per tab per switch and outside this adapter.
 Bundle delta against the frozen base: 22,970 gzip bytes, well inside the
 250 KB gate.
 
-### Phase 3
+### Phases 1 to 3
 
 Phase 3 was measured against the base commit a second time, back to back on a
 machine that was busy with unrelated work. Absolute numbers are inflated
@@ -383,6 +386,43 @@ most clearly: Graph 148 → 63 ms, Garden 128 → 97 ms, Workflows 63 → 44 ms,
 New Tab 65 → 45 ms. Eager startup JavaScript went from roughly 3.4 MB to
 2.9 MB minified, with Sigma (149 KB), Konva (195 KB) and xyflow (79 KB) now
 fetched on first use.
+
+### Phase 4, and the end-to-end result
+
+Phase 4 moved the four churning projections — telemetry, app metrics, terminal
+titles and provider thoughts — out of `useAgentResourceController` and into
+`useAgentTelemetryStore`. Seven components now subscribe to just the slice
+they display instead of receiving it threaded through `App`.
+
+The whole branch against `main`, measured back to back:
+
+| Measure | base | phases 1–4 | change |
+|---|---:|---:|---:|
+| React work per switch | 31.1 ms | **14.1 ms** | −55% |
+| React work, p95 | 60.5 ms | **26.3 ms** | −57% |
+| Tab switch, median | 95.2 ms | **64.7 ms** | −32% |
+| Tab switch, p95 | 114.0 ms | 95.8 ms | −16% |
+| First activation, median | 94.8 ms | 63.9 ms | −33% |
+| First activation, p95 | 162.4 ms | **97.0 ms** | −40% |
+| Group focus, median | 62.5 ms | 46.5 ms | −26% |
+| Group focus, p95 | 95.0 ms | 65.8 ms | −31% |
+| Full-roster telemetry | 50.0 ms | 33.4 ms | −33% |
+| Heavy surface resume | 98.5 ms | 80.7 ms | −18% |
+| Surface interaction | 75.4 ms | 66.2 ms | −12% |
+| Startup restore, p95 | 992.5 ms | **548.5 ms** | −45% |
+
+The guarantee phase 4 actually buys is not in that table, because the harness
+has no metric for it: **a telemetry tick, an app-metrics tick, a thought and a
+title change now cost the application zero renders.** Before, each of those
+was a full render of every mounted surface, all twenty tab headers and the
+54-row watchlist. A test pins it directly rather than leaving it to a
+benchmark to notice.
+
+One number moved the wrong way: **commits per tab switch went from 8 to 9.**
+Store subscriptions schedule their own commits. Each is small and scoped to
+the components that read the slice, and the total React work per switch
+halved, so this is the trade working as intended rather than a regression —
+but it is why the proposed commit-count gate stays loose.
 
 ### Freezing hidden panels was tried and reverted
 
@@ -422,7 +462,12 @@ case still pays for the rebuild itself. Raising the hidden grace period, or
 keeping the scene and only detaching the WebGL context, is the next thing to
 try there.
 
-Phase 4 remains open, and is the structural fix behind causes 2 to 4.
+What remains is the prop threading in `renderWorkbenchSurface` itself. `App`
+no longer re-renders for telemetry, so that closure churns far less often, but
+it still hands every surface fresh inline callbacks whenever `App` does render.
+Finishing the job means the surfaces taking their callbacks from a stable
+navigation context too. That is a smaller, purely mechanical follow-up now
+that the data half is done.
 ## Gate changes
 
 The gates were set as regression limits against a 250 ms tab switch and could
