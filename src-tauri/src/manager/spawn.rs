@@ -93,6 +93,16 @@ impl ProviderTerminalObservationSource {
     }
 }
 
+fn observe_antigravity_terminal_completion(
+    source: ProviderTerminalObservationSource,
+    gate: &mut AntigravityTurnCompletionGate,
+    provider_name: &str,
+    current_status: &str,
+    output: &str,
+) -> bool {
+    source.carries_provider_events() && gate.observe_output(provider_name, current_status, output)
+}
+
 impl OpenCodeStartupMemoryTransition {
     /// Classify the real provider title and promote the pending memory receipt
     /// exactly once when that title proves the compose surface is ready.
@@ -1007,9 +1017,10 @@ async fn spawn_agent_with_broker_mode(
         mut reader,
         terminal_runtime,
         process_id,
-        zellij_pane,
-        zellij_snapshot_frames,
+        mut zellij_pane,
+        mut zellij_snapshot_frames,
         terminal_observation_source,
+        mut pending_zellij_transport,
     ) = if let Some(engine) = app_state.zellij_terminal.get().cloned() {
         engine.start_attached_client().await?;
         let binding = engine
@@ -1022,14 +1033,15 @@ async fn spawn_agent_with_broker_mode(
             })
             .await?;
         let transport = engine.open_pane_transport(&binding).await?;
-        background_processes.push(transport.subscription);
+        let runtime = transport.runtime();
         (
-            transport.reader,
-            transport.runtime,
             None,
-            Some(transport.lease),
-            Some(transport.snapshot_frames),
+            runtime,
+            None,
+            None,
+            None,
             ProviderTerminalObservationSource::RenderedZellijFrame,
+            Some(transport),
         )
     } else {
         #[cfg(not(test))]
@@ -1140,12 +1152,13 @@ async fn spawn_agent_with_broker_mode(
             });
             child_process = Some(child);
             (
-                reader,
+                Some(reader),
                 runtime,
                 process_id,
                 None,
                 None,
                 ProviderTerminalObservationSource::RawProviderStream,
+                None,
             )
         }
     };
@@ -1155,7 +1168,7 @@ async fn spawn_agent_with_broker_mode(
         "pi" => terminal_runtime.reset_parser_on_scrollback_erase(),
         _ => terminal_runtime,
     };
-    let runtime_generation = if stage_runtime_replacement {
+    let runtime_start = if stage_runtime_replacement {
         app_state
             .terminal_sessions
             .stage_runtime_replacement(&config.session_id, terminal_runtime, initial_geometry)
@@ -1165,8 +1178,29 @@ async fn spawn_agent_with_broker_mode(
             .terminal_sessions
             .start_or_replace_runtime(&config.session_id, terminal_runtime, initial_geometry)
             .await
+    };
+    let runtime_generation = match runtime_start {
+        Ok(generation) => generation,
+        Err(error) => {
+            let message = format!("Failed to start terminal session broker: {error}");
+            if let Some(mut transport) = pending_zellij_transport.take() {
+                return match transport.shutdown().await {
+                    Ok(()) => Err(message),
+                    Err(cleanup_error) => Err(format!("{message}; {cleanup_error}")),
+                };
+            }
+            return Err(message);
+        }
+    };
+
+    if let Some(transport) = pending_zellij_transport.take() {
+        let active = transport.into_active();
+        reader = Some(active.reader);
+        zellij_snapshot_frames = Some(active.snapshot_frames);
+        background_processes.push(active.subscription);
+        zellij_pane = Some(active.lease);
     }
-    .map_err(|error| format!("Failed to start terminal session broker: {error}"))?;
+    let mut reader = reader.expect("terminal reader must exist after broker start");
 
     // Do not advertise the replacement as active in SQLite until both its
     // provider pane/transport and broker runtime exist. A failed restart must
@@ -1413,7 +1447,9 @@ async fn spawn_agent_with_broker_mode(
                         .lock()
                         .map(|status| status.clone())
                         .unwrap_or_default();
-                    if antigravity_turn_completion_gate.observe_output(
+                    if observe_antigravity_terminal_completion(
+                        terminal_observation_source,
+                        &mut antigravity_turn_completion_gate,
                         &provider_name_for_pty,
                         &status_before_output,
                         &text,
@@ -2926,6 +2962,20 @@ mod tests {
         let mut gate = AntigravityTurnCompletionGate::default();
 
         assert!(!gate.observe_output("antigravity", "Idle", "\r\n>\r\n? for shortcuts\r\n",));
+    }
+
+    #[test]
+    fn rendered_zellij_ready_prompt_never_completes_an_antigravity_turn() {
+        let mut gate = AntigravityTurnCompletionGate::default();
+
+        assert!(!observe_antigravity_terminal_completion(
+            ProviderTerminalObservationSource::RenderedZellijFrame,
+            &mut gate,
+            "antigravity",
+            "Processing...",
+            "Running the synchronization script...\r\n>\r\n? for shortcuts\r\n",
+        ));
+        assert!(!gate.tracking_processing_turn);
     }
 
     #[test]

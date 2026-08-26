@@ -50,6 +50,12 @@ Spawning an agent follows a deterministic sequence in `manager::spawn_agent`:
 7. **Register binding**: Store the generation-scoped agent-to-pane binding in
    `AppState`.
 
+The pane transport is a pending cleanup guard through step 6. If broker
+registration fails, Wardian cancels frame publication, closes the frame and
+input channels, kills and waits for the subscription process, confirms its
+reader and input workers exited, and closes the uncommitted pane generation
+before returning the spawn error.
+
 Running restart holds the agent's delivery gate from preflight through broker
 and pane promotion. While a replacement reservation exists, previews are
 noninteractive and focus handoffs are rejected. An exited, closing, or missing
@@ -74,6 +80,8 @@ prompt, but they never enter provider event parsers or OSC-title classifiers.
 Provider-owned logs, hooks, and telemetry remain authoritative for lifecycle
 events, session identity, status, turn receipts, and OpenCode startup memory
 receipt. The mock provider uses its mirrored provider log for the same reason.
+Antigravity ready-prompt completion is likewise restricted to a raw provider
+stream; a complete Zellij repaint cannot end an active turn.
 Pane recovery uses the durable nonce marker plus Zellij's original pane command;
 provider-controlled display titles are never cleanup identity.
 

@@ -135,11 +135,178 @@ impl Drop for ZellijPaneLease {
 }
 
 pub struct ZellijPaneTransport {
+    reader: Option<Box<dyn std::io::Read + Send>>,
+    snapshot_frames: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
+    runtime: Option<crate::state::terminal_session::TerminalRuntimeHandles>,
+    subscription: Option<std::process::Child>,
+    lease: Option<ZellijPaneLease>,
+    subscription_cancelled: Arc<AtomicBool>,
+    input_cancelled: Arc<AtomicBool>,
+    subscription_reader: Option<std::thread::JoinHandle<()>>,
+    input_worker: Option<std::thread::JoinHandle<()>>,
+    handed_off: bool,
+}
+
+pub struct ZellijPaneActiveTransport {
     pub reader: Box<dyn std::io::Read + Send>,
     pub snapshot_frames: std::sync::mpsc::Receiver<Vec<u8>>,
-    pub runtime: crate::state::terminal_session::TerminalRuntimeHandles,
     pub subscription: std::process::Child,
     pub lease: ZellijPaneLease,
+}
+
+impl ZellijPaneTransport {
+    pub fn runtime(&self) -> crate::state::terminal_session::TerminalRuntimeHandles {
+        self.runtime
+            .as_ref()
+            .expect("Zellij pane transport runtime must exist before handoff")
+            .clone()
+    }
+
+    pub fn into_active(mut self) -> ZellijPaneActiveTransport {
+        self.handed_off = true;
+        let active = ZellijPaneActiveTransport {
+            reader: self
+                .reader
+                .take()
+                .expect("Zellij pane transport reader must exist before handoff"),
+            snapshot_frames: self
+                .snapshot_frames
+                .take()
+                .expect("Zellij snapshot receiver must exist before handoff"),
+            subscription: self
+                .subscription
+                .take()
+                .expect("Zellij subscription must exist before handoff"),
+            lease: self
+                .lease
+                .take()
+                .expect("Zellij pane lease must exist before handoff"),
+        };
+        // The broker owns the cloned runtime after a successful start. These
+        // handles remain detached for the active generation and terminate when
+        // the broker runtime and subscription child are torn down.
+        self.runtime.take();
+        self.subscription_reader.take();
+        self.input_worker.take();
+        active
+    }
+
+    /// Tears down a transport that never committed to the terminal broker.
+    /// Every step is idempotent so callers can retry cleanup after an error.
+    pub async fn shutdown(&mut self) -> Result<(), String> {
+        let mut errors = self.shutdown_local_resources();
+        if let Some(lease) = self.lease.take() {
+            if let Err(error) = lease.close().await {
+                errors.push(error);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    fn shutdown_local_resources(&mut self) -> Vec<String> {
+        if self.handed_off {
+            return Vec::new();
+        }
+        self.subscription_cancelled.store(true, Ordering::Release);
+        self.input_cancelled.store(true, Ordering::Release);
+        self.runtime.take();
+        self.reader.take();
+        self.snapshot_frames.take();
+
+        let mut errors = Vec::new();
+        if let Some(mut subscription) = self.subscription.take() {
+            if let Err(error) = terminate_subscription_process(&mut subscription) {
+                errors.push(error);
+            }
+        }
+        if let Some(reader) = self.subscription_reader.take() {
+            if let Err(error) = join_transport_worker(reader, "subscription reader") {
+                errors.push(error);
+            }
+        }
+        if let Some(worker) = self.input_worker.take() {
+            if let Err(error) = join_transport_worker(worker, "input worker") {
+                errors.push(error);
+            }
+        }
+        errors
+    }
+}
+
+impl Drop for ZellijPaneTransport {
+    fn drop(&mut self) {
+        if self.handed_off {
+            return;
+        }
+        let _ = self.shutdown_local_resources();
+        // Dropping an unconsumed lease schedules generation-scoped pane cleanup.
+    }
+}
+
+fn terminate_subscription_process(subscription: &mut std::process::Child) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = crate::utils::process::force_kill_process_tree(subscription.id());
+    }
+    let _ = subscription.kill();
+    let deadline = std::time::Instant::now() + ACTIVATION_PROCESS_TERMINATION_TIMEOUT;
+    loop {
+        match subscription.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(ACTIVATION_COMMAND_POLL_INTERVAL);
+            }
+            Ok(None) => {
+                return Err(
+                    "Zellij pane subscription termination could not be confirmed".to_string(),
+                )
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Zellij pane subscription termination could not be confirmed: {error}"
+                ))
+            }
+        }
+    }
+}
+
+fn join_transport_worker(worker: std::thread::JoinHandle<()>, label: &str) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + ACTIVATION_PROCESS_TERMINATION_TIMEOUT;
+    while !worker.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(ACTIVATION_COMMAND_POLL_INTERVAL);
+    }
+    if !worker.is_finished() {
+        return Err(format!(
+            "Zellij pane {label} termination could not be confirmed"
+        ));
+    }
+    worker
+        .join()
+        .map_err(|_| format!("Zellij pane {label} terminated with a panic"))
+}
+
+fn send_subscription_frame(
+    sender: &std::sync::mpsc::SyncSender<Vec<u8>>,
+    mut frame: Vec<u8>,
+    cancelled: &AtomicBool,
+) -> bool {
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return false;
+        }
+        match sender.try_send(frame) {
+            Ok(()) => return true,
+            Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                frame = returned;
+                std::thread::sleep(ACTIVATION_COMMAND_POLL_INTERVAL);
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
+        }
+    }
 }
 
 struct ZellijSnapshotReader {
@@ -1801,13 +1968,19 @@ impl ZellijTerminalEngine {
         let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
         let (snapshot_tx, snapshot_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
         let expected_pane = pane_id.as_str().to_string();
+        let subscription_cancelled = Arc::new(AtomicBool::new(false));
+        let reader_cancelled = Arc::clone(&subscription_cancelled);
         let subscription_engine = Arc::downgrade(self);
         let subscription_session_id = binding.session_id.clone();
         let subscription_generation = binding.generation;
-        std::thread::spawn(move || {
+        let subscription_reader = std::thread::spawn(move || {
             use std::io::BufRead;
             let mut downstream_closed = false;
             for line in std::io::BufReader::new(stdout).lines() {
+                if reader_cancelled.load(Ordering::Acquire) {
+                    downstream_closed = true;
+                    break;
+                }
                 let Ok(line) = line else {
                     break;
                 };
@@ -1818,7 +1991,9 @@ impl ZellijTerminalEngine {
                     continue;
                 }
                 let frame = render_zellij_snapshot(update);
-                if snapshot_tx.send(frame.clone()).is_err() || render_tx.send(frame).is_err() {
+                if !send_subscription_frame(&snapshot_tx, frame.clone(), &reader_cancelled)
+                    || !send_subscription_frame(&render_tx, frame, &reader_cancelled)
+                {
                     // A broker replacement or termination drops Wardian's
                     // local frame receiver while the provider pane remains
                     // alive in Zellij. That is not pane-exit evidence and must
@@ -1839,21 +2014,32 @@ impl ZellijTerminalEngine {
         let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<
             crate::state::terminal_session::NativeTerminalWriteRequest,
         >(256);
+        let input_cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&input_cancelled);
         let input_engine = self.clone();
         let input_session_id = binding.session_id.clone();
         let input_generation = binding.generation;
-        std::thread::spawn(move || {
-            while let Some(request) = input_rx.blocking_recv() {
-                let result = tauri::async_runtime::block_on(input_engine.write_to_pane(
-                    &input_session_id,
-                    input_generation,
-                    &request.bytes,
-                ));
-                let failed = result.is_err();
-                let _ = request.completion.send(result);
-                if failed {
-                    break;
+        let input_worker = std::thread::spawn(move || loop {
+            if worker_cancelled.load(Ordering::Acquire) {
+                break;
+            }
+            let request = match input_rx.try_recv() {
+                Ok(request) => request,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    std::thread::sleep(ACTIVATION_COMMAND_POLL_INTERVAL);
+                    continue;
                 }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            };
+            let result = tauri::async_runtime::block_on(input_engine.write_to_pane(
+                &input_session_id,
+                input_generation,
+                &request.bytes,
+            ));
+            let failed = result.is_err();
+            let _ = request.completion.send(result);
+            if failed {
+                break;
             }
         });
         let runtime = crate::state::terminal_session::TerminalRuntimeHandles::new_with_write_ack(
@@ -1866,11 +2052,16 @@ impl ZellijTerminalEngine {
         })
         .reset_parser_on_scrollback_erase();
         Ok(ZellijPaneTransport {
-            reader: Box::new(ZellijSnapshotReader::new(render_rx)),
-            snapshot_frames: snapshot_rx,
-            runtime,
-            subscription,
-            lease,
+            reader: Some(Box::new(ZellijSnapshotReader::new(render_rx))),
+            snapshot_frames: Some(snapshot_rx),
+            runtime: Some(runtime),
+            subscription: Some(subscription),
+            lease: Some(lease),
+            subscription_cancelled,
+            input_cancelled,
+            subscription_reader: Some(subscription_reader),
+            input_worker: Some(input_worker),
+            handed_off: false,
         })
     }
 
@@ -2593,6 +2784,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn subscription_frame_backpressure_is_cancellation_aware() {
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+        sender.send(vec![1]).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker = std::thread::spawn(move || {
+            send_subscription_frame(&sender, vec![2], &worker_cancelled)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cancelled.store(true, AtomicOrdering::Release);
+
+        assert!(!worker.join().unwrap());
+    }
+
     #[derive(Default)]
     struct FakeRunner {
         calls: StdMutex<Vec<Vec<String>>>,
@@ -2661,6 +2867,99 @@ mod tests {
             }
             Ok(output)
         }
+    }
+
+    #[tokio::test]
+    async fn failed_broker_transport_shutdown_terminates_subscription_and_workers() {
+        let temp = tempfile::tempdir().unwrap();
+        let successful = |stdout: &[u8]| Output {
+            status: status(0),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        };
+        let engine = Arc::new(ZellijTerminalEngine::with_runner(
+            config(temp.path()),
+            FakeRunner::with_outputs([successful(b""), successful(b"[]")]),
+        ));
+        let binding = ZellijPaneBinding {
+            session_id: "failed-broker".to_string(),
+            pane_id: Some(ZellijPaneId::parse("terminal_7").unwrap()),
+            generation: 1,
+            phase: ZellijPanePhase::Running,
+        };
+        engine
+            .pane_registry()
+            .bindings
+            .insert(binding.session_id.clone(), binding.clone());
+
+        let (executable, args) = sleeping_helper();
+        let mut command = zellij_helper_command(executable);
+        let mut subscription = command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let subscription_pid = subscription.id();
+        let stdout = subscription.stdout.take().unwrap();
+        let subscription_reader = std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut bytes = Vec::new();
+            let _ = reader.read_to_end(&mut bytes);
+        });
+        let (render_tx, render_rx) = std::sync::mpsc::sync_channel(1);
+        let (snapshot_tx, snapshot_rx) = std::sync::mpsc::sync_channel(1);
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<
+            crate::state::terminal_session::NativeTerminalWriteRequest,
+        >(1);
+        let input_cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&input_cancelled);
+        let input_worker = std::thread::spawn(move || loop {
+            if worker_cancelled.load(Ordering::Acquire) {
+                break;
+            }
+            match input_rx.try_recv() {
+                Ok(_) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    std::thread::sleep(ACTIVATION_COMMAND_POLL_INTERVAL);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            }
+        });
+        let runtime = crate::state::terminal_session::TerminalRuntimeHandles::new_with_write_ack(
+            input_tx,
+            |_geometry| Ok(()),
+        );
+        let mut transport = ZellijPaneTransport {
+            reader: Some(Box::new(ZellijSnapshotReader::new(render_rx))),
+            snapshot_frames: Some(snapshot_rx),
+            runtime: Some(runtime),
+            subscription: Some(subscription),
+            lease: Some(ZellijPaneLease::new(
+                engine.clone(),
+                binding.session_id.clone(),
+                binding.generation,
+            )),
+            subscription_cancelled: Arc::new(AtomicBool::new(false)),
+            input_cancelled,
+            subscription_reader: Some(subscription_reader),
+            input_worker: Some(input_worker),
+            handed_off: false,
+        };
+        drop(render_tx);
+        drop(snapshot_tx);
+
+        // Model a broker-start failure that still holds the runtime clone used
+        // for the attempted registration. Explicit cancellation must stop the
+        // input worker without relying on every sender having been dropped.
+        let retained_runtime = transport.runtime();
+        transport.shutdown().await.unwrap();
+        transport.shutdown().await.unwrap();
+        drop(retained_runtime);
+
+        assert!(!crate::utils::process::process_exists(subscription_pid));
+        assert!(engine.binding("failed-broker").await.is_none());
     }
 
     struct BlockingActivationRunner {
@@ -3943,13 +4242,14 @@ mod tests {
             .filter_map(|pane| pane.pane_id())
             .collect::<Vec<_>>();
         assert_eq!(terminal_panes, vec![binding.pane_id.clone().unwrap()]);
-        let ZellijPaneTransport {
+        let transport = engine.open_pane_transport(&binding).await.unwrap();
+        let runtime = transport.runtime();
+        let ZellijPaneActiveTransport {
             mut reader,
             snapshot_frames,
-            runtime,
             mut subscription,
             lease: _lease,
-        } = engine.open_pane_transport(&binding).await.unwrap();
+        } = transport.into_active();
         let runtime_generation = broker
             .start_or_replace_runtime(
                 "native-agent",
@@ -4100,16 +4400,17 @@ mod tests {
             })
             .await
             .expect("provider pane after backend recovery");
-        let ZellijPaneTransport {
-            reader: _reader,
-            snapshot_frames: _snapshot_frames,
-            runtime,
-            mut subscription,
-            lease,
-        } = recovered
+        let transport = recovered
             .open_pane_transport(&recovered_binding)
             .await
             .unwrap();
+        let runtime = transport.runtime();
+        let ZellijPaneActiveTransport {
+            reader: _reader,
+            snapshot_frames: _snapshot_frames,
+            mut subscription,
+            lease,
+        } = transport.into_active();
         recovered_broker
             .start_or_replace_runtime(
                 "recovered-agent",

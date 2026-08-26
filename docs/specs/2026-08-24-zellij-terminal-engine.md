@@ -196,7 +196,11 @@ or status event from an older generation is rejected.
    rendered pane proves a usable prompt.
 
 If any step fails, remove the launch file, close a newly created pane when its ID
-is known, revoke the memory capability, and return the agent to `unbound`.
+is known, revoke the memory capability, and return the agent to `unbound`. The
+subscription transport remains an uncommitted cleanup guard until broker runtime
+registration succeeds. A broker-start failure cancels its frame producer, drops
+its frame and input channels, kills and waits for the subscription process,
+confirms both transport workers exited, and then closes the pane generation.
 
 A running restart holds the per-agent delivery gate across the complete staged
 transaction. The replacement reservation makes previews noninteractive and
@@ -381,6 +385,9 @@ provider `parse_output` parser and never supply OSC-title lifecycle evidence.
 - Terminal cards use replacement frames for noninteractive previews.
 - Provider-native logs, hooks, and structured state remain authoritative for
   transcript events, session identity, turn receipts, and completion.
+- Antigravity's ready-prompt completion gate is raw-provider-only. A rendered
+  repaint containing an earlier ready prompt cannot complete an active turn or
+  release queued delivery.
 - The mock provider mirrors its structured stream to its provider-owned log and
   is observed through that log, matching the production separation.
 - OpenCode startup readiness and memory receipt use provider-log status while

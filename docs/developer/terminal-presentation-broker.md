@@ -230,6 +230,10 @@ snapshots. One process-wide desktop xterm host moves between registered
 Workbench slots visually by positioning its app-root viewport over the selected
 slot; its DOM subtree does not move. Inactive and duplicate slots render
 read-only text previews.
+The Zellij subscription is not handed to an active agent until broker runtime
+registration succeeds. A failed registration tears down the subscription
+process, frame channels, workers, and candidate pane as one uncommitted
+transport.
 The standalone human terminal keeps its independent presentation behavior.
 
 The process-wide host keeps the stable broker identity
