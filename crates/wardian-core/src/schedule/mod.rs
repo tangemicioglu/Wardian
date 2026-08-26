@@ -8,6 +8,15 @@ use std::path::{Path, PathBuf};
 
 use crate::models::WorkflowSchedule;
 
+/// Largest supported weekly recurrence interval.
+///
+/// Weekly scheduling currently searches forward by day, so keeping this
+/// bounded prevents malformed or extreme persisted values from overflowing
+/// the search window or monopolizing a scheduler tick. 520 weeks is roughly
+/// ten years, which covers normal calendar scheduling while keeping the
+/// projection bounded.
+pub const MAX_WEEKLY_REPEAT_EVERY: u32 = 520;
+
 /// Next future fire time in epoch-ms for `schedule`, or `None` if the schedule
 /// can never fire again. Missed slots are skipped.
 pub fn compute_next_run(schedule: &ScheduleDefinition, now_ms: u64) -> Option<u64> {
@@ -71,11 +80,14 @@ pub fn compute_next_run(schedule: &ScheduleDefinition, now_ms: u64) -> Option<u6
                 }
             };
 
+            if schedule.repeat_every > MAX_WEEKLY_REPEAT_EVERY {
+                return None;
+            }
             let repeat_weeks = schedule.repeat_every.max(1) as i64;
             let now_local = chrono::Local::now();
             let mut best: Option<u64> = None;
 
-            let search_days = (repeat_weeks * 7 + 7) as u32;
+            let search_days = repeat_weeks.checked_mul(7)?.checked_add(7)? as u32;
             for day_name in &day_names {
                 if let Some(target_day) = day_map(day_name) {
                     for offset in 0..search_days {
@@ -245,6 +257,11 @@ pub fn validate_schedule_definition(schedule: &ScheduleDefinition) -> Result<(),
             }
             if schedule.repeat_every == 0 {
                 return Err("weekly schedules require repeat_every greater than zero".to_string());
+            }
+            if schedule.repeat_every > MAX_WEEKLY_REPEAT_EVERY {
+                return Err(format!(
+                    "weekly schedules require repeat_every no greater than {MAX_WEEKLY_REPEAT_EVERY}"
+                ));
             }
         }
         "monthly" => {
@@ -599,6 +616,28 @@ mod tests {
         let next = compute_next_run(&schedule, now_ms);
         assert!(next.is_some());
         assert!(next.unwrap() > now_ms);
+    }
+
+    #[test]
+    fn weekly_repeat_every_is_bounded_before_search() {
+        let schedule = ScheduleDefinition {
+            schedule_type: "weekly".to_string(),
+            time_of_day: Some("09:00".to_string()),
+            days_of_week: Some(vec!["Mon".to_string()]),
+            repeat_every: MAX_WEEKLY_REPEAT_EVERY,
+            end_condition: "never".to_string(),
+            ..Default::default()
+        };
+        assert!(compute_next_run(&schedule, 0).is_some());
+        validate_schedule_definition(&schedule).unwrap();
+
+        let out_of_bounds = ScheduleDefinition {
+            repeat_every: MAX_WEEKLY_REPEAT_EVERY + 1,
+            ..schedule
+        };
+        assert!(compute_next_run(&out_of_bounds, 0).is_none());
+        let error = validate_schedule_definition(&out_of_bounds).unwrap_err();
+        assert!(error.contains("no greater than 520"));
     }
 
     #[test]

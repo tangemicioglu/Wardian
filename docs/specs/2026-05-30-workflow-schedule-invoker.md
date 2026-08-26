@@ -87,8 +87,9 @@ All persist via `wardian_core::schedule` and emit `schedules-updated`.
 
 ### 4.5 CLI verbs (`wardian-cli`)
 `wardian workflow schedule <sub>` (parity with 6a's `exec`):
-- `add --blueprint <id> --name <n> [--every <mins> | --daily HH:MM | --weekly <days> HH:MM | --at <iso>] [--input <json>] [--bind name=target] [--provider <p>]`
+- `add --blueprint <id> --name <n> [--every <mins> | --daily HH:MM | --weekly <days@HH:MM> [--repeat-every <weeks>] | --at <iso>] [--input <json>] [--bind name=target] [--provider <p>]`
 - `list` (table / `--json`), `pause <id>`, `resume <id>`, `remove <id>`, `run-now <id>`.
+For weekly schedules, `--repeat-every` accepts 1 through 520 weeks.
 CRUD verbs edit `schedules.json` directly via `wardian_core::schedule` (no running app needed). **`run-now` just sets `next_run = now`** — the running app's tick fires it live; if the app is off, nothing fires (acceptable). The CLI has no live executor, so it never drives a real run itself.
 
 ## 5. Components & files (indicative)
