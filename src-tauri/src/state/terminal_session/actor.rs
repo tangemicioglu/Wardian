@@ -62,6 +62,14 @@ impl fmt::Display for TerminalBrokerError {
 
 impl std::error::Error for TerminalBrokerError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeFocusStartupAdmission {
+    session_id: String,
+    runtime_generation: u64,
+    lease_epoch: u64,
+    presentation_id: String,
+}
+
 /// A single terminal-input write and its completion receipt from the native
 /// PTY writer. A successful enqueue is not treated as a successful PTY write.
 pub struct NativeTerminalWriteRequest {
@@ -777,13 +785,11 @@ impl TerminalSessionBroker {
             )
             .await;
         }
-        let _ = self
-            .lifecycle_tx
-            .send(TerminalSessionLifecycleNotification {
-                session_id: session_id.to_string(),
-                runtime_generation,
-                lifecycle,
-            });
+        let _ = self.lifecycle_tx.send(TerminalSessionLifecycleNotification {
+            session_id: session_id.to_string(),
+            runtime_generation,
+            lifecycle,
+        });
         self.deferred_geometries
             .lock()
             .await
@@ -882,11 +888,13 @@ impl TerminalSessionBroker {
         } else {
             TerminalSessionLifecycleEvent::RuntimeStarted
         };
-        let _ = self.lifecycle_tx.send(TerminalSessionLifecycleNotification {
-            session_id: session_id.to_string(),
-            runtime_generation,
-            lifecycle,
-        });
+        let _ = self
+            .lifecycle_tx
+            .send(TerminalSessionLifecycleNotification {
+                session_id: session_id.to_string(),
+                runtime_generation,
+                lifecycle,
+            });
         self.deferred_geometries
             .lock()
             .await
@@ -1183,6 +1191,50 @@ impl TerminalSessionBroker {
                 reply,
             }
         })
+        .await
+    }
+
+    /// Atomically establishes whether native client startup may begin for an
+    /// observed terminal ownership identity. Ownership may still change while
+    /// startup is in flight, so callers must use the returned admission for
+    /// the final focus authorization.
+    pub async fn admit_native_focus_startup(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: &str,
+    ) -> Result<NativeFocusStartupAdmission, TerminalBrokerError> {
+        let owned_session_id = session_id.to_string();
+        let owned_presentation_id = presentation_id.to_string();
+        self.request(session_id, move |reply| {
+            TerminalSessionMessage::AdmitNativeFocusStartup {
+                session_id: owned_session_id,
+                runtime_generation,
+                lease_epoch,
+                presentation_id: owned_presentation_id,
+                reply,
+            }
+        })
+        .await
+    }
+
+    pub async fn run_admitted_native_focus<F, Fut>(
+        &self,
+        admission: NativeFocusStartupAdmission,
+        action: F,
+    ) -> Result<(), TerminalBrokerError>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        self.run_authorized_native_focus(
+            &admission.session_id,
+            admission.runtime_generation,
+            admission.lease_epoch,
+            &admission.presentation_id,
+            action,
+        )
         .await
     }
 
@@ -1766,6 +1818,13 @@ enum TerminalSessionMessage {
         arrival: ActivationAckArrival,
         reply: BrokerReply<TerminalActivationAckResult>,
     },
+    AdmitNativeFocusStartup {
+        session_id: String,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: String,
+        reply: BrokerReply<NativeFocusStartupAdmission>,
+    },
     AuthorizedNativeFocus {
         session_id: String,
         runtime_generation: u64,
@@ -2068,6 +2127,21 @@ impl TerminalSessionActor {
                 reply,
             } => {
                 let result = self.ack_activation(request, &arrival).await;
+                let _ = reply.send(result);
+            }
+            TerminalSessionMessage::AdmitNativeFocusStartup {
+                session_id,
+                runtime_generation,
+                lease_epoch,
+                presentation_id,
+                reply,
+            } => {
+                let result = self.admit_native_focus_startup(
+                    &session_id,
+                    runtime_generation,
+                    lease_epoch,
+                    &presentation_id,
+                );
                 let _ = reply.send(result);
             }
             TerminalSessionMessage::AuthorizedNativeFocus {
@@ -2596,13 +2670,12 @@ impl TerminalSessionActor {
         Ok(result)
     }
 
-    async fn run_authorized_native_focus(
-        &mut self,
+    fn validate_native_focus_authority(
+        &self,
         session_id: &str,
         runtime_generation: u64,
         lease_epoch: u64,
         presentation_id: &str,
-        action: AuthorizedNativeFocusAction,
     ) -> Result<(), TerminalBrokerError> {
         self.ensure_session(session_id)?;
         self.ensure_generation(runtime_generation)?;
@@ -2618,6 +2691,44 @@ impl TerminalSessionActor {
         {
             return Err(TerminalBrokerError::NativeFocusUnauthorized);
         }
+        Ok(())
+    }
+
+    fn admit_native_focus_startup(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: &str,
+    ) -> Result<NativeFocusStartupAdmission, TerminalBrokerError> {
+        self.validate_native_focus_authority(
+            session_id,
+            runtime_generation,
+            lease_epoch,
+            presentation_id,
+        )?;
+        Ok(NativeFocusStartupAdmission {
+            session_id: session_id.to_string(),
+            runtime_generation,
+            lease_epoch,
+            presentation_id: presentation_id.to_string(),
+        })
+    }
+
+    async fn run_authorized_native_focus(
+        &mut self,
+        session_id: &str,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: &str,
+        action: AuthorizedNativeFocusAction,
+    ) -> Result<(), TerminalBrokerError> {
+        self.validate_native_focus_authority(
+            session_id,
+            runtime_generation,
+            lease_epoch,
+            presentation_id,
+        )?;
         match tokio::time::timeout(AUTHORIZED_NATIVE_FOCUS_TIMEOUT, action()).await {
             Ok(result) => result.map_err(TerminalBrokerError::RuntimeIo),
             Err(_) => Err(TerminalBrokerError::RuntimeIo(

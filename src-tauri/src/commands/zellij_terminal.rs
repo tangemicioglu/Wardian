@@ -49,24 +49,6 @@ fn preview_state_without_binding(status: Option<&str>, has_runtime: bool) -> &'s
     }
 }
 
-fn validate_habitat_activation_preflight(
-    current_generation: u64,
-    current_lease_epoch: u64,
-    current_owner: Option<&str>,
-    activation_pending: bool,
-    observed_generation: u64,
-    observed_lease_epoch: u64,
-) -> Result<(), String> {
-    if current_generation != observed_generation
-        || current_lease_epoch != observed_lease_epoch
-        || activation_pending
-        || current_owner.is_some_and(|owner| owner != HABITAT_TERMINAL_PRESENTATION_ID)
-    {
-        return Err(OWNERSHIP_CHANGED_MESSAGE.to_string());
-    }
-    Ok(())
-}
-
 async fn run_habitat_activation<StartAttached, StartFuture, FocusAction, FocusFuture>(
     terminal_sessions: &TerminalSessionBroker,
     session_id: &str,
@@ -81,27 +63,18 @@ where
     FocusAction: FnOnce() -> FocusFuture + Send + 'static,
     FocusFuture: Future<Output = Result<(), String>> + Send + 'static,
 {
-    let broker_state = terminal_sessions
-        .broker_state(session_id)
-        .await
-        .map_err(|_| "Agent terminal ownership state is still loading".to_string())?;
-    validate_habitat_activation_preflight(
-        broker_state.runtime_generation,
-        broker_state.lease_epoch,
-        broker_state.owner_presentation_id.as_deref(),
-        broker_state.pending_activation.is_some(),
-        observed_generation,
-        observed_lease_epoch,
-    )?;
-    start_attached_client().await?;
-    terminal_sessions
-        .run_authorized_native_focus(
+    let admission = terminal_sessions
+        .admit_native_focus_startup(
             session_id,
             observed_generation,
             observed_lease_epoch,
             HABITAT_TERMINAL_PRESENTATION_ID,
-            focus_action,
         )
+        .await
+        .map_err(|_| OWNERSHIP_CHANGED_MESSAGE.to_string())?;
+    start_attached_client().await?;
+    terminal_sessions
+        .run_admitted_native_focus(admission, focus_action)
         .await
         .map_err(|_| OWNERSHIP_CHANGED_MESSAGE.to_string())
 }
@@ -314,34 +287,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn habitat_activation_preflight_rejects_changed_or_pending_ownership() {
-        for result in [
-            validate_habitat_activation_preflight(7, 11, None, true, 7, 11),
-            validate_habitat_activation_preflight(7, 11, Some("remote:client"), false, 7, 11),
-            validate_habitat_activation_preflight(8, 11, None, false, 7, 11),
-            validate_habitat_activation_preflight(7, 12, None, false, 7, 11),
-        ] {
-            assert_eq!(result.unwrap_err(), OWNERSHIP_CHANGED_MESSAGE);
-        }
-    }
-
-    #[test]
-    fn habitat_activation_preflight_accepts_current_desktop_eligibility() {
-        assert!(validate_habitat_activation_preflight(7, 11, None, false, 7, 11).is_ok());
-        assert!(validate_habitat_activation_preflight(
-            7,
-            11,
-            Some(HABITAT_TERMINAL_PRESENTATION_ID),
-            false,
-            7,
-            11,
-        )
-        .is_ok());
-    }
-
     #[tokio::test]
-    async fn pending_remote_activation_rejects_before_attached_client_startup() {
+    async fn remote_activation_before_actor_admission_prevents_attached_client_startup() {
         let (broker, generation, lease_epoch) = terminal_broker_fixture().await;
         let pending = begin_remote_activation(&broker, generation, lease_epoch).await;
         assert_eq!(
