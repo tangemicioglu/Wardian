@@ -87,6 +87,7 @@ pub enum LibraryIndexNode {
 pub struct LibrarySection {
     pub tree: LibraryIndexFolder,
     pub stubbed: bool,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -108,6 +109,16 @@ pub struct LibraryIndex {
     pub sections: std::collections::HashMap<String, LibrarySection>,
     pub deployments: std::collections::HashMap<String, Vec<DeploymentTarget>>,
     pub orphans: Vec<OrphanDeployment>,
+}
+
+/// One bounded continuation page for a library section. The page is flat on
+/// purpose: the frontend can merge entries into the already-loaded tree while
+/// the backend never serializes the cumulative index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryEntryPage {
+    pub entries: Vec<LibraryEntry>,
+    pub truncated: bool,
+    pub next_offset: Option<usize>,
 }
 
 #[cfg(test)]

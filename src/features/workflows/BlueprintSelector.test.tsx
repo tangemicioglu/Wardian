@@ -36,4 +36,27 @@ describe('BlueprintSelector', () => {
 
     expect(onNew).toHaveBeenCalled();
   });
+
+  it('marks a partial workflow catalog', async () => {
+    invokeMock.mockResolvedValueOnce({
+      blueprints: [{ id: 'wf', name: 'WF', path: '/x/wf.md' }],
+      truncated: true,
+    });
+
+    render(<BlueprintSelector onOpen={() => {}} onNew={() => {}} />);
+
+    expect(await screen.findByRole('status')).toHaveTextContent('first 500');
+  });
+
+  it('loads one more bounded catalog page', async () => {
+    invokeMock
+      .mockResolvedValueOnce({ blueprints: [{ id: 'wf-1', name: 'WF 1', path: '/x/1.md' }], truncated: true, next_offset: 500 })
+      .mockResolvedValueOnce({ blueprints: [{ id: 'wf-2', name: 'WF 2', path: '/x/2.md' }], truncated: false, next_offset: null });
+
+    render(<BlueprintSelector onOpen={() => {}} onNew={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: /load next 500/i }));
+
+    await waitFor(() => expect(screen.getByText('WF 2')).toBeInTheDocument());
+    expect(invokeMock).toHaveBeenLastCalledWith('workflow_list_blueprints', { offset: 500 });
+  });
 });

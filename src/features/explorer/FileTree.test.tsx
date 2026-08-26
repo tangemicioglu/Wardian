@@ -46,6 +46,36 @@ describe('FileTree Component', () => {
     });
   });
 
+  it('shows when a directory listing is partial', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      nodes: [{ name: 'file.txt', path: '/test/file.txt', is_dir: false, extension: 'txt' }],
+      truncated: true,
+    });
+
+    render(<FileTree path="/test" />);
+
+    expect(await screen.findByRole('status')).toHaveTextContent('first 500 items');
+  });
+
+  it('loads one more bounded directory page', async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({
+        nodes: [{ name: 'first.txt', path: '/test/first.txt', is_dir: false, extension: 'txt' }],
+        truncated: true,
+        next_offset: 500,
+      })
+      .mockResolvedValueOnce({
+        nodes: [{ name: 'next.txt', path: '/test/next.txt', is_dir: false, extension: 'txt' }],
+        truncated: false,
+        next_offset: null,
+      });
+
+    render(<FileTree path="/test" />);
+    fireEvent.click(await screen.findByRole('button', { name: /load next 500/i }));
+    expect(await screen.findByText('next.txt')).toBeInTheDocument();
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('get_directory_tree', { path: '/test', offset: 500 });
+  });
+
   it('calls onContextMenu when an item is right-clicked', async () => {
     const mockNodes = [
       { name: 'fileC.png', path: '/test/fileC.png', is_dir: false, extension: 'png' }

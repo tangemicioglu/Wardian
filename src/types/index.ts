@@ -248,6 +248,8 @@ export interface GitStatusResult {
     upstream: string | null;
     has_upstream: boolean;
     files: GitFileEntry[];
+    files_truncated?: boolean;
+    next_file_offset?: number | null;
     ahead: number;
     behind: number;
     rebase_in_progress?: boolean;
@@ -391,6 +393,12 @@ export interface PairActivityEntry {
   awaiting_reply_from: string | null;
 }
 
+export interface PairActivityResult {
+    pairs: PairActivityEntry[];
+    truncated: boolean;
+    next_offset?: number | null;
+}
+
 export interface AgentTelemetry {
     session_id: string;
     cpu_usage: number;
@@ -450,6 +458,7 @@ export interface LibraryIndexFolder {
 export interface LibrarySection {
     tree: LibraryIndexFolder;
     stubbed: boolean;
+    truncated?: boolean;
 }
 
 export interface DeploymentTarget {

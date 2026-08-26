@@ -11,7 +11,7 @@ pub use deployments::{
     scan_deployments, set_skill_deployments, DeploymentScan, SetDeploymentsOutcome, SkillSource,
 };
 pub use frontmatter::{extract_description, parse_frontmatter};
-pub use index::build_library_index;
+pub use index::{build_library_index, list_library_entries_page};
 pub use section::{
     is_single_normal_component, resolve_entry_path, LibrarySectionId, DEPLOYED_SKILL_SOURCE_FILE,
 };

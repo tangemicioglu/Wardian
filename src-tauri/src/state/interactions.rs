@@ -245,14 +245,35 @@ impl InteractionState {
         Ok(record)
     }
 
-    pub async fn inbox_notifications(&self) -> Vec<InteractionRecord> {
-        self.records
-            .lock()
-            .await
+    pub async fn inbox_notifications(&self, limit: usize) -> (Vec<InteractionRecord>, bool) {
+        self.inbox_notifications_page(0, limit).await
+    }
+
+    pub async fn inbox_notifications_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> (Vec<InteractionRecord>, bool) {
+        let records = self.records.lock().await;
+        let mut notifications = records
             .values()
             .filter(|record| record.kind == InteractionKind::Notification)
             .cloned()
-            .collect()
+            .collect::<Vec<_>>();
+        notifications.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        let mut page = notifications
+            .into_iter()
+            .skip(offset)
+            .take(limit.saturating_add(1))
+            .collect::<Vec<_>>();
+        let truncated = page.len() > limit;
+        page.truncate(limit);
+        (page, truncated)
     }
 
     pub async fn resolve_notification(

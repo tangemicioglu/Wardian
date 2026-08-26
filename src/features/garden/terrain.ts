@@ -63,6 +63,8 @@ export interface TerrainListing {
   /** Normalized absolute path of the listed directory. */
   path: string;
   children: readonly TerrainChild[];
+  truncated?: boolean;
+  nextOffset?: number | null;
 }
 
 export interface TerrainChild {

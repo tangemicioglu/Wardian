@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PanelRightOpen, Plus, RotateCcw, Waypoints, X } from "lucide-react";
-import type { AgentConfig, AgentTelemetry, CloneMode, TopologySnapshot, PairActivityEntry } from "../types";
+import type { AgentConfig, AgentTelemetry, CloneMode, TopologySnapshot, PairActivityEntry, PairActivityResult } from "../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlist/types";
 import { AgentContextMenu } from "../components/AgentContextMenu";
 import { DocsLink } from "../components/DocsLink";
@@ -23,6 +23,16 @@ import {
 } from "../features/graph/graphProjection";
 
 type MaybePromise = void | Promise<void>;
+
+function mergePairActivity(current: PairActivityEntry[], page: PairActivityEntry[]): PairActivityEntry[] {
+  const merged = new Map(current.map((entry) => [`${entry.a}\u0000${entry.b}`, entry]));
+  for (const entry of page) {
+    const key = `${entry.a}\u0000${entry.b}`;
+    const existing = merged.get(key);
+    if (!existing || entry.last_message_at > existing.last_message_at) merged.set(key, entry);
+  }
+  return [...merged.values()].sort((left, right) => right.last_message_at.localeCompare(left.last_message_at));
+}
 
 export interface GraphViewProps {
   visibility?: "visible" | "hidden";
@@ -78,6 +88,9 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
   );
   const [topology, setTopology] = useState<TopologySnapshot | null>(null);
   const [pairActivity, setPairActivity] = useState<PairActivityEntry[]>([]);
+  const [pairActivityTruncated, setPairActivityTruncated] = useState(false);
+  const [pairActivityNextOffset, setPairActivityNextOffset] = useState<number | null>(null);
+  const [loadingMorePairActivity, setLoadingMorePairActivity] = useState(false);
   const [inspectedAgentId, setInspectedAgentId] = useState<string | null>(
     initialSurfaceState?.inspected_agent_id ?? Array.from(props.selectedAgentIds)[0] ?? null,
   );
@@ -112,21 +125,38 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
     setLayoutNonce((value) => value + 1);
   };
 
+  const refreshActivity = useCallback(async (offset = 0, append = false) => {
+    if (props.visibility === "hidden") return;
+    try {
+      const result = await invoke<PairActivityResult | PairActivityEntry[]>(
+        "get_pair_activity",
+        offset > 0 ? { offset } : undefined,
+      );
+      const page = Array.isArray(result) ? result : result.pairs;
+      setPairActivity((current) => append ? mergePairActivity(current, page) : page);
+      setPairActivityTruncated(Array.isArray(result) ? false : result.truncated);
+      setPairActivityNextOffset(Array.isArray(result) ? null : result.next_offset ?? null);
+    } catch {
+      // Silently ignore errors
+    }
+  }, [props.visibility]);
+
+  const loadMoreActivity = useCallback(async () => {
+    if (pairActivityNextOffset === null || loadingMorePairActivity) return;
+    setLoadingMorePairActivity(true);
+    try {
+      await refreshActivity(pairActivityNextOffset, true);
+    } finally {
+      setLoadingMorePairActivity(false);
+    }
+  }, [loadingMorePairActivity, pairActivityNextOffset, refreshActivity]);
+
   useEffect(() => {
     if (props.visibility === "hidden") return;
-    let cancelled = false;
     const refreshTopology = async () => {
       try {
         const t = await invoke<TopologySnapshot>("get_topology");
-        if (!cancelled) setTopology(t);
-      } catch {
-        // Silently ignore errors
-      }
-    };
-    const refreshActivity = async () => {
-      try {
-        const a = await invoke<PairActivityEntry[]>("get_pair_activity");
-        if (!cancelled) setPairActivity(a);
+        setTopology(t);
       } catch {
         // Silently ignore errors
       }
@@ -140,16 +170,15 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
     // registrations resolve.
     const unlistenPromises: Promise<() => void>[] = [
       listen("topology-changed", refreshTopology),
-      listen("pair-activity-changed", refreshActivity),
+      listen("pair-activity-changed", () => refreshActivity()),
     ];
 
     return () => {
-      cancelled = true;
       unlistenPromises.forEach((p) => {
         p.then((un) => un()).catch(() => {});
       });
     };
-  }, [props.visibility]);
+  }, [props.visibility, refreshActivity]);
 
   const projection = useMemo(() => buildAgentGraph({
     agents: props.allAgents,
@@ -354,6 +383,16 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
           )}
         </div>
       </div>
+      {pairActivityTruncated && (
+        <div className="mx-3 mt-2 rounded border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)]" role="status">
+          <span>Showing recent communication activity only; pages are capped at 5,000 records.</span>{' '}
+          {pairActivityNextOffset !== null && (
+            <button type="button" className="font-semibold underline disabled:opacity-50" onClick={() => void loadMoreActivity()} disabled={loadingMorePairActivity}>
+              {loadingMorePairActivity ? 'Loading…' : 'Load next page'}
+            </button>
+          )}
+        </div>
+      )}
 
       <div className={`graph-body ${inspectorOpen ? "graph-body--inspector-open" : "graph-body--inspector-hidden"}`}>
         <div className="graph-canvas-shell" data-tour-target="graph-canvas">

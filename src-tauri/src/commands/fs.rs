@@ -5,7 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
 use wardian_core::models::AgentConfig;
-use wardian_core::models::FileNode;
+use wardian_core::models::{DirectoryTreeResult, FileNode};
+
+const MAX_DIRECTORY_CHILDREN: usize = 500;
 
 const EXPLORER_WATCH_DEBOUNCE_MS: u64 = 150;
 
@@ -133,8 +135,13 @@ pub async fn get_explorer_root(
 }
 
 #[tauri::command]
-pub async fn get_directory_tree(path: String) -> Result<Vec<FileNode>, String> {
+pub async fn get_directory_tree(
+    path: String,
+    offset: Option<usize>,
+) -> Result<DirectoryTreeResult, String> {
+    let offset = offset.unwrap_or(0);
     let mut nodes = Vec::new();
+    let mut truncated = false;
     let dir_path = Path::new(&path);
 
     if !dir_path.exists() || !dir_path.is_dir() {
@@ -144,9 +151,16 @@ pub async fn get_directory_tree(path: String) -> Result<Vec<FileNode>, String> {
         ));
     }
 
-    let entries = fs::read_dir(dir_path).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
+    let mut entries = fs::read_dir(dir_path)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries.into_iter().skip(offset) {
+        if nodes.len() >= MAX_DIRECTORY_CHILDREN {
+            truncated = true;
+            break;
+        }
         let metadata = entry.metadata().map_err(|e| e.to_string())?;
         let is_dir = metadata.is_dir();
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -166,7 +180,11 @@ pub async fn get_directory_tree(path: String) -> Result<Vec<FileNode>, String> {
     // Sort directories first, then alphabetically
     nodes.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
 
-    Ok(nodes)
+    Ok(DirectoryTreeResult {
+        next_offset: truncated.then_some(offset + nodes.len()),
+        nodes,
+        truncated,
+    })
 }
 
 #[tauri::command]
@@ -798,5 +816,30 @@ mod tests {
 
         assert!(!key.contains('\\'));
         assert!(key.ends_with("/deleted-before-unwatch"));
+    }
+
+    #[tokio::test]
+    async fn directory_listing_reports_truncation_without_materializing_all_children() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        for index in 0..=MAX_DIRECTORY_CHILDREN {
+            fs::write(temp.path().join(format!("file-{index:04}.txt")), "x").unwrap();
+        }
+
+        let result = get_directory_tree(temp.path().to_string_lossy().into_owned(), None)
+            .await
+            .expect("directory listing");
+
+        assert!(result.truncated);
+        assert_eq!(result.nodes.len(), MAX_DIRECTORY_CHILDREN);
+        assert_eq!(result.next_offset, Some(MAX_DIRECTORY_CHILDREN));
+
+        let next = get_directory_tree(
+            temp.path().to_string_lossy().into_owned(),
+            result.next_offset,
+        )
+        .await
+        .expect("next directory page");
+        assert!(!next.truncated);
+        assert_eq!(next.nodes.len(), 1);
     }
 }

@@ -341,6 +341,10 @@ export interface InboxViewProps {
 
 export function InboxView({ onOpenAgent, onSendAgentPrompt }: InboxViewProps) {
   const items = useQueueStore((s) => s.items);
+  const inboxNotificationsTruncated = useQueueStore((s) => s.inboxNotificationsTruncated);
+  const inboxNotificationsNextOffset = useQueueStore((s) => s.inboxNotificationsNextOffset);
+  const loadingMoreInboxNotifications = useQueueStore((s) => s.loadingMoreInboxNotifications);
+  const loadMoreInboxNotifications = useQueueStore((s) => s.loadMoreInboxNotifications);
   const preferences = useQueueStore((s) => s.preferences);
   const markAllRead = useQueueStore((s) => s.markAllRead);
   const clearRead = useQueueStore((s) => s.clearRead);
@@ -354,6 +358,17 @@ export function InboxView({ onOpenAgent, onSendAgentPrompt }: InboxViewProps) {
   return (
     <div className="queue-view flex flex-col h-full min-h-0 p-4 gap-4">
       <QueueControls hasItems={items.length > 0} hasReadItems={hasReadItems} markAllRead={markAllRead} clearRead={clearRead} />
+
+      {inboxNotificationsTruncated && (
+        <p role="status" className="text-xs text-[var(--color-wardian-warning)]">
+          <span>Showing the 200 newest Inbox notifications; pages are capped at 200.</span>{' '}
+          {inboxNotificationsNextOffset !== null && (
+            <button type="button" className="font-semibold underline disabled:opacity-50" onClick={() => void loadMoreInboxNotifications()} disabled={loadingMoreInboxNotifications}>
+              {loadingMoreInboxNotifications ? 'Loading…' : 'Load next 200'}
+            </button>
+          )}
+        </p>
+      )}
 
       {items.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">

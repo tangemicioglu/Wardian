@@ -78,6 +78,8 @@ describe('LibraryList', () => {
       createFolder: vi.fn().mockResolvedValue(undefined),
       openLibraryFolder: vi.fn().mockResolvedValue(undefined),
       fetchIndex: vi.fn().mockResolvedValue(undefined),
+      indexNextOffsets: {},
+      indexPageLoading: false,
     });
   });
 
@@ -91,6 +93,43 @@ describe('LibraryList', () => {
     expect(row).toHaveTextContent('strategy');
     expect(screen.getByTestId('library-deploy-badge-skills/dev/planner')).toHaveTextContent('●2');
     expect(screen.getByTestId('library-star-skills/dev/planner')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('shows when the active library section is partial', () => {
+    useLibraryStore.setState({
+      index: {
+        ...index,
+        sections: {
+          ...index.sections,
+          skills: { ...index.sections.skills, truncated: true },
+        },
+      },
+    });
+
+    render(<LibraryList />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('first 1,000 items');
+  });
+
+  it('loads one more bounded library page', async () => {
+    useLibraryStore.setState({
+      index: {
+        ...index,
+        sections: { ...index.sections, skills: { ...index.sections.skills, truncated: true } },
+      },
+      indexNextOffsets: { skills: 3 },
+    });
+    mockInvoke.mockResolvedValueOnce({
+      entries: [entry({ name: 'next', path: 'next', entry_ref: 'skills/next' })],
+      truncated: false,
+      next_offset: null,
+    });
+
+    render(<LibraryList />);
+    fireEvent.click(screen.getByRole('button', { name: /load next 1,000/i }));
+
+    await waitFor(() => expect(screen.getByTestId('library-row-skills/next')).toBeInTheDocument());
+    expect(mockInvoke).toHaveBeenCalledWith('get_library_index_page', { section: 'skills', offset: 3 });
   });
 
   it('shows the warning badge for entries with an error or a related orphan', () => {

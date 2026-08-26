@@ -11,6 +11,12 @@ export interface FileNode {
   extension: string | null;
 }
 
+export interface DirectoryTreeResult {
+  nodes: FileNode[];
+  truncated: boolean;
+  next_offset?: number | null;
+}
+
 export interface FileTreeProps {
   path: string;
   /** `open_in_new_tab` is set for the platform-standard Ctrl/Cmd-click gesture. */
@@ -82,18 +88,38 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
 }) => {
   const interaction = useFileTreeInteraction();
   const [nodes, setNodes] = useState<FileNode[]>([]);
+  const [listingTruncated, setListingTruncated] = useState(false);
+  const [listingNextOffset, setListingNextOffset] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchTree = useCallback(async (isMounted: () => boolean, showLoading: boolean) => {
+  const fetchTree = useCallback(async (
+    isMounted: () => boolean,
+    showLoading: boolean,
+    offset = 0,
+    append = false,
+  ) => {
     if (showLoading) {
       setLoading(true);
     }
     try {
-      const result = await invoke<FileNode[]>('get_directory_tree', { path });
+      const result = await invoke<DirectoryTreeResult | FileNode[]>(
+        'get_directory_tree',
+        offset > 0 ? { path, offset } : { path },
+      );
       if (isMounted()) {
-        setNodes(result);
+        const page = Array.isArray(result) ? result : result.nodes;
+        setNodes((current) => {
+          if (!append) return page;
+          const byPath = new Map(current.map((node) => [node.path, node]));
+          for (const node of page) byPath.set(node.path, node);
+          return [...byPath.values()].sort((left, right) =>
+            Number(right.is_dir) - Number(left.is_dir) || left.name.localeCompare(right.name),
+          );
+        });
+        setListingTruncated(Array.isArray(result) ? false : result.truncated);
+        setListingNextOffset(Array.isArray(result) ? null : result.next_offset ?? null);
         setError(null);
       }
     } catch (err) {
@@ -105,6 +131,14 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
       if (isMounted() && showLoading) setLoading(false);
     }
   }, [path]);
+
+  const loadMore = () => {
+    if (listingNextOffset === null || loading) return;
+    let isMounted = true;
+    void fetchTree(() => isMounted, true, listingNextOffset, true).finally(() => {
+      isMounted = false;
+    });
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -350,6 +384,21 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
           </div>
         );
       })}
+      {listingTruncated && (
+        <div className="flex items-center gap-2 px-2 py-1 text-[11px] text-wardian-text-muted italic" role="status">
+          <span>Showing the first 500 items in this folder; pages are capped at 500.</span>
+          {listingNextOffset !== null && (
+            <button
+              type="button"
+              className="not-italic text-[var(--color-wardian-accent)] hover:underline disabled:opacity-50"
+              onClick={loadMore}
+              disabled={loading}
+            >
+              {loading ? 'Loading…' : 'Load next 500'}
+            </button>
+          )}
+        </div>
+      )}
     </>
   );
 };

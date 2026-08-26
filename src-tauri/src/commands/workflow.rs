@@ -1,6 +1,6 @@
 use crate::{state::AppState, workflow::runs};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -95,39 +95,141 @@ pub fn workflow_write(path: String, mut blueprint: Blueprint) -> Result<serde_js
     Ok(serde_json::json!({ "written": true, "diagnostics": [] }))
 }
 
-/// List blueprint `.md` files under `<wardian-home>/library/workflows`.
+pub const MAX_WORKFLOW_BLUEPRINTS: usize = 500;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorkflowBlueprintListResult {
+    pub blueprints: Vec<serde_json::Value>,
+    pub truncated: bool,
+    pub next_offset: Option<usize>,
+}
+
+/// List at most 500 blueprint `.md` files under
+/// `<wardian-home>/library/workflows`.
 #[tauri::command]
-pub fn workflow_list_blueprints() -> Result<Vec<serde_json::Value>, String> {
+pub fn workflow_list_blueprints(
+    offset: Option<usize>,
+) -> Result<WorkflowBlueprintListResult, String> {
+    let offset = offset.unwrap_or(0);
     let home = wardian_core::paths::wardian_home().ok_or("no wardian home")?;
     let dir = home.join("library").join("workflows");
     let mut out = Vec::new();
+    let mut truncated = false;
     if dir.exists() {
-        for entry in workflow::list_blueprint_files(&dir) {
+        let (entries, files_truncated) =
+            workflow::list_blueprint_files_page(&dir, offset, MAX_WORKFLOW_BLUEPRINTS);
+        truncated = files_truncated;
+        for entry in entries {
             if let Ok(bp) = workflow::parse_file(&entry) {
                 out.push(serde_json::json!({ "id": bp.id, "name": bp.name, "path": entry.to_string_lossy() }));
             }
         }
     }
-    Ok(out)
+    Ok(WorkflowBlueprintListResult {
+        blueprints: out,
+        truncated,
+        next_offset: truncated.then_some(offset + MAX_WORKFLOW_BLUEPRINTS),
+    })
 }
 
-/// List all workflow runs under `<home>/logs/workflows/<id>/<run_id>/`.
+/// List the 200 newest workflow runs under
+/// `<home>/logs/workflows/<id>/<run_id>/`.
+pub const MAX_WORKFLOW_RUNS: usize = 200;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorkflowRunListResult {
+    pub runs: Vec<serde_json::Value>,
+    pub truncated: bool,
+    pub next_offset: Option<usize>,
+}
+
 #[tauri::command]
-pub fn workflow_list_runs() -> Result<Vec<serde_json::Value>, String> {
+pub fn workflow_list_runs(offset: Option<usize>) -> Result<WorkflowRunListResult, String> {
     let root = wardian_core::paths::workflow_runs_dir().ok_or("no wardian home")?;
-    workflow_list_runs_from_root(&root, resolve_blueprint_path)
+    workflow_list_runs_page_from_root(&root, resolve_blueprint_path, offset.unwrap_or(0))
 }
 
+fn workflow_list_runs_page_from_root<F>(
+    root: &Path,
+    mut resolve_blueprint_path: F,
+    offset: usize,
+) -> Result<WorkflowRunListResult, String>
+where
+    F: FnMut(&str) -> Option<PathBuf>,
+{
+    let retain_limit = offset.saturating_add(MAX_WORKFLOW_RUNS + 1);
+    let mut retained = Vec::with_capacity(retain_limit.min(MAX_WORKFLOW_RUNS + 1));
+    let mut blueprint_paths: HashMap<String, Option<PathBuf>> = HashMap::new();
+    if root.exists() {
+        for bp in std::fs::read_dir(root)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
+            if !bp.path().is_dir() {
+                continue;
+            }
+            for run in std::fs::read_dir(bp.path())
+                .map_err(|e| e.to_string())?
+                .flatten()
+            {
+                let dir = run.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                let Some(state) = read_checkpoint(&dir).ok().flatten() else {
+                    continue;
+                };
+                let blueprint_path = blueprint_paths
+                    .entry(state.blueprint_id.clone())
+                    .or_insert_with(|| resolve_blueprint_path(&state.blueprint_id));
+                retained.push(run_summary_from_state(
+                    &dir,
+                    state,
+                    blueprint_path.as_deref(),
+                ));
+                retained.sort_by(compare_run_summaries);
+                if retained.len() > retain_limit {
+                    retained.pop();
+                    let retained_blueprints: HashSet<String> = retained
+                        .iter()
+                        .filter_map(|run| run.get("blueprint_id").and_then(Value::as_str))
+                        .map(ToOwned::to_owned)
+                        .collect();
+                    blueprint_paths
+                        .retain(|blueprint_id, _| retained_blueprints.contains(blueprint_id));
+                }
+            }
+        }
+    }
+    let page_end = offset.saturating_add(MAX_WORKFLOW_RUNS);
+    let truncated = retained.len() > page_end;
+    Ok(WorkflowRunListResult {
+        runs: retained
+            .into_iter()
+            .skip(offset)
+            .take(MAX_WORKFLOW_RUNS)
+            .collect(),
+        truncated,
+        next_offset: truncated.then_some(page_end),
+    })
+}
+
+#[cfg(test)]
 fn workflow_list_runs_from_root<F>(
     root: &Path,
     mut resolve_blueprint_path: F,
-) -> Result<Vec<serde_json::Value>, String>
+) -> Result<WorkflowRunListResult, String>
 where
     F: FnMut(&str) -> Option<PathBuf>,
 {
     let mut out = Vec::new();
+    let mut truncated = false;
     if !root.exists() {
-        return Ok(out);
+        return Ok(WorkflowRunListResult {
+            runs: out,
+            truncated,
+            next_offset: None,
+        });
     }
     let mut blueprint_paths: HashMap<String, Option<PathBuf>> = HashMap::new();
 
@@ -157,20 +259,36 @@ where
                 state,
                 blueprint_path.as_deref(),
             ));
+            out.sort_by(compare_run_summaries);
+            if out.len() > MAX_WORKFLOW_RUNS {
+                out.pop();
+                truncated = true;
+                let retained_blueprints: HashSet<String> = out
+                    .iter()
+                    .filter_map(|run| run.get("blueprint_id").and_then(Value::as_str))
+                    .map(ToOwned::to_owned)
+                    .collect();
+                blueprint_paths
+                    .retain(|blueprint_id, _| retained_blueprints.contains(blueprint_id));
+            }
         }
     }
 
-    out.sort_by(|a, b| {
-        let a_updated = a.get("updated_at").and_then(Value::as_str).unwrap_or("");
-        let b_updated = b.get("updated_at").and_then(Value::as_str).unwrap_or("");
-        b_updated.cmp(a_updated).then_with(|| {
-            let a_run = a.get("run_id").and_then(Value::as_str).unwrap_or("");
-            let b_run = b.get("run_id").and_then(Value::as_str).unwrap_or("");
-            b_run.cmp(a_run)
-        })
-    });
+    Ok(WorkflowRunListResult {
+        runs: out,
+        truncated,
+        next_offset: truncated.then_some(MAX_WORKFLOW_RUNS),
+    })
+}
 
-    Ok(out)
+fn compare_run_summaries(a: &serde_json::Value, b: &serde_json::Value) -> std::cmp::Ordering {
+    let a_updated = a.get("updated_at").and_then(Value::as_str).unwrap_or("");
+    let b_updated = b.get("updated_at").and_then(Value::as_str).unwrap_or("");
+    b_updated.cmp(a_updated).then_with(|| {
+        let a_run = a.get("run_id").and_then(Value::as_str).unwrap_or("");
+        let b_run = b.get("run_id").and_then(Value::as_str).unwrap_or("");
+        b_run.cmp(a_run)
+    })
 }
 
 #[cfg(test)]
@@ -426,8 +544,7 @@ async fn workflow_run_impl(
     )?;
 
     tokio::spawn(async move {
-        if let Err(error) =
-            runs::drive_started_run_with_catalog_assignments_and_memory_principal(
+        if let Err(error) = runs::drive_started_run_with_catalog_assignments_and_memory_principal(
             Some(app),
             blueprint_for_run,
             run_state,
@@ -1046,6 +1163,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn workflow_run_bound_keeps_newest_runs_and_marks_partial_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workflow-runs");
+        for index in 0..=MAX_WORKFLOW_RUNS {
+            let run_root = root.join("wf").join(format!("run-{index:04}"));
+            write_checkpoint(&run_root, &RunState::new(format!("run-{index:04}"), "wf")).unwrap();
+        }
+
+        let result = workflow_list_runs_from_root(&root, |_| None).unwrap();
+
+        assert!(result.truncated);
+        assert_eq!(result.runs.len(), MAX_WORKFLOW_RUNS);
+        assert_eq!(result.runs[0]["run_id"], "run-0200");
+    }
+
+    #[test]
+    fn workflow_run_pages_continue_after_the_newest_page() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workflow-runs");
+        for index in 0..=MAX_WORKFLOW_RUNS {
+            let run_root = root.join("wf").join(format!("run-{index:04}"));
+            write_checkpoint(&run_root, &RunState::new(format!("run-{index:04}"), "wf")).unwrap();
+        }
+
+        let page = workflow_list_runs_page_from_root(&root, |_| None, MAX_WORKFLOW_RUNS).unwrap();
+        assert_eq!(page.runs.len(), 1);
+        assert!(!page.truncated);
+        assert_eq!(page.next_offset, None);
+    }
+
     fn sample_schedule() -> WorkflowSchedule {
         WorkflowSchedule {
             id: "s1".into(),
@@ -1190,7 +1338,7 @@ edges:
         }
         let resolve_count = std::cell::Cell::new(0);
 
-        let runs = workflow_list_runs_from_root(&root, |blueprint_id| {
+        let result = workflow_list_runs_from_root(&root, |blueprint_id| {
             resolve_count.set(resolve_count.get() + 1);
             Some(
                 dir.path()
@@ -1201,9 +1349,9 @@ edges:
         })
         .unwrap();
 
-        assert_eq!(runs.len(), 3);
+        assert_eq!(result.runs.len(), 3);
         assert_eq!(resolve_count.get(), 1);
-        assert!(runs.iter().all(|run| run["blueprint_path"]
+        assert!(result.runs.iter().all(|run| run["blueprint_path"]
             .as_str()
             .is_some_and(|path| path.ends_with("wf.md"))));
     }

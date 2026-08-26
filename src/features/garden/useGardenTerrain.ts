@@ -18,7 +18,7 @@ import {
   staleListings,
   type TerrainViewport,
 } from "./terrainFrontier";
-import type { FileNode } from "../explorer/FileTree";
+import type { DirectoryTreeResult, FileNode } from "../explorer/FileTree";
 
 interface ExplorerChangedEvent {
   root_path: string;
@@ -87,6 +87,10 @@ export interface GardenTerrainResult {
    * should not cost a `git status` on the other thirty-six.
    */
   visibleRoots: string[];
+  /** Directory listings that reached the Explorer child limit. */
+  truncatedRoots: ReadonlySet<string>;
+  /** Fetches one additional bounded page for a truncated root listing. */
+  loadMoreRoot: (path: string) => Promise<void>;
 }
 
 /**
@@ -203,8 +207,14 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
     const results = await Promise.all(
       wanted.map(async (path): Promise<TerrainListing | null> => {
         try {
-          const nodes = await invoke<FileNode[]>("get_directory_tree", { path });
-          return { path, children: toChildren(nodes ?? []) };
+          const result = await invoke<DirectoryTreeResult | FileNode[]>("get_directory_tree", { path });
+          const nodes = Array.isArray(result) ? result : result.nodes;
+          return {
+            path,
+            children: toChildren(nodes ?? []),
+            truncated: Array.isArray(result) ? false : result.truncated,
+            nextOffset: Array.isArray(result) ? null : result.next_offset ?? null,
+          };
         } catch {
           failed.current.add(path);
           return null;
@@ -240,6 +250,36 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
       (path) => dirty.current.delete(path) && !failed.current.has(path),
     );
     if (changedDuringRead.length > 0) void request(changedDuringRead);
+  }, []);
+
+  const loadMoreRoot = useCallback(async (path: string) => {
+    const listing = listingsRef.current.get(path);
+    if (!listing?.truncated || listing.nextOffset == null) return;
+    try {
+      const result = await invoke<DirectoryTreeResult | FileNode[]>('get_directory_tree', {
+        path,
+        offset: listing.nextOffset,
+      });
+      const page = Array.isArray(result) ? result : result.nodes;
+      setListings((current) => {
+        const existing = current.get(path);
+        if (!existing) return current;
+        const byPath = new Map(existing.children.map((child) => [child.path, child]));
+        for (const node of toChildren(page)) byPath.set(node.path, node);
+        const next = new Map(current);
+        next.set(path, {
+          ...existing,
+          children: [...byPath.values()].sort((left, right) =>
+            Number(right.isDir) - Number(left.isDir) || left.name.localeCompare(right.name),
+          ),
+          truncated: Array.isArray(result) ? false : result.truncated,
+          nextOffset: Array.isArray(result) ? null : result.next_offset ?? null,
+        });
+        return next;
+      });
+    } catch {
+      // The existing listing remains visible and can be retried.
+    }
   }, []);
 
   // Watch every root and refresh the listings a change actually invalidates.
@@ -336,7 +376,12 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
     return [...new Set(visible)].sort();
   }, [cells, viewport]);
 
-  return { cells, pending, visibleRoots };
+  const truncatedRoots = useMemo(
+    () => new Set([...listings.values()].filter((listing) => listing.truncated).map((listing) => listing.path)),
+    [listings],
+  );
+
+  return { cells, pending, visibleRoots, truncatedRoots, loadMoreRoot };
 }
 
 /**

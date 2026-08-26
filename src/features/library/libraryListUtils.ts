@@ -1,5 +1,45 @@
 import { LibraryEntry, LibraryIndexFolder, LibrarySectionId, isLibraryEntry } from '../../types';
 
+/** Merge one flat continuation page into the existing hierarchical tree. */
+export function mergeEntriesIntoTree(tree: LibraryIndexFolder, entries: LibraryEntry[]): LibraryIndexFolder {
+    const clone = (folder: LibraryIndexFolder): LibraryIndexFolder => ({
+        ...folder,
+        children: folder.children.map((child) => isLibraryEntry(child) ? { ...child } : clone(child)),
+    });
+    const next = clone(tree);
+    for (const entry of entries) {
+        const parts = entry.path.replace(/\\/g, '/').split('/').filter(Boolean);
+        parts.pop();
+        let folder = next;
+        let folderPath = '';
+        for (const part of parts) {
+            folderPath = folderPath ? `${folderPath}/${part}` : part;
+            let child = folder.children.find((candidate) => !isLibraryEntry(candidate) && candidate.path === folderPath);
+            if (!child || isLibraryEntry(child)) {
+                child = { path: folderPath, name: part, children: [] };
+                folder.children.push(child);
+            }
+            folder = child;
+        }
+        const existingIndex = folder.children.findIndex(
+            (candidate) => isLibraryEntry(candidate) && candidate.entry_ref === entry.entry_ref,
+        );
+        if (existingIndex >= 0) folder.children[existingIndex] = entry;
+        else folder.children.push(entry);
+    }
+    const sortFolder = (folder: LibraryIndexFolder) => {
+        for (const child of folder.children) if (!isLibraryEntry(child)) sortFolder(child);
+        folder.children.sort((left, right) => {
+            const leftFolder = !isLibraryEntry(left);
+            const rightFolder = !isLibraryEntry(right);
+            return Number(rightFolder) - Number(leftFolder)
+                || left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+        });
+    };
+    sortFolder(next);
+    return next;
+}
+
 /**
  * One renderable row of the library list. Browse mode interleaves
  * folder-header and entry rows with indentation depth; search mode and the

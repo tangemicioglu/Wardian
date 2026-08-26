@@ -31,6 +31,20 @@ describe('RunList', () => {
     expect(screen.getByText('Failed')).toBeInTheDocument();
   });
 
+  it('shows when the run list is partial', () => {
+    render(<RunList runs={runs} truncated selectedRunId={null} onOpen={vi.fn()} />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('200 most recent runs');
+  });
+
+  it('offers a bounded continuation page', () => {
+    const onLoadMore = vi.fn();
+    render(<RunList runs={runs} truncated selectedRunId={null} onOpen={vi.fn()} onLoadMore={onLoadMore} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /load next 200/i }));
+    expect(onLoadMore).toHaveBeenCalledOnce();
+  });
+
   it('keeps run text selectable instead of making the whole card a button', () => {
     render(<RunList runs={runs} selectedRunId={null} onOpen={vi.fn()} />);
 

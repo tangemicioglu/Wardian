@@ -158,6 +158,8 @@ export const GitPanel: React.FC<GitPanelProps> = ({
     loading: statusLoading,
     changeEventRevision,
     refreshStatus,
+    loadMoreStatus,
+    loadingMore: statusLoadingMore,
   } = sourceControlStatus;
   const [panelError, setPanelError] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -2287,6 +2289,19 @@ export const GitPanel: React.FC<GitPanelProps> = ({
 
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto no-scrollbar min-h-0 flex flex-col gap-2">
+        {status.files_truncated && (
+          <div
+            className="rounded border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)]"
+            role="status"
+          >
+            <span>Showing the first 1,000 changed files; pages are capped at 1,000.</span>{' '}
+            {status.next_file_offset != null && (
+              <button type="button" className="font-semibold underline disabled:opacity-50" onClick={() => void loadMoreStatus?.()} disabled={statusLoadingMore}>
+                {statusLoadingMore ? "Loading…" : "Load next 1,000"}
+              </button>
+            )}
+          </div>
+        )}
         {/* Staged Changes */}
         {stagedFiles.length > 0 && (
           <section>

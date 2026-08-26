@@ -12,10 +12,12 @@ export interface SelectedAgentGitStatus {
   error: string | null;
   loading: boolean;
   refreshing: boolean;
+  loadingMore?: boolean;
   statusRevision: number;
   changeEventRevision: number;
   changeCount: number;
   refreshStatus: () => Promise<boolean>;
+  loadMoreStatus?: () => Promise<boolean>;
 }
 
 export const formatGitStatusError = (err: unknown) => {
@@ -32,6 +34,7 @@ export function useSelectedAgentGitStatus(
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [statusRevision, setStatusRevision] = useState(0);
   const [changeEventRevision, setChangeEventRevision] = useState(0);
 
@@ -73,6 +76,29 @@ export function useSelectedAgentGitStatus(
     }
   }, []);
 
+  const loadMoreStatus = useCallback(async () => {
+    if (!rootPath || status?.next_file_offset == null || loadingMore) return false;
+    setLoadingMore(true);
+    try {
+      const result = await invoke<GitStatusResult>("git_status", {
+        cwd: rootPath,
+        fileOffset: status.next_file_offset,
+      });
+      setStatus((current) => current ? {
+        ...result,
+        files: [...current.files, ...result.files],
+      } : result);
+      setError(null);
+      setStatusRevision((current) => current + 1);
+      return true;
+    } catch (err) {
+      setError(formatGitStatusError(err));
+      return false;
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, rootPath, status]);
+
   const refreshStatus = useCallback(async () => {
     if (!rootPath) return false;
     return loadStatusForRoot(rootPath);
@@ -91,6 +117,7 @@ export function useSelectedAgentGitStatus(
     setStatusRevision(0);
     setChangeEventRevision(0);
     setRefreshing(false);
+    setLoadingMore(false);
 
     if (!selectedAgentId) {
       setLoading(false);
@@ -181,9 +208,11 @@ export function useSelectedAgentGitStatus(
     error,
     loading,
     refreshing,
+    loadingMore,
     statusRevision,
     changeEventRevision,
     changeCount: status?.files.length ?? 0,
     refreshStatus,
+    loadMoreStatus,
   };
 }

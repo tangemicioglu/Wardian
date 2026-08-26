@@ -48,6 +48,7 @@ function createSourceControlStatus(overrides?: Partial<SelectedAgentGitStatus>):
     ahead: 0,
     behind: 0,
     files: [],
+    files_truncated: false,
   };
   return {
     rootPath: "C:/repo",
@@ -194,6 +195,34 @@ describe("GitPanel", () => {
     expect(await screen.findByText("Unable to Load Source Control")).toBeInTheDocument();
     expect(screen.getByText("Agent not found")).toBeInTheDocument();
     expect(screen.queryByText("Loading git status...")).not.toBeInTheDocument();
+  });
+
+  it("shows when Source Control received a partial status list", () => {
+    const sourceControlStatus = createSourceControlStatus();
+    const status = sourceControlStatus.status;
+    if (!status) throw new Error("expected a loaded status fixture");
+    sourceControlStatus.status = { ...status, files_truncated: true };
+
+    renderGitPanel({ sourceControlStatus });
+
+    expect(screen.getByRole("status")).toHaveTextContent("first 1,000 changed files");
+  });
+
+  it("offers one more bounded status page", () => {
+    const loadMoreStatus = vi.fn(async () => true);
+    const sourceControlStatus = createSourceControlStatus({
+      status: {
+        ...createSourceControlStatus().status!,
+        files_truncated: true,
+        next_file_offset: 1_000,
+      },
+      loadMoreStatus,
+      loadingMore: false,
+    });
+
+    renderGitPanel({ sourceControlStatus });
+    fireEvent.click(screen.getByRole("button", { name: /load next 1,000/i }));
+    expect(loadMoreStatus).toHaveBeenCalledOnce();
   });
 
   it("shows a not-a-repository state when git status reports a non-git workspace", async () => {
@@ -2700,6 +2729,7 @@ describe("GitPanel", () => {
         { path: "README.md", status: "M", is_staged: true },
         { path: "src/changed.ts", status: "M", is_staged: false },
       ],
+      files_truncated: false,
     };
     mockInvoke.mockImplementation(async (command) => {
       if (command === "git_log") return [];

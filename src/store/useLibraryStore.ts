@@ -3,11 +3,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
   LibraryIndex,
+  LibraryEntry,
   LibraryItemMetadata,
   LibrarySectionId,
   OrphanDeployment,
   SkillDeployment,
 } from '../types';
+import { mergeEntriesIntoTree } from '../features/library/libraryListUtils';
 
 // The backend only exposes a single logical watch type, `"library"`, which
 // covers everything under `library/` (skills, prompts, workflows) plus
@@ -91,6 +93,13 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+function countLibraryEntries(folder: LibraryIndex['sections'][LibrarySectionId]['tree']): number {
+  return folder.children.reduce(
+    (count, child) => 'entry_ref' in child ? count + 1 : count + countLibraryEntries(child),
+    0,
+  );
+}
+
 interface LibraryState {
   libraryDetailWidth: number;
   index: LibraryIndex | null;
@@ -148,6 +157,9 @@ interface LibraryState {
   setSearchQuery: (q: string) => void;
   setShowStarredOnly: (v: boolean) => void;
   fetchIndex: () => Promise<void>;
+  loadMoreIndex: () => Promise<void>;
+  indexPageLoading: boolean;
+  indexNextOffsets: Partial<Record<LibrarySectionId, number | null>>;
   subscribeToLibraryChanges: () => () => void;
   reloadSelectedContent: () => Promise<void>;
   saveItem: (section: LibrarySectionId, path: string, content: string) => Promise<void>;
@@ -184,6 +196,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   _editorDirty: false,
   _editorResources: {},
   _editorGenerationClock: 0,
+  indexPageLoading: false,
+  indexNextOffsets: {},
 
   setLibraryDetailWidth: (libraryDetailWidth) => set({
     libraryDetailWidth: clampLibraryDetailWidth(libraryDetailWidth),
@@ -352,9 +366,47 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const index = await invoke<LibraryIndex>('get_library_index');
-      set({ index, isLoading: false });
+      const indexNextOffsets = Object.fromEntries(
+        (Object.keys(index.sections) as LibrarySectionId[]).map((section) => [
+          section,
+          index.sections[section]?.truncated ? countLibraryEntries(index.sections[section].tree) : null,
+        ]),
+      ) as Partial<Record<LibrarySectionId, number | null>>;
+      set({ index, isLoading: false, indexNextOffsets });
     } catch (e) {
       set({ error: errorMessage(e), isLoading: false });
+    }
+  },
+
+  loadMoreIndex: async () => {
+    const section = get().activeSection;
+    const offset = get().indexNextOffsets[section];
+    if (offset == null || get().indexPageLoading || section === 'mcps') return;
+    set({ indexPageLoading: true });
+    try {
+      const page = await invoke<{ entries: LibraryEntry[]; truncated: boolean; next_offset?: number | null }>(
+        'get_library_index_page',
+        { section, offset },
+      );
+      const current = get().index;
+      const existingSection = current?.sections[section];
+      if (!current || !existingSection) return;
+      set({
+        index: {
+          ...current,
+          sections: {
+            ...current.sections,
+            [section]: {
+              ...existingSection,
+              tree: mergeEntriesIntoTree(existingSection.tree, page.entries),
+              truncated: page.truncated,
+            },
+          },
+        },
+        indexNextOffsets: { ...get().indexNextOffsets, [section]: page.next_offset ?? null },
+      });
+    } finally {
+      set({ indexPageLoading: false });
     }
   },
 

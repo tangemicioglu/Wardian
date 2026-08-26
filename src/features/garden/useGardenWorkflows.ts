@@ -1,18 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Blueprint } from "../workflows/builder/blueprintTypes";
-import type { RunSummary } from "../workflows/run/runTypes";
+import type { RunSummary, RunSummaryListResult } from "../workflows/run/runTypes";
 import type { GardenWorkflowInput } from "./gardenProjection";
 import { workflowContextOf, type WorkflowContext } from "./workflowContext";
+import type { BlueprintListResult, BlueprintRef } from "../workflows/workflowTypes";
 import {
   deploymentsByBlueprint,
   type WorkflowScheduleRecord,
 } from "./workflowDeployments";
-
-interface BlueprintRef {
-  id: string;
-  path: string;
-}
 
 interface ParsedBlueprint {
   id: string;
@@ -22,6 +18,16 @@ interface ParsedBlueprint {
 }
 
 type GardenInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+
+export interface GardenWorkflowInputsResult {
+  workflows: GardenWorkflowInput[];
+  truncated: boolean;
+  nextOffset: number | null;
+}
+
+export interface GardenWorkflowHookResult extends GardenWorkflowInputsResult {
+  loadMore: () => Promise<void>;
+}
 
 let cachedBlueprintKey: string | null = null;
 let cachedBlueprints: ParsedBlueprint[] = [];
@@ -57,9 +63,19 @@ export function mergeWorkflowRunStatus(
   }));
 }
 
-export async function loadGardenWorkflowInputs(invoker: GardenInvoke = invoke as GardenInvoke): Promise<GardenWorkflowInput[]> {
+export async function loadGardenWorkflowInputs(
+  invoker: GardenInvoke = invoke as GardenInvoke,
+  blueprintOffset = 0,
+): Promise<GardenWorkflowInputsResult> {
   // `invoke` can resolve to null (not just reject), so coalesce to [] before mapping.
-  const refs = ((await invoker("workflow_list_blueprints").catch(() => [])) ?? []) as BlueprintRef[];
+  const blueprintResult = (await (
+    blueprintOffset > 0
+      ? invoker("workflow_list_blueprints", { offset: blueprintOffset })
+      : invoker("workflow_list_blueprints")
+  ).catch(() => [])) as BlueprintListResult | BlueprintRef[];
+  const refs = Array.isArray(blueprintResult) ? blueprintResult : blueprintResult?.blueprints ?? [];
+  const truncated = !Array.isArray(blueprintResult) && Boolean(blueprintResult?.truncated);
+  const nextOffset = Array.isArray(blueprintResult) ? null : blueprintResult?.next_offset ?? null;
   const nextBlueprintKey = blueprintRefsKey(refs);
   let blueprints = cachedBlueprintKey === nextBlueprintKey ? cachedBlueprints : null;
 
@@ -87,15 +103,20 @@ export async function loadGardenWorkflowInputs(invoker: GardenInvoke = invoke as
   // other, so they are fetched together rather than in sequence. Neither is
   // cached with the blueprints: run status changes constantly, and a schedule
   // can be rebound without the blueprint file changing at all.
-  const [runs, schedules] = await Promise.all([
-    invoker("workflow_list_runs").catch(() => []) as Promise<RunSummary[]>,
+  const [runResult, schedules] = await Promise.all([
+    invoker("workflow_list_runs").catch(() => []) as Promise<RunSummaryListResult | RunSummary[]>,
     invoker("schedule_list").catch(() => []) as Promise<WorkflowScheduleRecord[]>,
   ]);
-  return mergeWorkflowRunStatus(
-    blueprints,
-    runs ?? [],
-    deploymentsByBlueprint(schedules ?? []),
-  );
+  const runs = Array.isArray(runResult) ? runResult : runResult?.runs ?? [];
+  return {
+    workflows: mergeWorkflowRunStatus(
+      blueprints,
+      runs ?? [],
+      deploymentsByBlueprint(schedules ?? []),
+    ),
+    truncated,
+    nextOffset,
+  };
 }
 
 export function resetGardenWorkflowCacheForTests() {
@@ -108,17 +129,30 @@ function blueprintRefsKey(refs: BlueprintRef[]) {
 }
 
 /** Loads the blueprint catalog (list + parse, mirroring WorkflowsView) and merges run status. */
-export function useGardenWorkflows(enabled = true): GardenWorkflowInput[] {
-  const [workflows, setWorkflows] = useState<GardenWorkflowInput[]>([]);
+export function useGardenWorkflows(enabled = true): GardenWorkflowHookResult {
+  const [result, setResult] = useState<GardenWorkflowInputsResult>({ workflows: [], truncated: false, nextOffset: null });
 
   const load = useCallback(async () => {
-    setWorkflows(await loadGardenWorkflowInputs());
+    setResult(await loadGardenWorkflowInputs());
   }, []);
+
+  const loadMore = useCallback(async () => {
+    if (result.nextOffset === null) return;
+    const page = await loadGardenWorkflowInputs(invoke as GardenInvoke, result.nextOffset);
+    setResult((current) => ({
+      workflows: [
+        ...current.workflows,
+        ...page.workflows.filter((candidate) => !current.workflows.some((existing) => existing.id === candidate.id)),
+      ],
+      truncated: page.truncated,
+      nextOffset: page.nextOffset,
+    }));
+  }, [result.nextOffset]);
 
   useEffect(() => {
     if (!enabled) return;
     void load();
   }, [enabled, load]);
 
-  return workflows;
+  return { ...result, loadMore };
 }

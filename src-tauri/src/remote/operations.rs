@@ -123,6 +123,7 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
     });
     let notifications = crate::commands::inbox::list_inbox_notifications_for_state(state)
         .await
+        .map(|result| result.notifications)
         .unwrap_or_default()
         .into_iter()
         .map(|notification| {

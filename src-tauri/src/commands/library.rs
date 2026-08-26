@@ -7,7 +7,8 @@ use crate::state::{AppState, LibraryWatchRegistration};
 use crate::utils::fs::get_wardian_home;
 use wardian_core::library::{self, LibrarySectionId};
 use wardian_core::models::{
-    AgentConfig, DeployedSkillRef, LibraryIndex, LibraryItemMetadata, SkillDeployment,
+    AgentConfig, DeployedSkillRef, LibraryEntryPage, LibraryIndex, LibraryItemMetadata,
+    SkillDeployment,
 };
 
 const LIBRARY_WATCH_DEBOUNCE_MS: u64 = 200;
@@ -153,6 +154,17 @@ fn is_current_library_watch_generation(
 pub async fn get_library_index(_app: AppHandle) -> Result<LibraryIndex, String> {
     let home = get_wardian_home().ok_or("Could not find Wardian home")?;
     library::build_library_index(&home)
+}
+
+#[tauri::command]
+pub async fn get_library_index_page(
+    _app: AppHandle,
+    section: String,
+    offset: Option<usize>,
+) -> Result<LibraryEntryPage, String> {
+    let home = get_wardian_home().ok_or("Could not find Wardian home")?;
+    let section = parse_section(&section)?;
+    library::list_library_entries_page(&home, section, offset.unwrap_or(0), 1_000)
 }
 
 #[tauri::command]
