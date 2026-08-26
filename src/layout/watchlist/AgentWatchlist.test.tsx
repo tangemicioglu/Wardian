@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import AgentWatchlist from './AgentWatchlist';
+import {
+  resetAgentTelemetryStore,
+  useAgentTelemetryStore,
+  type AgentTelemetryState,
+} from '../../features/agents/useAgentTelemetryStore';
 import type { AgentConfig, AgentTelemetry } from '../../types';
 import type { Watchlist, WatchlistPrefs, AgentInteractions } from './types';
 
@@ -61,11 +66,18 @@ describe('AgentWatchlist', () => {
     { id: 'all', name: 'All Agents', agentIds: ['agent-1', 'agent-2'] },
   ];
 
+  /** Telemetry, titles and thoughts come from the store, not from props. */
+  function seedProjections(state: Partial<AgentTelemetryState>) {
+    useAgentTelemetryStore.setState(state);
+  }
+
+  beforeEach(() => {
+    resetAgentTelemetryStore();
+    seedProjections({ telemetry: sampleTelemetry });
+  });
+
   const defaultProps = {
     agents: sampleAgents,
-    telemetry: sampleTelemetry,
-    terminalTitles: {},
-    currentThoughts: {},
     selectedAgentIds: new Set<string>(),
     offAgentIds: new Set(['agent-2']),
     onSelectionChange: mockOnSelectionChange,
@@ -141,14 +153,16 @@ describe('AgentWatchlist', () => {
   });
 
   it('keeps the Status column canonical and exposes transient work as activity', () => {
+    seedProjections({
+      telemetry: {
+          ...sampleTelemetry,
+          'agent-1': { ...sampleTelemetry['agent-1'], current_status: 'processing' },
+      },
+      current_thoughts: { 'agent-1': 'Running command npm test' },
+    });
     render(
       <AgentWatchlist
         {...defaultProps}
-        telemetry={{
-          ...sampleTelemetry,
-          'agent-1': { ...sampleTelemetry['agent-1'], current_status: 'processing' },
-        }}
-        currentThoughts={{ 'agent-1': 'Running command npm test' }}
       />,
     );
 
@@ -291,7 +305,6 @@ describe('AgentWatchlist', () => {
       <AgentWatchlist
         {...defaultProps}
         agents={[]}
-        telemetry={{}}
         watchlists={[
           {
             id: 'today',
@@ -749,11 +762,11 @@ describe('AgentWatchlist', () => {
       'agent-2': { ...sampleTelemetry['agent-2'], query_count: 30, current_status: 'idle' },
       'agent-3': { ...sampleTelemetry['agent-1'], session_id: 'agent-3', query_count: 20 },
     };
+    seedProjections({ telemetry });
     const { container } = render(
       <AgentWatchlist
         {...defaultProps}
         agents={agents}
-        telemetry={telemetry}
         offAgentIds={new Set()}
         prefs={{ ...defaultPrefs, sort: { column_id: 'query_count', direction: 'desc' } }}
         onPrefsChange={mockOnPrefsChange}

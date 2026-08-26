@@ -1,4 +1,4 @@
-import { memo, type PropsWithChildren, type ReactNode, useEffect, useState } from "react";
+import { memo, type PropsWithChildren, type ReactNode, useEffect, useMemo, useState } from "react";
 
 import {
   AnalyticsView,
@@ -23,6 +23,7 @@ import {
   type SurfaceVisibility,
 } from "./coreSurfaceMetadata";
 import { keepHiddenSurfaceSnapshot } from "./hiddenSurfaceMemo";
+import { useAgentTelemetryStore } from "../../agents/useAgentTelemetryStore";
 
 export * from "./coreSurfaceMetadata";
 
@@ -108,7 +109,10 @@ type ManagedSurfaceProps<TState> = {
 };
 
 export interface DashboardSurfaceProps
-  extends DashboardViewProps, ManagedSurfaceProps<DashboardSurfaceState> {}
+  extends Omit<DashboardViewProps, "live">, ManagedSurfaceProps<DashboardSurfaceState> {
+  /** The roster to join against live metrics; the join happens here, not in `App`. */
+  live_agents: readonly { session_id: string }[];
+}
 
 export function DashboardSurface({
   surface_id,
@@ -117,11 +121,22 @@ export function DashboardSurface({
   // multi-instance, each one already persists its own columns and window.
   state: _state,
   visibility = "visible",
+  live_agents,
   ...viewProps
 }: DashboardSurfaceProps) {
+  // The instant columns read live agent state; every rate comes from the
+  // telemetry store. Joining them here rather than in `App` keeps a five-second
+  // tick off the whole-application render path.
+  const telemetry = useAgentTelemetryStore((state) => state.telemetry);
+  const live = useMemo(() => live_agents.map((agent) => ({
+    session_id: agent.session_id,
+    status: telemetry[agent.session_id]?.current_status ?? null,
+    cpu_usage: telemetry[agent.session_id]?.cpu_usage ?? null,
+    memory_mb: telemetry[agent.session_id]?.memory_mb ?? null,
+  })), [live_agents, telemetry]);
   return (
     <SurfaceFrame surface_id={surface_id} surface_type="dashboard" visibility={visibility}>
-      <DashboardView {...viewProps} />
+      <DashboardView {...viewProps} live={live} />
     </SurfaceFrame>
   );
 }
@@ -162,7 +177,8 @@ export function InboxSurface({
 
 export interface GraphSurfaceProps
   extends Omit<GraphViewProps,
-    "onOpenAgentInGrid" | "visibility" | "rendererActive" | "initialSurfaceState" | "onSurfaceStateChange">,
+    "onOpenAgentInGrid" | "visibility" | "rendererActive" | "initialSurfaceState"
+    | "onSurfaceStateChange" | "telemetry" | "terminalTitles" | "currentThoughts">,
     ManagedSurfaceProps<GraphSurfaceState> {
   onOpenAgent: (agentId: string) => void;
   on_state_change: (state: GraphSurfaceState) => void;
@@ -175,12 +191,21 @@ export const GraphSurface = memo(function GraphSurface({
   visibility = "visible",
   ...viewProps
 }: GraphSurfaceProps) {
+  // Read straight from the store. These change on every telemetry tick and,
+  // for thoughts, on every line of provider output; routing them through
+  // `App` made each of those a whole-application render.
+  const telemetry = useAgentTelemetryStore((state) => state.telemetry);
+  const terminalTitles = useAgentTelemetryStore((state) => state.terminal_titles);
+  const currentThoughts = useAgentTelemetryStore((state) => state.current_thoughts);
   return (
     <SurfaceFrame surface_id={surface_id} surface_type="graph" visibility={visibility}>
       <SuspendedSurfaceRenderer visibility={visibility}>
         {(rendererMounted) => (
           <GraphView
             {...viewProps}
+            telemetry={telemetry}
+            terminalTitles={terminalTitles}
+            currentThoughts={currentThoughts}
             visibility={visibility}
             rendererActive={rendererMounted}
             initialSurfaceState={_state}
@@ -196,7 +221,8 @@ export const GraphSurface = memo(function GraphSurface({
 
 export interface GardenSurfaceProps
   extends Omit<GardenViewProps,
-    "onOpenAgentInGrid" | "visibility" | "rendererActive" | "initialSurfaceState" | "onSurfaceStateChange">,
+    "onOpenAgentInGrid" | "visibility" | "rendererActive" | "initialSurfaceState"
+    | "onSurfaceStateChange" | "telemetry">,
     ManagedSurfaceProps<GardenSurfaceState> {
   onOpenAgent: (agentId: string) => void;
   on_state_change: (state: GardenSurfaceState) => void;
@@ -209,12 +235,17 @@ export const GardenSurface = memo(function GardenSurface({
   visibility = "visible",
   ...viewProps
 }: GardenSurfaceProps) {
+  // Read straight from the store. These change on every telemetry tick and,
+  // for thoughts, on every line of provider output; routing them through
+  // `App` made each of those a whole-application render.
+  const telemetry = useAgentTelemetryStore((state) => state.telemetry);
   return (
     <SurfaceFrame surface_id={surface_id} surface_type="garden" visibility={visibility}>
       <SuspendedSurfaceRenderer visibility={visibility}>
         {(rendererMounted) => (
           <GardenView
             {...viewProps}
+            telemetry={telemetry}
             visibility={visibility}
             rendererActive={rendererMounted}
             initialSurfaceState={_state}
