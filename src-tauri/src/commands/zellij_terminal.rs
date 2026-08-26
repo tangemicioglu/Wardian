@@ -46,26 +46,6 @@ fn preview_state_without_binding(status: Option<&str>, has_runtime: bool) -> &'s
     }
 }
 
-fn validate_habitat_activation(
-    broker_generation: u64,
-    observed_broker_generation: Option<u64>,
-    broker_owner: Option<&str>,
-    broker_activation_pending: bool,
-) -> Result<(), String> {
-    if observed_broker_generation.is_some_and(|observed| observed != broker_generation) {
-        return Err("Agent terminal generation changed; retry the selection".to_string());
-    }
-    if broker_owner.is_some_and(|owner| owner != HABITAT_TERMINAL_PRESENTATION_ID) {
-        return Err("Agent terminal is currently controlled from another presentation".to_string());
-    }
-    if broker_activation_pending {
-        return Err(
-            "Agent terminal ownership transfer is in progress; retry the selection".to_string(),
-        );
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn get_zellij_terminal_preview(
     session_id: String,
@@ -199,28 +179,13 @@ mod tests {
         assert_eq!(preview_state_without_binding(Some("Error"), true), "starting");
     }
 
-    #[test]
-    fn habitat_activation_rejects_foreign_owners_and_stale_generations() {
-        assert!(validate_habitat_activation(4, None, None, false).is_ok());
-        assert!(validate_habitat_activation(
-            4,
-            Some(4),
-            Some(HABITAT_TERMINAL_PRESENTATION_ID),
-            false
-        )
-        .is_ok());
-        assert!(validate_habitat_activation(4, Some(3), None, false).is_err());
-        assert!(
-            validate_habitat_activation(4, Some(4), Some("remote:paired-device"), false).is_err()
-        );
-        assert!(validate_habitat_activation(4, Some(4), None, true).is_err());
-    }
 }
 
 #[tauri::command]
 pub async fn activate_zellij_agent_terminal(
     session_id: String,
     broker_generation: Option<u64>,
+    broker_lease_epoch: Option<u64>,
     activation_request_id: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -237,24 +202,32 @@ pub async fn activate_zellij_agent_terminal(
         .await
         .ok_or_else(|| "Agent terminal is still starting".to_string())?;
     engine.start_attached_client().await?;
-    let broker_state = state
+    let broker_generation = broker_generation
+        .ok_or_else(|| "Agent terminal ownership state is still loading".to_string())?;
+    let broker_lease_epoch = broker_lease_epoch
+        .ok_or_else(|| "Agent terminal ownership state is still loading".to_string())?;
+    let focus_engine = engine.clone();
+    let focus_session_id = session_id.clone();
+    let focus_request_id = activation_request_id.clone();
+    state
         .terminal_sessions
-        .broker_state(&session_id)
-        .await
-        .map_err(|error| format!("Agent terminal ownership is unavailable: {error}"))?;
-    validate_habitat_activation(
-        broker_state.runtime_generation,
-        broker_generation,
-        broker_state.owner_presentation_id.as_deref(),
-        broker_state.pending_activation.is_some(),
-    )?;
-    engine
-        .activate_pane_for_request(
+        .run_authorized_native_focus(
             &session_id,
-            binding.generation,
-            &activation_request_id,
+            broker_generation,
+            broker_lease_epoch,
+            HABITAT_TERMINAL_PRESENTATION_ID,
+            move || async move {
+                focus_engine
+                    .activate_pane_for_request(
+                        &focus_session_id,
+                        binding.generation,
+                        &focus_request_id,
+                    )
+                    .await
+            },
         )
-        .await?;
+        .await
+        .map_err(|_| "Agent terminal ownership changed; retry the selection".to_string())?;
     Ok(session_id)
 }
 

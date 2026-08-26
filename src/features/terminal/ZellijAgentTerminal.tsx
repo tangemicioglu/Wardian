@@ -344,6 +344,7 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
               await invoke<string>("activate_zellij_agent_terminal", {
                 sessionId: active.agentId,
                 brokerGeneration: current.brokerOwners.get(active.agentId)?.generation ?? null,
+                brokerLeaseEpoch: current.brokerOwners.get(active.agentId)?.leaseEpoch ?? null,
                 activationRequestId: nextActivationRequestId(),
               });
             }
@@ -393,6 +394,7 @@ export const useZellijPresentationStore = create<ZellijPresentationStore>((set, 
                 invoke<string>("activate_zellij_agent_terminal", {
                   sessionId: agentId,
                   brokerGeneration: get().brokerOwners.get(agentId)?.generation ?? null,
+                  brokerLeaseEpoch: get().brokerOwners.get(agentId)?.leaseEpoch ?? null,
                   activationRequestId,
                 }),
                 new Promise<never>((_resolve, reject) => {

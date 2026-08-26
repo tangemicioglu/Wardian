@@ -197,6 +197,12 @@ roll back. If the old subscription has exited, is closing, or has lost its
 binding, restart reconciles that stale generation and creates a fresh pane
 through the ordinary path; it does not require a `running` replacement source.
 
+Card focus carries the broker runtime generation and lease epoch observed for
+that agent. The terminal broker actor validates those values, the current
+owner, and pending-transfer state, then executes the native Zellij focus action
+before processing another ownership transition. A stale or remotely owned
+request therefore performs no native focus or fullscreen action.
+
 ### Input and delivery
 
 - Human input goes through the active agent's broker runtime. The runtime uses

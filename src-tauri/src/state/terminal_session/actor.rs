@@ -22,6 +22,10 @@ const RUNTIME_INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 type ResizeHandler = dyn Fn(TerminalGeometry) -> Result<(), String> + Send + Sync + 'static;
 type BrokerReply<T> = oneshot::Sender<Result<T, TerminalBrokerError>>;
+type AuthorizedNativeFocusFuture =
+    Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>;
+type AuthorizedNativeFocusAction =
+    Box<dyn FnOnce() -> AuthorizedNativeFocusFuture + Send + 'static>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalBrokerError {
@@ -34,6 +38,7 @@ pub enum TerminalBrokerError {
     PresentationNotFound,
     ConsumerNotFound,
     DesktopConsumerAlreadyRegistered,
+    NativeFocusUnauthorized,
     PresentationLimit {
         client_kind: TerminalClientKind,
         limit: usize,
@@ -1148,6 +1153,35 @@ impl TerminalSessionBroker {
         .await
     }
 
+    /// Runs a native focus operation while this session's broker actor cannot
+    /// process a competing ownership transition.
+    pub async fn run_authorized_native_focus<F, Fut>(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: &str,
+        action: F,
+    ) -> Result<(), TerminalBrokerError>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        let owned_session_id = session_id.to_string();
+        let owned_presentation_id = presentation_id.to_string();
+        self.request(session_id, move |reply| {
+            TerminalSessionMessage::AuthorizedNativeFocus {
+                session_id: owned_session_id,
+                runtime_generation,
+                lease_epoch,
+                presentation_id: owned_presentation_id,
+                action: Box::new(move || Box::pin(action())),
+                reply,
+            }
+        })
+        .await
+    }
+
     pub async fn ack_activation(
         &self,
         request: TerminalActivationAckRequest,
@@ -1728,6 +1762,14 @@ enum TerminalSessionMessage {
         arrival: ActivationAckArrival,
         reply: BrokerReply<TerminalActivationAckResult>,
     },
+    AuthorizedNativeFocus {
+        session_id: String,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: String,
+        action: AuthorizedNativeFocusAction,
+        reply: BrokerReply<()>,
+    },
     Input {
         request: TerminalInputRequest,
         reply: BrokerReply<TerminalLeaseDecision>,
@@ -2022,6 +2064,25 @@ impl TerminalSessionActor {
                 reply,
             } => {
                 let result = self.ack_activation(request, &arrival).await;
+                let _ = reply.send(result);
+            }
+            TerminalSessionMessage::AuthorizedNativeFocus {
+                session_id,
+                runtime_generation,
+                lease_epoch,
+                presentation_id,
+                action,
+                reply,
+            } => {
+                let result = self
+                    .run_authorized_native_focus(
+                        &session_id,
+                        runtime_generation,
+                        lease_epoch,
+                        &presentation_id,
+                        action,
+                    )
+                    .await;
                 let _ = reply.send(result);
             }
             TerminalSessionMessage::Input { request, reply } => {
@@ -2529,6 +2590,31 @@ impl TerminalSessionActor {
             result: result.clone(),
         });
         Ok(result)
+    }
+
+    async fn run_authorized_native_focus(
+        &mut self,
+        session_id: &str,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: &str,
+        action: AuthorizedNativeFocusAction,
+    ) -> Result<(), TerminalBrokerError> {
+        self.ensure_session(session_id)?;
+        self.ensure_generation(runtime_generation)?;
+        if self.runtime_state != TerminalRuntimeState::Live {
+            return Err(TerminalBrokerError::RuntimeUnavailable);
+        }
+        if self.lease_epoch != lease_epoch
+            || self.pending_activation.is_some()
+            || self
+                .owner_presentation_id
+                .as_deref()
+                .is_some_and(|owner| owner != presentation_id)
+        {
+            return Err(TerminalBrokerError::NativeFocusUnauthorized);
+        }
+        action().await.map_err(TerminalBrokerError::RuntimeIo)
     }
 
     fn begin_owner_resync(

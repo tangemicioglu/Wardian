@@ -312,7 +312,7 @@ describe("ZellijAgentTerminal", () => {
     renderTerminals(terminal("agent-1"));
 
     const preview = await screen.findByRole("application", { name: "Terminal for agent-1" });
-    expect(screen.getByText("Terminal unavailable — restart the agent")).toBeInTheDocument();
+    expect(await screen.findByText("Terminal unavailable — restart the agent")).toBeInTheDocument();
     expect(preview).toHaveAttribute("aria-disabled", "true");
     expect(preview).toHaveAttribute("tabindex", "-1");
     fireEvent.keyDown(preview, { key: "x" });
@@ -1238,11 +1238,13 @@ describe("ZellijAgentTerminal", () => {
         ["activate_zellij_agent_terminal", {
           sessionId: "agent-1",
           brokerGeneration: null,
+          brokerLeaseEpoch: null,
           activationRequestId: expect.any(String),
         }],
         ["activate_zellij_agent_terminal", {
           sessionId: "agent-2",
           brokerGeneration: null,
+          brokerLeaseEpoch: null,
           activationRequestId: expect.any(String),
         }],
       ]);
@@ -1295,11 +1297,13 @@ describe("ZellijAgentTerminal", () => {
       ["activate_zellij_agent_terminal", {
         sessionId: "agent-2",
         brokerGeneration: null,
+        brokerLeaseEpoch: null,
         activationRequestId: expect.any(String),
       }],
       ["activate_zellij_agent_terminal", {
         sessionId: "agent-1",
         brokerGeneration: null,
+        brokerLeaseEpoch: null,
         activationRequestId: expect.any(String),
       }],
     ]);
@@ -1316,6 +1320,7 @@ describe("ZellijAgentTerminal", () => {
       {
         sessionId: "agent-2",
         brokerGeneration: null,
+        brokerLeaseEpoch: null,
         activationRequestId: expect.any(String),
       },
     );

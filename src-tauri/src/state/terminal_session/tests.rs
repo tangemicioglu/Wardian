@@ -1,6 +1,7 @@
 use super::*;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -685,6 +686,108 @@ async fn activation_is_two_phase_idempotent_and_superseding() {
         committed.broker_state.owner_presentation_id.as_deref(),
         Some("two")
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authorized_native_focus_serializes_competing_remote_activation() {
+    let timer = Arc::new(ManualTimer::default());
+    let (broker, generation) = start(timer).await;
+    register_desktop(&broker, "desktop:zellij-habitat-terminal").await;
+    broker
+        .register_presentation(
+            registration(
+                "remote-owner",
+                TerminalClientKind::Remote,
+                TerminalRequestedInteraction::Interactive,
+            ),
+            TerminalClientIdentity::authenticated_remote("remote-owner", true),
+        )
+        .await
+        .expect("register remote");
+    let state = broker.broker_state("session-1").await.expect("broker state");
+    let lease_epoch = state.lease_epoch;
+    let (focus_entered_tx, focus_entered_rx) = oneshot::channel();
+    let (release_focus_tx, release_focus_rx) = oneshot::channel();
+    let focus_broker = Arc::clone(&broker);
+    let focus = tokio::spawn(async move {
+        focus_broker
+            .run_authorized_native_focus(
+                "session-1",
+                generation,
+                lease_epoch,
+                "desktop:zellij-habitat-terminal",
+                move || async move {
+                    let _ = focus_entered_tx.send(());
+                    let _ = release_focus_rx.await;
+                    Ok(())
+                },
+            )
+            .await
+    });
+    focus_entered_rx.await.expect("focus action entered");
+
+    let remote_broker = Arc::clone(&broker);
+    let remote_activation = tokio::spawn(async move {
+        remote_broker
+            .begin_activation(TerminalActivationBeginRequest {
+                session_id: "session-1".to_string(),
+                presentation_id: "remote-owner".to_string(),
+                runtime_generation: generation,
+                observed_lease_epoch: lease_epoch,
+            })
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !remote_activation.is_finished(),
+        "ownership transition must wait until native focus finishes"
+    );
+
+    let _ = release_focus_tx.send(());
+    focus.await.expect("focus task").expect("authorized focus");
+    let remote = remote_activation
+        .await
+        .expect("remote task")
+        .expect("remote activation");
+    assert_eq!(remote.decision.status, TerminalLeaseDecisionStatus::Accepted);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_owner_change_rejects_stale_native_focus_without_running_action() {
+    let timer = Arc::new(ManualTimer::default());
+    let (broker, generation) = start(timer).await;
+    register_desktop(&broker, "desktop:zellij-habitat-terminal").await;
+    let remote = broker
+        .register_presentation(
+            registration(
+                "remote-owner",
+                TerminalClientKind::Remote,
+                TerminalRequestedInteraction::Interactive,
+            ),
+            TerminalClientIdentity::authenticated_remote("remote-owner", true),
+        )
+        .await
+        .expect("register remote");
+    let stale_lease_epoch = remote.broker_state.lease_epoch;
+    activate(&broker, "remote-owner", generation, stale_lease_epoch).await;
+    let action_ran = Arc::new(AtomicBool::new(false));
+    let observed_action = Arc::clone(&action_ran);
+
+    let result = broker
+        .run_authorized_native_focus(
+            "session-1",
+            generation,
+            stale_lease_epoch,
+            "desktop:zellij-habitat-terminal",
+            move || async move {
+                observed_action.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+
+    assert_eq!(result, Err(TerminalBrokerError::NativeFocusUnauthorized));
+    assert!(!action_ran.load(Ordering::SeqCst));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -54,6 +54,10 @@ and pane promotion. While a replacement reservation exists, previews are
 noninteractive and focus handoffs are rejected. An exited, closing, or missing
 old pane is first reconciled and removed, then restarted through the ordinary
 single-pane creation path instead of being treated as a live replacement.
+Native pane focus is executed through the terminal broker actor with the
+preview's runtime generation and lease epoch. The actor rejects stale, remote-
+owned, or pending-transfer requests before invoking Zellij and cannot process a
+competing ownership transition until the focus operation finishes.
 
 ### Shell-hosted Launch Notes
 - Workflow shell-command nodes and headless provider runs use the same shell resolver as interactive PTY sessions.
