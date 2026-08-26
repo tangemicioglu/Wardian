@@ -75,6 +75,10 @@ export default defineConfig(async () => ({
           // each of those canvases is behind a dynamic import. Keeping them in
           // one shared chunk would pin all three into startup as soon as any
           // one of them was reachable eagerly, so they are split apart.
+          // `graphology` is matched without a trailing slash on purpose, so the
+          // `graphology-*` helpers Sigma pulls in transitively land beside it
+          // rather than in the shared vendor chunk. Nothing outside the graph
+          // depends on any of them.
           if (
             normalized.includes("/node_modules/graphology") ||
             normalized.includes("/node_modules/sigma/")

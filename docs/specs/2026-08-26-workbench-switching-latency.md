@@ -491,3 +491,49 @@ it growing, not to force it down.
 
 These should be applied together with a regenerated checked-in baseline, as a
 reviewed step separate from this branch.
+
+## Post-implementation review
+
+A functionality-preservation pass over the whole branch after phase 4. Four
+things were specifically checked and cleared: the restructured `resolve_surface`
+error paths are behaviourally identical across all four branches, including
+`missing_surface_type` being absent on the known-type failure; the three new
+caches are keyed on genuinely immutable identities, since surfaces are
+deep-frozen, every `restore_state` callback is a pure `(value, version)`, and
+pane targets derive only from `root`; each removed prop has a subscribing
+replacement in all seven consumers; and no test assertion was dropped without a
+store-reading equivalent taking its place.
+
+Four defects were found and fixed.
+
+**The paused placeholder read wrong on a first open.** Mounting the renderer
+from an effect means a *visible* surface renders `rendererActive === false` for
+one frame, and that branch said "Graph renderer paused while hidden". Nothing
+was hidden or paused — the surface was opening, and the frame genuinely paints
+because the Sigma or Konva chunk is still being fetched behind it. The two
+states now read differently, keyed on `visibility`. This is the cost of the
+deferred mount that the harness cannot see: no latency metric covers copy.
+
+**`deriveAgentStatuses` was dead on arrival.** It was ported faithfully from
+`agent_statuses` in the controller, which nothing on `main` consumed either.
+Production resolves an agent's displayed status per row through
+`deriveCurrentThought` in `statusUtils`, which implements and tests the same
+`Headless > Off > metric > Idle` precedence. Deleted, along with the three
+assertions that only exercised it — each was already redundant with the
+`telemetry` or `off_agent_ids` assertion beside it.
+
+**`telemetryEquals` could silently drop a field.** It compared all eight fields
+of `AgentTelemetry` correctly, but a ninth field added later would have
+type-checked fine and never been compared, so a tick carrying only that field
+would have been discarded as unchanged. The field list is now derived from
+`satisfies Record<keyof AgentTelemetry, true>`, which makes the omission a
+compile error; verified by removing a field and observing TS1360.
+
+**An unrelated spec rode along.** `2026-08-22-cross-provider-agent-messaging-bridge.md`
+was an untracked draft in the worktree that a broad `git add` swept into the
+phase 4 documentation commit. Untracked again, left on disk.
+
+One deliberate widening was left in place and annotated rather than reverted:
+`vendor-graph-sigma` matches `/node_modules/graphology` without a trailing
+slash, so `graphology-utils` — which Sigma depends on — lands beside it instead
+of in the shared vendor chunk.

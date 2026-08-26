@@ -82,19 +82,31 @@ function makeStatusTelemetry(
   };
 }
 
+/**
+ * Every field of `AgentTelemetry`, listed so the compiler can enforce it.
+ *
+ * The comparison below decides whether a tick is dropped, so a field missing
+ * from it would be silently discarded rather than displayed. Keying off
+ * `Record<keyof AgentTelemetry, true>` turns adding a field without comparing
+ * it into a type error instead of a reporting bug.
+ */
+const TELEMETRY_FIELDS = Object.keys({
+  session_id: true,
+  cpu_usage: true,
+  memory_mb: true,
+  uptime_seconds: true,
+  query_count: true,
+  init_timestamp: true,
+  current_status: true,
+  log_path: true,
+} satisfies Record<keyof AgentTelemetry, true>) as (keyof AgentTelemetry)[];
+
 function telemetryEquals(
   left: AgentTelemetry | undefined,
   right: AgentTelemetry,
 ): boolean {
-  return left !== undefined
-    && left.session_id === right.session_id
-    && left.cpu_usage === right.cpu_usage
-    && left.memory_mb === right.memory_mb
-    && left.uptime_seconds === right.uptime_seconds
-    && left.query_count === right.query_count
-    && left.init_timestamp === right.init_timestamp
-    && left.current_status === right.current_status
-    && left.log_path === right.log_path;
+  if (left === undefined) return false;
+  return TELEMETRY_FIELDS.every((field) => left[field] === right[field]);
 }
 
 /**

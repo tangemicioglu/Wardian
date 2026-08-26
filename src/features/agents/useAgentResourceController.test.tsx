@@ -11,10 +11,7 @@ import type {
   AppTelemetry,
 } from "../../types";
 import { useAgentResourceController } from "./useAgentResourceController";
-import {
-  deriveAgentStatuses,
-  useAgentTelemetryStore,
-} from "./useAgentTelemetryStore";
+import { useAgentTelemetryStore } from "./useAgentTelemetryStore";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -141,14 +138,6 @@ function projections() {
   return useAgentTelemetryStore.getState();
 }
 
-function statuses(controller: { agents: AgentConfig[]; off_agent_ids: Set<string> }) {
-  return deriveAgentStatuses(
-    controller.agents,
-    projections().telemetry,
-    controller.off_agent_ids,
-  );
-}
-
 describe("useAgentResourceController", () => {
   it("owns one load and subscription path across consumer rerenders", async () => {
     const on_agent_json_event = vi.fn();
@@ -168,7 +157,6 @@ describe("useAgentResourceController", () => {
       "agent-turn-completed",
     ]);
     expect(result.current.off_agent_ids).toEqual(new Set(["agent-2"]));
-    expect(statuses(result.current)["agent-2"]).toBe("Off");
 
     const replacement_callback = vi.fn();
     rerender({ callback: replacement_callback });
@@ -320,7 +308,6 @@ describe("useAgentResourceController", () => {
 
     expect(projections().current_thoughts["agent-1"]).toBe("");
     expect(projections().telemetry["agent-1"].current_status).toBe("Idle");
-    expect(statuses(result.current)["agent-1"]).toBe("Idle");
     expect(on_agent_status_transition).toHaveBeenLastCalledWith({
       session_id: "agent-1",
       current_status: "Idle",
@@ -340,7 +327,6 @@ describe("useAgentResourceController", () => {
     });
 
     expect(projections().telemetry["agent-2"].current_status).toBe("Headless");
-    expect(statuses(result.current)["agent-2"]).toBe("Headless");
     expect(result.current.off_agent_ids.has("agent-2")).toBe(true);
   });
 

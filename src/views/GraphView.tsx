@@ -406,7 +406,15 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
             </OnboardingHint>
           </div>
           {props.rendererActive === false ? (
-            <div className="graph-empty-state">Graph renderer paused while hidden</div>
+            // A visible surface reaches this branch too: the renderer is mounted
+            // from an effect so the surface frame paints first, and the Sigma
+            // chunk is fetched after that. Saying "paused while hidden" there
+            // would be wrong, so the two states read differently.
+            <div className="graph-empty-state">
+              {props.visibility === "hidden"
+                ? "Graph renderer paused while hidden"
+                : "Preparing the graph…"}
+            </div>
           ) : projection.nodes.length === 0 ? (
             <div className="graph-empty-state">No agents in graph scope</div>
           ) : (

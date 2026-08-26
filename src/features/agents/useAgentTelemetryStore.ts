@@ -70,35 +70,3 @@ export function useCurrentThoughtFor(sessionId: string): string {
 export function useTerminalTitleFor(sessionId: string): string {
   return useAgentTelemetryStore((state) => state.terminal_titles[sessionId] ?? "");
 }
-
-/**
- * Resolves each agent's displayed status from its metrics and its off state.
- *
- * A headless agent reports its own status and is never overridden; otherwise an
- * agent the roster marks off reads as off regardless of what its last metric
- * said, and anything unreported reads as idle.
- */
-export function deriveAgentStatuses(
-  agents: readonly { session_id: string }[],
-  telemetry: Record<string, AgentTelemetry>,
-  offAgentIds: ReadonlySet<string>,
-): Record<string, string> {
-  const statuses: Record<string, string> = {};
-  const resolve = (sessionId: string, metricStatus: string | undefined): string => (
-    metricStatus === "Headless"
-      ? "Headless"
-      : offAgentIds.has(sessionId)
-        ? "Off"
-        : metricStatus ?? "Idle"
-  );
-  for (const agent of agents) {
-    statuses[agent.session_id] = resolve(
-      agent.session_id,
-      telemetry[agent.session_id]?.current_status,
-    );
-  }
-  for (const [sessionId, metric] of Object.entries(telemetry)) {
-    statuses[sessionId] = resolve(sessionId, metric.current_status);
-  }
-  return statuses;
-}

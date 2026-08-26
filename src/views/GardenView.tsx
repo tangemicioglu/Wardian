@@ -462,8 +462,14 @@ export const GardenView: React.FC<GardenViewProps> = ({
           setSelectedKey(null);
         }}
       /> : (
+        // A visible surface reaches this branch too: the renderer is mounted
+        // from an effect so the surface frame paints first, and the Konva chunk
+        // is fetched after that. Saying "paused while hidden" there would be
+        // wrong, so the two states read differently.
         <div className="flex flex-1 items-center justify-center text-sm text-muted">
-          Garden renderer paused while hidden
+          {visibility === "hidden"
+            ? "Garden renderer paused while hidden"
+            : "Preparing the garden…"}
         </div>
       )}
     </div>
