@@ -421,6 +421,7 @@ fn take_agent_runtime_for_termination(agent: &mut ActiveAgent) -> ActiveAgent {
         process_id: agent.process_id.take(),
         query_count: agent.query_count.clone(),
         init_timestamp: agent.init_timestamp.clone(),
+        last_query_timestamp: agent.last_query_timestamp.clone(),
         current_status: agent.current_status.clone(),
         last_status_at: agent.last_status_at.clone(),
         watch_state: agent.watch_state.clone(),
@@ -5334,6 +5335,7 @@ mod tests {
             process_id: None,
             query_count: Arc::new(Mutex::new(0)),
             init_timestamp: Arc::new(Mutex::new(None)),
+            last_query_timestamp: Arc::new(Mutex::new(None)),
             current_status: Arc::new(Mutex::new("Idle".to_string())),
             last_status_at: Arc::new(Mutex::new(None)),
             watch_state: Arc::new(Mutex::new(crate::state::AgentWatchState::new(

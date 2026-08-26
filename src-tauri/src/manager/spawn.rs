@@ -683,6 +683,7 @@ pub async fn spawn_agent(
             process_id: None,
             query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
             init_timestamp: std::sync::Arc::new(std::sync::Mutex::new(Some(born_to_save))),
+            last_query_timestamp: std::sync::Arc::new(std::sync::Mutex::new(None)),
             current_status: std::sync::Arc::new(std::sync::Mutex::new("Off".to_string())),
             last_status_at: std::sync::Arc::new(std::sync::Mutex::new(None)),
             watch_state: std::sync::Arc::new(std::sync::Mutex::new(AgentWatchState::new(
@@ -2258,6 +2259,7 @@ pub async fn spawn_agent(
         process_id,
         query_count,
         init_timestamp,
+        last_query_timestamp: std::sync::Arc::new(std::sync::Mutex::new(None)),
         current_status,
         last_status_at: std::sync::Arc::new(std::sync::Mutex::new(None)),
         watch_state,
@@ -2489,6 +2491,7 @@ mod tests {
             process_id: None,
             query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
             init_timestamp: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            last_query_timestamp: std::sync::Arc::new(std::sync::Mutex::new(None)),
             current_status: std::sync::Arc::new(std::sync::Mutex::new("Restoring".to_string())),
             last_status_at: std::sync::Arc::new(std::sync::Mutex::new(None)),
             watch_state: std::sync::Arc::new(std::sync::Mutex::new(

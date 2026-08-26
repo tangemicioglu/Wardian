@@ -709,6 +709,7 @@ mod tests {
             process_id: Some(1234),
             query_count: Arc::new(Mutex::new(0)),
             init_timestamp: Arc::new(Mutex::new(None)),
+            last_query_timestamp: Arc::new(Mutex::new(None)),
             current_status: Arc::new(Mutex::new(status.to_string())),
             last_status_at: Arc::new(Mutex::new(None)),
             watch_state: Arc::new(Mutex::new(AgentWatchState::new(

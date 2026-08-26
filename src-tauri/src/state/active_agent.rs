@@ -17,6 +17,9 @@ pub struct ActiveAgent {
     pub process_id: Option<u32>,
     pub query_count: Arc<Mutex<usize>>,
     pub init_timestamp: Arc<Mutex<Option<String>>>,
+    /// Latest provider-derived user-message timestamp retained between
+    /// telemetry passes, including passes where the source mtime is unchanged.
+    pub last_query_timestamp: Arc<Mutex<Option<String>>>,
     pub current_status: Arc<Mutex<String>>,
     pub last_status_at: Arc<Mutex<Option<String>>>,
     pub watch_state: Arc<Mutex<AgentWatchState>>,

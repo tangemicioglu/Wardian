@@ -5498,6 +5498,7 @@ mod tests {
             process_id: Some(1234),
             query_count: Arc::new(Mutex::new(0)),
             init_timestamp: Arc::new(Mutex::new(Some("2026-05-07T00:00:00.000Z".to_string()))),
+            last_query_timestamp: Arc::new(Mutex::new(None)),
             current_status: Arc::new(Mutex::new("Processing".to_string())),
             last_status_at: Arc::new(Mutex::new(None)),
             watch_state: Arc::new(Mutex::new(crate::state::AgentWatchState::new(

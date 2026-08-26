@@ -218,18 +218,12 @@ fn gemini_fallback_scan_due(session_id: &str) -> bool {
     }
 }
 
-fn should_run_provider_log_telemetry(
-    _provider: &str,
-    current_status: &str,
-    process_alive: Option<bool>,
-    has_persisted_query: bool,
-    has_parsed_log: bool,
-) -> bool {
+fn should_run_provider_log_telemetry(current_status: &str, process_alive: Option<bool>) -> bool {
     if process_alive == Some(false) {
-        // A stopped agent still has useful historical transcript data. Read
-        // it once when the durable interaction ledger has no answer; after a
-        // successful parse, the mtime cache prevents repeated work.
-        return !has_persisted_query && !has_parsed_log;
+        // A stopped agent can receive a provider-only prompt that is newer
+        // than the durable interaction ledger. Let the source watermark below
+        // decide whether the transcript needs parsing.
+        return true;
     }
     !(wardian_core::identity::normalize_status(current_status) == "off"
         && process_alive != Some(true))
@@ -315,23 +309,29 @@ fn update_latest_query_timestamp(latest: &mut Option<String>, candidate: Option<
     }
 }
 
+fn reconcile_cached_last_query_timestamp(
+    latest: &mut Option<String>,
+    cached_timestamp: &Arc<Mutex<Option<String>>>,
+) {
+    let Ok(mut cached_timestamp) = cached_timestamp.lock() else {
+        return;
+    };
+    update_latest_query_timestamp(latest, cached_timestamp.clone());
+    update_latest_query_timestamp(&mut cached_timestamp, latest.clone());
+}
+
 fn latest_user_query_timestamps() -> HashMap<String, String> {
-    let Ok(records) = wardian_core::db::list_user_message_interaction_records() else {
+    let Ok(records) = wardian_core::db::list_user_message_timestamp_records() else {
         return HashMap::new();
     };
     latest_user_query_timestamps_from_records(&records)
 }
 
 fn latest_user_query_timestamps_from_records(
-    records: &[wardian_core::control::InteractionRecord],
+    records: &[wardian_core::db::UserMessageTimestampRecord],
 ) -> HashMap<String, String> {
     let mut timestamps = HashMap::new();
     for record in records {
-        if record.kind != wardian_core::control::InteractionKind::Message
-            || record.sender_session_id.is_some()
-        {
-            continue;
-        }
         let Some(timestamp) = query_timestamp_from_text(&record.created_at) else {
             continue;
         };
@@ -560,6 +560,7 @@ struct AgentSnapshot {
     process_id: Option<u32>,
     query_count: Arc<Mutex<usize>>,
     init_timestamp: Arc<Mutex<Option<String>>>,
+    last_query_timestamp: Arc<Mutex<Option<String>>>,
     current_status: Arc<Mutex<String>>,
     last_status_at: Arc<Mutex<Option<String>>>,
     watch_state: Arc<Mutex<crate::state::AgentWatchState>>,
@@ -1232,6 +1233,7 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                     process_id: agent.process_id,
                     query_count: agent.query_count.clone(),
                     init_timestamp: agent.init_timestamp.clone(),
+                    last_query_timestamp: agent.last_query_timestamp.clone(),
                     current_status: agent.current_status.clone(),
                     last_status_at: agent.last_status_at.clone(),
                     watch_state: agent.watch_state.clone(),
@@ -1344,15 +1346,13 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
             let gemini_session_id = snap.resume_session.as_deref();
             let status_before_log_work = snap.current_status.lock().unwrap().clone();
             let mut last_query_timestamp = last_user_query_timestamps.remove(&snap.session_id);
+            reconcile_cached_last_query_timestamp(
+                &mut last_query_timestamp,
+                &snap.last_query_timestamp,
+            );
             let run_provider_log_work = should_run_provider_log_telemetry(
-                &snap.provider,
                 &status_before_log_work,
                 process_alive,
-                last_query_timestamp.is_some(),
-                snap.log_last_modified
-                    .lock()
-                    .map(|last| last.is_some())
-                    .unwrap_or(false),
             );
 
             if run_provider_log_work {
@@ -1759,6 +1759,11 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                 }
             }
 
+            reconcile_cached_last_query_timestamp(
+                &mut last_query_timestamp,
+                &snap.last_query_timestamp,
+            );
+
             if (snap.provider == "opencode"
                 || snap.provider == "claude"
                 || snap.provider == "antigravity")
@@ -1993,6 +1998,7 @@ mod tests {
             process_id: Some(1234),
             query_count: Arc::new(Mutex::new(0)),
             init_timestamp: Arc::new(Mutex::new(None)),
+            last_query_timestamp: Arc::new(Mutex::new(None)),
             current_status: Arc::new(Mutex::new(status.to_string())),
             last_status_at: Arc::new(Mutex::new(None)),
             watch_state: Arc::new(Mutex::new(crate::state::AgentWatchState::new(
@@ -2004,6 +2010,27 @@ mod tests {
             log_path: Arc::new(Mutex::new(None)),
             log_last_modified: Arc::new(Mutex::new(None)),
         }
+    }
+
+    #[test]
+    fn cached_provider_query_timestamp_survives_an_unchanged_log_pass() {
+        let snap = test_snapshot("Idle");
+        *snap.last_query_timestamp.lock().unwrap() =
+            Some("2026-05-14T12:00:03.000Z".to_string());
+        let mut latest = Some("2026-05-14T12:00:01.000Z".to_string());
+
+        super::reconcile_cached_last_query_timestamp(&mut latest, &snap.last_query_timestamp);
+
+        assert_eq!(latest.as_deref(), Some("2026-05-14T12:00:03.000Z"));
+        assert_eq!(
+            snap.last_query_timestamp.lock().unwrap().as_deref(),
+            Some("2026-05-14T12:00:03.000Z")
+        );
+    }
+
+    #[test]
+    fn stopped_agents_reconcile_provider_logs_even_with_durable_queries() {
+        assert!(super::should_run_provider_log_telemetry("Off", Some(false)));
     }
 
     #[test]

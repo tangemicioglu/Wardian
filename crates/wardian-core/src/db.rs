@@ -42,6 +42,14 @@ pub struct AgentRow {
     pub last_status_at: Option<String>,
 }
 
+/// The subset of a user message interaction needed to hydrate Last-Queried
+/// telemetry without decoding the interaction body or delivery state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserMessageTimestampRecord {
+    pub target_session_ids: Vec<String>,
+    pub created_at: String,
+}
+
 pub fn init_db() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = state_db_path().ok_or("could not resolve Wardian state.db path")?;
     init_db_at_path(&db_path)
@@ -119,6 +127,12 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             updated_at TEXT NOT NULL,
             completed_at TEXT
         )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_interactions_user_message_created_at
+         ON interactions(created_at, id, target_session_ids)
+         WHERE kind = 'message' AND sender_session_id IS NULL",
         [],
     )?;
     conn.execute(
@@ -564,29 +578,33 @@ pub fn list_interaction_records() -> Result<Vec<InteractionRecord>, Box<dyn std:
     })
 }
 
-/// Lists only user-authored message interactions used for historical
-/// Last-Queried telemetry. The database predicate keeps telemetry passes from
-/// decoding unrelated tasks, replies, notifications, or agent-originated
-/// messages.
-pub fn list_user_message_interaction_records(
-) -> Result<Vec<InteractionRecord>, Box<dyn std::error::Error>> {
+/// Lists the target IDs and creation times needed for historical Last-Queried
+/// telemetry. The filtered projection avoids decoding unrelated interaction
+/// kinds and fields on every telemetry pass.
+pub fn list_user_message_timestamp_records(
+) -> Result<Vec<UserMessageTimestampRecord>, Box<dyn std::error::Error>> {
     get_db_conn(|conn| {
-        let records = list_user_message_interaction_records_with_conn(conn)?;
+        let records = list_user_message_timestamp_records_with_conn(conn)?;
         Ok(records)
     })
 }
 
-pub fn list_user_message_interaction_records_with_conn(
+pub fn list_user_message_timestamp_records_with_conn(
     conn: &Connection,
-) -> rusqlite::Result<Vec<InteractionRecord>> {
+) -> rusqlite::Result<Vec<UserMessageTimestampRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, kind, sender_session_id, target_session_ids, status, trigger_policy,
-            body_ref, parent_interaction_id, created_at, updated_at, completed_at
+        "SELECT target_session_ids, created_at
          FROM interactions
          WHERE kind = 'message' AND sender_session_id IS NULL
          ORDER BY created_at ASC, id ASC",
     )?;
-    let rows = stmt.query_map([], row_to_interaction_record)?;
+    let rows = stmt.query_map([], |row| {
+        let target_session_ids: String = row.get(0)?;
+        Ok(UserMessageTimestampRecord {
+            target_session_ids: serde_json::from_str(&target_session_ids).map_err(to_sql_error)?,
+            created_at: row.get(1)?,
+        })
+    })?;
     rows.collect()
 }
 
@@ -1263,9 +1281,10 @@ mod tests {
             upsert_interaction_record_with_conn(&conn, &record).unwrap();
         }
 
-        let records = list_user_message_interaction_records_with_conn(&conn).unwrap();
+        let records = list_user_message_timestamp_records_with_conn(&conn).unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].id, "3");
+        assert_eq!(records[0].target_session_ids, vec!["agent-1"]);
+        assert_eq!(records[0].created_at, "2026-05-25T00:00:03.000Z");
     }
 
     #[test]
