@@ -110,6 +110,16 @@ async function selectTerminalPreview(driver, root) {
   ), 20000);
 }
 
+async function focusTerminalInput(driver, host) {
+  const input = await host.findElement(By.css(".xterm-helper-textarea"));
+  const focused = await driver.executeScript((terminalHost, terminalInput) => {
+    terminalHost.click();
+    terminalInput.focus();
+    return document.activeElement === terminalInput;
+  }, host, input);
+  assert.equal(focused, true, "Expected the singleton terminal input to receive focus");
+}
+
 async function waitForAgentSessionHost(driver) {
   const surfaceSelector = `[data-testid="agent-session-surface"]`
     + `[data-resource-key=${JSON.stringify(wardianSessionId)}]`;
@@ -320,9 +330,7 @@ test(
       `Agents presentation must be registered before clear: ${JSON.stringify(initialPresentationDebug)}`,
     );
 
-    const terminalInput = await agentsTerminalHost.findElement(By.css(".xterm-helper-textarea"));
-    await agentsTerminalHost.click();
-    await driver.executeScript((element) => element.focus(), terminalInput);
+    await focusTerminalInput(driver, agentsTerminalHost);
     await driver.actions().sendKeys("before-clear", Key.ENTER).perform();
     const beforeClearInput = await waitFor("terminal input before clear", 30000, async () => {
       const snapshot = await readSnapshot(driver);
@@ -388,11 +396,7 @@ test(
         };
       }, recoveredAgentsTerminalHost, wardianSessionId)
     ));
-    const recoveredTerminalInput = await recoveredAgentsTerminalHost.findElement(
-      By.css(".xterm-helper-textarea"),
-    );
-    await recoveredAgentsTerminalHost.click();
-    await driver.executeScript((element) => element.focus(), recoveredTerminalInput);
+    await focusTerminalInput(driver, recoveredAgentsTerminalHost);
     await driver.actions().sendKeys("after-clear", Key.ENTER).perform();
     await waitFor("terminal input after clear", 30000, async () => {
       const snapshot = await readSnapshot(driver);
