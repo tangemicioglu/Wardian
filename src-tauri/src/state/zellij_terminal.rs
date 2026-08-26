@@ -619,6 +619,15 @@ enum ControlledProcessOwnership {
     PreserveStartedDescendants,
 }
 
+struct ControlledCommandPolicy<'a> {
+    cancelled_message: &'static str,
+    timeout_message: &'static str,
+    job_label: &'static str,
+    termination_label: &'static str,
+    ownership: ControlledProcessOwnership,
+    started_pid_path: Option<&'a Path>,
+}
+
 impl ZellijCommandRunner for ProcessZellijCommandRunner {
     fn run(
         &self,
@@ -674,12 +683,14 @@ fn run_controlled_zellij_process(
         command,
         cancelled,
         deadline,
-        "Terminal handoff was superseded",
-        "Terminal handoff timed out",
-        "Zellij activation helper",
-        "Terminal handoff helper",
-        ControlledProcessOwnership::HelperTree,
-        None,
+        ControlledCommandPolicy {
+            cancelled_message: "Terminal handoff was superseded",
+            timeout_message: "Terminal handoff timed out",
+            job_label: "Zellij activation helper",
+            termination_label: "Terminal handoff helper",
+            ownership: ControlledProcessOwnership::HelperTree,
+            started_pid_path: None,
+        },
     )
 }
 
@@ -694,12 +705,14 @@ fn run_bounded_zellij_process(
         command,
         Arc::new(AtomicBool::new(false)),
         std::time::Instant::now() + ZELLIJ_COMMAND_TIMEOUT,
-        "Zellij command was cancelled",
-        "Zellij command timed out",
-        "Zellij lifecycle helper",
-        "Zellij lifecycle helper",
-        ControlledProcessOwnership::HelperTree,
-        None,
+        ControlledCommandPolicy {
+            cancelled_message: "Zellij command was cancelled",
+            timeout_message: "Zellij command timed out",
+            job_label: "Zellij lifecycle helper",
+            termination_label: "Zellij lifecycle helper",
+            ownership: ControlledProcessOwnership::HelperTree,
+            started_pid_path: None,
+        },
     )
 }
 
@@ -707,12 +720,7 @@ fn run_controlled_command(
     mut command: Command,
     cancelled: Arc<AtomicBool>,
     deadline: std::time::Instant,
-    cancelled_message: &'static str,
-    timeout_message: &'static str,
-    job_label: &'static str,
-    termination_label: &'static str,
-    ownership: ControlledProcessOwnership,
-    started_pid_path: Option<&Path>,
+    policy: ControlledCommandPolicy<'_>,
 ) -> Result<Output, String> {
     let mut stdout_file = tempfile::tempfile()
         .map_err(|error| format!("Zellij command stdout capture failed: {error}"))?;
@@ -732,21 +740,23 @@ fn run_controlled_command(
         command.process_group(0);
     }
     #[cfg(windows)]
-    let mut child_job = match ownership {
-        ControlledProcessOwnership::HelperTree => {
-            Some(crate::utils::process::create_kill_on_close_job(job_label)?)
-        }
+    let mut child_job = match policy.ownership {
+        ControlledProcessOwnership::HelperTree => Some(
+            crate::utils::process::create_kill_on_close_job(policy.job_label)?,
+        ),
         ControlledProcessOwnership::PreserveStartedDescendants => None,
     };
     #[cfg(not(windows))]
-    let _ = (job_label, ownership);
+    let _ = (policy.job_label, policy.ownership);
     let mut child = command
         .spawn()
         .map_err(|error| format!("Zellij command could not start: {error}"))?;
     let child_pid = child.id();
     #[cfg(windows)]
     if let Some(job) = child_job.as_ref() {
-        if let Err(error) = crate::utils::process::assign_pid_to_job(job, child_pid, job_label) {
+        if let Err(error) =
+            crate::utils::process::assign_pid_to_job(job, child_pid, policy.job_label)
+        {
             if !child.try_wait().is_ok_and(|status| status.is_some()) {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -758,10 +768,10 @@ fn run_controlled_command(
 
     let outcome = loop {
         if cancelled.load(Ordering::Acquire) {
-            break Err(cancelled_message.to_string());
+            break Err(policy.cancelled_message.to_string());
         }
         if std::time::Instant::now() >= deadline {
-            break Err(timeout_message.to_string());
+            break Err(policy.timeout_message.to_string());
         }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
@@ -776,7 +786,7 @@ fn run_controlled_command(
             child_pid,
             #[cfg(windows)]
             &mut child_job,
-            termination_label,
+            policy.termination_label,
         )?;
     }
     stdout_file
@@ -795,7 +805,7 @@ fn run_controlled_command(
         .map_err(|error| format!("Zellij command stderr failed: {error}"))?;
     #[cfg(windows)]
     if outcome.is_err() {
-        if let Some(pid_path) = started_pid_path {
+        if let Some(pid_path) = policy.started_pid_path {
             if let Some(pid) = parse_windows_attached_client_pid(&stdout).or_else(|| {
                 std::fs::read_to_string(pid_path)
                     .ok()
@@ -807,7 +817,7 @@ fn run_controlled_command(
         }
     }
     #[cfg(not(windows))]
-    let _ = started_pid_path;
+    let _ = policy.started_pid_path;
     outcome.map(|status| Output {
         status,
         stdout,
@@ -1519,12 +1529,14 @@ impl ZellijTerminalEngine {
             launcher,
             Arc::new(AtomicBool::new(false)),
             std::time::Instant::now() + ZELLIJ_COMMAND_TIMEOUT,
-            "Zellij native attached-client launch was cancelled",
-            "Zellij native attached-client launch timed out",
-            "Zellij attached-client launcher",
-            "Zellij attached-client launcher",
-            ControlledProcessOwnership::PreserveStartedDescendants,
-            Some(pid_path),
+            ControlledCommandPolicy {
+                cancelled_message: "Zellij native attached-client launch was cancelled",
+                timeout_message: "Zellij native attached-client launch timed out",
+                job_label: "Zellij attached-client launcher",
+                termination_label: "Zellij attached-client launcher",
+                ownership: ControlledProcessOwnership::PreserveStartedDescendants,
+                started_pid_path: Some(pid_path),
+            },
         ) {
             Ok(output) => output,
             Err(error) => {
@@ -2874,6 +2886,26 @@ mod tests {
         }
     }
 
+    fn test_process_exists(pid: u32) -> bool {
+        #[cfg(windows)]
+        {
+            crate::utils::process::process_exists(pid)
+        }
+        #[cfg(unix)]
+        unsafe {
+            if libc::kill(pid as libc::pid_t, 0) == 0 {
+                true
+            } else {
+                std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+            }
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            let _ = pid;
+            false
+        }
+    }
+
     #[test]
     fn delayed_attached_exit_does_not_clear_replacement_generation() {
         let mut state = ZellijEngineState::default();
@@ -3140,7 +3172,7 @@ mod tests {
         transport.shutdown().await.unwrap();
         drop(retained_runtime);
 
-        assert!(!crate::utils::process::process_exists(subscription_pid));
+        assert!(!test_process_exists(subscription_pid));
         assert!(engine.binding("failed-broker").await.is_none());
     }
 
@@ -3184,7 +3216,7 @@ mod tests {
             assert!(transport.subscription_reader.is_none());
             assert!(transport.input_worker.is_none());
             assert!(transport.lease.is_none());
-            assert!(!crate::utils::process::process_exists(subscription_pid));
+            assert!(!test_process_exists(subscription_pid));
             assert!(engine.binding(&session_id).await.is_none());
         }
     }
@@ -3210,7 +3242,7 @@ mod tests {
         drop(retained_runtime);
 
         assert!(engine.binding(session_id).await.is_none());
-        assert!(!crate::utils::process::process_exists(subscription_pid));
+        assert!(!test_process_exists(subscription_pid));
     }
 
     struct BlockingActivationRunner {
