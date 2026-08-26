@@ -4,6 +4,7 @@ use serde::Serialize;
 use tauri::State;
 
 const HABITAT_TERMINAL_PRESENTATION_ID: &str = "desktop:zellij-habitat-terminal";
+const OWNERSHIP_CHANGED_MESSAGE: &str = "Agent terminal ownership changed; retry the selection";
 
 #[derive(Debug, Serialize)]
 pub struct ZellijTerminalPreview {
@@ -46,6 +47,24 @@ fn preview_state_without_binding(status: Option<&str>, has_runtime: bool) -> &'s
     }
 }
 
+fn validate_habitat_activation_preflight(
+    current_generation: u64,
+    current_lease_epoch: u64,
+    current_owner: Option<&str>,
+    activation_pending: bool,
+    observed_generation: u64,
+    observed_lease_epoch: u64,
+) -> Result<(), String> {
+    if current_generation != observed_generation
+        || current_lease_epoch != observed_lease_epoch
+        || activation_pending
+        || current_owner.is_some_and(|owner| owner != HABITAT_TERMINAL_PRESENTATION_ID)
+    {
+        return Err(OWNERSHIP_CHANGED_MESSAGE.to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_zellij_terminal_preview(
     session_id: String,
@@ -85,10 +104,7 @@ pub async fn get_zellij_terminal_preview(
                     .lock()
                     .map(|value| value.clone())
                     .unwrap_or_default();
-                preview_state_without_binding(
-                    Some(&status),
-                    agent.runtime_generation.is_some(),
-                )
+                preview_state_without_binding(Some(&status), agent.runtime_generation.is_some())
             })
         };
         return Ok(ZellijTerminalPreview {
@@ -103,11 +119,8 @@ pub async fn get_zellij_terminal_preview(
             content: String::new(),
         });
     };
-    let preview_state = preview_state_for_phase(
-        binding.phase,
-        broker_state.is_some(),
-        replacement_pending,
-    );
+    let preview_state =
+        preview_state_for_phase(binding.phase, broker_state.is_some(), replacement_pending);
     if preview_state != "running" {
         return Ok(ZellijTerminalPreview {
             terminal_session_id: session_id.clone(),
@@ -175,10 +188,41 @@ mod tests {
     #[test]
     fn missing_binding_exposes_a_runtime_less_restart_failure() {
         assert_eq!(preview_state_without_binding(Some("Error"), false), "error");
-        assert_eq!(preview_state_without_binding(Some("Starting"), false), "starting");
-        assert_eq!(preview_state_without_binding(Some("Error"), true), "starting");
+        assert_eq!(
+            preview_state_without_binding(Some("Starting"), false),
+            "starting"
+        );
+        assert_eq!(
+            preview_state_without_binding(Some("Error"), true),
+            "starting"
+        );
     }
 
+    #[test]
+    fn habitat_activation_preflight_rejects_changed_or_pending_ownership() {
+        for result in [
+            validate_habitat_activation_preflight(7, 11, None, true, 7, 11),
+            validate_habitat_activation_preflight(7, 11, Some("remote:client"), false, 7, 11),
+            validate_habitat_activation_preflight(8, 11, None, false, 7, 11),
+            validate_habitat_activation_preflight(7, 12, None, false, 7, 11),
+        ] {
+            assert_eq!(result.unwrap_err(), OWNERSHIP_CHANGED_MESSAGE);
+        }
+    }
+
+    #[test]
+    fn habitat_activation_preflight_accepts_current_desktop_eligibility() {
+        assert!(validate_habitat_activation_preflight(7, 11, None, false, 7, 11).is_ok());
+        assert!(validate_habitat_activation_preflight(
+            7,
+            11,
+            Some(HABITAT_TERMINAL_PRESENTATION_ID),
+            false,
+            7,
+            11,
+        )
+        .is_ok());
+    }
 }
 
 #[tauri::command]
@@ -201,11 +245,24 @@ pub async fn activate_zellij_agent_terminal(
         .binding(&session_id)
         .await
         .ok_or_else(|| "Agent terminal is still starting".to_string())?;
-    engine.start_attached_client().await?;
     let broker_generation = broker_generation
         .ok_or_else(|| "Agent terminal ownership state is still loading".to_string())?;
     let broker_lease_epoch = broker_lease_epoch
         .ok_or_else(|| "Agent terminal ownership state is still loading".to_string())?;
+    let broker_state = state
+        .terminal_sessions
+        .broker_state(&session_id)
+        .await
+        .map_err(|_| "Agent terminal ownership state is still loading".to_string())?;
+    validate_habitat_activation_preflight(
+        broker_state.runtime_generation,
+        broker_state.lease_epoch,
+        broker_state.owner_presentation_id.as_deref(),
+        broker_state.pending_activation.is_some(),
+        broker_generation,
+        broker_lease_epoch,
+    )?;
+    engine.start_attached_client().await?;
     let focus_engine = engine.clone();
     let focus_session_id = session_id.clone();
     let focus_request_id = activation_request_id.clone();
@@ -227,7 +284,7 @@ pub async fn activate_zellij_agent_terminal(
             },
         )
         .await
-        .map_err(|_| "Agent terminal ownership changed; retry the selection".to_string())?;
+        .map_err(|_| OWNERSHIP_CHANGED_MESSAGE.to_string())?;
     Ok(session_id)
 }
 
