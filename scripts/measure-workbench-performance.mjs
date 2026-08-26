@@ -560,6 +560,68 @@ function browserFixture(fixture) {
       unavailable_reason: null,
     },
   };
+  // The Dashboard reads the telemetry store, not agent state. Without a fleet
+  // payload it renders its empty state, which left the Dashboard row of the
+  // audit matrix measuring an empty surface.
+  const fleetBuckets = Array.from({ length: 12 }, (_, index) => (
+    new Date(Date.UTC(2026, 0, 1, index)).toISOString()
+  ));
+  const fleetRows = fixture.agents.map((agent, index) => {
+    const idle = index % 3 === 2;
+    return {
+      key: agent.session_id,
+      label: agent.session_name,
+      sublabel: agent.agent_class ?? null,
+      tokens_per_hour: idle ? null : 1_200 + index * 37,
+      turns_per_hour: idle ? 0 : 3 + (index % 7),
+      active_ms: idle ? 0 : 60_000 + index * 1_500,
+      turns: idle ? 0 : 4 + (index % 11),
+      total_tokens: idle ? null : 9_000 + index * 210,
+      files_touched: idle ? 0 : index % 9,
+      lines_added: idle ? 0 : index * 3,
+      lines_removed: idle ? 0 : index,
+      tokens_reported: !idle,
+      idle,
+      spark: fleetBuckets.map((_, bucket) => (idle ? 0 : (index + bucket) % 13)),
+      status: agent.last_status ?? null,
+      cpu_usage: idle ? 0 : (index % 40) / 10,
+      memory_mb: idle ? 0 : 120 + index,
+    };
+  });
+  const fleetMaxima = {
+    tokens_per_hour: 4_000, turns_per_hour: 12, turns: 20, active_ms: 600_000,
+    total_tokens: 40_000, files_touched: 12, lines: 400, spark: 13, memory_mb: 400,
+  };
+  const providerCard = (provider, rosterCount) => ({
+    provider,
+    roster_agent_count: rosterCount,
+    active_agent_count: Math.max(1, Math.round(rosterCount * 0.6)),
+    active_ms: 300_000,
+    turns: 40,
+    total_tokens: 120_000,
+    files_touched: 30,
+    lines_added: 900,
+    lines_removed: 300,
+    tokens_reported: true,
+    spark: fleetBuckets.map((_, bucket) => bucket % 9),
+    idle: false,
+  });
+  const telemetryFleet = {
+    window: {
+      from: fleetBuckets[0],
+      to: fleetBuckets[fleetBuckets.length - 1],
+      from_floored: true,
+    },
+    window_minutes: 720,
+    rows: fleetRows,
+    maxima: fleetMaxima,
+    buckets: fleetBuckets,
+    trend_measure: "total_tokens",
+    grain: "hour",
+    habitat: providerCard("all", fixture.agents.length),
+    providers: [providerCard("mock", fixture.agents.length)],
+    provider_maxima: fleetMaxima,
+  };
   const defaults = {
     list_agent_classes: [], list_provider_readiness: [], load_watchlists: [], load_watchlist_prefs: null,
     load_agent_interactions: {}, load_queue_items: queueItems, load_queue_preferences: {},
@@ -585,6 +647,8 @@ function browserFixture(fixture) {
       },
     },
     list_available_shells: [],
+    telemetry_fleet: telemetryFleet,
+    telemetry_refresh: { refreshed: true, sessions: 0 },
     sync_provider_theme_settings: null, library_watch: null, library_unwatch: null,
     list_file_recoveries: [],
     get_library_index: {
@@ -927,18 +991,22 @@ async function measureSurfaceInteractions(page) {
     )),
     () => page.getByTestId("agents-overview-mode-auto").click(),
   );
+  // The Dashboard is a fleet table, not a card grid: the agent card and its
+  // selection ring were removed when it became a resource monitor. Sorting is
+  // the equivalent per-row interaction that surface still offers.
   await record(
-    "dashboard selection",
+    "dashboard sort",
     "perf-dashboard",
+    () => page.getByRole("button", { name: "Sort by Agent" }).click(),
+    () => page.waitForFunction(() => (
+      document.querySelector('[aria-label="Sort by Agent"]')?.getAttribute("aria-pressed") === "true"
+    )),
     async () => {
-      const card = page.locator(".dashboard-agent-card").first();
-      const selected = await card.evaluate((element) => element.classList.contains("ring-1"));
-      await card.locator(".dashboard-agent-card__content").click({ modifiers: ["Control"] });
-      return selected;
+      await page.getByRole("button", { name: "Sort by Active" }).click();
+      await page.waitForFunction(() => (
+        document.querySelector('[aria-label="Sort by Active"]')?.getAttribute("aria-pressed") === "true"
+      ));
     },
-    (selectedBefore) => page.waitForFunction((wasSelected) => (
-      document.querySelector(".dashboard-agent-card")?.classList.contains("ring-1") !== wasSelected
-    ), selectedBefore),
   );
   await record(
     "inbox filter",
@@ -1063,6 +1131,12 @@ async function measureTabActivation(page, surfaceId) {
     const commitIndex = window.__WARDIAN_WORKBENCH_PERF__.tab_activation_commit_index;
     const commits = window.__WARDIAN_WORKBENCH_PERF__.react_commits.slice(commitIndex);
     window.__WARDIAN_WORKBENCH_PERF__.last_tab_activation_react_commit_ms = Math.max(0, ...commits);
+    // A single activation can fan out into several React commits when unrelated
+    // app state churns alongside the workbench document. The max alone hides
+    // that fan-out, so the count and total are recorded next to it.
+    window.__WARDIAN_WORKBENCH_PERF__.last_tab_activation_react_commit_count = commits.length;
+    window.__WARDIAN_WORKBENCH_PERF__.last_tab_activation_react_commit_total_ms = commits
+      .reduce((total, duration) => total + duration, 0);
     return performance.now() - started;
   }, surfaceId);
 }
@@ -1165,16 +1239,22 @@ async function measureRuntime(fixture, runtimeOutDir, screenshotPath = null) {
     const tabSwitch = [];
     const tabSwitchBySurfaceType = {};
     const tabSwitchCommitBySurfaceType = {};
+    const tabSwitchCommitCounts = [];
+    const tabSwitchCommitTotals = [];
     for (let index = 0; index < 20; index += 1) {
       const surfaceId = tabIds[index];
       const duration = await measureTabActivation(page, surfaceId);
       tabSwitch.push(duration);
       const surfaceType = fixture.workbench.surfaces[surfaceId].surface_type;
       (tabSwitchBySurfaceType[surfaceType] ??= []).push(duration);
-      const commit = await page.evaluate(() => (
-        window.__WARDIAN_WORKBENCH_PERF__.last_tab_activation_react_commit_ms
-      ));
-      (tabSwitchCommitBySurfaceType[surfaceType] ??= []).push(commit);
+      const commit = await page.evaluate(() => ({
+        max_ms: window.__WARDIAN_WORKBENCH_PERF__.last_tab_activation_react_commit_ms,
+        count: window.__WARDIAN_WORKBENCH_PERF__.last_tab_activation_react_commit_count,
+        total_ms: window.__WARDIAN_WORKBENCH_PERF__.last_tab_activation_react_commit_total_ms,
+      }));
+      (tabSwitchCommitBySurfaceType[surfaceType] ??= []).push(commit.max_ms);
+      tabSwitchCommitCounts.push(commit.count);
+      tabSwitchCommitTotals.push(commit.total_ms);
     }
     const groupFocus = [];
     for (let round = 0; round < 5; round += 1) {
@@ -1271,6 +1351,11 @@ async function measureRuntime(fixture, runtimeOutDir, screenshotPath = null) {
         ),
       ),
       tab_switch_ms: summarize(tabSwitch, "tab switch"),
+      tab_switch_react_commit_count: summarize(tabSwitchCommitCounts, "tab switch React commit count"),
+      tab_switch_react_commit_total_ms: summarize(
+        tabSwitchCommitTotals,
+        "tab switch React commit total",
+      ),
       tab_switch_by_surface_type_ms: Object.fromEntries(Object.entries(tabSwitchBySurfaceType).map(
         ([surfaceType, samples]) => [surfaceType, summarize(samples, `${surfaceType} tab switch`)],
       )),
