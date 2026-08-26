@@ -181,6 +181,25 @@ describe("core view surface definitions", () => {
     expect(onUnmount).toHaveBeenCalledTimes(1);
   });
 
+  it("never allocates the renderer during the render pass that reveals a surface", () => {
+    const seen: boolean[] = [];
+    render(
+      <SuspendedSurfaceRenderer visibility="visible">
+        {(rendererMounted) => {
+          seen.push(rendererMounted);
+          return null;
+        }}
+      </SuspendedSurfaceRenderer>,
+    );
+
+    // Sigma and Konva cost more to build than the rest of their surface put
+    // together. Building one inside the commit that reveals a tab puts that
+    // cost in the frame the user is waiting on, so the first pass always runs
+    // paused and an effect mounts the renderer afterwards.
+    expect(seen[0]).toBe(false);
+    expect(seen[seen.length - 1]).toBe(true);
+  });
+
   it("cancels the pending release when the surface becomes visible during the grace period", () => {
     vi.useFakeTimers();
     const { rerender } = render(

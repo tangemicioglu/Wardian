@@ -645,6 +645,17 @@ function defaultRendererPolicy(
   return KEEP_ALIVE_SURFACE_TYPES.has(surface.surface_type) ? "always" : "onlyWhenVisible";
 }
 
+/**
+ * Hidden panels keep re-rendering, deliberately.
+ *
+ * Freezing a hidden panel's subtree and thawing it on reveal was measured and
+ * reverted. It does less total work, but it moves that work into the frame the
+ * user is waiting on: steady tab switching to the Agents overview went from
+ * 69 ms to 297 ms, and Graph and Garden regressed with it. Re-rendering a hidden
+ * panel spreads the cost over frames nobody is watching, which is the better
+ * trade for switching latency. Phases 1 and 2 already removed most of the app
+ * renders that drove this traffic in the first place.
+ */
 function DockviewSurfacePanel({ params }: IDockviewPanelProps<WorkbenchPanelParams>) {
   const { surface } = params;
   const runtime = useAdapterRuntime();

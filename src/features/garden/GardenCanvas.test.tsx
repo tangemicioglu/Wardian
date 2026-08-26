@@ -52,7 +52,7 @@ vi.mock("./AgentUnit", () => ({
 }));
 vi.mock("./WorkflowUnit", () => ({ WorkflowUnit: ({ unit }: any) => <div data-testid="workflow-unit">{unit.label}</div> }));
 
-import { GardenCanvas } from "./GardenCanvas";
+import { GardenCanvas } from "./GardenCanvasImpl";
 
 describe("GardenCanvas", () => {
   beforeEach(() => konvaMocks.reset());

@@ -62,13 +62,20 @@ export type SuspendedSurfaceRendererProps = {
  * Retains the logical surface host while releasing a previously visible heavy
  * renderer after a bounded hidden grace period. A surface restored hidden does
  * not allocate the renderer until its first reveal.
+ *
+ * The renderer is always mounted from an effect, never during the first render.
+ * Sigma and Konva cost more to build than the rest of the surface put together,
+ * and building one inside the commit that reveals a tab puts that cost in the
+ * frame the user is waiting on. Mounting from the effect lets the surface frame
+ * and its chrome paint first; both paused states already occupy the renderer's
+ * final geometry, so filling it in afterwards does not reflow the surface.
  */
 export function SuspendedSurfaceRenderer({
   visibility,
   hidden_grace_ms = HEAVY_SURFACE_HIDDEN_GRACE_MS,
   children,
 }: SuspendedSurfaceRendererProps) {
-  const [rendererMounted, setRendererMounted] = useState(visibility === "visible");
+  const [rendererMounted, setRendererMounted] = useState(false);
 
   useEffect(() => {
     if (visibility === "visible") {
