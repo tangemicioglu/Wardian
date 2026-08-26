@@ -34,12 +34,12 @@ const INGEST_INTERVAL_ACTIVE: std::time::Duration = std::time::Duration::from_se
 /// does not observe.
 const INGEST_INTERVAL_IDLE: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// A single ingest pass is abandoned after this long.
+/// A single ingest pass is considered slow after this long.
 ///
 /// A first pass over a very large backlog is legitimately slow, so this is
-/// generous. It exists to stop a wedged source (a locked database that never
-/// releases) from holding the loop forever.
-const INGEST_PASS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// generous. It is a diagnostic threshold, not a cancellation deadline:
+/// blocking work cannot be safely cancelled after it starts.
+const INGEST_PASS_SLOW_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// How many bytes of provider log one pass will read before stopping.
 ///
@@ -712,9 +712,14 @@ pub fn start_telemetry_ingest(app_handle: tauri::AppHandle) {
                 run_ingest_pass(&sources)
             });
 
+            // Keep the ingest loop single-flight. Dropping a JoinHandle after
+            // a timeout detaches the blocking pass, allowing another pass to
+            // contend for the database while the old one is still running.
+            // A slow pass delays the next cadence, but cannot multiply work.
+            let pass_started = std::time::Instant::now();
             let mut deferred = 0;
-            match tokio::time::timeout(INGEST_PASS_TIMEOUT, pass).await {
-                Ok(Ok(report)) => {
+            match pass.await {
+                Ok(report) => {
                     for failure in &report.failures {
                         crate::utils::logging::log_debug(&format!(
                             "[Wardian] Telemetry ingest source failed: {failure}"
@@ -731,13 +736,15 @@ pub fn start_telemetry_ingest(app_handle: tauri::AppHandle) {
                         let _ = app_handle.emit("telemetry-updated", ());
                     }
                 }
-                Ok(Err(error)) => crate::utils::logging::log_debug(&format!(
-                    "[Wardian] Telemetry ingest pass panicked; continuing: {error}"
+                Err(error) => crate::utils::logging::log_debug(&format!(
+                    "[Wardian] Telemetry ingest pass failed; continuing: {error}"
                 )),
-                Err(_) => crate::utils::logging::log_debug(&format!(
-                    "[Wardian] Telemetry ingest pass exceeded {}s; continuing",
-                    INGEST_PASS_TIMEOUT.as_secs()
-                )),
+            }
+            if pass_started.elapsed() >= INGEST_PASS_SLOW_THRESHOLD {
+                crate::utils::logging::log_debug(&format!(
+                    "[Wardian] Telemetry ingest pass took {}s; next pass deferred until it completed",
+                    pass_started.elapsed().as_secs()
+                ));
             }
 
             tokio::time::sleep(next_interval(any_agent_live, deferred)).await;

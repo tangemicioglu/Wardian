@@ -19,6 +19,13 @@ use wardian_core::control::{ProviderInputReadiness, ProviderReadyEvidence};
 
 const TELEMETRY_SLOW_PASS_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// A full process inventory is needed to discover newly spawned descendants,
+/// but refreshing every process on every five-second status tick is expensive
+/// on Windows. Between inventory refreshes, only the last known agent trees
+/// are sampled.
+const PROCESS_INVENTORY_REFRESH_TTL: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
 /// Reading every process's command line and environment block (PEB reads on
 /// Windows) is far too expensive to do on every 5s tick, so marker-based
 /// session-root discovery runs at most this often.
@@ -434,11 +441,64 @@ struct ProcessMarkerSnapshot {
 #[derive(Debug, Clone)]
 struct SystemProcessSnapshot {
     logical_cpu_count: usize,
-    children_map: HashMap<u32, Vec<u32>>,
-    processes: HashMap<u32, ProcessSample>,
+    children_map: Arc<HashMap<u32, Vec<u32>>>,
+    processes: Arc<HashMap<u32, ProcessSample>>,
     sys_refresh: std::time::Duration,
     #[cfg(windows)]
     session_roots: HashMap<String, Vec<u32>>,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessInventoryCache {
+    agent_key: Vec<(String, Option<u32>)>,
+    children_map: Arc<HashMap<u32, Vec<u32>>>,
+    processes: Arc<HashMap<u32, ProcessSample>>,
+    logical_cpu_count: usize,
+    refreshed_at: std::time::Instant,
+}
+
+static PROCESS_INVENTORY_CACHE: OnceLock<Mutex<Option<ProcessInventoryCache>>> = OnceLock::new();
+
+fn process_inventory_cache() -> &'static Mutex<Option<ProcessInventoryCache>> {
+    PROCESS_INVENTORY_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn process_inventory_agent_key(agent_roots: &[(String, Option<u32>)]) -> Vec<(String, Option<u32>)> {
+    let mut key = agent_roots.to_vec();
+    key.sort_unstable();
+    key
+}
+
+fn tracked_process_ids(
+    cache: &ProcessInventoryCache,
+    agent_roots: &[(String, Option<u32>)],
+) -> BTreeSet<u32> {
+    let mut tracked = BTreeSet::new();
+    // App telemetry reuses the same system sample. Keep the desktop process
+    // tree current on fast refreshes without refreshing unrelated processes.
+    tracked.extend(collect_related_pids(
+        Some(std::process::id()),
+        &[],
+        cache.children_map.as_ref(),
+    ));
+    #[cfg(windows)]
+    let session_roots = cached_session_roots();
+    for (session_id, process_id) in agent_roots {
+        #[cfg(windows)]
+        let discovered_roots = session_roots
+            .get(session_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        #[cfg(not(windows))]
+        let discovered_roots: &[u32] = &[];
+
+        tracked.extend(collect_related_pids(
+            *process_id,
+            discovered_roots,
+            cache.children_map.as_ref(),
+        ));
+    }
+    tracked
 }
 
 struct TelemetryAgentWorkGuard {
@@ -504,6 +564,7 @@ fn discover_session_roots_from_process_markers(
 fn refresh_system_process_snapshot(
     sys_metrics: &tokio::sync::Mutex<sysinfo::System>,
     #[cfg_attr(not(windows), allow(unused_variables))] session_ids: &[String],
+    agent_roots: &[(String, Option<u32>)],
 ) -> Option<SystemProcessSnapshot> {
     let mut sys = match sys_metrics.try_lock() {
         Ok(sys) => sys,
@@ -514,13 +575,28 @@ fn refresh_system_process_snapshot(
             return None;
         }
     };
-    // A full refresh_all() walks every process's command line and environment
-    // block, which costs over a second per tick on busy systems. Sample only
-    // CPU and memory each tick; marker data is fetched on TTL'd discovery
-    // passes below (OnlyIfNotSet keeps already-fetched markers cached inside
-    // sysinfo, so even discovery passes only read new processes).
+
+    let agent_key = process_inventory_agent_key(agent_roots);
+    let mut inventory_cache = process_inventory_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let inventory_due = inventory_cache.as_ref().is_none_or(|cache| {
+        cache.agent_key != agent_key
+            || cache.refreshed_at.elapsed() >= PROCESS_INVENTORY_REFRESH_TTL
+    });
     #[cfg(windows)]
-    let discovery_due = session_root_discovery_due(session_ids);
+    let discovery_due = session_root_discovery_due(session_ids)
+        || inventory_cache
+            .as_ref()
+            .is_none_or(|cache| cache.agent_key != agent_key);
+    #[cfg(not(windows))]
+    let discovery_due = false;
+
+    // A full refresh walks every process and, when discovery is due, reads
+    // every command line/environment block. Between those refreshes, sample
+    // only the last known agent trees. New descendants are picked up on the
+    // next inventory refresh, while existing agents retain five-second CPU,
+    // memory, and liveness updates.
     let refresh_kind = sysinfo::ProcessRefreshKind::nothing()
         .with_cpu()
         .with_memory();
@@ -533,11 +609,74 @@ fn refresh_system_process_snapshot(
         refresh_kind
     };
     let sys_refresh_started = std::time::Instant::now();
-    sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, refresh_kind);
+    if inventory_due || discovery_due {
+        sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, refresh_kind);
+    } else {
+        let tracked = tracked_process_ids(
+            inventory_cache
+                .as_ref()
+                .expect("an inventory cache is required for a tracked refresh"),
+            agent_roots,
+        );
+        let tracked_pids = tracked
+            .iter()
+            .map(|pid| sysinfo::Pid::from_u32(*pid))
+            .collect::<Vec<_>>();
+        if !tracked_pids.is_empty() {
+            sys.refresh_processes_specifics(
+                sysinfo::ProcessesToUpdate::Some(&tracked_pids),
+                true,
+                refresh_kind,
+            );
+        }
+    }
     let sys_refresh = sys_refresh_started.elapsed();
+
+    if !inventory_due && !discovery_due {
+        let tracked = tracked_process_ids(
+            inventory_cache
+                .as_ref()
+                .expect("an inventory cache is required for a tracked refresh"),
+            agent_roots,
+        );
+        let mut processes = inventory_cache
+            .as_ref()
+            .expect("an inventory cache is required for a tracked refresh")
+            .processes
+            .as_ref()
+            .clone();
+        for pid in tracked {
+            let key = sysinfo::Pid::from_u32(pid);
+            if let Some(process) = sys.process(key) {
+                processes.insert(
+                    pid,
+                    ProcessSample {
+                        cpu_usage: process.cpu_usage(),
+                        memory: process.memory(),
+                        run_time: process.run_time(),
+                    },
+                );
+            } else {
+                processes.remove(&pid);
+            }
+        }
+        let processes = Arc::new(processes);
+        let cache = inventory_cache
+            .as_mut()
+            .expect("an inventory cache is required for a tracked refresh");
+        cache.processes = processes.clone();
+        return Some(SystemProcessSnapshot {
+            logical_cpu_count: cache.logical_cpu_count,
+            children_map: cache.children_map.clone(),
+            processes,
+            sys_refresh,
+            #[cfg(windows)]
+            session_roots: cached_session_roots(),
+        });
+    }
+
     let logical_cpu_count = sys.cpus().len();
     let mut children_map: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut processes = HashMap::new();
     #[cfg(windows)]
     let mut process_markers = Vec::new();
 
@@ -546,14 +685,6 @@ fn refresh_system_process_snapshot(
         if let Some(parent) = process.parent() {
             children_map.entry(parent.as_u32()).or_default().push(pid);
         }
-        processes.insert(
-            pid,
-            ProcessSample {
-                cpu_usage: process.cpu_usage(),
-                memory: process.memory(),
-                run_time: process.run_time(),
-            },
-        );
         #[cfg(windows)]
         if discovery_due {
             process_markers.push(ProcessMarkerSnapshot {
@@ -583,14 +714,40 @@ fn refresh_system_process_snapshot(
         cached_session_roots()
     };
 
-    Some(SystemProcessSnapshot {
+    let mut cache = ProcessInventoryCache {
+        agent_key,
+        children_map: Arc::new(children_map),
+        processes: Arc::new(HashMap::new()),
         logical_cpu_count,
-        children_map,
-        processes,
+        refreshed_at: std::time::Instant::now(),
+    };
+    let tracked = tracked_process_ids(&cache, agent_roots);
+    let processes = tracked
+        .into_iter()
+        .filter_map(|pid| {
+            sys.process(sysinfo::Pid::from_u32(pid)).map(|process| {
+                (
+                    pid,
+                    ProcessSample {
+                        cpu_usage: process.cpu_usage(),
+                        memory: process.memory(),
+                        run_time: process.run_time(),
+                    },
+                )
+            })
+        })
+        .collect::<HashMap<_, _>>();
+    cache.processes = Arc::new(processes);
+    let snapshot = SystemProcessSnapshot {
+        logical_cpu_count,
+        children_map: cache.children_map.clone(),
+        processes: cache.processes.clone(),
         sys_refresh,
         #[cfg(windows)]
         session_roots,
-    })
+    };
+    *inventory_cache = Some(cache);
+    Some(snapshot)
 }
 
 #[derive(Debug, Clone)]
@@ -939,7 +1096,12 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
         let pass_started = std::time::Instant::now();
         let mut results = Vec::new();
         let mut provider_statuses = Vec::new();
-        let system_snapshot = refresh_system_process_snapshot(&sys_metrics, &session_ids);
+        let agent_roots = snapshots
+            .iter()
+            .map(|snap| (snap.session_id.clone(), snap.process_id))
+            .collect::<Vec<_>>();
+        let system_snapshot =
+            refresh_system_process_snapshot(&sys_metrics, &session_ids, &agent_roots);
         let mut slow_agents = Vec::new();
 
         for snap in &snapshots {
@@ -1597,6 +1759,62 @@ mod tests {
     fn converts_resident_bytes_to_mib() {
         assert_eq!(super::bytes_to_mib(1_048_576), 1.0);
         assert_eq!(super::bytes_to_mib(2_621_440), 2.5);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tracked_process_refresh_reuses_inventory_and_costs_less_than_full_scan() {
+        let mut cache = super::process_inventory_cache().lock().unwrap();
+        *cache = None;
+        drop(cache);
+
+        let system = tokio::sync::Mutex::new(sysinfo::System::new());
+        let session_ids = (0..58)
+            .map(|index| format!("agent-{index}"))
+            .collect::<Vec<_>>();
+        let agent_roots = session_ids
+            .iter()
+            .cloned()
+            .map(|session_id| (session_id, Some(std::process::id())))
+            .collect::<Vec<_>>();
+
+        let full = super::refresh_system_process_snapshot(
+            &system,
+            &session_ids,
+            &agent_roots,
+        )
+        .expect("full inventory refresh should succeed");
+        let tracked = super::refresh_system_process_snapshot(
+            &system,
+            &session_ids,
+            &agent_roots,
+        )
+        .expect("tracked refresh should succeed");
+
+        assert!(std::sync::Arc::ptr_eq(
+            &full.children_map,
+            &tracked.children_map
+        ));
+        assert!(tracked.processes.contains_key(&std::process::id()));
+        eprintln!(
+            "telemetry process refresh: full={:?}, tracked={:?}",
+            full.sys_refresh, tracked.sys_refresh
+        );
+        assert!(tracked.sys_refresh < full.sys_refresh);
+    }
+
+    #[test]
+    fn process_inventory_agent_key_is_order_independent() {
+        let left = super::process_inventory_agent_key(&[
+            ("agent-2".to_string(), Some(2)),
+            ("agent-1".to_string(), Some(1)),
+        ]);
+        let right = super::process_inventory_agent_key(&[
+            ("agent-1".to_string(), Some(1)),
+            ("agent-2".to_string(), Some(2)),
+        ]);
+
+        assert_eq!(left, right);
     }
 
     #[test]

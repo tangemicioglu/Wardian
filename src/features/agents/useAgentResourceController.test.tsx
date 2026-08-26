@@ -76,6 +76,8 @@ function metric(
 }
 
 beforeEach(() => {
+  mockInvoke.mockReset();
+  mockListen.mockReset();
   agents = [alpha, beta];
   listeners = new Map();
   unlisteners = new Map();
@@ -162,7 +164,11 @@ describe("useAgentResourceController", () => {
     expect(on_agent_json_event).not.toHaveBeenCalled();
 
     agents = [alpha];
-    act(() => emit("agents-updated", undefined));
+    act(() => {
+      emit("agents-updated", undefined);
+      emit("agents-updated", undefined);
+      emit("agents-updated", undefined);
+    });
     await waitFor(() => expect(result.current.agents).toHaveLength(1));
     expect(mockInvoke.mock.calls.filter(([command]) => command === "list_agents")).toHaveLength(2);
 
@@ -298,7 +304,7 @@ describe("useAgentResourceController", () => {
     });
   });
 
-  it("ignores a stale agent load that resolves after a newer refresh", async () => {
+  it("coalesces concurrent agent loads and performs one follow-up refresh", async () => {
     let resolve_first: ((value: AgentConfig[]) => void) | undefined;
     const first = new Promise<AgentConfig[]>((resolve) => {
       resolve_first = resolve;
@@ -306,15 +312,20 @@ describe("useAgentResourceController", () => {
     mockInvoke.mockImplementationOnce(() => first).mockResolvedValueOnce([beta]);
 
     const { result } = renderHook(() => useAgentResourceController());
-    await act(async () => {
-      await result.current.refresh_agents();
+    let first_refresh!: Promise<readonly AgentConfig[]>;
+    let second_refresh!: Promise<readonly AgentConfig[]>;
+    act(() => {
+      first_refresh = result.current.refresh_agents();
+      second_refresh = result.current.refresh_agents();
     });
-    expect(result.current.agents.map((agent) => agent.session_id)).toEqual(["agent-2"]);
+    expect(mockInvoke.mock.calls.filter(([command]) => command === "list_agents")).toHaveLength(1);
 
     await act(async () => {
       resolve_first?.([alpha]);
-      await first;
+      await first_refresh;
+      await second_refresh;
     });
+    expect(mockInvoke.mock.calls.filter(([command]) => command === "list_agents")).toHaveLength(2);
     expect(result.current.agents.map((agent) => agent.session_id)).toEqual(["agent-2"]);
   });
 
