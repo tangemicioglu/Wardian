@@ -206,6 +206,18 @@ wardian notify update "The migration is ready for review" --title "Inbox refacto
 wardian notify approval "Production deployment is prepared" --title "Deploy production" --action "Run the production deployment" --risk "This changes live traffic" --choice "Deploy" --choice "Do not deploy" --wait
 ```
 
+Agent creation validates `--class` against the classes in the active Wardian
+home and validates `--provider` against the supported provider IDs before
+starting a provider or reserving an agent name. Both values are
+case-insensitive and are stored canonically (`Reviewer`, `codex`). Unknown
+classes and providers fail without creating agent state. Names and workspace
+paths are also validated by the creation command.
+
+Model IDs and reasoning efforts are provider-discovered; use
+`wardian agent models --provider <provider>` to inspect the currently exposed
+catalog rather than relying on a fixed CLI list. Provider-specific live
+selection may reject a model/effort pair that is not present in that catalog.
+
 `agent restart` restarts the provider while preserving the Wardian agent, its
 habitat, and saved session history. Use it after `agent update` when the update
 reports `restart_required`, including class changes. `agent delete` is

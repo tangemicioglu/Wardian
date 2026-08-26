@@ -1301,6 +1301,24 @@ fn invalid_agent_name_error() -> String {
     "Invalid agent name. Names must contain only alphanumeric characters, underscores, or hyphens (no spaces).".to_string()
 }
 
+pub(crate) fn canonical_agent_class_name(requested: &str) -> Result<String, String> {
+    let home = crate::utils::fs::get_wardian_home()
+        .ok_or_else(|| "Could not locate Wardian home".to_string())?;
+    let classes = wardian_core::classes::initialize_classes(&home)?;
+    wardian_core::classes::find_class(&classes, requested)
+        .map(|class| class.name.clone())
+        .ok_or_else(|| format!("Agent class not found: {}", requested.trim()))
+}
+
+pub(crate) fn canonical_agent_provider_name(requested: &str) -> Result<String, String> {
+    let provider = requested.trim().to_ascii_lowercase();
+    if wardian_core::workflow::assignment::is_known_provider(&provider) {
+        Ok(provider)
+    } else {
+        Err(format!("unsupported provider `{}`", requested.trim()))
+    }
+}
+
 fn resolve_requested_spawn_session_name(
     requested_session_name: &str,
     agent_class: &str,
@@ -2056,9 +2074,7 @@ fn apply_agent_update_fields(
 
     if let Some(class) = class {
         let class = class.trim();
-        let canonical = classes
-            .iter()
-            .find(|definition| definition.name.eq_ignore_ascii_case(class))
+        let canonical = wardian_core::classes::find_class(classes, class)
             .ok_or_else(|| format!("Agent class not found: {class}"))?;
         if config.agent_class != canonical.name {
             config.agent_class = canonical.name.clone();
@@ -2494,7 +2510,7 @@ pub async fn spawn_agent(
     app: AppHandle,
 ) -> Result<AgentConfig, String> {
     let requested_session_name = req.session_name;
-    let agent_class = req.agent_class;
+    let agent_class = canonical_agent_class_name(&req.agent_class)?;
     let folder = normalize_spawn_folder(&req.folder)?;
     let resume_session = req.resume_session;
     let is_off = req.is_off;
@@ -2504,6 +2520,7 @@ pub async fn spawn_agent(
         .as_ref()
         .map(|c| c.provider.clone())
         .unwrap_or_else(|| "claude".to_string());
+    let provider_name = canonical_agent_provider_name(&provider_name)?;
     ensure_provider_available_before_session_bootstrap(&provider_name)?;
 
     let name_reservation =
@@ -2517,6 +2534,7 @@ pub async fn spawn_agent(
     let identity = new_agent_identity_plan(&provider_name);
     let session_id = identity.wardian_session_id;
     let mut config = config_override.unwrap_or_default();
+    config.provider = provider_name.clone();
     config.session_id = session_id.clone();
     config.session_name = session_name.clone();
     config.agent_class = agent_class.clone();
@@ -2610,6 +2628,21 @@ pub async fn clone_agent(
         (source, names)
     };
 
+    let source_class = canonical_agent_class_name(&source_config.agent_class)?;
+    let requested_class = req
+        .agent_class
+        .as_deref()
+        .map(canonical_agent_class_name)
+        .transpose()?;
+    let clone_class = requested_class.or(Some(source_class));
+    let source_provider = canonical_agent_provider_name(&source_config.provider)?;
+    let clone_provider = req
+        .provider
+        .as_deref()
+        .map(canonical_agent_provider_name)
+        .transpose()?
+        .or(Some(source_provider));
+
     let requested_session_name = req.session_name.filter(|name| !name.trim().is_empty());
     let generated_session_name = requested_session_name.is_none();
     let session_name = requested_session_name
@@ -2641,9 +2674,9 @@ pub async fn clone_agent(
     let mut config = clone_sanitize_config(
         &source_config,
         session_name,
-        req.provider,
+        clone_provider,
         folder_override,
-        req.agent_class,
+        clone_class,
         req.start.unwrap_or(true),
     );
     let provider_name = config.provider.clone();
@@ -5228,6 +5261,7 @@ mod tests {
         clone_sanitize_config, clone_unique_name, clone_validate_selected_agent_skills,
         clone_validate_selected_profile_files, collect_agent_worktrees,
         collect_agent_worktrees_with_discovered, configured_new_agent_order_placement,
+        canonical_agent_class_name, canonical_agent_provider_name,
         conversation_boundary_for_clear_reason, detach_agent_for_kill, disable_worktree_config,
         discover_git_worktrees_for_configs, discover_git_worktrees_for_sources_with,
         enable_worktree_config, ensure_existing_worktree_is_git_registered,
@@ -5346,6 +5380,31 @@ mod tests {
             Some(path) => unsafe { std::env::set_var("PATH", path) },
             None => unsafe { std::env::remove_var("PATH") },
         }
+    }
+
+    #[test]
+    fn agent_creation_parameters_use_canonical_registered_values() {
+        let _lock = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+
+        assert_eq!(
+            canonical_agent_class_name(" reviewer ").expect("registered class"),
+            "Reviewer"
+        );
+        let class_error = canonical_agent_class_name("DefinitelyNotDefined")
+            .expect_err("unknown class should fail");
+        assert!(class_error.contains("Agent class not found"));
+
+        assert_eq!(
+            canonical_agent_provider_name(" CoDeX ").expect("known provider"),
+            "codex"
+        );
+        let provider_error = canonical_agent_provider_name("definitely-not-a-provider")
+            .expect_err("unknown provider should fail");
+        assert!(provider_error.contains("unsupported provider"));
+
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
     }
 
     #[test]
