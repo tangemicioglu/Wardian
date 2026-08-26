@@ -812,11 +812,15 @@ test("remote gateway authenticates broker ownership transitions across desktop a
     {
       sessionId,
       brokerGeneration: remoteBegin.result.decision.runtime_generation,
+      brokerLeaseEpoch: remoteBegin.result.decision.lease_epoch,
       activationRequestId: "native-remote-handoff-rejection",
     },
   );
   assert.equal(desktopDuringRemoteHandoff.ok, false);
-  assert.match(desktopDuringRemoteHandoff.error, /ownership transfer is in progress/i);
+  assert.match(
+    desktopDuringRemoteHandoff.error,
+    /ownership changed; retry the selection/i,
+  );
   terminalSocket.send(JSON.stringify({
     type: "ack_activation",
     runtime_generation: remoteBegin.result.decision.runtime_generation,
