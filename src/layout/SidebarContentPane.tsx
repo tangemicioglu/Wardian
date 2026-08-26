@@ -151,7 +151,7 @@ const WorkflowsGlancePane: React.FC<WorkflowsGlancePaneProps> = ({ agents, onOpe
       void loadSchedules();
     }
     void loadRuns();
-    const timer = window.setInterval(() => void loadRuns(), 1500);
+    const timer = window.setInterval(() => void loadRuns(), 5000);
     return () => window.clearInterval(timer);
   }, [loadRuns, loadSchedules, schedules.length]);
 

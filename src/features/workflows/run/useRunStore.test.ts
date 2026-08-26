@@ -64,6 +64,22 @@ describe('useRunStore', () => {
     expect(useRunStore.getState().runs).toBe(firstRuns);
   });
 
+  it('coalesces overlapping run polls into one backend request', async () => {
+    let resolveRequest!: (value: RunSummary[]) => void;
+    const pending = new Promise<RunSummary[]>((resolve) => {
+      resolveRequest = resolve;
+    });
+    invokeMock.mockReturnValueOnce(pending);
+
+    const first = useRunStore.getState().loadRuns();
+    const second = useRunStore.getState().loadRuns();
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    resolveRequest([summary]);
+    await Promise.all([first, second]);
+    expect(useRunStore.getState().runs).toEqual([summary]);
+  });
+
   it('opens a run and scrubs to the final event', async () => {
     invokeMock.mockResolvedValueOnce(result);
 

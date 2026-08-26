@@ -46,9 +46,15 @@ pub struct WorkflowInboxApprovalDto {
 /// reconciliation query at startup, while `workflow-inbox-updated` remains the
 /// low-latency path for a currently open window.
 #[tauri::command]
-pub fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
+pub async fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
+    tokio::task::spawn_blocking(list_workflow_inbox_terminal_runs_blocking)
+        .await
+        .map_err(|error| format!("workflow terminal inbox task failed: {error}"))?
+}
+
+fn list_workflow_inbox_terminal_runs_blocking() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
     let mut updates = Vec::new();
-    for run in crate::commands::workflow::workflow_list_runs(None)?.runs {
+    for run in crate::commands::workflow::workflow_list_runs_blocking(None)?.runs {
         let Some(run_root) = run.get("path").and_then(serde_json::Value::as_str) else {
             continue;
         };
@@ -148,8 +154,14 @@ pub async fn resolve_inbox_notification(
 }
 
 #[tauri::command]
-pub fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
-    let runs = crate::commands::workflow::workflow_list_runs(None)?.runs;
+pub async fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
+    tokio::task::spawn_blocking(list_workflow_inbox_approvals_blocking)
+        .await
+        .map_err(|error| format!("workflow approval inbox task failed: {error}"))?
+}
+
+fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
+    let runs = crate::commands::workflow::workflow_list_runs_blocking(None)?.runs;
     let mut approvals = Vec::new();
     for run in runs {
         if run.get("status").and_then(serde_json::Value::as_str) != Some("awaiting_approval") {
@@ -278,8 +290,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn terminal_run_query_includes_a_missing_scheduled_blueprint_with_id_fallback() {
+    #[tokio::test]
+    async fn terminal_run_query_includes_a_missing_scheduled_blueprint_with_id_fallback() {
         let home = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set(home.path());
         let run_root = home
@@ -303,7 +315,7 @@ mod tests {
         )
         .unwrap();
 
-        let updates = list_workflow_inbox_terminal_runs().unwrap();
+        let updates = list_workflow_inbox_terminal_runs().await.unwrap();
 
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].workflow_id, "missing-scheduled-workflow");
