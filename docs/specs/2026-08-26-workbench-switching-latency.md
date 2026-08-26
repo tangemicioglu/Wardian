@@ -13,10 +13,9 @@ React commits, and roughly half of that work is the workbench tab strip
 re-deriving titles and badges for all twenty tabs on every one of those
 commits.**
 
-Phases 1 and 2 of the plan below are implemented on this branch and cut the
-React work in a tab switch by about half; see
-[Measured outcome of phases 1 and 2](#measured-outcome-of-phases-1-and-2).
-Phases 3 and 4 remain open.
+Phases 1 to 3 of the plan below are implemented on this branch; a tab switch
+now costs 44% less wall time and 60% less React work. See
+[Measured outcome](#measured-outcome-of-phases-1-to-3). Phase 4 remains open.
 
 ## Method
 
@@ -56,10 +55,10 @@ cost.
 And the harness is very sensitive to what else the machine is doing. An early
 run of this profile was taken while unrelated builds and test suites were
 running, and reported a 128 ms median tab switch and 53 ms of React work; the
-same build measured on an idle machine reports 83 ms and 28.5 ms. Every number
-in this document is from an idle run, and before/after pairs were measured under
-the same conditions from two worktrees. Treat any run taken alongside other work
-as unusable.
+same build measured on an idle machine reports 83 ms and 28.5 ms. Absolute
+figures here are from idle runs except where a section says otherwise, and every
+before/after pair was measured back to back from two worktrees under whatever
+load was present at the time. Compare within a pair; never across runs.
 
 ## Measured profile
 
@@ -230,7 +229,10 @@ inline arrow props plus freshly normalized state objects on every `App` render
 (`src/features/workbench/surfaces/AgentSessionSurface.tsx:236`), which is enough
 on its own to defeat `memo(AgentTerminal)` for every open agent tab.
 
-### 5. Hidden surfaces render as often as visible ones
+### 5. Hidden surfaces render as often as visible ones (not worth fixing)
+
+Measured and left alone — see
+[Freezing hidden panels was tried and reverted](#freezing-hidden-panels-was-tried-and-reverted).
 
 Agent sessions, browser, and files use `render_policy: "suspend_when_hidden"`,
 which maps to Dockview's `"always"` renderer, so the panels stay mounted.
@@ -275,7 +277,7 @@ restore p95 is 1055 ms.
 Ordered by measured gain per unit of risk. Each phase is verified by re-running
 `npm run perf:workbench` against the same fixture.
 
-### Phase 1 — Stop redundant renders (low risk, no API change)
+### Phase 1 — Stop redundant renders (landed)
 
 | Change | Expected effect |
 |---|---|
@@ -286,7 +288,7 @@ Ordered by measured gain per unit of risk. Each phase is verified by re-running
 
 Target: commits per tab switch from 8 to 4–5.
 
-### Phase 2 — Make the tab strip cheap (the single largest win)
+### Phase 2 — Make the tab strip cheap (landed)
 
 | Change | Expected effect |
 |---|---|
@@ -297,11 +299,11 @@ Target: commits per tab switch from 8 to 4–5.
 
 Target: `DockviewSurfaceTab` self time from 57 ms/switch to under 10 ms.
 
-### Phase 3 — Be lazy
+### Phase 3 — Be lazy (landed, with one part reverted)
 
 | Change | Expected effect |
 |---|---|
-| Freeze hidden panels: when `visible === false` and the surface has already mounted, render a memoized subtree that bails out unconditionally until it becomes visible again | removes the hidden Inbox/session/browser render traffic |
+| ~~Freeze hidden panels while they are off screen~~ | **Reverted.** Measured worse: it moves the saved work into the reveal frame. See below. |
 | Reveal in two passes: paint the surface frame and its chrome in the activation frame, mount the heavy renderer in a follow-up `requestAnimationFrame` or `startTransition` | Graph 212 ms and Agents Overview 396 ms collapse toward the ~77 ms floor; the tab responds in one frame and fills in |
 | `React.lazy` the graph, garden, workflows, library, and settings surfaces | drops `vendor-graph`, konva, xyflow, qrcode and the markdown pipeline out of startup; improves restore p95 |
 
@@ -319,7 +321,7 @@ the existing `memo()` boundaries start working as written. This is a refactor
 rather than a patch, and should follow phases 1 through 3 rather than block
 them.
 
-## Measured outcome of phases 1 and 2
+## Measured outcome of phases 1 to 3
 
 Both phases are implemented. Base and candidate were measured from two
 worktrees on an idle machine with the same repaired harness, so the pair is
@@ -355,23 +357,72 @@ which is roughly 2.8 renders per tab per switch and outside this adapter.
 Bundle delta against the frozen base: 22,970 gzip bytes, well inside the
 250 KB gate.
 
+### Phase 3
+
+Phase 3 was measured against the base commit a second time, back to back on a
+machine that was busy with unrelated work. Absolute numbers are inflated
+against the idle figures above — base tab switch reads 144 ms here versus 83 ms
+idle — but both halves of the pair saw the same load, so the comparison holds.
+This is the full phases 1 to 3 delta:
+
+| Measure | base | phases 1–3 | change |
+|---|---:|---:|---:|
+| Tab switch, median | 144.2 ms | **81.3 ms** | −44% |
+| Tab switch, p95 | 212.0 ms | **144.4 ms** | −32% |
+| React commit total per switch | 55.1 ms | **22.2 ms** | −60% |
+| First activation, median | 79.8 ms | 63.8 ms | −20% |
+| First activation, p95 | 177.7 ms | **95.4 ms** | −46% |
+| Group focus, median | 91.3 ms | 73.4 ms | −20% |
+| Heavy surface resume | 147.4 ms | 114.8 ms | −22% |
+| Full-roster telemetry | 66.5 ms | 50.5 ms | −24% |
+| Surface interaction | 113.9 ms | 95.5 ms | −16% |
+| Startup restore, p95 | 570.1 ms | 509.3 ms | −11% |
+
+On the idle runs, first activation by surface tells the code-splitting story
+most clearly: Graph 148 → 63 ms, Garden 128 → 97 ms, Workflows 63 → 44 ms,
+New Tab 65 → 45 ms. Eager startup JavaScript went from roughly 3.4 MB to
+2.9 MB minified, with Sigma (149 KB), Konva (195 KB) and xyflow (79 KB) now
+fetched on first use.
+
+### Freezing hidden panels was tried and reverted
+
+The plan called for holding a hidden panel's subtree instead of re-rendering
+it. It was implemented, measured, and removed.
+
+It does less total work and it made the steady tab switch worse, because the
+work it saves is work that was being spread over frames nobody was watching.
+Thawing a frozen panel puts all of it into the frame the user is waiting on:
+
+| Surface | phases 1–2 | with freezing |
+|---|---:|---:|
+| agents-overview | 69.3 ms | **297.3 ms** |
+| graph | 114.3 ms | 161.6 ms |
+| garden | 80.1 ms | 112.0 ms |
+| agent-session | 64.0 ms | 86.7 ms |
+
+Overall p95 went to 161.6 ms, worse than the 113 ms base. The lesson generalises:
+for a surface that stays mounted, background re-rendering is a cache, and
+dropping it trades a cost nobody notices for one they do. Phases 1 and 2 had
+already removed most of the app renders that made hidden panels expensive, so
+there was little left to win.
+
 ### What did not move
 
 **The commit count is still 8 per tab switch.** Phase 1 targeted 4–5 and did
 not reach it. The equality bail-outs removed the `App` renders they were aimed
 at, but the remaining commits originate inside Dockview and the save queue
 rather than in application state, so they need a different fix. They are now
-cheap — the whole set costs 14.6 ms where one of them used to cost 17 ms — so
-the count is no longer the thing to chase first.
+cheap — the whole set costs less than a single commit used to — so the count is
+no longer the thing to chase first.
 
-**Graph is unchanged at ~114 ms**, the slowest surface to switch to. Its cost
-is the synchronous sigma remount inside the activation commit, which is
-phase 3, not phase 2.
+**Graph is still the slowest surface to switch to** once its renderer has been
+released, because the reveal still rebuilds a Sigma scene. Deferring that build
+past first paint helped the cold case a great deal (148 → 63 ms) but the warm
+case still pays for the rebuild itself. Raising the hidden grace period, or
+keeping the scene and only detaching the WebGL context, is the next thing to
+try there.
 
-Phases 3 and 4 remain open. Phase 3 (freeze hidden panels, defer heavy reveals,
-code-split the eager bundle) is where the remaining per-surface outliers and the
-461 ms startup restore live.
-
+Phase 4 remains open, and is the structural fix behind causes 2 to 4.
 ## Gate changes
 
 The gates were set as regression limits against a 250 ms tab switch and could
