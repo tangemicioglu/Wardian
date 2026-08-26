@@ -42,6 +42,35 @@ describe("workLogPresentation", () => {
     expect(rows[0].entry?.summary).toBe("");
   });
 
+  it("promotes commands from the newer exec title and hides script completion output", () => {
+    const rows = derivePresentedChatRows([
+      event({
+        id: "exec-call-1",
+        kind: "tool_call",
+        title: "exec",
+        command: "rg -n AgentChatView src/features",
+        status: "succeeded",
+        sequence: 1,
+      }),
+      event({
+        id: "exec-result-1",
+        kind: "tool_result",
+        title: "output",
+        text: "Script completed",
+        status: "succeeded",
+        exit_code: 0,
+        sequence: 2,
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("event");
+    if (rows[0].kind !== "event") throw new Error("expected event row");
+    expect(rows[0].entry?.title).toBe("rg -n AgentChatView src/features");
+    expect(rows[0].entry?.merged_result_events.map((result) => result.id)).toEqual(["exec-result-1"]);
+    expect(rows[0].entry?.content).not.toContain("Script completed");
+  });
+
   it("drops the work entry summary when it only repeats the title", () => {
     // A tool call whose provider title is generic falls back to the command for
     // its title, and the summary independently falls back to the same command.

@@ -148,7 +148,7 @@ fn normalize_pi(
                         msg_type.into(),
                         first_string(&[tool.get("id"), message.get("id")]),
                         (tool_name == "bash")
-                            .then(|| input.and_then(|value| str_field(value, "command")))
+                            .then(|| input.and_then(tool_input_command))
                             .flatten()
                             .map(str::to_string),
                         None,
@@ -195,7 +195,7 @@ fn normalize_pi(
                 sequence,
                 msg_type.into(),
                 first_string(&[parsed.get("toolCallId"), parsed.get("id")]),
-                None,
+                input.and_then(tool_input_command).map(str::to_string),
                 None,
                 tool_name,
                 AgentChatStatus::Running,
@@ -410,7 +410,8 @@ fn normalize_codex_payload(
             let raw_input_text = codex_tool_call_raw_input_text(payload);
             let command = arguments
                 .as_ref()
-                .and_then(|value| str_field(value, "command").map(str::to_string));
+                .and_then(tool_input_command)
+                .map(str::to_string);
             let needs_approval = arguments.as_ref().is_some_and(|value| {
                 str_field(value, "sandbox_permissions") == Some("require_escalated")
             });
@@ -1168,6 +1169,13 @@ fn attach_tool_input_metadata(event: &mut AgentChatEvent, tool_name: &str, input
     };
     event.metadata["tool_input"] = input.clone();
 
+    if event.command.is_none() {
+        if let Some(command) = tool_input_command(input) {
+            event.command = Some(command.to_string());
+            event.language = Some("shell".to_string());
+        }
+    }
+
     let Some(path) = tool_input_file_path(input) else {
         return;
     };
@@ -1177,6 +1185,19 @@ fn attach_tool_input_metadata(event: &mut AgentChatEvent, tool_name: &str, input
     } else if generic_tool_writes_file(tool_name) {
         event.metadata["files_written"] = json!([path]);
     }
+}
+
+/// Returns the command-like argument used by shell tools across providers.
+///
+/// Codex's current `exec` tool calls use `cmd`, while older and other provider
+/// payloads use `command`. Keep the alias handling at normalization time so
+/// every client receives the same canonical `AgentChatEvent.command` field.
+fn tool_input_command(input: &Value) -> Option<&str> {
+    ["command", "cmd", "CommandLine", "script"]
+        .iter()
+        .find_map(|key| input.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
 }
 
 fn tool_input_file_path(input: &Value) -> Option<String> {
@@ -1828,6 +1849,30 @@ mod tests {
         assert_eq!(tool.command.as_deref(), Some("Get-ChildItem src-tauri"));
         assert_eq!(tool.language.as_deref(), Some("shell"));
         assert_eq!(tool.metadata["tool_name"], "shell_command");
+    }
+
+    #[test]
+    fn codex_exec_tool_call_normalizes_cmd_as_the_command() {
+        let tool = one(
+            "codex",
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"{\"cmd\":\"rg -n AgentChatView src/features\"}"}}"#,
+        );
+
+        assert_eq!(tool.title.as_deref(), Some("exec"));
+        assert_eq!(tool.command.as_deref(), Some("rg -n AgentChatView src/features"));
+        assert_eq!(tool.language.as_deref(), Some("shell"));
+        assert_eq!(tool.metadata["tool_input"]["cmd"], "rg -n AgentChatView src/features");
+    }
+
+    #[test]
+    fn pi_tool_execution_start_normalizes_command_from_tool_input() {
+        let tool = one(
+            "pi",
+            r#"{"type":"tool_execution_start","toolName":"exec","toolCallId":"call-1","args":{"cmd":"npm test -- chat"}}"#,
+        );
+
+        assert_eq!(tool.command.as_deref(), Some("npm test -- chat"));
+        assert_eq!(tool.language.as_deref(), Some("shell"));
     }
 
     #[test]

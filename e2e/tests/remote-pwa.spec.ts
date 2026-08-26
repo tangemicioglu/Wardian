@@ -256,6 +256,44 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
             sequence: 7,
             metadata: {},
           },
+          {
+            id: "remote-new-exec-call",
+            session_id: "agent-1",
+            provider: "opencode",
+            kind: "tool_call",
+            role: null,
+            text: null,
+            title: "exec",
+            status: "succeeded",
+            turn_id: "turn-1",
+            source: "provider_log",
+            command: "printf actual tool call",
+            exit_code: 0,
+            path: null,
+            language: "shell",
+            created_at: "2099-05-21T08:00:05.000Z",
+            sequence: 8,
+            metadata: { raw_type: "exec" },
+          },
+          {
+            id: "remote-new-exec-result",
+            session_id: "agent-1",
+            provider: "opencode",
+            kind: "tool_result",
+            role: null,
+            text: "Script completed",
+            title: "output",
+            status: "succeeded",
+            turn_id: "turn-1",
+            source: "provider_log",
+            command: null,
+            exit_code: 0,
+            path: null,
+            language: "shell",
+            created_at: "2099-05-21T08:00:06.000Z",
+            sequence: 9,
+            metadata: {},
+          },
         ],
       }),
     });
@@ -557,6 +595,8 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await page.getByRole("button", { name: "Chat", exact: true }).click();
   await expect(page.getByText("exec starting", { exact: true })).toHaveCount(0);
   await expect(page.getByText("exec running", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("exec", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Script completed", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("user message")).toHaveClass(/\bitems-end\b/);
   await expect(page.getByLabel("assistant message")).toHaveClass(/\bw-full\b/);
   await expect(page.getByTestId("chat-work-group")).toHaveAttribute("data-expanded", "false");
@@ -587,6 +627,7 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await page.getByRole("button", { name: "Show all" }).click();
   await expect(page.getByTestId("chat-work-group")).toHaveAttribute("data-expanded", "true");
   await expect(page.getByText("rg AgentChatView src/features/grid", { exact: true })).toBeVisible();
+  await expect(page.getByText("printf actual tool call", { exact: true })).toBeVisible();
   await captureFeatureScreenshot("chat-expanded-work.png", page.locator('[data-testid="remote-agent-detail"]'));
   await page.getByRole("button", { name: "Collapse" }).click();
   await captureFeatureScreenshot("chat-full-width.png", page.locator('[data-testid="remote-agent-detail"]'));

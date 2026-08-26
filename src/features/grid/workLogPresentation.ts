@@ -1,5 +1,5 @@
 import type { AgentChatEvent } from "../../types";
-import { toActivityBlock, type ActivityBlockModel } from "./activityBlocks";
+import { isLowSignalActivityTitle, toActivityBlock, type ActivityBlockModel } from "./activityBlocks";
 
 /**
  * Consecutive work events collapse into one group at this count.
@@ -10,8 +10,8 @@ import { toActivityBlock, type ActivityBlockModel } from "./activityBlocks";
  * the answer off screen in a grid cell.
  */
 const WORK_GROUP_MIN_ENTRIES = 3;
-const NON_MEANINGFUL_TEXT = /^(succeeded|success|ok|done|exit code:\s*0)$/i;
-const NON_MEANINGFUL_RESULT_LINE = /^(succeeded|success|ok|done|exit code:\s*0|wall time:\s*\d+(?:\.\d+)?\s*(?:ms|s|seconds?)|output:)$/i;
+const NON_MEANINGFUL_TEXT = /^(succeeded|success|ok|done|exit code:\s*0|script\s+(?:complete|completed|finish|finished)(?:\s+successfully)?|output\s+script\s+(?:complete|completed|finish|finished)(?:\s+successfully)?)$/i;
+const NON_MEANINGFUL_RESULT_LINE = /^(succeeded|success|ok|done|exit code:\s*0|script\s+(?:complete|completed|finish|finished)(?:\s+successfully)?|output\s+script\s+(?:complete|completed|finish|finished)(?:\s+successfully)?|wall time:\s*\d+(?:\.\d+)?\s*(?:ms|s|seconds?)|output:)$/i;
 
 export type PresentedChatRow =
   | { kind: "event"; event: AgentChatEvent; entry?: PresentedWorkEntry }
@@ -218,7 +218,7 @@ function summaryDistinctFromTitle(summary: string, title: string): string {
 
 function presentedTitle(event: AgentChatEvent, block: ActivityBlockModel): string {
   const title = event.title?.trim();
-  if (event.kind === "tool_result" && (!title || /^tool result$/i.test(title))) return "Output";
+  if (event.kind === "tool_result" && (!title || /^tool result$/i.test(title) || isLowSignalActivityTitle(title))) return "Output";
   return block.title;
 }
 
@@ -255,7 +255,8 @@ function detailsFromEvents(primary: AgentChatEvent, mergedResults: AgentChatEven
 function mergedContent(entry: PresentedWorkEntry): string {
   const diagnosticText = entry.merged_result_events
     .map((event) => event.text?.trimEnd())
-    .filter((text): text is string => Boolean(text?.trim()));
+    .filter((text): text is string => Boolean(text?.trim()))
+    .filter((text) => !isNonMeaningfulResultText(text));
 
   if (diagnosticText.length === 0) return entry.block.content;
   return [entry.block.content, ...diagnosticText].filter((part) => part.trim()).join("\n\n");

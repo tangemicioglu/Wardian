@@ -77,6 +77,9 @@ describe("activityBlocks", () => {
   it("recognizes present-participle provider lifecycle titles as low signal", () => {
     expect(isLowSignalActivityTitle("exec starting")).toBe(true);
     expect(isLowSignalActivityTitle("exec_running")).toBe(true);
+    expect(isLowSignalActivityTitle("exec")).toBe(true);
+    expect(isLowSignalActivityTitle("output")).toBe(true);
+    expect(isLowSignalActivityTitle("output script completed")).toBe(true);
     expect(isLowSignalActivityTitle("Read file")).toBe(false);
   });
 
