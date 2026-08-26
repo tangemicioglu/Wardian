@@ -13,6 +13,11 @@ React commits, and roughly half of that work is the workbench tab strip
 re-deriving titles and badges for all twenty tabs on every one of those
 commits.**
 
+Phases 1 and 2 of the plan below are implemented on this branch and cut the
+React work in a tab switch by about half; see
+[Measured outcome of phases 1 and 2](#measured-outcome-of-phases-1-and-2).
+Phases 3 and 4 remain open.
+
 ## Method
 
 Measurements come from `scripts/measure-workbench-performance.mjs` against the
@@ -41,61 +46,70 @@ harness could not provide.
    has not been completing. It now seeds fleet telemetry and exercises Dashboard
    column sorting.
 
-Two caveats on reading the numbers. The measurement waits two animation frames
+Three caveats on reading the numbers. The measurement waits two animation frames
 after the click, so roughly 32 ms at 60 Hz is measurement floor rather than
-perceived lag. And the attribution window spans the whole 20-switch loop, so its
-per-switch self times run higher than the strict click-to-paint window. Use the
+perceived lag. The attribution window spans the whole 20-switch loop, so its
+per-switch self times run higher than the strict click-to-paint window — use the
 attribution for **ratios between components** and the commit totals for absolute
 cost.
+
+And the harness is very sensitive to what else the machine is doing. An early
+run of this profile was taken while unrelated builds and test suites were
+running, and reported a 128 ms median tab switch and 53 ms of React work; the
+same build measured on an idle machine reports 83 ms and 28.5 ms. Every number
+in this document is from an idle run, and before/after pairs were measured under
+the same conditions from two worktrees. Treat any run taken alongside other work
+as unusable.
 
 ## Measured profile
 
 Branch `perf/tab-agent-switching` from `origin/main` @ `706eeb9c`, Windows,
 production renderer.
 
-| Measure | median | p95 | max |
-|---|---:|---:|---:|
-| Tab switch | 127.9 ms | 212.5 ms | 396.3 ms |
-| React commits per tab switch | **8** | 12 | 12 |
-| React commit total per tab switch | **53.4 ms** | 85.5 ms | 87.9 ms |
-| Largest single commit per tab switch | 17.1 ms | — | 21.6 ms |
-| First surface activation | 77.1 ms | 145.6 ms | 180.0 ms |
-| Group focus | 78.6 ms | 142.8 ms | 147.9 ms |
-| Startup restore | 516.7 ms | 1055.2 ms | 1055.2 ms |
-| Full-roster telemetry | 66.6 ms | 99.7 ms | — |
+| Measure | median | p95 |
+|---|---:|---:|
+| Tab switch | 83.1 ms | 113.0 ms |
+| React commits per tab switch | **8** | 12 |
+| React commit total per tab switch | **28.5 ms** | 50.1 ms |
+| First surface activation | 79.9 ms | 146.7 ms |
+| Group focus | 57.0 ms | 96.1 ms |
+| Startup restore | 527.7 ms | 592.5 ms |
+| Full-roster telemetry | 49.9 ms | 66.7 ms |
+| Surface interaction | 69.1 ms | 140.3 ms |
 
 The gate limit for tab switch p95 is 250 ms and the observed value passes it.
-That gate is a regression limit, not a smoothness target: 128 ms median is about
-eight frames.
+That gate is a regression limit, not a smoothness target: an 83 ms median is
+five frames, and a 113 ms p95 is seven.
 
 Tab switch by surface type (median):
 
 | Surface | median |
 |---|---:|
-| agents-overview | **396.3 ms** |
-| graph | 212.5 ms |
-| agent-session | 128.8 ms |
-| garden | 128.4 ms |
-| dashboard | 95.7 ms |
-| workflows | 93.7 ms |
-| inbox | 93.3 ms |
-| files | 79.2 ms |
-| library | 77.5 ms |
-| new-tab | 77.4 ms |
-| browser | 68.7 ms |
+| graph | **113.0 ms** |
+| garden | 112.4 ms |
+| new-tab | 96.1 ms |
+| agent-session | 91.0 ms |
+| dashboard | 90.0 ms |
+| agents-overview | 83.1 ms |
+| inbox | 66.7 ms |
+| files | 63.6 ms |
+| workflows | 63.3 ms |
+| library | 62.5 ms |
+| browser | 47.3 ms |
 
-The largest single commit is nearly flat across surface types (14–22 ms). The
+The largest single commit is nearly flat across surface types (8.7–13.2 ms). The
 variation between surfaces is not one expensive render; it is how much non-React
 work the reveal does.
 
 Two findings surfaced only because the harness now runs to completion:
 
-- **Dashboard column sort is the slowest measured interaction at 282 ms p95**,
-  above every other surface interaction. It had no coverage before because the
-  Dashboard was rendering its empty state.
-- **`full_roster_telemetry_p95_ms` is at or over its 100 ms gate on `main`**
-  (99.7 ms and 118.3 ms across two runs). A full-roster telemetry tick is
-  supposed to be the cheap path.
+- **Dashboard column sort is among the slowest measured interactions**, at
+  140.3 ms median and 146 ms p95, alongside the new-tab command palette. It had
+  no coverage at all before, because the Dashboard was rendering its empty state.
+- **`full_roster_telemetry_p95_ms` reached its 100 ms gate under load**
+  (99.7 ms and 118.3 ms). On an idle machine it sits at 66.7 ms, so the gate is
+  not breached on `main` — but the margin is thin enough that a loaded CI runner
+  can trip it.
 
 The checked-in baseline at
 `docs/research/workbench-navigation/workbench-performance-baseline.json` predates
@@ -305,18 +319,79 @@ the existing `memo()` boundaries start working as written. This is a refactor
 rather than a patch, and should follow phases 1 through 3 rather than block
 them.
 
+## Measured outcome of phases 1 and 2
+
+Both phases are implemented. Base and candidate were measured from two
+worktrees on an idle machine with the same repaired harness, so the pair is
+directly comparable.
+
+| Measure | base | after | change |
+|---|---:|---:|---:|
+| React commit total per tab switch | 28.5 ms | **14.6 ms** | −49% |
+| React commit total, p95 | 50.1 ms | **26.2 ms** | −48% |
+| Tab switch, median | 83.1 ms | 64.0 ms | −23% |
+| Tab switch, p95 | 113.0 ms | 100.7 ms | −11% |
+| First surface activation, median | 79.9 ms | 64.0 ms | −20% |
+| Group focus, median | 57.0 ms | 47.0 ms | −18% |
+| Group focus, p95 | 96.1 ms | 64.5 ms | −33% |
+| Startup restore, median | 527.7 ms | 461.0 ms | −13% |
+| Full-roster telemetry, p95 | 66.7 ms | 51.9 ms | −22% |
+| React commits per tab switch | 8 | 8 | unchanged |
+
+The mechanism, from the same fiber attribution. Render counts are the load-
+independent measure and the one to trust; the self times are indicative, since
+the base attribution run was not as quiet as the base latency run.
+
+| Component | renders/switch, base | renders/switch, after | self ms, base → after |
+|---|---:|---:|---:|
+| `DockviewSurfaceTab` | **157** | **56** | 57.1 → 4.5 |
+| `DockviewSurfacePanel` | 144 | 63 | 17.0 → 2.2 |
+| Dockview group header | 28 | 16 | 14.0 → 2.2 |
+
+The tab strip no longer re-renders on unrelated app state. What remains is
+Dockview re-rendering its own tab components when a group changes active panel,
+which is roughly 2.8 renders per tab per switch and outside this adapter.
+
+Bundle delta against the frozen base: 22,970 gzip bytes, well inside the
+250 KB gate.
+
+### What did not move
+
+**The commit count is still 8 per tab switch.** Phase 1 targeted 4–5 and did
+not reach it. The equality bail-outs removed the `App` renders they were aimed
+at, but the remaining commits originate inside Dockview and the save queue
+rather than in application state, so they need a different fix. They are now
+cheap — the whole set costs 14.6 ms where one of them used to cost 17 ms — so
+the count is no longer the thing to chase first.
+
+**Graph is unchanged at ~114 ms**, the slowest surface to switch to. Its cost
+is the synchronous sigma remount inside the activation commit, which is
+phase 3, not phase 2.
+
+Phases 3 and 4 remain open. Phase 3 (freeze hidden panels, defer heavy reveals,
+code-split the eager bundle) is where the remaining per-surface outliers and the
+461 ms startup restore live.
+
 ## Gate changes
 
-The current gates pass while the app is visibly laggy, and one of them has not
-been running at all. Proposed after phases 1 through 3:
+The gates were set as regression limits against a 250 ms tab switch and could
+not see render fan-out at all. With phases 1 and 2 landed, these are the limits
+the current numbers support — each roughly 20% above the measured p95, which is
+enough headroom for a loaded CI runner without going slack:
 
-| Gate | Now | Proposed |
-|---|---:|---:|
-| `tab_switch_p95_ms` | 250 | 120 |
-| `tab_switch_react_commit_count` (new) | — | 3 |
-| `tab_switch_react_commit_total_ms` (new) | — | 25 |
-| `surface_first_activation_p95_ms` | 500 | 250 |
+| Gate | Now | Proposed | Measured p95 after |
+|---|---:|---:|---:|
+| `tab_switch_p95_ms` | 250 | 125 | 100.7 ms |
+| `tab_switch_react_commit_total_ms` (new) | — | 35 | 26.2 ms |
+| `tab_switch_react_commit_count` (new) | — | 12 | 11 |
+| `surface_first_activation_p95_ms` | 500 | 160 | 128.1 ms |
+| `group_focus_p95_ms` | 175 | 85 | 64.5 ms |
 
-The commit-count gate matters most. A max-single-commit gate cannot catch render
-fan-out, which is exactly the regression this profile found: eight commits of
-17 ms each, reported as "17 ms".
+The commit-total gate is the one that matters. A max-single-commit gate cannot
+catch fan-out, which is exactly the regression this profile found: eight commits
+reported as the duration of one. The count gate is deliberately loose at 12 —
+the count did not improve and is not currently the lever, so it is there to stop
+it growing, not to force it down.
+
+These should be applied together with a regenerated checked-in baseline, as a
+reviewed step separate from this branch.
