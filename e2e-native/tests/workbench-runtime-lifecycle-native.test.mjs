@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { By, Key, until } from "selenium-webdriver";
+import { By, until } from "selenium-webdriver";
 
 import {
   createNativeHarness,
@@ -16,6 +16,7 @@ import {
   closeWorkbenchSurface,
   openWorkbenchSurface,
 } from "../lib/workbench.mjs";
+import { readTerminalDebugSnapshot } from "../lib/terminal-debug.mjs";
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
@@ -110,14 +111,26 @@ async function selectTerminalPreview(driver, root) {
   ), 20000);
 }
 
-async function focusTerminalInput(driver, host) {
-  const input = await host.findElement(By.css(".xterm-helper-textarea"));
-  const focused = await driver.executeScript((terminalHost, terminalInput) => {
-    terminalHost.click();
-    terminalInput.focus();
-    return document.activeElement === terminalInput;
-  }, host, input);
-  assert.equal(focused, true, "Expected the singleton terminal input to receive focus");
+async function sendOwnedTerminalInput(driver, host, input) {
+  const presentationId = await host.getAttribute("data-terminal-presentation-id");
+  assert.ok(presentationId, "Expected the singleton terminal presentation identity");
+  const ownership = await waitFor("singleton terminal input ownership", 10000, async () => {
+    const snapshot = await readTerminalDebugSnapshot(driver, presentationId);
+    return {
+      ok: snapshot?.broker?.ownerPresentationId === presentationId,
+      snapshot,
+    };
+  });
+  const decision = await invokeTauri(driver, "send_terminal_presentation_input", {
+    request: {
+      session_id: wardianSessionId,
+      presentation_id: presentationId,
+      runtime_generation: ownership.snapshot.broker.runtimeGeneration,
+      lease_epoch: ownership.snapshot.broker.leaseEpoch,
+      input,
+    },
+  });
+  assert.equal(decision.status, "accepted");
 }
 
 async function waitForAgentSessionHost(driver) {
@@ -330,8 +343,7 @@ test(
       `Agents presentation must be registered before clear: ${JSON.stringify(initialPresentationDebug)}`,
     );
 
-    await focusTerminalInput(driver, agentsTerminalHost);
-    await driver.actions().sendKeys("before-clear", Key.ENTER).perform();
+    await sendOwnedTerminalInput(driver, agentsTerminalHost, "before-clear\r");
     const beforeClearInput = await waitFor("terminal input before clear", 30000, async () => {
       const snapshot = await readSnapshot(driver);
       return {
@@ -396,8 +408,7 @@ test(
         };
       }, recoveredAgentsTerminalHost, wardianSessionId)
     ));
-    await focusTerminalInput(driver, recoveredAgentsTerminalHost);
-    await driver.actions().sendKeys("after-clear", Key.ENTER).perform();
+    await sendOwnedTerminalInput(driver, recoveredAgentsTerminalHost, "after-clear\r");
     await waitFor("terminal input after clear", 30000, async () => {
       const snapshot = await readSnapshot(driver);
       const debug = await driver.executeScript((host) => {
