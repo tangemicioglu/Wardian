@@ -72,6 +72,17 @@ pub fn load_class_definitions(home: &Path) -> Result<Vec<AgentClassDefinition>, 
     serde_json::from_str::<Vec<AgentClassDefinition>>(&data).map_err(|error| error.to_string())
 }
 
+/// Find a class by its user-facing name without making class names
+/// case-sensitive at command boundaries.
+pub fn find_class<'a>(
+    classes: &'a [AgentClassDefinition],
+    name: &str,
+) -> Option<&'a AgentClassDefinition> {
+    classes
+        .iter()
+        .find(|class| class.name.eq_ignore_ascii_case(name.trim()))
+}
+
 pub fn save_class_definitions(home: &Path, classes: &[AgentClassDefinition]) -> Result<(), String> {
     crate::atomic_file::write_json_atomic(&home.join("classes.json"), classes)
         .map_err(|error| error.to_string())
@@ -285,6 +296,19 @@ mod tests {
             std::fs::read_to_string(root.join("CLAUDE.md")).expect("claude stub"),
             "@AGENTS.md\n"
         );
+    }
+
+    #[test]
+    fn find_class_is_case_insensitive_and_trims_input() {
+        let classes = super::default_class_definitions();
+
+        assert_eq!(
+            super::find_class(&classes, " reviewer ")
+                .expect("reviewer class")
+                .name,
+            "Reviewer"
+        );
+        assert!(super::find_class(&classes, "DefinitelyNotDefined").is_none());
     }
 
     #[test]

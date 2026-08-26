@@ -462,6 +462,10 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             reasoning_effort,
         } => {
             use crate::commands::agent::spawn_agent;
+            let provider = crate::commands::agent::canonical_agent_provider_name(&provider)
+                .map_err(ControlError::bad_request)?;
+            let class = crate::commands::agent::canonical_agent_class_name(&class)
+                .map_err(ControlError::not_found)?;
             let req = build_spawn_agent_request(
                 provider,
                 class,
@@ -494,10 +498,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             let classes = wardian_core::classes::initialize_classes(&home)
                 .map_err(ControlError::request_failed)?;
             if let Some(class) = class.as_deref() {
-                if !classes
-                    .iter()
-                    .any(|definition| definition.name.eq_ignore_ascii_case(class.trim()))
-                {
+                if wardian_core::classes::find_class(&classes, class).is_none() {
                     return Err(ControlError::not_found(format!(
                         "agent class not found: {class}"
                     )));
