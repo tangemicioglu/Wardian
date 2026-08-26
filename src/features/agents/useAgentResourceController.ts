@@ -65,6 +65,7 @@ export type AgentResourceController = {
 };
 
 const EMPTY_APP_TELEMETRY: AppTelemetry = { cpu_usage: 0, memory_mb: 0 };
+const AGENT_ROSTER_REFRESH_DEBOUNCE_MS = 100;
 
 function makeStatusTelemetry(
   session_id: string,
@@ -105,6 +106,10 @@ export function useAgentResourceController(
   const agent_status_ref = useRef<Record<string, string>>({});
   const fetch_request_ref = useRef(0);
   const mounted_ref = useRef(true);
+  const refresh_in_flight_ref = useRef<Promise<readonly AgentConfig[]> | null>(null);
+  const refresh_pending_ref = useRef(false);
+  const pending_spawned_agent_ref = useRef<AgentConfig | undefined>(undefined);
+  const roster_refresh_timer_ref = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const reportError = useCallback((operation: string, error: unknown) => {
     const handler = options_ref.current.on_error;
@@ -128,55 +133,94 @@ export function useAgentResourceController(
   const refreshAgents = useCallback(async (
     spawned_agent?: AgentConfig,
   ): Promise<readonly AgentConfig[]> => {
-    const request_id = ++fetch_request_ref.current;
-    try {
-      const listed_agents = await invoke<AgentConfig[]>("list_agents");
-      if (!mounted_ref.current || request_id !== fetch_request_ref.current) {
-        return agents_ref.current;
-      }
-
-      const normalized = normalizeAgentConfigs(listed_agents);
-      const spawned_agent_id = spawned_agent?.session_id;
-      const should_place_new_agent = Boolean(spawned_agent_id);
-      const new_agent_position = useSettingsStore.getState().watchlistNewAgentPosition;
-      const next_agents = should_place_new_agent
-        ? new_agent_position === "bottom"
-          ? [
-              ...normalized.filter((agent) => agent.session_id !== spawned_agent_id),
-              ...normalized.filter((agent) => agent.session_id === spawned_agent_id),
-            ]
-          : [
-              ...normalized.filter((agent) => agent.session_id === spawned_agent_id),
-              ...normalized.filter((agent) => agent.session_id !== spawned_agent_id),
-            ]
-        : normalized;
-
-      commitAgents(next_agents);
-
-      const order_changed = next_agents.some(
-        (agent, index) => agent.session_id !== normalized[index]?.session_id,
-      );
-      if (
-        should_place_new_agent
-        && order_changed
-        && next_agents.some((agent) => agent.session_id === spawned_agent_id)
-      ) {
-        try {
-          await invoke("reorder_agents", {
-            sessionIds: next_agents.map((agent) => agent.session_id),
-          });
-        } catch (error) {
-          reportError("reorder_spawned_agent", error);
-        }
-      }
-      return next_agents;
-    } catch (error) {
-      if (request_id === fetch_request_ref.current) {
-        reportError("list_agents", error);
-      }
-      return agents_ref.current;
+    if (roster_refresh_timer_ref.current !== null) {
+      clearTimeout(roster_refresh_timer_ref.current);
+      roster_refresh_timer_ref.current = null;
     }
+    if (spawned_agent) {
+      pending_spawned_agent_ref.current = spawned_agent;
+    }
+    if (refresh_in_flight_ref.current) {
+      // A mutation or lifecycle event arrived while the roster request was in
+      // flight. Let the current request finish, then perform one newer load;
+      // callers never create a parallel list_agents request.
+      refresh_pending_ref.current = true;
+      return refresh_in_flight_ref.current;
+    }
+
+    const request = (async (): Promise<readonly AgentConfig[]> => {
+      let latest_agents = agents_ref.current;
+      do {
+        refresh_pending_ref.current = false;
+        const requested_spawned_agent = pending_spawned_agent_ref.current;
+        pending_spawned_agent_ref.current = undefined;
+        const request_id = ++fetch_request_ref.current;
+        try {
+          const listed_agents = await invoke<AgentConfig[]>("list_agents");
+          if (!mounted_ref.current || request_id !== fetch_request_ref.current) {
+            return agents_ref.current;
+          }
+
+          const normalized = normalizeAgentConfigs(listed_agents);
+          const spawned_agent_id = requested_spawned_agent?.session_id;
+          const should_place_new_agent = Boolean(spawned_agent_id);
+          const new_agent_position = useSettingsStore.getState().watchlistNewAgentPosition;
+          const next_agents = should_place_new_agent
+            ? new_agent_position === "bottom"
+              ? [
+                  ...normalized.filter((agent) => agent.session_id !== spawned_agent_id),
+                  ...normalized.filter((agent) => agent.session_id === spawned_agent_id),
+                ]
+              : [
+                  ...normalized.filter((agent) => agent.session_id === spawned_agent_id),
+                  ...normalized.filter((agent) => agent.session_id !== spawned_agent_id),
+                ]
+            : normalized;
+
+          commitAgents(next_agents);
+          latest_agents = next_agents;
+
+          const order_changed = next_agents.some(
+            (agent, index) => agent.session_id !== normalized[index]?.session_id,
+          );
+          if (
+            should_place_new_agent
+            && order_changed
+            && next_agents.some((agent) => agent.session_id === spawned_agent_id)
+          ) {
+            try {
+              await invoke("reorder_agents", {
+                sessionIds: next_agents.map((agent) => agent.session_id),
+              });
+            } catch (error) {
+              reportError("reorder_spawned_agent", error);
+            }
+          }
+        } catch (error) {
+          if (request_id === fetch_request_ref.current) {
+            reportError("list_agents", error);
+          }
+          latest_agents = agents_ref.current;
+        }
+      } while (refresh_pending_ref.current && mounted_ref.current);
+      return latest_agents;
+    })();
+    const tracked_request = request.finally(() => {
+      if (refresh_in_flight_ref.current === tracked_request) {
+        refresh_in_flight_ref.current = null;
+      }
+    });
+    refresh_in_flight_ref.current = tracked_request;
+    return tracked_request;
   }, [commitAgents, reportError]);
+
+  const scheduleRefreshAgents = useCallback(() => {
+    if (roster_refresh_timer_ref.current !== null) return;
+    roster_refresh_timer_ref.current = setTimeout(() => {
+      roster_refresh_timer_ref.current = null;
+      void refreshAgents();
+    }, AGENT_ROSTER_REFRESH_DEBOUNCE_MS);
+  }, [refreshAgents]);
 
   const applyAgentConfig = useCallback((updated_agent: AgentConfig) => {
     const normalized_agent = normalizeAgentConfig(updated_agent);
@@ -229,7 +273,7 @@ export function useAgentResourceController(
         }
       }),
       listen("agents-updated", () => {
-        void refreshAgents();
+        scheduleRefreshAgents();
       }),
       listen<AgentTelemetry[]>("agent-metrics", (event) => {
         const previous_telemetry = telemetry_ref.current;
@@ -304,11 +348,15 @@ export function useAgentResourceController(
     return () => {
       mounted_ref.current = false;
       fetch_request_ref.current += 1;
+      if (roster_refresh_timer_ref.current !== null) {
+        clearTimeout(roster_refresh_timer_ref.current);
+        roster_refresh_timer_ref.current = null;
+      }
       for (const subscription of subscriptions) {
         void subscription.then((unlisten) => unlisten()).catch(() => undefined);
       }
     };
-  }, [applyStatus, refreshAgents, reportError]);
+  }, [applyStatus, refreshAgents, reportError, scheduleRefreshAgents]);
 
   const setTerminalTitle = useCallback((session_id: string, title: string) => {
     setTerminalTitles((previous) => ({ ...previous, [session_id]: title }));

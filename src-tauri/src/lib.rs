@@ -25,7 +25,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use wardian_core::models::AgentConfig;
 
 const TELEMETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-const TELEMETRY_TICK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const TELEMETRY_TICK_SLOW_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn schedule_restored_agent_archive_sync(app_handle: AppHandle, session_id: String) {
     tauri::async_runtime::spawn(async move {
@@ -136,24 +136,19 @@ fn start_metrics_supervisor(metrics_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(TELEMETRY_INTERVAL).await;
-            let tick_handle = metrics_handle.clone();
-            let mut tick = tauri::async_runtime::spawn(async move {
-                emit_metrics_tick(tick_handle).await;
-            });
-            match tokio::time::timeout(TELEMETRY_TICK_TIMEOUT, &mut tick).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    crate::utils::logging::log_debug(&format!(
-                        "[Wardian] Telemetry tick failed; continuing metrics supervisor: {error}"
-                    ));
-                }
-                Err(_) => {
-                    tick.abort();
-                    crate::utils::logging::log_debug(&format!(
-                        "[Wardian] Telemetry tick exceeded {}s; continuing metrics supervisor while timed-out work finishes in background",
-                        TELEMETRY_TICK_TIMEOUT.as_secs()
-                    ));
-                }
+            let started = std::time::Instant::now();
+            // Do not abort a future that owns spawn_blocking work. Tokio cannot
+            // cancel a blocking task after it starts, so aborting here detached
+            // the old scan and allowed another one to start on the next tick.
+            // Awaiting the tick in this supervisor keeps the work single-flight:
+            // a slow sample delays the next sample, but can never multiply it.
+            emit_metrics_tick(metrics_handle.clone()).await;
+            let elapsed = started.elapsed();
+            if elapsed >= TELEMETRY_TICK_SLOW_THRESHOLD {
+                crate::utils::logging::log_debug(&format!(
+                    "[Wardian] Telemetry tick took {}s; next sample deferred until it completed",
+                    elapsed.as_secs()
+                ));
             }
         }
     });
