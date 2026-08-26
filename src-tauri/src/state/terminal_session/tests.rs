@@ -791,6 +791,85 @@ async fn remote_owner_change_rejects_stale_native_focus_without_running_action()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authorized_native_focus_timeout_releases_output_and_ownership_processing() {
+    let timer = Arc::new(ManualTimer::default());
+    let (broker, generation) = start(timer).await;
+    register_desktop(&broker, "desktop:zellij-habitat-terminal").await;
+    broker
+        .register_presentation(
+            registration(
+                "remote-owner",
+                TerminalClientKind::Remote,
+                TerminalRequestedInteraction::Interactive,
+            ),
+            TerminalClientIdentity::authenticated_remote("remote-owner", true),
+        )
+        .await
+        .expect("register remote");
+    let lease_epoch = broker
+        .broker_state("session-1")
+        .await
+        .expect("broker state")
+        .lease_epoch;
+    let focus_broker = Arc::clone(&broker);
+    let focus = tokio::spawn(async move {
+        focus_broker
+            .run_authorized_native_focus(
+                "session-1",
+                generation,
+                lease_epoch,
+                "desktop:zellij-habitat-terminal",
+                || async move { std::future::pending::<Result<(), String>>().await },
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let output_broker = Arc::clone(&broker);
+    let output = tokio::task::spawn_blocking(move || {
+        output_broker.process_output_blocking(
+            "session-1",
+            generation,
+            b"focus-timeout-recovered".to_vec(),
+        )
+    });
+    let remote_broker = Arc::clone(&broker);
+    let remote_activation = tokio::spawn(async move {
+        remote_broker
+            .begin_activation(TerminalActivationBeginRequest {
+                session_id: "session-1".to_string(),
+                presentation_id: "remote-owner".to_string(),
+                runtime_generation: generation,
+                observed_lease_epoch: lease_epoch,
+            })
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!output.is_finished());
+    assert!(!remote_activation.is_finished());
+
+    assert_eq!(
+        focus.await.expect("focus task"),
+        Err(TerminalBrokerError::RuntimeIo(
+            "native_focus_timeout".to_string()
+        ))
+    );
+    tokio::time::timeout(Duration::from_secs(1), output)
+        .await
+        .expect("output pipeline remained blocked")
+        .expect("output task")
+        .expect("process output after timeout");
+    let remote = tokio::time::timeout(Duration::from_secs(1), remote_activation)
+        .await
+        .expect("ownership processing remained blocked")
+        .expect("remote activation task")
+        .expect("remote activation after timeout");
+    assert_eq!(remote.decision.status, TerminalLeaseDecisionStatus::Accepted);
+    let snapshot = broker.snapshot("session-1").await.expect("snapshot");
+    assert!(snapshot.visible_grid.contains("focus-timeout-recovered"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pending_activation_freezes_input_and_timeout_rolls_back() {
     let timer = Arc::new(ManualTimer::default());
     let (broker, generation) = start(timer.clone()).await;

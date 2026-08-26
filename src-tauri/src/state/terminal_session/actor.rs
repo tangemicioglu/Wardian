@@ -19,6 +19,10 @@ const EVENT_WAKE_COALESCE: Duration = Duration::from_millis(16);
 const ACTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_INPUT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(not(test))]
+const AUTHORIZED_NATIVE_FOCUS_TIMEOUT: Duration = Duration::from_millis(4_500);
+#[cfg(test)]
+const AUTHORIZED_NATIVE_FOCUS_TIMEOUT: Duration = Duration::from_millis(250);
 
 type ResizeHandler = dyn Fn(TerminalGeometry) -> Result<(), String> + Send + Sync + 'static;
 type BrokerReply<T> = oneshot::Sender<Result<T, TerminalBrokerError>>;
@@ -2614,7 +2618,12 @@ impl TerminalSessionActor {
         {
             return Err(TerminalBrokerError::NativeFocusUnauthorized);
         }
-        action().await.map_err(TerminalBrokerError::RuntimeIo)
+        match tokio::time::timeout(AUTHORIZED_NATIVE_FOCUS_TIMEOUT, action()).await {
+            Ok(result) => result.map_err(TerminalBrokerError::RuntimeIo),
+            Err(_) => Err(TerminalBrokerError::RuntimeIo(
+                "native_focus_timeout".to_string(),
+            )),
+        }
     }
 
     fn begin_owner_resync(

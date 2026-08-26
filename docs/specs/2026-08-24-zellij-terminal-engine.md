@@ -91,7 +91,10 @@ Wardian AppState
 
 The attached client is a hidden lifecycle process that keeps the Zellij server
 and provider panes alive; it is not a terminal-session broker runtime on any
-platform. Each provider pane has one JSON snapshot subscription and its own
+platform. Every attached-client installation receives a monotonic engine-owned
+generation. A delayed EOF callback clears engine state only when that exact
+generation is still installed, so an old reader cannot detach a replacement
+client. Each provider pane has one JSON snapshot subscription and its own
 generation-scoped broker runtime. Exactly one app-level xterm.js host renders
 the selected agent's broker stream. That host remains mounted in one app-root
 viewport for its entire lifetime; card changes reposition the viewport without
@@ -241,7 +244,12 @@ unique handoff token. The engine records each request before attached-client
 startup and rechecks that token before each native unfullscreen, focus, and
 fullscreen action under the focus lock. A superseding selection or the
 five-second frontend deadline explicitly cancels the matching native token, so
-the expired request cannot continue with another pane mutation. Removing an
+the expired request cannot continue with another pane mutation. Native focus
+commands have a four-second backend deadline and run as killable helper
+processes; cancellation or expiry terminates the helper. The broker actor has a
+bounded backstop and releases queued output and ownership work after a failed
+focus transaction, while a command timeout moves the engine to recoverable
+`reattaching` state. Removing an
 in-flight target invalidates that activation and queues a focus reconciliation
 for the still-live target. A removed final target clears its active agent
 identity, so remounting requires a fresh activation instead of silently

@@ -243,7 +243,11 @@ WebGL objects.
 Native pane handoffs are request-token fenced before every Zellij focus or
 fullscreen mutation. Superseding a card selection, removing its slot, or
 reaching the bounded handoff deadline cancels the matching token before the
-frontend permits another activation to settle.
+frontend permits another activation to settle. The Zellij helper process is
+killable and has a four-second native deadline. The actor authorization window
+has its own bounded backstop, so a hung helper cannot indefinitely block
+terminal output or a remote ownership transition; timeout leaves the broker
+responsive and marks the engine for reattachment.
 
 The authenticated remote WebSocket registers a remote presentation and
 consumer, then uses the same activation, input, resize, snapshot, events, ack,

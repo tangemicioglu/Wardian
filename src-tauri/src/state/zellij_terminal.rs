@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -20,6 +22,13 @@ const PANE_ID_RECONCILIATION_TIMEOUT: std::time::Duration = std::time::Duration:
 const PANE_CLEANUP_CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(test)]
 const PANE_CLEANUP_CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Duration::ZERO;
+#[cfg(not(test))]
+const ACTIVATION_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+#[cfg(test)]
+const ACTIVATION_COMMAND_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(250);
+const ACTIVATION_COMMAND_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(10);
 
 fn zellij_helper_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
@@ -306,6 +315,40 @@ pub trait ZellijCommandRunner: Send + Sync {
     ) -> Result<Output, String> {
         self.run(executable, args, env)
     }
+
+    fn run_controlled(
+        &self,
+        executable: &Path,
+        args: &[String],
+        env: &[(OsString, OsString)],
+        cancelled: Arc<AtomicBool>,
+        deadline: std::time::Instant,
+    ) -> Result<Output, String> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("Terminal handoff was superseded".to_string());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("Terminal handoff timed out".to_string());
+        }
+        self.run(executable, args, env)
+    }
+
+    fn run_status_controlled(
+        &self,
+        executable: &Path,
+        args: &[String],
+        env: &[(OsString, OsString)],
+        cancelled: Arc<AtomicBool>,
+        deadline: std::time::Instant,
+    ) -> Result<Output, String> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("Terminal handoff was superseded".to_string());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("Terminal handoff timed out".to_string());
+        }
+        self.run_status(executable, args, env)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -338,11 +381,103 @@ impl ZellijCommandRunner for ProcessZellijCommandRunner {
             .output()
             .map_err(|error| format!("Zellij command could not start: {error}"))
     }
+
+    fn run_controlled(
+        &self,
+        executable: &Path,
+        args: &[String],
+        env: &[(OsString, OsString)],
+        cancelled: Arc<AtomicBool>,
+        deadline: std::time::Instant,
+    ) -> Result<Output, String> {
+        run_controlled_zellij_process(executable, args, env, cancelled, deadline)
+    }
+
+    fn run_status_controlled(
+        &self,
+        executable: &Path,
+        args: &[String],
+        env: &[(OsString, OsString)],
+        cancelled: Arc<AtomicBool>,
+        deadline: std::time::Instant,
+    ) -> Result<Output, String> {
+        run_controlled_zellij_process(executable, args, env, cancelled, deadline)
+    }
+}
+
+fn run_controlled_zellij_process(
+    executable: &Path,
+    args: &[String],
+    env: &[(OsString, OsString)],
+    cancelled: Arc<AtomicBool>,
+    deadline: std::time::Instant,
+) -> Result<Output, String> {
+    let mut child = zellij_helper_command(executable)
+        .args(args)
+        .envs(env.iter().cloned())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Zellij command could not start: {error}"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Zellij command stdout was unavailable".to_string())?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Zellij command stderr was unavailable".to_string())?;
+    let stdout_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+
+    let outcome = loop {
+        if cancelled.load(Ordering::Acquire) {
+            break Err("Terminal handoff was superseded".to_string());
+        }
+        if std::time::Instant::now() >= deadline {
+            break Err("Terminal handoff timed out".to_string());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => std::thread::sleep(ACTIVATION_COMMAND_POLL_INTERVAL),
+            Err(error) => break Err(format!("Zellij command status failed: {error}")),
+        }
+    };
+
+    if outcome.is_err() && child.kill().is_err() {
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            _ => return outcome.map(|_| unreachable!()),
+        }
+    }
+    let _ = child.wait();
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "Zellij command stdout reader failed".to_string())?
+        .map_err(|error| format!("Zellij command stdout failed: {error}"))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "Zellij command stderr reader failed".to_string())?
+        .map_err(|error| format!("Zellij command stderr failed: {error}"))?;
+    outcome.map(|status| Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 struct ZellijEngineState {
     phase: ZellijEnginePhase,
     attached: Option<ZellijAttachedClient>,
+    attached_generation: Option<u64>,
+    next_attached_generation: u64,
 }
 
 #[derive(Default)]
@@ -404,7 +539,6 @@ impl ZellijPaneRegistry {
 
 struct ZellijAttachedClient {
     child: ZellijAttachedProcess,
-    runtime_generation: u64,
     #[cfg(not(windows))]
     _master: crate::state::terminal_session::SharedPtyMaster,
 }
@@ -421,7 +555,55 @@ impl Default for ZellijEngineState {
         Self {
             phase: ZellijEnginePhase::Stopped,
             attached: None,
+            attached_generation: None,
+            next_attached_generation: 0,
         }
+    }
+}
+
+impl ZellijEngineState {
+    fn allocate_attached_generation(&mut self) -> Result<u64, String> {
+        let generation = self
+            .next_attached_generation
+            .checked_add(1)
+            .ok_or_else(|| "Zellij attached-client generation was exhausted".to_string())?;
+        self.next_attached_generation = generation;
+        Ok(generation)
+    }
+
+    #[cfg_attr(windows, allow(dead_code))]
+    fn record_attached_exit(&mut self, generation: u64) -> bool {
+        if self.attached_generation != Some(generation) {
+            return false;
+        }
+        self.attached = None;
+        self.attached_generation = None;
+        self.phase = ZellijEnginePhase::Reattaching;
+        true
+    }
+}
+
+#[derive(Clone)]
+struct ZellijActivationRequest {
+    id: String,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct ZellijActionControl {
+    cancelled: Arc<AtomicBool>,
+    deadline: std::time::Instant,
+}
+
+impl ZellijActionControl {
+    fn for_activation(cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            cancelled,
+            deadline: std::time::Instant::now() + ACTIVATION_COMMAND_TIMEOUT,
+        }
+    }
+
+    fn uncancelled() -> Self {
+        Self::for_activation(Arc::new(AtomicBool::new(false)))
     }
 }
 
@@ -432,7 +614,7 @@ pub struct ZellijTerminalEngine {
     panes: std::sync::Mutex<ZellijPaneRegistry>,
     start_lock: Mutex<()>,
     activation_lock: Mutex<()>,
-    latest_activation_request: std::sync::Mutex<Option<String>>,
+    latest_activation_request: std::sync::Mutex<Option<ZellijActivationRequest>>,
 }
 
 impl ZellijTerminalEngine {
@@ -617,12 +799,7 @@ impl ZellijTerminalEngine {
     }
 
     pub async fn attached_runtime_generation(&self) -> Option<u64> {
-        self.state
-            .lock()
-            .await
-            .attached
-            .as_ref()
-            .map(|client| client.runtime_generation)
+        self.state.lock().await.attached_generation
     }
 
     pub async fn attached_exit_status(&self) -> Result<Option<u32>, String> {
@@ -659,9 +836,13 @@ impl ZellijTerminalEngine {
                     }
                 };
                 if alive {
-                    return Ok(attached.runtime_generation);
+                    state.phase = ZellijEnginePhase::Running;
+                    return state.attached_generation.ok_or_else(|| {
+                        "Zellij attached client lost its generation".to_string()
+                    });
                 }
                 state.attached = None;
+                state.attached_generation = None;
                 state.phase = ZellijEnginePhase::Reattaching;
             }
             state.phase = ZellijEnginePhase::Starting;
@@ -683,12 +864,13 @@ impl ZellijTerminalEngine {
                     return Err(error);
                 }
                 let mut state = self.state.lock().await;
+                let runtime_generation = state.allocate_attached_generation()?;
                 state.attached = Some(ZellijAttachedClient {
                     child: ZellijAttachedProcess::NativeConsole(pid),
-                    runtime_generation: 1,
                 });
+                state.attached_generation = Some(runtime_generation);
                 state.phase = ZellijEnginePhase::Running;
-                return Ok(1);
+                return Ok(runtime_generation);
             }
         }
 
@@ -787,12 +969,13 @@ impl ZellijTerminalEngine {
                 return Err(error);
             }
             let mut state = self.state.lock().await;
+            let runtime_generation = state.allocate_attached_generation()?;
             state.attached = Some(ZellijAttachedClient {
                 child: ZellijAttachedProcess::NativeConsole(pid),
-                runtime_generation: 1,
             });
+            state.attached_generation = Some(runtime_generation);
             state.phase = ZellijEnginePhase::Running;
-            Ok(1)
+            Ok(runtime_generation)
         }
 
         #[cfg(not(windows))]
@@ -838,8 +1021,18 @@ impl ZellijTerminalEngine {
                 Arc::new(std::sync::Mutex::new(pair.master));
             drop(pair.slave);
 
+            let runtime_generation = {
+                let mut state = self.state.lock().await;
+                let runtime_generation = state.allocate_attached_generation()?;
+                state.attached = Some(ZellijAttachedClient {
+                    child: ZellijAttachedProcess::Portable(child),
+                    _master: master,
+                });
+                state.attached_generation = Some(runtime_generation);
+                state.phase = ZellijEnginePhase::Running;
+                runtime_generation
+            };
             let weak_engine = Arc::downgrade(self);
-            let runtime_generation = 1;
             std::thread::spawn(move || {
                 let mut buffer = [0u8; 8192];
                 while std::io::Read::read(&mut reader, &mut buffer).is_ok_and(|read| read > 0) {
@@ -850,25 +1043,10 @@ impl ZellijTerminalEngine {
                 if let Some(engine) = weak_engine.upgrade() {
                     tauri::async_runtime::spawn(async move {
                         let mut state = engine.state.lock().await;
-                        if state
-                            .attached
-                            .as_ref()
-                            .is_some_and(|client| client.runtime_generation == runtime_generation)
-                        {
-                            state.attached = None;
-                            state.phase = ZellijEnginePhase::Reattaching;
-                        }
+                        state.record_attached_exit(runtime_generation);
                     });
                 }
             });
-
-            let mut state = self.state.lock().await;
-            state.attached = Some(ZellijAttachedClient {
-                child: ZellijAttachedProcess::Portable(child),
-                runtime_generation,
-                _master: master,
-            });
-            state.phase = ZellijEnginePhase::Running;
             Ok(runtime_generation)
         }
     }
@@ -916,6 +1094,25 @@ impl ZellijTerminalEngine {
                 "--all".to_string(),
                 "--json".to_string(),
             ])
+            .await?;
+        serde_json::from_slice(&output.stdout)
+            .map_err(|error| format!("Zellij returned invalid pane state: {error}"))
+    }
+
+    async fn list_panes_controlled(
+        &self,
+        control: &ZellijActionControl,
+    ) -> Result<Vec<ZellijPaneInfo>, String> {
+        let output = self
+            .run_action_controlled(
+                vec![
+                    "action".to_string(),
+                    "list-panes".to_string(),
+                    "--all".to_string(),
+                    "--json".to_string(),
+                ],
+                control,
+            )
             .await?;
         serde_json::from_slice(&output.stdout)
             .map_err(|error| format!("Zellij returned invalid pane state: {error}"))
@@ -1526,10 +1723,17 @@ impl ZellijTerminalEngine {
     }
 
     pub fn register_activation_request(&self, request_id: &str) {
-        *self
+        let mut latest = self
             .latest_activation_request
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request_id.to_string());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(previous) = latest.take() {
+            previous.cancelled.store(true, Ordering::Release);
+        }
+        *latest = Some(ZellijActivationRequest {
+            id: request_id.to_string(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        });
     }
 
     pub fn cancel_activation_request(&self, request_id: &str) -> bool {
@@ -1537,9 +1741,13 @@ impl ZellijTerminalEngine {
             .latest_activation_request
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if latest.as_deref() != Some(request_id) {
+        let Some(request) = latest.as_ref() else {
+            return false;
+        };
+        if request.id != request_id {
             return false;
         }
+        request.cancelled.store(true, Ordering::Release);
         *latest = None;
         true
     }
@@ -1548,8 +1756,26 @@ impl ZellijTerminalEngine {
         self.latest_activation_request
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_deref()
-            == Some(request_id)
+            .as_ref()
+            .is_some_and(|request| {
+                request.id == request_id && !request.cancelled.load(Ordering::Acquire)
+            })
+    }
+
+    fn activation_control(&self, request_id: &str) -> Result<ZellijActionControl, String> {
+        let latest = self
+            .latest_activation_request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let request = latest
+            .as_ref()
+            .filter(|request| {
+                request.id == request_id && !request.cancelled.load(Ordering::Acquire)
+            })
+            .ok_or_else(|| "Terminal handoff was superseded".to_string())?;
+        Ok(ZellijActionControl::for_activation(Arc::clone(
+            &request.cancelled,
+        )))
     }
 
     fn ensure_activation_request_is_current(&self, request_id: Option<&str>) -> Result<(), String> {
@@ -1564,9 +1790,10 @@ impl ZellijTerminalEngine {
         session_id: &str,
         generation: u64,
         request_id: Option<&str>,
+        control: &ZellijActionControl,
     ) -> Result<(), String> {
         let target = self.live_pane(session_id, generation).await?;
-        let panes = self.list_panes().await?;
+        let panes = self.list_panes_controlled(control).await?;
         if let Some(fullscreen) = panes.iter().find(|pane| {
             !pane.is_plugin
                 && pane.pane_id().is_some_and(|pane_id| pane_id != target)
@@ -1574,32 +1801,41 @@ impl ZellijTerminalEngine {
         }) {
             let fullscreen_id = fullscreen.pane_id().expect("terminal pane checked above");
             self.ensure_activation_request_is_current(request_id)?;
-            self.run_status_action(vec![
-                "action".to_string(),
-                "toggle-no-ui-fullscreen".to_string(),
-                "--pane-id".to_string(),
-                fullscreen_id.as_str().to_string(),
-            ])
+            self.run_status_action_controlled(
+                vec![
+                    "action".to_string(),
+                    "toggle-no-ui-fullscreen".to_string(),
+                    "--pane-id".to_string(),
+                    fullscreen_id.as_str().to_string(),
+                ],
+                control,
+            )
             .await?;
         }
         self.ensure_activation_request_is_current(request_id)?;
-        self.run_status_action(vec![
-            "action".to_string(),
-            "focus-pane-id".to_string(),
-            target.as_str().to_string(),
-        ])
+        self.run_status_action_controlled(
+            vec![
+                "action".to_string(),
+                "focus-pane-id".to_string(),
+                target.as_str().to_string(),
+            ],
+            control,
+        )
         .await?;
         let target_is_fullscreen = panes.iter().any(|pane| {
             pane.pane_id().is_some_and(|pane_id| pane_id == target) && pane.is_fullscreen
         });
         if !target_is_fullscreen {
             self.ensure_activation_request_is_current(request_id)?;
-            self.run_status_action(vec![
-                "action".to_string(),
-                "toggle-no-ui-fullscreen".to_string(),
-                "--pane-id".to_string(),
-                target.as_str().to_string(),
-            ])
+            self.run_status_action_controlled(
+                vec![
+                    "action".to_string(),
+                    "toggle-no-ui-fullscreen".to_string(),
+                    "--pane-id".to_string(),
+                    target.as_str().to_string(),
+                ],
+                control,
+            )
             .await?;
         }
         Ok(())
@@ -1607,7 +1843,13 @@ impl ZellijTerminalEngine {
 
     pub async fn activate_pane(&self, session_id: &str, generation: u64) -> Result<(), String> {
         let _activation_guard = self.activation_lock.lock().await;
-        self.activate_pane_locked(session_id, generation, None).await
+        self.activate_pane_locked(
+            session_id,
+            generation,
+            None,
+            &ZellijActionControl::uncancelled(),
+        )
+        .await
     }
 
     pub async fn activate_pane_for_request(
@@ -1623,7 +1865,8 @@ impl ZellijTerminalEngine {
         if self.replacement_pending(session_id) {
             return Err("Agent terminal restart is still settling".to_string());
         }
-        self.activate_pane_locked(session_id, generation, Some(request_id))
+        let control = self.activation_control(request_id)?;
+        self.activate_pane_locked(session_id, generation, Some(request_id), &control)
             .await
     }
 
@@ -1739,6 +1982,29 @@ impl ZellijTerminalEngine {
         }
     }
 
+    async fn run_action_controlled(
+        &self,
+        action: Vec<String>,
+        control: &ZellijActionControl,
+    ) -> Result<Output, String> {
+        let executable = self.config.executable.clone();
+        let runner = self.runner.clone();
+        let mut args = vec!["--session".to_string(), self.config.session_name.clone()];
+        args.extend(action);
+        let env = vec![(
+            OsString::from("ZELLIJ_CONFIG_DIR"),
+            self.config.config_dir().into_os_string(),
+        )];
+        let cancelled = Arc::clone(&control.cancelled);
+        let deadline = control.deadline;
+        let result = tokio::task::spawn_blocking(move || {
+            runner.run_controlled(&executable, &args, &env, cancelled, deadline)
+        })
+        .await
+        .map_err(|error| format!("Zellij command task failed: {error}"))?;
+        self.finish_controlled_action(result).await
+    }
+
     async fn run_status_action(&self, action: Vec<String>) -> Result<Output, String> {
         let executable = self.config.executable.clone();
         let runner = self.runner.clone();
@@ -1756,6 +2022,50 @@ impl ZellijTerminalEngine {
             Ok(output)
         } else {
             Err("Zellij command failed".to_string())
+        }
+    }
+
+    async fn run_status_action_controlled(
+        &self,
+        action: Vec<String>,
+        control: &ZellijActionControl,
+    ) -> Result<Output, String> {
+        let executable = self.config.executable.clone();
+        let runner = self.runner.clone();
+        let mut args = vec!["--session".to_string(), self.config.session_name.clone()];
+        args.extend(action);
+        let env = vec![(
+            OsString::from("ZELLIJ_CONFIG_DIR"),
+            self.config.config_dir().into_os_string(),
+        )];
+        let cancelled = Arc::clone(&control.cancelled);
+        let deadline = control.deadline;
+        let result = tokio::task::spawn_blocking(move || {
+            runner.run_status_controlled(&executable, &args, &env, cancelled, deadline)
+        })
+        .await
+        .map_err(|error| format!("Zellij command task failed: {error}"))?;
+        self.finish_controlled_action(result).await
+    }
+
+    async fn finish_controlled_action(
+        &self,
+        result: Result<Output, String>,
+    ) -> Result<Output, String> {
+        match result {
+            Ok(output) if output.status.success() => Ok(output),
+            Ok(output) => {
+                let detail = String::from_utf8_lossy(&output.stderr);
+                Err(format!(
+                    "Zellij command failed: {}",
+                    redact_zellij_error(&detail)
+                ))
+            }
+            Err(error) if error == "Terminal handoff timed out" => {
+                self.set_phase(ZellijEnginePhase::Reattaching).await;
+                Err(error)
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -1970,6 +2280,91 @@ mod tests {
     fn status(code: i32) -> ExitStatus {
         use std::os::unix::process::ExitStatusExt;
         ExitStatus::from_raw(code << 8)
+    }
+
+    fn sleeping_helper() -> (PathBuf, Vec<String>) {
+        #[cfg(windows)]
+        {
+            (
+                PathBuf::from("powershell.exe"),
+                vec![
+                    "-NoLogo".to_string(),
+                    "-NoProfile".to_string(),
+                    "-NonInteractive".to_string(),
+                    "-Command".to_string(),
+                    "Start-Sleep -Seconds 30".to_string(),
+                ],
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            (
+                PathBuf::from("/bin/sh"),
+                vec!["-c".to_string(), "exec sleep 30".to_string()],
+            )
+        }
+    }
+
+    #[test]
+    fn delayed_attached_exit_does_not_clear_replacement_generation() {
+        let mut state = ZellijEngineState::default();
+        let old_generation = state.allocate_attached_generation().unwrap();
+        state.attached_generation = Some(old_generation);
+        state.phase = ZellijEnginePhase::Running;
+        let replacement_generation = state.allocate_attached_generation().unwrap();
+        state.attached_generation = Some(replacement_generation);
+
+        assert!(!state.record_attached_exit(old_generation));
+        assert_eq!(state.attached_generation, Some(replacement_generation));
+        assert_eq!(state.phase, ZellijEnginePhase::Running);
+    }
+
+    #[test]
+    fn controlled_process_runner_terminates_helper_at_deadline() {
+        let (executable, args) = sleeping_helper();
+        let started = std::time::Instant::now();
+        let result = ProcessZellijCommandRunner.run_status_controlled(
+            &executable,
+            &args,
+            &[],
+            Arc::new(AtomicBool::new(false)),
+            started + std::time::Duration::from_millis(75),
+        );
+
+        assert_eq!(result, Err("Terminal handoff timed out".to_string()));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "the killed helper must not hold the calling thread"
+        );
+    }
+
+    #[test]
+    fn controlled_process_runner_terminates_helper_when_cancelled() {
+        let (executable, args) = sleeping_helper();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&cancelled);
+        let cancel_thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(75));
+            signal.store(true, AtomicOrdering::Release);
+        });
+        let started = std::time::Instant::now();
+        let result = ProcessZellijCommandRunner.run_status_controlled(
+            &executable,
+            &args,
+            &[],
+            cancelled,
+            started + std::time::Duration::from_secs(5),
+        );
+        cancel_thread.join().unwrap();
+
+        assert_eq!(
+            result,
+            Err("Terminal handoff was superseded".to_string())
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "activation cancellation must terminate the helper"
+        );
     }
 
     #[derive(Default)]

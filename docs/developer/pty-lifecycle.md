@@ -57,7 +57,12 @@ single-pane creation path instead of being treated as a live replacement.
 Native pane focus is executed through the terminal broker actor with the
 preview's runtime generation and lease epoch. The actor rejects stale, remote-
 owned, or pending-transfer requests before invoking Zellij and cannot process a
-competing ownership transition until the focus operation finishes.
+competing ownership transition until the focus operation finishes. Focus CLI
+helpers are cancellation-aware, are killed at a four-second backend deadline,
+and have an actor-level timeout backstop so output and ownership processing
+resume after failure. Each replacement attached client also receives a unique
+engine generation; delayed exit callbacks from older clients cannot clear the
+replacement.
 
 ### Shell-hosted Launch Notes
 - Workflow shell-command nodes and headless provider runs use the same shell resolver as interactive PTY sessions.
