@@ -105,6 +105,15 @@ export function AgentSessionSurface({
   const handleTerminalFocus = useCallback(() => {
     on_terminal_focus?.(resource_key);
   }, [on_terminal_focus, resource_key]);
+  // An inline arrow here was enough on its own to defeat `memo(AgentTerminal)`
+  // for every open agent tab, since it is a new prop identity every render.
+  const handlePresentationStateChange = useCallback((
+    nextBrokerState: TerminalBrokerState | null,
+    nextPresentationState: TerminalPresentationState | null,
+  ) => {
+    setObservedBrokerState(nextBrokerState);
+    setObservedPresentationState(nextPresentationState);
+  }, []);
 
   if (!resolvedAgent) {
     return (
@@ -233,10 +242,7 @@ export function AgentSessionSurface({
           onTitleChange={handleTitleChange}
           onTerminalFocus={handleTerminalFocus}
           autoFocus={auto_focus_terminal}
-          onPresentationStateChange={(nextBrokerState, nextPresentationState) => {
-            setObservedBrokerState(nextBrokerState);
-            setObservedPresentationState(nextPresentationState);
-          }}
+          onPresentationStateChange={handlePresentationStateChange}
         />
       </div>
     </section>
