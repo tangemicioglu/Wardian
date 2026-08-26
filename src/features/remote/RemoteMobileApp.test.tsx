@@ -2217,6 +2217,53 @@ describe("RemoteMobileApp", () => {
     });
   });
 
+  it("hides command-less exec lifecycle rows and shows the command for exec starting on mobile", async () => {
+    const lifecycleEvent = (overrides: Partial<AgentChatEvent>): AgentChatEvent => ({
+      id: "exec-starting",
+      session_id: "agent-1",
+      provider: "codex",
+      kind: "tool_call",
+      role: null,
+      text: null,
+      title: "exec starting",
+      status: "running",
+      turn_id: null,
+      source: "provider_log",
+      command: "npm test -- chat",
+      exit_code: null,
+      path: null,
+      language: "shell",
+      created_at: "2026-05-21T08:00:00.000Z",
+      sequence: 1,
+      metadata: { raw_type: "exec_starting" },
+      ...overrides,
+    });
+    mockRemoteAgentDetailFetch("codex", {
+      status: "Processing...",
+      chatEvents: [
+        lifecycleEvent({}),
+        lifecycleEvent({
+          id: "exec-running-without-command",
+          title: "exec running",
+          command: null,
+          sequence: 2,
+          metadata: { raw_type: "exec_running" },
+        }),
+      ],
+    });
+
+    render(<RemoteMobileApp />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /Open Coder details/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
+
+    const summary = await screen.findByTestId("chat-tool-call-summary");
+    expect(summary).toHaveTextContent("$ npm test -- chat");
+    expect(screen.queryByText("exec starting")).not.toBeInTheDocument();
+    expect(screen.queryByText("exec running")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("chat-tool-call-summary")).toHaveLength(1);
+  });
+
   it("renders remote diff and todo tool activity with desktop-style structure", async () => {
     mockRemoteAgentDetailFetch("codex", {
       chatEvents: [
