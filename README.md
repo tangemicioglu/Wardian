@@ -59,7 +59,7 @@ Choose the asset for your operating system and CPU:
 Debian/Ubuntu users who want package-manager updates can use the optional
 [Wardian APT repository](docs/developer/package-manager-distribution.md#linux-apt-repository).
 
-> **macOS:** Official releases built by the signed release workflow are Developer ID signed and Apple-notarized. Open the DMG, drag Wardian to **Applications**, eject the DMG, then launch the copy in **Applications**. Do not run Wardian directly from the mounted DMG: it is read-only and in-app updates cannot replace an app there. Source-built and older unsigned builds can still receive normal Gatekeeper warnings; approve only builds whose source you trust.
+> **macOS:** Official releases built by the signed release workflow are Developer ID signed and Apple-notarized. Open the DMG, drag Wardian to **Applications**, eject the DMG, then launch the copy in **Applications**. Do not run Wardian directly from the mounted DMG: it is read-only and in-app updates cannot replace an app there.
 >
 > **Windows:** SmartScreen can show a reputation warning for a new release. Continue only when the installer came from the official Wardian release you intended to install.
 >
@@ -233,7 +233,6 @@ Wardian is evolving toward a malleable home for agent work: a local environment
 where agent capabilities, workflows, evidence, and project context can be
 inspected, rearranged, and extended over time.
 
-- **Malleable Workbench**: extend the canonical tab, split, restore, and surface contribution model with new tools such as file editing and browsing.
 - **Runtime reliability and provider fidelity**: keep real PTY behavior, provider-specific delivery, transcript capture, and cross-platform process supervision stable as provider CLIs change.
 - **Malleable workbench**: evolve fixed pages into restorable work surfaces so an agent session, Queue, Library, workflow, and project files can stay visible together without confusing layout with runtime state.
 - **Reusable context and capabilities**: continue tightening the Library around prompts, skills, classes, workflow blueprints, MCP configuration, and inspectable filesystem-backed artifacts.
