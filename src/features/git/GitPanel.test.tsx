@@ -208,6 +208,23 @@ describe("GitPanel", () => {
     expect(screen.getByRole("status")).toHaveTextContent("first 1,000 changed files");
   });
 
+  it("offers one more bounded status page", () => {
+    const loadMoreStatus = vi.fn(async () => true);
+    const sourceControlStatus = createSourceControlStatus({
+      status: {
+        ...createSourceControlStatus().status!,
+        files_truncated: true,
+        next_file_offset: 1_000,
+      },
+      loadMoreStatus,
+      loadingMore: false,
+    });
+
+    renderGitPanel({ sourceControlStatus });
+    fireEvent.click(screen.getByRole("button", { name: /load next 1,000/i }));
+    expect(loadMoreStatus).toHaveBeenCalledOnce();
+  });
+
   it("shows a not-a-repository state when git status reports a non-git workspace", async () => {
     mockInvoke.mockImplementation(async (command) => {
       if (command === "get_explorer_root") return "C:/not-a-repo";

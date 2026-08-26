@@ -7,12 +7,15 @@ import type { NodeStatusKind, RunEvent, RunReadResult, RunState, RunSummary, Run
 interface RunStoreState {
   runs: RunSummary[];
   runsTruncated: boolean;
+  runsNextOffset: number | null;
+  loadingMoreRuns: boolean;
   state: RunState | null;
   events: RunEvent[];
   blueprint: Blueprint | null;
   blueprintPath: string | null;
   scrubIndex: number;
   loadRuns: () => Promise<void>;
+  loadMoreRuns: () => Promise<void>;
   openRun: (blueprintId: string, runId: string) => Promise<void>;
   clearOpenRun: () => void;
   setScrubIndex: (index: number) => void;
@@ -23,6 +26,8 @@ interface RunStoreState {
 const initialState = {
   runs: [],
   runsTruncated: false,
+  runsNextOffset: null,
+  loadingMoreRuns: false,
   state: null,
   events: [],
   blueprint: null,
@@ -36,8 +41,28 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
     const result = await invoke<RunSummaryListResult | RunSummary[]>('workflow_list_runs');
     const runs = Array.isArray(result) ? result : result.runs;
     const runsTruncated = Array.isArray(result) ? false : result.truncated;
-    if (runSummariesEqual(get().runs, runs) && get().runsTruncated === runsTruncated) return;
-    set({ runs, runsTruncated });
+    const runsNextOffset = Array.isArray(result) ? null : result.next_offset ?? null;
+    if (runSummariesEqual(get().runs, runs) && get().runsTruncated === runsTruncated && get().runsNextOffset === runsNextOffset) return;
+    set({ runs, runsTruncated, runsNextOffset });
+  },
+  async loadMoreRuns() {
+    const offset = get().runsNextOffset;
+    if (offset === null || get().loadingMoreRuns) return;
+    set({ loadingMoreRuns: true });
+    try {
+      const result = await invoke<RunSummaryListResult>('workflow_list_runs', { offset });
+      set((state) => {
+        const byKey = new Map(state.runs.map((run) => [`${run.blueprint_id}:${run.run_id}`, run]));
+        for (const run of result.runs) byKey.set(`${run.blueprint_id}:${run.run_id}`, run);
+        return {
+          runs: [...byKey.values()],
+          runsTruncated: result.truncated,
+          runsNextOffset: result.next_offset ?? null,
+        };
+      });
+    } finally {
+      set({ loadingMoreRuns: false });
+    }
   },
   async openRun(blueprintId, runId) {
     const result = await invoke<RunReadResult>('workflow_read_run', { blueprintId, runId });

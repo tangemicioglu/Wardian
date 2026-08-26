@@ -135,7 +135,11 @@ pub async fn get_explorer_root(
 }
 
 #[tauri::command]
-pub async fn get_directory_tree(path: String) -> Result<DirectoryTreeResult, String> {
+pub async fn get_directory_tree(
+    path: String,
+    offset: Option<usize>,
+) -> Result<DirectoryTreeResult, String> {
+    let offset = offset.unwrap_or(0);
     let mut nodes = Vec::new();
     let mut truncated = false;
     let dir_path = Path::new(&path);
@@ -147,13 +151,16 @@ pub async fn get_directory_tree(path: String) -> Result<DirectoryTreeResult, Str
         ));
     }
 
-    let entries = fs::read_dir(dir_path).map_err(|e| e.to_string())?;
-    for entry in entries {
+    let mut entries = fs::read_dir(dir_path)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries.into_iter().skip(offset) {
         if nodes.len() >= MAX_DIRECTORY_CHILDREN {
             truncated = true;
             break;
         }
-        let entry = entry.map_err(|e| e.to_string())?;
         let metadata = entry.metadata().map_err(|e| e.to_string())?;
         let is_dir = metadata.is_dir();
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -173,7 +180,11 @@ pub async fn get_directory_tree(path: String) -> Result<DirectoryTreeResult, Str
     // Sort directories first, then alphabetically
     nodes.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
 
-    Ok(DirectoryTreeResult { nodes, truncated })
+    Ok(DirectoryTreeResult {
+        next_offset: truncated.then_some(offset + nodes.len()),
+        nodes,
+        truncated,
+    })
 }
 
 #[tauri::command]
@@ -814,11 +825,21 @@ mod tests {
             fs::write(temp.path().join(format!("file-{index:04}.txt")), "x").unwrap();
         }
 
-        let result = get_directory_tree(temp.path().to_string_lossy().into_owned())
+        let result = get_directory_tree(temp.path().to_string_lossy().into_owned(), None)
             .await
             .expect("directory listing");
 
         assert!(result.truncated);
         assert_eq!(result.nodes.len(), MAX_DIRECTORY_CHILDREN);
+        assert_eq!(result.next_offset, Some(MAX_DIRECTORY_CHILDREN));
+
+        let next = get_directory_tree(
+            temp.path().to_string_lossy().into_owned(),
+            result.next_offset,
+        )
+        .await
+        .expect("next directory page");
+        assert!(!next.truncated);
+        assert_eq!(next.nodes.len(), 1);
     }
 }

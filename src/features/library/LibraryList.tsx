@@ -149,6 +149,9 @@ export const LibraryList: React.FC = () => {
     const createFolder = useLibraryStore((s) => s.createFolder);
     const openLibraryFolder = useLibraryStore((s) => s.openLibraryFolder);
     const fetchIndex = useLibraryStore((s) => s.fetchIndex);
+    const loadMoreIndex = useLibraryStore((s) => s.loadMoreIndex);
+    const indexPageLoading = useLibraryStore((s) => s.indexPageLoading);
+    const indexNextOffset = useLibraryStore((s) => s.indexNextOffsets[activeSection] ?? null);
 
     const sectionMeta = LIBRARY_SECTIONS.find((s) => s.id === activeSection);
     const kindLabel = sectionMeta?.kindLabel ?? 'item';
@@ -270,7 +273,12 @@ export const LibraryList: React.FC = () => {
             />
             {sectionTruncated && (
                 <div className="mx-3 mt-2 rounded border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)]" role="status">
-                    Showing the first 1,000 items in this section.
+                    <span>Showing the first 1,000 items in this section; pages are capped at 1,000.</span>{' '}
+                    {indexNextOffset !== null && (
+                        <button type="button" className="font-semibold underline disabled:opacity-50" onClick={() => void loadMoreIndex()} disabled={indexPageLoading}>
+                            {indexPageLoading ? 'Loading…' : 'Load next 1,000'}
+                        </button>
+                    )}
                 </div>
             )}
             <div className="flex-1 overflow-y-auto">

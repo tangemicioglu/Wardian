@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::library::deployments::{collect_skill_sources, scan_deployments, DeploymentScan};
 use crate::library::frontmatter::extract_description;
 use crate::library::metadata::MetadataStore;
 use crate::library::section::LibrarySectionId;
 use crate::models::{
-    LibraryEntry, LibraryIndex, LibraryIndexFolder, LibraryIndexNode, LibrarySection,
+    LibraryEntry, LibraryEntryPage, LibraryIndex, LibraryIndexFolder, LibraryIndexNode,
+    LibrarySection,
 };
 
 /// Distinguishes how a section's directory tree maps onto index entries.
@@ -64,13 +65,13 @@ pub fn build_library_index(home: &Path) -> Result<LibraryIndex, String> {
 
     let mut sections = HashMap::new();
     let mut skills_section = build_section(
-            home,
-            LibrarySectionId::Skills,
-            SectionShape::SkillDirs,
-            "skill",
-            &metadata,
-            &skill_deployment_count,
-        )?;
+        home,
+        LibrarySectionId::Skills,
+        SectionShape::SkillDirs,
+        "skill",
+        &metadata,
+        &skill_deployment_count,
+    )?;
     skills_section.truncated |= scan.truncated;
     sections.insert("skills".to_string(), skills_section);
     sections.insert(
@@ -122,6 +123,249 @@ pub fn build_library_index(home: &Path) -> Result<LibraryIndex, String> {
         deployments,
         orphans: scan.orphans,
     })
+}
+
+/// Return one bounded page of entries from a section.
+///
+/// This deliberately does not build the normal capped tree first: doing so
+/// would make page two impossible to reach. The walk skips earlier entries
+/// without reading their content, retains only the requested page, and stops
+/// as soon as it has observed one entry beyond the page.
+pub fn list_library_entries_page(
+    home: &Path,
+    section: LibrarySectionId,
+    offset: usize,
+    limit: usize,
+) -> Result<LibraryEntryPage, String> {
+    if section == LibrarySectionId::Mcps || limit == 0 {
+        return Ok(LibraryEntryPage {
+            entries: Vec::new(),
+            truncated: false,
+            next_offset: None,
+        });
+    }
+
+    let sources = collect_skill_sources(home);
+    let scan = scan_deployments(home, &sources);
+    let metadata = MetadataStore::load(home);
+    let skill_deployment_count = |rel_path: &str| -> u32 {
+        scan.deployments
+            .get(rel_path)
+            .map(|targets| targets.len() as u32)
+            .unwrap_or(0)
+    };
+    let no_deployment_count = |_: &str| -> u32 { 0 };
+    let mut page = EntryPageCollector::new(offset, limit);
+
+    if section == LibrarySectionId::Classes {
+        let root = section.root_for_home(home);
+        fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+        for path in sorted_directory_entries(&root) {
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let (description, error) = read_description(&path.join("AGENTS.md"), true);
+            let entry_ref = format!("classes/{name}");
+            let meta = metadata.get(&entry_ref);
+            page.push(LibraryEntry {
+                kind: "class".to_string(),
+                path: name.clone(),
+                entry_ref,
+                name: name.clone(),
+                description,
+                tags: meta.map(|m| m.tags.clone()).unwrap_or_default(),
+                is_starred: meta.map(|m| m.is_starred).unwrap_or(false),
+                deployment_count: scan
+                    .deployments
+                    .values()
+                    .flatten()
+                    .filter(|target| target.target_type == "class" && target.target_id == name)
+                    .count() as u32,
+                error,
+            });
+            if page.done() {
+                break;
+            }
+        }
+    } else {
+        let deployment_count_for: &dyn Fn(&str) -> u32 = match section {
+            LibrarySectionId::Skills => &skill_deployment_count,
+            LibrarySectionId::Prompts | LibrarySectionId::Workflows => &no_deployment_count,
+            LibrarySectionId::Classes | LibrarySectionId::Mcps => unreachable!(),
+        };
+        let (shape, kind) = match section {
+            LibrarySectionId::Skills => (SectionShape::SkillDirs, "skill"),
+            LibrarySectionId::Prompts => (SectionShape::MarkdownFiles, "prompt"),
+            LibrarySectionId::Workflows => (SectionShape::MarkdownFiles, "workflow"),
+            LibrarySectionId::Classes | LibrarySectionId::Mcps => unreachable!(),
+        };
+        let root = section.root_for_home(home);
+        fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+        collect_section_page(
+            &root,
+            "",
+            section.as_str(),
+            kind,
+            &shape,
+            &metadata,
+            deployment_count_for,
+            &mut page,
+            0,
+        );
+    }
+
+    page.entries
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    let truncated = page.truncated || (section == LibrarySectionId::Skills && scan.truncated);
+    Ok(LibraryEntryPage {
+        next_offset: page.truncated.then_some(offset + page.entries.len()),
+        entries: page.entries,
+        truncated,
+    })
+}
+
+struct EntryPageCollector {
+    skip: usize,
+    remaining: usize,
+    entries: Vec<LibraryEntry>,
+    truncated: bool,
+}
+
+impl EntryPageCollector {
+    fn new(skip: usize, limit: usize) -> Self {
+        Self {
+            skip,
+            remaining: limit,
+            entries: Vec::with_capacity(limit),
+            truncated: false,
+        }
+    }
+
+    fn push(&mut self, entry: LibraryEntry) {
+        if self.skip > 0 {
+            self.skip -= 1;
+        } else if self.remaining > 0 {
+            self.remaining -= 1;
+            self.entries.push(entry);
+        } else {
+            self.truncated = true;
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.truncated
+    }
+}
+
+fn sorted_directory_entries(dir: &Path) -> Vec<PathBuf> {
+    let mut entries = fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_section_page(
+    dir: &Path,
+    rel_path: &str,
+    section_prefix: &str,
+    kind: &str,
+    shape: &SectionShape,
+    metadata: &MetadataStore,
+    deployment_count_for: &dyn Fn(&str) -> u32,
+    page: &mut EntryPageCollector,
+    depth: usize,
+) -> bool {
+    if depth > MAX_LIBRARY_DEPTH || page.done() {
+        return page.done();
+    }
+    for path in sorted_directory_entries(dir) {
+        let entry_name = path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_default();
+        match shape {
+            SectionShape::SkillDirs => {
+                if !path.is_dir() {
+                    continue;
+                }
+                let child_rel = join_rel(rel_path, &entry_name);
+                if path.join("SKILL.md").is_file() {
+                    page.push(build_entry(
+                        &path.join("SKILL.md"),
+                        &child_rel,
+                        &entry_name,
+                        section_prefix,
+                        kind,
+                        metadata,
+                        deployment_count_for,
+                    ));
+                } else if collect_section_page(
+                    &path,
+                    &child_rel,
+                    section_prefix,
+                    kind,
+                    shape,
+                    metadata,
+                    deployment_count_for,
+                    page,
+                    depth + 1,
+                ) {
+                    return true;
+                }
+            }
+            SectionShape::MarkdownFiles => {
+                if path.is_dir() {
+                    let child_rel = join_rel(rel_path, &entry_name);
+                    if collect_section_page(
+                        &path,
+                        &child_rel,
+                        section_prefix,
+                        kind,
+                        shape,
+                        metadata,
+                        deployment_count_for,
+                        page,
+                        depth + 1,
+                    ) {
+                        return true;
+                    }
+                } else if path
+                    .extension()
+                    .map(|ext| ext.eq_ignore_ascii_case("md"))
+                    .unwrap_or(false)
+                {
+                    let child_rel = join_rel(rel_path, &entry_name);
+                    let stem = path
+                        .file_stem()
+                        .map(|value| value.to_string_lossy().to_string())
+                        .unwrap_or_else(|| entry_name.clone());
+                    page.push(build_entry(
+                        &path,
+                        &child_rel,
+                        &stem,
+                        section_prefix,
+                        kind,
+                        metadata,
+                        deployment_count_for,
+                    ));
+                }
+            }
+        }
+        if page.done() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Ensure the section directory exists (mcps is handled separately and
@@ -395,7 +639,9 @@ fn sort_children(children: &mut [LibraryIndexNode]) {
         match (a_is_folder, b_is_folder) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => node_name(a).to_lowercase().cmp(&node_name(b).to_lowercase()),
+            _ => node_name(a)
+                .to_lowercase()
+                .cmp(&node_name(b).to_lowercase()),
         }
     });
 }
@@ -410,21 +656,47 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp");
         let home = temp.path();
         // skill with frontmatter + linked deployment to class
-        let skill = home.join("library").join("skills").join("dev").join("planner");
+        let skill = home
+            .join("library")
+            .join("skills")
+            .join("dev")
+            .join("planner");
         fs::create_dir_all(&skill).unwrap();
-        fs::write(skill.join("SKILL.md"), "---\ndescription: Plans work\n---\nbody").unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\ndescription: Plans work\n---\nbody",
+        )
+        .unwrap();
         crate::library::links::create_directory_link(
             &skill,
-            &home.join("classes").join("Architect").join(".agents").join("skills").join("planner"),
-        ).unwrap();
+            &home
+                .join("classes")
+                .join("Architect")
+                .join(".agents")
+                .join("skills")
+                .join("planner"),
+        )
+        .unwrap();
         // prompt
         fs::create_dir_all(home.join("library").join("prompts")).unwrap();
-        fs::write(home.join("library").join("prompts").join("greet.md"), "# Greeting\nHello").unwrap();
+        fs::write(
+            home.join("library").join("prompts").join("greet.md"),
+            "# Greeting\nHello",
+        )
+        .unwrap();
         // workflow
         fs::create_dir_all(home.join("library").join("workflows")).unwrap();
-        fs::write(home.join("library").join("workflows").join("triage.md"), "---\ndescription: Triage\n---\n").unwrap();
+        fs::write(
+            home.join("library").join("workflows").join("triage.md"),
+            "---\ndescription: Triage\n---\n",
+        )
+        .unwrap();
         // class AGENTS.md
-        fs::write(home.join("classes").join("Architect").join("AGENTS.md"), "# Role: Architect\nDesigns").unwrap();
+        fs::write(
+            home.join("classes").join("Architect").join("AGENTS.md"),
+            "# Role: Architect\nDesigns",
+        )
+        .unwrap();
         // starred metadata (already-qualified key)
         fs::write(
             home.join("library").join("library.json"),
@@ -434,8 +706,14 @@ mod tests {
         let index = build_library_index(home).expect("index");
 
         let skills = &index.sections["skills"];
-        let dev = match &skills.tree.children[0] { LibraryIndexNode::Folder(f) => f, _ => panic!("dev folder") };
-        let planner = match &dev.children[0] { LibraryIndexNode::Entry(e) => e, _ => panic!("planner entry") };
+        let dev = match &skills.tree.children[0] {
+            LibraryIndexNode::Folder(f) => f,
+            _ => panic!("dev folder"),
+        };
+        let planner = match &dev.children[0] {
+            LibraryIndexNode::Entry(e) => e,
+            _ => panic!("planner entry"),
+        };
         assert_eq!(planner.entry_ref, "skills/dev/planner");
         assert_eq!(planner.description, "Plans work");
         assert!(planner.is_starred);
@@ -443,7 +721,10 @@ mod tests {
         assert_eq!(planner.deployment_count, 1);
 
         let prompts = &index.sections["prompts"];
-        let greet = match &prompts.tree.children[0] { LibraryIndexNode::Entry(e) => e, _ => panic!("greet") };
+        let greet = match &prompts.tree.children[0] {
+            LibraryIndexNode::Entry(e) => e,
+            _ => panic!("greet"),
+        };
         assert_eq!(greet.kind, "prompt");
         assert_eq!(greet.name, "greet");
         assert_eq!(greet.description, "Greeting");
@@ -451,14 +732,20 @@ mod tests {
         assert_eq!(index.sections["workflows"].tree.children.len(), 1);
 
         let classes = &index.sections["classes"];
-        let architect = match &classes.tree.children[0] { LibraryIndexNode::Entry(e) => e, _ => panic!("class") };
+        let architect = match &classes.tree.children[0] {
+            LibraryIndexNode::Entry(e) => e,
+            _ => panic!("class"),
+        };
         assert_eq!(architect.entry_ref, "classes/Architect");
         assert_eq!(architect.description, "Role: Architect");
         assert_eq!(architect.deployment_count, 1);
 
         assert!(index.sections["mcps"].stubbed);
         assert!(index.sections["mcps"].tree.children.is_empty());
-        assert!(!home.join("library").join("mcps").exists(), "stub creates no dir");
+        assert!(
+            !home.join("library").join("mcps").exists(),
+            "stub creates no dir"
+        );
 
         assert_eq!(index.deployments["skills/dev/planner"].len(), 1);
         assert!(index.orphans.is_empty());
@@ -486,11 +773,20 @@ mod tests {
         let home = temp.path();
         let skill = home.join("library").join("skills").join("planner");
         fs::create_dir_all(&skill).unwrap();
-        fs::write(skill.join("SKILL.md"), "---\ndescription: Plans work\n---\n").unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\ndescription: Plans work\n---\n",
+        )
+        .unwrap();
         crate::library::links::create_directory_link(
             &skill,
-            &home.join("common").join(".agents").join("skills").join("planner"),
-        ).unwrap();
+            &home
+                .join("common")
+                .join(".agents")
+                .join("skills")
+                .join("planner"),
+        )
+        .unwrap();
 
         let index = build_library_index(home).expect("index");
         assert_eq!(index.deployments["skills/planner"].len(), 1);
@@ -499,7 +795,10 @@ mod tests {
         let round_tripped: LibraryIndex = serde_json::from_str(&json).expect("deserialize");
 
         for key in ["skills", "prompts", "workflows", "classes", "mcps"] {
-            assert!(round_tripped.sections.contains_key(key), "missing section {key}");
+            assert!(
+                round_tripped.sections.contains_key(key),
+                "missing section {key}"
+            );
         }
         assert_eq!(
             round_tripped.deployments["skills/planner"].len(),
@@ -520,5 +819,32 @@ mod tests {
         let section = &index.sections["prompts"];
         assert!(section.truncated);
         assert_eq!(section.tree.children.len(), MAX_LIBRARY_NODES_PER_SECTION);
+    }
+
+    #[test]
+    fn library_entry_pages_continue_without_returning_the_cumulative_index() {
+        let temp = tempfile::tempdir().expect("temp");
+        let prompts = temp.path().join("library").join("prompts");
+        fs::create_dir_all(&prompts).unwrap();
+        for index in 0..=MAX_LIBRARY_NODES_PER_SECTION {
+            fs::write(prompts.join(format!("prompt-{index:04}.md")), "# Prompt").unwrap();
+        }
+
+        let first = list_library_entries_page(temp.path(), LibrarySectionId::Prompts, 0, 1_000)
+            .expect("first page");
+        assert_eq!(first.entries.len(), 1_000);
+        assert!(first.truncated);
+        assert_eq!(first.next_offset, Some(1_000));
+
+        let second = list_library_entries_page(
+            temp.path(),
+            LibrarySectionId::Prompts,
+            first.next_offset.unwrap(),
+            1_000,
+        )
+        .expect("second page");
+        assert_eq!(second.entries.len(), 1);
+        assert!(!second.truncated);
+        assert_eq!(second.next_offset, None);
     }
 }

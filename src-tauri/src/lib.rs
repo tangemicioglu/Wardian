@@ -837,6 +837,7 @@ pub fn run() {
             commands::workflow::schedule_remove,
             commands::workflow::schedule_run_now,
             commands::library::get_library_index,
+            commands::library::get_library_index_page,
             commands::library::read_library_item,
             commands::library::save_library_item,
             commands::library::update_library_metadata,

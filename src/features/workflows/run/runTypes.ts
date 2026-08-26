@@ -49,6 +49,7 @@ export interface RunSummary {
 export interface RunSummaryListResult {
   runs: RunSummary[];
   truncated: boolean;
+  next_offset?: number | null;
 }
 
 export interface RunReadResult {

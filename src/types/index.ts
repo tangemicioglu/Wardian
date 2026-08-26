@@ -249,6 +249,7 @@ export interface GitStatusResult {
     has_upstream: boolean;
     files: GitFileEntry[];
     files_truncated?: boolean;
+    next_file_offset?: number | null;
     ahead: number;
     behind: number;
     rebase_in_progress?: boolean;
@@ -393,6 +394,7 @@ export interface PairActivityEntry {
 export interface PairActivityResult {
     pairs: PairActivityEntry[];
     truncated: boolean;
+    next_offset?: number | null;
 }
 
 export interface AgentTelemetry {

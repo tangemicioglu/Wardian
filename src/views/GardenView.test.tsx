@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 
 const gardenWorkflowSpy = vi.hoisted(() => vi.fn(() => (
-  { workflows: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }], truncated: false }
+  {
+    workflows: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
+    truncated: false,
+    nextOffset: null as number | null,
+    loadMore: vi.fn(),
+  }
 )));
 
 vi.mock("../features/garden/useGardenWorkflows", () => ({
@@ -56,6 +61,8 @@ beforeEach(() => {
   gardenWorkflowSpy.mockReturnValue({
     workflows: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
     truncated: false,
+    nextOffset: null,
+    loadMore: vi.fn(),
   });
 });
 
@@ -84,6 +91,8 @@ describe("GardenView", () => {
     gardenWorkflowSpy.mockReturnValue({
       workflows: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
       truncated: true,
+      nextOffset: 500,
+      loadMore: vi.fn(),
     });
     const agents = [{ session_id: "a1", session_name: "Alpha" } as AgentConfig];
 

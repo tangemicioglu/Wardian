@@ -328,6 +328,7 @@ fn parse_porcelain_status(raw: &str) -> GitStatusResult {
         upstream,
         files,
         files_truncated: false,
+        next_file_offset: None,
         ahead,
         behind,
         rebase_in_progress: false,
@@ -350,14 +351,22 @@ fn is_rebase_in_progress(cwd: &str) -> Result<bool, String> {
 }
 
 pub(crate) fn git_status_for_cwd(cwd: &str) -> Result<GitStatusResult, String> {
-    let (raw, files_truncated) = run_bounded_git_status(cwd)?;
+    git_status_for_cwd_page(cwd, 0)
+}
+
+pub(crate) fn git_status_for_cwd_page(
+    cwd: &str,
+    file_offset: usize,
+) -> Result<GitStatusResult, String> {
+    let (raw, files_truncated) = run_bounded_git_status(cwd, file_offset)?;
     let mut status = parse_porcelain_status(&raw);
     status.files_truncated = files_truncated;
+    status.next_file_offset = files_truncated.then_some(file_offset + MAX_GIT_STATUS_FILES);
     status.rebase_in_progress = is_rebase_in_progress(cwd)?;
     Ok(status)
 }
 
-fn run_bounded_git_status(cwd: &str) -> Result<(String, bool), String> {
+fn run_bounded_git_status(cwd: &str, file_offset: usize) -> Result<(String, bool), String> {
     let args = ["status", "--porcelain=v1", "-b", "--untracked-files=all"];
     let mut last_not_found = None;
 
@@ -399,7 +408,11 @@ fn run_bounded_git_status(cwd: &str) -> Result<(String, bool), String> {
             }
             let is_file_line = !line.starts_with("## ") && line.trim_end_matches(['\r', '\n']).len() >= 4;
             if is_file_line {
-                if file_lines >= MAX_GIT_STATUS_FILES {
+                if file_lines < file_offset {
+                    file_lines += 1;
+                    continue;
+                }
+                if file_lines >= file_offset + MAX_GIT_STATUS_FILES {
                     truncated = true;
                     break;
                 }
@@ -435,8 +448,11 @@ fn run_bounded_git_status(cwd: &str) -> Result<(String, bool), String> {
 }
 
 #[tauri::command]
-pub async fn git_status(cwd: String) -> Result<GitStatusResult, String> {
-    git_status_for_cwd(&cwd)
+pub async fn git_status(
+    cwd: String,
+    file_offset: Option<usize>,
+) -> Result<GitStatusResult, String> {
+    git_status_for_cwd_page(&cwd, file_offset.unwrap_or(0))
 }
 
 #[tauri::command]
@@ -1872,6 +1888,13 @@ mod tests {
 
         assert!(result.files_truncated);
         assert_eq!(result.files.len(), MAX_GIT_STATUS_FILES);
+        assert_eq!(result.next_file_offset, Some(MAX_GIT_STATUS_FILES));
+
+        let next = git_status_for_cwd_page(&temp.path().to_string_lossy(), MAX_GIT_STATUS_FILES)
+            .expect("next git status page");
+        assert!(!next.files_truncated);
+        assert_eq!(next.files.len(), 1);
+        assert_eq!(next.next_file_offset, None);
     }
 
     #[test]
@@ -3403,12 +3426,12 @@ bare
 
         run_git_allowing_status(cwd, &["rebase", "target"], &[1]).unwrap();
 
-        let rebasing = git_status(cwd.to_string()).await.unwrap();
+        let rebasing = git_status(cwd.to_string(), None).await.unwrap();
         assert!(rebasing.rebase_in_progress, "{rebasing:?}");
 
         git_rebase_abort(cwd.to_string()).await.unwrap();
 
-        let aborted = git_status(cwd.to_string()).await.unwrap();
+        let aborted = git_status(cwd.to_string(), None).await.unwrap();
         assert!(!aborted.rebase_in_progress, "{aborted:?}");
         let branch = run_git(cwd, &["branch", "--show-current"]).unwrap();
         assert_eq!(branch.trim(), "feature");
@@ -3612,11 +3635,11 @@ bare
         let temp = tempfile::tempdir().unwrap();
         let cwd = temp.path().to_str().unwrap();
 
-        assert!(git_status(cwd.to_string()).await.is_err());
+        assert!(git_status(cwd.to_string(), None).await.is_err());
 
         git_init(cwd.to_string()).await.unwrap();
 
-        let status = git_status(cwd.to_string()).await.unwrap();
+        let status = git_status(cwd.to_string(), None).await.unwrap();
         assert!(status.files.is_empty(), "{status:?}");
         let inside = run_git(cwd, &["rev-parse", "--is-inside-work-tree"]).unwrap();
         assert_eq!(inside.trim(), "true");

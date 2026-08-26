@@ -113,7 +113,12 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const visitUnit = useGardenStore((s) => s.visit);
   const adoptScene = useGardenStore((s) => s.adoptScene);
   const resetLayout = useGardenStore((s) => s.reset);
-  const { workflows: workflowInputs, truncated: workflowsTruncated } = useGardenWorkflows(visibility === "visible");
+  const {
+    workflows: workflowInputs,
+    truncated: workflowsTruncated,
+    nextOffset: workflowsNextOffset,
+    loadMore: loadMoreWorkflows,
+  } = useGardenWorkflows(visibility === "visible");
   const skillInputs = useGardenSkills(visibility === "visible");
   // Deep-links into the Library the same way the agent config panel's "Manage
   // skills" affordance does, so the Garden does not invent a second navigation
@@ -401,12 +406,24 @@ export const GardenView: React.FC<GardenViewProps> = ({
       </div>
       {terrain.truncatedRoots.size > 0 && (
         <div className="absolute bottom-3 right-3 z-10 rounded-md border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)] shadow-sm" role="status">
-          Some folder contents are limited to the first 500 items.
+          <span>Folder contents load 500 items at a time.</span>{' '}
+          <button
+            type="button"
+            className="font-semibold underline disabled:opacity-50"
+            onClick={() => void Promise.all([...terrain.truncatedRoots].map((path) => terrain.loadMoreRoot(path)))}
+          >
+            Load next page
+          </button>
         </div>
       )}
       {workflowsTruncated && (
         <div className="absolute bottom-14 right-3 z-10 rounded-md border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)] shadow-sm" role="status">
-          Some workflows are omitted because the catalog is limited to the first 500.
+          <span>Some workflows are omitted because the catalog is limited to the first 500; pages are capped at 500.</span>{' '}
+          {workflowsNextOffset !== null && (
+            <button type="button" className="font-semibold underline" onClick={() => void loadMoreWorkflows()}>
+              Load next page
+            </button>
+          )}
         </div>
       )}
       {rendererActive ? <GardenCanvas

@@ -60,6 +60,40 @@ pub fn list_blueprint_files_bounded(dir: &Path, limit: usize) -> (Vec<PathBuf>, 
     (files, truncated)
 }
 
+/// Collect one bounded continuation page of blueprint files without retaining
+/// the skipped prefix or the full catalog in memory.
+pub fn list_blueprint_files_page(dir: &Path, offset: usize, limit: usize) -> (Vec<PathBuf>, bool) {
+    fn visit(dir: &Path, skip: &mut usize, limit: usize, files: &mut Vec<PathBuf>) -> bool {
+        let Ok(read_dir) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        let mut entries = read_dir.flatten().collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                if visit(&path, skip, limit, files) {
+                    return true;
+                }
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                if *skip > 0 {
+                    *skip -= 1;
+                } else if files.len() < limit {
+                    files.push(path);
+                } else {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    let mut files = Vec::with_capacity(limit);
+    let mut skip = offset;
+    let truncated = visit(dir, &mut skip, limit, &mut files);
+    (files, truncated)
+}
+
 /// Find the blueprint whose frontmatter `id` matches `id`, searching
 /// `<wardian-home>/library/workflows` recursively so blueprints nested in
 /// subfolders resolve the same way flat ones always have.
@@ -101,7 +135,9 @@ edges: []
 
     fn write_blueprint(path: &Path, id: &str, name: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let text = BLUEPRINT_TEMPLATE.replace("{id}", id).replace("{name}", name);
+        let text = BLUEPRINT_TEMPLATE
+            .replace("{id}", id)
+            .replace("{name}", name);
         std::fs::write(path, text).unwrap();
     }
 
@@ -184,5 +220,22 @@ edges: []
 
         assert_eq!(files.len(), 3);
         assert!(truncated);
+    }
+
+    #[test]
+    fn paged_listing_skips_only_the_requested_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..=3 {
+            write_blueprint(
+                &dir.path().join(format!("workflow-{index}.md")),
+                &format!("workflow-{index}"),
+                &format!("Workflow {index}"),
+            );
+        }
+
+        let (files, truncated) = list_blueprint_files_page(dir.path(), 2, 2);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].file_name().unwrap(), "workflow-2.md");
+        assert!(!truncated);
     }
 }

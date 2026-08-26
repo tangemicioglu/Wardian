@@ -79,6 +79,22 @@ bounded UI response types without an explicit review.
 - The generated documentation and the implementation agree on the constants
   and response semantics.
 
+## Bounded expansion
+
+The initial cap is a page size, not a permanent visibility cutoff. Every
+surface that reports `truncated` exposes a continuation affordance when a
+continuation token is available. Continuations are offset/cursor based and
+use the same fixed page size as the initial request (500, 200, 1,000, or
+5,000, as appropriate); a request never grows with the number of pages the
+operator has already loaded. The UI may append pages for inspection, but no
+single response or expansion action may return the full collection.
+
+The contract applies to indirect consumers too: Garden folder/workflow views,
+the Graph activity view, and other projections preserve continuation metadata
+instead of replacing it with a generic omission notice. When a collection is
+refreshed, a fresh initial request resets the continuation sequence so pages
+cannot silently splice together different snapshots.
+
 ## Review checklist
 
 - [x] Source Control status files

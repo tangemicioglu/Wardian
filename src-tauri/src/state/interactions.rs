@@ -246,32 +246,34 @@ impl InteractionState {
     }
 
     pub async fn inbox_notifications(&self, limit: usize) -> (Vec<InteractionRecord>, bool) {
+        self.inbox_notifications_page(0, limit).await
+    }
+
+    pub async fn inbox_notifications_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> (Vec<InteractionRecord>, bool) {
         let records = self.records.lock().await;
-        let mut selected = Vec::with_capacity(limit.min(records.len()));
-        let mut truncated = false;
-        for record in records
+        let mut notifications = records
             .values()
             .filter(|record| record.kind == InteractionKind::Notification)
-        {
-            if selected.len() < limit {
-                selected.push(record.clone());
-                continue;
-            }
-
-            truncated = true;
-            if let Some(oldest_index) = selected
-                .iter()
-                .enumerate()
-                .min_by(|(_, left), (_, right)| left.created_at.cmp(&right.created_at))
-                .map(|(index, _)| index)
-            {
-                if record.created_at > selected[oldest_index].created_at {
-                    selected[oldest_index] = record.clone();
-                }
-            }
-        }
-        selected.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        (selected, truncated)
+            .cloned()
+            .collect::<Vec<_>>();
+        notifications.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        let mut page = notifications
+            .into_iter()
+            .skip(offset)
+            .take(limit.saturating_add(1))
+            .collect::<Vec<_>>();
+        let truncated = page.len() > limit;
+        page.truncate(limit);
+        (page, truncated)
     }
 
     pub async fn resolve_notification(

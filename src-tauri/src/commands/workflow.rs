@@ -101,19 +101,23 @@ pub const MAX_WORKFLOW_BLUEPRINTS: usize = 500;
 pub struct WorkflowBlueprintListResult {
     pub blueprints: Vec<serde_json::Value>,
     pub truncated: bool,
+    pub next_offset: Option<usize>,
 }
 
 /// List at most 500 blueprint `.md` files under
 /// `<wardian-home>/library/workflows`.
 #[tauri::command]
-pub fn workflow_list_blueprints() -> Result<WorkflowBlueprintListResult, String> {
+pub fn workflow_list_blueprints(
+    offset: Option<usize>,
+) -> Result<WorkflowBlueprintListResult, String> {
+    let offset = offset.unwrap_or(0);
     let home = wardian_core::paths::wardian_home().ok_or("no wardian home")?;
     let dir = home.join("library").join("workflows");
     let mut out = Vec::new();
     let mut truncated = false;
     if dir.exists() {
         let (entries, files_truncated) =
-            workflow::list_blueprint_files_bounded(&dir, MAX_WORKFLOW_BLUEPRINTS);
+            workflow::list_blueprint_files_page(&dir, offset, MAX_WORKFLOW_BLUEPRINTS);
         truncated = files_truncated;
         for entry in entries {
             if let Ok(bp) = workflow::parse_file(&entry) {
@@ -124,6 +128,7 @@ pub fn workflow_list_blueprints() -> Result<WorkflowBlueprintListResult, String>
     Ok(WorkflowBlueprintListResult {
         blueprints: out,
         truncated,
+        next_offset: truncated.then_some(offset + MAX_WORKFLOW_BLUEPRINTS),
     })
 }
 
@@ -135,14 +140,81 @@ pub const MAX_WORKFLOW_RUNS: usize = 200;
 pub struct WorkflowRunListResult {
     pub runs: Vec<serde_json::Value>,
     pub truncated: bool,
+    pub next_offset: Option<usize>,
 }
 
 #[tauri::command]
-pub fn workflow_list_runs() -> Result<WorkflowRunListResult, String> {
+pub fn workflow_list_runs(offset: Option<usize>) -> Result<WorkflowRunListResult, String> {
     let root = wardian_core::paths::workflow_runs_dir().ok_or("no wardian home")?;
-    workflow_list_runs_from_root(&root, resolve_blueprint_path)
+    workflow_list_runs_page_from_root(&root, resolve_blueprint_path, offset.unwrap_or(0))
 }
 
+fn workflow_list_runs_page_from_root<F>(
+    root: &Path,
+    mut resolve_blueprint_path: F,
+    offset: usize,
+) -> Result<WorkflowRunListResult, String>
+where
+    F: FnMut(&str) -> Option<PathBuf>,
+{
+    let retain_limit = offset.saturating_add(MAX_WORKFLOW_RUNS + 1);
+    let mut retained = Vec::with_capacity(retain_limit.min(MAX_WORKFLOW_RUNS + 1));
+    let mut blueprint_paths: HashMap<String, Option<PathBuf>> = HashMap::new();
+    if root.exists() {
+        for bp in std::fs::read_dir(root)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
+            if !bp.path().is_dir() {
+                continue;
+            }
+            for run in std::fs::read_dir(bp.path())
+                .map_err(|e| e.to_string())?
+                .flatten()
+            {
+                let dir = run.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                let Some(state) = read_checkpoint(&dir).ok().flatten() else {
+                    continue;
+                };
+                let blueprint_path = blueprint_paths
+                    .entry(state.blueprint_id.clone())
+                    .or_insert_with(|| resolve_blueprint_path(&state.blueprint_id));
+                retained.push(run_summary_from_state(
+                    &dir,
+                    state,
+                    blueprint_path.as_deref(),
+                ));
+                retained.sort_by(compare_run_summaries);
+                if retained.len() > retain_limit {
+                    retained.pop();
+                    let retained_blueprints: HashSet<String> = retained
+                        .iter()
+                        .filter_map(|run| run.get("blueprint_id").and_then(Value::as_str))
+                        .map(ToOwned::to_owned)
+                        .collect();
+                    blueprint_paths
+                        .retain(|blueprint_id, _| retained_blueprints.contains(blueprint_id));
+                }
+            }
+        }
+    }
+    let page_end = offset.saturating_add(MAX_WORKFLOW_RUNS);
+    let truncated = retained.len() > page_end;
+    Ok(WorkflowRunListResult {
+        runs: retained
+            .into_iter()
+            .skip(offset)
+            .take(MAX_WORKFLOW_RUNS)
+            .collect(),
+        truncated,
+        next_offset: truncated.then_some(page_end),
+    })
+}
+
+#[cfg(test)]
 fn workflow_list_runs_from_root<F>(
     root: &Path,
     mut resolve_blueprint_path: F,
@@ -156,6 +228,7 @@ where
         return Ok(WorkflowRunListResult {
             runs: out,
             truncated,
+            next_offset: None,
         });
     }
     let mut blueprint_paths: HashMap<String, Option<PathBuf>> = HashMap::new();
@@ -195,12 +268,17 @@ where
                     .filter_map(|run| run.get("blueprint_id").and_then(Value::as_str))
                     .map(ToOwned::to_owned)
                     .collect();
-                blueprint_paths.retain(|blueprint_id, _| retained_blueprints.contains(blueprint_id));
+                blueprint_paths
+                    .retain(|blueprint_id, _| retained_blueprints.contains(blueprint_id));
             }
         }
     }
 
-    Ok(WorkflowRunListResult { runs: out, truncated })
+    Ok(WorkflowRunListResult {
+        runs: out,
+        truncated,
+        next_offset: truncated.then_some(MAX_WORKFLOW_RUNS),
+    })
 }
 
 fn compare_run_summaries(a: &serde_json::Value, b: &serde_json::Value) -> std::cmp::Ordering {
@@ -466,8 +544,7 @@ async fn workflow_run_impl(
     )?;
 
     tokio::spawn(async move {
-        if let Err(error) =
-            runs::drive_started_run_with_catalog_assignments_and_memory_principal(
+        if let Err(error) = runs::drive_started_run_with_catalog_assignments_and_memory_principal(
             Some(app),
             blueprint_for_run,
             run_state,
@@ -1100,6 +1177,21 @@ mod tests {
         assert!(result.truncated);
         assert_eq!(result.runs.len(), MAX_WORKFLOW_RUNS);
         assert_eq!(result.runs[0]["run_id"], "run-0200");
+    }
+
+    #[test]
+    fn workflow_run_pages_continue_after_the_newest_page() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workflow-runs");
+        for index in 0..=MAX_WORKFLOW_RUNS {
+            let run_root = root.join("wf").join(format!("run-{index:04}"));
+            write_checkpoint(&run_root, &RunState::new(format!("run-{index:04}"), "wf")).unwrap();
+        }
+
+        let page = workflow_list_runs_page_from_root(&root, |_| None, MAX_WORKFLOW_RUNS).unwrap();
+        assert_eq!(page.runs.len(), 1);
+        assert!(!page.truncated);
+        assert_eq!(page.next_offset, None);
     }
 
     fn sample_schedule() -> WorkflowSchedule {

@@ -158,7 +158,7 @@ describe("GraphView", () => {
         return { edges: [], ignored_pairs: [], fallback_groups: [] };
       }
       if (command === "get_pair_activity") {
-        return { pairs: [], truncated: true };
+        return { pairs: [], truncated: true, next_offset: 5_000 };
       }
       return undefined;
     });
@@ -166,6 +166,8 @@ describe("GraphView", () => {
     render(<GraphView {...defaultProps} />);
 
     expect(await screen.findByRole("status")).toHaveTextContent("recent communication activity only");
+    fireEvent.click(screen.getByRole("button", { name: /load next page/i }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_pair_activity", { offset: 5_000 }));
   });
 
   it("shows a first-use tip for deliberate topology changes", () => {

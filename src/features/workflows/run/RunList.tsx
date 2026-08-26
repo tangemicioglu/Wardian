@@ -7,9 +7,11 @@ interface RunListProps {
   truncated?: boolean;
   selectedRunId: string | null;
   onOpen: (blueprintId: string, runId: string) => void;
+  onLoadMore?: () => void;
+  loadingMore?: boolean;
 }
 
-export function RunList({ runs, truncated = false, selectedRunId, onOpen }: RunListProps) {
+export function RunList({ runs, truncated = false, selectedRunId, onOpen, onLoadMore, loadingMore = false }: RunListProps) {
   if (runs.length === 0) {
     return (
       <div className="select-text rounded-lg border border-dashed border-wardian-border p-4 text-center text-xs text-[var(--color-wardian-text-muted)]">
@@ -22,7 +24,12 @@ export function RunList({ runs, truncated = false, selectedRunId, onOpen }: RunL
     <div className="flex flex-col gap-2">
       {truncated && (
         <div className="rounded border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)]" role="status">
-          Showing the 200 most recent runs.
+          <span>Showing the 200 most recent runs; pages are capped at 200.</span>{' '}
+          {onLoadMore && (
+            <button type="button" className="font-semibold underline disabled:opacity-50" onClick={onLoadMore} disabled={loadingMore}>
+              {loadingMore ? 'Loading…' : 'Load next 200'}
+            </button>
+          )}
         </div>
       )}
       {runs.map((run) => {

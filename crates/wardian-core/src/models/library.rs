@@ -111,6 +111,16 @@ pub struct LibraryIndex {
     pub orphans: Vec<OrphanDeployment>,
 }
 
+/// One bounded continuation page for a library section. The page is flat on
+/// purpose: the frontend can merge entries into the already-loaded tree while
+/// the backend never serializes the cumulative index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryEntryPage {
+    pub entries: Vec<LibraryEntry>,
+    pub truncated: bool,
+    pub next_offset: Option<usize>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

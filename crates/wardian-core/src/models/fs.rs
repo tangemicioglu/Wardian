@@ -12,4 +12,6 @@ pub struct FileNode {
 pub struct DirectoryTreeResult {
     pub nodes: Vec<FileNode>,
     pub truncated: bool,
+    /// Offset for the next bounded page, when more children exist.
+    pub next_offset: Option<usize>,
 }

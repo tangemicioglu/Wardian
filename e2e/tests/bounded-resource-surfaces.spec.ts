@@ -23,6 +23,7 @@ test("shows an explicit notice when the workflow catalog is bounded", async ({ p
       workflow_list_blueprints: {
         blueprints: [{ id: "wf", name: "Example workflow", path: "/workflows/example.md" }],
         truncated: true,
+        next_offset: 500,
       },
       workflow_list_runs: { runs: [], truncated: false },
     },
@@ -30,7 +31,8 @@ test("shows an explicit notice when the workflow catalog is bounded", async ({ p
 
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("workflows-view")).toBeVisible();
-  await expect(page.getByTestId("blueprint-selector").getByRole("status")).toHaveText("Showing the first 500 workflows.");
+  await expect(page.getByTestId("blueprint-selector").getByRole("status")).toContainText("Showing the first 500 workflows");
+  await expect(page.getByTestId("blueprint-selector").getByRole("button", { name: "Load next 500" })).toBeVisible();
 
   const screenshotPath = process.env.WARDIAN_BOUNDED_RESOURCE_SCREENSHOT
     ?? testInfo.outputPath("workflow-catalog-truncated.png");

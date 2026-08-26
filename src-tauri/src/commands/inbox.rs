@@ -28,6 +28,7 @@ pub const MAX_INBOX_NOTIFICATIONS: usize = 200;
 pub struct InboxNotificationListResult {
     pub notifications: Vec<InboxNotificationDto>,
     pub truncated: bool,
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,7 +48,7 @@ pub struct WorkflowInboxApprovalDto {
 #[tauri::command]
 pub fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
     let mut updates = Vec::new();
-    for run in crate::commands::workflow::workflow_list_runs()?.runs {
+    for run in crate::commands::workflow::workflow_list_runs(None)?.runs {
         let Some(run_root) = run.get("path").and_then(serde_json::Value::as_str) else {
             continue;
         };
@@ -75,16 +76,24 @@ pub fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInboxUpda
 #[tauri::command]
 pub async fn list_inbox_notifications(
     state: State<'_, AppState>,
+    offset: Option<usize>,
 ) -> Result<InboxNotificationListResult, String> {
-    list_inbox_notifications_for_state(&state).await
+    list_inbox_notifications_for_state_with_offset(&state, offset.unwrap_or(0)).await
 }
 
 pub async fn list_inbox_notifications_for_state(
     state: &AppState,
 ) -> Result<InboxNotificationListResult, String> {
+    list_inbox_notifications_for_state_with_offset(state, 0).await
+}
+
+pub async fn list_inbox_notifications_for_state_with_offset(
+    state: &AppState,
+    offset: usize,
+) -> Result<InboxNotificationListResult, String> {
     let (records, truncated) = state
         .interactions
-        .inbox_notifications(MAX_INBOX_NOTIFICATIONS)
+        .inbox_notifications_page(offset, MAX_INBOX_NOTIFICATIONS)
         .await;
     let mut notifications = Vec::new();
     for record in records {
@@ -118,6 +127,7 @@ pub async fn list_inbox_notifications_for_state(
     Ok(InboxNotificationListResult {
         notifications,
         truncated,
+        next_offset: truncated.then_some(offset + MAX_INBOX_NOTIFICATIONS),
     })
 }
 
@@ -139,7 +149,7 @@ pub async fn resolve_inbox_notification(
 
 #[tauri::command]
 pub fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
-    let runs = crate::commands::workflow::workflow_list_runs()?.runs;
+    let runs = crate::commands::workflow::workflow_list_runs(None)?.runs;
     let mut approvals = Vec::new();
     for run in runs {
         if run.get("status").and_then(serde_json::Value::as_str) != Some("awaiting_approval") {

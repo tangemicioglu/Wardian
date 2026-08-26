@@ -22,6 +22,11 @@ type GardenInvoke = (command: string, args?: Record<string, unknown>) => Promise
 export interface GardenWorkflowInputsResult {
   workflows: GardenWorkflowInput[];
   truncated: boolean;
+  nextOffset: number | null;
+}
+
+export interface GardenWorkflowHookResult extends GardenWorkflowInputsResult {
+  loadMore: () => Promise<void>;
 }
 
 let cachedBlueprintKey: string | null = null;
@@ -58,11 +63,19 @@ export function mergeWorkflowRunStatus(
   }));
 }
 
-export async function loadGardenWorkflowInputs(invoker: GardenInvoke = invoke as GardenInvoke): Promise<GardenWorkflowInputsResult> {
+export async function loadGardenWorkflowInputs(
+  invoker: GardenInvoke = invoke as GardenInvoke,
+  blueprintOffset = 0,
+): Promise<GardenWorkflowInputsResult> {
   // `invoke` can resolve to null (not just reject), so coalesce to [] before mapping.
-  const blueprintResult = (await invoker("workflow_list_blueprints").catch(() => [])) as BlueprintListResult | BlueprintRef[];
+  const blueprintResult = (await (
+    blueprintOffset > 0
+      ? invoker("workflow_list_blueprints", { offset: blueprintOffset })
+      : invoker("workflow_list_blueprints")
+  ).catch(() => [])) as BlueprintListResult | BlueprintRef[];
   const refs = Array.isArray(blueprintResult) ? blueprintResult : blueprintResult?.blueprints ?? [];
   const truncated = !Array.isArray(blueprintResult) && Boolean(blueprintResult?.truncated);
+  const nextOffset = Array.isArray(blueprintResult) ? null : blueprintResult?.next_offset ?? null;
   const nextBlueprintKey = blueprintRefsKey(refs);
   let blueprints = cachedBlueprintKey === nextBlueprintKey ? cachedBlueprints : null;
 
@@ -102,6 +115,7 @@ export async function loadGardenWorkflowInputs(invoker: GardenInvoke = invoke as
       deploymentsByBlueprint(schedules ?? []),
     ),
     truncated,
+    nextOffset,
   };
 }
 
@@ -115,17 +129,30 @@ function blueprintRefsKey(refs: BlueprintRef[]) {
 }
 
 /** Loads the blueprint catalog (list + parse, mirroring WorkflowsView) and merges run status. */
-export function useGardenWorkflows(enabled = true): GardenWorkflowInputsResult {
-  const [result, setResult] = useState<GardenWorkflowInputsResult>({ workflows: [], truncated: false });
+export function useGardenWorkflows(enabled = true): GardenWorkflowHookResult {
+  const [result, setResult] = useState<GardenWorkflowInputsResult>({ workflows: [], truncated: false, nextOffset: null });
 
   const load = useCallback(async () => {
     setResult(await loadGardenWorkflowInputs());
   }, []);
+
+  const loadMore = useCallback(async () => {
+    if (result.nextOffset === null) return;
+    const page = await loadGardenWorkflowInputs(invoke as GardenInvoke, result.nextOffset);
+    setResult((current) => ({
+      workflows: [
+        ...current.workflows,
+        ...page.workflows.filter((candidate) => !current.workflows.some((existing) => existing.id === candidate.id)),
+      ],
+      truncated: page.truncated,
+      nextOffset: page.nextOffset,
+    }));
+  }, [result.nextOffset]);
 
   useEffect(() => {
     if (!enabled) return;
     void load();
   }, [enabled, load]);
 
-  return result;
+  return { ...result, loadMore };
 }

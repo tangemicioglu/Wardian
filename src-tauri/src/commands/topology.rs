@@ -136,12 +136,15 @@ const MAX_ACTIVITY_PAIRS: usize = 1_000;
 pub struct PairActivityResult {
     pub pairs: Vec<PairActivity>,
     pub truncated: bool,
+    pub next_offset: Option<usize>,
 }
 
 #[tauri::command]
-pub async fn get_pair_activity() -> Result<PairActivityResult, String> {
-    let mut records = wardian_core::db::list_recent_interaction_records(MAX_ACTIVITY_RECORDS + 1)
-        .map_err(|e| e.to_string())?;
+pub async fn get_pair_activity(offset: Option<usize>) -> Result<PairActivityResult, String> {
+    let offset = offset.unwrap_or(0);
+    let mut records =
+        wardian_core::db::list_recent_interaction_records_page(MAX_ACTIVITY_RECORDS + 1, offset)
+            .map_err(|e| e.to_string())?;
     let mut truncated = records.len() > MAX_ACTIVITY_RECORDS;
     records.truncate(MAX_ACTIVITY_RECORDS);
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -151,7 +154,11 @@ pub async fn get_pair_activity() -> Result<PairActivityResult, String> {
         pairs.truncate(MAX_ACTIVITY_PAIRS);
         truncated = true;
     }
-    Ok(PairActivityResult { pairs, truncated })
+    Ok(PairActivityResult {
+        pairs,
+        truncated,
+        next_offset: truncated.then_some(offset + MAX_ACTIVITY_RECORDS),
+    })
 }
 
 fn mutate(app: &AppHandle, apply: impl FnOnce(&mut Topology) -> bool) -> Result<bool, String> {

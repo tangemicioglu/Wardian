@@ -23,12 +23,15 @@ function readProtected(item: QueueItem) {
 interface QueueState {
   items: QueueItem[];
   inboxNotificationsTruncated: boolean;
+  inboxNotificationsNextOffset: number | null;
+  loadingMoreInboxNotifications: boolean;
   preferences: QueuePreferences;
   _agentBuffers: Record<string, string>;
   _workflowLastOutput: Record<string, string>;
   _readNotificationIds: string[];
 
   loadItems: () => Promise<void>;
+  loadMoreInboxNotifications: () => Promise<void>;
   loadPreferences: () => Promise<void>;
   resolveApprovalRequest: (item: QueueItem, choice: string) => Promise<void>;
   appendAgentEvent: (sessionId: string, data: Record<string, unknown>) => void;
@@ -113,11 +116,18 @@ interface InboxNotificationDto {
 interface InboxNotificationListResult {
   notifications: InboxNotificationDto[];
   truncated: boolean;
+  next_offset?: number | null;
 }
 
-async function loadInboxNotificationItems(readNotificationIds: Set<string>): Promise<{ items: QueueItem[]; truncated: boolean }> {
+async function loadInboxNotificationItems(
+  readNotificationIds: Set<string>,
+  offset?: number,
+): Promise<{ items: QueueItem[]; truncated: boolean; nextOffset: number | null }> {
   try {
-    const result = await invoke<InboxNotificationListResult | InboxNotificationDto[]>("list_inbox_notifications");
+    const result = await invoke<InboxNotificationListResult | InboxNotificationDto[]>(
+      "list_inbox_notifications",
+      offset && offset > 0 ? { offset } : undefined,
+    );
     const notifications = Array.isArray(result) ? result : result.notifications;
     return {
       items: notifications.map((notification) => ({
@@ -139,9 +149,10 @@ async function loadInboxNotificationItems(readNotificationIds: Set<string>): Pro
         expires_at: notification.expires_at,
       })),
       truncated: !Array.isArray(result) && result.truncated,
+      nextOffset: Array.isArray(result) ? null : result.next_offset ?? null,
     };
   } catch {
-    return { items: [], truncated: false };
+    return { items: [], truncated: false, nextOffset: null };
   }
 }
 
@@ -250,6 +261,8 @@ function matchesActionNeededEvidence(
 export const useQueueStore = create<QueueState>((set, get) => ({
   items: [],
   inboxNotificationsTruncated: false,
+  inboxNotificationsNextOffset: null,
+  loadingMoreInboxNotifications: false,
   preferences: DEFAULT_QUEUE_PREFERENCES,
   _agentBuffers: {},
   _workflowLastOutput: {},
@@ -283,6 +296,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       set({
         items,
         inboxNotificationsTruncated: notificationResult.truncated,
+        inboxNotificationsNextOffset: notificationResult.nextOffset,
         _readNotificationIds: [...readNotificationIds],
       });
       if (reconciledTerminals.length > 0) {
@@ -290,6 +304,32 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       }
     } catch {
       // First run or unavailable: leave items empty.
+    }
+  },
+
+  async loadMoreInboxNotifications() {
+    const offset = get().inboxNotificationsNextOffset;
+    if (offset === null || get().loadingMoreInboxNotifications) return;
+    set({ loadingMoreInboxNotifications: true });
+    try {
+      const readNotificationIds = new Set(get()._readNotificationIds);
+      const page = await loadInboxNotificationItems(readNotificationIds, offset);
+      set((state) => {
+        const existing = new Map(
+          state.items
+            .filter((item) => item.inbox_notification_id)
+            .map((item) => [item.inbox_notification_id!, item]),
+        );
+        for (const item of page.items) existing.set(item.inbox_notification_id!, item);
+        const nonNotifications = state.items.filter((item) => !item.inbox_notification_id);
+        return {
+          items: [...nonNotifications, ...existing.values()].sort((left, right) => right.timestamp - left.timestamp),
+          inboxNotificationsTruncated: page.truncated,
+          inboxNotificationsNextOffset: page.nextOffset,
+        };
+      });
+    } finally {
+      set({ loadingMoreInboxNotifications: false });
     }
   },
 

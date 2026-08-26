@@ -11,6 +11,8 @@ function resetStore() {
   useQueueStore.setState({
     items: [],
     inboxNotificationsTruncated: false,
+    inboxNotificationsNextOffset: null,
+    loadingMoreInboxNotifications: false,
     _agentBuffers: {},
     _workflowLastOutput: {},
     _readNotificationIds: [],
@@ -40,6 +42,19 @@ describe("InboxView", () => {
     render(<InboxView />);
 
     expect(screen.getByRole("status")).toHaveTextContent("200 newest Inbox notifications");
+  });
+
+  it("offers one more bounded notification page", async () => {
+    const loadMoreInboxNotifications = vi.fn(async () => undefined);
+    useQueueStore.setState({
+      inboxNotificationsTruncated: true,
+      inboxNotificationsNextOffset: 200,
+      loadMoreInboxNotifications,
+    });
+
+    render(<InboxView />);
+    fireEvent.click(screen.getByRole("button", { name: /load next 200/i }));
+    await waitFor(() => expect(loadMoreInboxNotifications).toHaveBeenCalledOnce());
   });
 
   it("renders an agent completion item", () => {

@@ -58,6 +58,8 @@ export function WorkflowsView({ theme }: WorkflowsViewProps) {
 
   const runs = useRunStore((state) => state.runs);
   const runsTruncated = useRunStore((state) => state.runsTruncated);
+  const loadMoreRuns = useRunStore((state) => state.loadMoreRuns);
+  const loadingMoreRuns = useRunStore((state) => state.loadingMoreRuns);
   const runState = useRunStore((state) => state.state);
   const runBlueprint = useRunStore((state) => state.blueprint);
   const loadRuns = useRunStore((state) => state.loadRuns);
@@ -371,6 +373,8 @@ export function WorkflowsView({ theme }: WorkflowsViewProps) {
                 ? selectedRunIdsByBlueprint[activeBlueprintId] ?? (runState?.blueprint_id === activeBlueprintId ? runState.run_id : null)
                 : selectedRunId ?? runState?.run_id ?? null}
               onOpen={(blueprintId, runId) => void openRunForObserve(blueprintId, runId)}
+              onLoadMore={() => void loadMoreRuns()}
+              loadingMore={loadingMoreRuns}
             />
           </aside>
         )}
@@ -674,9 +678,17 @@ async function resolveScheduleBlueprint(schedule: WorkflowSchedule, currentBluep
   }
 
   try {
-    const result = await invoke<BlueprintListResult | BlueprintRef[]>('workflow_list_blueprints');
-    const refs = Array.isArray(result) ? result : result.blueprints;
-    const ref = refs.find((candidate) => candidate.id === schedule.blueprint_id) ?? null;
+    let offset = 0;
+    let ref: BlueprintRef | null = null;
+    while (!ref) {
+      const result = offset > 0
+        ? await invoke<BlueprintListResult | BlueprintRef[]>('workflow_list_blueprints', { offset })
+        : await invoke<BlueprintListResult | BlueprintRef[]>('workflow_list_blueprints');
+      const refs = Array.isArray(result) ? result : result.blueprints;
+      ref = refs.find((candidate) => candidate.id === schedule.blueprint_id) ?? null;
+      if (ref || Array.isArray(result) || !result.next_offset) break;
+      offset = result.next_offset;
+    }
     if (!ref) {
       return { blueprint: null, path: null };
     }
