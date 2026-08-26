@@ -18,8 +18,8 @@ these sources and keeps the newest valid timestamp for each agent:
 1. User-authored `Message` interaction records with no sender agent, which
    cover prompts delivered by Wardian UI, CLI, remote, and headless paths.
 2. Provider transcripts, including real user-message records for Codex,
-    Claude, Gemini, Antigravity, and Pi, and prompt-loop timestamps for
-    OpenCode.
+   Claude, Gemini, Pi, and both Antigravity's current SQLite step metadata and
+   legacy JSONL format, plus prompt-loop timestamps for OpenCode.
 3. The existing watchlist interaction map remains a frontend compatibility
    fallback for records created by older versions or direct terminal input
    that has not yet appeared in a provider transcript.
@@ -30,10 +30,13 @@ newer timestamp with the current app time.
 
 ## Restart and parsing behavior
 
-Telemetry reads persisted interaction records on each metrics pass. Provider
-logs are bounded to the existing telemetry tail limit and are reparsed when
-their modification time changes. An initial transcript replay supplies the
-historical timestamp without changing the agent's current status.
+Telemetry reads only senderless message records from the persisted interaction
+ledger on each metrics pass. Provider logs are bounded to the existing
+telemetry tail limit and are reparsed when their modification time changes.
+Current Antigravity conversations are read from the SQLite `steps.metadata`
+protobuf timestamp; legacy Antigravity JSONL remains supported. An initial
+transcript replay supplies the historical timestamp without changing the
+agent's current status.
 
 The UI uses the telemetry timestamp first and falls back to the legacy map
 only when telemetry has no timestamp. Relative display formatting remains a

@@ -265,21 +265,25 @@ fn bytes_to_mib(bytes: u64) -> f64 {
     bytes as f64 / 1_048_576.0
 }
 
+fn query_timestamp_from_text(timestamp: &str) -> Option<String> {
+    let timestamp = timestamp.trim();
+    if timestamp.is_empty() {
+        return None;
+    }
+    if chrono::DateTime::parse_from_rfc3339(timestamp).is_ok() {
+        return Some(timestamp.to_string());
+    }
+    // SQLite's CURRENT_TIMESTAMP is UTC but uses a space separator.
+    let sqlite_timestamp = format!("{}Z", timestamp.replace(' ', "T"));
+    chrono::DateTime::parse_from_rfc3339(&sqlite_timestamp)
+        .ok()
+        .map(|parsed| parsed.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
 fn query_timestamp_from_value(value: Option<&serde_json::Value>) -> Option<String> {
     let value = value?;
     if let Some(timestamp) = value.as_str() {
-        let timestamp = timestamp.trim();
-        if timestamp.is_empty() {
-            return None;
-        }
-        if chrono::DateTime::parse_from_rfc3339(timestamp).is_ok() {
-            return Some(timestamp.to_string());
-        }
-        // SQLite's CURRENT_TIMESTAMP is UTC but uses a space separator.
-        let sqlite_timestamp = format!("{}Z", timestamp.replace(' ', "T"));
-        return chrono::DateTime::parse_from_rfc3339(&sqlite_timestamp)
-            .ok()
-            .map(|parsed| parsed.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        return query_timestamp_from_text(timestamp);
     }
     value.as_i64().and_then(|millis| {
         chrono::DateTime::from_timestamp_millis(millis)
@@ -312,9 +316,15 @@ fn update_latest_query_timestamp(latest: &mut Option<String>, candidate: Option<
 }
 
 fn latest_user_query_timestamps() -> HashMap<String, String> {
-    let Ok(records) = wardian_core::db::list_interaction_records() else {
+    let Ok(records) = wardian_core::db::list_user_message_interaction_records() else {
         return HashMap::new();
     };
+    latest_user_query_timestamps_from_records(&records)
+}
+
+fn latest_user_query_timestamps_from_records(
+    records: &[wardian_core::control::InteractionRecord],
+) -> HashMap<String, String> {
     let mut timestamps = HashMap::new();
     for record in records {
         if record.kind != wardian_core::control::InteractionKind::Message
@@ -322,14 +332,12 @@ fn latest_user_query_timestamps() -> HashMap<String, String> {
         {
             continue;
         }
-        let Some(timestamp) =
-            query_timestamp_from_value(Some(&serde_json::Value::String(record.created_at)))
-        else {
+        let Some(timestamp) = query_timestamp_from_text(&record.created_at) else {
             continue;
         };
-        for session_id in record.target_session_ids {
+        for session_id in &record.target_session_ids {
             let entry = timestamps
-                .entry(session_id)
+                .entry(session_id.clone())
                 .or_insert_with(|| timestamp.clone());
             let mut latest = Some(entry.clone());
             update_latest_query_timestamp(&mut latest, Some(timestamp.clone()));
@@ -1497,7 +1505,34 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                         }
 
                         if should_parse {
-                            if let Ok(content) = read_log_bounded(path) {
+                            let is_antigravity_database = snap.provider == "antigravity"
+                                && path
+                                    .extension()
+                                    .is_some_and(|extension| extension.eq_ignore_ascii_case("db"));
+                            if is_antigravity_database {
+                                if let Ok(metrics) =
+                                    AntigravityProvider::conversation_metrics_from_database(path)
+                                {
+                                    if let Some(mtime) = new_mtime {
+                                        *snap.log_last_modified.lock().unwrap() = Some(mtime);
+                                    }
+                                    q_count = metrics.query_count;
+                                    update_latest_query_timestamp(
+                                        &mut last_query_timestamp,
+                                        metrics.last_query_timestamp,
+                                    );
+                                    if let Some(status) = metrics.status {
+                                        set_snapshot_status_from_log(
+                                            snap,
+                                            status,
+                                            is_initial_log_replay,
+                                        );
+                                    }
+                                    if metrics.init_timestamp.is_some() {
+                                        i_ts = metrics.init_timestamp;
+                                    }
+                                }
+                            } else if let Ok(content) = read_log_bounded(path) {
                                 if let Some(mtime) = new_mtime {
                                     *snap.log_last_modified.lock().unwrap() = Some(mtime);
                                 }

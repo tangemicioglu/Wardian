@@ -23,6 +23,15 @@ pub struct AntigravityConversationMessage {
     pub text: String,
 }
 
+/// Historical telemetry extracted from one Antigravity SQLite conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntigravityConversationMetrics {
+    pub query_count: usize,
+    pub init_timestamp: Option<String>,
+    pub last_query_timestamp: Option<String>,
+    pub status: Option<&'static str>,
+}
+
 pub(crate) fn changed_workspace_conversation(
     before: Option<&str>,
     after: Option<&str>,
@@ -176,6 +185,66 @@ impl AntigravityProvider {
         Ok(messages)
     }
 
+    /// Reads durable user-message timestamps from the current Antigravity
+    /// SQLite conversation format. Each step's metadata contains a protobuf
+    /// timestamp at field `1`, with seconds and nanos at fields `1` and `2`.
+    pub fn conversation_metrics_from_database(
+        path: &Path,
+    ) -> Result<AntigravityConversationMetrics, String> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| format!("failed to open Antigravity conversation database: {error}"))?;
+        let mut statement = connection
+            .prepare("SELECT idx, step_type, metadata FROM steps ORDER BY idx")
+            .map_err(|error| {
+                format!("failed to read Antigravity conversation metadata: {error}")
+            })?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                ))
+            })
+            .map_err(|error| {
+                format!("failed to query Antigravity conversation metadata: {error}")
+            })?;
+
+        let mut metrics = AntigravityConversationMetrics {
+            query_count: 0,
+            init_timestamp: None,
+            last_query_timestamp: None,
+            status: None,
+        };
+        for row in rows {
+            let (_step_index, step_type, metadata) = row.map_err(|error| {
+                format!("failed to decode Antigravity conversation metadata: {error}")
+            })?;
+            let timestamp = metadata
+                .as_deref()
+                .and_then(|metadata| protobuf_timestamp_at_path(metadata, &[1]));
+            if metrics.init_timestamp.is_none() {
+                metrics.init_timestamp = timestamp.clone();
+            }
+            match step_type {
+                14 => {
+                    metrics.query_count += 1;
+                    if timestamp.is_some() {
+                        metrics.last_query_timestamp = timestamp;
+                    }
+                    metrics.status = Some("Processing...");
+                }
+                15 => metrics.status = Some("Idle"),
+                _ => {}
+            }
+        }
+
+        Ok(metrics)
+    }
+
     /// Returns the newest durable user-message step in an Antigravity
     /// conversation. The step index is the provider-owned receipt cursor used
     /// by the live watcher to acknowledge a submitted turn.
@@ -265,11 +334,46 @@ fn file_uri_path_text(uri: &str) -> Option<&str> {
 }
 
 fn protobuf_string_at_path(bytes: &[u8], fields: &[u32]) -> Option<String> {
-    let mut current = bytes;
-    for field in fields {
-        current = protobuf_length_delimited_field(current, *field)?;
-    }
+    let current = protobuf_message_at_path(bytes, fields)?;
     String::from_utf8(current.to_vec()).ok()
+}
+
+fn protobuf_message_at_path<'a>(bytes: &'a [u8], fields: &[u32]) -> Option<&'a [u8]> {
+    fields.iter().try_fold(bytes, |current, field| {
+        protobuf_length_delimited_field(current, *field)
+    })
+}
+
+fn protobuf_varint_field(bytes: &[u8], wanted_field: u32) -> Option<u64> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let key = protobuf_varint(bytes, &mut offset)?;
+        let field = (key >> 3) as u32;
+        match key & 0x07 {
+            0 => {
+                let value = protobuf_varint(bytes, &mut offset)?;
+                if field == wanted_field {
+                    return Some(value);
+                }
+            }
+            1 => offset = offset.checked_add(8)?,
+            2 => {
+                let length = usize::try_from(protobuf_varint(bytes, &mut offset)?).ok()?;
+                offset = offset.checked_add(length)?;
+            }
+            5 => offset = offset.checked_add(4)?,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn protobuf_timestamp_at_path(bytes: &[u8], fields: &[u32]) -> Option<String> {
+    let timestamp = protobuf_message_at_path(bytes, fields)?;
+    let seconds = i64::try_from(protobuf_varint_field(timestamp, 1)?).ok()?;
+    let nanos = u32::try_from(protobuf_varint_field(timestamp, 2).unwrap_or_default()).ok()?;
+    chrono::DateTime::from_timestamp(seconds, nanos)
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 fn protobuf_length_delimited_field(bytes: &[u8], wanted_field: u32) -> Option<&[u8]> {
@@ -774,11 +878,23 @@ SET dp0=%~dp0
         bytes
     }
 
+    fn protobuf_varint_field(field: u32, value: u64) -> Vec<u8> {
+        let mut bytes = protobuf_varint(u64::from(field << 3));
+        bytes.extend(protobuf_varint(value));
+        bytes
+    }
+
     fn protobuf_message_field(field: u32, value: Vec<u8>) -> Vec<u8> {
         let mut bytes = protobuf_varint(u64::from(field << 3 | 2));
         bytes.extend(protobuf_varint(value.len() as u64));
         bytes.extend(value);
         bytes
+    }
+
+    fn protobuf_timestamp_metadata(seconds: u64, nanos: u64) -> Vec<u8> {
+        let mut timestamp = protobuf_varint_field(1, seconds);
+        timestamp.extend(protobuf_varint_field(2, nanos));
+        protobuf_message_field(1, timestamp)
     }
 
     #[test]
@@ -919,6 +1035,54 @@ SET dp0=%~dp0
             AntigravityProvider::latest_user_message_step_index(&database)
                 .expect("read latest user message"),
             Some(12)
+        );
+    }
+
+    #[test]
+    fn conversation_metrics_from_database_reads_user_message_timestamps() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database = temp.path().join("conversation.db");
+        let connection = Connection::open(&database).expect("open database");
+        connection
+            .execute_batch(
+                "CREATE TABLE steps (
+                    idx INTEGER,
+                    step_type INTEGER,
+                    metadata BLOB,
+                    step_payload BLOB
+                );",
+            )
+            .expect("create steps");
+        for (idx, step_type, seconds, nanos) in [
+            (0_i64, 14_i64, 1_787_770_550_u64, 0_u64),
+            (1_i64, 15_i64, 1_787_770_551_u64, 0_u64),
+            (2_i64, 14_i64, 1_787_770_552_u64, 500_000_000_u64),
+            (3_i64, 15_i64, 1_787_770_553_u64, 0_u64),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO steps (idx, step_type, metadata, step_payload)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        idx,
+                        step_type,
+                        protobuf_timestamp_metadata(seconds, nanos),
+                        Vec::<u8>::new()
+                    ],
+                )
+                .expect("insert conversation step");
+        }
+        drop(connection);
+
+        assert_eq!(
+            AntigravityProvider::conversation_metrics_from_database(&database)
+                .expect("read conversation metrics"),
+            AntigravityConversationMetrics {
+                query_count: 2,
+                init_timestamp: Some("2026-08-26T18:55:50.000Z".to_string()),
+                last_query_timestamp: Some("2026-08-26T18:55:52.500Z".to_string()),
+                status: Some("Idle"),
+            }
         );
     }
 }

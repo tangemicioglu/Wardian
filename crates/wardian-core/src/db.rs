@@ -564,6 +564,32 @@ pub fn list_interaction_records() -> Result<Vec<InteractionRecord>, Box<dyn std:
     })
 }
 
+/// Lists only user-authored message interactions used for historical
+/// Last-Queried telemetry. The database predicate keeps telemetry passes from
+/// decoding unrelated tasks, replies, notifications, or agent-originated
+/// messages.
+pub fn list_user_message_interaction_records(
+) -> Result<Vec<InteractionRecord>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        let records = list_user_message_interaction_records_with_conn(conn)?;
+        Ok(records)
+    })
+}
+
+pub fn list_user_message_interaction_records_with_conn(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<InteractionRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, sender_session_id, target_session_ids, status, trigger_policy,
+            body_ref, parent_interaction_id, created_at, updated_at, completed_at
+         FROM interactions
+         WHERE kind = 'message' AND sender_session_id IS NULL
+         ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], row_to_interaction_record)?;
+    rows.collect()
+}
+
 pub fn list_recent_interaction_records(
     limit: usize,
 ) -> Result<Vec<InteractionRecord>, Box<dyn std::error::Error>> {
@@ -1205,6 +1231,41 @@ mod tests {
 
         let records = list_interaction_records_with_conn(&conn).unwrap();
         assert_eq!(records, vec![record]);
+    }
+
+    #[test]
+    fn user_message_interaction_records_are_filtered_in_sql() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let make_record = |id: &str, kind: InteractionKind, sender_session_id: Option<&str>| {
+            InteractionRecord {
+                id: id.to_string(),
+                kind,
+                sender_session_id: sender_session_id.map(str::to_string),
+                target_session_ids: vec!["agent-1".to_string()],
+                status: InteractionStatus::Queued,
+                trigger_policy: InteractionTriggerPolicy::StartTurn,
+                body_ref: InteractionBodyRef::Inline {
+                    body: "prompt".to_string(),
+                },
+                parent_interaction_id: None,
+                created_at: format!("2026-05-25T00:00:0{id}.000Z"),
+                updated_at: format!("2026-05-25T00:00:0{id}.000Z"),
+                completed_at: None,
+            }
+        };
+
+        for record in [
+            make_record("1", InteractionKind::Task, None),
+            make_record("2", InteractionKind::Message, Some("sender-1")),
+            make_record("3", InteractionKind::Message, None),
+        ] {
+            upsert_interaction_record_with_conn(&conn, &record).unwrap();
+        }
+
+        let records = list_user_message_interaction_records_with_conn(&conn).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "3");
     }
 
     #[test]
