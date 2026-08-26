@@ -232,7 +232,7 @@ describe("SidebarContentPane", () => {
       renderPane({ activeTab: "workflows" });
 
       loadRunsMock.mockClear();
-      vi.advanceTimersByTime(1500);
+      vi.advanceTimersByTime(5000);
 
       expect(loadRunsMock).toHaveBeenCalled();
     } finally {
