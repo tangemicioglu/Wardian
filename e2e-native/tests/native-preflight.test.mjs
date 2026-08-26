@@ -131,6 +131,31 @@ test("native harness refuses to delete an unsafe isolated home path", () => {
   }
 });
 
+test("native harness registers the legacy TestClass fixture", () => {
+  const safeHome = path.join(
+    process.cwd(),
+    ".tmp",
+    "e2e-native",
+    `fixture-class-${process.pid}`,
+  );
+
+  try {
+    prepareIsolatedHome({ isolatedHome: safeHome });
+    const classes = JSON.parse(
+      fs.readFileSync(path.join(safeHome, "custom_classes.json"), "utf8"),
+    );
+    assert.deepEqual(classes, [
+      {
+        name: "TestClass",
+        description: "Native test fixture class",
+        is_default: false,
+      },
+    ]);
+  } finally {
+    fs.rmSync(safeHome, { recursive: true, force: true });
+  }
+});
+
 test("native session infrastructure failures make the test process fail by default", async () => {
   const previousAllowSkip = process.env.WARDIAN_E2E_ALLOW_INFRA_SKIP;
   const previousExitCode = process.exitCode;

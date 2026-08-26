@@ -554,7 +554,11 @@ fn clone_sanitize_config(
     if let Some(agent_class) = agent_class.filter(|value| !value.trim().is_empty()) {
         config.agent_class = agent_class;
     }
-    if config.provider != source_provider {
+    let same_provider = config
+        .provider
+        .trim()
+        .eq_ignore_ascii_case(source_provider.trim());
+    if !same_provider {
         config.reset_provider_config_for_provider();
         config.custom_args = None;
     } else {
@@ -8102,6 +8106,31 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         assert!(clone.codex_config().cleared_provider_sessions.is_empty());
         assert_eq!(clone.opencode_port, None);
         assert!(!clone.is_off);
+    }
+
+    #[test]
+    fn clone_sanitize_config_preserves_provider_config_when_source_provider_case_differs() {
+        let source = AgentConfig {
+            provider: "CoDeX".to_string(),
+            provider_config: ProviderConfig::Codex(CodexProviderConfig {
+                profile: Some("custom-profile".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let clone = clone_sanitize_config(
+            &source,
+            "Alpha-copy".to_string(),
+            Some("codex".to_string()),
+            None,
+            None,
+            true,
+        );
+
+        assert_eq!(clone.provider, "codex");
+        assert_eq!(clone.codex_config().profile.as_deref(), Some("custom-profile"));
+        assert!(matches!(clone.provider_config, ProviderConfig::Codex(_)));
     }
 
     #[test]

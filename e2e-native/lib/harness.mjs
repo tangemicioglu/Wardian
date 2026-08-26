@@ -387,6 +387,20 @@ export function prepareIsolatedHome(harness) {
     throw lastError;
   }
   fs.mkdirSync(harness.isolatedHome, { recursive: true });
+
+  // Native fixtures historically use TestClass. Keep that fixture explicitly
+  // registered now that spawn_agent validates classes at the command boundary.
+  fs.writeFileSync(
+    path.join(harness.isolatedHome, "custom_classes.json"),
+    JSON.stringify([
+      {
+        name: "TestClass",
+        description: "Native test fixture class",
+        is_default: false,
+      },
+    ]),
+    "utf8",
+  );
 }
 
 function sleep(ms) {
