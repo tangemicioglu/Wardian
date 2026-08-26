@@ -433,6 +433,58 @@ fn workflow_schedule_rejects_zero_or_invalid_repeat_every() {
 }
 
 #[test]
+fn workflow_schedule_bounds_repeat_every_before_persistence() {
+    let home = TempDir::new().unwrap();
+    seed_demo_workflow(&home);
+    let workspace = home.path().to_str().unwrap();
+
+    let accepted = workflow_command(
+        &home,
+        &[
+            "workflow",
+            "schedule",
+            "add",
+            "--blueprint",
+            "demo",
+            "--name",
+            "Long Weekly",
+            "--weekly",
+            "Sun@12:00",
+            "--repeat-every",
+            "520",
+            "--workspace",
+            workspace,
+        ],
+    );
+    assert_eq!(accepted["schedule"]["schedule"]["repeat_every"], 520);
+
+    let rejected = workflow_failure(
+        &home,
+        &[
+            "workflow",
+            "schedule",
+            "add",
+            "--blueprint",
+            "demo",
+            "--name",
+            "Too Long Weekly",
+            "--weekly",
+            "Sun@12:00",
+            "--repeat-every",
+            "521",
+            "--workspace",
+            workspace,
+        ],
+    );
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("no greater than 520"));
+
+    let persisted = workflow_command(&home, &["workflow", "schedule", "list"]);
+    assert_eq!(persisted["schedules"].as_array().unwrap().len(), 1);
+    assert_eq!(persisted["schedules"][0]["schedule"]["repeat_every"], 520);
+}
+
+#[test]
 fn workflow_schedule_update_preserves_identity_and_unspecified_configuration() {
     let home = TempDir::new().unwrap();
     seed_demo_workflow(&home);

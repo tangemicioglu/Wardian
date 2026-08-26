@@ -888,7 +888,7 @@ pub struct ScheduleDefinitionArgs {
         ]
     )]
     pub at: Option<String>,
-    /// Weekly recurrence interval in weeks; defaults to 1 for new weekly schedules.
+    /// Weekly recurrence interval in weeks (1-520); defaults to 1 for new weekly schedules.
     #[arg(
         long,
         conflicts_with_all = ["every", "daily", "monthly", "specific_dates", "at"]

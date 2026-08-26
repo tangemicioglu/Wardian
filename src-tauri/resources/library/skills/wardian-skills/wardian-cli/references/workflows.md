@@ -33,6 +33,7 @@ schedule only after the user explicitly asks for one.
 Scheduled schedules require an existing workspace directory. `schedule update`
 edits the persisted record in place, so its id and run history remain stable.
 Weekly schedules default to a one-week recurrence; use
-`--repeat-every <positive-integer>` for a longer weekly interval. The
+`--repeat-every <positive-integer>` for a weekly interval from 1 through 520
+weeks. The
 interval-only `--every` option remains expressed in minutes, and the current
 schedule model does not support repeat intervals for other calendar cadences.

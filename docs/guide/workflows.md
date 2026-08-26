@@ -61,7 +61,8 @@ state without replacing the schedule identity.
 
 For a weekly schedule, use `--weekly <days@HH:MM>`; it defaults to one-week
 recurrence. Use `--repeat-every <positive-integer>` for a longer weekly
-interval, such as `--weekly Sun@12:00 --repeat-every 2`. The separate
+interval from 1 through 520 weeks, such as
+`--weekly Sun@12:00 --repeat-every 2`. The separate
 `--every` option remains interval-only and is expressed in minutes. Monthly,
 daily, and specific-date schedules do not currently support a repeat interval
 in the shared schedule model.
