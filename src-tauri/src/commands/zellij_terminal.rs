@@ -1,6 +1,8 @@
+use crate::state::terminal_session::TerminalSessionBroker;
 use crate::state::zellij_terminal::ZellijPanePhase;
 use crate::state::AppState;
 use serde::Serialize;
+use std::future::Future;
 use tauri::State;
 
 const HABITAT_TERMINAL_PRESENTATION_ID: &str = "desktop:zellij-habitat-terminal";
@@ -63,6 +65,45 @@ fn validate_habitat_activation_preflight(
         return Err(OWNERSHIP_CHANGED_MESSAGE.to_string());
     }
     Ok(())
+}
+
+async fn run_habitat_activation<StartAttached, StartFuture, FocusAction, FocusFuture>(
+    terminal_sessions: &TerminalSessionBroker,
+    session_id: &str,
+    observed_generation: u64,
+    observed_lease_epoch: u64,
+    start_attached_client: StartAttached,
+    focus_action: FocusAction,
+) -> Result<(), String>
+where
+    StartAttached: FnOnce() -> StartFuture + Send,
+    StartFuture: Future<Output = Result<(), String>> + Send,
+    FocusAction: FnOnce() -> FocusFuture + Send + 'static,
+    FocusFuture: Future<Output = Result<(), String>> + Send + 'static,
+{
+    let broker_state = terminal_sessions
+        .broker_state(session_id)
+        .await
+        .map_err(|_| "Agent terminal ownership state is still loading".to_string())?;
+    validate_habitat_activation_preflight(
+        broker_state.runtime_generation,
+        broker_state.lease_epoch,
+        broker_state.owner_presentation_id.as_deref(),
+        broker_state.pending_activation.is_some(),
+        observed_generation,
+        observed_lease_epoch,
+    )?;
+    start_attached_client().await?;
+    terminal_sessions
+        .run_authorized_native_focus(
+            session_id,
+            observed_generation,
+            observed_lease_epoch,
+            HABITAT_TERMINAL_PRESENTATION_ID,
+            focus_action,
+        )
+        .await
+        .map_err(|_| OWNERSHIP_CHANGED_MESSAGE.to_string())
 }
 
 #[tauri::command]
@@ -156,6 +197,81 @@ pub async fn get_zellij_terminal_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::terminal_session::{TerminalClientIdentity, TerminalRuntimeHandles};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, oneshot};
+    use wardian_core::models::*;
+
+    async fn terminal_broker_fixture() -> (Arc<TerminalSessionBroker>, u64, u64) {
+        let broker = Arc::new(TerminalSessionBroker::default());
+        let (input_tx, _input_rx) = mpsc::channel(16);
+        let runtime = TerminalRuntimeHandles::new(input_tx, |_geometry| Ok(()));
+        let generation = broker
+            .start_or_replace_runtime(
+                "session-1",
+                runtime,
+                TerminalGeometry {
+                    cols: 120,
+                    rows: 40,
+                },
+            )
+            .await
+            .expect("start terminal runtime");
+        broker
+            .register_presentation(
+                terminal_registration(
+                    HABITAT_TERMINAL_PRESENTATION_ID,
+                    TerminalClientKind::Desktop,
+                ),
+                TerminalClientIdentity::trusted_desktop(),
+            )
+            .await
+            .expect("register habitat presentation");
+        let remote = broker
+            .register_presentation(
+                terminal_registration("remote-owner", TerminalClientKind::Remote),
+                TerminalClientIdentity::authenticated_remote("remote-owner", true),
+            )
+            .await
+            .expect("register remote presentation");
+        (broker, generation, remote.broker_state.lease_epoch)
+    }
+
+    fn terminal_registration(
+        presentation_id: &str,
+        client_kind: TerminalClientKind,
+    ) -> TerminalPresentationRegistration {
+        TerminalPresentationRegistration {
+            presentation_id: presentation_id.to_string(),
+            session_id: "session-1".to_string(),
+            client_kind,
+            desired_geometry: Some(TerminalGeometry {
+                cols: 120,
+                rows: 40,
+            }),
+            visibility: TerminalVisibility::Visible,
+            render_state: TerminalRenderState::Mounted,
+            requested_interaction: TerminalRequestedInteraction::Interactive,
+            observed_lease_epoch: 0,
+        }
+    }
+
+    async fn begin_remote_activation(
+        broker: &TerminalSessionBroker,
+        generation: u64,
+        lease_epoch: u64,
+    ) -> TerminalActivationBeginResult {
+        broker
+            .begin_activation(TerminalActivationBeginRequest {
+                session_id: "session-1".to_string(),
+                presentation_id: "remote-owner".to_string(),
+                runtime_generation: generation,
+                observed_lease_epoch: lease_epoch,
+            })
+            .await
+            .expect("begin remote activation")
+    }
 
     #[test]
     fn preview_phase_mapping_only_advertises_running_panes_as_interactive() {
@@ -223,6 +339,100 @@ mod tests {
         )
         .is_ok());
     }
+
+    #[tokio::test]
+    async fn pending_remote_activation_rejects_before_attached_client_startup() {
+        let (broker, generation, lease_epoch) = terminal_broker_fixture().await;
+        let pending = begin_remote_activation(&broker, generation, lease_epoch).await;
+        assert_eq!(
+            pending.decision.status,
+            TerminalLeaseDecisionStatus::Accepted
+        );
+        let startup_ran = Arc::new(AtomicBool::new(false));
+        let observed_startup = Arc::clone(&startup_ran);
+        let focus_ran = Arc::new(AtomicBool::new(false));
+        let observed_focus = Arc::clone(&focus_ran);
+
+        let result = run_habitat_activation(
+            &broker,
+            "session-1",
+            pending.decision.runtime_generation,
+            pending.decision.lease_epoch,
+            move || async move {
+                observed_startup.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            move || async move {
+                observed_focus.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err(), OWNERSHIP_CHANGED_MESSAGE);
+        assert!(!startup_ran.load(Ordering::SeqCst));
+        assert!(!focus_ran.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_ack_during_startup_is_rejected_by_final_focus_authorization() {
+        let (broker, generation, lease_epoch) = terminal_broker_fixture().await;
+        let (startup_entered_tx, startup_entered_rx) = oneshot::channel();
+        let (release_startup_tx, release_startup_rx) = oneshot::channel();
+        let focus_ran = Arc::new(AtomicBool::new(false));
+        let observed_focus = Arc::clone(&focus_ran);
+        let activation_broker = Arc::clone(&broker);
+        let activation = tokio::spawn(async move {
+            run_habitat_activation(
+                activation_broker.as_ref(),
+                "session-1",
+                generation,
+                lease_epoch,
+                move || async move {
+                    let _ = startup_entered_tx.send(());
+                    let _ = release_startup_rx.await;
+                    Ok(())
+                },
+                move || async move {
+                    observed_focus.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await
+        });
+        startup_entered_rx.await.expect("startup entered");
+
+        let pending = begin_remote_activation(&broker, generation, lease_epoch).await;
+        assert_eq!(
+            pending.decision.status,
+            TerminalLeaseDecisionStatus::Accepted
+        );
+        let acknowledged = broker
+            .ack_activation(TerminalActivationAckRequest {
+                session_id: "session-1".to_string(),
+                presentation_id: "remote-owner".to_string(),
+                runtime_generation: pending.decision.runtime_generation,
+                lease_epoch: pending.decision.lease_epoch,
+                activation_id: pending.activation_id.expect("remote activation id"),
+            })
+            .await
+            .expect("ack remote activation");
+        assert_eq!(
+            acknowledged.decision.status,
+            TerminalLeaseDecisionStatus::Accepted
+        );
+        assert_eq!(
+            acknowledged.broker_state.owner_presentation_id.as_deref(),
+            Some("remote-owner")
+        );
+        let _ = release_startup_tx.send(());
+
+        assert_eq!(
+            activation.await.expect("activation task").unwrap_err(),
+            OWNERSHIP_CHANGED_MESSAGE
+        );
+        assert!(!focus_ran.load(Ordering::SeqCst));
+    }
 }
 
 #[tauri::command]
@@ -249,42 +459,23 @@ pub async fn activate_zellij_agent_terminal(
         .ok_or_else(|| "Agent terminal ownership state is still loading".to_string())?;
     let broker_lease_epoch = broker_lease_epoch
         .ok_or_else(|| "Agent terminal ownership state is still loading".to_string())?;
-    let broker_state = state
-        .terminal_sessions
-        .broker_state(&session_id)
-        .await
-        .map_err(|_| "Agent terminal ownership state is still loading".to_string())?;
-    validate_habitat_activation_preflight(
-        broker_state.runtime_generation,
-        broker_state.lease_epoch,
-        broker_state.owner_presentation_id.as_deref(),
-        broker_state.pending_activation.is_some(),
-        broker_generation,
-        broker_lease_epoch,
-    )?;
-    engine.start_attached_client().await?;
+    let start_engine = engine.clone();
     let focus_engine = engine.clone();
     let focus_session_id = session_id.clone();
     let focus_request_id = activation_request_id.clone();
-    state
-        .terminal_sessions
-        .run_authorized_native_focus(
-            &session_id,
-            broker_generation,
-            broker_lease_epoch,
-            HABITAT_TERMINAL_PRESENTATION_ID,
-            move || async move {
-                focus_engine
-                    .activate_pane_for_request(
-                        &focus_session_id,
-                        binding.generation,
-                        &focus_request_id,
-                    )
-                    .await
-            },
-        )
-        .await
-        .map_err(|_| OWNERSHIP_CHANGED_MESSAGE.to_string())?;
+    run_habitat_activation(
+        state.terminal_sessions.as_ref(),
+        &session_id,
+        broker_generation,
+        broker_lease_epoch,
+        move || async move { start_engine.start_attached_client().await.map(|_| ()) },
+        move || async move {
+            focus_engine
+                .activate_pane_for_request(&focus_session_id, binding.generation, &focus_request_id)
+                .await
+        },
+    )
+    .await?;
     Ok(session_id)
 }
 
