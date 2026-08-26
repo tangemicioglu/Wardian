@@ -628,6 +628,18 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await expect(page.getByTestId("chat-work-group")).toHaveAttribute("data-expanded", "true");
   await expect(page.getByText("rg AgentChatView src/features/grid", { exact: true })).toBeVisible();
   await expect(page.getByText("printf actual tool call", { exact: true })).toBeVisible();
+  const selectableToolCall = page.getByText("printf actual tool call", { exact: true });
+  await selectableToolCall.evaluate((element) => {
+    const selection = window.getSelection();
+    if (!selection) throw new Error("Text selection is unavailable");
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("printf actual tool call");
+  await captureFeatureScreenshot("chat-text-selection.png", page.locator('[data-testid="remote-agent-detail"]'));
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
   await captureFeatureScreenshot("chat-expanded-work.png", page.locator('[data-testid="remote-agent-detail"]'));
   await page.getByRole("button", { name: "Collapse" }).click();
   await captureFeatureScreenshot("chat-full-width.png", page.locator('[data-testid="remote-agent-detail"]'));
