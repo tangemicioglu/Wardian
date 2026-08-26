@@ -818,23 +818,82 @@ pub enum WorkflowScheduleCommand {
 #[derive(Debug, Args, Clone)]
 pub struct ScheduleDefinitionArgs {
     /// Interval cadence in minutes.
-    #[arg(long, conflicts_with_all = ["daily", "weekly", "monthly", "specific_dates", "at"])]
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "daily",
+            "weekly",
+            "monthly",
+            "specific_dates",
+            "at",
+            "repeat_every"
+        ]
+    )]
     pub every: Option<u32>,
     /// Daily at HH:MM local time.
-    #[arg(long, conflicts_with_all = ["every", "weekly", "monthly", "specific_dates", "at"])]
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "every",
+            "weekly",
+            "monthly",
+            "specific_dates",
+            "at",
+            "repeat_every"
+        ]
+    )]
     pub daily: Option<String>,
     /// Weekly comma-separated days and time, e.g. Mon,Wed,Fri@09:30.
-    #[arg(long, conflicts_with_all = ["every", "daily", "monthly", "specific_dates", "at"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["every", "daily", "monthly", "specific_dates", "at"]
+    )]
     pub weekly: Option<String>,
     /// Monthly comma-separated day numbers and time, e.g. 1,15@09:30.
-    #[arg(long, conflicts_with_all = ["every", "daily", "weekly", "specific_dates", "at"])]
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "every",
+            "daily",
+            "weekly",
+            "specific_dates",
+            "at",
+            "repeat_every"
+        ]
+    )]
     pub monthly: Option<String>,
     /// Specific comma-separated dates and time, e.g. 2026-09-01,2026-09-15@09:30.
-    #[arg(long, conflicts_with_all = ["every", "daily", "weekly", "monthly", "at"])]
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "every",
+            "daily",
+            "weekly",
+            "monthly",
+            "at",
+            "repeat_every"
+        ]
+    )]
     pub specific_dates: Option<String>,
     /// One-time run at RFC3339 / YYYY-MM-DDTHH:MM local time.
-    #[arg(long, conflicts_with_all = ["every", "daily", "weekly", "monthly", "specific_dates"])]
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "every",
+            "daily",
+            "weekly",
+            "monthly",
+            "specific_dates",
+            "repeat_every"
+        ]
+    )]
     pub at: Option<String>,
+    /// Weekly recurrence interval in weeks; defaults to 1 for new weekly schedules.
+    #[arg(
+        long,
+        conflicts_with_all = ["every", "daily", "monthly", "specific_dates", "at"]
+    )]
+    pub repeat_every: Option<u32>,
     /// End condition: never, on_date, or after_occurrences.
     #[arg(long)]
     pub end: Option<String>,
@@ -1764,6 +1823,59 @@ mod tests {
             WorkflowCommand::Schedule(ref command)
                 if matches!(command.as_ref(), WorkflowScheduleCommand::Add { .. })
         ));
+    }
+
+    #[test]
+    fn parses_weekly_repeat_every() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "workflow",
+            "schedule",
+            "add",
+            "--blueprint",
+            "heartbeat",
+            "--name",
+            "HB",
+            "--weekly",
+            "Sun@12:00",
+            "--repeat-every",
+            "2",
+            "--workspace",
+            ".",
+        ])
+        .unwrap();
+        let Command::Workflow(args) = cli.command else {
+            panic!("expected Workflow")
+        };
+        assert!(matches!(
+            args.command,
+            WorkflowCommand::Schedule(ref command)
+                if matches!(command.as_ref(), WorkflowScheduleCommand::Add { cadence, .. }
+                    if cadence.weekly.as_deref() == Some("Sun@12:00")
+                        && cadence.repeat_every == Some(2))
+        ));
+    }
+
+    #[test]
+    fn rejects_repeat_every_with_interval_cadence() {
+        let error = Cli::try_parse_from([
+            "wardian",
+            "workflow",
+            "schedule",
+            "add",
+            "--blueprint",
+            "heartbeat",
+            "--name",
+            "HB",
+            "--every",
+            "60",
+            "--repeat-every",
+            "2",
+            "--workspace",
+            ".",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

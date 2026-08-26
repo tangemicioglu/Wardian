@@ -29,12 +29,21 @@ The cadence forms match the Schedule editor:
 - `--every 60`
 - `--daily 09:30`
 - `--weekly Mon,Wed,Fri@09:30`
+- `--weekly Mon,Wed,Fri@09:30 --repeat-every 2`
 - `--monthly 1,15@09:30`
 - `--specific-dates 2026-09-01,2026-09-15@09:30`
 - `--at 2026-09-01T09:30`
 
 Recurring schedules can use `--end never`, `--end on_date --end-date
 YYYY-MM-DD`, or `--end after_occurrences --max-occurrences N`.
+
+For weekly schedules, `--repeat-every <positive-integer>` optionally selects
+the number of weeks between matching weekdays. It defaults to `1` when a new
+weekly schedule is created and may also be supplied by itself on update to
+change an existing weekly schedule. The interval-only `--every` option is not
+an alias for this calendar recurrence. The current schedule model does not
+support a repeat interval for monthly, daily, or specific-date schedules, so
+`--repeat-every` is rejected for those cadences.
 
 Update changes only the options supplied and retains the schedule id, run
 occurrence count, last-run status/error/timestamp, input, assignments, and

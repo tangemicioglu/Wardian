@@ -171,6 +171,9 @@ wardian workflow schedule add --blueprint <id> --name <name> \
   --workspace <absolute-workspace-path> --every 60
 wardian workflow schedule update <schedule-id> \
   --workspace <absolute-workspace-path> --daily 09:30
+wardian workflow schedule add --blueprint <id> --name <name> \
+  --workspace <absolute-workspace-path> \
+  --weekly Mon,Wed,Fri@09:30 --repeat-every 2
 wardian workflow schedule list
 wardian library list [skills|prompts|classes|workflows|mcps] [--flat]
 wardian library show <section/path> [--content]

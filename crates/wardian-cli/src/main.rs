@@ -966,7 +966,8 @@ fn render_workflow_schedule(command: WorkflowScheduleCommand) -> Result<String, 
 
             let blueprint_id = blueprint.unwrap_or_else(|| schedule.blueprint_id.clone());
             let _blueprint = validate_schedule_blueprint(&blueprint_id)?;
-            let schedule_changed = schedule_definition_args_set(&cadence);
+            let schedule_changed =
+                schedule_definition_args_set(&cadence) || cadence.repeat_every.is_some();
             let end_changed = cadence.end.is_some()
                 || cadence.end_date.is_some()
                 || cadence.max_occurrences.is_some();
@@ -1248,6 +1249,9 @@ fn build_schedule_definition(
         definition.days_of_month = None;
         definition.specific_dates = None;
         definition.run_at = None;
+        if base.is_none_or(|base| base.schedule_type != "weekly") {
+            definition.repeat_every = 1;
+        }
     } else if let Some(spec) = args.monthly.as_deref() {
         let (days, time) = spec.split_once('@').ok_or_else(|| {
             CliError::generic("--monthly expects day numbers@HH:MM, e.g. 1,15@09:30")
@@ -1292,6 +1296,19 @@ fn build_schedule_definition(
         definition.days_of_week = None;
         definition.days_of_month = None;
         definition.specific_dates = None;
+    }
+    if let Some(repeat_every) = args.repeat_every {
+        if repeat_every == 0 {
+            return Err(CliError::generic(
+                "--repeat-every must be greater than zero",
+            ));
+        }
+        if definition.schedule_type != "weekly" {
+            return Err(CliError::generic(
+                "--repeat-every is only supported for weekly schedules",
+            ));
+        }
+        definition.repeat_every = repeat_every;
     }
     apply_end_condition(args, &mut definition)?;
     if definition.end_condition.trim().is_empty() {

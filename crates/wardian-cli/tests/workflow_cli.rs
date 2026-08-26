@@ -88,6 +88,15 @@ fn workflow_output(home: &TempDir, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+fn workflow_failure(home: &TempDir, args: &[&str]) -> std::process::Output {
+    Command::new(bin())
+        .args(args)
+        .env("WARDIAN_HOME", home.path())
+        .env_remove("WARDIAN_SESSION_ID")
+        .output()
+        .unwrap()
+}
+
 #[test]
 fn workflow_list_uses_declared_ids_and_reports_parse_errors_per_row() {
     let home = TempDir::new().unwrap();
@@ -258,6 +267,169 @@ fn workflow_schedule_add_list_pause_resume_run_now_remove_round_trip() {
     assert_eq!(remove["removed"], 1);
     let empty = workflow_command(&home, &["workflow", "schedule", "list"]);
     assert!(empty["schedules"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn workflow_schedule_weekly_defaults_repeat_every_and_persists_original_command() {
+    let home = TempDir::new().unwrap();
+    seed_demo_workflow(&home);
+    let assignments = serde_json::json!({
+        "planner": {
+            "target_type": "temporary_provider",
+            "provider": "mock",
+            "workspace": home.path().to_string_lossy(),
+        }
+    })
+    .to_string();
+
+    let add = workflow_command(
+        &home,
+        &[
+            "workflow",
+            "schedule",
+            "add",
+            "--blueprint",
+            "demo",
+            "--name",
+            "Weekly Software Updates to Discord",
+            "--weekly",
+            "Sun@12:00",
+            "--workspace",
+            home.path().to_str().unwrap(),
+            "--assignments",
+            assignments.as_str(),
+        ],
+    );
+
+    assert_eq!(add["ok"], true);
+    assert_eq!(add["schedule"]["schedule"]["schedule_type"], "weekly");
+    assert_eq!(add["schedule"]["schedule"]["repeat_every"], 1);
+    assert_eq!(add["schedule"]["schedule"]["days_of_week"][0], "Sun");
+
+    let persisted = workflow_command(&home, &["workflow", "schedule", "list"]);
+    assert_eq!(persisted["schedules"][0]["schedule"]["repeat_every"], 1);
+}
+
+#[test]
+fn workflow_schedule_weekly_accepts_explicit_repeat_every() {
+    let home = TempDir::new().unwrap();
+    seed_demo_workflow(&home);
+
+    let add = workflow_command(
+        &home,
+        &[
+            "workflow",
+            "schedule",
+            "add",
+            "--blueprint",
+            "demo",
+            "--name",
+            "Biweekly",
+            "--weekly",
+            "Sun@12:00",
+            "--repeat-every",
+            "2",
+            "--workspace",
+            home.path().to_str().unwrap(),
+        ],
+    );
+
+    assert_eq!(add["schedule"]["schedule"]["repeat_every"], 2);
+}
+
+#[test]
+fn workflow_schedule_update_changes_weekly_repeat_every() {
+    let home = TempDir::new().unwrap();
+    seed_demo_workflow(&home);
+
+    let add = workflow_command(
+        &home,
+        &[
+            "workflow",
+            "schedule",
+            "add",
+            "--blueprint",
+            "demo",
+            "--name",
+            "Weekly",
+            "--weekly",
+            "Sun@12:00",
+            "--repeat-every",
+            "2",
+            "--workspace",
+            home.path().to_str().unwrap(),
+        ],
+    );
+    let id = add["schedule"]["id"].as_str().unwrap();
+
+    let updated = workflow_command(
+        &home,
+        &["workflow", "schedule", "update", id, "--repeat-every", "3"],
+    );
+
+    assert_eq!(updated["ok"], true);
+    assert_eq!(updated["schedule"]["id"], id);
+    assert_eq!(updated["schedule"]["schedule"]["schedule_type"], "weekly");
+    assert_eq!(updated["schedule"]["schedule"]["repeat_every"], 3);
+
+    let persisted = workflow_command(&home, &["workflow", "schedule", "list"]);
+    assert_eq!(persisted["schedules"][0]["schedule"]["repeat_every"], 3);
+}
+
+#[test]
+fn workflow_schedule_rejects_zero_or_invalid_repeat_every() {
+    let home = TempDir::new().unwrap();
+    seed_demo_workflow(&home);
+    let base_args = [
+        "workflow",
+        "schedule",
+        "add",
+        "--blueprint",
+        "demo",
+        "--name",
+        "Weekly",
+        "--weekly",
+        "Sun@12:00",
+        "--workspace",
+    ];
+    let workspace = home.path().to_str().unwrap();
+
+    let mut zero_args = base_args.to_vec();
+    zero_args.extend([workspace, "--repeat-every", "0"]);
+    let zero = workflow_failure(&home, &zero_args);
+    assert!(!zero.status.success());
+    assert!(
+        String::from_utf8_lossy(&zero.stderr).contains("--repeat-every must be greater than zero")
+    );
+
+    let mut invalid_args = base_args.to_vec();
+    invalid_args.extend([workspace, "--repeat-every", "not-a-number"]);
+    let invalid = workflow_failure(&home, &invalid_args);
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid value"));
+
+    let monthly = workflow_failure(
+        &home,
+        &[
+            "workflow",
+            "schedule",
+            "add",
+            "--blueprint",
+            "demo",
+            "--name",
+            "Monthly",
+            "--monthly",
+            "1@12:00",
+            "--workspace",
+            workspace,
+            "--repeat-every",
+            "2",
+        ],
+    );
+    assert!(!monthly.status.success());
+
+    let persisted = workflow_command(&home, &["workflow", "schedule", "list"]);
+    assert!(persisted["schedules"].as_array().unwrap().is_empty());
 }
 
 #[test]

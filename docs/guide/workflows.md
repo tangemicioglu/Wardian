@@ -59,6 +59,13 @@ same rule for `workflow schedule add` and `workflow schedule update`. Use the
 CLI update command to change cadence, assignments, provider, input, or pause
 state without replacing the schedule identity.
 
+For a weekly schedule, use `--weekly <days@HH:MM>`; it defaults to one-week
+recurrence. Use `--repeat-every <positive-integer>` for a longer weekly
+interval, such as `--weekly Sun@12:00 --repeat-every 2`. The separate
+`--every` option remains interval-only and is expressed in minutes. Monthly,
+daily, and specific-date schedules do not currently support a repeat interval
+in the shared schedule model.
+
 Bash:
 
 ```bash
