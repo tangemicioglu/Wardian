@@ -180,6 +180,58 @@ describe("useAgentResourceController", () => {
     });
   });
 
+  it("keeps projection identity when a repeated event carries no new value", async () => {
+    const { result } = renderHook(() => useAgentResourceController({}));
+    await waitFor(() => expect(result.current.agents).toHaveLength(2));
+
+    const metric = {
+      session_id: "agent-1",
+      cpu_usage: 4,
+      memory_mb: 128,
+      uptime_seconds: 90,
+      query_count: 2,
+      init_timestamp: null,
+      current_status: "Idle",
+      log_path: null,
+    };
+    act(() => emit("agent-metrics", [metric]));
+    const settled = result.current.telemetry;
+    const settledAgent = settled["agent-1"];
+    expect(settledAgent).toBeDefined();
+
+    // The backend re-serializes every metric on each 5s tick, so payload
+    // identity always differs even when no value did. Rebuilding the map here
+    // re-rendered the whole application on every tick.
+    act(() => emit("agent-metrics", [{ ...metric }]));
+    expect(result.current.telemetry).toBe(settled);
+    expect(result.current.telemetry["agent-1"]).toBe(settledAgent);
+
+    act(() => emit("agent-metrics", [{ ...metric, uptime_seconds: 95 }]));
+    expect(result.current.telemetry).not.toBe(settled);
+    expect(result.current.telemetry["agent-1"].uptime_seconds).toBe(95);
+
+    // One agent-json-event per line of provider output; an unchanged thought
+    // must not re-render.
+    act(() => emit("agent-json-event", {
+      session_id: "agent-1",
+      data: { type: "progress", content: "Indexing files" },
+    }));
+    const thoughts = result.current.current_thoughts;
+    expect(thoughts["agent-1"]).toBe("Indexing files");
+    act(() => emit("agent-json-event", {
+      session_id: "agent-1",
+      data: { type: "progress", content: "Indexing files" },
+    }));
+    expect(result.current.current_thoughts).toBe(thoughts);
+
+    const appTelemetry = result.current.app_telemetry;
+    act(() => emit("app-metrics", {
+      cpu_usage: appTelemetry.cpu_usage,
+      memory_mb: appTelemetry.memory_mb,
+    }));
+    expect(result.current.app_telemetry).toBe(appTelemetry);
+  });
+
   it("projects JSON thoughts, terminal titles, status events, and app telemetry", async () => {
     const on_agent_json_event = vi.fn();
     const on_agent_status_transition = vi.fn();
