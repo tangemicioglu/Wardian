@@ -10,9 +10,9 @@ use crate::utils::logging::{log_debug, log_terminal_trace_bytes, log_terminal_tr
 use crate::utils::PtyUtf8Decoder;
 #[cfg(test)]
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use std::io::{BufRead, Read, Seek};
 #[cfg(test)]
 use std::io::Write;
+use std::io::{BufRead, Read, Seek};
 use tauri::{AppHandle, Emitter, Manager};
 use wardian_core::control::ProviderInputReadiness;
 use wardian_core::models::{AgentConfig, AgentEvent, ProviderConfig};
@@ -30,10 +30,9 @@ use super::session_identity::{
 };
 use super::{
     apply_agent_event, apply_agent_event_with_policy, apply_agent_status_event,
-    apply_agent_status_event_with_policy, debug_preview_bytes,
-    extract_terminal_titles, finalize_interactive_spawn_args, interactive_provider_args,
-    interactive_provider_cwd, interactive_provider_launch, set_agent_status,
-    ProviderStatusEventPolicy,
+    apply_agent_status_event_with_policy, debug_preview_bytes, extract_terminal_titles,
+    finalize_interactive_spawn_args, interactive_provider_args, interactive_provider_cwd,
+    interactive_provider_launch, set_agent_status, ProviderStatusEventPolicy,
 };
 use crate::providers::gemini::gemini_status_from_title;
 
@@ -70,9 +69,7 @@ fn record_pending_memory_injection(
 }
 
 fn provider_title_has_startup_ready_prompt(provider: &str, title: &str, status: &str) -> bool {
-    if provider != "opencode"
-        || wardian_core::identity::normalize_status(status) != "idle"
-    {
+    if provider != "opencode" || wardian_core::identity::normalize_status(status) != "idle" {
         return false;
     }
     let title = title.trim();
@@ -82,6 +79,18 @@ fn provider_title_has_startup_ready_prompt(provider: &str, title: &str, status: 
 #[derive(Default)]
 struct OpenCodeStartupMemoryTransition {
     ready_observed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderTerminalObservationSource {
+    RawProviderStream,
+    RenderedZellijFrame,
+}
+
+impl ProviderTerminalObservationSource {
+    fn carries_provider_events(self) -> bool {
+        self == Self::RawProviderStream
+    }
 }
 
 impl OpenCodeStartupMemoryTransition {
@@ -95,13 +104,33 @@ impl OpenCodeStartupMemoryTransition {
         agent_id: &str,
     ) -> Option<&'static str> {
         let status = opencode_status_from_title(title)?;
-        if !self.ready_observed
-            && provider_title_has_startup_ready_prompt(provider, title, status)
+        if !self.ready_observed && provider_title_has_startup_ready_prompt(provider, title, status)
         {
             self.ready_observed = true;
             record_pending_memory_injection(pending, agent_id, provider);
         }
         Some(status)
+    }
+
+    /// Zellij owns the raw PTY stream, so its rendered-frame consumer cannot
+    /// observe OSC titles. The provider-owned OpenCode log remains the status
+    /// authority; promote startup only after that channel reports idle.
+    fn observe_provider_status(
+        &mut self,
+        pending: &mut Option<PendingMemoryInjection>,
+        provider: &str,
+        status: &str,
+        agent_id: &str,
+    ) -> bool {
+        if self.ready_observed
+            || provider != "opencode"
+            || wardian_core::identity::normalize_status(status) != "idle"
+        {
+            return false;
+        }
+        self.ready_observed = true;
+        record_pending_memory_injection(pending, agent_id, provider);
+        true
     }
 }
 
@@ -176,7 +205,10 @@ fn refresh_pi_log_boundary(file: &mut std::fs::File, cursor: &mut PiLogCursor) -
     Some(())
 }
 
-fn pi_log_baseline(session_dir: &std::path::Path, provider_session_id: &str) -> Option<PiLogBaseline> {
+fn pi_log_baseline(
+    session_dir: &std::path::Path,
+    provider_session_id: &str,
+) -> Option<PiLogBaseline> {
     let path = PiProvider::session_file(session_dir, provider_session_id)?;
     let mut file = std::fs::File::open(&path).ok()?;
     let metadata = file.metadata().ok()?;
@@ -497,10 +529,10 @@ fn codex_cleared_provider_sessions(config: &AgentConfig) -> Vec<String> {
     config.codex_config().cleared_provider_sessions
 }
 
-#[cfg(target_os = "macos")]
-use super::macos_extended_path;
 #[cfg(windows)]
 use super::cleanup_stale_session_processes;
+#[cfg(target_os = "macos")]
+use super::macos_extended_path;
 #[cfg(all(windows, test))]
 use super::{app_process_supervisor_active, assign_pid_to_job, create_kill_on_close_job};
 
@@ -971,9 +1003,14 @@ async fn spawn_agent_with_broker_mode(
     #[cfg(all(windows, test))]
     let mut job_object = None;
 
-    let (mut reader, terminal_runtime, process_id, zellij_pane, zellij_snapshot_frames) = if let Some(engine) =
-        app_state.zellij_terminal.get().cloned()
-    {
+    let (
+        mut reader,
+        terminal_runtime,
+        process_id,
+        zellij_pane,
+        zellij_snapshot_frames,
+        terminal_observation_source,
+    ) = if let Some(engine) = app_state.zellij_terminal.get().cloned() {
         engine.start_attached_client().await?;
         let binding = engine
             .create_pane(crate::state::zellij_terminal::ZellijLaunchSpec {
@@ -992,6 +1029,7 @@ async fn spawn_agent_with_broker_mode(
             None,
             Some(transport.lease),
             Some(transport.snapshot_frames),
+            ProviderTerminalObservationSource::RenderedZellijFrame,
         )
     } else {
         #[cfg(not(test))]
@@ -999,104 +1037,116 @@ async fn spawn_agent_with_broker_mode(
 
         #[cfg(test)]
         {
-        // Unit-test compatibility for isolated AppState fixtures that do not
-        // initialize bundled application resources. Production never falls
-        // back to a Wardian-owned provider PTY.
-        let pty_system = NativePtySystem::default();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: initial_geometry.rows,
-                cols: initial_geometry.cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| format!("Failed to open pty: {e}"))?;
-        let mut cmd = CommandBuilder::new(&launch_spec.executable);
-        for arg in &launch_spec.args {
-            cmd.arg(arg);
-        }
-        cmd.cwd(&provider_cwd);
-        for (key, value) in &launch_env {
-            cmd.env(key, value);
-        }
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| format!("Failed to spawn command: {e}"))?;
-        let process_id = child.process_id();
+            // Unit-test compatibility for isolated AppState fixtures that do not
+            // initialize bundled application resources. Production never falls
+            // back to a Wardian-owned provider PTY.
+            let pty_system = NativePtySystem::default();
+            let pair = pty_system
+                .openpty(PtySize {
+                    rows: initial_geometry.rows,
+                    cols: initial_geometry.cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| format!("Failed to open pty: {e}"))?;
+            let mut cmd = CommandBuilder::new(&launch_spec.executable);
+            for arg in &launch_spec.args {
+                cmd.arg(arg);
+            }
+            cmd.cwd(&provider_cwd);
+            for (key, value) in &launch_env {
+                cmd.env(key, value);
+            }
+            let child = pair
+                .slave
+                .spawn_command(cmd)
+                .map_err(|e| format!("Failed to spawn command: {e}"))?;
+            let process_id = child.process_id();
 
-        #[cfg(windows)]
-        {
-            if !app_process_supervisor_active() {
-                if let Ok(job) = create_kill_on_close_job("agent fallback") {
-                    if let Some(pid) = process_id {
-                        if let Err(err) = assign_pid_to_job(&job, pid, "agent fallback") {
-                            log_debug(&format!(
+            #[cfg(windows)]
+            {
+                if !app_process_supervisor_active() {
+                    if let Ok(job) = create_kill_on_close_job("agent fallback") {
+                        if let Some(pid) = process_id {
+                            if let Err(err) = assign_pid_to_job(&job, pid, "agent fallback") {
+                                log_debug(&format!(
                                 "[Wardian] Failed to assign session {} PID {} to fallback job: {}",
                                 config.session_id, pid, err
                             ));
+                            }
+                        }
+                        job_object = Some(job);
+                    }
+                }
+            }
+
+            let reader = pair
+                .master
+                .try_clone_reader()
+                .map_err(|e| format!("Failed to get pty reader: {e}"))?;
+            let mut writer = pair
+                .master
+                .take_writer()
+                .map_err(|e| format!("Failed to get pty writer: {e}"))?;
+            let pty_master: crate::state::terminal_session::SharedPtyMaster =
+                std::sync::Arc::new(std::sync::Mutex::new(pair.master));
+            drop(pair.slave);
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<
+                crate::state::terminal_session::NativeTerminalWriteRequest,
+            >(256);
+            let runtime = crate::state::terminal_session::native_terminal_runtime(tx, pty_master);
+            let sid_for_input = config.session_id.clone();
+            let provider_name_for_input = config.provider.clone();
+            std::thread::spawn(move || {
+                while let Some(input) = rx.blocking_recv() {
+                    let bytes = input.bytes;
+                    if provider_name_for_input == "opencode" {
+                        log_debug(&format!(
+                            "[Wardian] OpenCode PTY input for session {}: {}",
+                            sid_for_input,
+                            debug_preview_bytes(&bytes, 128)
+                        ));
+                    }
+                    log_terminal_trace_bytes(
+                        &sid_for_input,
+                        &provider_name_for_input,
+                        "IN",
+                        &bytes,
+                    );
+                    let write_result = writer
+                        .write_all(&bytes)
+                        .and_then(|_| writer.flush())
+                        .map_err(|error| error.to_string());
+                    match write_result {
+                        Ok(()) => {
+                            let _ = input.completion.send(Ok(()));
+                        }
+                        Err(error) => {
+                            let _ = input.completion.send(Err(error.clone()));
+                            log_terminal_trace_note(
+                                &sid_for_input,
+                                &provider_name_for_input,
+                                &format!("PTY input write failed: {error}"),
+                            );
+                            break;
                         }
                     }
-                    job_object = Some(job);
                 }
-            }
-        }
-
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| format!("Failed to get pty reader: {e}"))?;
-        let mut writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| format!("Failed to get pty writer: {e}"))?;
-        let pty_master: crate::state::terminal_session::SharedPtyMaster =
-            std::sync::Arc::new(std::sync::Mutex::new(pair.master));
-        drop(pair.slave);
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<
-            crate::state::terminal_session::NativeTerminalWriteRequest,
-        >(256);
-        let runtime = crate::state::terminal_session::native_terminal_runtime(tx, pty_master);
-        let sid_for_input = config.session_id.clone();
-        let provider_name_for_input = config.provider.clone();
-        std::thread::spawn(move || {
-            while let Some(input) = rx.blocking_recv() {
-                let bytes = input.bytes;
-                if provider_name_for_input == "opencode" {
-                    log_debug(&format!(
-                        "[Wardian] OpenCode PTY input for session {}: {}",
-                        sid_for_input,
-                        debug_preview_bytes(&bytes, 128)
-                    ));
-                }
-                log_terminal_trace_bytes(&sid_for_input, &provider_name_for_input, "IN", &bytes);
-                let write_result = writer
-                    .write_all(&bytes)
-                    .and_then(|_| writer.flush())
-                    .map_err(|error| error.to_string());
-                match write_result {
-                    Ok(()) => {
-                        let _ = input.completion.send(Ok(()));
-                    }
-                    Err(error) => {
-                        let _ = input.completion.send(Err(error.clone()));
-                        log_terminal_trace_note(
-                            &sid_for_input,
-                            &provider_name_for_input,
-                            &format!("PTY input write failed: {error}"),
-                        );
-                        break;
-                    }
-                }
-            }
-            log_terminal_trace_note(
-                &sid_for_input,
-                &provider_name_for_input,
-                "input channel closed",
-            );
-        });
-        child_process = Some(child);
-        (reader, runtime, process_id, None, None)
+                log_terminal_trace_note(
+                    &sid_for_input,
+                    &provider_name_for_input,
+                    "input channel closed",
+                );
+            });
+            child_process = Some(child);
+            (
+                reader,
+                runtime,
+                process_id,
+                None,
+                None,
+                ProviderTerminalObservationSource::RawProviderStream,
+            )
         }
     };
 
@@ -1144,7 +1194,9 @@ async fn spawn_agent_with_broker_mode(
     let terminal_title_clone = terminal_title.clone();
     let last_output_at = std::sync::Arc::new(std::sync::Mutex::new(None));
     let last_output_at_clone = last_output_at.clone();
-    let initial_log_path = pi_log_baseline.as_ref().map(|baseline| baseline.path.clone());
+    let initial_log_path = pi_log_baseline
+        .as_ref()
+        .map(|baseline| baseline.path.clone());
     let log_path = std::sync::Arc::new(std::sync::Mutex::new(initial_log_path));
     // The mock provider writes its event stream to a file it owns, so its log
     // path is known up front and needs no discovery watcher. Without this the
@@ -1157,7 +1209,8 @@ async fn spawn_agent_with_broker_mode(
             }
         }
     }
-    // PTY reader thread: uses provider.parse_output() for event classification
+    // Terminal reader thread: rendered Zellij frames update visible terminal
+    // state only; the unit-test raw PTY fallback may also classify events.
     let pty_app = app.clone();
     let pty_provider = provider.clone();
     let sid_for_pty = sid_out.clone();
@@ -1166,9 +1219,8 @@ async fn spawn_agent_with_broker_mode(
     let terminal_sessions = app_state.terminal_sessions.clone();
     let reader_runtime_generation = runtime_generation;
     let pty_config = config_lock.clone();
-    let mut pending_memory_injection = memory_setup.map(|(store, brief)| {
-        (store, brief, expected_folder.clone(), memory_process_key)
-    });
+    let mut pending_memory_injection = memory_setup
+        .map(|(store, brief)| (store, brief, expected_folder.clone(), memory_process_key));
     std::thread::spawn(move || {
         let mut buf = [0; 4096];
         let mut current_line = String::new();
@@ -1176,8 +1228,7 @@ async fn spawn_agent_with_broker_mode(
         let mut opencode_chunks_logged = 0usize;
         let mut codex_terminal_theme_responder = CodexTerminalThemeProbeResponder::default();
         let mut antigravity_turn_completion_gate = AntigravityTurnCompletionGate::default();
-        let mut opencode_startup_memory_transition =
-            OpenCodeStartupMemoryTransition::default();
+        let mut opencode_startup_memory_transition = OpenCodeStartupMemoryTransition::default();
         let mut startup_prompt_pending = true;
         let mut pty_decoder = PtyUtf8Decoder::new();
         let output_ready_emit_gate =
@@ -1240,16 +1291,18 @@ async fn spawn_agent_with_broker_mode(
                         opencode_chunks_logged += 1;
                     }
                     had_pty_output = true;
-                    for response in codex_terminal_theme_responder.responses_for_chunk(
-                        &provider_name_for_pty,
-                        &buf[0..n],
-                        &terminal_theme_for_pty,
-                    ) {
-                        let _ = terminal_sessions.send_privileged_input_blocking(
-                            &sid_for_pty,
-                            reader_runtime_generation,
-                            response,
-                        );
+                    if terminal_observation_source.carries_provider_events() {
+                        for response in codex_terminal_theme_responder.responses_for_chunk(
+                            &provider_name_for_pty,
+                            &buf[0..n],
+                            &terminal_theme_for_pty,
+                        ) {
+                            let _ = terminal_sessions.send_privileged_input_blocking(
+                                &sid_for_pty,
+                                reader_runtime_generation,
+                                response,
+                            );
+                        }
                     }
                     let latest_snapshot = zellij_snapshot_frames
                         .as_ref()
@@ -1319,6 +1372,39 @@ async fn spawn_agent_with_broker_mode(
                             "Action Needed",
                         );
                     }
+                    if terminal_observation_source
+                        == ProviderTerminalObservationSource::RenderedZellijFrame
+                    {
+                        let provider_status = current_status_clone
+                            .lock()
+                            .map(|status| status.clone())
+                            .unwrap_or_default();
+                        if startup_prompt_pending
+                            && opencode_startup_memory_transition.observe_provider_status(
+                                &mut pending_memory_injection,
+                                &provider_name_for_pty,
+                                &provider_status,
+                                &sid_for_pty,
+                            )
+                        {
+                            startup_prompt_pending = false;
+                            let readiness_app = pty_app.clone();
+                            let readiness_session_id = sid_for_pty.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let state = readiness_app.state::<AppState>();
+                                crate::control::record_provider_ready_title(
+                                    state.inner(),
+                                    &readiness_session_id,
+                                )
+                                .await;
+                                crate::control::spawn_mailbox_drain_if_idle(
+                                    &readiness_app,
+                                    &readiness_session_id,
+                                    "Idle",
+                                );
+                            });
+                        }
+                    }
                     if let Ok(mut stamp) = last_output_at_clone.lock() {
                         *stamp = Some(std::time::SystemTime::now());
                     }
@@ -1342,112 +1428,118 @@ async fn spawn_agent_with_broker_mode(
                         );
                     }
 
-                    // Process stream events to capture Session ID / Status changes
-                    // Use a simple line-based approach for stream-json events
-                    for line in text.lines() {
-                        if let Some(event) = pty_provider.parse_output(line) {
-                            if matches!(&event, AgentEvent::Init { .. }) {
-                                if let Err(error) = handle_provider_init_event(
-                                    &provider_name_for_pty,
-                                    &event,
-                                    &pty_config,
-                                    &init_timestamp_clone,
-                                ) {
-                                    log_debug(&format!(
-                                        "[WARDIAN] Rejected {} initialization identity: {}",
-                                        provider_name_for_pty, error
-                                    ));
-                                    set_agent_status(
-                                        &pty_app,
-                                        &sid_for_pty,
-                                        &current_status_clone,
-                                        "Error",
-                                    );
-                                    return;
+                    if terminal_observation_source.carries_provider_events() {
+                        // Raw provider streams can carry lifecycle events. A
+                        // rendered Zellij frame is screen state and must never
+                        // be reinterpreted as the provider's event protocol.
+                        for line in text.lines() {
+                            if let Some(event) = pty_provider.parse_output(line) {
+                                if matches!(&event, AgentEvent::Init { .. }) {
+                                    if let Err(error) = handle_provider_init_event(
+                                        &provider_name_for_pty,
+                                        &event,
+                                        &pty_config,
+                                        &init_timestamp_clone,
+                                    ) {
+                                        log_debug(&format!(
+                                            "[WARDIAN] Rejected {} initialization identity: {}",
+                                            provider_name_for_pty, error
+                                        ));
+                                        set_agent_status(
+                                            &pty_app,
+                                            &sid_for_pty,
+                                            &current_status_clone,
+                                            "Error",
+                                        );
+                                        return;
+                                    }
                                 }
+                                apply_agent_status_event_with_policy(
+                                    &pty_app,
+                                    &sid_for_pty,
+                                    event,
+                                    &current_status_clone,
+                                    pty_status_event_policy_for_provider(&provider_name_for_pty),
+                                );
                             }
-                            apply_agent_status_event_with_policy(
-                                &pty_app,
-                                &sid_for_pty,
-                                event,
-                                &current_status_clone,
-                                pty_status_event_policy_for_provider(&provider_name_for_pty),
-                            );
                         }
                     }
 
-                    if let Some(title) = extract_terminal_titles(&text).into_iter().last() {
-                        let _previous_title = terminal_title_clone
-                            .lock()
-                            .map(|value| value.clone())
-                            .unwrap_or_default();
-                        if provider_name_for_pty == "opencode" {
-                            log_debug(&format!(
-                                "[Wardian] OpenCode backend title for session {}: {}",
-                                sid_for_pty, title
-                            ));
-                        }
-                        if let Ok(mut current_title) = terminal_title_clone.lock() {
-                            *current_title = title.clone();
-                        }
-                        if provider_name_for_pty == "opencode" {
-                            if let Some(next_status) = opencode_startup_memory_transition
-                                .observe_title(
-                                    &mut pending_memory_injection,
-                                    &provider_name_for_pty,
-                                    &title,
-                                    &sid_for_pty,
-                                )
-                            {
-                                let was_idle = current_status_clone
-                                    .lock()
-                                    .map(|status| {
-                                        wardian_core::identity::normalize_status(&status) == "idle"
-                                    })
-                                    .unwrap_or(false);
-                                set_agent_status(
-                                    &pty_emit_app,
-                                    &sid_for_pty,
-                                    &current_status_clone,
-                                    next_status,
-                                );
-                                if startup_prompt_pending
-                                    && opencode_startup_memory_transition.ready_observed
-                                {
-                                    startup_prompt_pending = false;
-                                    let readiness_app = pty_app.clone();
-                                    let readiness_session_id = sid_for_pty.clone();
-                                    tauri::async_runtime::spawn(async move {
-                                        let state = readiness_app.state::<AppState>();
-                                        crate::control::record_provider_ready_title(
-                                            state.inner(),
-                                            &readiness_session_id,
-                                        )
-                                        .await;
-                                        crate::control::spawn_mailbox_drain_if_idle(
-                                            &readiness_app,
-                                            &readiness_session_id,
-                                            "Idle",
-                                        );
-                                    });
-                                }
-                                // OpenCode's TUI does not expose a separate
-                                // JSON acknowledgement in interactive mode;
-                                // its provider-owned title changes from
-                                // `OpenCode` to `OC | …` when it accepts a
-                                // submitted turn.
-                                if was_idle && next_status == "Processing..." {
-                                    super::emit_agent_turn_started(&pty_emit_app, &sid_for_pty);
-                                }
+                    if terminal_observation_source.carries_provider_events() {
+                        if let Some(title) = extract_terminal_titles(&text).into_iter().last() {
+                            let _previous_title = terminal_title_clone
+                                .lock()
+                                .map(|value| value.clone())
+                                .unwrap_or_default();
+                            if provider_name_for_pty == "opencode" {
+                                log_debug(&format!(
+                                    "[Wardian] OpenCode backend title for session {}: {}",
+                                    sid_for_pty, title
+                                ));
                             }
-                        } else if provider_name_for_pty == "gemini" {
-                            if let Some(next_status) = gemini_status_from_title(&title) {
-                                set_agent_status(
-                                    &pty_emit_app,
-                                    &sid_for_pty,
-                                    &current_status_clone,
-                                    next_status,
-                                );
+                            if let Ok(mut current_title) = terminal_title_clone.lock() {
+                                *current_title = title.clone();
+                            }
+                            if provider_name_for_pty == "opencode" {
+                                if let Some(next_status) = opencode_startup_memory_transition
+                                    .observe_title(
+                                        &mut pending_memory_injection,
+                                        &provider_name_for_pty,
+                                        &title,
+                                        &sid_for_pty,
+                                    )
+                                {
+                                    let was_idle = current_status_clone
+                                        .lock()
+                                        .map(|status| {
+                                            wardian_core::identity::normalize_status(&status)
+                                                == "idle"
+                                        })
+                                        .unwrap_or(false);
+                                    set_agent_status(
+                                        &pty_emit_app,
+                                        &sid_for_pty,
+                                        &current_status_clone,
+                                        next_status,
+                                    );
+                                    if startup_prompt_pending
+                                        && opencode_startup_memory_transition.ready_observed
+                                    {
+                                        startup_prompt_pending = false;
+                                        let readiness_app = pty_app.clone();
+                                        let readiness_session_id = sid_for_pty.clone();
+                                        tauri::async_runtime::spawn(async move {
+                                            let state = readiness_app.state::<AppState>();
+                                            crate::control::record_provider_ready_title(
+                                                state.inner(),
+                                                &readiness_session_id,
+                                            )
+                                            .await;
+                                            crate::control::spawn_mailbox_drain_if_idle(
+                                                &readiness_app,
+                                                &readiness_session_id,
+                                                "Idle",
+                                            );
+                                        });
+                                    }
+                                    // OpenCode's TUI does not expose a separate
+                                    // JSON acknowledgement in interactive mode;
+                                    // its provider-owned title changes from
+                                    // `OpenCode` to `OC | …` when it accepts a
+                                    // submitted turn.
+                                    if was_idle && next_status == "Processing..." {
+                                        super::emit_agent_turn_started(&pty_emit_app, &sid_for_pty);
+                                    }
+                                }
+                            } else if provider_name_for_pty == "gemini" {
+                                if let Some(next_status) = gemini_status_from_title(&title) {
+                                    set_agent_status(
+                                        &pty_emit_app,
+                                        &sid_for_pty,
+                                        &current_status_clone,
+                                        next_status,
+                                    );
+                                }
                             }
                         }
                     }
@@ -1484,70 +1576,72 @@ async fn spawn_agent_with_broker_mode(
                         }
                         OutputReadyEmitAction::Suppress => {}
                     }
-                    current_line.push_str(&text);
-                    loop {
-                        if let Some(start) = current_line.find('{') {
-                            let slice = &current_line[start..];
-                            let mut stream = serde_json::Deserializer::from_str(slice)
-                                .into_iter::<serde_json::Value>();
-                            match stream.next() {
-                                Some(Ok(parsed)) => {
-                                    // Use provider to classify the raw JSON into an AgentEvent
-                                    let raw_line = parsed.to_string();
-                                    if let Some(message) = extract_transcript_message(
-                                        &provider_name_for_pty,
-                                        &raw_line,
-                                    ) {
-                                        if let Ok(mut watch_state) = watch_state_clone.lock() {
-                                            watch_state.push_transcript(message);
-                                        }
-                                    }
-                                    if let Some(event) = pty_provider.parse_output(&raw_line) {
-                                        if matches!(&event, AgentEvent::Init { .. }) {
-                                            if let Err(error) = handle_provider_init_event(
-                                                &provider_name_for_pty,
-                                                &event,
-                                                &pty_config,
-                                                &init_timestamp_clone,
-                                            ) {
-                                                log_debug(&format!(
-                                                    "[WARDIAN] Rejected {} initialization identity: {}",
-                                                    provider_name_for_pty, error
-                                                ));
-                                                set_agent_status(
-                                                    &pty_app,
-                                                    &sid_for_pty,
-                                                    &current_status_clone,
-                                                    "Error",
-                                                );
-                                                return;
+                    if terminal_observation_source.carries_provider_events() {
+                        current_line.push_str(&text);
+                        loop {
+                            if let Some(start) = current_line.find('{') {
+                                let slice = &current_line[start..];
+                                let mut stream = serde_json::Deserializer::from_str(slice)
+                                    .into_iter::<serde_json::Value>();
+                                match stream.next() {
+                                    Some(Ok(parsed)) => {
+                                        // Use provider to classify the raw JSON into an AgentEvent
+                                        let raw_line = parsed.to_string();
+                                        if let Some(message) = extract_transcript_message(
+                                            &provider_name_for_pty,
+                                            &raw_line,
+                                        ) {
+                                            if let Ok(mut watch_state) = watch_state_clone.lock() {
+                                                watch_state.push_transcript(message);
                                             }
                                         }
+                                        if let Some(event) = pty_provider.parse_output(&raw_line) {
+                                            if matches!(&event, AgentEvent::Init { .. }) {
+                                                if let Err(error) = handle_provider_init_event(
+                                                    &provider_name_for_pty,
+                                                    &event,
+                                                    &pty_config,
+                                                    &init_timestamp_clone,
+                                                ) {
+                                                    log_debug(&format!(
+                                                        "[WARDIAN] Rejected {} initialization identity: {}",
+                                                        provider_name_for_pty, error
+                                                    ));
+                                                    set_agent_status(
+                                                        &pty_app,
+                                                        &sid_for_pty,
+                                                        &current_status_clone,
+                                                        "Error",
+                                                    );
+                                                    return;
+                                                }
+                                            }
 
-                                        apply_agent_event_with_policy(
-                                            &pty_app,
-                                            &sid_for_pty,
-                                            event,
-                                            &query_count_clone,
-                                            &init_timestamp_clone,
-                                            &current_status_clone,
-                                            pty_status_event_policy_for_provider(
-                                                &provider_name_for_pty,
-                                            ),
-                                        );
+                                            apply_agent_event_with_policy(
+                                                &pty_app,
+                                                &sid_for_pty,
+                                                event,
+                                                &query_count_clone,
+                                                &init_timestamp_clone,
+                                                &current_status_clone,
+                                                pty_status_event_policy_for_provider(
+                                                    &provider_name_for_pty,
+                                                ),
+                                            );
+                                        }
+                                        let _ = pty_emit_app.emit("agent-json-event", serde_json::json!({ "session_id": sid_out, "data": parsed }));
+                                        let consumed = stream.byte_offset();
+                                        current_line = current_line[start + consumed..].to_string();
+                                        continue;
                                     }
-                                    let _ = pty_emit_app.emit("agent-json-event", serde_json::json!({ "session_id": sid_out, "data": parsed }));
-                                    let consumed = stream.byte_offset();
-                                    current_line = current_line[start + consumed..].to_string();
-                                    continue;
+                                    _ => break,
                                 }
-                                _ => break,
                             }
+                            break;
                         }
-                        break;
-                    }
-                    if current_line.len() > 10000 {
-                        current_line.clear();
+                        if current_line.len() > 10000 {
+                            current_line.clear();
+                        }
                     }
                 }
                 Err(err) => {
@@ -1564,7 +1658,97 @@ async fn spawn_agent_with_broker_mode(
         set_agent_status(&pty_app, &sid_for_pty, &current_status_clone, "Off");
     });
 
-    if config.provider == "codex" {
+    if config.provider == "mock" {
+        let watcher_app = app.clone();
+        let watcher_provider = provider.clone();
+        let watcher_session = config.session_id.clone();
+        let watcher_query_count = query_count.clone();
+        let watcher_init_timestamp = init_timestamp.clone();
+        let watcher_current_status = current_status.clone();
+        let watcher_log_path = log_path.clone();
+        let watcher_config = config_lock.clone();
+        let watcher_watch_state = watch_state.clone();
+        std::thread::spawn(move || {
+            let mut offset = 0_u64;
+            loop {
+                let current = watcher_current_status
+                    .lock()
+                    .map(|status| status.clone())
+                    .unwrap_or_else(|error| error.into_inner().clone());
+                let path = watcher_log_path.lock().ok().and_then(|path| path.clone());
+                if let Some(path) = path {
+                    if let Ok(mut file) = std::fs::File::open(path) {
+                        if file.seek(std::io::SeekFrom::Start(offset)).is_ok() {
+                            let mut reader = std::io::BufReader::new(file);
+                            let mut line = String::new();
+                            loop {
+                                line.clear();
+                                let read = reader.read_line(&mut line).unwrap_or(0);
+                                if read == 0 {
+                                    break;
+                                }
+                                offset += read as u64;
+                                let trimmed = line.trim();
+                                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed)
+                                else {
+                                    continue;
+                                };
+                                let raw_line = parsed.to_string();
+                                if let Some(message) = extract_transcript_message("mock", &raw_line)
+                                {
+                                    if let Ok(mut watch_state) = watcher_watch_state.lock() {
+                                        watch_state.push_transcript(message);
+                                    }
+                                }
+                                if let Some(event) = watcher_provider.parse_output(&raw_line) {
+                                    if matches!(&event, AgentEvent::Init { .. }) {
+                                        if let Err(error) = handle_provider_init_event(
+                                            "mock",
+                                            &event,
+                                            &watcher_config,
+                                            &watcher_init_timestamp,
+                                        ) {
+                                            log_debug(&format!(
+                                                "[WARDIAN] Rejected mock initialization identity: {error}"
+                                            ));
+                                            set_agent_status(
+                                                &watcher_app,
+                                                &watcher_session,
+                                                &watcher_current_status,
+                                                "Error",
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    apply_agent_event(
+                                        &watcher_app,
+                                        &watcher_session,
+                                        event,
+                                        &watcher_query_count,
+                                        &watcher_init_timestamp,
+                                        &watcher_current_status,
+                                    );
+                                }
+                                let _ = watcher_app.emit(
+                                    "agent-json-event",
+                                    serde_json::json!({
+                                        "session_id": watcher_session,
+                                        "data": parsed,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
+                // Drain the provider-owned log once after terminal EOF so a
+                // final turn-completed event cannot be lost to watcher timing.
+                if current == "Off" {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+    } else if config.provider == "codex" {
         let watcher_app = app.clone();
         let watcher_provider = provider.clone();
         let watcher_session = config.session_id.clone();
@@ -2499,8 +2683,7 @@ mod tests {
         drop(append);
 
         let mut cursor = baseline.cursor;
-        let mut file =
-            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("positioned log");
+        let mut file = open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("positioned log");
         let mut observed = String::new();
         file.read_to_string(&mut observed).expect("new Pi events");
 
@@ -2533,8 +2716,7 @@ mod tests {
         std::fs::rename(&replacement, &path).expect("replace Pi transcript at same path");
 
         let mut cursor = baseline.cursor;
-        let mut file =
-            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("replacement log");
+        let mut file = open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("replacement log");
         let mut observed = String::new();
         file.read_to_string(&mut observed)
             .expect("replacement Pi events");
@@ -2563,10 +2745,10 @@ mod tests {
         std::fs::write(&path, new_content).expect("in-place Pi transcript rewrite");
 
         let mut cursor = baseline.cursor;
-        let mut file =
-            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("rewritten log");
+        let mut file = open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("rewritten log");
         let mut observed = String::new();
-        file.read_to_string(&mut observed).expect("rewritten Pi events");
+        file.read_to_string(&mut observed)
+            .expect("rewritten Pi events");
         let assistant_messages = observed
             .lines()
             .filter_map(|line| extract_transcript_message("pi", line))
@@ -2778,7 +2960,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_title_readiness_records_receipt_and_enables_resume_delta() {
+    fn opencode_provider_log_readiness_records_receipt_and_enables_resume_delta() {
         let temp = tempfile::tempdir().unwrap();
         let store = wardian_core::memory::MemoryStore::open(temp.path().join("memory.db")).unwrap();
         let agent_id = "opencode-memory-agent";
@@ -2811,21 +2993,14 @@ mod tests {
             .unwrap();
         let mut pending = Some((store, brief, workspace.clone(), process_key.into()));
 
-        let title_event = "\u{1b}]0;OpenCode\u{7}";
-        let title = extract_terminal_titles(title_event)
-            .into_iter()
-            .last()
-            .expect("OpenCode title");
         let mut transition = OpenCodeStartupMemoryTransition::default();
-        assert_eq!(
-            transition.observe_title(
-                &mut pending,
-                "opencode",
-                &title,
-                agent_id,
-            ),
-            Some("Idle")
-        );
+        assert!(!transition.observe_provider_status(
+            &mut pending,
+            "opencode",
+            "Processing...",
+            agent_id,
+        ));
+        assert!(transition.observe_provider_status(&mut pending, "opencode", "Idle", agent_id,));
         assert!(transition.ready_observed);
         assert!(!record_pending_memory_injection(
             &mut pending,
@@ -2875,6 +3050,12 @@ mod tests {
         );
         assert!(resumed.context_text.contains("Later OpenCode memory"));
         assert!(!resumed.context_text.contains("Initial OpenCode memory"));
+    }
+
+    #[test]
+    fn rendered_zellij_frames_never_enter_the_raw_provider_event_parser() {
+        assert!(ProviderTerminalObservationSource::RawProviderStream.carries_provider_events());
+        assert!(!ProviderTerminalObservationSource::RenderedZellijFrame.carries_provider_events());
     }
 
     #[test]

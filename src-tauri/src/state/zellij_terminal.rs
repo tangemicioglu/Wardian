@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,10 +25,12 @@ const PANE_CLEANUP_CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Durati
 #[cfg(not(test))]
 const ACTIVATION_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 #[cfg(test)]
-const ACTIVATION_COMMAND_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_millis(250);
-const ACTIVATION_COMMAND_POLL_INTERVAL: std::time::Duration =
-    std::time::Duration::from_millis(10);
+const ACTIVATION_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+const ACTIVATION_COMMAND_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+const ACTIVATION_PROCESS_TERMINATION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(2);
+const MANAGED_PANE_MARKER_SCHEMA: u32 = 1;
+const MANAGED_PANE_MARKER_MAX_BYTES: u64 = 16 * 1024;
 
 fn zellij_helper_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
@@ -197,6 +199,13 @@ pub struct ZellijPaneInfo {
     pub pane_columns: u16,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ManagedPaneMarker {
+    schema: u32,
+    nonce: String,
+    session_id: String,
+}
+
 impl ZellijPaneInfo {
     pub fn pane_id(&self) -> Option<ZellijPaneId> {
         (!self.is_plugin).then(|| ZellijPaneId(format!("terminal_{}", self.id)))
@@ -256,6 +265,14 @@ impl ZellijTerminalConfig {
 
     fn launches_dir(&self) -> PathBuf {
         self.runtime_root.join("launches")
+    }
+
+    fn managed_panes_dir(&self) -> PathBuf {
+        self.runtime_root.join("managed-panes")
+    }
+
+    fn managed_pane_marker_path(&self, nonce: &str) -> PathBuf {
+        self.managed_panes_dir().join(format!("{nonce}.json"))
     }
 
     #[cfg(windows)]
@@ -412,30 +429,47 @@ fn run_controlled_zellij_process(
     cancelled: Arc<AtomicBool>,
     deadline: std::time::Instant,
 ) -> Result<Output, String> {
-    let mut child = zellij_helper_command(executable)
+    let mut stdout_file = tempfile::tempfile()
+        .map_err(|error| format!("Zellij command stdout capture failed: {error}"))?;
+    let mut stderr_file = tempfile::tempfile()
+        .map_err(|error| format!("Zellij command stderr capture failed: {error}"))?;
+    let mut command = zellij_helper_command(executable);
+    command
         .args(args)
         .envs(env.iter().cloned())
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(stdout_file.try_clone().map_err(|error| {
+            format!("Zellij command stdout capture failed: {error}")
+        })?))
+        .stderr(Stdio::from(stderr_file.try_clone().map_err(|error| {
+            format!("Zellij command stderr capture failed: {error}")
+        })?));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    let mut child_job = Some(crate::utils::process::create_kill_on_close_job(
+        "Zellij activation helper",
+    )?);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Zellij command could not start: {error}"))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Zellij command stdout was unavailable".to_string())?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "Zellij command stderr was unavailable".to_string())?;
-    let stdout_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
-    });
+    let child_pid = child.id();
+    #[cfg(windows)]
+    if let Some(job) = child_job.as_ref() {
+        if let Err(error) =
+            crate::utils::process::assign_pid_to_job(job, child_pid, "Zellij activation helper")
+        {
+            if !child.try_wait().is_ok_and(|status| status.is_some()) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+            child_job = None;
+        }
+    }
 
     let outcome = loop {
         if cancelled.load(Ordering::Acquire) {
@@ -451,26 +485,75 @@ fn run_controlled_zellij_process(
         }
     };
 
-    if outcome.is_err() && child.kill().is_err() {
-        match child.try_wait() {
-            Ok(Some(_)) => {}
-            _ => return outcome.map(|_| unreachable!()),
-        }
+    if outcome.is_err() {
+        terminate_controlled_zellij_process(
+            &mut child,
+            child_pid,
+            #[cfg(windows)]
+            &mut child_job,
+        )?;
     }
-    let _ = child.wait();
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| "Zellij command stdout reader failed".to_string())?
+    stdout_file
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("Zellij command stdout capture failed: {error}"))?;
+    stderr_file
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("Zellij command stderr capture failed: {error}"))?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    stdout_file
+        .read_to_end(&mut stdout)
         .map_err(|error| format!("Zellij command stdout failed: {error}"))?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| "Zellij command stderr reader failed".to_string())?
+    stderr_file
+        .read_to_end(&mut stderr)
         .map_err(|error| format!("Zellij command stderr failed: {error}"))?;
     outcome.map(|status| Output {
         status,
         stdout,
         stderr,
     })
+}
+
+fn terminate_controlled_zellij_process(
+    child: &mut std::process::Child,
+    child_pid: u32,
+    #[cfg(windows)] child_job: &mut Option<win32job::Job>,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = child_pid;
+        // Closing a kill-on-close job terminates the helper and any descendants
+        // even when `Child::kill` cannot reach a process that is changing state.
+        drop(child_job.take());
+    }
+    #[cfg(unix)]
+    unsafe {
+        let result = libc::kill(-(child_pid as libc::pid_t), libc::SIGKILL);
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                let _ = child.kill();
+            }
+        }
+    }
+    let _ = child.kill();
+    let deadline = std::time::Instant::now() + ACTIVATION_PROCESS_TERMINATION_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(ACTIVATION_COMMAND_POLL_INTERVAL);
+            }
+            Ok(None) => {
+                return Err("Terminal handoff helper termination could not be confirmed".to_string())
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Terminal handoff helper termination could not be confirmed: {error}"
+                ))
+            }
+        }
+    }
 }
 
 struct ZellijEngineState {
@@ -487,6 +570,7 @@ struct ZellijPaneRegistry {
     replacement_bindings: HashMap<String, ZellijPaneBinding>,
     replacement_reservations: HashMap<String, u64>,
     retired_bindings: HashMap<(String, u64), ZellijPaneBinding>,
+    managed_tokens: HashMap<(String, u64), String>,
 }
 
 impl ZellijPaneRegistry {
@@ -712,9 +796,7 @@ impl ZellijTerminalEngine {
             return Err("Agent Zellij replacement reservation is stale".to_string());
         }
         panes.replacement_bindings.remove(session_id);
-        panes
-            .bindings
-            .insert(session_id.to_string(), replacement);
+        panes.bindings.insert(session_id.to_string(), replacement);
         panes
             .retired_bindings
             .insert((session_id.to_string(), displaced.generation), displaced);
@@ -781,12 +863,7 @@ impl ZellijTerminalEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn finish_pane_subscription(
-        &self,
-        session_id: &str,
-        generation: u64,
-        downstream_closed: bool,
-    ) {
+    fn finish_pane_subscription(&self, session_id: &str, generation: u64, downstream_closed: bool) {
         if downstream_closed {
             return;
         }
@@ -837,9 +914,9 @@ impl ZellijTerminalEngine {
                 };
                 if alive {
                     state.phase = ZellijEnginePhase::Running;
-                    return state.attached_generation.ok_or_else(|| {
-                        "Zellij attached client lost its generation".to_string()
-                    });
+                    return state
+                        .attached_generation
+                        .ok_or_else(|| "Zellij attached client lost its generation".to_string());
                 }
                 state.attached = None;
                 state.attached_generation = None;
@@ -1054,6 +1131,8 @@ impl ZellijTerminalEngine {
     pub fn prepare_runtime_directories(&self) -> Result<(), String> {
         std::fs::create_dir_all(self.config.config_dir()).map_err(|error| error.to_string())?;
         std::fs::create_dir_all(self.config.launches_dir()).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(self.config.managed_panes_dir())
+            .map_err(|error| error.to_string())?;
         let config_path = self.config.config_dir().join("config.kdl");
         let config = concat!(
             "simplified_ui true\n",
@@ -1179,6 +1258,72 @@ impl ZellijTerminalEngine {
         }
     }
 
+    fn managed_pane_markers(&self) -> Result<Vec<ManagedPaneMarker>, String> {
+        let mut markers = Vec::new();
+        let entries = match std::fs::read_dir(self.config.managed_panes_dir()) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(markers),
+            Err(_) => return Err("Managed Zellij pane registry is unavailable".to_string()),
+        };
+        for entry in entries {
+            let entry =
+                entry.map_err(|_| "Managed Zellij pane registry is unreadable".to_string())?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|_| "Managed Zellij pane marker is unreadable".to_string())?;
+            if !file_type.is_file() {
+                return Err("Managed Zellij pane marker is not a regular file".to_string());
+            }
+            let metadata = entry
+                .metadata()
+                .map_err(|_| "Managed Zellij pane marker is unreadable".to_string())?;
+            if metadata.len() > MANAGED_PANE_MARKER_MAX_BYTES {
+                return Err("Managed Zellij pane marker is oversized".to_string());
+            }
+            let bytes = std::fs::read(&path)
+                .map_err(|_| "Managed Zellij pane marker is unreadable".to_string())?;
+            let marker: ManagedPaneMarker = serde_json::from_slice(&bytes)
+                .map_err(|_| "Managed Zellij pane marker is malformed".to_string())?;
+            let expected_name = format!("{}.json", marker.nonce);
+            if marker.schema != MANAGED_PANE_MARKER_SCHEMA
+                || path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str())
+                || !valid_launch_nonce(&marker.nonce)
+                || marker.session_id.trim().is_empty()
+                || marker.session_id.contains('\0')
+            {
+                return Err("Managed Zellij pane marker identity is invalid".to_string());
+            }
+            markers.push(marker);
+        }
+        Ok(markers)
+    }
+
+    fn remove_managed_pane_marker(&self, nonce: &str) -> Result<(), String> {
+        let path = self.config.managed_pane_marker_path(nonce);
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("Managed Zellij pane marker could not be removed".to_string()),
+        }
+    }
+
+    async fn managed_panes(&self) -> Result<Vec<(ZellijPaneInfo, ManagedPaneMarker)>, String> {
+        let markers = self.managed_pane_markers()?;
+        Ok(self
+            .list_panes()
+            .await?
+            .into_iter()
+            .filter_map(|pane| {
+                let marker = markers
+                    .iter()
+                    .find(|marker| pane_matches_managed_marker(&pane, marker))?
+                    .clone();
+                Some((pane, marker))
+            })
+            .collect())
+    }
+
     async fn close_unregistered_managed_panes(&self) -> Result<(), String> {
         let registered = {
             let panes = self.pane_registry();
@@ -1190,28 +1335,40 @@ impl ZellijTerminalEngine {
                 .filter_map(|binding| binding.pane_id.clone())
                 .collect::<std::collections::HashSet<_>>()
         };
-        let stale = self
-            .list_panes()
-            .await?
-            .into_iter()
-            .filter(|pane| pane.title.starts_with("wardian:"))
-            .filter_map(|pane| pane.pane_id())
-            .filter(|pane_id| !registered.contains(pane_id))
-            .collect::<Vec<_>>();
-        for pane_id in stale {
+        let managed = self.managed_panes().await?;
+        let live_tokens = managed
+            .iter()
+            .map(|(_, marker)| marker.nonce.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for (pane, marker) in managed {
+            let Some(pane_id) = pane.pane_id() else {
+                continue;
+            };
+            if registered.contains(&pane_id) {
+                continue;
+            }
             self.close_pane_id(&pane_id).await?;
+            self.confirm_pane_closed(&pane_id).await?;
+            self.remove_managed_pane_marker(&marker.nonce)?;
+        }
+        for marker in self.managed_pane_markers()? {
+            if !live_tokens.contains(&marker.nonce) {
+                self.remove_managed_pane_marker(&marker.nonce)?;
+            }
         }
         Ok(())
     }
 
-    async fn session_pane_ids(&self, session_id: &str) -> Result<Vec<ZellijPaneId>, String> {
-        let expected_title = format!("wardian:{session_id}");
+    async fn session_managed_panes(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(ZellijPaneId, String)>, String> {
         Ok(self
-            .list_panes()
+            .managed_panes()
             .await?
             .into_iter()
-            .filter(|pane| pane.title == expected_title)
-            .filter_map(|pane| pane.pane_id())
+            .filter(|(_, marker)| marker.session_id == session_id)
+            .filter_map(|(pane, marker)| pane.pane_id().map(|pane_id| (pane_id, marker.nonce)))
             .collect())
     }
 
@@ -1235,25 +1392,33 @@ impl ZellijTerminalEngine {
     }
 
     fn remove_binding_generation(&self, session_id: &str, generation: u64) {
-        let mut panes = self.pane_registry();
-        if panes
-            .bindings
-            .get(session_id)
-            .is_some_and(|binding| binding.generation == generation)
-        {
-            panes.bindings.remove(session_id);
+        let managed_token = {
+            let mut panes = self.pane_registry();
+            if panes
+                .bindings
+                .get(session_id)
+                .is_some_and(|binding| binding.generation == generation)
+            {
+                panes.bindings.remove(session_id);
+            }
+            if panes
+                .replacement_bindings
+                .get(session_id)
+                .is_some_and(|binding| binding.generation == generation)
+            {
+                panes.replacement_bindings.remove(session_id);
+                panes.replacement_reservations.remove(session_id);
+            }
+            panes
+                .retired_bindings
+                .remove(&(session_id.to_string(), generation));
+            panes
+                .managed_tokens
+                .remove(&(session_id.to_string(), generation))
+        };
+        if let Some(token) = managed_token {
+            let _ = self.remove_managed_pane_marker(&token);
         }
-        if panes
-            .replacement_bindings
-            .get(session_id)
-            .is_some_and(|binding| binding.generation == generation)
-        {
-            panes.replacement_bindings.remove(session_id);
-            panes.replacement_reservations.remove(session_id);
-        }
-        panes
-            .retired_bindings
-            .remove(&(session_id.to_string(), generation));
     }
 
     async fn close_unregistered_session_panes(&self, session_id: &str) -> Result<(), String> {
@@ -1275,17 +1440,18 @@ impl ZellijTerminalEngine {
                 .collect::<std::collections::HashSet<_>>()
         };
         let stale = self
-            .session_pane_ids(session_id)
+            .session_managed_panes(session_id)
             .await?
             .into_iter()
-            .filter(|pane_id| !registered.contains(pane_id))
+            .filter(|(pane_id, _)| !registered.contains(pane_id))
             .collect::<Vec<_>>();
         if stale.is_empty() {
             return Ok(());
         }
-        for pane_id in stale {
+        for (pane_id, nonce) in stale {
             self.close_pane_id(&pane_id).await?;
             self.confirm_pane_closed(&pane_id).await?;
+            self.remove_managed_pane_marker(&nonce)?;
         }
         Ok(())
     }
@@ -1394,8 +1560,7 @@ impl ZellijTerminalEngine {
                     .bindings
                     .get(&launch.session_id)
                     .is_none_or(|binding| {
-                        binding.generation != expected
-                            || binding.phase != ZellijPanePhase::Running
+                        binding.generation != expected || binding.phase != ZellijPanePhase::Running
                     })
                     || panes.replacement_bindings.contains_key(&launch.session_id)
                 {
@@ -1438,13 +1603,14 @@ impl ZellijTerminalEngine {
             .collect::<std::collections::HashSet<_>>();
 
         let nonce = Uuid::new_v4().simple().to_string();
-        let (launch_path, pane_command) = match prepare_pane_launch(&self.config, &launch, &nonce) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                self.rollback_start(&launch.session_id, generation).await;
-                return Err(error);
-            }
-        };
+        let (launch_path, marker_path, pane_command) =
+            match prepare_pane_launch(&self.config, &launch, &nonce) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.rollback_start(&launch.session_id, generation).await;
+                    return Err(error);
+                }
+            };
 
         let mut action = vec![
             "action".to_string(),
@@ -1459,6 +1625,7 @@ impl ZellijTerminalEngine {
 
         if result.is_err() {
             let _ = std::fs::remove_file(&launch_path);
+            let _ = std::fs::remove_file(&marker_path);
         }
         let output = match result {
             Ok(output) => output,
@@ -1470,14 +1637,20 @@ impl ZellijTerminalEngine {
         let pane_id = match parse_created_pane_id(&output.stdout) {
             Ok(pane_id) => pane_id,
             Err(_) => {
-                let expected_title = format!("wardian:{}", launch.session_id);
                 let deadline = std::time::Instant::now() + PANE_ID_RECONCILIATION_TIMEOUT;
                 loop {
                     if let Ok(panes) = self.list_panes().await {
                         if let Some(pane_id) = panes.into_iter().find_map(|pane| {
                             let pane_id = pane.pane_id()?;
-                            (pane.title == expected_title && !known_panes.contains(&pane_id))
-                                .then_some(pane_id)
+                            (pane_matches_managed_marker(
+                                &pane,
+                                &ManagedPaneMarker {
+                                    schema: MANAGED_PANE_MARKER_SCHEMA,
+                                    nonce: nonce.clone(),
+                                    session_id: launch.session_id.clone(),
+                                },
+                            ) && !known_panes.contains(&pane_id))
+                            .then_some(pane_id)
                         }) {
                             break pane_id;
                         }
@@ -1514,7 +1687,7 @@ impl ZellijTerminalEngine {
             } else {
                 panes.bindings.get_mut(&launch.session_id)
             };
-            match candidate {
+            let result = match candidate {
                 None => Err("Zellij pane start lost its agent binding".to_string()),
                 Some(binding)
                     if binding.generation != generation
@@ -1527,12 +1700,19 @@ impl ZellijTerminalEngine {
                     binding.phase = ZellijPanePhase::Running;
                     Ok(binding.clone())
                 }
+            };
+            if result.is_ok() {
+                panes
+                    .managed_tokens
+                    .insert((launch.session_id.clone(), generation), nonce.clone());
             }
+            result
         };
         match binding {
             Ok(binding) => Ok(binding),
             Err(error) => {
                 let _ = self.close_pane_id(&pane_id).await;
+                let _ = self.remove_managed_pane_marker(&nonce);
                 self.rollback_start(&launch.session_id, generation).await;
                 Err(error)
             }
@@ -1938,9 +2118,8 @@ impl ZellijTerminalEngine {
         let panes = self.pane_registry();
         let binding = match panes.binding_for_generation(session_id, generation) {
             Some(binding) => binding,
-            None
-                if panes.bindings.contains_key(session_id)
-                    || panes.replacement_bindings.contains_key(session_id) =>
+            None if panes.bindings.contains_key(session_id)
+                || panes.replacement_bindings.contains_key(session_id) =>
             {
                 return Err("Agent Zellij pane generation is stale".to_string())
             }
@@ -2065,6 +2244,13 @@ impl ZellijTerminalEngine {
                 self.set_phase(ZellijEnginePhase::Reattaching).await;
                 Err(error)
             }
+            Err(error)
+                if error
+                    .starts_with("Terminal handoff helper termination could not be confirmed") =>
+            {
+                self.set_phase(ZellijEnginePhase::Failed).await;
+                Err(error)
+            }
             Err(error) => Err(error),
         }
     }
@@ -2121,12 +2307,51 @@ fn validate_launch_spec(launch: &ZellijLaunchSpec) -> Result<(), String> {
     Ok(())
 }
 
+fn valid_launch_nonce(nonce: &str) -> bool {
+    nonce.len() >= 32
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn pane_matches_managed_marker(pane: &ZellijPaneInfo, marker: &ManagedPaneMarker) -> bool {
+    if pane.is_plugin {
+        return false;
+    }
+    pane.pane_command.as_deref().is_some_and(|command| {
+        command.contains("terminal-host")
+            && command
+                .split_whitespace()
+                .map(|argument| argument.trim_matches(['\'', '"']))
+                .any(|argument| argument == marker.nonce)
+    })
+}
+
+fn write_managed_pane_marker(
+    config: &ZellijTerminalConfig,
+    marker: &ManagedPaneMarker,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(config.managed_panes_dir())
+        .map_err(|_| "Managed Zellij pane registry is unavailable".to_string())?;
+    let path = config.managed_pane_marker_path(&marker.nonce);
+    let bytes = serde_json::to_vec(marker).map_err(|_| "Managed Zellij pane marker is invalid")?;
+    write_private_launch_file(&path, &bytes)
+        .map_err(|_| "Managed Zellij pane marker could not be persisted".to_string())?;
+    Ok(path)
+}
+
 fn prepare_pane_launch(
     config: &ZellijTerminalConfig,
     launch: &ZellijLaunchSpec,
     nonce: &str,
-) -> Result<(PathBuf, Vec<String>), String> {
+) -> Result<(PathBuf, PathBuf, Vec<String>), String> {
     let manifest_path = config.launches_dir().join(format!("{nonce}.json"));
+    let marker = ManagedPaneMarker {
+        schema: MANAGED_PANE_MARKER_SCHEMA,
+        nonce: nonce.to_string(),
+        session_id: launch.session_id.clone(),
+    };
+    let marker_path = write_managed_pane_marker(config, &marker)?;
     let manifest = TerminalLaunchManifest {
         schema: TERMINAL_LAUNCH_MANIFEST_SCHEMA,
         nonce: nonce.to_string(),
@@ -2136,9 +2361,13 @@ fn prepare_pane_launch(
         cwd: launch.cwd.to_string_lossy().to_string(),
         env: launch.env.clone(),
     };
-    write_launch_manifest(&manifest_path, &manifest)?;
+    if let Err(error) = write_launch_manifest(&manifest_path, &manifest) {
+        let _ = std::fs::remove_file(&marker_path);
+        return Err(error);
+    }
     Ok((
         manifest_path.clone(),
+        marker_path,
         vec![
             config.wardian_cli.to_string_lossy().to_string(),
             "terminal-host".to_string(),
@@ -2357,10 +2586,7 @@ mod tests {
         );
         cancel_thread.join().unwrap();
 
-        assert_eq!(
-            result,
-            Err("Terminal handoff was superseded".to_string())
-        );
+        assert_eq!(result, Err("Terminal handoff was superseded".to_string()));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(2),
             "activation cancellation must terminate the helper"
@@ -2371,6 +2597,7 @@ mod tests {
     struct FakeRunner {
         calls: StdMutex<Vec<Vec<String>>>,
         outputs: StdMutex<VecDeque<Output>>,
+        managed_nonce: StdMutex<Option<String>>,
     }
 
     impl FakeRunner {
@@ -2394,6 +2621,7 @@ mod tests {
                         stderr: Vec::new(),
                     },
                 ])),
+                managed_nonce: StdMutex::new(None),
             })
         }
 
@@ -2401,6 +2629,7 @@ mod tests {
             Arc::new(Self {
                 calls: StdMutex::new(Vec::new()),
                 outputs: StdMutex::new(outputs.into_iter().collect()),
+                managed_nonce: StdMutex::new(None),
             })
         }
     }
@@ -2413,11 +2642,24 @@ mod tests {
             _env: &[(OsString, OsString)],
         ) -> Result<Output, String> {
             self.calls.lock().unwrap().push(args.to_vec());
-            self.outputs
+            if let Some(nonce) = args
+                .windows(2)
+                .find_map(|pair| (pair[0] == "--nonce").then(|| pair[1].clone()))
+            {
+                *self.managed_nonce.lock().unwrap() = Some(nonce);
+            }
+            let mut output = self
+                .outputs
                 .lock()
                 .unwrap()
                 .pop_front()
-                .ok_or_else(|| "missing fake output".to_string())
+                .ok_or_else(|| "missing fake output".to_string())?;
+            if let Some(nonce) = self.managed_nonce.lock().unwrap().as_deref() {
+                output.stdout = String::from_utf8_lossy(&output.stdout)
+                    .replace("WARDIAN_MANAGED_NONCE", nonce)
+                    .into_bytes();
+            }
+            Ok(output)
         }
     }
 
@@ -2504,10 +2746,8 @@ mod tests {
     #[tokio::test]
     async fn replacement_pane_promotion_can_restore_the_displaced_generation() {
         let temp = tempfile::tempdir().unwrap();
-        let engine = ZellijTerminalEngine::with_runner(
-            config(temp.path()),
-            FakeRunner::with_outputs([]),
-        );
+        let engine =
+            ZellijTerminalEngine::with_runner(config(temp.path()), FakeRunner::with_outputs([]));
         {
             let mut panes = engine.pane_registry();
             panes.bindings.insert(
@@ -2554,10 +2794,8 @@ mod tests {
     #[tokio::test]
     async fn rejected_replacement_promotion_leaves_both_generations_registered() {
         let temp = tempfile::tempdir().unwrap();
-        let engine = ZellijTerminalEngine::with_runner(
-            config(temp.path()),
-            FakeRunner::with_outputs([]),
-        );
+        let engine =
+            ZellijTerminalEngine::with_runner(config(temp.path()), FakeRunner::with_outputs([]));
         {
             let mut panes = engine.pane_registry();
             panes.bindings.insert(
@@ -2720,7 +2958,9 @@ mod tests {
                     phase: ZellijPanePhase::Running,
                 },
             );
-            panes.replacement_reservations.insert("agent-1".to_string(), 1);
+            panes
+                .replacement_reservations
+                .insert("agent-1".to_string(), 1);
             panes.replacement_bindings.insert(
                 "agent-1".to_string(),
                 ZellijPaneBinding {
@@ -2775,7 +3015,9 @@ mod tests {
                     phase: ZellijPanePhase::Closing,
                 },
             );
-            panes.replacement_reservations.insert("agent-1".to_string(), 1);
+            panes
+                .replacement_reservations
+                .insert("agent-1".to_string(), 1);
         }
 
         engine.reserve_replacement("agent-1", 2).await.unwrap();
@@ -2788,19 +3030,32 @@ mod tests {
     #[tokio::test]
     async fn missing_replacement_identity_cleanup_preserves_the_displaced_pane() {
         let temp = tempfile::tempdir().unwrap();
+        let nonce = "0123456789abcdef0123456789abcdef";
         let successful = |stdout: &[u8]| Output {
             status: status(0),
             stdout: stdout.to_vec(),
             stderr: Vec::new(),
         };
-        let both_panes = br#"[{"id":1,"is_plugin":false,"is_fullscreen":false,"title":"wardian:agent-1","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120},{"id":2,"is_plugin":false,"is_fullscreen":false,"title":"wardian:agent-1","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#;
+        let both_panes = format!(
+            r#"[{{"id":1,"is_plugin":false,"is_fullscreen":false,"title":"provider title","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}},{{"id":2,"is_plugin":false,"is_fullscreen":false,"title":"mutated replacement title","exited":false,"exit_status":null,"pane_command":"wardian-cli terminal-host --nonce {nonce}","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}}]"#
+        );
         let displaced_only = br#"[{"id":1,"is_plugin":false,"is_fullscreen":false,"title":"wardian:agent-1","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#;
         let runner = FakeRunner::with_outputs([
-            successful(both_panes),
+            successful(both_panes.as_bytes()),
             successful(b""),
             successful(displaced_only),
         ]);
         let engine = ZellijTerminalEngine::with_runner(config(temp.path()), runner.clone());
+        engine.prepare_runtime_directories().unwrap();
+        write_managed_pane_marker(
+            &engine.config,
+            &ManagedPaneMarker {
+                schema: MANAGED_PANE_MARKER_SCHEMA,
+                nonce: nonce.to_string(),
+                session_id: "agent-1".to_string(),
+            },
+        )
+        .unwrap();
         {
             let mut panes = engine.pane_registry();
             panes.next_generation = 2;
@@ -2885,10 +3140,7 @@ mod tests {
                     rows: 40,
                 })
                 .reset_parser_on_scrollback_erase(),
-                wardian_core::models::TerminalGeometry {
-                    cols: 80,
-                    rows: 24,
-                },
+                wardian_core::models::TerminalGeometry { cols: 80, rows: 24 },
             )
             .await
             .expect("start Zellij frame runtime");
@@ -2915,7 +3167,11 @@ mod tests {
         }
 
         let snapshot = broker.snapshot("agent-1").await.expect("Zellij snapshot");
-        let canonical = format!("{}\n{}", snapshot.scrollback.join("\n"), snapshot.visible_grid);
+        let canonical = format!(
+            "{}\n{}",
+            snapshot.scrollback.join("\n"),
+            snapshot.visible_grid
+        );
         assert_eq!(canonical.matches("stable history").count(), 1);
         assert!(!canonical.contains("first frame"));
         assert!(canonical.contains("second frame"));
@@ -3077,7 +3333,7 @@ mod tests {
             stdout: stdout.to_vec(),
             stderr: Vec::new(),
         };
-        let candidate = br#"[{"id":9,"is_plugin":false,"is_fullscreen":false,"title":"wardian:agent-1","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#;
+        let candidate = br#"[{"id":9,"is_plugin":false,"is_fullscreen":false,"title":"provider title","exited":false,"exit_status":null,"pane_command":"wardian-cli terminal-host --nonce WARDIAN_MANAGED_NONCE","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#;
         let runner = FakeRunner::with_outputs([
             successful(b"[]"),
             successful(b"[]"),
@@ -3124,7 +3380,7 @@ mod tests {
             stdout: Vec::new(),
             stderr: b"close failed".to_vec(),
         };
-        let candidate = br#"[{"id":9,"is_plugin":false,"is_fullscreen":false,"title":"wardian:agent-1","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#;
+        let candidate = br#"[{"id":9,"is_plugin":false,"is_fullscreen":false,"title":"provider title","exited":false,"exit_status":null,"pane_command":"wardian-cli terminal-host --nonce WARDIAN_MANAGED_NONCE","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#;
         let runner = FakeRunner::with_outputs([
             successful(b"[]"),
             successful(b"[]"),
@@ -3349,10 +3605,8 @@ mod tests {
     #[tokio::test]
     async fn downstream_subscription_close_does_not_mark_a_live_pane_exited() {
         let root = tempfile::tempdir().unwrap();
-        let engine = ZellijTerminalEngine::with_runner(
-            config(root.path()),
-            FakeRunner::with_outputs([]),
-        );
+        let engine =
+            ZellijTerminalEngine::with_runner(config(root.path()), FakeRunner::with_outputs([]));
         engine.pane_registry().bindings.insert(
             "agent-1".to_string(),
             ZellijPaneBinding {
@@ -3551,10 +3805,11 @@ mod tests {
     #[tokio::test]
     async fn startup_reconciliation_closes_unregistered_managed_panes() {
         let root = tempfile::tempdir().unwrap();
+        let nonce = "0123456789abcdef0123456789abcdef";
         let runner = FakeRunner::with_outputs([
             Output {
                 status: status(0),
-                stdout: br#"[{"id":9,"is_plugin":false,"is_fullscreen":false,"title":"wardian:stale-agent","exited":false,"exit_status":null,"pane_command":"provider","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}]"#.to_vec(),
+                stdout: format!(r#"[{{"id":9,"is_plugin":false,"is_fullscreen":false,"title":"provider-mutated-title","exited":false,"exit_status":null,"pane_command":"wardian-cli terminal-host --nonce {nonce}","pane_cwd":"workspace","pane_rows":40,"pane_columns":120}}]"#).into_bytes(),
                 stderr: Vec::new(),
             },
             Output {
@@ -3562,8 +3817,23 @@ mod tests {
                 stdout: Vec::new(),
                 stderr: Vec::new(),
             },
+            Output {
+                status: status(0),
+                stdout: b"[]".to_vec(),
+                stderr: Vec::new(),
+            },
         ]);
         let engine = ZellijTerminalEngine::with_runner(config(root.path()), runner.clone());
+        engine.prepare_runtime_directories().unwrap();
+        write_managed_pane_marker(
+            &engine.config,
+            &ManagedPaneMarker {
+                schema: MANAGED_PANE_MARKER_SCHEMA,
+                nonce: nonce.to_string(),
+                session_id: "stale-agent".to_string(),
+            },
+        )
+        .unwrap();
 
         engine.close_unregistered_managed_panes().await.unwrap();
 
@@ -3571,6 +3841,7 @@ mod tests {
         assert!(calls[1]
             .windows(2)
             .any(|args| args == ["--pane-id", "terminal_9"]));
+        assert!(!engine.config.managed_pane_marker_path(nonce).exists());
     }
 
     #[cfg(windows)]
@@ -3835,7 +4106,10 @@ mod tests {
             runtime,
             mut subscription,
             lease,
-        } = recovered.open_pane_transport(&recovered_binding).await.unwrap();
+        } = recovered
+            .open_pane_transport(&recovered_binding)
+            .await
+            .unwrap();
         recovered_broker
             .start_or_replace_runtime(
                 "recovered-agent",
@@ -3870,8 +4144,7 @@ mod tests {
             )
             .await
             .expect("route input through the fresh broker");
-        let recovered_deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let recovered_deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         while std::fs::read_to_string(&recovered_input).ok().as_deref() != Some("recovered\r\n") {
             assert!(
                 std::time::Instant::now() < recovered_deadline,

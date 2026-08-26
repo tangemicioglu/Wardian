@@ -244,7 +244,10 @@ Native pane handoffs are request-token fenced before every Zellij focus or
 fullscreen mutation. Superseding a card selection, removing its slot, or
 reaching the bounded handoff deadline cancels the matching token before the
 frontend permits another activation to settle. The Zellij helper process is
-killable and has a four-second native deadline. The actor authorization window
+killable and has a four-second native deadline. Each controlled helper runs in
+a Unix process group or Windows kill-on-close job and must confirm exit after
+cancellation; file-backed output capture leaves no pipe-reader thread behind.
+An unconfirmed termination fences the engine in `failed`. The actor authorization window
 has its own bounded backstop, so a hung helper cannot indefinitely block
 terminal output or a remote ownership transition; timeout leaves the broker
 responsive and marks the engine for reattachment.

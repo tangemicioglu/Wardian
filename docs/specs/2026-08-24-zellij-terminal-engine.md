@@ -123,6 +123,11 @@ Wardian writes one versioned, nonce-bound JSON manifest beneath
 `WARDIAN_HOME/runtime/zellij/launches/`. The file contains the executable,
 exact argument vector, working directory, and environment overlay. Wardian
 places only the unpredictable launch-file path on the pane command line.
+It also writes a separate non-secret marker beneath
+`WARDIAN_HOME/runtime/zellij/managed-panes/`. That marker contains only the
+nonce and Wardian session ID. The nonce remains in Zellij's original pane
+command, giving cleanup a stable identity even when the provider changes the
+display title.
 
 The bundled CLI atomically renames the manifest to a same-directory,
 process-scoped claim before reading it. Only the host that wins that rename can
@@ -182,10 +187,10 @@ or status event from an older generation is rejected.
 1. Build the provider launch specification and per-agent environment exactly
    as Wardian does for headless provider validation.
 2. Issue a memory capability for this provider generation.
-3. Write and sync the one-use manifest.
+3. Write and sync the one-use manifest and durable non-secret pane marker.
 4. Run `new-pane --name <stable Wardian label>` with the terminal host.
-5. Parse the returned `terminal_<id>`, or reconcile it by stable pane title,
-   and register it atomically.
+5. Parse the returned `terminal_<id>`, or reconcile it by the marker nonce in
+   Zellij's original pane command, and register it atomically.
 6. Start a pane subscription and provider-native log watchers.
 7. Mark the generation ready only after provider-native evidence or the current
    rendered pane proves a usable prompt.
@@ -246,7 +251,10 @@ fullscreen action under the focus lock. A superseding selection or the
 five-second frontend deadline explicitly cancels the matching native token, so
 the expired request cannot continue with another pane mutation. Native focus
 commands have a four-second backend deadline and run as killable helper
-processes; cancellation or expiry terminates the helper. The broker actor has a
+process groups on Unix and kill-on-close jobs on Windows. Output capture uses
+temporary files rather than pipe-reader threads. Cancellation or expiry kills
+the complete helper group and confirms exit before returning. An unconfirmed
+termination marks the engine failed and fences further handoffs. The broker actor has a
 bounded backstop and releases queued output and ownership work after a failed
 focus transaction, while a command timeout moves the engine to recoverable
 `reattaching` state. Removing an
@@ -332,8 +340,10 @@ alone. A failed or unconfirmed Zellij close therefore stays registered as
 `closing`; the next spawn closes every tracked closing generation and confirms
 each pane is absent before it removes that cleanup record or allocates a new
 generation. If a closing generation has no pane identity, Wardian closes every
-unregistered same-title pane while preserving every identified live or retired
-generation. A failed replacement cancellation retains its reservation until
+unregistered pane whose durable nonce marker and original pane command identify
+that session, while preserving every identified live or retired generation.
+Provider-controlled titles are presentation data and never authorize cleanup.
+A failed replacement cancellation retains its reservation until
 candidate closure succeeds. Both an ordinary start and the next restart retry
 that cleanup before inspecting or creating a reservation, so user-facing
 recovery cannot remain blocked behind a failed cancellation. The same rule
@@ -365,11 +375,17 @@ retaining the existing Zellij pane and singleton renderer.
 Zellij `subscribe --format json --ansi` emits complete rendered pane viewports,
 not provider PTY byte streams. Wardian treats each update as a replacement
 frame. It does not append frames, infer raw byte deltas, or reconstruct a
-provider transcript from repaint differences.
+provider transcript from repaint differences. Rendered frames never enter a
+provider `parse_output` parser and never supply OSC-title lifecycle evidence.
 
 - Terminal cards use replacement frames for noninteractive previews.
 - Provider-native logs, hooks, and structured state remain authoritative for
   transcript events, session identity, turn receipts, and completion.
+- The mock provider mirrors its structured stream to its provider-owned log and
+  is observed through that log, matching the production separation.
+- OpenCode startup readiness and memory receipt use provider-log status while
+  Zellij owns the raw PTY; Gemini and OpenCode ongoing status likewise comes
+  from provider-native telemetry rather than rendered screen text.
 - Current-frame prompt and action-required detection may establish startup
   readiness when a provider has no native event.
 - `list-panes --all --json` is authoritative for pane existence, exit status,

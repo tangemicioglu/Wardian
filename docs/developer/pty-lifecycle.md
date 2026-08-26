@@ -37,8 +37,9 @@ Spawning an agent follows a deterministic sequence in `manager::spawn_agent`:
    lifecycle client. It does not register a desktop broker session.
 2. **Build provider command**: Assemble the executable, exact argument vector,
    working directory, and per-agent environment.
-3. **Create one-use manifest**: Persist a nonce-bound JSON manifest containing
-   the exact provider launch specification.
+3. **Create launch records**: Persist a nonce-bound one-use JSON manifest
+   containing the exact provider launch specification and a separate
+   non-secret managed-pane marker containing only the nonce and session ID.
 4. **Create pane**: Ask Zellij to create the pane with Wardian's bundled
    terminal host. The host atomically renames the manifest to a private claimed
    name, validates it, and deletes the claim before it starts the provider. A
@@ -60,9 +61,21 @@ owned, or pending-transfer requests before invoking Zellij and cannot process a
 competing ownership transition until the focus operation finishes. Focus CLI
 helpers are cancellation-aware, are killed at a four-second backend deadline,
 and have an actor-level timeout backstop so output and ownership processing
-resume after failure. Each replacement attached client also receives a unique
+resume after failure. Controlled helpers run in Unix process groups or Windows
+kill-on-close jobs, capture output in temporary files, and confirm process exit
+before returning from cancellation. If termination cannot be confirmed, the
+engine enters `failed` and refuses further native handoffs. Each replacement attached client also receives a unique
 engine generation; delayed exit callbacks from older clients cannot clear the
 replacement.
+
+Rendered Zellij frames are complete screen snapshots, not the provider's raw
+PTY protocol. They update the broker/parser and may prove a visible startup
+prompt, but they never enter provider event parsers or OSC-title classifiers.
+Provider-owned logs, hooks, and telemetry remain authoritative for lifecycle
+events, session identity, status, turn receipts, and OpenCode startup memory
+receipt. The mock provider uses its mirrored provider log for the same reason.
+Pane recovery uses the durable nonce marker plus Zellij's original pane command;
+provider-controlled display titles are never cleanup identity.
 
 ### Shell-hosted Launch Notes
 - Workflow shell-command nodes and headless provider runs use the same shell resolver as interactive PTY sessions.
