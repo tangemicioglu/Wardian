@@ -40,8 +40,9 @@ Spawning an agent follows a deterministic sequence in `manager::spawn_agent`:
 3. **Create one-use manifest**: Persist a nonce-bound JSON manifest containing
    the exact provider launch specification.
 4. **Create pane**: Ask Zellij to create the pane with Wardian's bundled
-   terminal host. The host validates and deletes the manifest before it starts
-   the provider.
+   terminal host. The host atomically renames the manifest to a private claimed
+   name, validates it, and deletes the claim before it starts the provider. A
+   concurrent host cannot consume the same nonce-bound launch.
 5. **Subscribe**: Observe replacement pane frames and provider-native logs.
 6. **Register runtime**: Register the pane-addressed transport under the agent's
    existing terminal session ID in the terminal-session broker.

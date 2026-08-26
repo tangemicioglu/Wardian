@@ -121,10 +121,13 @@ Wardian writes one versioned, nonce-bound JSON manifest beneath
 exact argument vector, working directory, and environment overlay. Wardian
 places only the unpredictable launch-file path on the pane command line.
 
-The bundled CLI validates and deletes the manifest before starting the
-provider. On Linux and macOS it replaces itself with the provider by using
-`exec`. On Windows it starts the provider with inherited ConPTY handles and
-waits for its exit.
+The bundled CLI atomically renames the manifest to a same-directory,
+process-scoped claim before reading it. Only the host that wins that rename can
+validate the manifest and start the provider; concurrent consumers fail after
+the original nonce path disappears. The host deletes its claim on every
+validation result and before starting the provider. On Linux and macOS it then
+replaces itself with the provider by using `exec`. On Windows it starts the
+provider with inherited ConPTY handles and waits for its exit.
 
 Wardian removes abandoned `.json` launch files during engine startup. A launch
 file is not a durable authorization record. Memory authority
@@ -391,8 +394,8 @@ many-renderer fallback remains reachable in a release build.
 Unit tests must cover:
 
 - platform artifact selection and every pinned executable digest;
-- launch-file path, nonce, cleanup, argument, environment, and redaction
-  rules;
+- launch-file path, nonce, atomic single-consumer claim, cleanup, argument,
+  environment, and redaction rules;
 - command construction and pane-ID parsing without invoking a shell;
 - every engine and pane state transition, including stale generations;
 - reconciliation of matching, missing, exited, and unknown panes;
