@@ -5,6 +5,7 @@ import {
   ACTIVITY_COLLAPSE_LINE_LIMIT,
   classifyActivityLanguage,
   countLines,
+  isLowSignalActivityTitle,
   shouldCollapseActivity,
   toActivityBlock,
 } from "./activityBlocks";
@@ -71,6 +72,12 @@ describe("activityBlocks", () => {
     expect(model.language).toBe("typescript");
     expect(model.content).toContain("export const app");
     expect(model.defaultCollapsed).toBe(false);
+  });
+
+  it("recognizes present-participle provider lifecycle titles as low signal", () => {
+    expect(isLowSignalActivityTitle("exec starting")).toBe(true);
+    expect(isLowSignalActivityTitle("exec_running")).toBe(true);
+    expect(isLowSignalActivityTitle("Read file")).toBe(false);
   });
 
   it("uses status text instead of raw metadata when text is absent", () => {

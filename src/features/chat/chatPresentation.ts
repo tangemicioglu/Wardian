@@ -370,8 +370,9 @@ export function isThinkingIndicator(event: AgentChatEvent): boolean {
 
 export function hasMeaningfulToolIdentity(event: AgentChatEvent): boolean {
   const title = event.title?.trim();
-  if (title && !isGenericActivityTitle(title)) return true;
-  return Boolean(toolNameFromEvent(event));
+  if (title && !isGenericActivityTitle(title) && !isLowSignalActivityTitle(title)) return true;
+  const toolName = toolNameFromEvent(event);
+  return Boolean(toolName && !isLowSignalActivityTitle(toolName));
 }
 
 export function sortTranscriptEvents(events: AgentChatEvent[]): AgentChatEvent[] {
@@ -392,9 +393,10 @@ export function sortTranscriptEvents(events: AgentChatEvent[]): AgentChatEvent[]
 
 /**
  * A tool call with no command, no text, and no recognizable identity is a
- * provider keepalive rather than work worth a row. Everything else is shown,
- * except status events, which only earn a row when they carry a failure or the
- * synthetic thinking indicator.
+ * provider keepalive rather than work worth a row. Actionable approvals and
+ * explicit failures remain visible even when their provider payload is thin.
+ * Status events only earn a row when they carry a failure or the synthetic
+ * thinking indicator.
  */
 export function shouldShowChatEvent(event: AgentChatEvent): boolean {
   if (isProviderLaunchScreen(event)) return false;
@@ -403,7 +405,9 @@ export function shouldShowChatEvent(event: AgentChatEvent): boolean {
     !event.command?.trim() &&
     !event.text?.trim() &&
     !hasMeaningfulToolIdentity(event) &&
-    (event.status === "running" || event.status === "processing")
+    event.status !== "action_required" &&
+    event.status !== "failed" &&
+    event.status !== "cancelled"
   ) {
     return false;
   }

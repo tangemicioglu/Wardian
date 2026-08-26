@@ -11,6 +11,12 @@ export const QUEUE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days - future sett
 const SUMMARY_MAX_CHARS = 500;
 const DEDUP_WINDOW_MS = 1_000;
 let persistQueue: Promise<void> = Promise.resolve();
+let queueMutationRevision = 0;
+
+type WorkflowRunIdentity = {
+  workflow_id: string;
+  workflow_run_id: string;
+};
 
 function readProtected(item: QueueItem) {
   return Boolean(
@@ -29,6 +35,7 @@ interface QueueState {
   _agentBuffers: Record<string, string>;
   _workflowLastOutput: Record<string, string>;
   _readNotificationIds: string[];
+  _dismissedWorkflowRuns: string[];
 
   loadItems: () => Promise<void>;
   loadMoreInboxNotifications: () => Promise<void>;
@@ -72,9 +79,46 @@ interface QueueState {
   setSoundVolume: (volume: number) => void;
 }
 
-function persistItems(items: QueueItem[], readNotificationIds: string[] = []) {
+function workflowRunKeyFromIdentity(identity: WorkflowRunIdentity): string {
+  return JSON.stringify([identity.workflow_id, identity.workflow_run_id]);
+}
+
+function workflowRunIdentityFromKey(key: string): WorkflowRunIdentity | undefined {
+  try {
+    const value: unknown = JSON.parse(key);
+    if (!Array.isArray(value) || value.length !== 2 || value.some((part) => typeof part !== "string")) return undefined;
+    return { workflow_id: value[0], workflow_run_id: value[1] };
+  } catch {
+    return undefined;
+  }
+}
+
+function workflowRunKey(item: QueueItem): string | undefined {
+  if (item.type !== "workflow_completed" || !item.workflow_id || !item.workflow_run_id) return undefined;
+  return workflowRunKeyFromIdentity({ workflow_id: item.workflow_id, workflow_run_id: item.workflow_run_id });
+}
+
+function workflowDismissalMarker(key: string): QueueItem | undefined {
+  const identity = workflowRunIdentityFromKey(key);
+  if (!identity) return undefined;
+  return {
+    id: `workflow-dismissed:${identity.workflow_id}:${identity.workflow_run_id}`,
+    type: "workflow_completed",
+    timestamp: Date.now(),
+    read: true,
+    dismissed: true,
+    workflow_id: identity.workflow_id,
+    workflow_run_id: identity.workflow_run_id,
+  };
+}
+
+function persistItems(
+  items: QueueItem[],
+  readNotificationIds: string[] = [],
+  dismissedWorkflowRuns: string[] = [],
+) {
   const legacyItems = items.filter(
-    (item) => !item.inbox_notification_id && !item.workflow_approval,
+    (item) => !item.inbox_notification_id && !item.workflow_approval && !item.dismissed,
   );
   const readNotificationAcknowledgements = new Set([
     ...readNotificationIds,
@@ -87,11 +131,16 @@ function persistItems(items: QueueItem[], readNotificationIds: string[] = []) {
       type: "agent_update" as const,
       timestamp: Date.now(),
       read: true,
-      inbox_notification_id: notificationId,
-    }));
+    inbox_notification_id: notificationId,
+  }));
+  const workflowDismissalItems = dismissedWorkflowRuns
+    .map(workflowDismissalMarker)
+    .filter((item): item is QueueItem => item !== undefined);
   persistQueue = persistQueue
     .catch(() => undefined)
-    .then(() => invoke("save_queue_items", { items: [...legacyItems, ...acknowledgementItems] }).then(() => undefined, () => undefined));
+    .then(() => invoke("save_queue_items", {
+      items: [...legacyItems, ...acknowledgementItems, ...workflowDismissalItems],
+    }).then(() => undefined, () => undefined));
 }
 
 function persistPreferences(preferences: QueuePreferences) {
@@ -224,11 +273,6 @@ async function loadWorkflowTerminalItems(): Promise<QueueItem[]> {
   }
 }
 
-function workflowRunKey(item: QueueItem): string | undefined {
-  if (item.type !== "workflow_completed" || !item.workflow_id || !item.workflow_run_id) return undefined;
-  return `${item.workflow_id}:${item.workflow_run_id}`;
-}
-
 function notifyForItem(item: QueueItem, preferences: QueuePreferences) {
   void dispatchQueueNotification(item, preferences);
 }
@@ -267,9 +311,13 @@ export const useQueueStore = create<QueueState>((set, get) => ({
   _agentBuffers: {},
   _workflowLastOutput: {},
   _readNotificationIds: [],
+  _dismissedWorkflowRuns: [],
 
   async loadItems() {
     try {
+      const loadRevision = queueMutationRevision;
+      await persistQueue;
+      if (loadRevision !== queueMutationRevision) return;
       const raw = await invoke<QueueItem[]>("load_queue_items");
       const cutoff = Date.now() - QUEUE_MAX_AGE_MS;
       const persistedItems = (Array.isArray(raw) ? raw : []).filter((i) => i.timestamp > cutoff);
@@ -278,14 +326,23 @@ export const useQueueStore = create<QueueState>((set, get) => ({
           .filter((item) => item.type === "agent_update" && item.read && item.inbox_notification_id)
           .map((item) => item.inbox_notification_id!),
       );
-      const legacyItems = persistedItems.filter((item) => !item.inbox_notification_id && !item.workflow_approval);
+      const dismissedWorkflowRuns = persistedItems
+        .filter((item) => item.dismissed)
+        .map(workflowRunKey)
+        .filter((key): key is string => key !== undefined);
+      const legacyItems = persistedItems.filter(
+        (item) => !item.inbox_notification_id && !item.workflow_approval && !item.dismissed,
+      );
       const [notificationResult, workflowApprovals, workflowTerminals] = await Promise.all([
         loadInboxNotificationItems(readNotificationIds),
         loadWorkflowApprovalItems(),
         loadWorkflowTerminalItems(),
       ]);
       const persistedWorkflowRuns = new Set(
-        legacyItems.map(workflowRunKey).filter((key): key is string => key !== undefined),
+        persistedItems
+          .filter((item) => !item.inbox_notification_id && !item.workflow_approval)
+          .map(workflowRunKey)
+          .filter((key): key is string => key !== undefined),
       );
       const reconciledTerminals = workflowTerminals.filter((item) => {
         const key = workflowRunKey(item);
@@ -293,14 +350,16 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       });
       const items = [...notificationResult.items, ...workflowApprovals, ...reconciledTerminals, ...legacyItems]
         .sort((left, right) => right.timestamp - left.timestamp);
+      if (loadRevision !== queueMutationRevision) return;
       set({
         items,
         inboxNotificationsTruncated: notificationResult.truncated,
         inboxNotificationsNextOffset: notificationResult.nextOffset,
         _readNotificationIds: [...readNotificationIds],
+        _dismissedWorkflowRuns: [...new Set(dismissedWorkflowRuns)],
       });
       if (reconciledTerminals.length > 0) {
-        persistItems(items, [...readNotificationIds]);
+        persistItems(items, [...readNotificationIds], dismissedWorkflowRuns);
       }
     } catch {
       // First run or unavailable: leave items empty.
@@ -417,9 +476,10 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       evidence_source: evidenceId ? "provider_runtime" : undefined,
     };
 
+    queueMutationRevision += 1;
     set((s) => {
       const next = [item, ...s.items];
-      persistItems(next, s._readNotificationIds);
+      persistItems(next, s._readNotificationIds, s._dismissedWorkflowRuns);
       notifyForItem(item, s.preferences);
       return { items: next, _agentBuffers: { ...s._agentBuffers, [sessionId]: "" } };
     });
@@ -449,9 +509,10 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       evidence_source: evidenceSource,
     };
 
+    queueMutationRevision += 1;
     set((s) => {
       const next = [item, ...s.items];
-      persistItems(next, s._readNotificationIds);
+      persistItems(next, s._readNotificationIds, s._dismissedWorkflowRuns);
       notifyForItem(item, s.preferences);
       return { items: next, _agentBuffers: { ...s._agentBuffers, [sessionId]: "" } };
     });
@@ -474,6 +535,10 @@ export const useQueueStore = create<QueueState>((set, get) => ({
         && item.workflow_run_id === run_instance_id,
     );
     if (existing) return;
+    const workflowKey = run_instance_id
+      ? workflowRunKeyFromIdentity({ workflow_id, workflow_run_id: run_instance_id })
+      : undefined;
+    if (workflowKey && get()._dismissedWorkflowRuns.includes(workflowKey)) return;
     const trackedOutput = get()._workflowLastOutput[workflow_id];
     const summary = payload.summary?.trim() || trackedOutput?.trim();
     const item: QueueItem = {
@@ -489,6 +554,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       summary: summary ? boundSummary(summary) : undefined,
     };
 
+    queueMutationRevision += 1;
     set((s) => {
       const next = [
         item,
@@ -498,7 +564,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
           && existingItem.workflow_approval.run_id === run_instance_id
         )),
       ];
-      persistItems(next, s._readNotificationIds);
+      persistItems(next, s._readNotificationIds, s._dismissedWorkflowRuns);
       notifyForItem(item, s.preferences);
       return {
         items: next,
@@ -511,35 +577,43 @@ export const useQueueStore = create<QueueState>((set, get) => ({
     set((s) => {
       const item = s.items.find((candidate) => candidate.id === id);
       if (item && readProtected(item)) return {};
+      queueMutationRevision += 1;
+      const workflowKey = item ? workflowRunKey(item) : undefined;
+      const dismissedWorkflowRuns = workflowKey
+        ? [...new Set([...s._dismissedWorkflowRuns, workflowKey])]
+        : s._dismissedWorkflowRuns;
       const next = s.items.filter((i) => i.id !== id);
-      persistItems(next, s._readNotificationIds);
-      return { items: next };
+      persistItems(next, s._readNotificationIds, dismissedWorkflowRuns);
+      return { items: next, _dismissedWorkflowRuns: dismissedWorkflowRuns };
     });
   },
 
   recordProviderChoiceSent(id, choice) {
+    queueMutationRevision += 1;
     set((s) => {
       const next = s.items.map((item) => (
         item.id === id ? { ...item, provider_choice_sent: choice } : item
       ));
-      persistItems(next, s._readNotificationIds);
+      persistItems(next, s._readNotificationIds, s._dismissedWorkflowRuns);
       return { items: next };
     });
   },
 
   markRead(id) {
+    queueMutationRevision += 1;
     set((s) => {
       const next = s.items.map((i) => (i.id === id ? { ...i, read: true } : i));
       const notificationId = s.items.find((item) => item.id === id)?.inbox_notification_id;
       const readNotificationIds = notificationId
         ? [...new Set([...s._readNotificationIds, notificationId])]
         : s._readNotificationIds;
-      persistItems(next, readNotificationIds);
+      persistItems(next, readNotificationIds, s._dismissedWorkflowRuns);
       return { items: next, _readNotificationIds: readNotificationIds };
     });
   },
 
   markAllRead() {
+    queueMutationRevision += 1;
     set((s) => {
       const next = s.items.map((i) => (readProtected(i) ? i : { ...i, read: true }));
       const readNotificationIds = [...new Set([
@@ -548,16 +622,24 @@ export const useQueueStore = create<QueueState>((set, get) => ({
           .filter((item) => item.type === "agent_update" && item.inbox_notification_id && item.read)
           .map((item) => item.inbox_notification_id!),
       ])];
-      persistItems(next, readNotificationIds);
+      persistItems(next, readNotificationIds, s._dismissedWorkflowRuns);
       return { items: next, _readNotificationIds: readNotificationIds };
     });
   },
 
   clearRead() {
+    queueMutationRevision += 1;
     set((s) => {
-      const next = s.items.filter((i) => !(i.read && isClearableLegacyCompletion(i)));
-      persistItems(next, s._readNotificationIds);
-      return { items: next };
+      const dismissedWorkflowRuns = new Set(s._dismissedWorkflowRuns);
+      const next = s.items.filter((item) => {
+        if (!(item.read && isClearableLegacyCompletion(item))) return true;
+        const workflowKey = workflowRunKey(item);
+        if (workflowKey) dismissedWorkflowRuns.add(workflowKey);
+        return false;
+      });
+      const dismissed = [...dismissedWorkflowRuns];
+      persistItems(next, s._readNotificationIds, dismissed);
+      return { items: next, _dismissedWorkflowRuns: dismissed };
     });
   },
 

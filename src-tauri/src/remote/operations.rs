@@ -117,7 +117,9 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
         .map(str::to_string)
         .collect::<std::collections::HashSet<_>>();
     let legacy_items = persisted_items.into_iter().filter(|item| {
-        item.get("inbox_notification_id").is_none() && item.get("workflow_approval").is_none()
+        item.get("inbox_notification_id").is_none()
+            && item.get("workflow_approval").is_none()
+            && item.get("dismissed").is_none()
     });
     let notifications = crate::commands::inbox::list_inbox_notifications_for_state(state)
         .await
@@ -189,6 +191,7 @@ fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
 
 fn is_clearable_legacy_completion(item: &serde_json::Value) -> bool {
     is_legacy_queue_item(item)
+        && item.get("dismissed").is_none()
         && !provider_choice_acknowledgement_unresolved(item)
         && matches!(
             item.get("type").and_then(serde_json::Value::as_str),
@@ -1084,6 +1087,11 @@ mod tests {
             "type": "workflow_completed",
             "read": true,
             "provider_choice_pending": "1"
+        })));
+        assert!(!is_clearable_legacy_completion(&serde_json::json!({
+            "type": "workflow_completed",
+            "read": true,
+            "dismissed": true
         })));
         assert!(!is_clearable_legacy_completion(&serde_json::json!({
             "type": "agent_completed",

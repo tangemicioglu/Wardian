@@ -109,6 +109,13 @@ describe("shouldShowChatEvent", () => {
     expect(shouldShowChatEvent(event({ status: "running", metadata: { tool_name: "Edit" } }))).toBe(true);
   });
 
+  it("hides command-less provider lifecycle tool calls", () => {
+    expect(shouldShowChatEvent(event({ title: "exec starting", status: "running" }))).toBe(false);
+    expect(shouldShowChatEvent(event({ title: "exec running", status: "processing" }))).toBe(false);
+    expect(shouldShowChatEvent(event({ title: "exec running", status: "succeeded" }))).toBe(false);
+    expect(shouldShowChatEvent(event({ title: "exec starting", command: "npm test", status: "running" }))).toBe(true);
+  });
+
   it("keeps the synthetic thinking indicator but drops ordinary status events", () => {
     expect(shouldShowChatEvent(event({ kind: "status", metadata: { chat_thinking_indicator: true } }))).toBe(true);
     expect(shouldShowChatEvent(event({ kind: "status", status: "succeeded" }))).toBe(false);

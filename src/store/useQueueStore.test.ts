@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { useQueueStore } from "./useQueueStore";
 import { normalizeQueuePreferences } from "../features/queue/queueFilters";
+import type { QueueItem } from "../types";
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -11,6 +12,7 @@ function resetStore() {
     _agentBuffers: {},
     _workflowLastOutput: {},
     _readNotificationIds: [],
+    _dismissedWorkflowRuns: [],
     preferences: normalizeQueuePreferences({}),
   });
 }
@@ -538,6 +540,76 @@ describe("useQueueStore - persistence", () => {
     await useQueueStore.getState().loadItems();
 
     expect(useQueueStore.getState().items).toEqual([persisted]);
+  });
+
+  it("keeps a cleared workflow completion hidden when durable runs are reloaded", async () => {
+    const terminalRun = {
+      workflow_id: "release",
+      run_instance_id: "run-cleared",
+      workflow_name: "Release",
+      status: "completed" as const,
+      summary: "Release finished.",
+      updated_at: new Date().toISOString(),
+    };
+    let persisted: QueueItem[] = [];
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "load_queue_items") return Promise.resolve(persisted);
+      if (command === "list_workflow_inbox_terminal_runs") return Promise.resolve([terminalRun]);
+      if (command === "save_queue_items") {
+        persisted = ((args as { items?: QueueItem[] } | undefined)?.items ?? []);
+      }
+      return Promise.resolve([]);
+    });
+
+    await useQueueStore.getState().loadItems();
+    const itemId = useQueueStore.getState().items[0].id;
+    useQueueStore.getState().markRead(itemId);
+    await vi.waitFor(() => expect(persisted).toEqual([
+      expect.objectContaining({ workflow_run_id: "run-cleared", read: true }),
+    ]));
+
+    useQueueStore.getState().clearRead();
+    await vi.waitFor(() => expect(persisted).toEqual([
+      expect.objectContaining({
+        workflow_id: "release",
+        workflow_run_id: "run-cleared",
+        dismissed: true,
+      }),
+    ]));
+    expect(useQueueStore.getState().items).toHaveLength(0);
+
+    await useQueueStore.getState().loadItems();
+
+    expect(useQueueStore.getState().items).toEqual([]);
+  });
+
+  it("does not let a stale workflow reload overwrite a local read mutation", async () => {
+    const workflowItem: QueueItem = {
+      id: "workflow-completion:release:run-stale",
+      type: "workflow_completed",
+      timestamp: Date.now(),
+      read: false,
+      workflow_id: "release",
+      workflow_run_id: "run-stale",
+      workflow_name: "Release",
+      status: "completed",
+    };
+    let resolveLoad!: (items: QueueItem[]) => void;
+    const pendingLoad = new Promise<QueueItem[]>((resolve) => {
+      resolveLoad = resolve;
+    });
+    mockInvoke.mockImplementation((command) => {
+      if (command === "load_queue_items") return pendingLoad;
+      return Promise.resolve([]);
+    });
+    useQueueStore.setState({ items: [workflowItem] });
+
+    const reload = useQueueStore.getState().loadItems();
+    useQueueStore.getState().markRead(workflowItem.id);
+    resolveLoad([workflowItem]);
+    await reload;
+
+    expect(useQueueStore.getState().items[0]).toEqual(expect.objectContaining({ read: true }));
   });
 
   it("keeps durable update notifications unread until their local acknowledgement is persisted", async () => {
