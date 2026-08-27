@@ -600,6 +600,23 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await expect(page.getByLabel("user message")).toHaveClass(/\bitems-end\b/);
   await expect(page.getByLabel("assistant message")).toHaveClass(/\bw-full\b/);
   await expect(page.getByTestId("chat-work-group")).toHaveAttribute("data-expanded", "false");
+  await page.setViewportSize({ width: 1020, height: 844 });
+  const transcript = page.locator(".chat-transcript-list");
+  const transcriptBox = await transcript.boundingBox();
+  const rowBoxes = await transcript.locator(":scope > .chat-row").evaluateAll((elements) =>
+    elements.map((element) => {
+      const { width, x } = element.getBoundingClientRect();
+      return { width, x };
+    }),
+  );
+  expect(transcriptBox).not.toBeNull();
+  expect(rowBoxes.length).toBeGreaterThan(1);
+  for (const rowBox of rowBoxes) {
+    expect(rowBox.width).toBeCloseTo(transcriptBox!.width, 0);
+    expect(rowBox.x).toBeCloseTo(transcriptBox!.x, 0);
+  }
+  await captureFeatureScreenshot("chat-consistent-width.png", page.locator('[data-testid="remote-agent-detail"]'));
+  await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() => page.getByLabel("user message").locator(".chat-row-actions--inline").evaluate((element) => getComputedStyle(element).top))
     .toBe("-4px");
