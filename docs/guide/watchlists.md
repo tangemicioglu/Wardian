@@ -4,8 +4,6 @@ The **Agent Watchlist** (Right Sidebar) is your primary high-fidelity tool for m
 
 Use it when you need persistent awareness of all agents while working in any Workbench surface or auxiliary tool.
 
-![Wardian agent roster showing grouped agents with status, query count, and last queried columns](../assets/screenshots/watchlists/agent-roster.png)
-
 ## When to Use It
 
 - Select one or more agents before using Command, Library prompt runs, Explorer, or Source Control.
@@ -50,17 +48,17 @@ Click the **gear icon** (⚙) in the watchlist header to open the column picker.
 
 | Column | Default | Description |
 |---|---|---|
-| Status | On | Current agent status label |
-| Query Count | On | Number of prompts sent this session |
+| Status | Off | Current agent status label |
+| Query Count | Off | Number of prompts sent this session |
 | Uptime | Off | Time since the agent process started |
 | Provider / Model | Off | Provider name and model identifier |
-| Last Queried | On | Time elapsed since the last prompt was sent |
+| Last Queried | On | Time elapsed since the last user prompt was sent |
 
 ### Sorting
 Click any column header to sort by that column. The first sort on **Last** is descending so the most recently queried agent appears first; other columns start ascending. Clicking the active header again cycles through the opposite direction → unsorted. The **Agent** column header sorts alphabetically by name. Sorting applies on top of your custom watchlist order; drag-to-reorder still works when no sort is active.
 
 ### Persistence
-Column visibility and sort state are saved to `<wardian-home>/watchlists/prefs.json` and restored on next launch.
+Column visibility and sort state are saved to `<wardian-home>/watchlists/prefs.json` and restored on next launch. The Last Queried value is sourced from the latest user prompt timestamp in the interaction ledger or provider transcript (including current Antigravity SQLite conversations), so it is not reset when the app restarts. Existing saved column preferences remain unchanged; the defaults apply to new preference files.
 
 New visible agents normally appear at the top of the roster. Change
 **Settings > Watchlist > New agent position** to place agents spawned from the

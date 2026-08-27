@@ -10,6 +10,7 @@ import {
   getListsNotContainingAgent,
   formatUptime,
   formatRelativeTime,
+  latestValidQueryTimestamp,
   cycleSort,
   sortAgents,
   normalizeWatchlistState,
@@ -675,6 +676,18 @@ describe('formatRelativeTime', () => {
   });
 });
 
+describe('latestValidQueryTimestamp', () => {
+  it('selects the newest valid timestamp across telemetry and persisted fallback', () => {
+    expect(latestValidQueryTimestamp('2026-01-01T00:00:00Z', '2026-01-04T00:00:00Z'))
+      .toBe('2026-01-04T00:00:00Z');
+  });
+
+  it('ignores an invalid telemetry timestamp when the fallback is valid', () => {
+    expect(latestValidQueryTimestamp('not-a-timestamp', '2026-01-04T00:00:00Z'))
+      .toBe('2026-01-04T00:00:00Z');
+  });
+});
+
 // ── cycleSort ──────────────────────────────────────────────────────────
 
 describe('cycleSort', () => {
@@ -734,5 +747,18 @@ describe('sortAgents', () => {
   it('sorts by last_queried desc (most recent first)', () => {
     const sort: WatchlistPrefs['sort'] = { column_id: 'last_queried', direction: 'desc' };
     expect(sortAgents(agents, sort, telemetry, interactions).map(a => a.session_id)).toEqual(['a', 'c', 'b']);
+  });
+
+  it('sorts by the newest timestamp across telemetry and the legacy interaction map', () => {
+    const sort: WatchlistPrefs['sort'] = { column_id: 'last_queried', direction: 'desc' };
+    const telemetryWithLastQuery = {
+      a: makeTelemetry('a', { last_query_timestamp: '2026-01-01T00:00:00Z' }),
+      b: makeTelemetry('b', { last_query_timestamp: '2026-01-03T00:00:00Z' }),
+      c: makeTelemetry('c', { last_query_timestamp: '2026-01-02T00:00:00Z' }),
+    };
+    const legacyInteractions = { a: '2026-01-04T00:00:00Z' };
+
+    expect(sortAgents(agents, sort, telemetryWithLastQuery, legacyInteractions).map(a => a.session_id))
+      .toEqual(['a', 'b', 'c']);
   });
 });

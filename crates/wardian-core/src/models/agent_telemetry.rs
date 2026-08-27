@@ -6,6 +6,7 @@ pub struct AgentTelemetry {
     pub uptime_seconds: u64,
     pub query_count: usize,
     pub init_timestamp: Option<String>,
+    pub last_query_timestamp: Option<String>,
     pub current_status: String,
     pub log_path: Option<String>,
 }
@@ -23,11 +24,13 @@ mod tests {
             uptime_seconds: 3600,
             query_count: 42,
             init_timestamp: Some("2026-01-01T00:00:00Z".into()),
+            last_query_timestamp: Some("2026-01-02T00:00:00Z".into()),
             current_status: "Idle".into(),
             log_path: None,
         };
         let json = serde_json::to_string(&telemetry).unwrap();
         assert!(json.contains("\"session_id\":\"abc\""));
         assert!(json.contains("\"query_count\":42"));
+        assert!(json.contains("\"last_query_timestamp\":\"2026-01-02T00:00:00Z\""));
     }
 }

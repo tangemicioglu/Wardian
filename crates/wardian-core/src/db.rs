@@ -42,6 +42,23 @@ pub struct AgentRow {
     pub last_status_at: Option<String>,
 }
 
+/// The subset of a user message interaction needed to hydrate Last-Queried
+/// telemetry without decoding the interaction body or delivery state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserMessageTimestampRecord {
+    pub target_session_ids: Vec<String>,
+    pub created_at: String,
+}
+
+/// Durable provider-derived query time used to hydrate telemetry after a
+/// restart, including sessions whose provider log has grown beyond the
+/// bounded recovery window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentQueryTimestampRecord {
+    pub session_id: String,
+    pub last_query_timestamp: String,
+}
+
 pub fn init_db() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = state_db_path().ok_or("could not resolve Wardian state.db path")?;
     init_db_at_path(&db_path)
@@ -90,7 +107,8 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             provider TEXT,
             workspace TEXT,
             project TEXT,
-            last_status_at DATETIME
+            last_status_at DATETIME,
+            last_query_timestamp TEXT
         )",
         [],
     )?;
@@ -119,6 +137,12 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             updated_at TEXT NOT NULL,
             completed_at TEXT
         )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_interactions_user_message_created_at
+         ON interactions(created_at, id, target_session_ids)
+         WHERE kind = 'message' AND sender_session_id IS NULL",
         [],
     )?;
     conn.execute(
@@ -208,6 +232,7 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         ("workspace", "TEXT"),
         ("project", "TEXT"),
         ("last_status_at", "DATETIME"),
+        ("last_query_timestamp", "TEXT"),
         ("description", "TEXT NOT NULL DEFAULT ''"),
     ] {
         ensure_column(conn, "agents", name, definition)?;
@@ -339,6 +364,60 @@ pub fn update_agent_status_with_conn(
         }
     }
     Ok(())
+}
+
+/// Persists the newest provider-derived user-message timestamp for an agent.
+/// SQLite's Julian-day comparison handles the RFC3339 offsets emitted by the
+/// supported providers while keeping an older observation from regressing the
+/// durable watermark.
+pub fn update_agent_query_timestamp(
+    session_id: &str,
+    timestamp: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        update_agent_query_timestamp_with_conn(conn, session_id, timestamp)?;
+        Ok(())
+    })
+}
+
+pub fn update_agent_query_timestamp_with_conn(
+    conn: &Connection,
+    session_id: &str,
+    timestamp: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE agents
+         SET last_query_timestamp = ?1
+         WHERE session_id = ?2
+           AND (
+               last_query_timestamp IS NULL
+               OR julianday(?1) > julianday(last_query_timestamp)
+           )",
+        params![timestamp, session_id],
+    )?;
+    Ok(())
+}
+
+pub fn list_agent_query_timestamp_records(
+) -> Result<Vec<AgentQueryTimestampRecord>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| Ok(list_agent_query_timestamp_records_with_conn(conn)?))
+}
+
+pub fn list_agent_query_timestamp_records_with_conn(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<AgentQueryTimestampRecord>> {
+    let mut statement = conn.prepare(
+        "SELECT session_id, last_query_timestamp
+         FROM agents
+         WHERE last_query_timestamp IS NOT NULL",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(AgentQueryTimestampRecord {
+            session_id: row.get(0)?,
+            last_query_timestamp: row.get(1)?,
+        })
+    })?;
+    rows.collect()
 }
 
 pub fn record_event(
@@ -562,6 +641,36 @@ pub fn list_interaction_records() -> Result<Vec<InteractionRecord>, Box<dyn std:
         let records = list_interaction_records_with_conn(conn)?;
         Ok(records)
     })
+}
+
+/// Lists the target IDs and creation times needed for historical Last-Queried
+/// telemetry. The filtered projection avoids decoding unrelated interaction
+/// kinds and fields on every telemetry pass.
+pub fn list_user_message_timestamp_records(
+) -> Result<Vec<UserMessageTimestampRecord>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        let records = list_user_message_timestamp_records_with_conn(conn)?;
+        Ok(records)
+    })
+}
+
+pub fn list_user_message_timestamp_records_with_conn(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<UserMessageTimestampRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT target_session_ids, created_at
+         FROM interactions
+         WHERE kind = 'message' AND sender_session_id IS NULL
+         ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let target_session_ids: String = row.get(0)?;
+        Ok(UserMessageTimestampRecord {
+            target_session_ids: serde_json::from_str(&target_session_ids).map_err(to_sql_error)?,
+            created_at: row.get(1)?,
+        })
+    })?;
+    rows.collect()
 }
 
 pub fn list_recent_interaction_records(
@@ -1148,6 +1257,7 @@ mod tests {
         assert!(columns.contains(&"workspace".to_string()));
         assert!(columns.contains(&"project".to_string()));
         assert!(columns.contains(&"last_status_at".to_string()));
+        assert!(columns.contains(&"last_query_timestamp".to_string()));
         assert!(columns.contains(&"description".to_string()));
     }
 
@@ -1182,6 +1292,41 @@ mod tests {
     }
 
     #[test]
+    fn agent_query_timestamp_watermark_keeps_the_newest_observation() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        upsert_agent_with_conn(
+            &conn,
+            &AgentUpsert {
+                session_id: "uuid-query",
+                session_name: "query-agent",
+                description: "",
+                agent_class: "Coder",
+                provider: "codex",
+                workspace: None,
+                project: None,
+                is_off: false,
+                created_at: None,
+            },
+        )
+        .unwrap();
+
+        update_agent_query_timestamp_with_conn(&conn, "uuid-query", "2026-08-26T12:00:03.000Z")
+            .unwrap();
+        update_agent_query_timestamp_with_conn(&conn, "uuid-query", "2026-08-26T12:00:01.000Z")
+            .unwrap();
+
+        let records = list_agent_query_timestamp_records_with_conn(&conn).unwrap();
+        assert_eq!(
+            records,
+            vec![AgentQueryTimestampRecord {
+                session_id: "uuid-query".to_string(),
+                last_query_timestamp: "2026-08-26T12:00:03.000Z".to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn interaction_records_round_trip_through_db() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
@@ -1205,6 +1350,42 @@ mod tests {
 
         let records = list_interaction_records_with_conn(&conn).unwrap();
         assert_eq!(records, vec![record]);
+    }
+
+    #[test]
+    fn user_message_interaction_records_are_filtered_in_sql() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let make_record = |id: &str, kind: InteractionKind, sender_session_id: Option<&str>| {
+            InteractionRecord {
+                id: id.to_string(),
+                kind,
+                sender_session_id: sender_session_id.map(str::to_string),
+                target_session_ids: vec!["agent-1".to_string()],
+                status: InteractionStatus::Queued,
+                trigger_policy: InteractionTriggerPolicy::StartTurn,
+                body_ref: InteractionBodyRef::Inline {
+                    body: "prompt".to_string(),
+                },
+                parent_interaction_id: None,
+                created_at: format!("2026-05-25T00:00:0{id}.000Z"),
+                updated_at: format!("2026-05-25T00:00:0{id}.000Z"),
+                completed_at: None,
+            }
+        };
+
+        for record in [
+            make_record("1", InteractionKind::Task, None),
+            make_record("2", InteractionKind::Message, Some("sender-1")),
+            make_record("3", InteractionKind::Message, None),
+        ] {
+            upsert_interaction_record_with_conn(&conn, &record).unwrap();
+        }
+
+        let records = list_user_message_timestamp_records_with_conn(&conn).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].target_session_ids, vec!["agent-1"]);
+        assert_eq!(records[0].created_at, "2026-05-25T00:00:03.000Z");
     }
 
     #[test]

@@ -138,6 +138,28 @@ declare global {
   }
 }
 
+function isLaterTimestamp(candidate: string, current: string): boolean {
+  const candidateMs = Date.parse(candidate);
+  const currentMs = Date.parse(current);
+  if (Number.isFinite(candidateMs) && Number.isFinite(currentMs)) {
+    return candidateMs > currentMs;
+  }
+  return candidate.localeCompare(current) > 0;
+}
+
+function mergeLatestAgentInteractions(
+  current: AgentInteractions,
+  updates: Readonly<Record<string, string>>,
+): AgentInteractions {
+  const merged = { ...current };
+  for (const [agentId, timestamp] of Object.entries(updates)) {
+    if (!merged[agentId] || isLaterTimestamp(timestamp, merged[agentId])) {
+      merged[agentId] = timestamp;
+    }
+  }
+  return merged;
+}
+
 
 function normalizeCollapsedTeamIdsByList(value: unknown): Record<string, string[]> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -610,7 +632,11 @@ function AppBody() {
   }, []);
 
   const handleAgentInteractions = useCallback((updates: Readonly<Record<string, string>>) => {
-    const updated = { ...agentInteractionsRef.current, ...updates };
+    const updated = mergeLatestAgentInteractions(agentInteractionsRef.current, updates);
+    if (Object.keys(updated).length === Object.keys(agentInteractionsRef.current).length
+      && Object.entries(updated).every(([agentId, timestamp]) => agentInteractionsRef.current[agentId] === timestamp)) {
+      return;
+    }
     agentInteractionsRef.current = updated;
     setAgentInteractions(updated);
     queueAgentInteractionSnapshot(updated);
@@ -740,7 +766,7 @@ function AppBody() {
         const interactions = await invoke<AgentInteractions>("load_agent_interactions");
         if (interactions) {
           const preLoadUpdates = agentInteractionsRef.current;
-          const merged = { ...interactions, ...preLoadUpdates };
+          const merged = mergeLatestAgentInteractions(interactions, preLoadUpdates);
           agentInteractionsRef.current = merged;
           setAgentInteractions(merged);
           if (Object.keys(preLoadUpdates).length > 0) {

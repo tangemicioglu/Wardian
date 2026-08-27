@@ -163,6 +163,10 @@ describe('AgentWatchlist', () => {
     render(
       <AgentWatchlist
         {...defaultProps}
+        prefs={{
+          ...defaultPrefs,
+          columns: [{ id: 'status_label', visible: true }, ...defaultPrefs.columns],
+        }}
       />,
     );
 
@@ -1235,6 +1239,27 @@ describe('AgentWatchlist', () => {
       />
     );
     expect(screen.getByText('Last')).toBeInTheDocument();
+  });
+
+  it('displays the newest Last Queried timestamp from telemetry or persisted fallback', () => {
+    const recent = new Date(Date.now() - 30 * 1000).toISOString();
+    const older = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    seedProjections({
+      telemetry: {
+        ...sampleTelemetry,
+        'agent-1': { ...sampleTelemetry['agent-1'], last_query_timestamp: older },
+      },
+    });
+    render(
+      <AgentWatchlist
+        {...defaultProps}
+        prefs={defaultPrefs}
+        onPrefsChange={mockOnPrefsChange}
+        interactions={{ 'agent-1': recent }}
+      />
+    );
+
+    expect(screen.getByText('30s ago')).toBeInTheDocument();
   });
 
   it('hides uptime column when not visible in prefs', () => {

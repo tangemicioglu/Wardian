@@ -77,6 +77,7 @@ function makeStatusTelemetry(
     uptime_seconds: previous?.uptime_seconds ?? 0,
     query_count: previous?.query_count ?? 0,
     init_timestamp: previous?.init_timestamp ?? null,
+    last_query_timestamp: previous?.last_query_timestamp ?? null,
     current_status,
     log_path: previous?.log_path ?? null,
   };
@@ -97,6 +98,7 @@ const TELEMETRY_FIELDS = Object.keys({
   uptime_seconds: true,
   query_count: true,
   init_timestamp: true,
+  last_query_timestamp: true,
   current_status: true,
   log_path: true,
 } satisfies Record<keyof AgentTelemetry, true>) as (keyof AgentTelemetry)[];
@@ -360,6 +362,12 @@ export function useAgentResourceController(
           applyStatus(metric.session_id, metric.current_status, "metrics", false);
 
           const previous_metric = previous_telemetry[metric.session_id];
+          if (
+            typeof metric.last_query_timestamp === "string"
+            && metric.last_query_timestamp !== previous_metric?.last_query_timestamp
+          ) {
+            interaction_updates[metric.session_id] = metric.last_query_timestamp;
+          }
           const previous_query_count = previous_metric?.query_count ?? 0;
           const current_query_count = metric.query_count ?? 0;
           const is_transcript_hydration = Boolean(
@@ -370,6 +378,8 @@ export function useAgentResourceController(
             && metric.log_path,
           );
           if (
+            typeof metric.last_query_timestamp !== "string"
+            &&
             previous_metric
             && current_query_count > previous_query_count
             && !is_transcript_hydration

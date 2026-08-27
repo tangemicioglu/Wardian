@@ -72,6 +72,7 @@ fn restored_agent_without_process(
         process_id,
         query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
         init_timestamp: std::sync::Arc::new(std::sync::Mutex::new(born)),
+        last_query_timestamp: std::sync::Arc::new(std::sync::Mutex::new(None)),
         current_status: std::sync::Arc::new(std::sync::Mutex::new(status.to_string())),
         last_status_at: std::sync::Arc::new(std::sync::Mutex::new(Some(observed_at))),
         watch_state: std::sync::Arc::new(std::sync::Mutex::new(watch_state)),

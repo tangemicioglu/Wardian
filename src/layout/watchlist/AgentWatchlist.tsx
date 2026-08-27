@@ -19,6 +19,7 @@ import {
   formatRelativeTime,
   cycleSort,
   sortAgents,
+  latestValidQueryTimestamp,
   getDisplayItemsForList,
   flattenDisplayItems,
   getWatchlistEntries,
@@ -967,7 +968,10 @@ export default function AgentWatchlist({
           }
           if (col.id === 'last_queried') return (
             <span key="last_queried" className="label-small tabular-nums text-muted">
-              {formatRelativeTime(interactions[agentId])}
+              {formatRelativeTime(latestValidQueryTimestamp(
+                metrics?.last_query_timestamp,
+                interactions[agentId],
+              ))}
             </span>
           );
           return null;
