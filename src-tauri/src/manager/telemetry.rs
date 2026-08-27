@@ -440,10 +440,19 @@ fn reconcile_cached_last_query_timestamp(
 }
 
 fn latest_user_query_timestamps() -> HashMap<String, String> {
-    let Ok(records) = wardian_core::db::list_user_message_timestamp_records() else {
-        return HashMap::new();
-    };
-    latest_user_query_timestamps_from_records(&records)
+    let mut timestamps = wardian_core::db::list_user_message_timestamp_records()
+        .map(|records| latest_user_query_timestamps_from_records(&records))
+        .unwrap_or_default();
+    if let Ok(records) = wardian_core::db::list_agent_query_timestamp_records() {
+        for record in records {
+            let mut latest = timestamps.remove(&record.session_id);
+            update_latest_query_timestamp(&mut latest, Some(record.last_query_timestamp));
+            if let Some(latest) = latest {
+                timestamps.insert(record.session_id, latest);
+            }
+        }
+    }
+    timestamps
 }
 
 fn latest_user_query_timestamps_from_records(
@@ -1889,6 +1898,9 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                 &mut last_query_timestamp,
                 &snap.last_query_timestamp,
             );
+            if let Some(timestamp) = last_query_timestamp.as_deref() {
+                let _ = wardian_core::db::update_agent_query_timestamp(&snap.session_id, timestamp);
+            }
 
             if (snap.provider == "opencode"
                 || snap.provider == "claude"

@@ -50,6 +50,15 @@ pub struct UserMessageTimestampRecord {
     pub created_at: String,
 }
 
+/// Durable provider-derived query time used to hydrate telemetry after a
+/// restart, including sessions whose provider log has grown beyond the
+/// bounded recovery window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentQueryTimestampRecord {
+    pub session_id: String,
+    pub last_query_timestamp: String,
+}
+
 pub fn init_db() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = state_db_path().ok_or("could not resolve Wardian state.db path")?;
     init_db_at_path(&db_path)
@@ -98,7 +107,8 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             provider TEXT,
             workspace TEXT,
             project TEXT,
-            last_status_at DATETIME
+            last_status_at DATETIME,
+            last_query_timestamp TEXT
         )",
         [],
     )?;
@@ -222,6 +232,7 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         ("workspace", "TEXT"),
         ("project", "TEXT"),
         ("last_status_at", "DATETIME"),
+        ("last_query_timestamp", "TEXT"),
         ("description", "TEXT NOT NULL DEFAULT ''"),
     ] {
         ensure_column(conn, "agents", name, definition)?;
@@ -353,6 +364,60 @@ pub fn update_agent_status_with_conn(
         }
     }
     Ok(())
+}
+
+/// Persists the newest provider-derived user-message timestamp for an agent.
+/// SQLite's Julian-day comparison handles the RFC3339 offsets emitted by the
+/// supported providers while keeping an older observation from regressing the
+/// durable watermark.
+pub fn update_agent_query_timestamp(
+    session_id: &str,
+    timestamp: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        update_agent_query_timestamp_with_conn(conn, session_id, timestamp)?;
+        Ok(())
+    })
+}
+
+pub fn update_agent_query_timestamp_with_conn(
+    conn: &Connection,
+    session_id: &str,
+    timestamp: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE agents
+         SET last_query_timestamp = ?1
+         WHERE session_id = ?2
+           AND (
+               last_query_timestamp IS NULL
+               OR julianday(?1) > julianday(last_query_timestamp)
+           )",
+        params![timestamp, session_id],
+    )?;
+    Ok(())
+}
+
+pub fn list_agent_query_timestamp_records(
+) -> Result<Vec<AgentQueryTimestampRecord>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| Ok(list_agent_query_timestamp_records_with_conn(conn)?))
+}
+
+pub fn list_agent_query_timestamp_records_with_conn(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<AgentQueryTimestampRecord>> {
+    let mut statement = conn.prepare(
+        "SELECT session_id, last_query_timestamp
+         FROM agents
+         WHERE last_query_timestamp IS NOT NULL",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(AgentQueryTimestampRecord {
+            session_id: row.get(0)?,
+            last_query_timestamp: row.get(1)?,
+        })
+    })?;
+    rows.collect()
 }
 
 pub fn record_event(
@@ -1192,6 +1257,7 @@ mod tests {
         assert!(columns.contains(&"workspace".to_string()));
         assert!(columns.contains(&"project".to_string()));
         assert!(columns.contains(&"last_status_at".to_string()));
+        assert!(columns.contains(&"last_query_timestamp".to_string()));
         assert!(columns.contains(&"description".to_string()));
     }
 
@@ -1223,6 +1289,41 @@ mod tests {
         assert_eq!(row.description, "Owns frontend release follow-up");
         assert_eq!(row.project.as_deref(), Some("Wardian"));
         assert_eq!(row.workspace.as_deref(), Some("D:/Development/Wardian"));
+    }
+
+    #[test]
+    fn agent_query_timestamp_watermark_keeps_the_newest_observation() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        upsert_agent_with_conn(
+            &conn,
+            &AgentUpsert {
+                session_id: "uuid-query",
+                session_name: "query-agent",
+                description: "",
+                agent_class: "Coder",
+                provider: "codex",
+                workspace: None,
+                project: None,
+                is_off: false,
+                created_at: None,
+            },
+        )
+        .unwrap();
+
+        update_agent_query_timestamp_with_conn(&conn, "uuid-query", "2026-08-26T12:00:03.000Z")
+            .unwrap();
+        update_agent_query_timestamp_with_conn(&conn, "uuid-query", "2026-08-26T12:00:01.000Z")
+            .unwrap();
+
+        let records = list_agent_query_timestamp_records_with_conn(&conn).unwrap();
+        assert_eq!(
+            records,
+            vec![AgentQueryTimestampRecord {
+                session_id: "uuid-query".to_string(),
+                last_query_timestamp: "2026-08-26T12:00:03.000Z".to_string(),
+            }]
+        );
     }
 
     #[test]

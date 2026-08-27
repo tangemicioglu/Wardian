@@ -30,6 +30,24 @@ fn database_contains_user_message(path: &Path) -> bool {
         .is_ok()
 }
 
+fn update_latest_timestamp(latest: &mut Option<String>, candidate: Option<String>) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    let should_replace = latest.as_deref().is_none_or(|current| {
+        match (
+            chrono::DateTime::parse_from_rfc3339(current),
+            chrono::DateTime::parse_from_rfc3339(&candidate),
+        ) {
+            (Ok(current), Ok(candidate)) => candidate > current,
+            _ => candidate.as_str() > current,
+        }
+    });
+    if should_replace {
+        *latest = Some(candidate);
+    }
+}
+
 /// A user or model message stored in Antigravity's current SQLite
 /// conversation format.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,11 +229,21 @@ impl AntigravityProvider {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|error| format!("failed to open Antigravity conversation database: {error}"))?;
-        let mut statement = connection
-            .prepare("SELECT idx, step_type, metadata FROM steps ORDER BY idx")
-            .map_err(|error| {
-                format!("failed to read Antigravity conversation metadata: {error}")
-            })?;
+        let has_metadata_column = connection
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('steps') WHERE name = 'metadata' LIMIT 1",
+                [],
+                |_row| Ok(()),
+            )
+            .is_ok();
+        let query = if has_metadata_column {
+            "SELECT idx, step_type, metadata FROM steps ORDER BY idx"
+        } else {
+            "SELECT idx, step_type, NULL AS metadata FROM steps ORDER BY idx"
+        };
+        let mut statement = connection.prepare(query).map_err(|error| {
+            format!("failed to read Antigravity conversation metadata: {error}")
+        })?;
         let rows = statement
             .query_map([], |row| {
                 Ok((
@@ -247,9 +275,7 @@ impl AntigravityProvider {
             match step_type {
                 14 => {
                     metrics.query_count += 1;
-                    if timestamp.is_some() {
-                        metrics.last_query_timestamp = timestamp;
-                    }
+                    update_latest_timestamp(&mut metrics.last_query_timestamp, timestamp);
                     metrics.status = Some("Processing...");
                 }
                 15 => metrics.status = Some("Idle"),
@@ -1051,6 +1077,16 @@ SET dp0=%~dp0
                 .expect("read latest user message"),
             Some(12)
         );
+        assert_eq!(
+            AntigravityProvider::conversation_metrics_from_database(&database)
+                .expect("read metrics without metadata"),
+            AntigravityConversationMetrics {
+                query_count: 2,
+                init_timestamp: None,
+                last_query_timestamp: None,
+                status: Some("Processing..."),
+            }
+        );
     }
 
     #[test]
@@ -1098,6 +1134,44 @@ SET dp0=%~dp0
                 last_query_timestamp: Some("2026-08-26T18:55:52.500Z".to_string()),
                 status: Some("Idle"),
             }
+        );
+    }
+
+    #[test]
+    fn conversation_metrics_from_database_uses_newest_timestamp_not_last_row() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database = temp.path().join("conversation.db");
+        let connection = Connection::open(&database).expect("open database");
+        connection
+            .execute_batch(
+                "CREATE TABLE steps (
+                    idx INTEGER,
+                    step_type INTEGER,
+                    metadata BLOB,
+                    step_payload BLOB
+                );",
+            )
+            .expect("create steps");
+        for (idx, seconds) in [(0_i64, 1_787_770_552_u64), (1_i64, 1_787_770_550_u64)] {
+            connection
+                .execute(
+                    "INSERT INTO steps (idx, step_type, metadata, step_payload)
+                     VALUES (?1, 14, ?2, ?3)",
+                    params![
+                        idx,
+                        protobuf_timestamp_metadata(seconds, 0),
+                        Vec::<u8>::new()
+                    ],
+                )
+                .expect("insert user message");
+        }
+        drop(connection);
+
+        let metrics = AntigravityProvider::conversation_metrics_from_database(&database)
+            .expect("read conversation metrics");
+        assert_eq!(
+            metrics.last_query_timestamp.as_deref(),
+            Some("2026-08-26T18:55:52.000Z")
         );
     }
 }
