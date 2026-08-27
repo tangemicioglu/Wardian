@@ -1112,7 +1112,9 @@ fn set_snapshot_status(snap: &AgentSnapshot, next_status: &str) {
 }
 
 fn set_snapshot_status_from_log(snap: &AgentSnapshot, next_status: &str, is_initial_replay: bool) {
-    if is_initial_replay {
+    if is_initial_replay
+        || super::should_suppress_interrupted_status(&snap.current_status, next_status)
+    {
         return;
     }
     set_snapshot_status(snap, next_status);

@@ -2398,6 +2398,29 @@ describe("AgentChatView", () => {
     }));
   });
 
+  it("queues typed chat text while the agent is executing", async () => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      if (command === "submit_prompt_to_agent") return Promise.resolve(undefined);
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    render(<AgentChatView sessionId="agent-1" status="Processing" />);
+
+    const input = await screen.findByLabelText("Message agent");
+    fireEvent.change(input, { target: { value: "Follow up while you work" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Queue message" }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("submit_prompt_to_agent", {
+      sessionId: "agent-1",
+      prompt: "Follow up while you work",
+    }));
+    expect(invokeMock).not.toHaveBeenCalledWith("send_input_to_agent", {
+      sessionId: "agent-1",
+      input: "\u0003",
+    });
+  });
+
   it("shows submit failures without clearing the draft", async () => {
     invokeMock.mockImplementation((command) => {
       if (command === "load_agent_chat_transcript") return Promise.resolve([]);

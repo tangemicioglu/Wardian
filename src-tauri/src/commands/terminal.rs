@@ -227,24 +227,44 @@ pub async fn send_input_to_agent(
 ) -> Result<(), String> {
     let is_interrupt = input.contains('\u{3}');
     let is_submit = input.contains('\r') || input.contains('\n');
+    let interrupt_status = if is_interrupt {
+        let agents = state.agents.lock().await;
+        agents
+            .get(&session_id)
+            .map(|agent| agent.current_status.clone())
+    } else {
+        None
+    };
+    if let Some(current_status) = interrupt_status.as_ref() {
+        manager::mark_agent_interrupted(current_status);
+    }
     let decision = {
         let _delivery_guard = state.lock_agent_delivery(&session_id).await;
         state
             .terminal_sessions
             .send_legacy_input(&session_id, input.as_bytes().to_vec())
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())
+    };
+    let decision = match decision {
+        Ok(decision) => decision,
+        Err(error) => {
+            if let Some(current_status) = interrupt_status.as_ref() {
+                manager::clear_agent_interrupted(current_status);
+            }
+            return Err(error);
+        }
     };
     if decision.status == wardian_core::models::TerminalLeaseDecisionStatus::Accepted {
         if is_interrupt {
             clear_raw_terminal_prompt_buffer(&session_id);
-            let agents = state.agents.lock().await;
-            if let Some(agent) = agents.get(&session_id) {
-                manager::set_agent_status(&app, &session_id, &agent.current_status, "Idle");
+            if let Some(current_status) = interrupt_status.as_ref() {
+                manager::set_agent_status(&app, &session_id, current_status, "Idle");
             }
         } else if is_submit {
             let agents = state.agents.lock().await;
             if let Some(agent) = agents.get(&session_id) {
+                manager::clear_agent_interrupted(&agent.current_status);
                 let provider = agent.config.lock().unwrap().provider.clone();
                 if (provider == "opencode" || provider == "gemini" || provider == "antigravity")
                     && manager::mark_agent_prompt_started(agent)
@@ -263,6 +283,9 @@ pub async fn send_input_to_agent(
         }
         Ok(())
     } else {
+        if let Some(current_status) = interrupt_status.as_ref() {
+            manager::clear_agent_interrupted(current_status);
+        }
         Err(format!(
             "Terminal input lease rejected: {:?}",
             decision.reason

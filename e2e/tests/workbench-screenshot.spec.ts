@@ -385,14 +385,14 @@ test("keeps the offline agent composer send button consistent across empty, popu
       current_status: "Processing...",
     });
   });
-  const interruptButton = page.getByRole("button", { name: "Interrupt agent" });
-  await expect(interruptButton).toBeEnabled();
-  await expect(interruptButton).toHaveCSS("background-color", "rgb(146, 106, 9)");
+  const queueButton = page.getByRole("button", { name: "Queue message" });
+  await expect(queueButton).toBeEnabled();
+  await expect(queueButton).toHaveCSS("background-color", "rgb(146, 106, 9)");
 
-  const interruptPath = process.env.WARDIAN_COMPOSER_INTERRUPT_SCREENSHOT
-    ?? testInfo.outputPath("composer-send-interrupt.png");
-  await card.screenshot({ path: interruptPath, animations: "disabled" });
-  await testInfo.attach("composer-send-interrupt", { path: interruptPath, contentType: "image/png" });
+  const queuePath = process.env.WARDIAN_COMPOSER_QUEUE_SCREENSHOT
+    ?? testInfo.outputPath("composer-send-queue.png");
+  await card.screenshot({ path: queuePath, animations: "disabled" });
+  await testInfo.attach("composer-send-queue", { path: queuePath, contentType: "image/png" });
 });
 
 test("serializes chat model selection while persistence and live application are active", async ({ page }, testInfo) => {

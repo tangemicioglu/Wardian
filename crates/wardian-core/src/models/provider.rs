@@ -18,6 +18,8 @@ pub enum AgentEvent {
     /// The agent's full turn is complete (response + all tool calls finished).
     /// This is the definitive signal the workflow engine waits for.
     TurnCompleted,
+    /// The provider stopped the current turn without completing it.
+    TurnInterrupted,
     /// The agent requires user intervention.
     ActionRequired { message: String },
     /// An unrecognized event type.
