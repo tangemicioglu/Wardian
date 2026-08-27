@@ -38,7 +38,8 @@ pub use crate::utils::shell::build_program_launch;
 
 use crate::state::{ActiveAgent, AppState};
 use portable_pty::CommandBuilder;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, Manager};
 use wardian_core::control::{ProviderInputReadiness, ProviderReadyEvidence};
 use wardian_core::conversations::write_json_atomic;
@@ -148,6 +149,8 @@ pub(crate) fn cleanup_stale_persisted_session_processes() {
 }
 
 pub fn terminate_active_agent_process(agent: &mut ActiveAgent) {
+    clear_agent_interrupted(&agent.current_status);
+
     // IMPORTANT: Kill the process tree FIRST while the parent is still alive.
     // If we kill the PTY child (cmd.exe) first, its children (claude.exe, node.exe,
     // etc.) become orphaned and taskkill /T can no longer enumerate them via parent PID.
@@ -194,6 +197,63 @@ pub fn terminate_active_agent_process(agent: &mut ActiveAgent) {
 
     let _ = agent.memory_capability.take();
     agent.process_id = None;
+}
+
+fn interrupted_status_arcs() -> &'static std::sync::Mutex<HashSet<usize>> {
+    static INTERRUPTED_STATUS_ARCS: OnceLock<std::sync::Mutex<HashSet<usize>>> = OnceLock::new();
+    INTERRUPTED_STATUS_ARCS.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
+fn status_arc_key(current_status: &std::sync::Arc<std::sync::Mutex<String>>) -> usize {
+    std::sync::Arc::as_ptr(current_status) as usize
+}
+
+/// Prevents late provider events from reviving an agent after a user interrupt.
+pub(crate) fn mark_agent_interrupted(
+    current_status: &std::sync::Arc<std::sync::Mutex<String>>,
+) {
+    let mut interrupted = interrupted_status_arcs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    interrupted.insert(status_arc_key(current_status));
+}
+
+pub(crate) fn clear_agent_interrupted(
+    current_status: &std::sync::Arc<std::sync::Mutex<String>>,
+) {
+    let mut interrupted = interrupted_status_arcs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    interrupted.remove(&status_arc_key(current_status));
+}
+
+pub(crate) async fn clear_agent_interrupted_for_session(state: &AppState, session_id: &str) {
+    let current_status = {
+        let agents = state.agents.lock().await;
+        agents
+            .get(session_id)
+            .map(|agent| agent.current_status.clone())
+    };
+    if let Some(current_status) = current_status {
+        clear_agent_interrupted(&current_status);
+    }
+}
+
+fn should_suppress_interrupted_status(
+    current_status: &std::sync::Arc<std::sync::Mutex<String>>,
+    next_status: &str,
+) -> bool {
+    if !matches!(
+        wardian_core::identity::normalize_status(next_status).as_str(),
+        "processing" | "action_required"
+    ) {
+        return false;
+    }
+
+    let interrupted = interrupted_status_arcs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    interrupted.contains(&status_arc_key(current_status))
 }
 
 pub(crate) fn set_agent_status(
@@ -574,6 +634,18 @@ pub(crate) fn apply_agent_event_with_policy(
     policy: ProviderStatusEventPolicy,
 ) {
     let provider_turn_started = policy.confirms_turn_started(&event);
+    if provider_status_from_event(
+        &current_status
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_default(),
+        &event,
+        policy,
+    )
+    .is_some_and(|next_status| should_suppress_interrupted_status(current_status, next_status))
+    {
+        return;
+    }
     match &event {
         AgentEvent::UserQuery => {
             if let Ok(mut count) = query_count.lock() {
@@ -646,7 +718,9 @@ pub(crate) fn provider_status_from_event(
             }
         }
         AgentEvent::ModelResponse if policy.requires_turn_completed() => None,
-        AgentEvent::ModelResponse | AgentEvent::TurnCompleted => Some("Idle"),
+        AgentEvent::ModelResponse | AgentEvent::TurnCompleted | AgentEvent::TurnInterrupted => {
+            Some("Idle")
+        }
         AgentEvent::ActionRequired { .. } => Some("Action Needed"),
         AgentEvent::Init { .. } | AgentEvent::Unknown => None,
     }
@@ -664,6 +738,9 @@ pub(crate) fn apply_agent_status_event_with_policy(
         .map(|status| status.clone())
         .unwrap_or_default();
     if let Some(next_status) = provider_status_from_event(&current, &event, policy) {
+        if should_suppress_interrupted_status(current_status, next_status) {
+            return;
+        }
         set_agent_status(app, session_id, current_status, next_status);
         if should_emit_agent_turn_completed(&current, &event) {
             emit_agent_turn_completed(app, session_id);
@@ -1905,6 +1982,28 @@ mod tests {
         assert!(!should_emit_agent_turn_completed(
             "Idle",
             &AgentEvent::TurnCompleted,
+        ));
+    }
+
+    #[test]
+    fn interrupted_status_suppression_blocks_late_busy_events_until_new_input() {
+        let current_status = std::sync::Arc::new(std::sync::Mutex::new("Idle".to_string()));
+
+        mark_agent_interrupted(&current_status);
+        assert!(should_suppress_interrupted_status(
+            &current_status,
+            "Processing..."
+        ));
+        assert!(should_suppress_interrupted_status(
+            &current_status,
+            "Action Needed"
+        ));
+        assert!(!should_suppress_interrupted_status(&current_status, "Idle"));
+
+        clear_agent_interrupted(&current_status);
+        assert!(!should_suppress_interrupted_status(
+            &current_status,
+            "Processing..."
         ));
     }
 

@@ -1879,7 +1879,7 @@ pub async fn spawn_agent(
                                                     pty_status_event_policy_for_provider("claude"),
                                                 );
                                             }
-                                            AgentEvent::TurnCompleted => {
+                                            AgentEvent::TurnCompleted | AgentEvent::TurnInterrupted => {
                                                 *waiting = false;
                                                 apply_agent_status_event_with_policy(
                                                     &watcher_app,

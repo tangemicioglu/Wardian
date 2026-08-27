@@ -518,6 +518,8 @@ impl AgentProvider for CodexProvider {
             }
             "turn.started" => Some(AgentEvent::UserQuery),
             "turn.completed" => Some(AgentEvent::TurnCompleted),
+            "turn.failed" | "turn.aborted" | "turn.cancelled" | "turn.canceled"
+            | "turn.interrupted" => Some(AgentEvent::TurnInterrupted),
             "item.completed" => {
                 let item_type = parsed
                     .get("item")
@@ -569,7 +571,11 @@ impl AgentProvider for CodexProvider {
                     }
                     "user_message" => Some(AgentEvent::UserQuery),
                     "agent_message" => Some(AgentEvent::Unknown),
-                    "task_complete" => Some(AgentEvent::TurnCompleted),
+                    "task_complete" | "turn_complete" | "turn_completed" => {
+                        Some(AgentEvent::TurnCompleted)
+                    }
+                    "turn_failed" | "turn_aborted" | "turn_cancelled" | "turn_canceled"
+                    | "turn_interrupted" => Some(AgentEvent::TurnInterrupted),
                     "exec_approval_request" => {
                         let message = parsed
                             .get("payload")
@@ -1113,6 +1119,13 @@ SET dp0=%~dp0
         let p = make_provider();
         let line = r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"abc"}}"#;
         assert_eq!(p.parse_output(line).unwrap(), AgentEvent::TurnCompleted);
+    }
+
+    #[test]
+    fn parse_output_interrupted_turn_event() {
+        let p = make_provider();
+        let line = r#"{"type":"turn.aborted"}"#;
+        assert_eq!(p.parse_output(line).unwrap(), AgentEvent::TurnInterrupted);
     }
 
     #[test]

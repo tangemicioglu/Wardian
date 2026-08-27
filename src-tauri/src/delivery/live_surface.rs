@@ -351,6 +351,7 @@ pub async fn submit_live_surface_prompt(
                 }
             };
         }
+        crate::manager::clear_agent_interrupted_for_session(state, &request.session_id).await;
         let wait_session_id = request.session_id.clone();
         let payload_session_id = request.session_id.clone();
         let payload_interaction_id = interaction_id.clone();

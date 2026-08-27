@@ -486,6 +486,7 @@ function ChatComposer({
   const [slashIndex, setSlashIndex] = useState(0);
   const placeholder = disabledReason ?? (hasActionRequired ? "Respond to action required..." : "Message agent...");
   const canSubmit = (draft.trim().length > 0 || attachments.length > 0) && !disabledReason;
+  const isInterruptAction = isExecuting && !canSubmit;
   const slashMatches = useMemo(
     () => matchingSlashCommands(draft, agent?.provider),
     [agent?.provider, draft],
@@ -788,16 +789,16 @@ function ChatComposer({
             sessionId={sessionId}
           />
           <button
-            aria-label={isInterrupting ? "Interrupting agent" : isExecuting ? "Interrupt agent" : isSubmitting ? "Sending message" : "Send message"}
+            aria-label={isInterrupting ? "Interrupting agent" : isSubmitting ? "Sending message" : isInterruptAction ? "Interrupt agent" : isExecuting ? "Queue message" : "Send message"}
             className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)] text-[var(--color-wardian-accent-contrast)] transition-colors hover:opacity-85 disabled:cursor-not-allowed disabled:border-transparent disabled:bg-transparent disabled:text-[var(--color-wardian-text-muted-neutral)] disabled:opacity-50"
             disabled={isInterrupting || isSubmitting || (!isExecuting && !canSubmit)}
-            onClick={isExecuting ? onInterrupt : undefined}
-            title={isExecuting ? "Interrupt agent" : isSubmitting ? "Sending message" : "Send message"}
-            type={isExecuting ? "button" : "submit"}
+            onClick={isInterruptAction ? onInterrupt : undefined}
+            title={isInterruptAction ? "Interrupt agent" : isSubmitting ? "Sending message" : isExecuting ? "Queue message" : "Send message"}
+            type={isInterruptAction ? "button" : "submit"}
           >
             {isInterrupting || isSubmitting ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            ) : isExecuting ? (
+            ) : isInterruptAction ? (
               <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
             ) : (
               <SendHorizontal className="h-4 w-4" aria-hidden="true" />

@@ -79,22 +79,35 @@ pub(crate) fn codex_provider_session_is_excluded(candidate: &str, excluded: &[St
 
 pub(crate) fn codex_status_from_log(lines: &[serde_json::Value]) -> Option<String> {
     for line in lines.iter().rev() {
-        let payload = line.get("payload")?;
-        let payload_type = payload.get("type").and_then(|v| v.as_str())?;
-        match payload_type {
-            "exec_approval_request" => return Some("Action Needed".to_string()),
-            "task_started"
-            | "agent_message"
-            | "exec_command_begin"
-            | "exec_command_start"
-            | "custom_tool_call"
-            | "custom_tool_call_output"
-            | "function_call"
-            | "function_call_output"
-            | "reasoning" => {
+        let event_type = line.get("type").and_then(|value| value.as_str());
+        let payload_type = line
+            .get("payload")
+            .and_then(|payload| payload.get("type"))
+            .and_then(|value| value.as_str());
+        match payload_type.or(event_type) {
+            Some("turn.completed")
+            | Some("turn.failed")
+            | Some("turn.aborted")
+            | Some("turn.cancelled")
+            | Some("turn.canceled")
+            | Some("turn.interrupted") => return Some("Idle".to_string()),
+            Some("exec_approval_request") => return Some("Action Needed".to_string()),
+            Some("task_started")
+            | Some("turn.started")
+            | Some("user_message")
+            | Some("agent_message")
+            | Some("exec_command_begin")
+            | Some("exec_command_start")
+            | Some("custom_tool_call")
+            | Some("custom_tool_call_output")
+            | Some("function_call")
+            | Some("function_call_output")
+            | Some("reasoning") => {
                 return Some("Processing...".to_string());
             }
-            "task_complete" => return Some("Idle".to_string()),
+            Some("task_complete") | Some("turn_complete") | Some("turn_completed") => {
+                return Some("Idle".to_string())
+            }
             _ => {}
         }
     }
@@ -462,6 +475,19 @@ mod tests {
             codex_status_from_log(&lines).as_deref(),
             Some("Processing...")
         );
+    }
+
+    #[test]
+    fn codex_status_from_log_treats_interrupted_turn_as_idle() {
+        let lines = vec![
+            serde_json::json!({
+                "type": "event_msg",
+                "payload": { "type": "task_started" }
+            }),
+            serde_json::json!({ "type": "turn.aborted" }),
+        ];
+
+        assert_eq!(codex_status_from_log(&lines).as_deref(), Some("Idle"));
     }
 
     #[test]
