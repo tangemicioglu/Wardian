@@ -505,11 +505,27 @@ pub(crate) fn apply_opencode_log_metrics(
     if init_timestamp.is_none() && metrics.init_timestamp.is_some() {
         *init_timestamp = metrics.init_timestamp;
     }
-    if metrics.last_query_timestamp.is_some() {
-        *last_query_timestamp = metrics.last_query_timestamp;
-    }
+    update_latest_query_timestamp(last_query_timestamp, metrics.last_query_timestamp);
     if let Some(status) = metrics.status {
         *current_status = status;
+    }
+}
+
+fn update_latest_query_timestamp(latest: &mut Option<String>, candidate: Option<String>) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    let should_replace = latest.as_deref().is_none_or(|current| {
+        match (
+            chrono::DateTime::parse_from_rfc3339(current),
+            chrono::DateTime::parse_from_rfc3339(&candidate),
+        ) {
+            (Ok(current), Ok(candidate)) => candidate > current,
+            _ => candidate.as_str() > current,
+        }
+    });
+    if should_replace {
+        *latest = Some(candidate);
     }
 }
 
@@ -885,6 +901,30 @@ mod tests {
 
         assert_eq!(init_timestamp, Some("2026-04-26T04:20:00.000Z".to_string()));
         assert_eq!(current_status, "Idle");
+    }
+
+    #[test]
+    fn opencode_log_metrics_preserve_a_newer_existing_query_timestamp() {
+        let current =
+            "INFO  2026-04-26T04:28:42 +1ms service=session.prompt session.id=ses_target step=0 loop\n";
+        let mut query_count = 0;
+        let mut init_timestamp = None;
+        let mut last_query_timestamp = Some("2026-04-26T12:30:00.000Z".to_string());
+        let mut current_status = "Processing...".to_string();
+
+        apply_opencode_log_metrics(
+            current,
+            "ses_target",
+            &mut query_count,
+            &mut init_timestamp,
+            &mut last_query_timestamp,
+            &mut current_status,
+        );
+
+        assert_eq!(
+            last_query_timestamp.as_deref(),
+            Some("2026-04-26T12:30:00.000Z")
+        );
     }
 
     #[test]

@@ -14,6 +14,22 @@ pub struct AntigravityTranscriptSummary {
 
 pub struct AntigravityProvider;
 
+fn database_contains_user_message(path: &Path) -> bool {
+    let Ok(connection) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return false;
+    };
+    connection
+        .query_row(
+            "SELECT 1 FROM steps WHERE step_type = 14 LIMIT 1",
+            [],
+            |_row| Ok(()),
+        )
+        .is_ok()
+}
+
 /// A user or model message stored in Antigravity's current SQLite
 /// conversation format.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,13 +130,12 @@ impl AntigravityProvider {
 
     /// Returns the durable log for one verified provider conversation. Version
     /// 1.1.7 stores interactive turns in SQLite and leaves the legacy JSONL
-    /// transcript empty, so prefer a database that actually contains messages.
+    /// transcript empty, so prefer a database that contains a user-message
+    /// step. This probe intentionally avoids decoding every payload; chat
+    /// hydration performs the full message decode after selecting the source.
     pub fn conversation_log_path(home: &Path, conversation_id: &str) -> Option<PathBuf> {
         let database = Self::conversation_database_path(home, conversation_id);
-        if Self::conversation_messages_from_database(&database)
-            .map(|messages| !messages.is_empty())
-            .unwrap_or(false)
-        {
+        if database_contains_user_message(&database) {
             return Some(database);
         }
 
