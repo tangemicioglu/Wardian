@@ -577,6 +577,22 @@ test("renders copied feedback in an agent chat", async ({ page }, testInfo) => {
   await page.goto("/");
   const card = page.getByTestId("agent-card");
   const messageRow = card.locator('[aria-label="assistant message"]');
+  const transcript = card.getByTestId("agent-chat-transcript");
+  const transcriptBox = await transcript.boundingBox();
+  const messageRowBox = await messageRow.boundingBox();
+  const transcriptWidthMetrics = await transcript.evaluate((element) => {
+    const probe = document.createElement("span");
+    probe.style.cssText = "position:absolute; width:1ch; height:0; overflow:hidden;";
+    element.append(probe);
+    const chWidth = probe.getBoundingClientRect().width;
+    probe.remove();
+    return { chWidth, maxWidth: Number.parseFloat(getComputedStyle(element).maxWidth) };
+  });
+  expect(transcriptWidthMetrics.maxWidth).toBeCloseTo(transcriptWidthMetrics.chWidth * 76, 0);
+  expect(transcriptBox).not.toBeNull();
+  expect(messageRowBox).not.toBeNull();
+  expect(messageRowBox!.width).toBeCloseTo(transcriptBox!.width, 0);
+  expect(messageRowBox!.x).toBeCloseTo(transcriptBox!.x, 0);
   const copyButton = card.getByRole("button", { name: "Copy message" });
   await messageRow.hover();
   await expect(copyButton).toBeVisible();

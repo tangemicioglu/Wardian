@@ -603,6 +603,15 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await page.setViewportSize({ width: 1020, height: 844 });
   const transcript = page.locator(".chat-transcript-list");
   const transcriptBox = await transcript.boundingBox();
+  const transcriptWidthMetrics = await transcript.evaluate((element) => {
+    const probe = document.createElement("span");
+    probe.style.cssText = "position:absolute; width:1ch; height:0; overflow:hidden;";
+    element.append(probe);
+    const chWidth = probe.getBoundingClientRect().width;
+    probe.remove();
+    return { chWidth, maxWidth: Number.parseFloat(getComputedStyle(element).maxWidth) };
+  });
+  expect(transcriptWidthMetrics.maxWidth).toBeCloseTo(transcriptWidthMetrics.chWidth * 76, 0);
   const rowBoxes = await transcript.locator(":scope > .chat-row").evaluateAll((elements) =>
     elements.map((element) => {
       const { width, x } = element.getBoundingClientRect();
@@ -617,6 +626,11 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   }
   await captureFeatureScreenshot("chat-consistent-width.png", page.locator('[data-testid="remote-agent-detail"]'));
   await page.setViewportSize({ width: 390, height: 844 });
+  const narrowTranscript = await transcript.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  expect(narrowTranscript.scrollWidth).toBeLessThanOrEqual(narrowTranscript.clientWidth);
   await expect
     .poll(() => page.getByLabel("user message").locator(".chat-row-actions--inline").evaluate((element) => getComputedStyle(element).top))
     .toBe("-4px");
