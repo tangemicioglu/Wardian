@@ -70,6 +70,20 @@ pub enum ConversationSpeakerType {
     Unknown,
 }
 
+/// The normalized provenance of a message-shaped input record.
+///
+/// This is deliberately independent from the provider's display role. Some
+/// providers serialize injected context as a `user` message, even though it
+/// must not start a request-indexed turn.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationInputOrigin {
+    HumanInput,
+    AgentInput,
+    ContextInjection,
+    ProviderInternal,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConversationFormatVersions {
     pub manifest: u8,
@@ -180,6 +194,14 @@ pub struct ConversationNarrativeRecord {
     pub kind: ConversationRecordKind,
     pub role: Option<String>,
     pub speaker_type: Option<ConversationSpeakerType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_origin: Option<ConversationInputOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_purpose: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_root_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub causal_ref: Option<String>,
     pub text: Option<String>,
     pub tool: Option<String>,
     pub status: Option<String>,
@@ -598,6 +620,10 @@ mod tests {
             kind: ConversationRecordKind::ToolResult,
             role: Some("tool".to_string()),
             speaker_type: Some(ConversationSpeakerType::Tool),
+            input_origin: None,
+            input_purpose: None,
+            request_root_id: None,
+            causal_ref: None,
             text: None,
             tool: Some("shell_command".to_string()),
             status: Some("success".to_string()),
@@ -970,6 +996,10 @@ mod tests {
             kind: ConversationRecordKind::Message,
             role: Some("assistant".to_string()),
             speaker_type: Some(ConversationSpeakerType::Assistant),
+            input_origin: None,
+            input_purpose: None,
+            request_root_id: None,
+            causal_ref: None,
             text: Some(text.to_string()),
             tool: None,
             status: None,

@@ -7,6 +7,7 @@ pub struct ClaudeProvider;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClaudeUserEventKind {
     RealQuery,
+    ContextInjection,
     ToolResult,
     LocalCommand,
     Ignored,
@@ -19,6 +20,18 @@ pub(crate) fn classify_claude_user_event(parsed: &serde_json::Value) -> ClaudeUs
     let Some(content) = message.get("content") else {
         return ClaudeUserEventKind::Ignored;
     };
+
+    if content.as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item.get("type").and_then(|value| value.as_str()) == Some("tool_result"))
+    }) {
+        return ClaudeUserEventKind::ToolResult;
+    }
+
+    if has_claude_context_evidence(parsed) {
+        return ClaudeUserEventKind::ContextInjection;
+    }
 
     if let Some(text) = content.as_str() {
         let trimmed = text.trim();
@@ -38,12 +51,6 @@ pub(crate) fn classify_claude_user_event(parsed: &serde_json::Value) -> ClaudeUs
     if items.is_empty() {
         return ClaudeUserEventKind::Ignored;
     }
-    if items
-        .iter()
-        .any(|item| item.get("type").and_then(|v| v.as_str()) == Some("tool_result"))
-    {
-        return ClaudeUserEventKind::ToolResult;
-    }
     if items.iter().any(|item| {
         item.get("type").and_then(|v| v.as_str()) == Some("text")
             && item
@@ -55,6 +62,72 @@ pub(crate) fn classify_claude_user_event(parsed: &serde_json::Value) -> ClaudeUs
     }
 
     ClaudeUserEventKind::Ignored
+}
+
+/// Returns the provider-native causal reference for a Claude context record.
+///
+/// Claude uses parent tool-use and transcript UUID fields for records that are
+/// injected into the provider conversation. These references are retained as
+/// provenance; the injected text itself is never inspected to classify it.
+pub(crate) fn claude_context_causal_ref(parsed: &serde_json::Value) -> Option<String> {
+    let message = parsed.get("message");
+    first_nonempty_string(parsed, &["parent_tool_use_id", "parentToolUseId"])
+        .or_else(|| {
+            message.and_then(|value| {
+                first_nonempty_string(value, &["parent_tool_use_id", "parentToolUseId"])
+            })
+        })
+        .map(|value| format!("provider:tool_use:{value}"))
+        .or_else(|| {
+            first_nonempty_string(parsed, &["parent_uuid", "parentUuid"])
+                .or_else(|| {
+                    message.and_then(|value| {
+                        first_nonempty_string(value, &["parent_uuid", "parentUuid"])
+                    })
+                })
+                .map(|value| format!("provider:uuid:{value}"))
+        })
+}
+
+pub(crate) fn claude_context_purpose(parsed: &serde_json::Value) -> &'static str {
+    let skill_name = ["tool_name", "toolName", "name"]
+        .iter()
+        .filter_map(|key| parsed.get(*key).and_then(|value| value.as_str()))
+        .chain(parsed.get("message").into_iter().flat_map(|message| {
+            ["tool_name", "toolName", "name"]
+                .iter()
+                .filter_map(|key| message.get(*key).and_then(|value| value.as_str()))
+        }))
+        .any(|value| value.eq_ignore_ascii_case("skill"));
+    if skill_name {
+        "skill"
+    } else {
+        "context"
+    }
+}
+
+fn has_claude_context_evidence(parsed: &serde_json::Value) -> bool {
+    let message = parsed.get("message");
+    [parsed, message.unwrap_or(&serde_json::Value::Null)]
+        .into_iter()
+        .any(|value| {
+            ["is_meta", "isMeta", "is_context", "isContext"]
+                .iter()
+                .any(|key| value.get(*key).and_then(|flag| flag.as_bool()) == Some(true))
+                || first_nonempty_string(value, &["parent_tool_use_id", "parentToolUseId"])
+                    .is_some()
+                || first_nonempty_string(value, &["parent_uuid", "parentUuid"]).is_some()
+        })
+}
+
+fn first_nonempty_string<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(|candidate| candidate.as_str())
+            .map(str::trim)
+            .filter(|candidate| !candidate.is_empty())
+    })
 }
 
 fn is_claude_local_command_content(content: &str) -> bool {
@@ -372,7 +445,9 @@ impl AgentProvider for ClaudeProvider {
             // Only count real user prompts as queries. Tool results are part of the same turn.
             "user" => match classify_claude_user_event(&parsed) {
                 ClaudeUserEventKind::RealQuery => Some(AgentEvent::UserQuery),
-                ClaudeUserEventKind::ToolResult => Some(AgentEvent::Generating),
+                ClaudeUserEventKind::ContextInjection | ClaudeUserEventKind::ToolResult => {
+                    Some(AgentEvent::Generating)
+                }
                 ClaudeUserEventKind::LocalCommand | ClaudeUserEventKind::Ignored => {
                     Some(AgentEvent::Unknown)
                 }

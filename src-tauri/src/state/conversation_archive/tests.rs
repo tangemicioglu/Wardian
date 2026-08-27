@@ -3,11 +3,13 @@ use super::{
     narrative_from_chat_event, narrative_from_delivered_input, new_conversation_id,
     ActiveConversationHandle, ConversationArchiveContext, ConversationArchiveState,
 };
+use crate::providers::chat_transcript::normalize_chat_lines;
 use wardian_core::conversations::{
     read_jsonl_records, AgentConversationLoggingSetting, ConversationBoundaryReason,
-    ConversationLoggingSetting, ConversationManifest, ConversationNarrativeRecord,
-    ConversationRecordKind, ConversationSourceRecord, ConversationSpeakerType, ConversationStatus,
-    ConversationTurnRecord, ConversationTurnStatus, CONVERSATION_SCHEMA,
+    ConversationInputOrigin, ConversationLoggingSetting, ConversationManifest,
+    ConversationNarrativeRecord, ConversationRecordKind, ConversationSourceRecord,
+    ConversationSpeakerType, ConversationStatus, ConversationTurnRecord, ConversationTurnStatus,
+    CONVERSATION_SCHEMA,
 };
 use wardian_core::models::chat::{
     AgentChatEvent, AgentChatEventKind, AgentChatRole, AgentChatStatus,
@@ -35,6 +37,11 @@ fn user_chat_message_converts_to_primary_narrative_record() {
         record.text.as_deref(),
         Some("Please inspect the workspace.")
     );
+    assert_eq!(
+        record.input_origin,
+        Some(ConversationInputOrigin::HumanInput)
+    );
+    assert_eq!(record.input_purpose.as_deref(), Some("request"));
     assert_eq!(record.event_refs, vec!["event-1".to_string()]);
 }
 
@@ -78,6 +85,16 @@ fn delivered_input_becomes_user_narrative_record() {
     assert_eq!(record.role.as_deref(), Some("user"));
     assert_eq!(record.speaker_type, Some(ConversationSpeakerType::Agent));
     assert_eq!(record.text.as_deref(), Some("Please review the patch."));
+    assert_eq!(
+        record.input_origin,
+        Some(ConversationInputOrigin::AgentInput)
+    );
+    assert_eq!(record.input_purpose.as_deref(), Some("request"));
+    assert_eq!(record.request_root_id.as_deref(), Some("wardian:input:7"));
+    assert_eq!(
+        record.causal_ref.as_deref(),
+        Some("wardian:agent:source-agent")
+    );
 }
 
 #[test]
@@ -423,6 +440,159 @@ fn request_kind_marks_goal_continuation_and_agent_context_rows() {
     assert_eq!(turns[2].request.kind, "agent_context");
     assert_eq!(turns[2].status, ConversationTurnStatus::ContextOnly);
     assert_eq!(turns[2].status_source, "mechanical_context_only");
+}
+
+#[test]
+fn provider_context_injections_stay_with_the_root_request_turn() {
+    let mut human = chat_event(
+        "claude-human",
+        AgentChatEventKind::Message,
+        Some(AgentChatRole::User),
+        Some("Fix the archive."),
+    );
+    human.provider = "claude".to_string();
+    human.turn_id = Some("request-1".to_string());
+    human.metadata = serde_json::json!({
+        "input_origin": "human_input",
+        "input_purpose": "request",
+        "request_root_id": "request-1"
+    });
+
+    let mut context_one = chat_event(
+        "claude-context-1",
+        AgentChatEventKind::Message,
+        Some(AgentChatRole::User),
+        Some("Skill body one."),
+    );
+    context_one.provider = "claude".to_string();
+    context_one.turn_id = Some("context-1".to_string());
+    context_one.metadata = serde_json::json!({
+        "input_origin": "context_injection",
+        "input_purpose": "skill",
+        "request_root_id": "request-1",
+        "causal_ref": "provider:tool_use:skill-call-1"
+    });
+
+    let mut context_two = context_one.clone();
+    context_two.id = "claude-context-2".to_string();
+    context_two.turn_id = Some("context-2".to_string());
+    context_two.text = Some("Skill body two.".to_string());
+    context_two.metadata["causal_ref"] = serde_json::json!("provider:tool_use:skill-call-2");
+
+    let mut assistant = chat_event(
+        "claude-assistant",
+        AgentChatEventKind::Message,
+        Some(AgentChatRole::Assistant),
+        Some("Archive fixed."),
+    );
+    assistant.provider = "claude".to_string();
+    assistant.turn_id = Some("response-1".to_string());
+
+    let events = vec![human, context_one, context_two, assistant];
+    let records = events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| narrative_from_chat_event(event, index as u64 + 1).unwrap())
+        .collect::<Vec<_>>();
+    let turns = derive_turn_records("conv-claude-context", &records, &events, &[], false);
+
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].request.kind, "user_request");
+    assert_eq!(turns[0].status, ConversationTurnStatus::Responded);
+    assert_eq!(turns[0].seq_start, 1);
+    assert_eq!(turns[0].seq_end, 4);
+    assert_eq!(
+        records[1].input_origin,
+        Some(ConversationInputOrigin::ContextInjection)
+    );
+    assert_eq!(records[1].request_root_id.as_deref(), Some("request-1"));
+    assert_eq!(
+        records[1].causal_ref.as_deref(),
+        Some("provider:tool_use:skill-call-1")
+    );
+}
+
+#[test]
+fn codex_context_before_and_after_request_does_not_create_fake_turns() {
+    let lines = [
+        r#"{"type":"response_item","payload":{"type":"message","id":"context-1","role":"user","content":[{"type":"input_text","text":"Host context."}],"internal_chat_message_metadata_passthrough":{"turn_id":"codex-turn-1"}}}"#,
+        r#"{"type":"event_msg","payload":{"type":"user_message","message":"Inspect the archive."}}"#,
+        r#"{"type":"response_item","payload":{"type":"message","id":"context-2","role":"user","content":[{"type":"input_text","text":"Skill context."}],"internal_chat_message_metadata_passthrough":{"turn_id":"codex-turn-1"}}}"#,
+        r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Archive inspected."}]}}"#,
+    ];
+    let events = normalize_chat_lines("agent-1", "codex", lines);
+    let records = events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| narrative_from_chat_event(event, index as u64 + 1))
+        .collect::<Vec<_>>();
+
+    let turns = derive_turn_records("conv-codex-context", &records, &events, &[], false);
+
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].request.kind, "user_request");
+    assert_eq!(turns[0].status, ConversationTurnStatus::Responded);
+    assert_eq!(
+        records[0].input_origin,
+        Some(ConversationInputOrigin::ContextInjection)
+    );
+    assert_eq!(records[0].request_root_id.as_deref(), Some("agent-1:2"));
+    assert_eq!(
+        records[2].input_origin,
+        Some(ConversationInputOrigin::ContextInjection)
+    );
+    assert_eq!(records[2].request_root_id.as_deref(), Some("agent-1:2"));
+}
+
+#[test]
+fn context_without_a_root_request_is_context_only_not_pending_response() {
+    let mut context = chat_event(
+        "provider-context",
+        AgentChatEventKind::Message,
+        Some(AgentChatRole::User),
+        Some("Provider supplied context."),
+    );
+    context.provider = "claude".to_string();
+    context.metadata = serde_json::json!({
+        "input_origin": "context_injection",
+        "input_purpose": "context",
+        "causal_ref": "provider:uuid:parent-1"
+    });
+    let record = narrative_from_chat_event(&context, 1).expect("context record");
+
+    let turns = derive_turn_records("conv-context-only", &[record], &[context], &[], true);
+
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].request.kind, "context_injection");
+    assert_eq!(turns[0].status, ConversationTurnStatus::ContextOnly);
+    assert_eq!(turns[0].status_source, "mechanical_context_injection_only");
+}
+
+#[test]
+fn legacy_records_rederive_context_origin_from_archived_provider_events() {
+    let mut context = chat_event(
+        "legacy-context",
+        AgentChatEventKind::Message,
+        Some(AgentChatRole::User),
+        Some("Injected context."),
+    );
+    context.provider = "claude".to_string();
+    context.metadata = serde_json::json!({
+        "input_origin": "context_injection",
+        "input_purpose": "skill",
+        "request_root_id": "request-legacy",
+        "causal_ref": "provider:tool_use:skill-legacy"
+    });
+    let mut record = narrative_from_chat_event(&context, 2).expect("context record");
+    record.input_origin = None;
+    record.input_purpose = None;
+    record.request_root_id = None;
+    record.causal_ref = None;
+
+    let turns = derive_turn_records("conv-legacy-context", &[record], &[context], &[], true);
+
+    assert_eq!(turns[0].request.kind, "context_injection");
+    assert_eq!(turns[0].status, ConversationTurnStatus::ContextOnly);
 }
 
 #[test]
@@ -2680,6 +2850,10 @@ fn narrative_record_with_turn(seq: u64, turn_id: &str, text: &str) -> Conversati
         kind: ConversationRecordKind::Message,
         role: Some("assistant".to_string()),
         speaker_type: Some(ConversationSpeakerType::Assistant),
+        input_origin: None,
+        input_purpose: None,
+        request_root_id: None,
+        causal_ref: None,
         text: Some(text.to_string()),
         tool: None,
         status: None,

@@ -63,6 +63,11 @@ Each row includes:
   contains compact provider/session/source-kind/source-id pointers and omits
   source paths. Full provider-native refs remain in `manifest.json`, and full
   source path details remain in `sources.jsonl`.
+- Input provenance remains on the normalized `conversation.jsonl` records as
+  optional `input_origin`, `input_purpose`, `request_root_id`, and `causal_ref`
+  fields. Provider-injected user-role context is therefore attached to its
+  root request instead of becoming a new request row; see
+  `2026-08-27-conversation-input-provenance.md`.
 
 Allowed turn statuses are `in_progress`, `pending_response`, `responded`,
 `interrupted`, `lifecycle`, `context_only`, `superseded`, and `unknown`.
@@ -71,10 +76,11 @@ signal exists. `unknown` is reserved for malformed or currently unclassified
 rows rather than normal no-response rows.
 
 Allowed request kinds include `user_request`, `goal_start`,
-`goal_continuation`, `agent_context`, `tool_only`, `lifecycle`,
-`unknown_user_message`, and `unknown`. AGENTS.md injections, tool-only lifecycle
-starts, and Codex goal continuation context are typed so summary readers can
-skip them without parsing raw prompt text. For Codex goal continuations,
+`goal_continuation`, `agent_context`, `context_injection`,
+`provider_internal`, `tool_only`, `lifecycle`, `unknown_user_message`, and
+`unknown`. AGENTS.md injections, provider context injections, tool-only
+lifecycle starts, and Codex goal continuation context are typed so summary
+readers can skip them without parsing raw prompt text. For Codex goal continuations,
 `request.objective_text` prefers the compact value inside
 `<objective>...</objective>` when present.
 

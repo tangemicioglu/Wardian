@@ -822,6 +822,7 @@ fn load_opencode_db_chat_events_from_db(
         .map_err(|err| err.to_string())?;
 
     let mut events = Vec::new();
+    let mut request_root_id = None;
     for row in rows {
         let row = row.map_err(|err| err.to_string())?;
         let Some(event) = opencode_db_part_to_chat_event(
@@ -829,10 +830,21 @@ fn load_opencode_db_chat_events_from_db(
             opencode_session_id,
             events.len() as u64 + 1,
             row,
+            request_root_id.as_deref(),
         )?
         else {
             continue;
         };
+        if event.role == Some(AgentChatRole::User)
+            && event.metadata["input_origin"] != "context_injection"
+        {
+            request_root_id = event
+                .metadata
+                .get("request_root_id")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string)
+                .or_else(|| event.turn_id.clone());
+        }
         events.push(event);
     }
 
@@ -853,6 +865,7 @@ fn opencode_db_part_to_chat_event(
     opencode_session_id: &str,
     sequence: u64,
     row: OpencodeDbPart,
+    request_root_id: Option<&str>,
 ) -> Result<Option<AgentChatEvent>, String> {
     let message: serde_json::Value =
         serde_json::from_str(&row.message_data).map_err(|err| err.to_string())?;
@@ -876,6 +889,44 @@ fn opencode_db_part_to_chat_event(
     else {
         return Ok(None);
     };
+
+    let editor_context = part
+        .get("metadata")
+        .and_then(|value| value.get("kind"))
+        .and_then(|value| value.as_str())
+        == Some("editor_context");
+    let mut metadata = serde_json::json!({
+        "provider_log": true,
+        "opencode_session_id": opencode_session_id,
+        "part_id": row.part_id,
+        "raw_type": "text",
+        "sequence": sequence,
+        "part_time_created": row.part_time_created,
+        "message_time_created": row.message_time_created,
+    });
+    if editor_context {
+        metadata["input_origin"] = serde_json::json!("context_injection");
+        metadata["input_purpose"] = serde_json::json!("editor_context");
+        metadata["context_observation"] = serde_json::json!("provider_native");
+        metadata["causal_ref"] = serde_json::json!(format!("provider:message:{}", &row.message_id));
+        if let Some(request_root_id) = request_root_id {
+            metadata["request_root_id"] = serde_json::json!(request_root_id);
+        }
+    } else {
+        match &role {
+            AgentChatRole::User => {
+                metadata["input_origin"] = serde_json::json!("human_input");
+                metadata["input_purpose"] = serde_json::json!("request");
+                metadata["context_observation"] = serde_json::json!("provider_native");
+                metadata["request_root_id"] = serde_json::json!(&row.message_id);
+            }
+            AgentChatRole::System => {
+                metadata["input_origin"] = serde_json::json!("provider_internal");
+                metadata["input_purpose"] = serde_json::json!("internal");
+            }
+            AgentChatRole::Assistant | AgentChatRole::Tool => {}
+        }
+    }
 
     let Some(text) = visible_chat_text(&role, text) else {
         return Ok(None);
@@ -902,15 +953,7 @@ fn opencode_db_part_to_chat_event(
         language: None,
         created_at: None,
         sequence: Some(sequence),
-        metadata: serde_json::json!({
-            "provider_log": true,
-            "opencode_session_id": opencode_session_id,
-            "part_id": row.part_id,
-            "raw_type": "text",
-            "sequence": sequence,
-            "part_time_created": row.part_time_created,
-            "message_time_created": row.message_time_created,
-        }),
+        metadata,
     }))
 }
 
@@ -2093,9 +2136,11 @@ Do you want to proceed?
             );
             INSERT INTO message VALUES ('msg-user', 'ses_test', 1, 1, '{"role":"user"}');
             INSERT INTO part VALUES ('part-user', 'msg-user', 'ses_test', 2, 2, '{"type":"text","text":"List 50 numbers."}');
+            INSERT INTO message VALUES ('msg-context', 'ses_test', 3, 3, '{"role":"user"}');
+            INSERT INTO part VALUES ('part-context', 'msg-context', 'ses_test', 4, 4, '{"type":"text","text":"<system-reminder>Editor context</system-reminder>","synthetic":true,"metadata":{"kind":"editor_context","source":"websocket"}}');
             INSERT INTO message VALUES ('msg-assistant', 'ses_test', 3, 3, '{"role":"assistant"}');
-            INSERT INTO part VALUES ('part-finish', 'msg-assistant', 'ses_test', 4, 4, '{"type":"finish","reason":"stop"}');
-            INSERT INTO part VALUES ('part-assistant', 'msg-assistant', 'ses_test', 5, 5, '{"type":"text","text":"1, 2, 3"}');
+            INSERT INTO part VALUES ('part-finish', 'msg-assistant', 'ses_test', 5, 5, '{"type":"finish","reason":"stop"}');
+            INSERT INTO part VALUES ('part-assistant', 'msg-assistant', 'ses_test', 6, 6, '{"type":"text","text":"1, 2, 3"}');
             "#,
         )
         .expect("seed db");
@@ -2103,16 +2148,29 @@ Do you want to proceed?
         let chat_events =
             load_opencode_db_chat_events_from_db(&db_path, "agent-1", "ses_test").expect("load db");
 
-        assert_eq!(chat_events.len(), 2);
+        assert_eq!(chat_events.len(), 3);
         assert_eq!(chat_events[0].provider, "opencode");
         assert_eq!(chat_events[0].role, Some(AgentChatRole::User));
         assert_eq!(chat_events[0].text.as_deref(), Some("List 50 numbers."));
-        assert_eq!(chat_events[1].role, Some(AgentChatRole::Assistant));
-        assert_eq!(chat_events[1].text.as_deref(), Some("1, 2, 3"));
-        assert_eq!(chat_events[1].source.as_deref(), Some("opencode_db"));
-        assert_eq!(chat_events[1].metadata["opencode_session_id"], "ses_test");
-        assert_eq!(chat_events[1].metadata["part_id"], "part-assistant");
-        assert_eq!(chat_events[1].metadata["raw_type"], "text");
+        assert_eq!(chat_events[0].metadata["input_origin"], "human_input");
+        assert_eq!(chat_events[1].role, Some(AgentChatRole::User));
+        assert_eq!(chat_events[1].metadata["input_origin"], "context_injection");
+        assert_eq!(chat_events[1].metadata["input_purpose"], "editor_context");
+        assert_eq!(
+            chat_events[1].metadata["context_observation"],
+            "provider_native"
+        );
+        assert_eq!(chat_events[1].metadata["request_root_id"], "msg-user");
+        assert_eq!(
+            chat_events[1].metadata["causal_ref"],
+            "provider:message:msg-context"
+        );
+        assert_eq!(chat_events[2].role, Some(AgentChatRole::Assistant));
+        assert_eq!(chat_events[2].text.as_deref(), Some("1, 2, 3"));
+        assert_eq!(chat_events[2].source.as_deref(), Some("opencode_db"));
+        assert_eq!(chat_events[2].metadata["opencode_session_id"], "ses_test");
+        assert_eq!(chat_events[2].metadata["part_id"], "part-assistant");
+        assert_eq!(chat_events[2].metadata["raw_type"], "text");
     }
 
     #[test]

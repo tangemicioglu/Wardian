@@ -1,11 +1,14 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 use wardian_core::models::chat::{
     AgentChatEvent, AgentChatEventKind, AgentChatRole, AgentChatStatus,
 };
 
-use crate::providers::claude::{classify_claude_user_event, ClaudeUserEventKind};
+use crate::providers::claude::{
+    classify_claude_user_event, claude_context_causal_ref, claude_context_purpose,
+    ClaudeUserEventKind,
+};
 
 pub fn normalize_chat_lines(
     session_id: &str,
@@ -14,11 +17,15 @@ pub fn normalize_chat_lines(
 ) -> Vec<AgentChatEvent> {
     let normalized_provider = normalize_provider(provider);
     let mut seen_gemini_messages = HashSet::new();
-    let mut events = Vec::new();
+    let mut events: Vec<AgentChatEvent> = Vec::new();
+    let mut request_root_id: Option<String> = None;
+    let mut codex_provider_turn_id: Option<String> = None;
+    let mut pending_context_events: Vec<usize> = Vec::new();
+    let mut tool_request_roots: HashMap<String, (Option<String>, bool)> = HashMap::new();
 
     for (index, line) in lines.into_iter().enumerate() {
         let sequence = index as u64 + 1;
-        let Some(event) = normalize_chat_line(
+        let Some(mut event) = normalize_chat_line(
             session_id,
             normalized_provider.as_str(),
             line.as_ref(),
@@ -41,7 +48,106 @@ pub fn normalize_chat_lines(
             }
         }
 
+        let input_origin = metadata_string(&event.metadata, "input_origin");
+        if matches!(input_origin.as_deref(), Some("human_input" | "agent_input")) {
+            let root_id = metadata_string(&event.metadata, "request_root_id")
+                .or_else(|| event.turn_id.clone())
+                .or_else(|| (normalized_provider == "codex").then(|| event.id.clone()));
+            if let Some(root_id) = root_id.as_deref() {
+                set_metadata_string(&mut event.metadata, "request_root_id", root_id);
+                request_root_id = Some(root_id.to_string());
+            }
+
+            if normalized_provider == "codex" {
+                let pending_turn_id = pending_context_events.iter().find_map(|index| {
+                    events
+                        .get(*index)
+                        .and_then(|context| metadata_string(&context.metadata, "provider_turn_id"))
+                });
+                if let Some(root_id) = root_id {
+                    for index in pending_context_events.drain(..) {
+                        if let Some(context) = events.get_mut(index) {
+                            set_metadata_string(
+                                &mut context.metadata,
+                                "request_root_id",
+                                &root_id,
+                            );
+                            if metadata_string(&context.metadata, "causal_ref").is_none() {
+                                set_metadata_string(
+                                    &mut context.metadata,
+                                    "causal_ref",
+                                    &format!("request:{root_id}"),
+                                );
+                            }
+                        }
+                    }
+                }
+                codex_provider_turn_id = pending_turn_id;
+            }
+        }
+
+        if event.kind == AgentChatEventKind::ToolCall {
+            if let Some(tool_id) = event.turn_id.clone() {
+                let is_skill = metadata_string(&event.metadata, "tool_name")
+                    .or_else(|| event.title.clone())
+                    .is_some_and(|tool| tool.eq_ignore_ascii_case("skill"));
+                tool_request_roots.insert(tool_id, (request_root_id.clone(), is_skill));
+            }
+        }
+
+        if input_origin.as_deref() == Some("context_injection") {
+            if let Some(causal_ref) = metadata_string(&event.metadata, "causal_ref") {
+                if let Some(tool_id) = causal_ref.strip_prefix("provider:tool_use:") {
+                    if let Some((root_id, is_skill)) = tool_request_roots.get(tool_id) {
+                        if let Some(root_id) = root_id {
+                            set_metadata_string(&mut event.metadata, "request_root_id", root_id);
+                            request_root_id = Some(root_id.clone());
+                        }
+                        if *is_skill {
+                            set_metadata_string(&mut event.metadata, "input_purpose", "skill");
+                        }
+                    }
+                }
+            }
+            let provider_turn_matches = if normalized_provider == "codex" {
+                match metadata_string(&event.metadata, "provider_turn_id") {
+                    Some(context_turn) => {
+                        codex_provider_turn_id.as_deref() == Some(context_turn.as_str())
+                    }
+                    None => true,
+                }
+            } else {
+                true
+            };
+            if metadata_string(&event.metadata, "request_root_id").is_none()
+                && provider_turn_matches
+            {
+                if let Some(root_id) = request_root_id.as_deref() {
+                    set_metadata_string(&mut event.metadata, "request_root_id", root_id);
+                }
+            }
+            if metadata_string(&event.metadata, "causal_ref").is_none()
+                && metadata_string(&event.metadata, "request_root_id").is_some()
+            {
+                if let Some(root_id) = request_root_id.as_deref() {
+                    set_metadata_string(
+                        &mut event.metadata,
+                        "causal_ref",
+                        &format!("request:{root_id}"),
+                    );
+                }
+            }
+        }
+
+        let pending_context = normalized_provider == "codex"
+            && input_origin.as_deref() == Some("context_injection")
+            && metadata_string(&event.metadata, "request_root_id").is_none()
+            && metadata_string(&event.metadata, "provider_turn_id").is_some();
+        let event_index = events.len();
         events.push(event);
+        if pending_context {
+            pending_context_events.push(event_index);
+        }
     }
 
     events
@@ -357,6 +463,34 @@ fn normalize_codex_payload(
         ),
         "message" => {
             let role = role_from_str(str_field(payload, "role")?)?;
+            if codex_response_item_user_context(payload, &source, &role) {
+                let mut metadata = json!({
+                    "raw_type": payload_type,
+                    "input_origin": "context_injection",
+                    "input_purpose": "context",
+                    "context_observation": "provider_native",
+                });
+                if let Some(turn_id) = turn_id.as_deref() {
+                    set_metadata_string(
+                        &mut metadata,
+                        "causal_ref",
+                        &format!("provider:message:{turn_id}"),
+                    );
+                }
+                if let Some(provider_turn_id) = codex_provider_turn_id(payload) {
+                    set_metadata_string(&mut metadata, "provider_turn_id", &provider_turn_id);
+                }
+                return message_event_with_metadata(
+                    session_id,
+                    provider,
+                    sequence,
+                    role,
+                    text_from_value(payload)?,
+                    source,
+                    turn_id,
+                    metadata,
+                );
+            }
             message_event(
                 session_id,
                 provider,
@@ -484,7 +618,7 @@ fn normalize_claude(
         "user" => match classify_claude_user_event(parsed) {
             ClaudeUserEventKind::RealQuery => {
                 let message = parsed.get("message").unwrap_or(parsed);
-                message_event(
+                let mut event = message_event(
                     session_id,
                     provider,
                     sequence,
@@ -493,6 +627,34 @@ fn normalize_claude(
                     "stream_json".to_string(),
                     turn_id_from(message).or_else(|| turn_id_from(parsed)),
                     msg_type,
+                )?;
+                set_metadata_string(
+                    &mut event.metadata,
+                    "context_observation",
+                    "provider_native",
+                );
+                Some(event)
+            }
+            ClaudeUserEventKind::ContextInjection => {
+                let message = parsed.get("message").unwrap_or(parsed);
+                let mut metadata = json!({
+                    "raw_type": msg_type,
+                    "input_origin": "context_injection",
+                    "input_purpose": claude_context_purpose(parsed),
+                    "context_observation": "provider_native",
+                });
+                if let Some(causal_ref) = claude_context_causal_ref(parsed) {
+                    set_metadata_string(&mut metadata, "causal_ref", &causal_ref);
+                }
+                message_event_with_metadata(
+                    session_id,
+                    provider,
+                    sequence,
+                    AgentChatRole::User,
+                    text_from_value(message)?,
+                    "stream_json".to_string(),
+                    turn_id_from(message).or_else(|| turn_id_from(parsed)),
+                    metadata,
                 )
             }
             ClaudeUserEventKind::ToolResult => {
@@ -1412,6 +1574,58 @@ fn message_event(
     turn_id: Option<String>,
     raw_type: &str,
 ) -> Option<AgentChatEvent> {
+    let mut metadata = json!({"raw_type": raw_type});
+    match &role {
+        AgentChatRole::User => {
+            set_metadata_string(&mut metadata, "input_origin", "human_input");
+            set_metadata_string(&mut metadata, "input_purpose", "request");
+            set_metadata_string(
+                &mut metadata,
+                "context_observation",
+                if provider.eq_ignore_ascii_case("claude")
+                    || provider.eq_ignore_ascii_case("codex")
+                {
+                    "provider_native"
+                } else {
+                    "unreported"
+                },
+            );
+            if let Some(turn_id) = turn_id.as_deref() {
+                set_metadata_string(&mut metadata, "request_root_id", turn_id);
+            }
+        }
+        AgentChatRole::System => {
+            set_metadata_string(&mut metadata, "input_origin", "provider_internal");
+            set_metadata_string(&mut metadata, "input_purpose", "internal");
+        }
+        AgentChatRole::Assistant | AgentChatRole::Tool => {}
+    }
+    message_event_with_metadata(
+        session_id,
+        provider,
+        sequence,
+        role,
+        text,
+        source,
+        turn_id,
+        metadata,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keeps provider parser call sites readable while centralizing DTO defaults"
+)]
+fn message_event_with_metadata(
+    session_id: &str,
+    provider: &str,
+    sequence: u64,
+    role: AgentChatRole,
+    text: String,
+    source: String,
+    turn_id: Option<String>,
+    metadata: Value,
+) -> Option<AgentChatEvent> {
     let text = visible_chat_text(&role, &text)?;
     Some(event(
         session_id,
@@ -1423,7 +1637,7 @@ fn message_event(
             text: Some(text),
             turn_id,
             source: Some(source),
-            metadata: json!({"raw_type": raw_type}),
+            metadata,
             ..Default::default()
         },
     ))
@@ -1710,9 +1924,42 @@ fn normalize_provider(provider: &str) -> String {
     provider.trim().to_ascii_lowercase()
 }
 
+fn metadata_string(metadata: &Value, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn set_metadata_string(metadata: &mut Value, key: &str, value: &str) {
+    if !metadata.is_object() {
+        *metadata = json!({});
+    }
+    metadata[key] = json!(value);
+}
+
 fn codex_tool_call_input(payload: &Value) -> Option<Value> {
     json_object_or_encoded_json(payload.get("arguments"))
         .or_else(|| json_object_or_encoded_json(payload.get("input")))
+}
+
+fn codex_provider_turn_id(payload: &Value) -> Option<String> {
+    payload
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(|value| str_field(value, "turn_id"))
+        .map(str::to_string)
+}
+
+fn codex_response_item_user_context(payload: &Value, source: &str, role: &AgentChatRole) -> bool {
+    // Codex emits provider-supplied host context as a response_item message
+    // with batched content. The canonical human prompt is the separate
+    // event_msg/user_message record, so this boundary is structural rather
+    // than based on the injected text.
+    source == "response_item"
+        && matches!(role, AgentChatRole::User)
+        && matches!(payload.get("content"), Some(Value::Array(_)))
 }
 
 fn codex_tool_call_raw_input_text(payload: &Value) -> Option<String> {
@@ -1763,6 +2010,7 @@ fn turn_id_from(value: &Value) -> Option<String> {
         value.get("turn_id"),
         value.get("id"),
         value.get("message_id"),
+        value.get("uuid"),
         value.get("sessionID"),
         value.get("session_id"),
         value.get("request_id"),
@@ -1825,6 +2073,35 @@ mod tests {
         assert_eq!(approval.text.as_deref(), Some("Need git status"));
         assert_eq!(approval.metadata["raw_type"], "function_call");
         assert_eq!(approval.metadata["tool_name"], "shell_command");
+    }
+
+    #[test]
+    fn codex_response_item_user_context_attaches_to_the_canonical_request() {
+        let lines = [
+            r#"{"type":"response_item","payload":{"type":"message","id":"context-1","role":"user","content":[{"type":"input_text","text":"Host context."}],"internal_chat_message_metadata_passthrough":{"turn_id":"codex-turn-1"}}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","id":"context-2","role":"user","content":[{"type":"input_text","text":"Skill context."}],"internal_chat_message_metadata_passthrough":{"turn_id":"codex-turn-1"}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"Inspect the archive."}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","id":"context-3","role":"user","content":[{"type":"input_text","text":"More host context."}],"internal_chat_message_metadata_passthrough":{"turn_id":"codex-turn-1"}}}"#,
+        ];
+
+        let events = normalize_chat_lines("agent-1", "codex", lines);
+        assert_eq!(events.len(), 4);
+        assert!(events[..2].iter().all(|event| {
+            event.metadata["input_origin"] == "context_injection"
+                && event.metadata["input_purpose"] == "context"
+                && event.metadata["context_observation"] == "provider_native"
+                && event.metadata["request_root_id"] == "agent-1:3"
+                && event.metadata["provider_turn_id"] == "codex-turn-1"
+        }));
+        assert_eq!(
+            events[0].metadata["causal_ref"],
+            "provider:message:context-1"
+        );
+        assert_eq!(events[2].role, Some(AgentChatRole::User));
+        assert_eq!(events[2].metadata["input_origin"], "human_input");
+        assert_eq!(events[2].metadata["context_observation"], "provider_native");
+        assert_eq!(events[2].metadata["request_root_id"], "agent-1:3");
+        assert_eq!(events[3].metadata["request_root_id"], "agent-1:3");
     }
 
     #[test]
@@ -2197,6 +2474,63 @@ mod tests {
         );
         assert_eq!(codex.metadata["tool_name"], "shell_command");
         assert_eq!(codex.metadata["tool_input"]["command"], "npm test");
+    }
+
+    #[test]
+    fn claude_native_context_records_keep_origin_and_skill_causality() {
+        let lines = [
+            r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"Fix the archive."}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"skill-call-1","name":"Skill","input":{}}]}}"#,
+            r#"{"type":"user","isMeta":true,"parent_tool_use_id":"skill-call-1","uuid":"context-1","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill\nUse the procedure."}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"skill-call-2","name":"Skill","input":{}}]}}"#,
+            r#"{"type":"user","isMeta":true,"parent_tool_use_id":"skill-call-2","uuid":"context-2","message":{"role":"user","content":[{"type":"text","text":"A second injected procedure."}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Archive fixed."}]}}"#,
+        ];
+
+        let events = normalize_chat_lines("agent-1", "claude", lines);
+        assert_eq!(events.len(), 6);
+        assert_eq!(events[0].metadata["input_origin"], "human_input");
+        assert_eq!(events[0].metadata["request_root_id"], "request-1");
+        for (event, context_id) in events
+            .iter()
+            .skip(2)
+            .step_by(2)
+            .zip(["context-1", "context-2"])
+        {
+            assert_eq!(event.role, Some(AgentChatRole::User));
+            assert_eq!(event.metadata["input_origin"], "context_injection");
+            assert_eq!(event.metadata["input_purpose"], "skill");
+            assert_eq!(event.metadata["request_root_id"], "request-1");
+            assert!(event.metadata["causal_ref"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("provider:tool_use:")));
+            assert_eq!(event.turn_id.as_deref(), Some(context_id));
+        }
+    }
+
+    #[test]
+    fn claude_context_without_skill_tool_is_still_provider_typed() {
+        let event = one(
+            "claude",
+            r#"{"type":"user","isMeta":true,"parentUuid":"request-1","uuid":"context-1","message":{"role":"user","content":"Host context supplied by Claude."}}"#,
+        );
+
+        assert_eq!(event.metadata["input_origin"], "context_injection");
+        assert_eq!(event.metadata["input_purpose"], "context");
+        assert_eq!(event.metadata["causal_ref"], "provider:uuid:request-1");
+    }
+
+    #[test]
+    fn provider_without_context_evidence_keeps_normal_user_input_and_reports_no_boundary() {
+        let event = one(
+            "gemini",
+            r#"{"type":"user","id":"request-1","text":"Inspect the archive."}"#,
+        );
+
+        assert_eq!(event.metadata["input_origin"], "human_input");
+        assert_eq!(event.metadata["input_purpose"], "request");
+        assert_eq!(event.metadata["context_observation"], "unreported");
+        assert_ne!(event.metadata["input_origin"], "context_injection");
     }
 
     #[test]
