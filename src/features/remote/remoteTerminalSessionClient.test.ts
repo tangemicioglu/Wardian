@@ -149,7 +149,19 @@ describe("RemoteTerminalSessionClient", () => {
           reason: null,
           runtime_generation: 4,
           lease_epoch: 8,
-          owner_presentation_id: "desktop:presentation-1",
+          owner_presentation_id: null,
+        },
+        broker_state: {
+          ...registered().broker_state,
+          lease_epoch: 8,
+          owner_presentation_id: null,
+          pending_activation: {
+            presentation_id: "remote:presentation-1",
+            previous_owner_presentation_id: "desktop:presentation-1",
+            runtime_generation: 4,
+            lease_epoch: 8,
+            activation_id: "activation-1",
+          },
         },
         activation_id: "activation-1",
         snapshot: snapshot({ sequence_barrier: 15 }),
@@ -158,6 +170,9 @@ describe("RemoteTerminalSessionClient", () => {
     });
     await Promise.resolve();
     await Promise.resolve();
+    expect(client.state.broker_state?.owner_presentation_id).toBeNull();
+    expect(client.state.broker_state?.pending_activation?.presentation_id)
+      .toBe("remote:presentation-1");
     expect(parsed(socket)).not.toContainEqual(expect.objectContaining({ type: "ack_activation" }));
 
     releaseSnapshot?.();

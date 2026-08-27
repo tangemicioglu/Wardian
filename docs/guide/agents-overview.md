@@ -56,7 +56,7 @@ Auto derives its layout from the current surface dimensions and targets comforta
 
 Each card can show either:
 
-- **Terminal** for the provider's real PTY, approvals, raw keybindings, and interactive TUI.
+- **Terminal** for the provider's Zellij pane, approvals, raw keybindings, and interactive TUI.
 - **Chat** for normalized messages, tool activity, approval choices, and a compact prompt composer.
 
 Chat messages and activity rows share a centered, readable transcript column that
@@ -64,7 +64,15 @@ expands fluidly on narrow surfaces.
 
 Use the **Terminal** / **Chat** button in the card header for a temporary per-agent override. The default comes from **Settings > Agents > Agent card display**. Unsent Chat text stays with that agent when you switch modes.
 
-In Terminal mode, click inside the terminal before typing. When the same agent terminal is visible elsewhere, the clicked presentation explicitly requests ownership; merely tabbing through the UI does not steal it. A **Mirror** remains read-only until ownership transfers. Reclaimed renderers restore and fit automatically when visible.
+Wardian keeps one interactive Habitat terminal renderer. Inactive Terminal cards
+show live, read-only pane previews without exposing renderer ownership. Click or
+keyboard-focus a preview and Wardian selects that agent's Zellij pane before the
+first input is accepted. The lifetime-stable terminal viewport is then positioned
+over the card; its xterm and WebGL objects are not moved, remounted, or recreated.
+From the user's perspective, each card remains its agent's terminal.
+When no terminal card is open, Wardian retains that renderer allocation but
+releases terminal input ownership. Opening a card activates its pane again
+before keyboard focus moves into the terminal.
 
 ## Arrange and Focus Agents
 

@@ -81,9 +81,12 @@ process.stdin.resume();
 
 async function activatePresentation(driver, sessionId, presentationId) {
   const clicked = await driver.executeScript((sid, pid) => {
-    const card = document.getElementById(`agent-card-${sid}`);
-    const host = [...(card?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
-      .find((candidate) => candidate.getAttribute("data-terminal-presentation-id") === pid);
+    const host = [...document.querySelectorAll(
+      '[data-zellij-singleton-viewport="true"] [data-testid="agent-terminal-host"]',
+    )].find((candidate) => (
+      candidate.getAttribute("data-terminal-session-id") === sid
+      && candidate.getAttribute("data-terminal-presentation-id") === pid
+    ));
     if (!host) return false;
     host.click();
     return true;
@@ -151,9 +154,12 @@ async function captureRestoredScrollbackEvidence(driver, sessionId, presentation
     return null;
   }
   const scrolled = await driver.executeScript((sid, pid) => {
-    const card = document.getElementById(`agent-card-${sid}`);
-    const host = [...(card?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
-      .find((candidate) => candidate.getAttribute("data-terminal-presentation-id") === pid);
+    const host = [...document.querySelectorAll(
+      '[data-zellij-singleton-viewport="true"] [data-testid="agent-terminal-host"]',
+    )].find((candidate) => (
+      candidate.getAttribute("data-terminal-session-id") === sid
+      && candidate.getAttribute("data-terminal-presentation-id") === pid
+    ));
     if (!host) return false;
     host.dispatchEvent(new WheelEvent("wheel", { deltaY: -2400, bubbles: true, cancelable: true }));
     return true;

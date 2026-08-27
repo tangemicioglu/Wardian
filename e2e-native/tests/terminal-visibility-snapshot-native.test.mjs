@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { By, until } from "selenium-webdriver";
+import { By } from "selenium-webdriver";
 
 import {
   createNativeHarness,
@@ -12,28 +12,14 @@ import {
   startNativeSession,
   waitForAppShell,
 } from "../lib/harness.mjs";
-import {
-  readTerminalDebugSnapshot,
-  resolveAgentTerminalPresentationId,
-} from "../lib/terminal-debug.mjs";
 import { openWorkbenchSurface } from "../lib/workbench.mjs";
-
-// Visibility-scoped WebGL contexts: terminals only hold a WebGL context while
-// their card is on screen. This test proves the demotion/promotion lifecycle
-// is purely cosmetic — an off-screen (demoted, snapshot-frozen) terminal still
-// receives output, still accepts input, and shows complete, interactive
-// content once scrolled back into view.
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
-const TOP_PROVIDER_SESSION_ID = `e2e-vis-top-${RUN_ID}`;
-const TOP_SESSION_NAME = `E2E-Vis-01-Top-${RUN_ID}`;
-const MIDDLE_PROVIDER_SESSION_ID = `e2e-vis-middle-${RUN_ID}`;
-const MIDDLE_SESSION_NAME = `E2E-Vis-02-Middle-${RUN_ID}`;
-const BOTTOM_PROVIDER_SESSION_ID = `e2e-vis-bottom-${RUN_ID}`;
-const BOTTOM_SESSION_NAME = `E2E-Vis-03-Bottom-${RUN_ID}`;
-const OFFSCREEN_MARKER = `OFFSCREEN_ECHO_${RUN_ID}`;
-const VISIBLE_MARKER = `VISIBLE_ECHO_${RUN_ID}`;
+const AGENTS = Array.from({ length: 3 }, (_, index) => ({
+  providerSessionId: `e2e-vis-${RUN_ID}-${index + 1}`,
+  sessionName: `E2E-Visibility-${String(index + 1).padStart(2, "0")}-${RUN_ID}`,
+}));
 
 async function invokeTauri(driver, command, args = {}) {
   const result = await driver.executeAsyncScript((cmd, payload, done) => {
@@ -42,361 +28,213 @@ async function invokeTauri(driver, command, args = {}) {
       (error) => done({ ok: false, error: String(error) }),
     );
   }, command, args);
-
   assert.equal(result.ok, true, `${command} failed: ${result.error}`);
   return result.value;
 }
 
-async function readCardState(driver, sessionId) {
-  return await driver.executeScript((sid) => {
-    const card = document.getElementById(`agent-card-${sid}`);
-    if (!card) {
-      return null;
-    }
-    const rect = card.getBoundingClientRect();
-    return {
-      onScreen: rect.bottom > 0 && rect.top < window.innerHeight,
-      hasSnapshotOverlay: Boolean(card.querySelector('[data-testid="terminal-snapshot-overlay"]')),
-      overlayPointerEvents:
-        card.querySelector('[data-testid="terminal-snapshot-overlay"]')?.style.pointerEvents ?? null,
-    };
-  }, sessionId);
+function createEchoMockScript() {
+  const scriptPath = path.join(os.tmpdir(), `wardian-vis-mock-${RUN_ID}.cjs`);
+  const inputLogPath = path.join(os.tmpdir(), `wardian-vis-input-${RUN_ID}.jsonl`);
+  fs.rmSync(inputLogPath, { force: true });
+  const script = `
+"use strict";
+const fs = require("node:fs");
+const inputLogPath = ${JSON.stringify(inputLogPath)};
+const providerSessionId = process.env.WARDIAN_MOCK_SESSION_ID;
+if (!providerSessionId) throw new Error("WARDIAN_MOCK_SESSION_ID is required");
+process.stdout.write(JSON.stringify({
+  type: "init",
+  session_id: providerSessionId,
+  timestamp: new Date().toISOString(),
+}) + "\\n");
+for (let line = 1; line <= 12; line += 1) {
+  process.stdout.write("visibility-row-" + String(line).padStart(2, "0") + "\\r\\n");
 }
-
-async function scrollCardIntoView(driver, sessionId, block) {
-  await driver.executeScript((sid, blockOption) => {
-    document.getElementById(`agent-card-${sid}`)?.scrollIntoView({ block: blockOption, behavior: "instant" });
-  }, sessionId, block);
-}
-
-async function activateAgentTerminalPresentation(driver, sessionId, presentationId) {
-  const activated = await driver.executeScript((sid, pid) => {
-    const card = document.getElementById(`agent-card-${sid}`);
-    const host = [...(card?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
-      .find((candidate) => candidate.getAttribute("data-terminal-presentation-id") === pid);
-    if (!host) return false;
-    host.click();
-    return true;
-  }, sessionId, presentationId);
-  assert.equal(activated, true, `Expected terminal presentation ${presentationId} to activate`);
-  await driver.wait(async () => {
-    const snapshot = await readTerminalDebugSnapshot(driver, presentationId);
-    return snapshot?.broker?.ownerPresentationId === presentationId;
-  }, 20_000, `Timed out waiting for terminal presentation ${presentationId} to own input`);
-}
-
-async function sendTerminalPresentationInput(driver, sessionId, presentationId, input) {
-  const snapshot = await readTerminalDebugSnapshot(driver, presentationId);
-  assert.equal(
-    snapshot?.broker?.ownerPresentationId,
-    presentationId,
-    `Expected ${presentationId} to retain its input lease`,
-  );
-  await invokeTauri(driver, "send_terminal_presentation_input", {
-    request: {
-      session_id: sessionId,
-      presentation_id: presentationId,
-      runtime_generation: snapshot.broker.runtimeGeneration,
-      lease_epoch: snapshot.broker.leaseEpoch,
-      input,
-    },
-  });
+process.stdin.setEncoding("utf8");
+if (process.stdin.isTTY) process.stdin.setRawMode(true);
+process.stdin.on("data", (chunk) => {
+  fs.appendFileSync(inputLogPath, JSON.stringify({ session_id: providerSessionId, chunk }) + "\\n");
+});
+setInterval(() => {}, 1000);
+`;
+  fs.writeFileSync(scriptPath, script, "utf8");
+  return { inputLogPath, scriptPath };
 }
 
 async function selectGridMode(driver) {
-  const gridButton = await driver.wait(async () => {
-    for (const button of await driver.findElements(By.css('[aria-label="Agents mode"] button'))) {
-      if (await button.isDisplayed() && (await button.getText()).trim() === "Grid") {
-        return button;
-      }
-    }
-    return false;
-  }, 20_000, "Timed out locating the Agents Grid mode control");
-  await gridButton.click();
+  await driver.wait(async () => await driver.executeScript(() => {
+    const grid = [...document.querySelectorAll('[aria-label="Agents mode"] button')]
+      .find((button) => button.textContent?.trim() === "Grid");
+    if (!grid) return false;
+    grid.click();
+    return true;
+  }), 20_000, "Timed out locating the Agents Grid mode control");
   await driver.wait(async () => await driver.executeScript(() => (
     document.querySelector('[data-testid="agent-grid"]')?.getAttribute("data-overview-mode") === "grid"
   )), 20_000, "Timed out selecting explicit Agents Grid mode");
 }
 
-async function waitFor(label, timeoutMs, probe) {
-  const startedAt = Date.now();
-  let last = null;
-  while (Date.now() - startedAt < timeoutMs) {
-    last = await probe();
-    if (last?.ok) {
-      return last;
+async function selectPassiveCard(driver, sessionId, key = null) {
+  const selected = await driver.executeScript((sid, firstKey) => {
+    const card = document.getElementById(`agent-card-${sid}`);
+    const preview = card?.querySelector(
+      `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sid)}"]`,
+    );
+    if (!(preview instanceof HTMLElement) || preview.getAttribute("aria-disabled") === "true") {
+      return false;
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error(`Timed out waiting for ${label}: ${JSON.stringify(last)}`);
-}
-
-function createEchoMockScript() {
-  const scriptPath = path.join(os.tmpdir(), `wardian-vis-mock-${RUN_ID}.cjs`);
-  const script = `
-"use strict";
-const providerSessionId = process.env.WARDIAN_MOCK_SESSION_ID;
-if (!providerSessionId) {
-  throw new Error("WARDIAN_MOCK_SESSION_ID is required");
-}
-const init = JSON.stringify({
-  type: "init",
-  session_id: providerSessionId,
-  timestamp: new Date().toISOString(),
-}) + "\\n";
-process.stdout.write(init);
-for (let line = 1; line <= 12; line += 1) {
-  process.stdout.write("seed-row-" + String(line).padStart(2, "0") + "\\r\\n");
-}
-let pending = "";
-process.stdin.on("data", (chunk) => {
-  pending += chunk.toString();
-  let newlineIndex = pending.search(/[\\r\\n]/);
-  while (newlineIndex >= 0) {
-    const line = pending.slice(0, newlineIndex).trim();
-    pending = pending.slice(newlineIndex + 1);
-    if (line.length > 0) {
-      process.stdout.write("echo:" + line + "\\r\\n");
+    preview.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    if (firstKey) {
+      preview.dispatchEvent(new KeyboardEvent("keydown", {
+        key: firstKey,
+        bubbles: true,
+        cancelable: true,
+      }));
     }
-    newlineIndex = pending.search(/[\\r\\n]/);
-  }
-});
-process.stdin.resume();
-`;
-  fs.writeFileSync(scriptPath, script, "utf8");
-  return scriptPath;
+    return true;
+  }, sessionId, key);
+  assert.equal(selected, true, `Expected a usable passive card for ${sessionId}`);
 }
 
 test(
-  "offscreen demoted terminals keep receiving output and input and restore cleanly on re-entry",
-  { timeout: 240000 },
+  "offscreen cards stay passive while one singleton renderer moves between panes",
+  { timeout: 240_000 },
   async (t) => {
     const harness = await createNativeHarness();
-    const previousTerminalDebug = process.env.VITE_WARDIAN_TERMINAL_DEBUG;
-
-    try {
-      if (!skipNativeBuild) {
-        process.env.VITE_WARDIAN_TERMINAL_DEBUG = "1";
-        ensureNativeAppBuilt(harness);
-      }
-      assert.ok(harness.appPath);
-    } catch (error) {
-      t.skip(String(error));
-      return;
-    } finally {
-      if (previousTerminalDebug === undefined) {
-        delete process.env.VITE_WARDIAN_TERMINAL_DEBUG;
-      } else {
-        process.env.VITE_WARDIAN_TERMINAL_DEBUG = previousTerminalDebug;
-      }
-    }
-
-    prepareIsolatedHome(harness);
-
-    const mockScript = createEchoMockScript();
+    const { inputLogPath, scriptPath } = createEchoMockScript();
     const previousMockScript = process.env.WARDIAN_MOCK_SCRIPT;
-    process.env.WARDIAN_MOCK_SCRIPT = mockScript;
+    let session = null;
 
-    let session;
-    try {
-      session = await startNativeSession(harness);
-    } catch (error) {
-      t.skip(String(error));
-      return;
-    } finally {
-      if (previousMockScript === undefined) {
-        delete process.env.WARDIAN_MOCK_SCRIPT;
-      } else {
-        process.env.WARDIAN_MOCK_SCRIPT = previousMockScript;
-      }
-    }
-
+    process.env.WARDIAN_MOCK_SCRIPT = scriptPath;
     t.after(async () => {
-      await session.close();
-      fs.rmSync(mockScript, { force: true });
+      await session?.close();
+      fs.rmSync(scriptPath, { force: true });
+      fs.rmSync(inputLogPath, { force: true });
+      if (previousMockScript === undefined) delete process.env.WARDIAN_MOCK_SCRIPT;
+      else process.env.WARDIAN_MOCK_SCRIPT = previousMockScript;
     });
 
+    if (!skipNativeBuild) ensureNativeAppBuilt(harness);
+    prepareIsolatedHome(harness);
+    session = await startNativeSession(harness);
     const { driver } = session;
-    await waitForAppShell(driver, 20000);
-    // Use a compact viewport after reload so the second default Grid row sits
-    // below the fold — the shape that triggers visibility demotion.
-    await driver.executeScript(() => {
-      localStorage.setItem(
-        "wardian-settings",
-        JSON.stringify({
-          state: { theme: "dark", terminalFontSize: 10, terminalFontFamily: "", autoPatchGemini: false },
-          version: 0,
-        }),
-      );
-      location.reload();
-    });
-    await waitForAppShell(driver, 20000);
+    await waitForAppShell(driver, 20_000);
     await driver.manage().window().setRect({ width: 1400, height: 520 });
 
-    const topAgent = await invokeTauri(driver, "spawn_agent", {
-      req: {
-        sessionName: TOP_SESSION_NAME,
-        agentClass: "TestClass",
-        folder: harness.repoRoot,
-        resumeSession: TOP_PROVIDER_SESSION_ID,
-        isOff: false,
-        configOverride: { provider: "mock" },
-      },
-    });
-    const topSessionId = topAgent.session_id;
-    assert.notEqual(topSessionId, TOP_PROVIDER_SESSION_ID);
-    const middleAgent = await invokeTauri(driver, "spawn_agent", {
-      req: {
-        sessionName: MIDDLE_SESSION_NAME,
-        agentClass: "TestClass",
-        folder: harness.repoRoot,
-        resumeSession: MIDDLE_PROVIDER_SESSION_ID,
-        isOff: false,
-        configOverride: { provider: "mock" },
-      },
-    });
-    const middleSessionId = middleAgent.session_id;
-    assert.notEqual(middleSessionId, MIDDLE_PROVIDER_SESSION_ID);
-    const bottomAgent = await invokeTauri(driver, "spawn_agent", {
-      req: {
-        sessionName: BOTTOM_SESSION_NAME,
-        agentClass: "TestClass",
-        folder: harness.repoRoot,
-        resumeSession: BOTTOM_PROVIDER_SESSION_ID,
-        isOff: false,
-        configOverride: { provider: "mock" },
-      },
-    });
-    const bottomSessionId = bottomAgent.session_id;
-    assert.notEqual(bottomSessionId, BOTTOM_PROVIDER_SESSION_ID);
+    const spawned = [];
+    for (const agent of AGENTS) {
+      const active = await invokeTauri(driver, "spawn_agent", {
+        req: {
+          sessionName: agent.sessionName,
+          agentClass: "TestClass",
+          folder: harness.repoRoot,
+          resumeSession: agent.providerSessionId,
+          isOff: false,
+          configOverride: { provider: "mock" },
+        },
+      });
+      spawned.push({ ...agent, sessionId: active.session_id });
+    }
 
     await openWorkbenchSurface(driver, "agents-overview");
-    await driver.wait(until.elementLocated(By.id(`agent-card-${bottomSessionId}`)), 20000);
-    if (!(await driver.executeScript(() => Boolean(window.__wardianTerminalDebug?.snapshot)))) {
-      if (skipNativeBuild) {
-        t.skip("Built Wardian app does not expose terminal debug snapshots; run without WARDIAN_NATIVE_SKIP_BUILD.");
-        return;
-      }
-      assert.fail("Expected terminal debug snapshots in the native build");
-    }
-    // This test exercises vertical Grid residency, not Auto's responsive
-    // single-card fallback. Both renderer identities must exist before any
-    // visibility assertion is meaningful.
     await selectGridMode(driver);
-    const topPresentationId = await resolveAgentTerminalPresentationId(driver, topSessionId);
-    const bottomPresentationId = await resolveAgentTerminalPresentationId(driver, bottomSessionId);
+    for (const agent of spawned) {
+      await driver.wait(async () => (
+        (await driver.findElements(By.id(`agent-card-${agent.sessionId}`))).length === 1
+      ), 20_000, `Timed out locating ${agent.sessionId}`);
+    }
 
-    // Establish the bottom presentation's input lease while it is visible;
-    // visibility demotion must not revoke that lease.
-    await scrollCardIntoView(driver, bottomSessionId, "center");
-    await activateAgentTerminalPresentation(driver, bottomSessionId, bottomPresentationId);
-    await scrollCardIntoView(driver, topSessionId, "start");
-
-    // Visible top terminal holds a WebGL context; the below-the-fold bottom
-    // terminal must not.
-    await waitFor("top terminal on WebGL", 30000, async () => {
-      const snapshot = await readTerminalDebugSnapshot(driver, topPresentationId);
-      return { ok: snapshot?.renderer?.webglActive === true, snapshot: snapshot?.renderer };
+    const passiveState = await driver.executeScript(() => ({
+      cardHosts: [...document.querySelectorAll('[id^="agent-card-"]')]
+        .reduce((count, card) => count + card.querySelectorAll('[data-testid="agent-terminal-host"]').length, 0),
+      previews: document.querySelectorAll('[data-zellij-presentation="preview"]').length,
+      singletonHosts: document.querySelectorAll(
+        '[data-zellij-singleton-viewport="true"] [data-testid="agent-terminal-host"]',
+      ).length,
+      xterms: document.querySelectorAll('[data-testid="agent-terminal-host"] .xterm').length,
+    }));
+    assert.deepEqual(passiveState, {
+      cardHosts: 0,
+      previews: spawned.length,
+      singletonHosts: 0,
+      xterms: 0,
     });
-    // The IntersectionObserver is the visibility authority (it accounts for
-    // scroll-container clipping a raw rect probe cannot); assert on its
-    // observable outcome — the below-the-fold terminal holds no WebGL context.
-    const bottomOffscreen = await waitFor("bottom terminal demoted off screen", 30000, async () => {
-      const card = await readCardState(driver, bottomSessionId);
-      const snapshot = await readTerminalDebugSnapshot(driver, bottomPresentationId);
+
+    await driver.executeScript((sid) => {
+      document.getElementById(`agent-card-${sid}`)?.scrollIntoView({ block: "center" });
+    }, spawned[0].sessionId);
+    await selectPassiveCard(driver, spawned[0].sessionId);
+    let firstSelectionState = null;
+    try {
+      await driver.wait(async () => {
+        firstSelectionState = await driver.executeScript((sid) => {
+          const host = document.querySelector(
+            '[data-zellij-singleton-viewport="true"] [data-testid="agent-terminal-host"]',
+          );
+          const preview = document.querySelector(
+            `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sid)}"]`,
+          );
+          return {
+            activeSessionId: host?.getAttribute("data-terminal-session-id") ?? null,
+            previewDisabled: preview?.getAttribute("aria-disabled") ?? null,
+            previewText: preview?.textContent ?? null,
+            viewportCount: document.querySelectorAll('[data-zellij-singleton-viewport="true"]').length,
+            xtermCount: document.querySelectorAll('[data-testid="agent-terminal-host"] .xterm').length,
+          };
+        }, spawned[0].sessionId);
+        return firstSelectionState.activeSessionId === spawned[0].sessionId
+          && firstSelectionState.xtermCount === 1;
+      }, 20_000, "Singleton renderer did not select the first card");
+    } catch (error) {
+      throw new Error(`${error.message}; last state: ${JSON.stringify(firstSelectionState)}`);
+    }
+
+    const rendererIdentity = await driver.executeScript(() => {
+      const xterm = document.querySelector('[data-testid="agent-terminal-host"] .xterm');
+      const renderer = document.querySelector('[data-terminal-renderer-instance-id]');
+      xterm?.setAttribute("data-e2e-singleton-identity", "stable");
+      return renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null;
+    });
+    assert.ok(rendererIdentity, "Expected the singleton renderer debug identity");
+
+    const last = spawned.at(-1);
+    await driver.executeScript((sid) => {
+      document.getElementById(`agent-card-${sid}`)?.scrollIntoView({ block: "center" });
+    }, last.sessionId);
+    const cardContract = await driver.executeScript((sid) => {
+      const card = document.getElementById(`agent-card-${sid}`);
       return {
-        ok: Boolean(snapshot) && snapshot.renderer?.webglActive !== true,
-        card,
-        renderer: snapshot?.renderer ?? null,
+        hasHost: Boolean(card?.querySelector('[data-testid="agent-terminal-host"]')),
+        hasPreview: Boolean(card?.querySelector('[data-zellij-presentation="preview"]')),
       };
-    });
-    console.log("offscreen bottom card:", JSON.stringify(bottomOffscreen));
+    }, last.sessionId);
+    assert.deepEqual(cardContract, { hasHost: false, hasPreview: true });
 
-    // Input to the demoted terminal must reach its PTY, and the echoed output
-    // must land in the (off-screen) buffer.
-    await sendTerminalPresentationInput(
-      driver,
-      bottomSessionId,
-      bottomPresentationId,
-      `${OFFSCREEN_MARKER}\r`,
-    );
-    await waitFor("offscreen echo in demoted terminal buffer", 30000, async () => {
-      const snapshot = await readTerminalDebugSnapshot(driver, bottomPresentationId);
-      const text = (snapshot?.lines ?? []).join("\n");
-      return { ok: text.includes(`echo:${OFFSCREEN_MARKER}`), tail: text.slice(-300) };
-    });
+    await selectPassiveCard(driver, last.sessionId, "v");
+    await driver.wait(async () => await driver.executeScript((sid, instanceId) => {
+      const hosts = document.querySelectorAll('[data-testid="agent-terminal-host"]');
+      const xterms = document.querySelectorAll('[data-testid="agent-terminal-host"] .xterm');
+      const host = hosts[0];
+      const renderer = document.querySelector('[data-terminal-renderer-instance-id]');
+      return hosts.length === 1
+        && xterms.length === 1
+        && xterms[0].getAttribute("data-e2e-singleton-identity") === "stable"
+        && host?.getAttribute("data-terminal-session-id") === sid
+        && renderer?.getAttribute("data-terminal-renderer-instance-id") === instanceId;
+    }, last.sessionId, rendererIdentity), 20_000, "Singleton renderer identity changed during handoff");
 
-    // Scroll the bottom card into view: it must promote back onto WebGL with
-    // no snapshot overlay left and the offscreen-era content present.
-    await scrollCardIntoView(driver, bottomSessionId, "center");
-    await waitFor("bottom terminal promoted on re-entry", 30000, async () => {
-      const snapshot = await readTerminalDebugSnapshot(driver, bottomPresentationId);
-      const card = await readCardState(driver, bottomSessionId);
-      return {
-        ok: snapshot?.renderer?.webglActive === true && card?.hasSnapshotOverlay === false,
-        renderer: snapshot?.renderer ?? null,
-        card,
-      };
-    });
-    const promotedSnapshot = await readTerminalDebugSnapshot(driver, bottomPresentationId);
-    const promotedText = (promotedSnapshot?.lines ?? []).join("\n");
-    assert.ok(
-      promotedText.includes(`echo:${OFFSCREEN_MARKER}`),
-      `Expected offscreen-era echo in promoted terminal, got tail: ${promotedText.slice(-300)}`,
-    );
-    assert.ok(
-      promotedText.includes("seed-row-12"),
-      `Expected seeded rows in promoted terminal, got tail: ${promotedText.slice(-300)}`,
-    );
-
-    // The promoted terminal stays fully interactive.
-    await sendTerminalPresentationInput(
-      driver,
-      bottomSessionId,
-      bottomPresentationId,
-      `${VISIBLE_MARKER}\r`,
-    );
-    await waitFor("visible echo after promotion", 30000, async () => {
-      const snapshot = await readTerminalDebugSnapshot(driver, bottomPresentationId);
-      const text = (snapshot?.lines ?? []).join("\n");
-      return { ok: text.includes(`echo:${VISIBLE_MARKER}`), tail: text.slice(-300) };
-    });
-
-    // Leaving the viewport again demotes after the grace window and freezes a
-    // cosmetic (pointer-transparent) snapshot of the last frame.
-    await scrollCardIntoView(driver, topSessionId, "start");
-    const demotedAgain = await waitFor("bottom terminal demoted again with snapshot", 30000, async () => {
-      const snapshot = await readTerminalDebugSnapshot(driver, bottomPresentationId);
-      const card = await readCardState(driver, bottomSessionId);
-      return {
-        ok: snapshot?.renderer?.webglActive === false && card?.hasSnapshotOverlay === true,
-        renderer: snapshot?.renderer ?? null,
-        card,
-      };
-    });
-    assert.equal(
-      demotedAgain.card.overlayPointerEvents,
-      "none",
-      `Snapshot overlay must never intercept input: ${JSON.stringify(demotedAgain.card)}`,
-    );
-
-    // Fresh output while frozen lifts the stale snapshot so the live DOM
-    // rendering shows through.
-    await sendTerminalPresentationInput(
-      driver,
-      bottomSessionId,
-      bottomPresentationId,
-      `${OFFSCREEN_MARKER}-again\r`,
-    );
-    await waitFor("stale snapshot lifted by fresh output", 30000, async () => {
-      const card = await readCardState(driver, bottomSessionId);
-      const snapshot = await readTerminalDebugSnapshot(driver, bottomPresentationId);
-      const text = (snapshot?.lines ?? []).join("\n");
-      return {
-        ok: card?.hasSnapshotOverlay === false && text.includes(`echo:${OFFSCREEN_MARKER}-again`),
-        card,
-        tail: text.slice(-200),
-      };
-    });
+    const receipts = await driver.wait(() => {
+      if (!fs.existsSync(inputLogPath)) return false;
+      const records = fs.readFileSync(inputLogPath, "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      return records.some((record) => (
+        record.session_id === last.providerSessionId && record.chunk.includes("v")
+      )) ? records : false;
+    }, 20_000, "Buffered handoff input did not reach the selected offscreen pane");
+    assert.equal(receipts.some((record) => (
+      record.session_id !== last.providerSessionId && record.chunk.includes("v")
+    )), false, "Buffered handoff input reached the wrong provider pane");
   },
 );

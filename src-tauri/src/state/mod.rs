@@ -12,6 +12,7 @@ pub mod telemetry_ingest;
 pub mod terminal_session;
 pub mod terminal_text;
 pub mod user_terminal;
+pub mod zellij_terminal;
 
 pub use active_agent::ActiveAgent;
 pub use agent_watch::AgentWatchState;
@@ -34,3 +35,4 @@ pub use mailbox::{
 };
 pub use terminal_session::TerminalSessionBroker;
 pub use user_terminal::UserTerminalSession;
+pub use zellij_terminal::ZellijTerminalEngine;

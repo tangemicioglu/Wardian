@@ -1,6 +1,7 @@
 use super::*;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -169,6 +170,175 @@ async fn activate(
         })
         .await
         .expect("ack activation")
+}
+
+#[tokio::test]
+async fn fixed_runtime_geometry_rejects_remote_owner_resizes() {
+    let broker = Arc::new(TerminalSessionBroker::with_timer(Arc::new(
+        ManualTimer::default(),
+    )));
+    let (runtime, _, resizes) = runtime();
+    let generation = broker
+        .start_or_replace_runtime(
+            "session-1",
+            runtime.fixed_geometry(geometry(120, 40)),
+            geometry(80, 24),
+        )
+        .await
+        .expect("start fixed-geometry runtime");
+    let registration = broker
+        .register_presentation(
+            registration(
+                "remote-owner",
+                TerminalClientKind::Remote,
+                TerminalRequestedInteraction::Interactive,
+            ),
+            TerminalClientIdentity::authenticated_remote("remote-owner", true),
+        )
+        .await
+        .expect("register remote owner");
+    let active = activate(
+        &broker,
+        "remote-owner",
+        generation,
+        registration.broker_state.lease_epoch,
+    )
+    .await;
+
+    let result = broker
+        .resize(TerminalGeometryRequest {
+            lease: TerminalLeaseIdentity {
+                session_id: "session-1".to_string(),
+                presentation_id: "remote-owner".to_string(),
+                runtime_generation: generation,
+                lease_epoch: active.broker_state.lease_epoch,
+            },
+            geometry_sequence: 1,
+            geometry: geometry(72, 20),
+        })
+        .await
+        .expect("report owner viewport");
+
+    assert_eq!(
+        result.decision.status,
+        TerminalLeaseDecisionStatus::Rejected
+    );
+    assert_eq!(
+        result.decision.reason,
+        Some(TerminalLeaseRejectionReason::FixedGeometry)
+    );
+    assert_eq!(result.geometry, geometry(120, 40));
+    assert!(result.snapshot.is_none());
+    assert!(resizes.lock().expect("resize log").is_empty());
+    assert_eq!(
+        broker
+            .broker_state("session-1")
+            .await
+            .expect("broker state")
+            .geometry,
+        geometry(120, 40)
+    );
+}
+
+#[tokio::test]
+async fn staged_runtime_replacement_rolls_back_to_the_usable_displaced_runtime() {
+    let broker = Arc::new(TerminalSessionBroker::with_timer(Arc::new(
+        ManualTimer::default(),
+    )));
+    let (old_runtime, mut old_input, _) = runtime();
+    let old_generation = broker
+        .start_or_replace_runtime("transactional", old_runtime, geometry(120, 40))
+        .await
+        .expect("start displaced runtime");
+    let (replacement_runtime, _replacement_input, _) = runtime();
+    let replacement_generation = broker
+        .stage_runtime_replacement(
+            "transactional",
+            replacement_runtime,
+            geometry(120, 40),
+        )
+        .await
+        .expect("stage replacement runtime");
+    assert!(replacement_generation > old_generation);
+
+    broker
+        .rollback_runtime_replacement("transactional", replacement_generation)
+        .await
+        .expect("roll back replacement runtime");
+    broker
+        .send_privileged_input("transactional", b"old-runtime-still-live".to_vec())
+        .await
+        .expect("write through restored runtime");
+
+    assert_eq!(
+        old_input.recv().await,
+        Some(b"old-runtime-still-live".to_vec())
+    );
+}
+
+#[tokio::test]
+async fn staged_runtime_replacement_without_a_displaced_actor_rolls_back_to_absence() {
+    let broker = Arc::new(TerminalSessionBroker::with_timer(Arc::new(
+        ManualTimer::default(),
+    )));
+    let (replacement_runtime, _replacement_input, _) = runtime();
+    let replacement_generation = broker
+        .stage_runtime_replacement(
+            "missing-actor",
+            replacement_runtime,
+            geometry(120, 40),
+        )
+        .await
+        .expect("stage replacement without a displaced actor");
+
+    broker
+        .rollback_runtime_replacement("missing-actor", replacement_generation)
+        .await
+        .expect("roll back replacement to no actor");
+
+    assert_eq!(
+        broker.broker_state("missing-actor").await,
+        Err(TerminalBrokerError::SessionNotFound)
+    );
+}
+
+#[tokio::test]
+async fn staged_runtime_replacement_without_a_displaced_actor_commits_as_started() {
+    let broker = Arc::new(TerminalSessionBroker::with_timer(Arc::new(
+        ManualTimer::default(),
+    )));
+    let mut lifecycle = broker.subscribe_lifecycle();
+    let (replacement_runtime, mut replacement_input, _) = runtime();
+    let replacement_generation = broker
+        .stage_runtime_replacement(
+            "missing-actor",
+            replacement_runtime,
+            geometry(120, 40),
+        )
+        .await
+        .expect("stage replacement without a displaced actor");
+
+    broker
+        .commit_runtime_replacement("missing-actor", replacement_generation)
+        .await
+        .expect("commit replacement as the new actor");
+    broker
+        .send_privileged_input("missing-actor", b"replacement-live".to_vec())
+        .await
+        .expect("write through committed replacement");
+
+    assert_eq!(
+        replacement_input.recv().await,
+        Some(b"replacement-live".to_vec())
+    );
+    assert_eq!(
+        lifecycle.recv().await.expect("replacement lifecycle"),
+        TerminalSessionLifecycleNotification {
+            session_id: "missing-actor".to_string(),
+            runtime_generation: replacement_generation,
+            lifecycle: TerminalSessionLifecycleEvent::RuntimeStarted,
+        }
+    );
 }
 
 fn process_output(
@@ -519,6 +689,187 @@ async fn activation_is_two_phase_idempotent_and_superseding() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authorized_native_focus_serializes_competing_remote_activation() {
+    let timer = Arc::new(ManualTimer::default());
+    let (broker, generation) = start(timer).await;
+    register_desktop(&broker, "desktop:zellij-habitat-terminal").await;
+    broker
+        .register_presentation(
+            registration(
+                "remote-owner",
+                TerminalClientKind::Remote,
+                TerminalRequestedInteraction::Interactive,
+            ),
+            TerminalClientIdentity::authenticated_remote("remote-owner", true),
+        )
+        .await
+        .expect("register remote");
+    let state = broker.broker_state("session-1").await.expect("broker state");
+    let lease_epoch = state.lease_epoch;
+    let (focus_entered_tx, focus_entered_rx) = oneshot::channel();
+    let (release_focus_tx, release_focus_rx) = oneshot::channel();
+    let focus_broker = Arc::clone(&broker);
+    let focus = tokio::spawn(async move {
+        focus_broker
+            .run_authorized_native_focus(
+                "session-1",
+                generation,
+                lease_epoch,
+                "desktop:zellij-habitat-terminal",
+                move || async move {
+                    let _ = focus_entered_tx.send(());
+                    let _ = release_focus_rx.await;
+                    Ok(())
+                },
+            )
+            .await
+    });
+    focus_entered_rx.await.expect("focus action entered");
+
+    let remote_broker = Arc::clone(&broker);
+    let remote_activation = tokio::spawn(async move {
+        remote_broker
+            .begin_activation(TerminalActivationBeginRequest {
+                session_id: "session-1".to_string(),
+                presentation_id: "remote-owner".to_string(),
+                runtime_generation: generation,
+                observed_lease_epoch: lease_epoch,
+            })
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !remote_activation.is_finished(),
+        "ownership transition must wait until native focus finishes"
+    );
+
+    let _ = release_focus_tx.send(());
+    focus.await.expect("focus task").expect("authorized focus");
+    let remote = remote_activation
+        .await
+        .expect("remote task")
+        .expect("remote activation");
+    assert_eq!(remote.decision.status, TerminalLeaseDecisionStatus::Accepted);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_owner_change_rejects_stale_native_focus_without_running_action() {
+    let timer = Arc::new(ManualTimer::default());
+    let (broker, generation) = start(timer).await;
+    register_desktop(&broker, "desktop:zellij-habitat-terminal").await;
+    let remote = broker
+        .register_presentation(
+            registration(
+                "remote-owner",
+                TerminalClientKind::Remote,
+                TerminalRequestedInteraction::Interactive,
+            ),
+            TerminalClientIdentity::authenticated_remote("remote-owner", true),
+        )
+        .await
+        .expect("register remote");
+    let stale_lease_epoch = remote.broker_state.lease_epoch;
+    activate(&broker, "remote-owner", generation, stale_lease_epoch).await;
+    let action_ran = Arc::new(AtomicBool::new(false));
+    let observed_action = Arc::clone(&action_ran);
+
+    let result = broker
+        .run_authorized_native_focus(
+            "session-1",
+            generation,
+            stale_lease_epoch,
+            "desktop:zellij-habitat-terminal",
+            move || async move {
+                observed_action.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+
+    assert_eq!(result, Err(TerminalBrokerError::NativeFocusUnauthorized));
+    assert!(!action_ran.load(Ordering::SeqCst));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authorized_native_focus_timeout_releases_output_and_ownership_processing() {
+    let timer = Arc::new(ManualTimer::default());
+    let (broker, generation) = start(timer).await;
+    register_desktop(&broker, "desktop:zellij-habitat-terminal").await;
+    broker
+        .register_presentation(
+            registration(
+                "remote-owner",
+                TerminalClientKind::Remote,
+                TerminalRequestedInteraction::Interactive,
+            ),
+            TerminalClientIdentity::authenticated_remote("remote-owner", true),
+        )
+        .await
+        .expect("register remote");
+    let lease_epoch = broker
+        .broker_state("session-1")
+        .await
+        .expect("broker state")
+        .lease_epoch;
+    let focus_broker = Arc::clone(&broker);
+    let focus = tokio::spawn(async move {
+        focus_broker
+            .run_authorized_native_focus(
+                "session-1",
+                generation,
+                lease_epoch,
+                "desktop:zellij-habitat-terminal",
+                || async move { std::future::pending::<Result<(), String>>().await },
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let output_broker = Arc::clone(&broker);
+    let output = tokio::task::spawn_blocking(move || {
+        output_broker.process_output_blocking(
+            "session-1",
+            generation,
+            b"focus-timeout-recovered".to_vec(),
+        )
+    });
+    let remote_broker = Arc::clone(&broker);
+    let remote_activation = tokio::spawn(async move {
+        remote_broker
+            .begin_activation(TerminalActivationBeginRequest {
+                session_id: "session-1".to_string(),
+                presentation_id: "remote-owner".to_string(),
+                runtime_generation: generation,
+                observed_lease_epoch: lease_epoch,
+            })
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!output.is_finished());
+    assert!(!remote_activation.is_finished());
+
+    assert_eq!(
+        focus.await.expect("focus task"),
+        Err(TerminalBrokerError::RuntimeIo(
+            "native_focus_timeout".to_string()
+        ))
+    );
+    tokio::time::timeout(Duration::from_secs(1), output)
+        .await
+        .expect("output pipeline remained blocked")
+        .expect("output task")
+        .expect("process output after timeout");
+    let remote = tokio::time::timeout(Duration::from_secs(1), remote_activation)
+        .await
+        .expect("ownership processing remained blocked")
+        .expect("remote activation task")
+        .expect("remote activation after timeout");
+    assert_eq!(remote.decision.status, TerminalLeaseDecisionStatus::Accepted);
+    let snapshot = broker.snapshot("session-1").await.expect("snapshot");
+    assert!(snapshot.visible_grid.contains("focus-timeout-recovered"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pending_activation_freezes_input_and_timeout_rolls_back() {
     let timer = Arc::new(ManualTimer::default());
     let (broker, generation) = start(timer.clone()).await;
@@ -535,6 +886,23 @@ async fn pending_activation_freezes_input_and_timeout_rolls_back() {
         })
         .await
         .expect("begin transfer");
+    assert!(pending.broker_state.owner_presentation_id.is_none());
+    assert_eq!(
+        pending
+            .broker_state
+            .pending_activation
+            .as_ref()
+            .map(|activation| activation.presentation_id.as_str()),
+        Some("two")
+    );
+    assert_eq!(
+        pending
+            .broker_state
+            .pending_activation
+            .as_ref()
+            .map(|activation| activation.previous_owner_presentation_id.as_deref()),
+        Some(Some("one"))
+    );
     for presentation_id in ["one", "two"] {
         let decision = broker
             .send_input(TerminalInputRequest {
@@ -683,6 +1051,51 @@ async fn hidden_read_only_and_suspended_presentations_are_not_promoted() {
         .await
         .expect("promotion state");
     assert_eq!(state.owner_presentation_id.as_deref(), Some("eligible"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_becoming_hidden_and_read_only_releases_its_input_lease() {
+    let timer = Arc::new(ManualTimer::default());
+    let (broker, generation) = start(timer).await;
+    register_desktop(&broker, "owner").await;
+    let active = activate(&broker, "owner", generation, 0).await;
+
+    let updated = broker
+        .update_presentation(
+            TerminalPresentationUpdateRequest {
+                presentation_id: "owner".to_string(),
+                session_id: "session-1".to_string(),
+                runtime_generation: generation,
+                desired_geometry: Some(geometry(80, 24)),
+                visibility: TerminalVisibility::Hidden,
+                render_state: TerminalRenderState::Mounted,
+                requested_interaction: TerminalRequestedInteraction::ReadOnly,
+                observed_lease_epoch: active.broker_state.lease_epoch,
+            },
+            TerminalClientIdentity::trusted_desktop(),
+        )
+        .await
+        .expect("hide owner");
+
+    assert!(updated.broker_state.owner_presentation_id.is_none());
+    assert!(updated.broker_state.lease_epoch > active.broker_state.lease_epoch);
+    let rejected = broker
+        .send_input(TerminalInputRequest {
+            lease: TerminalLeaseIdentity {
+                session_id: "session-1".to_string(),
+                presentation_id: "owner".to_string(),
+                runtime_generation: generation,
+                lease_epoch: active.broker_state.lease_epoch,
+            },
+            bytes: b"stale hidden input".to_vec(),
+        })
+        .await
+        .expect("stale input decision");
+    assert_eq!(rejected.status, TerminalLeaseDecisionStatus::Rejected);
+    assert_eq!(
+        rejected.reason,
+        Some(TerminalLeaseRejectionReason::LeaseEpochChanged)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

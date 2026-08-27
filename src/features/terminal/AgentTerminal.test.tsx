@@ -100,6 +100,20 @@ function modernBrokerState(ownerPresentationId: string | null = null) {
   };
 }
 
+function modernPendingBrokerState(presentationId: string) {
+  return {
+    ...modernBrokerState(),
+    lease_epoch: 1,
+    pending_activation: {
+      presentation_id: presentationId,
+      previous_owner_presentation_id: null,
+      runtime_generation: 1,
+      lease_epoch: 1,
+      activation_id: "activation-1",
+    },
+  };
+}
+
 function modernSnapshot() {
   return {
     snapshot_id: "modern-snapshot",
@@ -1239,6 +1253,7 @@ describe("AgentTerminal scrollback", () => {
             lease_epoch: 1,
             owner_presentation_id: null,
           },
+          broker_state: modernPendingBrokerState("pane-focus"),
           activation_id: "activation-1",
           snapshot: modernSnapshot(),
           sequence_barrier: 0,
@@ -1336,6 +1351,7 @@ describe("AgentTerminal scrollback", () => {
             lease_epoch: 1,
             owner_presentation_id: null,
           },
+          broker_state: modernPendingBrokerState("agents-pane"),
           activation_id: "agents-activation",
           snapshot: modernSnapshot(),
           sequence_barrier: 0,

@@ -8,7 +8,11 @@ import type {
   TerminalRequestedInteraction,
   TerminalVisibility,
 } from "../../../types";
-import { AgentTerminal } from "../../terminal/AgentTerminal";
+import {
+  HABITAT_TERMINAL_PRESENTATION_ID,
+  ZellijAgentTerminal,
+  useZellijPresentationStore,
+} from "../../terminal/ZellijAgentTerminal";
 
 export interface AgentSessionSurfaceProps {
   /** Stable workbench presentation identity. Closing it must not affect the agent runtime. */
@@ -34,7 +38,7 @@ export interface AgentSessionSurfaceProps {
   on_close_surface?: () => void;
 }
 
-/** One renderer identity per workbench presentation of an agent runtime. */
+/** One local slot identity per workbench presentation of an agent runtime. */
 export function agentSessionPresentationId(surfaceId: string, agentId: string): string {
   return `${surfaceId}:agent:${agentId}`;
 }
@@ -42,12 +46,11 @@ export function agentSessionPresentationId(surfaceId: string, agentId: string): 
 type PresentationMode = "connecting" | "owner" | "mirror";
 
 function presentationMode(
-  agentId: string,
   presentationId: string,
-  brokerState: TerminalBrokerState | null | undefined,
+  brokerOwner: string | null | undefined,
 ): PresentationMode {
-  if (!brokerState || brokerState.session_id !== agentId) return "connecting";
-  return brokerState.owner_presentation_id === presentationId ? "owner" : "mirror";
+  if (brokerOwner === null || brokerOwner === undefined) return "connecting";
+  return brokerOwner === presentationId ? "owner" : "mirror";
 }
 
 /**
@@ -78,6 +81,11 @@ export function AgentSessionSurface({
   on_close_surface,
 }: AgentSessionSurfaceProps) {
   const presentationId = agentSessionPresentationId(surface_id, resource_key);
+  const targetId = `${presentationId}:${resource_key}`;
+  const activeTargetId = useZellijPresentationStore((state) => state.activeTargetId);
+  const sharedBrokerObservation = useZellijPresentationStore(
+    (state) => state.brokerOwners.get(resource_key),
+  );
   const resolvedAgent = agent?.session_id === resource_key ? agent : undefined;
   const [observedBrokerState, setObservedBrokerState] = useState(broker_state ?? null);
   const [observedPresentationState, setObservedPresentationState] = useState(
@@ -91,11 +99,21 @@ export function AgentSessionSurface({
     setRebindAgentId(rebind_candidates[0]?.session_id ?? "");
   }, [rebindAgentId, rebind_candidates]);
 
-  const mode = presentationMode(resource_key, presentationId, observedBrokerState);
+  const localBrokerOwner = observedBrokerState?.session_id === resource_key
+    ? observedBrokerState.owner_presentation_id
+    : undefined;
+  const sharedBrokerOwner = sharedBrokerObservation?.owner;
+  const brokerOwner = activeTargetId === targetId
+    && sharedBrokerOwner === HABITAT_TERMINAL_PRESENTATION_ID
+    ? localBrokerOwner
+    : sharedBrokerObservation !== undefined
+      ? sharedBrokerOwner
+      : localBrokerOwner;
+  const mode = presentationMode(presentationId, brokerOwner);
   const resolvedPresentation = observedPresentationState?.presentation_id === presentationId
     ? observedPresentationState
     : null;
-  const isReadOnly = mode === "mirror"
+  const isReadOnly = (mode === "mirror" && brokerOwner !== HABITAT_TERMINAL_PRESENTATION_ID)
     || requested_interaction === "read_only"
     || resolvedPresentation?.interaction_capability === "read_only";
 
@@ -227,12 +245,12 @@ export function AgentSessionSurface({
         </div>
       </header>
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden p-2">
-        <AgentTerminal
+        <ZellijAgentTerminal
           sessionId={resource_key}
           presentationId={presentationId}
           visibility={visibility}
           renderState={render_state}
-          requestedInteraction={requested_interaction}
+          requestedInteraction={isReadOnly ? "read_only" : requested_interaction}
           provider={resolvedAgent.provider}
           isMaximized={is_maximized}
           theme={theme}

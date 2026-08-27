@@ -2,23 +2,28 @@
 
 Wardian is built to handle multiple simultaneous, long-running agent sessions with strict resource and process isolation.
 
-## 🌉 Cross-Platform PTY Layer
-Wardian utilizes the `portable-pty` crate to provide a consistent PTY interface across different operating systems.
+## Cross-Platform terminal layer
 
-- **Windows**: Uses **ConPTY** (Windows Pseudo Console) through the `NativePtySystem`.
+Wardian bundles Zellij 0.45.0 as its agent terminal engine. Zellij owns one
+provider PTY per agent pane and uses ConPTY on Windows and Unix PTYs on Linux
+and macOS. On Windows, Wardian starts one attached Zellij client in a hidden
+native console and tracks its PID. On Linux and macOS, Wardian uses
+`portable-pty` for one attached Zellij client. Wardian does not use
+`portable-pty` to start a provider process per agent.
+
+- **Windows**: Zellij owns provider **ConPTY** instances. Wardian does not open
+  them through `NativePtySystem`.
 - **Linux/macOS**: Uses the standard Unix PTY system.
 
-### The PTY Model:
-- **Master**: The control end of the PTY, used for reading output and writing input.
-- **Slave**: The application end, where the selected runtime shell hosts the provider command.
+The standalone human terminal continues to use its own `portable-pty` runtime.
 
 ## 🛡️ Process Integrity (Windows Job Objects)
 To prevent orphaned provider and console-host processes when Wardian crashes or is force-closed, the Windows implementation uses **Job Objects** via the `win32job` crate.
 
 1. On startup, Wardian creates an app-lifetime `win32job::Job`.
 2. The `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` flag is enabled.
-3. Wardian assigns the backend process to that job before restoring or spawning interactive agents.
-4. Provider shells, CLIs, ConPTY console hosts, and descendants inherit the job from process creation time.
+3. Wardian assigns the backend process to that job before starting the attached Zellij client.
+4. The Zellij server, launchers, provider CLIs, ConPTY console hosts, and descendants inherit the job from process creation time.
 5. When the Wardian process terminates, the job object is closed by the OS, which automatically kills all processes assigned to it.
 
 Per-agent process-tree termination is still used for normal UI actions such as kill, pause, resume, and clear. Per-agent Job Objects are only a fallback if app-level supervision cannot be installed, because post-spawn assignment is inherently less reliable than inheriting the app-level job at creation time.
@@ -28,15 +33,69 @@ At startup, Wardian also sweeps stale persisted interactive sessions before rest
 ## 🔁 Spawning Lifecycle
 Spawning an agent follows a deterministic sequence in `manager::spawn_agent`:
 
-1. **Open PTY**: Create a new master/slave pair.
-2. **Resolve Runtime Shell**: Select the configured shell profile (`Auto`, discovered shell, or `Custom`).
-3. **Build Provider Command**: Assemble the provider executable plus provider-specific flags from the selected `AgentConfig.provider_config`.
-4. **Wrap for Host Shell**: Convert the provider command into a shell-hosted invocation that respects the selected shell family.
-5. **Spawn**: The PTY slave spawns the shell-hosted command.
-6. **Piping**:
-   - A **Writer Thread** is spawned to handle input from the UI.
-   - A **Reader Thread** is spawned to capture output, parsing it for JSON logs and status transitions.
-7. **Registration**: The `ActiveAgent` handle is added to the `AppState`.
+1. **Ensure engine**: Start or reattach the one Wardian-owned hidden Zellij
+   lifecycle client. It does not register a desktop broker session.
+2. **Build provider command**: Assemble the executable, exact argument vector,
+   working directory, and per-agent environment.
+3. **Create launch records**: Persist a nonce-bound one-use JSON manifest
+   containing the exact provider launch specification and a separate
+   non-secret managed-pane marker containing only the nonce and session ID.
+4. **Create pane**: Ask Zellij to create the pane with Wardian's bundled
+   terminal host. The host atomically renames the manifest to a private claimed
+   name, validates it, and deletes the claim before it starts the provider. A
+   concurrent host cannot consume the same nonce-bound launch.
+5. **Subscribe**: Observe replacement pane frames and provider-native logs.
+6. **Register runtime**: Register the pane-addressed transport under the agent's
+   existing terminal session ID in the terminal-session broker.
+7. **Register binding**: Store the generation-scoped agent-to-pane binding in
+   `AppState`.
+
+The pane transport is a pending cleanup guard through step 6. If broker
+registration fails, Wardian cancels frame publication, closes the frame and
+input channels, kills and waits for the subscription process, confirms its
+reader and input workers exited, and closes the uncommitted pane generation
+before returning the spawn error. Any unconfirmed process, worker, or pane
+closure remains inside the generation-scoped guard and is retried by a backend
+cleanup task; the pane lease is not released while local transport cleanup is
+still pending.
+
+Running restart holds the agent's delivery gate from preflight through broker
+and pane promotion. While a replacement reservation exists, previews are
+noninteractive and focus handoffs are rejected. An exited, closing, or missing
+old pane is first reconciled and removed, then restarted through the ordinary
+single-pane creation path instead of being treated as a live replacement.
+Native pane focus is executed through the terminal broker actor with the
+preview's runtime generation and lease epoch. The actor rejects stale, remote-
+owned, or pending-transfer requests before invoking Zellij and cannot process a
+competing ownership transition until the focus operation finishes. Focus CLI
+helpers are cancellation-aware, are killed at a four-second backend deadline,
+and have an actor-level timeout backstop so output and ownership processing
+resume after failure. Controlled helpers run in Unix process groups or Windows
+kill-on-close jobs, capture output in temporary files, and confirm process exit
+before returning from cancellation. If termination cannot be confirmed, the
+engine enters `failed` and refuses further native handoffs. Each replacement attached client also receives a unique
+engine generation; delayed exit callbacks from older clients cannot clear the
+replacement.
+
+Every other Zellij lifecycle CLI action, including session bootstrap and the
+Windows attached-client launcher wrapper, also has a fixed backend deadline.
+Ordinary helpers run in the same Unix process-group or Windows kill-on-close
+job boundary and confirm termination before returning a timeout, so start,
+close, reconcile, write, and status operations cannot block the engine
+indefinitely. The Windows launcher is the deliberate exception to the helper
+job: its started Zellij client remains in Wardian's app-lifetime supervisor job,
+while a failed or timed-out wrapper kills any client PID it published.
+
+Rendered Zellij frames are complete screen snapshots, not the provider's raw
+PTY protocol. They update the broker/parser and may prove a visible startup
+prompt, but they never enter provider event parsers or OSC-title classifiers.
+Provider-owned logs, hooks, and telemetry remain authoritative for lifecycle
+events, session identity, status, turn receipts, and OpenCode startup memory
+receipt. The mock provider uses its mirrored provider log for the same reason.
+Antigravity ready-prompt completion is likewise restricted to a raw provider
+stream; a complete Zellij repaint cannot end an active turn.
+Pane recovery uses the durable nonce marker plus Zellij's original pane command;
+provider-controlled display titles are never cleanup identity.
 
 ### Shell-hosted Launch Notes
 - Workflow shell-command nodes and headless provider runs use the same shell resolver as interactive PTY sessions.
@@ -45,7 +104,10 @@ Spawning an agent follows a deterministic sequence in `manager::spawn_agent`:
 
 ## Input Readiness and Interaction Delivery
 
-PTY input is a transport, not Wardian's communication source of truth. The interaction control plane owns structured messages, asks, replies, delivery attempts, and Inbox evidence. The PTY writer is only one possible way to deliver an interaction to a live provider runtime.
+Terminal input is a transport, not Wardian's communication source of truth.
+The interaction control plane owns structured messages, asks, replies,
+delivery attempts, and Inbox evidence. Structured delivery addresses the
+agent's Zellij pane under the existing per-agent lock.
 
 Each interactive provider runtime has a provider input generation. The generation increments whenever Wardian creates or reattaches a runtime boundary, including spawn, resume, clear, and provider reattach. Readiness observations are valid only for the generation that produced them.
 
@@ -84,17 +146,13 @@ When debugging or testing PTY issues, treat browser smoke results as insufficien
 
 ## 📐 Terminal Resizing
 
-Terminal resizing is presentation-aware. Each visible terminal reports its
-desired viewport without touching the PTY. Only the broker's active lease owner
-may submit an epoch-bearing resize with a monotonically increasing geometry
-sequence. The broker serializes native PTY resize, parser resize, canonical
-geometry update, and the geometry stream event as one commit; stale, mirror, or
-reordered requests are rejected nonfatally.
-
-Desktop geometry is clamped to 20..500 columns and 8..200 rows. Remote geometry
-uses 20..240 columns and 8..80 rows. Mirrors scale, pan, or letterbox the
-canonical owner grid locally instead of applying smallest-client-wins geometry.
-This keeps desktop rendering stable when a phone or narrow split is attached.
+Zellij derives provider-pane geometry from its attached client and layout.
+Snapshot cards never resize panes. The active desktop xterm fits the canonical
+Zellij frame locally. Presentation resize requests do not resize a provider
+ConPTY in this replacement, so narrow and duplicate surfaces cannot destabilize
+the provider TUI. The terminal broker keeps its parser at the same canonical
+geometry; viewport reports remain local presentation data and cannot reinterpret
+a complete Zellij frame at a different width.
 
 See [Terminal Presentation Broker](./terminal-presentation-broker.md) for the
 generation, lease, snapshot, and ownership-transfer protocol.
@@ -107,17 +165,19 @@ Wardian's frontend terminal stack is built on `xterm.js` and is intentionally tr
 
 - Wardian uses xterm's WebGL renderer for mounted terminal views when available. WebGL is preferred because xterm's `customGlyphs` support for block and box-drawing characters does not apply to the DOM renderer, and provider TUIs such as Claude Code rely on those glyphs for mascot/status rendering.
 - If WebGL is unavailable or loses its context, Wardian falls back to xterm's built-in DOM renderer rather than failing terminal initialization.
-- Renderer instances are not the source of runtime truth. Each presentation has
-  an independent renderer, while the Rust broker parser, snapshots, and ordered
-  event stream remain canonical if it must be recreated.
+- Renderer instances are not the source of runtime truth. One lifetime-stable
+  app-root renderer presents the selected pane's broker stream; inactive agent
+  cards use replacement pane snapshots and allocate no xterm.js or WebGL
+  instance. Card focus repositions the stable viewport and changes its
+  generation-scoped broker binding without reparenting its DOM, recreating its
+  xterm, or cycling its WebGL addon.
+- The singleton attempts WebGL once. If creation fails or the context is lost,
+  it keeps the same xterm instance on the DOM renderer and does not retry on
+  later card focus or visibility changes.
 - Renderer retirement is lease-bound. Output/reset/refresh operations capture
   one renderer identity before awaiting; retirement releases its budget slot
   immediately but defers physical disposal until every in-flight operation
   finishes. Post-await work may mutate only the captured renderer generation.
-- Agents keeps resident xterm renderers stable within the process budget while
-  scrolling. Intersection controls WebGL promotion separately, so leaving the
-  viewport does not cause destroy/recreate flicker. Above the budget, residency
-  changes only when an approaching card needs capacity.
 - Provider integrations must not depend on renderer-specific behavior.
 
 ### Capability Handling

@@ -57,7 +57,7 @@ flag-off development server cannot satisfy the run accidentally.
 | `e2e-native/tests/real-provider-rendering-native.test.mjs` | Scheduled for the Task 17 native semantic helper migration. |
 | `e2e-native/tests/terminal-geometry-sweep-native.test.mjs` | Scheduled for the Task 17 native semantic helper migration. |
 | `e2e-native/tests/terminal-rendering-native.test.mjs` | Scheduled for the Task 17 native semantic helper migration. |
-| `e2e-native/tests/terminal-visibility-snapshot-native.test.mjs` | Scheduled for the Task 17 native semantic helper migration. |
+| `e2e-native/tests/terminal-visibility-snapshot-native.test.mjs` | Migrated to the passive-card and app-level singleton terminal contract. |
 | `e2e-native/tests/terminal-wheel-scroll-native.test.mjs` | Scheduled for the Task 17 native semantic helper migration. |
 | `scripts/measure-view-performance.mjs` | Removed in Task 18 after replacement by the fail-closed production workbench performance harness. |
 | `scripts/capture-doc-screenshots.mjs` | Scheduled for the Task 20 semantic capture migration. |

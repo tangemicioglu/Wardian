@@ -7,9 +7,9 @@ mod snapshot;
 mod tests;
 
 pub use actor::{
-    NativeTerminalWriteRequest, TerminalBrokerError, TerminalClientIdentity,
-    TerminalRuntimeHandles, TerminalSessionBroker, TerminalSessionHandle, TerminalTimer,
-    MAX_DESKTOP_PRESENTATIONS_PER_SESSION, MAX_REMOTE_PRESENTATIONS_PER_SESSION,
+    NativeFocusStartupAdmission, NativeTerminalWriteRequest, TerminalBrokerError,
+    TerminalClientIdentity, TerminalRuntimeHandles, TerminalSessionBroker, TerminalSessionHandle,
+    TerminalTimer, MAX_DESKTOP_PRESENTATIONS_PER_SESSION, MAX_REMOTE_PRESENTATIONS_PER_SESSION,
     TERMINAL_SESSION_ACTOR_CAPACITY,
 };
 pub use native::{

@@ -175,8 +175,13 @@ async function captureOpenCodeInteractionScreenshot(driver, sessionId) {
 }
 
 async function activateAgentCard(driver, sessionId) {
-  const card = await driver.findElement(By.id(`agent-card-${sessionId}`));
-  await card.click();
+  await driver.findElement(By.id(`agent-card-${sessionId}`));
+  await driver.executeScript((sid) => {
+    const preview = document.querySelector(
+      `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sid)}"]`,
+    );
+    preview?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  }, sessionId);
 }
 
 async function activateAgentTerminalOwnership(driver, sessionId) {

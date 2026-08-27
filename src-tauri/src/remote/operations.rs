@@ -707,6 +707,7 @@ mod tests {
             background_processes: Vec::new(),
             memory_capability: None,
             runtime_generation: None,
+            zellij_pane: None,
             process_id: Some(1234),
             query_count: Arc::new(Mutex::new(0)),
             init_timestamp: Arc::new(Mutex::new(None)),

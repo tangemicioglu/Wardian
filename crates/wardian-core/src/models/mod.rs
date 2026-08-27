@@ -8,6 +8,7 @@ pub mod library;
 pub mod provider;
 pub mod session_policy;
 pub mod terminal_session;
+pub mod terminal_engine;
 pub mod workbench;
 pub mod workflow;
 
@@ -27,5 +28,6 @@ pub use session_policy::{
     WorkflowAgentMode,
 };
 pub use terminal_session::*;
+pub use terminal_engine::*;
 pub use workbench::*;
 pub use workflow::*;

@@ -178,6 +178,7 @@ pub enum TerminalLeaseRejectionReason {
     ResyncNotRequired,
     StaleOwnerResync,
     StaleGeometrySequence,
+    FixedGeometry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,6 +224,7 @@ impl TerminalLeaseDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalActivationBeginResult {
     pub decision: TerminalLeaseDecision,
+    pub broker_state: TerminalBrokerState,
     pub activation_id: Option<String>,
     pub snapshot: Option<TerminalSnapshot>,
     pub sequence_barrier: u64,
@@ -323,6 +325,7 @@ pub enum TerminalBrokerEventKind {
         owner_presentation_id: Option<String>,
         lease_epoch: u64,
         activation_id: Option<String>,
+        pending_activation: Option<TerminalPendingActivationState>,
     },
     Lifecycle {
         lifecycle: TerminalSessionLifecycleEvent,

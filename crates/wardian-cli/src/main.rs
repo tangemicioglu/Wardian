@@ -9,6 +9,7 @@ mod live;
 mod memory;
 mod output;
 mod telemetry;
+mod terminal_host;
 mod watchlist;
 
 use std::{
@@ -72,6 +73,7 @@ fn run() -> i32 {
         Command::Notify(args) => handle_notify(args),
         Command::Ask(args) => handle_ask(args),
         Command::Reply(args) => handle_reply(args),
+        Command::TerminalHost(args) => return terminal_host::run(args),
     };
 
     match result {

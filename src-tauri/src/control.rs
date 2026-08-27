@@ -5495,6 +5495,7 @@ mod tests {
             background_processes: Vec::new(),
             memory_capability: None,
             runtime_generation: None,
+            zellij_pane: None,
             process_id: Some(1234),
             query_count: Arc::new(Mutex::new(0)),
             init_timestamp: Arc::new(Mutex::new(Some("2026-05-07T00:00:00.000Z".to_string()))),
@@ -7968,6 +7969,71 @@ mod tests {
 
         assert!(drained.is_none());
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn replacement_readiness_rollback_releases_queued_delivery_to_the_old_runtime() {
+        let _home = TestWardianHome::new();
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        state
+            .interactions
+            .start_provider_input_generation(
+                "agent-1",
+                wardian_core::control::ProviderInputReadiness::Ready,
+                Some(wardian_core::control::ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        let readiness_snapshot = state
+            .interactions
+            .capture_provider_input_rollback_snapshot("agent-1")
+            .await;
+        state
+            .interactions
+            .start_provider_input_generation(
+                "agent-1",
+                wardian_core::control::ProviderInputReadiness::Booting,
+                None,
+            )
+            .await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        install_test_terminal_runtime(&state, "agent-1", tx).await;
+
+        let queued = deliver_message_to_target(
+            None,
+            &state,
+            "CoderOne",
+            "survive failed restart",
+            None,
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued[0].delivery_state, "queued");
+
+        state
+            .interactions
+            .restore_provider_input_rollback_snapshot("agent-1", &readiness_snapshot)
+            .await
+            .expect("restore provider readiness");
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+            .await
+            .unwrap()
+            .expect("restored readiness drains queued message");
+
+        let expected = expected_terminal_chunks("mock", "survive failed restart");
+        assert_eq!(rx.recv().await.unwrap(), expected[0]);
+        assert_eq!(rx.recv().await.unwrap(), expected[1]);
+        assert_eq!(drained.runtime_state, "mailbox_drain");
     }
 
     #[tokio::test]

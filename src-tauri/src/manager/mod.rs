@@ -23,7 +23,7 @@ pub(crate) use opencode::opencode_last_assistant_text;
 pub(crate) use session_identity::{
     apply_provider_identity, validate_config_for_launch, validate_session_values_for_launch,
 };
-pub use spawn::{resize_pty, spawn_agent};
+pub use spawn::{resize_pty, spawn_agent, spawn_agent_replacement};
 pub use telemetry::{get_all_metrics, get_app_metrics};
 
 pub use crate::utils::fs::*;
@@ -1073,12 +1073,26 @@ pub(crate) fn interactive_provider_launch(
 }
 
 pub(crate) fn apply_terminal_identity_env(cmd: &mut CommandBuilder) {
-    cmd.env("COLORTERM", "truecolor");
-    cmd.env("TERM", "xterm-256color");
-    if let Some(home) = crate::utils::fs::get_wardian_home() {
-        cmd.env("WARDIAN_HOME", home);
+    for (key, value) in terminal_identity_env() {
+        cmd.env(key, value);
     }
-    apply_managed_cli_path_to_pty(cmd);
+}
+
+pub(crate) fn terminal_identity_env() -> Vec<(String, String)> {
+    let mut env = vec![
+        ("COLORTERM".to_string(), "truecolor".to_string()),
+        ("TERM".to_string(), "xterm-256color".to_string()),
+    ];
+    if let Some(home) = crate::utils::fs::get_wardian_home() {
+        env.push((
+            "WARDIAN_HOME".to_string(),
+            home.to_string_lossy().to_string(),
+        ));
+    }
+    if let Some((key, value)) = managed_cli_path_env() {
+        env.push((key, value));
+    }
+    env
 }
 
 pub(crate) fn issue_memory_capability(
@@ -1097,12 +1111,16 @@ pub(crate) fn issue_memory_capability(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn apply_managed_cli_path_to_pty(cmd: &mut CommandBuilder) {
-    if let Some(path) =
-        crate::utils::cli_install::child_path_with_cli_bin(std::env::var("PATH").ok().as_deref())
-    {
-        cmd.env(managed_cli_path_env_key(), path);
+    if let Some((key, value)) = managed_cli_path_env() {
+        cmd.env(key, value);
     }
+}
+
+pub(crate) fn managed_cli_path_env() -> Option<(String, String)> {
+    crate::utils::cli_install::child_path_with_cli_bin(std::env::var("PATH").ok().as_deref())
+        .map(|path| (managed_cli_path_env_key().to_string(), path))
 }
 
 pub(crate) fn apply_managed_cli_path_to_process(cmd: &mut tokio::process::Command) {
@@ -1123,26 +1141,38 @@ fn managed_cli_path_env_key() -> &'static str {
     "PATH"
 }
 
+#[cfg(test)]
 pub(crate) fn apply_interactive_provider_runtime_env(
     provider_name: &str,
     cmd: &mut CommandBuilder,
 ) -> Result<(), String> {
+    for (key, value) in interactive_provider_runtime_env(provider_name)? {
+        cmd.env(key, value);
+    }
+    Ok(())
+}
+
+pub(crate) fn interactive_provider_runtime_env(
+    provider_name: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let mut env = Vec::new();
     if provider_name == "claude" {
-        for (key, value) in claude_terminal_runtime_env() {
-            cmd.env(key, value);
-        }
+        env.extend(
+            claude_terminal_runtime_env()
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string())),
+        );
     }
 
     #[cfg(windows)]
     if provider_name == "claude" {
         if let Some(script) = ensure_claude_bash_env_script()? {
-            cmd.env("BASH_ENV", script);
+            env.push(("BASH_ENV".to_string(), script));
         }
     }
 
-    let _ = (provider_name, cmd);
-
-    Ok(())
+    let _ = provider_name;
+    Ok(env)
 }
 
 pub(crate) fn apply_process_provider_runtime_env(
@@ -1835,6 +1865,7 @@ mod tests {
             background_processes: Vec::new(),
             memory_capability: None,
             runtime_generation: None,
+            zellij_pane: None,
             process_id: None,
             query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
             init_timestamp: std::sync::Arc::new(std::sync::Mutex::new(None)),

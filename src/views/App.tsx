@@ -36,6 +36,7 @@ import { SidebarIconRail, SidebarTab } from "../layout/SidebarIconRail";
 import { SidebarContentPane } from "../layout/SidebarContentPane";
 import { CustomTitleBar } from "../layout/titlebar/CustomTitleBar";
 import { UserTerminalPanel } from "../features/terminal/UserTerminalPanel";
+import { ZellijAgentTerminalHost } from "../features/terminal/ZellijAgentTerminal";
 import { useTerminalApplicationVisibility } from "../features/terminal/useTerminalApplicationVisibility";
 import { SettingsModal } from "../features/settings/SettingsModal";
 import { UpdateAvailableNotice } from "../features/settings/UpdateAvailableNotice";
@@ -1991,6 +1992,7 @@ function AppBody() {
             />
           )}
           mainOverlays={<>
+            <ZellijAgentTerminalHost />
             {dirtySurfacePrompt.dialog}
             <CustomCloneModal
             sourceSessionId={customCloneSourceId ?? ""}

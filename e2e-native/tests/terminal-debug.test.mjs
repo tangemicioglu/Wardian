@@ -6,29 +6,56 @@ import {
   resolveAgentTerminalPresentationId,
 } from "../lib/terminal-debug.mjs";
 
+class FakeElement {
+  constructor(attributes = {}, preview = null) {
+    this.attributes = attributes;
+    this.preview = preview;
+  }
+
+  getAttribute(name) {
+    return this.attributes[name] ?? null;
+  }
+
+  querySelector(selector) {
+    if (selector.includes('data-testid="agent-terminal-host"')) return null;
+    if (selector.includes('data-zellij-presentation="preview"')) return this.preview;
+    return null;
+  }
+
+  dispatchEvent() {
+    return true;
+  }
+}
+
 function terminalHost(sessionId, presentationId) {
-  const attributes = new Map([
-    ["data-terminal-session-id", sessionId],
-    ["data-terminal-presentation-id", presentationId],
-  ]);
-  return { getAttribute: (name) => attributes.get(name) ?? null };
+  return new FakeElement({
+    "data-terminal-session-id": sessionId,
+    "data-terminal-presentation-id": presentationId,
+  });
 }
 
-function terminalRoot(hosts, attributes = {}) {
-  return {
-    getAttribute: (name) => attributes[name] ?? null,
-    querySelectorAll: () => hosts,
-  };
+function passiveRoot(attributes = {}) {
+  return new FakeElement(attributes, new FakeElement({ "aria-disabled": "false" }));
 }
 
-function fakeDriver({ cards = new Map(), panels = [], presentationIds = [] }) {
+function fakeDriver({ cards = new Map(), panels = [], singletonHosts = [], presentationIds = [] }) {
   return {
     async executeScript(callback, ...args) {
-      const previousDocument = globalThis.document;
-      const previousWindow = globalThis.window;
+      const previous = {
+        CSS: globalThis.CSS,
+        document: globalThis.document,
+        HTMLElement: globalThis.HTMLElement,
+        PointerEvent: globalThis.PointerEvent,
+        window: globalThis.window,
+      };
+      globalThis.CSS = { escape: (value) => value };
+      globalThis.HTMLElement = FakeElement;
+      globalThis.PointerEvent = class {};
       globalThis.document = {
         getElementById: (id) => cards.get(id) ?? null,
-        querySelectorAll: () => panels,
+        querySelectorAll: (selector) => (
+          selector.includes('data-surface-type="agent-session"') ? panels : singletonHosts
+        ),
       };
       globalThis.window = {
         __wardianTerminalDebug: { presentationIds: () => presentationIds },
@@ -36,8 +63,7 @@ function fakeDriver({ cards = new Map(), panels = [], presentationIds = [] }) {
       try {
         return callback(...args);
       } finally {
-        globalThis.document = previousDocument;
-        globalThis.window = previousWindow;
+        Object.assign(globalThis, previous);
       }
     },
     async wait(probe, _timeoutMs, message) {
@@ -48,13 +74,12 @@ function fakeDriver({ cards = new Map(), panels = [], presentationIds = [] }) {
   };
 }
 
-test("resolves an Agents renderer only from the exact session card host", async () => {
+test("resolves the singleton renderer for one exact passive Agents card", async () => {
   const sessionId = "session-a";
-  const presentationId = "agents-surface:agent:session-a";
+  const presentationId = "desktop:zellij-habitat-terminal";
   const driver = fakeDriver({
-    cards: new Map([[`agent-card-${sessionId}`, terminalRoot([
-      terminalHost(sessionId, presentationId),
-    ])]]),
+    cards: new Map([[`agent-card-${sessionId}`, passiveRoot()]]),
+    singletonHosts: [terminalHost(sessionId, presentationId)],
     presentationIds: [presentationId],
   });
 
@@ -64,13 +89,14 @@ test("resolves an Agents renderer only from the exact session card host", async 
   );
 });
 
-test("fails closed when one Agents card has ambiguous terminal presentations", async () => {
+test("fails closed when the singleton host is ambiguous", async () => {
   const sessionId = "session-a";
   const driver = fakeDriver({
-    cards: new Map([[`agent-card-${sessionId}`, terminalRoot([
+    cards: new Map([[`agent-card-${sessionId}`, passiveRoot()]]),
+    singletonHosts: [
       terminalHost(sessionId, "presentation-a"),
       terminalHost(sessionId, "presentation-b"),
-    ])]]),
+    ],
     presentationIds: ["presentation-a", "presentation-b"],
   });
 
@@ -80,21 +106,17 @@ test("fails closed when one Agents card has ambiguous terminal presentations", a
   );
 });
 
-test("agent-session resolution requires an exact surface when a session has two tabs", async () => {
+test("agent-session resolution requires an exact surface before using the singleton", async () => {
   const sessionId = "session-a";
+  const presentationId = "desktop:zellij-habitat-terminal";
   const panels = [
-    terminalRoot([terminalHost(sessionId, "surface-a:agent")], {
-      "data-resource-key": sessionId,
-      "data-surface-id": "surface-a",
-    }),
-    terminalRoot([terminalHost(sessionId, "surface-b:agent")], {
-      "data-resource-key": sessionId,
-      "data-surface-id": "surface-b",
-    }),
+    passiveRoot({ "data-resource-key": sessionId, "data-surface-id": "surface-a" }),
+    passiveRoot({ "data-resource-key": sessionId, "data-surface-id": "surface-b" }),
   ];
   const driver = fakeDriver({
     panels,
-    presentationIds: ["surface-a:agent", "surface-b:agent"],
+    singletonHosts: [terminalHost(sessionId, presentationId)],
+    presentationIds: [presentationId],
   });
 
   await assert.rejects(
@@ -106,6 +128,6 @@ test("agent-session resolution requires an exact surface when a session has two 
       surfaceId: "surface-b",
       timeoutMs: 1,
     }),
-    "surface-b:agent",
+    presentationId,
   );
 });

@@ -19,9 +19,17 @@ const EVENT_WAKE_COALESCE: Duration = Duration::from_millis(16);
 const ACTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_INPUT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(not(test))]
+const AUTHORIZED_NATIVE_FOCUS_TIMEOUT: Duration = Duration::from_millis(4_500);
+#[cfg(test)]
+const AUTHORIZED_NATIVE_FOCUS_TIMEOUT: Duration = Duration::from_millis(250);
 
 type ResizeHandler = dyn Fn(TerminalGeometry) -> Result<(), String> + Send + Sync + 'static;
 type BrokerReply<T> = oneshot::Sender<Result<T, TerminalBrokerError>>;
+type AuthorizedNativeFocusFuture =
+    Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>;
+type AuthorizedNativeFocusAction =
+    Box<dyn FnOnce() -> AuthorizedNativeFocusFuture + Send + 'static>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalBrokerError {
@@ -34,6 +42,7 @@ pub enum TerminalBrokerError {
     PresentationNotFound,
     ConsumerNotFound,
     DesktopConsumerAlreadyRegistered,
+    NativeFocusUnauthorized,
     PresentationLimit {
         client_kind: TerminalClientKind,
         limit: usize,
@@ -53,6 +62,14 @@ impl fmt::Display for TerminalBrokerError {
 
 impl std::error::Error for TerminalBrokerError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeFocusStartupAdmission {
+    session_id: String,
+    runtime_generation: u64,
+    lease_epoch: u64,
+    presentation_id: String,
+}
+
 /// A single terminal-input write and its completion receipt from the native
 /// PTY writer. A successful enqueue is not treated as a successful PTY write.
 pub struct NativeTerminalWriteRequest {
@@ -70,6 +87,7 @@ enum TerminalRuntimeInput {
 pub struct TerminalRuntimeHandles {
     input_tx: TerminalRuntimeInput,
     resize: Arc<ResizeHandler>,
+    fixed_geometry: Option<TerminalGeometry>,
     ignore_scrollback_erase: bool,
     reset_parser_on_scrollback_erase: bool,
 }
@@ -82,6 +100,7 @@ impl TerminalRuntimeHandles {
         Self {
             input_tx: TerminalRuntimeInput::Legacy(input_tx),
             resize: Arc::new(resize),
+            fixed_geometry: None,
             ignore_scrollback_erase: false,
             reset_parser_on_scrollback_erase: false,
         }
@@ -99,6 +118,7 @@ impl TerminalRuntimeHandles {
         Self {
             input_tx: TerminalRuntimeInput::Acknowledged(input_tx),
             resize: Arc::new(resize),
+            fixed_geometry: None,
             ignore_scrollback_erase: false,
             reset_parser_on_scrollback_erase: false,
         }
@@ -106,6 +126,15 @@ impl TerminalRuntimeHandles {
 
     fn acknowledges_native_writes(&self) -> bool {
         matches!(&self.input_tx, TerminalRuntimeInput::Acknowledged(_))
+    }
+
+    /// Keeps the broker parser at a runtime-owned canonical geometry.
+    ///
+    /// Presentation viewport reports remain useful for local layout, but they
+    /// must not resize or reinterpret complete frames emitted by a multiplexer.
+    pub fn fixed_geometry(mut self, geometry: TerminalGeometry) -> Self {
+        self.fixed_geometry = Some(geometry);
+        self
     }
 
     /// Keeps the broker's canonical history when a provider emits ED3.
@@ -631,6 +660,7 @@ pub struct TerminalSessionHandle {
 
 pub struct TerminalSessionBroker {
     sessions: RwLock<HashMap<String, TerminalSessionHandle>>,
+    pending_runtime_replacements: AsyncMutex<HashMap<String, PendingRuntimeReplacement>>,
     /// Last runtime generation allocated for each session during this broker lifetime.
     ///
     /// Entries intentionally outlive runtime removal. Native reader tasks can deliver
@@ -641,6 +671,11 @@ pub struct TerminalSessionBroker {
     wake_tx: broadcast::Sender<TerminalEventsReady>,
     lifecycle_tx: broadcast::Sender<TerminalSessionLifecycleNotification>,
     timer: Arc<dyn TerminalTimer>,
+}
+
+struct PendingRuntimeReplacement {
+    candidate_generation: u64,
+    displaced: Option<TerminalSessionHandle>,
 }
 
 #[derive(Default)]
@@ -670,6 +705,7 @@ impl TerminalSessionBroker {
         let (lifecycle_tx, _) = broadcast::channel(64);
         Self {
             sessions: RwLock::new(HashMap::new()),
+            pending_runtime_replacements: AsyncMutex::new(HashMap::new()),
             runtime_generation_tombstones: RwLock::new(HashMap::new()),
             deferred_geometries: AsyncMutex::new(DeferredGeometryState::default()),
             wake_tx,
@@ -693,7 +729,19 @@ impl TerminalSessionBroker {
         geometry: TerminalGeometry,
     ) -> Result<u64, TerminalBrokerError> {
         validate_id(session_id, "session_id")?;
-        let geometry = clamp_geometry(geometry, TerminalClientKind::Desktop);
+        if self
+            .pending_runtime_replacements
+            .lock()
+            .await
+            .contains_key(session_id)
+        {
+            return Err(TerminalBrokerError::RuntimeIo(
+                "terminal runtime replacement already pending".to_string(),
+            ));
+        }
+        let geometry = runtime
+            .fixed_geometry
+            .unwrap_or_else(|| clamp_geometry(geometry, TerminalClientKind::Desktop));
         let (replaced, runtime_generation) = {
             let mut sessions = self.sessions.write().await;
             let previous = sessions.get(session_id).cloned();
@@ -737,6 +785,109 @@ impl TerminalSessionBroker {
             )
             .await;
         }
+        let _ = self.lifecycle_tx.send(TerminalSessionLifecycleNotification {
+            session_id: session_id.to_string(),
+            runtime_generation,
+            lifecycle,
+        });
+        self.deferred_geometries
+            .lock()
+            .await
+            .sessions
+            .remove(session_id);
+        Ok(runtime_generation)
+    }
+
+    /// Installs a replacement actor without terminating the displaced actor.
+    /// Callers must explicitly commit or roll back after their surrounding
+    /// agent-state transaction finishes.
+    pub async fn stage_runtime_replacement(
+        &self,
+        session_id: &str,
+        runtime: TerminalRuntimeHandles,
+        geometry: TerminalGeometry,
+    ) -> Result<u64, TerminalBrokerError> {
+        validate_id(session_id, "session_id")?;
+        let geometry = runtime
+            .fixed_geometry
+            .unwrap_or_else(|| clamp_geometry(geometry, TerminalClientKind::Desktop));
+        let mut pending = self.pending_runtime_replacements.lock().await;
+        if pending.contains_key(session_id) {
+            return Err(TerminalBrokerError::RuntimeIo(
+                "terminal runtime replacement already pending".to_string(),
+            ));
+        }
+        let (displaced, runtime_generation) = {
+            let mut sessions = self.sessions.write().await;
+            let displaced = sessions.get(session_id).cloned();
+            let mut generations = self.runtime_generation_tombstones.write().await;
+            let runtime_generation = generations
+                .get(session_id)
+                .copied()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| {
+                    TerminalBrokerError::RuntimeIo(
+                        "terminal runtime generation exhausted".to_string(),
+                    )
+                })?;
+            generations.insert(session_id.to_string(), runtime_generation);
+            let initial_lease_epoch = displaced.as_ref().map_or(0, |handle| {
+                handle.lease_epoch.load(Ordering::SeqCst).saturating_add(1)
+            });
+            let candidate = self.spawn_actor(
+                session_id.to_string(),
+                runtime_generation,
+                initial_lease_epoch,
+                runtime,
+                geometry,
+            );
+            sessions.insert(session_id.to_string(), candidate);
+            (displaced, runtime_generation)
+        };
+        pending.insert(
+            session_id.to_string(),
+            PendingRuntimeReplacement {
+                candidate_generation: runtime_generation,
+                displaced,
+            },
+        );
+        Ok(runtime_generation)
+    }
+
+    pub async fn commit_runtime_replacement(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+    ) -> Result<(), TerminalBrokerError> {
+        let pending = self
+            .pending_runtime_replacements
+            .lock()
+            .await
+            .remove(session_id)
+            .ok_or(TerminalBrokerError::RuntimeUnavailable)?;
+        if pending.candidate_generation != runtime_generation {
+            let expected = pending.candidate_generation;
+            self.pending_runtime_replacements
+                .lock()
+                .await
+                .insert(session_id.to_string(), pending);
+            return Err(TerminalBrokerError::StaleRuntimeGeneration {
+                expected,
+                received: runtime_generation,
+            });
+        }
+        let lifecycle = if let Some(displaced) = pending.displaced {
+            self.shutdown_handle(
+                session_id,
+                displaced,
+                TerminalSessionLifecycleEvent::RuntimeReplaced,
+            )
+            .await;
+            TerminalSessionLifecycleEvent::RuntimeReplaced
+        } else {
+            TerminalSessionLifecycleEvent::RuntimeStarted
+        };
         let _ = self
             .lifecycle_tx
             .send(TerminalSessionLifecycleNotification {
@@ -749,7 +900,52 @@ impl TerminalSessionBroker {
             .await
             .sessions
             .remove(session_id);
-        Ok(runtime_generation)
+        Ok(())
+    }
+
+    pub async fn rollback_runtime_replacement(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+    ) -> Result<(), TerminalBrokerError> {
+        let pending = self
+            .pending_runtime_replacements
+            .lock()
+            .await
+            .remove(session_id)
+            .ok_or(TerminalBrokerError::RuntimeUnavailable)?;
+        if pending.candidate_generation != runtime_generation {
+            let expected = pending.candidate_generation;
+            self.pending_runtime_replacements
+                .lock()
+                .await
+                .insert(session_id.to_string(), pending);
+            return Err(TerminalBrokerError::StaleRuntimeGeneration {
+                expected,
+                received: runtime_generation,
+            });
+        }
+        let candidate = {
+            let mut sessions = self.sessions.write().await;
+            let candidate = sessions
+                .get(session_id)
+                .filter(|handle| handle.runtime_generation == runtime_generation)
+                .cloned()
+                .ok_or(TerminalBrokerError::RuntimeUnavailable)?;
+            if let Some(displaced) = pending.displaced {
+                sessions.insert(session_id.to_string(), displaced);
+            } else {
+                sessions.remove(session_id);
+            }
+            candidate
+        };
+        self.shutdown_handle(
+            session_id,
+            candidate,
+            TerminalSessionLifecycleEvent::RuntimeTerminated,
+        )
+        .await;
+        Ok(())
     }
 
     /// Remembers presentation geometry while no native runtime exists yet.
@@ -966,6 +1162,79 @@ impl TerminalSessionBroker {
         self.request(&session_id, move |reply| {
             TerminalSessionMessage::BeginActivation { request, reply }
         })
+        .await
+    }
+
+    /// Runs a native focus operation while this session's broker actor cannot
+    /// process a competing ownership transition.
+    pub async fn run_authorized_native_focus<F, Fut>(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: &str,
+        action: F,
+    ) -> Result<(), TerminalBrokerError>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        let owned_session_id = session_id.to_string();
+        let owned_presentation_id = presentation_id.to_string();
+        self.request(session_id, move |reply| {
+            TerminalSessionMessage::AuthorizedNativeFocus {
+                session_id: owned_session_id,
+                runtime_generation,
+                lease_epoch,
+                presentation_id: owned_presentation_id,
+                action: Box::new(move || Box::pin(action())),
+                reply,
+            }
+        })
+        .await
+    }
+
+    /// Atomically establishes whether native client startup may begin for an
+    /// observed terminal ownership identity. Ownership may still change while
+    /// startup is in flight, so callers must use the returned admission for
+    /// the final focus authorization.
+    pub async fn admit_native_focus_startup(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: &str,
+    ) -> Result<NativeFocusStartupAdmission, TerminalBrokerError> {
+        let owned_session_id = session_id.to_string();
+        let owned_presentation_id = presentation_id.to_string();
+        self.request(session_id, move |reply| {
+            TerminalSessionMessage::AdmitNativeFocusStartup {
+                session_id: owned_session_id,
+                runtime_generation,
+                lease_epoch,
+                presentation_id: owned_presentation_id,
+                reply,
+            }
+        })
+        .await
+    }
+
+    pub async fn run_admitted_native_focus<F, Fut>(
+        &self,
+        admission: NativeFocusStartupAdmission,
+        action: F,
+    ) -> Result<(), TerminalBrokerError>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        self.run_authorized_native_focus(
+            &admission.session_id,
+            admission.runtime_generation,
+            admission.lease_epoch,
+            &admission.presentation_id,
+            action,
+        )
         .await
     }
 
@@ -1549,6 +1818,21 @@ enum TerminalSessionMessage {
         arrival: ActivationAckArrival,
         reply: BrokerReply<TerminalActivationAckResult>,
     },
+    AdmitNativeFocusStartup {
+        session_id: String,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: String,
+        reply: BrokerReply<NativeFocusStartupAdmission>,
+    },
+    AuthorizedNativeFocus {
+        session_id: String,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: String,
+        action: AuthorizedNativeFocusAction,
+        reply: BrokerReply<()>,
+    },
     Input {
         request: TerminalInputRequest,
         reply: BrokerReply<TerminalLeaseDecision>,
@@ -1845,6 +2129,40 @@ impl TerminalSessionActor {
                 let result = self.ack_activation(request, &arrival).await;
                 let _ = reply.send(result);
             }
+            TerminalSessionMessage::AdmitNativeFocusStartup {
+                session_id,
+                runtime_generation,
+                lease_epoch,
+                presentation_id,
+                reply,
+            } => {
+                let result = self.admit_native_focus_startup(
+                    &session_id,
+                    runtime_generation,
+                    lease_epoch,
+                    &presentation_id,
+                );
+                let _ = reply.send(result);
+            }
+            TerminalSessionMessage::AuthorizedNativeFocus {
+                session_id,
+                runtime_generation,
+                lease_epoch,
+                presentation_id,
+                action,
+                reply,
+            } => {
+                let result = self
+                    .run_authorized_native_focus(
+                        &session_id,
+                        runtime_generation,
+                        lease_epoch,
+                        &presentation_id,
+                        action,
+                    )
+                    .await;
+                let _ = reply.send(result);
+            }
             TerminalSessionMessage::Input { request, reply } => {
                 let result = self.send_input(request).await;
                 let _ = reply.send(result);
@@ -2115,6 +2433,15 @@ impl TerminalSessionActor {
         {
             self.pending_owner_resync = None;
         }
+        if self.owner_presentation_id.as_deref() == Some(&request.presentation_id)
+            && (presentation.visibility == TerminalVisibility::Hidden
+                || presentation.interaction_capability
+                    != TerminalInteractionCapability::Interactive)
+        {
+            self.owner_presentation_id = None;
+            self.advance_lease_epoch();
+            self.promote_latest_eligible().await?;
+        }
         Ok(TerminalPresentationUpdateResult {
             presentation,
             broker_state: self.broker_state(),
@@ -2239,10 +2566,14 @@ impl TerminalSessionActor {
             owner_presentation_id: None,
             lease_epoch: self.lease_epoch,
             activation_id: Some(activation_id.clone()),
+            pending_activation: Some(pending_state.clone()),
         });
         let snapshot = self.snapshot();
+        let mut broker_state = self.broker_state();
+        broker_state.pending_activation = Some(pending_state.clone());
         let begin_result = TerminalActivationBeginResult {
             decision: self.accepted_decision(),
+            broker_state,
             activation_id: Some(activation_id.clone()),
             sequence_barrier: snapshot.sequence_barrier,
             snapshot: Some(snapshot),
@@ -2324,6 +2655,7 @@ impl TerminalSessionActor {
             owner_presentation_id: self.owner_presentation_id.clone(),
             lease_epoch: self.lease_epoch,
             activation_id: Some(request.activation_id.clone()),
+            pending_activation: None,
         });
         let snapshot = self.snapshot();
         let result = TerminalActivationAckResult {
@@ -2336,6 +2668,73 @@ impl TerminalSessionActor {
             result: result.clone(),
         });
         Ok(result)
+    }
+
+    fn validate_native_focus_authority(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: &str,
+    ) -> Result<(), TerminalBrokerError> {
+        self.ensure_session(session_id)?;
+        self.ensure_generation(runtime_generation)?;
+        if self.runtime_state != TerminalRuntimeState::Live {
+            return Err(TerminalBrokerError::RuntimeUnavailable);
+        }
+        if self.lease_epoch != lease_epoch
+            || self.pending_activation.is_some()
+            || self
+                .owner_presentation_id
+                .as_deref()
+                .is_some_and(|owner| owner != presentation_id)
+        {
+            return Err(TerminalBrokerError::NativeFocusUnauthorized);
+        }
+        Ok(())
+    }
+
+    fn admit_native_focus_startup(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: &str,
+    ) -> Result<NativeFocusStartupAdmission, TerminalBrokerError> {
+        self.validate_native_focus_authority(
+            session_id,
+            runtime_generation,
+            lease_epoch,
+            presentation_id,
+        )?;
+        Ok(NativeFocusStartupAdmission {
+            session_id: session_id.to_string(),
+            runtime_generation,
+            lease_epoch,
+            presentation_id: presentation_id.to_string(),
+        })
+    }
+
+    async fn run_authorized_native_focus(
+        &mut self,
+        session_id: &str,
+        runtime_generation: u64,
+        lease_epoch: u64,
+        presentation_id: &str,
+        action: AuthorizedNativeFocusAction,
+    ) -> Result<(), TerminalBrokerError> {
+        self.validate_native_focus_authority(
+            session_id,
+            runtime_generation,
+            lease_epoch,
+            presentation_id,
+        )?;
+        match tokio::time::timeout(AUTHORIZED_NATIVE_FOCUS_TIMEOUT, action()).await {
+            Ok(result) => result.map_err(TerminalBrokerError::RuntimeIo),
+            Err(_) => Err(TerminalBrokerError::RuntimeIo(
+                "native_focus_timeout".to_string(),
+            )),
+        }
     }
 
     fn begin_owner_resync(
@@ -2476,6 +2875,17 @@ impl TerminalSessionActor {
         if let Some(reason) = self.validate_active_lease(&request.lease) {
             return Ok(self.rejected_resize(reason, request.geometry_sequence));
         }
+        if self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.fixed_geometry)
+            .is_some()
+        {
+            return Ok(self.rejected_resize(
+                TerminalLeaseRejectionReason::FixedGeometry,
+                request.geometry_sequence,
+            ));
+        }
         let client_kind = self
             .presentations
             .get(&request.lease.presentation_id)
@@ -2493,12 +2903,12 @@ impl TerminalSessionActor {
             ));
         }
         let geometry = clamp_geometry(request.geometry, client_kind);
-        let geometry_changed = geometry != self.geometry;
+        let previous_geometry = self.geometry;
         self.commit_geometry(geometry, request.geometry_sequence)
             .await?;
         if let Some(record) = self.presentations.get_mut(&request.lease.presentation_id) {
             record.last_geometry_sequence = request.geometry_sequence;
-            record.state.desired_geometry = Some(geometry);
+            record.state.desired_geometry = Some(self.geometry);
         }
         Ok(TerminalGeometryCommitResult {
             decision: self.accepted_decision(),
@@ -2507,7 +2917,7 @@ impl TerminalSessionActor {
             // An unchanged viewport report must not force every presentation
             // to reset and replay a full terminal snapshot. The caller already
             // has the current frame and no canonical geometry changed.
-            snapshot: geometry_changed.then(|| self.snapshot()),
+            snapshot: (previous_geometry != self.geometry).then(|| self.snapshot()),
         })
     }
 
@@ -2818,6 +3228,7 @@ impl TerminalSessionActor {
             owner_presentation_id: self.owner_presentation_id.clone(),
             lease_epoch: self.lease_epoch,
             activation_id: None,
+            pending_activation: None,
         });
         Ok(())
     }
@@ -2841,6 +3252,7 @@ impl TerminalSessionActor {
             owner_presentation_id: self.owner_presentation_id.clone(),
             lease_epoch: self.lease_epoch,
             activation_id: None,
+            pending_activation: None,
         });
         Ok(())
     }
@@ -2850,6 +3262,14 @@ impl TerminalSessionActor {
         geometry: TerminalGeometry,
         geometry_sequence: u64,
     ) -> Result<(), TerminalBrokerError> {
+        if self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.fixed_geometry)
+            .is_some()
+        {
+            return Ok(());
+        }
         if geometry == self.geometry {
             return Ok(());
         }
@@ -3033,6 +3453,7 @@ impl TerminalSessionActor {
     ) -> TerminalActivationBeginResult {
         TerminalActivationBeginResult {
             decision: self.rejected_decision(reason),
+            broker_state: self.broker_state(),
             activation_id: None,
             snapshot: None,
             sequence_barrier: self.stream_sequence,

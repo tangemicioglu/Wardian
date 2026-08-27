@@ -816,7 +816,8 @@ export type TerminalLeaseRejectionReason =
     | "stale_activation"
     | "resync_not_required"
     | "stale_owner_resync"
-    | "stale_geometry_sequence";
+    | "stale_geometry_sequence"
+    | "fixed_geometry";
 
 export type TerminalLeaseDecision = {
     status: TerminalLeaseDecisionStatus;
@@ -828,6 +829,7 @@ export type TerminalLeaseDecision = {
 
 export type TerminalActivationBeginResult = {
     decision: TerminalLeaseDecision;
+    broker_state: TerminalBrokerState;
     activation_id: string | null;
     snapshot: TerminalSnapshot | null;
     sequence_barrier: number;
@@ -911,6 +913,7 @@ export type TerminalBrokerEvent = {
         owner_presentation_id: string | null;
         lease_epoch: number;
         activation_id: string | null;
+        pending_activation?: TerminalPendingActivationState | null;
     }
     | { type: "lifecycle"; lifecycle: TerminalSessionLifecycleEvent }
 );

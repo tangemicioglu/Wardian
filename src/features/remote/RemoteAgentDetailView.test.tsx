@@ -164,7 +164,19 @@ describe("RemoteAgentDetailView terminal protocol v2", () => {
         result: {
           decision: {
             status: "accepted", reason: null, runtime_generation: 1, lease_epoch: 4,
-            owner_presentation_id: "desktop:presentation-1",
+            owner_presentation_id: null,
+          },
+          broker_state: {
+            ...registered().broker_state,
+            lease_epoch: 4,
+            owner_presentation_id: null,
+            pending_activation: {
+              presentation_id: "remote:presentation-1",
+              previous_owner_presentation_id: "desktop:presentation-1",
+              runtime_generation: 1,
+              lease_epoch: 4,
+              activation_id: "activation-1",
+            },
           },
           activation_id: "activation-1",
           snapshot: registered().initial_snapshot,

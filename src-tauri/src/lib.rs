@@ -69,6 +69,7 @@ fn restored_agent_without_process(
         background_processes: Vec::new(),
         memory_capability: None,
         runtime_generation: None,
+        zellij_pane: None,
         process_id,
         query_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
         init_timestamp: std::sync::Arc::new(std::sync::Mutex::new(born)),
@@ -82,6 +83,46 @@ fn restored_agent_without_process(
         log_last_modified: std::sync::Arc::new(std::sync::Mutex::new(None)),
         #[cfg(windows)]
         job_object: None,
+    }
+}
+
+fn inert_restored_agent_status(
+    config: &AgentConfig,
+    last_status: Option<&str>,
+) -> Option<&'static str> {
+    match last_status {
+        Some("Headless") => Some("Headless"),
+        Some("Error") if config.is_off => Some("Error"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod restored_agent_tests {
+    use super::*;
+
+    #[test]
+    fn durable_off_error_restores_without_a_runtime() {
+        let config = AgentConfig {
+            session_id: "failed-replacement".to_string(),
+            is_off: true,
+            ..Default::default()
+        };
+
+        let status = inert_restored_agent_status(&config, Some("Error"));
+        let agent = restored_agent_without_process(
+            config,
+            status.expect("durable Error must remain inert"),
+            String::new(),
+            None,
+            None,
+        );
+
+        assert_eq!(agent.current_status.lock().unwrap().as_str(), "Error");
+        assert!(agent.config.lock().unwrap().is_off);
+        assert!(agent.runtime_generation.is_none());
+        assert!(agent.process_id.is_none());
+        assert!(agent.zellij_pane.is_none());
     }
 }
 
@@ -312,6 +353,27 @@ pub fn run() {
                             "[Wardian] CLI install skipped: {err}"
                         ));
                     }
+                    match crate::state::zellij_terminal::ZellijTerminalConfig::from_resources(
+                        &resource_dir,
+                        &app_home,
+                    ) {
+                        Ok(config) => {
+                            let engine = std::sync::Arc::new(
+                                crate::state::zellij_terminal::ZellijTerminalEngine::new(config),
+                            );
+                            if let Err(error) = engine.prepare_runtime_directories() {
+                                crate::utils::logging::log_debug(&format!(
+                                    "[Wardian] Zellij terminal engine preparation failed: {error}"
+                                ));
+                            } else {
+                                let state = app.state::<AppState>();
+                                let _ = state.zellij_terminal.set(engine);
+                            }
+                        }
+                        Err(error) => crate::utils::logging::log_debug(&format!(
+                            "[Wardian] Zellij terminal engine unavailable: {error}"
+                        )),
+                    }
                 }
             }
 
@@ -406,10 +468,10 @@ pub fn run() {
                                     .collect();
 
                             // Pass 1: prepare every config and publish the full roster
-                            // immediately. Headless agents are final; PTY agents appear
-                            // as inert "Restoring" placeholders so the watchlist shows
-                            // the complete list instead of agents streaming in one by
-                            // one as each provider spawn completes.
+                            // immediately. Headless and durable failed-replacement agents
+                            // are final; runnable PTY agents appear as inert "Restoring"
+                            // placeholders so the watchlist shows the complete list instead
+                            // of agents streaming in one by one as each provider spawn completes.
                             type PendingSpawn = (AgentConfig, Option<String>);
                             let mut pending_spawns: Vec<PendingSpawn> = Vec::new();
                             for mut config in configs {
@@ -456,12 +518,18 @@ pub fn run() {
                                     .cloned()
                                     .unwrap_or((None, None, None));
 
-                                if last_status.as_deref() == Some("Headless") {
+                                if let Some(inert_status) =
+                                    inert_restored_agent_status(&config, last_status.as_deref())
+                                {
                                     let agent = restored_agent_without_process(
                                         config.clone(),
-                                        "Headless",
+                                        inert_status,
                                         String::new(),
-                                        last_pid,
+                                        if inert_status == "Headless" {
+                                            last_pid
+                                        } else {
+                                            None
+                                        },
                                         last_born,
                                     );
                                     insert_restored_agent(config.session_id.clone(), agent).await;
@@ -711,6 +779,9 @@ pub fn run() {
             commands::terminal_session::send_terminal_presentation_input,
             commands::terminal_session::send_terminal_presentation_binary,
             commands::terminal_session::resize_terminal_presentation,
+            commands::zellij_terminal::get_zellij_terminal_preview,
+            commands::zellij_terminal::activate_zellij_agent_terminal,
+            commands::zellij_terminal::cancel_zellij_agent_terminal_activation,
             commands::terminal::ensure_user_terminal,
             commands::terminal::send_input_to_user_terminal,
             commands::terminal::send_binary_input_to_user_terminal,

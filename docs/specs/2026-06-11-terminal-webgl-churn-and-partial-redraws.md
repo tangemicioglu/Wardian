@@ -203,9 +203,10 @@ Findings:
    logo) is only ever visible for terminals that are actively streaming while
    demoted. The demotion/promotion lifecycle is provably non-functional-state:
    PTY, parser buffer, input, and the remote gateway never touch the renderer
-   (`terminal-visibility-snapshot-native.test.mjs` exercises offscreen
-   output/input, re-entry completeness, overlay pointer-transparency, and
-   stale-snapshot lift).
+   This per-card renderer design was superseded by the Zellij singleton
+   terminal engine. `terminal-visibility-snapshot-native.test.mjs` now proves
+   that offscreen cards remain renderer-free previews while one stable xterm
+   moves between panes and routes handoff input only to the selected provider.
 
 3c. **Record PTY size reports that arrive before the PTY exists
    (2026-06-12).** Startup restore publishes "Restoring" placeholders before

@@ -230,7 +230,7 @@ export class RemoteTerminalSessionClient {
 
     if (message.type === "activation_begin") {
       const { result } = message;
-      this.#notifyDecision(result.decision);
+      this.#notifyDecision(result.decision, result.broker_state);
       if (
         result.decision.status === "accepted"
         && result.activation_id

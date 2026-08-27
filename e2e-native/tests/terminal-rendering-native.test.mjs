@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import xtermHeadless from "@xterm/headless";
 import { By, until } from "selenium-webdriver";
 
 import {
@@ -23,7 +22,6 @@ const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
 const PROVIDER_SESSION_ID = `e2e-terminal-rendering-${RUN_ID}`;
 const SESSION_NAME = `E2E-Terminal-Rendering-${RUN_ID}`;
-const { Terminal: HeadlessTerminal } = xtermHeadless;
 const RENDER_LINES = Array.from(
   { length: 42 },
   (_, index) => `render-${String(index + 1).padStart(2, "0")} | ▐ glyph | ✓ check | cafe | omega Ω`,
@@ -45,28 +43,6 @@ async function invokeTauri(driver, command, args = {}) {
 
 function normalizeRows(rows) {
   return rows.map((line) => String(line ?? "").trimEnd());
-}
-
-function nonEmptyRows(rows) {
-  return normalizeRows(rows).filter((line) => line.trim().length > 0);
-}
-
-async function renderOutsideRows(rawFrame, cols, rows, viewportY = null) {
-  const term = new HeadlessTerminal({
-    allowProposedApi: true,
-    cols,
-    rows,
-    scrollback: 1_000,
-  });
-
-  await new Promise((resolve) => term.write(rawFrame, resolve));
-  const buffer = term.buffer.active;
-  const firstRow = Number.isInteger(viewportY) ? viewportY : buffer.viewportY;
-  const rendered = Array.from({ length: term.rows }, (_, index) =>
-    buffer.getLine(firstRow + index)?.translateToString(true) ?? "",
-  );
-  term.dispose();
-  return normalizeRows(rendered);
 }
 
 async function readVisibleRows(driver) {
@@ -157,15 +133,21 @@ async function activateAgentCard(driver, sessionId) {
     20000,
   );
   await driver.wait(until.elementIsVisible(card), 20000);
-  await card.click();
+  await driver.executeScript((sid) => {
+    const preview = document.querySelector(
+      `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sid)}"]`,
+    );
+    preview?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  }, sessionId);
 }
 
-async function waitForTerminalHost(driver) {
-  const host = await driver.wait(
-    until.elementLocated(By.css(TERMINAL_HOST_SELECTOR)),
-    20000,
-  );
-  await driver.wait(until.elementIsVisible(host), 20000);
+async function waitForTerminalHost(driver, sessionId) {
+  await driver.wait(async () => await driver.executeScript((sid, selector) => {
+    const host = document.querySelector(
+      `[data-zellij-singleton-viewport="true"] ${selector}[data-terminal-session-id="${CSS.escape(sid)}"]`,
+    );
+    return Boolean(host && getComputedStyle(host).visibility === "visible");
+  }, sessionId, TERMINAL_HOST_SELECTOR), 20000);
 }
 
 async function waitForRenderedGlyphs(driver, presentationId, requiredStableSamples = 1) {
@@ -197,35 +179,35 @@ async function terminalDebugAvailable(driver) {
   });
 }
 
-async function assertInsideMatchesOutside(driver, presentationId) {
+async function assertCanonicalFrameIsComplete(driver, presentationId) {
   const debug = await readTerminalDebugSnapshot(driver, presentationId);
   assert.ok(debug, "Expected Wardian terminal debug snapshot");
-
-  const debugRows = normalizeRows(debug.lines ?? []);
-  const outsideRows = await renderOutsideRows(
-    RAW_FRAME,
-    debug.cols,
-    Math.min(debug.rows, debugRows.length || 24),
-    debug.viewportY,
+  const brokerGeometries = (debug.snapshotReplays ?? [])
+    .map((replay) => replay.brokerGeometry)
+    .filter(Boolean);
+  assert.ok(brokerGeometries.length > 0, "Expected a canonical broker snapshot replay");
+  assert.ok(
+    brokerGeometries.every((geometry) => geometry.cols === 120 && geometry.rows === 40),
+    `Expected canonical Zellij geometry to remain 120x40, got ${JSON.stringify(brokerGeometries)}`,
   );
-  assert.deepEqual(nonEmptyRows(debugRows), nonEmptyRows(outsideRows));
+  const canonicalRows = [
+    ...(debug.allLines ?? []),
+    ...(debug.lines ?? []),
+    ...(debug.renderer?.allLines ?? []),
+    ...(debug.renderer?.lines ?? []),
+  ];
+  const canonical = canonicalRows.join("").replace(/\s+/g, "");
+  // Zellij exposes its current 120x40 screen, not the provider's discarded
+  // scrollback. Verify a contiguous tail that must fit in that canonical frame.
+  for (const expected of RENDER_LINES.slice(-12)) {
+    assert.ok(
+      canonical.includes(expected.replace(/\s+/g, "")),
+      `Expected canonical Zellij frame to retain ${expected}: ${JSON.stringify(debug)}`,
+    );
+  }
 }
 
-async function scrollTerminalToTop(driver, presentationId) {
-  await driver.wait(async () => {
-    return await driver.executeScript((pid) => {
-      return window.__wardianTerminalDebug?.scrollToTop?.(pid) === true;
-    }, presentationId);
-  }, 5000);
-  await driver.wait(async () => {
-    return await driver.executeScript((pid) => {
-      const snapshot = window.__wardianTerminalDebug?.snapshot?.(pid);
-      return snapshot ? snapshot.viewportY === 0 : false;
-    }, presentationId);
-  }, 5000);
-}
-
-test("agent terminal rendering matches outside xterm after split UTF-8, resize, and scroll", { timeout: 180000 }, async (t) => {
+test("agent terminal preserves the canonical Zellij frame after split UTF-8 and viewport resize", { timeout: 180000 }, async (t) => {
   const harness = await createNativeHarness();
   const previousTerminalDebug = process.env.VITE_WARDIAN_TERMINAL_DEBUG;
 
@@ -284,7 +266,7 @@ test("agent terminal rendering matches outside xterm after split UTF-8, resize, 
   assert.notEqual(sessionId, PROVIDER_SESSION_ID);
   await openWorkbenchSurface(driver, "agents-overview");
   await activateAgentCard(driver, sessionId);
-  await waitForTerminalHost(driver);
+  await waitForTerminalHost(driver, sessionId);
   if (!(await terminalDebugAvailable(driver))) {
     if (skipNativeBuild) {
       t.skip("Built Wardian app does not expose terminal debug snapshots; run the full native test without WARDIAN_NATIVE_SKIP_BUILD.");
@@ -294,22 +276,13 @@ test("agent terminal rendering matches outside xterm after split UTF-8, resize, 
   }
   const presentationId = await resolveAgentTerminalPresentationId(driver, sessionId);
   await waitForRenderedGlyphs(driver, presentationId);
-  await assertInsideMatchesOutside(driver, presentationId);
+  await assertCanonicalFrameIsComplete(driver, presentationId);
   await writeScreenshot(driver, harness, "initial");
 
   await driver.manage().window().setRect({ width: 980, height: 680 });
   await waitForRenderedGlyphs(driver, presentationId);
-  await assertInsideMatchesOutside(driver, presentationId);
+  await assertCanonicalFrameIsComplete(driver, presentationId);
   await writeScreenshot(driver, harness, "resized");
-
-  await scrollTerminalToTop(driver, presentationId);
-  const scrolledDebug = await readTerminalDebugSnapshot(driver, presentationId);
-  assert.ok(
-    scrolledDebug.lines.some((line) => line.includes("render-01") || line.includes("render-02")),
-    `Expected top scrollback rows after scrolling to top, got ${JSON.stringify(scrolledDebug)}`,
-  );
-  await assertInsideMatchesOutside(driver, presentationId);
-  await writeScreenshot(driver, harness, "scrolled-top");
 
   await invokeTauri(driver, "pause_agent", { sessionId });
   const afterPause = await readRenderedText(driver, presentationId);

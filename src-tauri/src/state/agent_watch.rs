@@ -53,6 +53,14 @@ impl AgentWatchState {
         })
     }
 
+    /// Replace terminal output with a complete renderer snapshot while
+    /// retaining delivery, lifecycle, and transcript records.
+    pub fn replace_output(&mut self, bytes: &[u8]) -> WatchCursor {
+        self.records
+            .retain(|record| !matches!(record.kind, WatchRecordKind::Output { .. }));
+        self.push_output(bytes)
+    }
+
     pub fn push_delivery(&mut self, payload: serde_json::Value) -> WatchCursor {
         self.push_record(WatchRecordKind::Delivery { payload })
     }
@@ -400,6 +408,19 @@ mod tests {
 
         assert_eq!(snapshot.output.text, "red");
         assert_eq!(raw.text, "\u{1b}[31mred\u{1b}[0m");
+    }
+
+    #[test]
+    fn replacing_a_terminal_snapshot_does_not_duplicate_old_viewport_text() {
+        let mut state = AgentWatchState::new("agent-1".to_string(), 16, 1024);
+        state.push_event("status", serde_json::json!({"status":"processing"}));
+        state.replace_output(b"first viewport");
+        state.replace_output(b"second viewport");
+
+        let snapshot = state.snapshot_since(None, Some(1024)).unwrap();
+
+        assert_eq!(snapshot.output.text, "second viewport");
+        assert_eq!(snapshot.events.len(), 1);
     }
 
     #[test]

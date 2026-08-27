@@ -114,6 +114,9 @@ function isPresentationNotFound(error: unknown) {
   return String(error).includes("PresentationNotFound");
 }
 
+const RUNTIME_RECOVERY_RETRY_MS = 100;
+const RUNTIME_RECOVERY_MAX_RETRIES = 8;
+
 /**
  * One ordered desktop broker feed for a native terminal session.
  *
@@ -131,6 +134,8 @@ export class TerminalSessionClient {
   #lastOwnerPresentationId: string | null = null;
   #runtimeTransitionPending = false;
   #lastRecoveredReplacementGeneration = 0;
+  #runtimeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  #runtimeRecoveryRetryCount = 0;
   #runtimeGeneration = 0;
   #cursor = 0;
   #subscription: Promise<TerminalEventSubscriptionResult> | null = null;
@@ -637,6 +642,11 @@ export class TerminalSessionClient {
     }
     this.#destroyed = true;
     this.#drainQueued = false;
+    if (this.#runtimeRecoveryTimer !== null) {
+      clearTimeout(this.#runtimeRecoveryTimer);
+      this.#runtimeRecoveryTimer = null;
+    }
+    this.#runtimeRecoveryRetryCount = 0;
     const subscribed = this.#subscription !== null;
     this.#subscription = null;
     if (subscribed) {
@@ -693,13 +703,16 @@ export class TerminalSessionClient {
             const generationAdvanced =
               notification.runtime_generation > this.#runtimeGeneration;
             const sameGenerationReplacementNeedsRecovery =
-              notification.lifecycle === "runtime_replaced" &&
+              (notification.lifecycle === "runtime_replaced" ||
+                (notification.lifecycle === "runtime_started" &&
+                  this.#runtimeTransitionPending)) &&
               notification.runtime_generation === this.#runtimeGeneration &&
               notification.runtime_generation !== this.#lastRecoveredReplacementGeneration;
             if (
               notification.runtime_generation === this.#runtimeGeneration &&
               (notification.lifecycle === "runtime_paused" ||
-                notification.lifecycle === "runtime_replaced") &&
+                notification.lifecycle === "runtime_replaced" ||
+                notification.lifecycle === "runtime_terminated") &&
               !this.#runtimeTransitionPending
             ) {
               this.#replacementOwnerCandidate = this.#currentLocalOwnerPresentationId()
@@ -715,17 +728,19 @@ export class TerminalSessionClient {
             }
             if (generationAdvanced || sameGenerationReplacementNeedsRecovery) {
               this.#runtimeTransitionPending = true;
+              this.#runtimeRecoveryRetryCount = 0;
               const previousOwnerPresentationId = this.#replacementOwnerCandidate
                 ?? this.#currentLocalOwnerPresentationId()
                 ?? this.#lastOwnerPresentationId
                 ?? null;
-              this.#replacementOwnerCandidate = null;
+              this.#replacementOwnerCandidate = previousOwnerPresentationId;
               this.#runtimeGeneration = notification.runtime_generation;
               this.#subscription = null;
               const recovered = await this.#retryRegistrationsForGeneration(
                 previousOwnerPresentationId,
               );
-              if (recovered && notification.lifecycle === "runtime_replaced") {
+              if (recovered) {
+                this.#replacementOwnerCandidate = null;
                 this.#lastRecoveredReplacementGeneration = notification.runtime_generation;
               }
             } else {
@@ -761,10 +776,10 @@ export class TerminalSessionClient {
         binding.callbacks.onRegistrationRecovered?.(result);
         recoveredPresentations += 1;
       } catch {
-        // A later lifecycle notification or explicit remount retries again.
+        // A later lifecycle notification or the bounded recovery timer retries.
       }
     }
-    if (this.#brokerState) {
+    if (recoveredPresentations > 0 && this.#brokerState) {
       await this.#ensureSubscription(this.#brokerState.runtime_generation).catch(() => undefined);
       await this.#restorePreviousOwner(previousOwnerPresentationId);
       this.queueDrain();
@@ -772,9 +787,47 @@ export class TerminalSessionClient {
     }
     if (recoveredPresentations === this.#presentations.size) {
       this.#runtimeTransitionPending = false;
+      if (this.#runtimeRecoveryTimer !== null) {
+        clearTimeout(this.#runtimeRecoveryTimer);
+        this.#runtimeRecoveryTimer = null;
+      }
+      this.#runtimeRecoveryRetryCount = 0;
       return true;
     }
+    this.#scheduleRuntimeRecoveryRetry();
     return false;
+  }
+
+  #scheduleRuntimeRecoveryRetry() {
+    if (
+      this.#runtimeRecoveryTimer !== null ||
+      this.#destroyed ||
+      !this.#runtimeTransitionPending ||
+      this.#presentations.size === 0 ||
+      this.#runtimeRecoveryRetryCount >= RUNTIME_RECOVERY_MAX_RETRIES
+    ) {
+      return;
+    }
+    const retryDelay = Math.min(
+      RUNTIME_RECOVERY_RETRY_MS * (2 ** this.#runtimeRecoveryRetryCount),
+      1_000,
+    );
+    this.#runtimeRecoveryRetryCount += 1;
+    this.#runtimeRecoveryTimer = setTimeout(() => {
+      this.#runtimeRecoveryTimer = null;
+      void this.#serialize(async () => {
+        if (this.#destroyed || !this.#runtimeTransitionPending) {
+          return;
+        }
+        const recovered = await this.#retryRegistrationsForGeneration(
+          this.#replacementOwnerCandidate ?? this.#lastOwnerPresentationId,
+        );
+        if (recovered) {
+          this.#replacementOwnerCandidate = null;
+          this.#lastRecoveredReplacementGeneration = this.#runtimeGeneration;
+        }
+      }).catch(() => undefined);
+    }, retryDelay);
   }
 
   async #recoverPresentation(
@@ -833,6 +886,7 @@ export class TerminalSessionClient {
         observed_lease_epoch: state.lease_epoch,
       },
     });
+    this.#setBrokerState(begin.broker_state);
     this.#notifyDecision(begin.decision);
     if (begin.decision.status !== "accepted" || !begin.activation_id || !begin.snapshot) {
       return { begin, ack: null };
@@ -1027,7 +1081,7 @@ export class TerminalSessionClient {
           ...next,
           lease_epoch: event.lease_epoch,
           owner_presentation_id: event.owner_presentation_id,
-          pending_activation: event.activation_id === null ? null : next.pending_activation,
+          pending_activation: event.pending_activation ?? null,
           stream_sequence: event.sequence,
         };
       } else if (event.type === "lifecycle") {

@@ -1,22 +1,41 @@
 # Terminal Presentation Broker
 
-One agent runtime can appear in Agents, one or more Agent Session
-surfaces, and authenticated remote clients at the same time. The Rust terminal
-session broker makes those views independent presentations of one PTY without
-allowing them to fight over input or geometry.
+> Agent terminals now use one shared xterm.js presentation. The broker remains
+> the ordered transport for each selected Zellij pane and for the standalone
+> user terminal. Inactive cards are snapshots rather than independent xterm.js
+> presentations.
+
+The selected pane can appear in Agents or an Agent Session surface. The Rust
+terminal session broker binds one stable desktop presentation to the selected
+pane while the app-root viewport is positioned over the selected slot, without
+allowing stale surfaces to retain input ownership. The engine's attached
+Zellij client is a hidden lifecycle process, not the desktop renderer's stream.
 
 ## Core Invariants
 
 For each live terminal session:
 
-1. At most one presentation owns input and canonical PTY geometry.
-2. Every presentation consumes the same ordered output stream.
+1. At most one presentation owns a selected pane's broker input lease.
+2. Inactive agent cards consume pane snapshots and allocate no xterm.js renderer.
 3. Mount, focus, restore, viewport observation, and visibility changes never
    acquire ownership implicitly.
 4. Mirrors never resize the PTY.
 5. Split, move, hide, suspend, and close affect presentations, not the runtime.
-6. Desktop and remote clients use the same generation, lease, snapshot,
-   sequence, and geometry rules.
+6. Authenticated remote terminal attachment uses the same per-agent broker;
+   it cannot focus the desktop viewport, and canonical Zellij resize requests
+   return the `fixed_geometry` lease rejection.
+7. With no open agent-terminal slot, the singleton renderer stays allocated but
+   its presentation is hidden, read-only, and ineligible to own input.
+8. While a two-phase ownership transfer is pending, the singleton is hidden and
+   read-only and every card for that agent is disabled. A live broker event is
+   authoritative over an equal-generation, equal-lease preview response, so a
+   delayed poll cannot reopen input during or after the transfer.
+9. Preview responses are request-ordered per agent. A stale success or failure
+   cannot replace a newer pane state, and card activation rechecks that the
+   selected slot is still `running` before it invokes the native handoff.
+10. A pane is interactive only when both its Zellij generation and broker actor
+    are live. Missing broker metadata keeps the preview in recovery and cannot
+    clear a newer live owner observation.
 
 Structured prompt delivery is a separate backend-authorized control path. The
 terminal lease applies to terminal keystrokes and binary input; it must not gate
@@ -128,7 +147,10 @@ Activation is a two-phase protocol:
 2. The broker verifies the presentation is visible, mounted, interactive,
    synchronized, and backed by a live runtime. It advances the epoch, records a
    pending activation, removes the active owner for the transfer window, and
-   returns an activation ID plus snapshot/barrier.
+   returns the authoritative pending broker state, activation ID, and
+   snapshot/barrier. Desktop and remote clients publish that broker state before
+   applying the snapshot so every presentation becomes hidden or read-only for
+   the complete transfer window.
 3. After applying the snapshot, acknowledge the exact activation ID,
    generation, and epoch. The broker applies at most one current desired
    geometry and publishes the new owner.
@@ -203,9 +225,41 @@ client being released or be overtaken by a replacement presentation.
 
 ## Desktop and Remote Consistency
 
-`TerminalSessionClient` owns one ordered desktop subscription per session and
-fans snapshots and events to independent xterms. Each surface/card has a stable
-presentation ID and its own renderer, local scale, pan, and viewport state.
+For Zellij-owned agent terminals, each agent broker receives complete pane
+snapshots. One process-wide desktop xterm host moves between registered
+Workbench slots visually by positioning its app-root viewport over the selected
+slot; its DOM subtree does not move. Inactive and duplicate slots render
+read-only text previews.
+The Zellij subscription is not handed to an active agent until broker runtime
+registration succeeds. A failed registration tears down the subscription
+process, frame channels, workers, and candidate pane as one uncommitted
+transport. Failed termination confirmation retains that transport and its pane
+lease in a backend retry task; cleanup never becomes a detached child process
+or an untracked pane generation.
+The standalone human terminal keeps its independent presentation behavior.
+
+The process-wide host keeps the stable broker identity
+`desktop:zellij-habitat-terminal`. Card and Agent Session presentation IDs are
+local slot identities only: the host translates its ownership observation back
+to the selected slot so that surface UI can report owner or mirror state without
+registering another xterm. Hiding, suspending, making a slot read-only, or
+closing the last slot hides and releases input from the retained host; none of
+those transitions unmounts, reparents, disposes, or recreates its xterm or
+WebGL objects.
+Native pane handoffs are request-token fenced before every Zellij focus or
+fullscreen mutation. Superseding a card selection, removing its slot, or
+reaching the bounded handoff deadline cancels the matching token before the
+frontend permits another activation to settle. The Zellij helper process is
+killable and has a four-second native deadline. Each controlled helper runs in
+a Unix process group or Windows kill-on-close job and must confirm exit after
+cancellation; file-backed output capture leaves no pipe-reader thread behind.
+An unconfirmed termination fences the engine in `failed`. The actor authorization window
+has its own bounded backstop, so a hung helper cannot indefinitely block
+terminal output or a remote ownership transition; timeout leaves the broker
+responsive and marks the engine for reattachment.
+Ordinary Zellij lifecycle helpers use the same process-group or job ownership,
+file-backed output capture, confirmed termination, and a fixed backend deadline;
+the four-second deadline remains specific to interactive handoff cancellation.
 
 The authenticated remote WebSocket registers a remote presentation and
 consumer, then uses the same activation, input, resize, snapshot, events, ack,
@@ -214,10 +268,18 @@ mandatory, and existing socket backpressure and rate limits still apply.
 Non-owner or stale requests are nonfatal protocol results, not reasons to close
 the socket.
 
+When a runtime terminates, its remote feed consumer is no longer valid. The
+socket suspends old-generation drains, waits for the broker's replacement
+generation, and registers a fresh presentation and consumer before resuming
+events. A missing old consumer is recovery state, not a client-visible error or
+evidence that the replacement runtime failed.
+
 ## Renderer Budgets
 
-The desktop process permits at most 24 mounted xterm renderers and 12 WebGL
-contexts. The pools are independent deterministic LRUs:
+The legacy presentation pool permits at most 24 mounted xterm renderers and 12
+WebGL contexts. Zellij-owned agent terminals do not use that budget: they use
+one xterm host and at most one WebGL context. The standalone human terminal and
+remaining legacy surfaces retain their existing budgets.
 
 - touching a visible or interacted presentation keeps it warm;
 - WebGL eviction falls back to xterm's DOM renderer;

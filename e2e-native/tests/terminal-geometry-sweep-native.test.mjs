@@ -117,11 +117,17 @@ async function waitForAgentTerminal(driver, sessionId) {
     20000,
   );
   await driver.wait(until.elementIsVisible(card), 20000);
-  await card.click();
-  await driver.wait(
-    until.elementLocated(By.css(`#agent-card-${sessionId} ${TERMINAL_HOST_SELECTOR}`)),
-    20000,
-  );
+  await driver.executeScript((sid) => {
+    const preview = document.querySelector(
+      `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sid)}"]`,
+    );
+    preview?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  }, sessionId);
+  await driver.wait(async () => await driver.executeScript((sid, selector) => (
+    document.querySelector(
+      `[data-zellij-singleton-viewport="true"] ${selector}[data-terminal-session-id="${CSS.escape(sid)}"]`,
+    ) !== null
+  ), sessionId, TERMINAL_HOST_SELECTOR), 20000);
 }
 
 async function waitForRenderedFrame(driver, sessionId, presentationId) {
@@ -145,7 +151,12 @@ async function waitForRenderedFrame(driver, sessionId, presentationId) {
 async function readGeometryCapture(driver, sessionId, presentationId) {
   return await driver.executeScript((sid, pid) => {
     const card = document.getElementById(`agent-card-${sid}`);
-    const host = card?.querySelector('[data-testid="agent-terminal-host"]') ?? null;
+    const host = [...document.querySelectorAll(
+      '[data-zellij-singleton-viewport="true"] [data-testid="agent-terminal-host"]',
+    )].find((candidate) => (
+      candidate.getAttribute("data-terminal-session-id") === sid
+      && candidate.getAttribute("data-terminal-presentation-id") === pid
+    )) ?? null;
     const screen = host?.querySelector(".xterm-screen") ?? null;
     const viewport = host?.querySelector(".xterm-viewport") ?? null;
     const rows = host?.querySelector(".xterm-rows") ?? null;

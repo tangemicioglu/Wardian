@@ -12,11 +12,7 @@ import {
 } from "../lib/harness.mjs";
 import {
   closeWorkbenchSurface,
-  focusSurfaceTab,
-  openWorkbenchSurface,
   waitForWorkbenchReady,
-  workbenchSnapshot,
-  workbenchSurfacePanel,
 } from "../lib/workbench.mjs";
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
@@ -26,6 +22,7 @@ const SESSION_NAME = `E2E-Terminal-Broker-${RUN_ID}`;
 let wardianSessionId = null;
 const OWNER_GEOMETRY = Object.freeze({ cols: 101, rows: 31 });
 const MIRROR_GEOMETRY = Object.freeze({ cols: 151, rows: 44 });
+const ZELLIJ_CANONICAL_GEOMETRY = Object.freeze({ cols: 120, rows: 40 });
 
 async function invokeTauri(driver, command, args = {}) {
   const result = await driver.executeAsyncScript((cmd, payload, done) => {
@@ -92,6 +89,21 @@ async function updatePresentation(
       presentation_id: presentationId,
       session_id: wardianSessionId,
       runtime_generation: runtimeGeneration,
+      desired_geometry: desiredGeometry,
+      visibility: "visible",
+      render_state: "mounted",
+      requested_interaction: "interactive",
+      observed_lease_epoch: 0,
+    },
+  });
+}
+
+async function registerPresentation(driver, presentationId, desiredGeometry) {
+  return await invokeTauri(driver, "register_terminal_presentation", {
+    request: {
+      presentation_id: presentationId,
+      session_id: wardianSessionId,
+      client_kind: "desktop",
       desired_geometry: desiredGeometry,
       visibility: "visible",
       render_state: "mounted",
@@ -188,7 +200,6 @@ function assertRecoveryWindow(
   events,
   activationId,
   ownerPresentationId,
-  expectedGeometry,
   label,
 ) {
   const pendingIndex = events.findIndex(
@@ -208,23 +219,6 @@ function assertRecoveryWindow(
     events.slice(pendingIndex + 1, rollbackIndex).some((event) => event.type === "output"),
     true,
     `${label}: broker output did not continue while activation was pending`,
-  );
-  const geometryIndex = events.findLastIndex(
-    (event, index) => index < rollbackIndex
-      && event.type === "geometry"
-      && event.geometry?.cols === expectedGeometry.cols
-      && event.geometry?.rows === expectedGeometry.rows,
-  );
-  assert.ok(
-    geometryIndex >= 0 && geometryIndex < rollbackIndex,
-    `${label}: owner geometry was not restored before fallback ownership`,
-  );
-}
-
-function assertUsableGeometry(geometry, label) {
-  assert.ok(
-    geometry?.cols > 0 && geometry?.rows > 0,
-    `${label}: expected positive terminal geometry`,
   );
 }
 
@@ -280,78 +274,19 @@ test(
     // before this broker test establishes its own explicit owner/mirror pair.
     await closeWorkbenchSurface(driver, "agents-overview");
 
-    await openWorkbenchSurface(driver, {
-      surface_type: "agent-session",
-      resource_key: wardianSessionId,
-    });
-    await openWorkbenchSurface(driver, {
-      surface_type: "agent-session",
-      resource_key: wardianSessionId,
-      to_side: true,
-    });
-
-    const mountedPresentations = await waitFor("two visible agent presentations", 30000, async () => {
-      const snapshot = await workbenchSnapshot(driver);
-      const tabs = snapshot.groups
-        .flatMap((group) => group.tabs)
-        .filter(
-          (tab) => tab.surface_type === "agent-session" && tab.resource_key === wardianSessionId,
-        );
-      const panels = snapshot.panels.filter(
-        (panel) => panel.surface_type === "agent-session"
-          && panel.resource_key === wardianSessionId
-          && panel.visible,
-      );
-      return {
-        ok: tabs.length === 2
-          && panels.length === 2
-          && new Set(tabs.map((tab) => tab.surface_id)).size === 2,
-        snapshot,
-        tabs,
-      };
-    });
-    const [ownerSurface, mirrorSurface] = mountedPresentations.tabs;
-    const ownerPresentationId = `${ownerSurface.surface_id}:agent:${wardianSessionId}`;
-    const mirrorPresentationId = `${mirrorSurface.surface_id}:agent:${wardianSessionId}`;
+    const ownerPresentationId = `native-owner:${wardianSessionId}`;
+    const mirrorPresentationId = `native-mirror:${wardianSessionId}`;
 
     const terminalSnapshot = await invokeTauri(driver, "request_terminal_snapshot", {
       request: { session_id: wardianSessionId },
     });
     const runtimeGeneration = terminalSnapshot.runtime_generation;
-    const registered = await waitFor("both broker registrations", 30000, async () => {
-      const owner = await updatePresentation(
-        driver,
-        ownerPresentationId,
-        runtimeGeneration,
-        OWNER_GEOMETRY,
-      );
-      const mirror = await updatePresentation(
-        driver,
-        mirrorPresentationId,
-        runtimeGeneration,
-        MIRROR_GEOMETRY,
-      );
-      return {
-        ok: owner.presentation.presentation_id === ownerPresentationId
-          && mirror.presentation.presentation_id === mirrorPresentationId,
-        owner,
-        mirror,
-      };
-    });
+    const owner = await registerPresentation(driver, ownerPresentationId, OWNER_GEOMETRY);
+    const mirror = await registerPresentation(driver, mirrorPresentationId, MIRROR_GEOMETRY);
+    const registered = { owner, mirror };
     assert.equal(registered.mirror.broker_state.owner_presentation_id, null);
     assert.equal(registered.mirror.broker_state.pending_activation, null);
 
-    await focusSurfaceTab(driver, "agent-session", wardianSessionId, { index: 0 });
-    await focusSurfaceTab(driver, "agent-session", wardianSessionId, { index: -1 });
-    const mirrorPanel = await workbenchSurfacePanel(
-      driver,
-      "agent-session",
-      wardianSessionId,
-      { index: -1 },
-    );
-    await driver.executeScript((panel) => {
-      panel.querySelector('[data-testid="agent-terminal-host"]')?.focus();
-    }, mirrorPanel);
     const passiveFocusState = await updatePresentation(
       driver,
       ownerPresentationId,
@@ -362,6 +297,14 @@ test(
     assert.equal(passiveFocusState.broker_state.pending_activation, null);
 
     const consumerId = `desktop:${wardianSessionId}`;
+    await invokeTauri(driver, "subscribe_terminal_events", {
+      request: {
+        session_id: wardianSessionId,
+        consumer_id: consumerId,
+        client_kind: "desktop",
+        runtime_generation: runtimeGeneration,
+      },
+    });
     const eventStartSnapshot = await invokeTauri(driver, "request_terminal_snapshot", {
       request: { session_id: wardianSessionId },
     });
@@ -408,8 +351,9 @@ test(
       10_000,
       OWNER_GEOMETRY,
     );
-    assert.equal(ownerCanonical.decision.status, "accepted");
-    assert.deepEqual(ownerCanonical.geometry, OWNER_GEOMETRY);
+    assert.equal(ownerCanonical.decision.status, "rejected");
+    assert.equal(ownerCanonical.decision.reason, "fixed_geometry");
+    assert.deepEqual(ownerCanonical.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     brokerState = {
       ...brokerState,
       geometry: ownerCanonical.geometry,
@@ -445,14 +389,14 @@ test(
     );
     assert.equal(mirrorResize.decision.status, "rejected");
     assert.equal(mirrorResize.decision.reason, "not_owner");
-    assert.deepEqual(mirrorResize.geometry, OWNER_GEOMETRY);
+    assert.deepEqual(mirrorResize.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     const stableAfterMirror = await updatePresentation(
       driver,
       ownerPresentationId,
       runtimeGeneration,
       OWNER_GEOMETRY,
     );
-    assert.deepEqual(stableAfterMirror.broker_state.geometry, OWNER_GEOMETRY);
+    assert.deepEqual(stableAfterMirror.broker_state.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     brokerState = stableAfterMirror.broker_state;
 
     const ownerInputMarker = `OWNER_INPUT_${RUN_ID}`;
@@ -480,7 +424,9 @@ test(
       20_000,
       { cols: 104, rows: 32 },
     );
-    assert.equal(raceGeometry.decision.status, "accepted");
+    assert.equal(raceGeometry.decision.status, "rejected");
+    assert.equal(raceGeometry.decision.reason, "fixed_geometry");
+    assert.deepEqual(raceGeometry.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     brokerState = { ...brokerState, geometry: raceGeometry.geometry };
     const raceMirrorBegin = await beginActivation(driver, mirrorPresentationId, brokerState);
     assert.equal(raceMirrorBegin.decision.status, "accepted");
@@ -493,6 +439,7 @@ test(
     assert.notEqual(raceOwnerBegin.activation_id, raceMirrorBegin.activation_id);
     assert.ok(raceOwnerBegin.snapshot, "race activation must capture canonical geometry");
     const raceExpectedGeometry = raceOwnerBegin.snapshot.geometry;
+    assert.deepEqual(raceExpectedGeometry, ZELLIJ_CANONICAL_GEOMETRY);
     await new Promise((resolve) => setTimeout(resolve, 300));
     const staleRaceAck = await ackActivation(driver, mirrorPresentationId, raceMirrorBegin);
     assert.equal(staleRaceAck.decision.status, "rejected");
@@ -504,7 +451,7 @@ test(
     // viewport, so the response may already be newer than the activation
     // snapshot. Event-order assertions below still prove snapshot restoration
     // preceded the ownership commit.
-    assertUsableGeometry(raceOwnerAck.broker_state.geometry, "race activation");
+    assert.deepEqual(raceOwnerAck.broker_state.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     brokerState = raceOwnerAck.broker_state;
 
     await reportPresentationViewport(
@@ -520,7 +467,9 @@ test(
       30_000,
       { cols: 108, rows: 33 },
     );
-    assert.equal(timeoutGeometry.decision.status, "accepted");
+    assert.equal(timeoutGeometry.decision.status, "rejected");
+    assert.equal(timeoutGeometry.decision.reason, "fixed_geometry");
+    assert.deepEqual(timeoutGeometry.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     brokerState = { ...brokerState, geometry: timeoutGeometry.geometry };
     const timeoutBegin = await beginActivation(driver, mirrorPresentationId, brokerState);
     assert.equal(timeoutBegin.decision.status, "accepted");
@@ -550,7 +499,10 @@ test(
         value,
       };
     });
-    assertUsableGeometry(timeoutFallback.value.broker_state.geometry, "activation timeout");
+    assert.deepEqual(
+      timeoutFallback.value.broker_state.geometry,
+      ZELLIJ_CANONICAL_GEOMETRY,
+    );
     brokerState = timeoutFallback.value.broker_state;
 
     const disconnectGeometry = await resizePresentation(
@@ -560,20 +512,23 @@ test(
       40_000,
       { cols: 112, rows: 35 },
     );
-    assert.equal(disconnectGeometry.decision.status, "accepted");
+    assert.equal(disconnectGeometry.decision.status, "rejected");
+    assert.equal(disconnectGeometry.decision.reason, "fixed_geometry");
+    assert.deepEqual(disconnectGeometry.geometry, ZELLIJ_CANONICAL_GEOMETRY);
     brokerState = { ...brokerState, geometry: disconnectGeometry.geometry };
     const disconnectBegin = await beginActivation(driver, mirrorPresentationId, brokerState);
     assert.equal(disconnectBegin.decision.status, "accepted");
     assert.ok(disconnectBegin.snapshot, "disconnect activation must capture canonical geometry");
     const disconnectExpectedGeometry = disconnectBegin.snapshot.geometry;
-    assertUsableGeometry(disconnectExpectedGeometry, "disconnect activation snapshot");
+    assert.deepEqual(disconnectExpectedGeometry, ZELLIJ_CANONICAL_GEOMETRY);
     await new Promise((resolve) => setTimeout(resolve, 400));
-    await closeWorkbenchSurface(
-      driver,
-      "agent-session",
-      wardianSessionId,
-      { index: -1 },
-    );
+    await invokeTauri(driver, "unregister_terminal_presentation", {
+      request: {
+        session_id: wardianSessionId,
+        presentation_id: mirrorPresentationId,
+        runtime_generation: runtimeGeneration,
+      },
+    });
     const disconnectFallback = await waitFor("disconnect rollback", 30000, async () => {
       const value = await updatePresentation(
         driver,
@@ -588,7 +543,7 @@ test(
       };
     });
     const disconnectFallbackGeometry = disconnectFallback.value.broker_state.geometry;
-    assert.ok(disconnectFallbackGeometry.cols > 0 && disconnectFallbackGeometry.rows > 0);
+    assert.deepEqual(disconnectFallbackGeometry, ZELLIJ_CANONICAL_GEOMETRY);
 
     await new Promise((resolve) => setTimeout(resolve, 300));
     const drained = await drainBrokerEvents(
@@ -628,28 +583,16 @@ test(
         && event.owner_presentation_id === ownerPresentationId,
     );
     assert.ok(racePendingIndex >= 0 && raceCommitIndex > racePendingIndex);
-    const raceGeometryIndex = drained.events.findLastIndex(
-      (event, index) => index < racePendingIndex
-        && event.type === "geometry"
-        && event.geometry?.cols === raceExpectedGeometry.cols
-        && event.geometry?.rows === raceExpectedGeometry.rows,
-    );
-    assert.ok(
-      raceGeometryIndex >= 0 && raceGeometryIndex < racePendingIndex,
-      "owner geometry must commit before the superseding ownership race",
-    );
     assertRecoveryWindow(
       drained.events,
       timeoutBegin.activation_id,
       ownerPresentationId,
-      timeoutExpectedGeometry,
       "activation timeout",
     );
     assertRecoveryWindow(
       drained.events,
       disconnectBegin.activation_id,
       ownerPresentationId,
-      disconnectFallbackGeometry,
       "presentation disconnect",
     );
   },

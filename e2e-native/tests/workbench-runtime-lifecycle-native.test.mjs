@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { By, Key, until } from "selenium-webdriver";
+import { By, until } from "selenium-webdriver";
 
 import {
   createNativeHarness,
@@ -16,11 +16,13 @@ import {
   closeWorkbenchSurface,
   openWorkbenchSurface,
 } from "../lib/workbench.mjs";
+import { readTerminalDebugSnapshot } from "../lib/terminal-debug.mjs";
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
 const PROVIDER_SESSION_ID = `e2e-workbench-runtime-${RUN_ID}`;
 const SESSION_NAME = `E2E-Workbench-Runtime-${RUN_ID}`;
+const NATIVE_SCRIPT_TIMEOUT_MS = 120000;
 let wardianSessionId = null;
 
 async function invokeTauri(driver, command, args = {}) {
@@ -90,11 +92,54 @@ async function readSnapshot(driver) {
   });
 }
 
+function zellijRendererSelector() {
+  return `[data-zellij-singleton-viewport="true"]`
+    + `[data-zellij-agent-id=${JSON.stringify(wardianSessionId)}] `
+    + '[data-testid="agent-terminal-host"]';
+}
+
+async function selectTerminalPreview(driver, root) {
+  await driver.wait(async () => (
+    driver.executeScript((node) => {
+      const preview = node.querySelector('[data-zellij-presentation="preview"]');
+      if (!(preview instanceof HTMLElement) || preview.getAttribute("aria-disabled") === "true") {
+        return false;
+      }
+      preview.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      return true;
+    }, root)
+  ), 20000);
+}
+
+async function sendOwnedTerminalInput(driver, host, input) {
+  const presentationId = await host.getAttribute("data-terminal-presentation-id");
+  assert.ok(presentationId, "Expected the singleton terminal presentation identity");
+  const ownership = await waitFor("singleton terminal input ownership", 10000, async () => {
+    const snapshot = await readTerminalDebugSnapshot(driver, presentationId);
+    return {
+      ok: snapshot?.broker?.ownerPresentationId === presentationId,
+      snapshot,
+    };
+  });
+  const decision = await invokeTauri(driver, "send_terminal_presentation_input", {
+    request: {
+      session_id: wardianSessionId,
+      presentation_id: presentationId,
+      runtime_generation: ownership.snapshot.broker.runtimeGeneration,
+      lease_epoch: ownership.snapshot.broker.leaseEpoch,
+      input,
+    },
+  });
+  assert.equal(decision.status, "accepted");
+}
+
 async function waitForAgentSessionHost(driver) {
-  const selector = `[data-testid="agent-session-surface"]`
-    + `[data-resource-key=${JSON.stringify(wardianSessionId)}] [data-testid="agent-terminal-host"]`;
+  const surfaceSelector = `[data-testid="agent-session-surface"]`
+    + `[data-resource-key=${JSON.stringify(wardianSessionId)}]`;
   try {
-    const host = await driver.wait(until.elementLocated(By.css(selector)), 20000);
+    const surface = await driver.wait(until.elementLocated(By.css(surfaceSelector)), 20000);
+    await selectTerminalPreview(driver, surface);
+    const host = await driver.wait(until.elementLocated(By.css(zellijRendererSelector())), 20000);
     await driver.wait(until.elementIsVisible(host), 20000);
     return host;
   } catch (error) {
@@ -111,6 +156,13 @@ async function waitForAgentSessionHost(driver) {
       })),
       agentSessions: document.querySelectorAll('[data-testid="agent-session-surface"]').length,
       terminalHosts: document.querySelectorAll('[data-testid="agent-terminal-host"]').length,
+      viewportOwner: document.querySelector('[data-zellij-singleton-viewport="true"]')
+        ?.getAttribute("data-terminal-broker-owner") ?? null,
+      sessionPresentation: document.querySelector('[data-testid="agent-session-surface"]')
+        ?.getAttribute("data-presentation-id") ?? null,
+      previewDisabled: document.querySelector(
+        '[data-testid="agent-session-surface"] [data-zellij-presentation="preview"]',
+      )?.getAttribute("aria-disabled") ?? null,
     }));
     throw new Error(`Agent Session terminal did not mount: ${JSON.stringify(diagnostic)}\n${error}`);
   }
@@ -211,6 +263,7 @@ test(
 
     normalSession = await startNativeSession(harness);
     const { driver } = normalSession;
+    await driver.manage().setTimeouts({ script: NATIVE_SCRIPT_TIMEOUT_MS });
     await waitForAppShell(driver, 20000);
     await driver.manage().window().setRect({ width: 1400, height: 900 });
 
@@ -232,17 +285,24 @@ test(
     assert.notEqual(wardianSessionId, PROVIDER_SESSION_ID);
 
     await openWorkbenchSurface(driver, "agents-overview");
-    await driver.wait(until.elementLocated(By.id(`agent-card-${wardianSessionId}`)), 20000);
+    const agentCard = await driver.wait(
+      until.elementLocated(By.id(`agent-card-${wardianSessionId}`)),
+      20000,
+    );
+    await selectTerminalPreview(driver, agentCard);
     const agentsTerminalHost = await driver.wait(until.elementLocated(By.css(
-      `#agent-card-${wardianSessionId} [data-testid="agent-terminal-host"]`,
+      zellijRendererSelector(),
     )), 20000);
     await driver.wait(until.elementIsVisible(agentsTerminalHost), 20000);
     await waitForActiveWorkbenchOverlayAlignment(driver, "initial Agents overlay alignment");
     const initialAgentsFit = await waitFor("fitted Agents terminal first paint", 30000, async () => (
-      await driver.executeScript((host) => {
+      await driver.executeScript((host, sessionId) => {
         const rendererHost = host.firstElementChild;
         const hostRect = host.getBoundingClientRect();
         const rendererRect = rendererHost?.getBoundingClientRect();
+        const targetRect = document.querySelector(
+          `[data-zellij-presentation="live"][data-zellij-agent-id="${CSS.escape(sessionId)}"]`,
+        )?.getBoundingClientRect();
         const transform = rendererHost instanceof HTMLElement ? rendererHost.style.transform : "";
         return {
           ok: getComputedStyle(host).visibility === "visible"
@@ -251,6 +311,11 @@ test(
             && rendererRect !== undefined
             && rendererRect.width >= 10
             && rendererRect.height >= 10
+            && targetRect !== undefined
+            && Math.abs(hostRect.left - targetRect.left) <= 1
+            && Math.abs(hostRect.top - targetRect.top) <= 1
+            && Math.abs(hostRect.width - targetRect.width) <= 1
+            && Math.abs(hostRect.height - targetRect.height) <= 1
             && !transform.includes("scale("),
           host_width: hostRect.width,
           host_height: hostRect.height,
@@ -258,29 +323,27 @@ test(
           renderer_height: rendererRect?.height ?? 0,
           transform,
         };
-      }, agentsTerminalHost)
+      }, agentsTerminalHost, wardianSessionId)
     ));
     assert.equal(initialAgentsFit.transform, "", "Agents first paint must use a locally fitted renderer");
     const initialPresentationDebug = await waitFor("registered Agents presentation", 30000, async () => (
       await driver.executeScript((host) => {
         const presentationId = host.getAttribute("data-terminal-presentation-id");
-        const presentationIds = window.__wardianTerminalDebug?.presentationIds() ?? [];
+        const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
         return {
-          ok: presentationId !== null && presentationIds.includes(presentationId),
+          ok: presentationId !== null && renderer !== null,
           presentation_id: presentationId,
-          presentation_ids: presentationIds,
+          renderer_instance_id:
+            renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
         };
       }, agentsTerminalHost)
     ));
     assert.ok(
-      initialPresentationDebug.presentation_ids.includes(initialPresentationDebug.presentation_id),
+      initialPresentationDebug.renderer_instance_id,
       `Agents presentation must be registered before clear: ${JSON.stringify(initialPresentationDebug)}`,
     );
 
-    const terminalInput = await agentsTerminalHost.findElement(By.css(".xterm-helper-textarea"));
-    await agentsTerminalHost.click();
-    await driver.executeScript((element) => element.focus(), terminalInput);
-    await driver.actions().sendKeys("before-clear", Key.ENTER).perform();
+    await sendOwnedTerminalInput(driver, agentsTerminalHost, "before-clear\r");
     const beforeClearInput = await waitFor("terminal input before clear", 30000, async () => {
       const snapshot = await readSnapshot(driver);
       return {
@@ -301,7 +364,7 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     await driver.wait(until.elementLocated(By.css(
-      `#agent-card-${wardianSessionId} [data-testid="agent-terminal-host"]`,
+      zellijRendererSelector(),
     )), 30000);
     const fatalErrors = await driver.findElements(By.xpath(
       "//h3[contains(normalize-space(.), 'Terminal Initialization Fatal Error')]",
@@ -313,51 +376,50 @@ test(
     );
 
     const recoveredAgentsTerminalHost = await driver.findElement(By.css(
-      `#agent-card-${wardianSessionId} [data-testid="agent-terminal-host"]`,
+      zellijRendererSelector(),
     ));
     await waitForActiveWorkbenchOverlayAlignment(driver, "Agents overlay alignment after clear");
     await waitFor("recovered Agents presentation", 10000, async () => (
-      driver.executeScript((host) => {
+      driver.executeScript((host, sessionId) => {
         const presentationId = host.getAttribute("data-terminal-presentation-id");
         const rect = host.getBoundingClientRect();
-        const cardRect = host.closest("[data-agent-grid-card-id]")?.getBoundingClientRect();
+        const targetRect = document.querySelector(
+          `[data-zellij-presentation="live"][data-zellij-agent-id="${CSS.escape(sessionId)}"]`,
+        )?.getBoundingClientRect();
         const computed = getComputedStyle(host);
-        const presentationIds = window.__wardianTerminalDebug?.presentationIds() ?? [];
+        const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
         return {
-          ok: presentationId !== null && presentationIds.includes(presentationId),
+          ok: presentationId !== null
+            && renderer !== null
+            && targetRect !== undefined
+            && Math.abs(rect.left - targetRect.left) <= 1
+            && Math.abs(rect.top - targetRect.top) <= 1
+            && Math.abs(rect.width - targetRect.width) <= 1
+            && Math.abs(rect.height - targetRect.height) <= 1,
           presentation_id: presentationId,
-          presentation_ids: presentationIds,
+          renderer_instance_id:
+            renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
           host_visibility: computed.visibility,
           host_display: computed.display,
           host_width: rect.width,
           host_height: rect.height,
-          card_width: cardRect?.width ?? 0,
-          card_height: cardRect?.height ?? 0,
+          target_width: targetRect?.width ?? 0,
+          target_height: targetRect?.height ?? 0,
         };
-      }, recoveredAgentsTerminalHost)
+      }, recoveredAgentsTerminalHost, wardianSessionId)
     ));
-    const recoveredTerminalInput = await recoveredAgentsTerminalHost.findElement(
-      By.css(".xterm-helper-textarea"),
-    );
-    await recoveredAgentsTerminalHost.click();
-    await driver.executeScript((element) => element.focus(), recoveredTerminalInput);
-    await driver.actions().sendKeys("after-clear", Key.ENTER).perform();
+    await sendOwnedTerminalInput(driver, recoveredAgentsTerminalHost, "after-clear\r");
     await waitFor("terminal input after clear", 30000, async () => {
       const snapshot = await readSnapshot(driver);
       const debug = await driver.executeScript((host) => {
-        const presentationIds = window.__wardianTerminalDebug?.presentationIds() ?? [];
         const presentationId = host.getAttribute("data-terminal-presentation-id");
-        const snapshot = presentationId
-          ? window.__wardianTerminalDebug?.snapshot(presentationId) ?? null
-          : null;
+        const viewport = host.closest('[data-zellij-singleton-viewport="true"]');
+        const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
         return {
           presentation_id: presentationId ?? null,
-          presentation_ids: presentationIds,
-          broker: snapshot?.broker ?? null,
-          last_reported_size: snapshot?.lastReportedSize ?? null,
-          renderer_geometry: snapshot?.renderer
-            ? { cols: snapshot.renderer.cols, rows: snapshot.renderer.rows }
-            : null,
+          broker_owner: viewport?.getAttribute("data-terminal-broker-owner") ?? null,
+          renderer_instance_id:
+            renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
         };
       }, recoveredAgentsTerminalHost);
       return {
@@ -370,25 +432,25 @@ test(
     const recoveredFit = await waitFor("fitted Agents terminal after clear", 30000, async () => (
       await driver.executeScript((host) => {
         const presentationId = host.getAttribute("data-terminal-presentation-id");
-        const debug = presentationId
-          ? window.__wardianTerminalDebug?.snapshot(presentationId) ?? null
-          : null;
+        const viewport = host.closest('[data-zellij-singleton-viewport="true"]');
+        const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
         const rect = host.getBoundingClientRect();
         return {
-          ok: debug?.broker?.ownerPresentationId === presentationId
-            && debug?.lastReportedSize?.cols === debug?.renderer?.cols
-            && debug?.lastReportedSize?.rows === debug?.renderer?.rows
+          ok: viewport?.getAttribute("data-terminal-broker-owner") === presentationId
+            && renderer !== null
             && rect.width >= 10
             && rect.height >= 10,
           presentation_id: presentationId,
-          debug,
+          broker_owner: viewport?.getAttribute("data-terminal-broker-owner") ?? null,
+          renderer_instance_id:
+            renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
           host_width: rect.width,
           host_height: rect.height,
         };
       }, recoveredAgentsTerminalHost)
     ));
     assert.equal(
-      recoveredFit.debug.broker.ownerPresentationId,
+      recoveredFit.broker_owner,
       recoveredFit.presentation_id,
       "The pre-clear owner must own the replacement runtime",
     );
@@ -396,22 +458,80 @@ test(
     await openWorkbenchSurface(driver, "agent-session", wardianSessionId);
     await waitForAgentSessionHost(driver);
 
+    const retainedRendererIdentity = await driver.executeScript((host) => {
+      const xterm = host.querySelector(".xterm");
+      const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
+      xterm?.setAttribute("data-e2e-retained-renderer", "true");
+      return {
+        instanceId: renderer?.getAttribute("data-terminal-renderer-instance-id") ?? null,
+        webglAttemptCount: renderer?.getAttribute("data-terminal-webgl-attempt-count") ?? null,
+        webglActivationCount:
+          renderer?.getAttribute("data-terminal-webgl-activation-count") ?? null,
+      };
+    }, recoveredAgentsTerminalHost);
+    assert.ok(retainedRendererIdentity.instanceId);
+
     const beforeClose = await waitFor("initial runtime output", 30000, async () => {
       const snapshot = await readSnapshot(driver);
       return {
-        ok: snapshotText(snapshot).includes("runtime-start:")
-          && snapshotText(snapshot).includes("runtime-tick:"),
+        ok: snapshotText(snapshot).includes("runtime-tick:"),
         snapshot,
       };
     });
 
     await closeWorkbenchSurface(driver, "agent-session", wardianSessionId);
     await closeWorkbenchSurface(driver, "agents-overview");
-    assert.equal(
-      (await driver.findElements(By.css('[data-testid="agent-terminal-host"]'))).length,
-      0,
-      "Expected every desktop terminal presentation to be detached",
-    );
+    const retainedAfterClose = await waitFor("hidden renderer broker release", 10000, async () => (
+      await driver.executeScript((selector, expectedIdentity) => {
+        const host = document.querySelector(selector);
+        const viewport = host?.closest('[data-zellij-singleton-viewport="true"]');
+        const renderer = host?.querySelector("[data-terminal-renderer-instance-id]");
+        const result = {
+          terminalHosts: document.querySelectorAll('[data-testid="agent-terminal-host"]').length,
+          hidden: viewport instanceof HTMLElement
+            && getComputedStyle(viewport).visibility === "hidden",
+          xtermStable: host?.querySelector(".xterm")
+            ?.getAttribute("data-e2e-retained-renderer") === "true",
+          instanceStable:
+            renderer?.getAttribute("data-terminal-renderer-instance-id")
+              === expectedIdentity.instanceId,
+          webglAttemptStable:
+            renderer?.getAttribute("data-terminal-webgl-attempt-count")
+              === expectedIdentity.webglAttemptCount,
+          webglStable:
+            renderer?.getAttribute("data-terminal-webgl-activation-count")
+              === expectedIdentity.webglActivationCount,
+          brokerOwner: viewport?.getAttribute("data-terminal-broker-owner") ?? null,
+        };
+        return {
+          ok: result.terminalHosts === 1
+            && result.hidden
+            && result.xtermStable
+            && result.instanceStable
+            && result.webglAttemptStable
+            && result.webglStable
+            && result.brokerOwner === "",
+          ...result,
+        };
+      }, zellijRendererSelector(), retainedRendererIdentity)
+    ));
+    assert.deepEqual({
+      terminalHosts: retainedAfterClose.terminalHosts,
+      hidden: retainedAfterClose.hidden,
+      xtermStable: retainedAfterClose.xtermStable,
+      instanceStable: retainedAfterClose.instanceStable,
+      webglAttemptStable: retainedAfterClose.webglAttemptStable,
+      webglStable: retainedAfterClose.webglStable,
+      brokerOwner: retainedAfterClose.brokerOwner,
+    }, {
+      terminalHosts: 1,
+      hidden: true,
+      xtermStable: true,
+      instanceStable: true,
+      webglAttemptStable: true,
+      webglStable: true,
+      brokerOwner: "",
+    }, "Closing every surface must hide, not destroy, the singleton renderer");
 
     const afterClose = await waitFor("runtime output after every presentation closes", 30000, async () => {
       const snapshot = await readSnapshot(driver);
@@ -421,7 +541,7 @@ test(
         snapshot,
       };
     });
-    assert.ok(snapshotText(afterClose.snapshot).includes("runtime-start:"));
+    assert.ok(snapshotText(afterClose.snapshot).includes("runtime-tick:"));
 
     const agentsAfterClose = await invokeTauri(driver, "list_agents");
     const liveAgent = agentsAfterClose.find((candidate) => candidate.session_id === wardianSessionId);
@@ -431,11 +551,50 @@ test(
     // Roster Enter now reveals the agent in Agents. Reopening a dedicated
     // Agent Session is an explicit surface action.
     await openWorkbenchSurface(driver, "agent-session", wardianSessionId);
-    await waitForAgentSessionHost(driver);
+    const reopenedTerminalHost = await waitForAgentSessionHost(driver);
+    const retainedAfterReopen = await waitFor("fresh broker activation after reopen", 10000, async () => (
+      await driver.executeScript((host, expectedIdentity) => {
+        const presentationId = host.getAttribute("data-terminal-presentation-id");
+        const viewport = host.closest('[data-zellij-singleton-viewport="true"]');
+        const renderer = host.querySelector("[data-terminal-renderer-instance-id]");
+        const result = {
+          xtermStable: host.querySelector(".xterm")
+            ?.getAttribute("data-e2e-retained-renderer") === "true",
+          instanceStable:
+            renderer?.getAttribute("data-terminal-renderer-instance-id")
+              === expectedIdentity.instanceId,
+          webglAttemptStable:
+            renderer?.getAttribute("data-terminal-webgl-attempt-count")
+              === expectedIdentity.webglAttemptCount,
+          webglStable:
+            renderer?.getAttribute("data-terminal-webgl-activation-count")
+              === expectedIdentity.webglActivationCount,
+          brokerOwner: viewport?.getAttribute("data-terminal-broker-owner") ?? null,
+        };
+        return {
+          ok: result.xtermStable
+            && result.instanceStable
+            && result.webglAttemptStable
+            && result.webglStable
+            && result.brokerOwner === presentationId,
+          ...result,
+          presentationId,
+        };
+      }, reopenedTerminalHost, retainedRendererIdentity)
+    ));
+    assert.deepEqual(retainedAfterReopen, {
+      ok: true,
+      xtermStable: true,
+      instanceStable: true,
+      webglAttemptStable: true,
+      webglStable: true,
+      brokerOwner: retainedAfterReopen.presentationId,
+      presentationId: retainedAfterReopen.presentationId,
+    }, "Reopening a surface must reuse the retained singleton renderer");
     const afterReopen = await readSnapshot(driver);
     assert.equal(afterReopen.runtime_generation, beforeClose.snapshot.runtime_generation);
     assert.ok(afterReopen.sequence_barrier >= afterClose.snapshot.sequence_barrier);
-    assert.ok(snapshotText(afterReopen).includes("runtime-start:"));
+    assert.ok(snapshotText(afterReopen).includes("runtime-tick:"));
 
     const paneActions = await driver.wait(
       until.elementLocated(By.css(

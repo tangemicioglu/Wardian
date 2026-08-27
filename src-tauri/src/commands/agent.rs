@@ -411,6 +411,11 @@ struct PreparedAgentClear {
     status_arc: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
+struct PreparedRuntimeReplacement {
+    termination: ActiveAgent,
+    status_arc: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
 fn take_agent_runtime_for_termination(agent: &mut ActiveAgent) -> ActiveAgent {
     ActiveAgent {
         config: agent.config.clone(),
@@ -418,6 +423,7 @@ fn take_agent_runtime_for_termination(agent: &mut ActiveAgent) -> ActiveAgent {
         background_processes: std::mem::take(&mut agent.background_processes),
         memory_capability: agent.memory_capability.take(),
         runtime_generation: agent.runtime_generation.take(),
+        zellij_pane: agent.zellij_pane.take(),
         process_id: agent.process_id.take(),
         query_count: agent.query_count.clone(),
         init_timestamp: agent.init_timestamp.clone(),
@@ -468,6 +474,15 @@ fn prepare_agent_for_clear(agent: &mut ActiveAgent) -> PreparedAgentClear {
     }
 }
 
+fn prepare_runtime_replacement(agent: &mut ActiveAgent) -> PreparedRuntimeReplacement {
+    let termination = take_agent_runtime_for_termination(agent);
+    let status_arc = replace_agent_status_incarnation(agent, "Processing...");
+    PreparedRuntimeReplacement {
+        termination,
+        status_arc,
+    }
+}
+
 fn restore_agent_runtime_after_aborted_clear(
     agent: &mut ActiveAgent,
     prepared: &mut PreparedAgentClear,
@@ -476,6 +491,7 @@ fn restore_agent_runtime_after_aborted_clear(
     agent.background_processes = std::mem::take(&mut prepared.termination.background_processes);
     agent.memory_capability = prepared.termination.memory_capability.take();
     agent.runtime_generation = prepared.termination.runtime_generation.take();
+    agent.zellij_pane = prepared.termination.zellij_pane.take();
     agent.process_id = prepared.termination.process_id.take();
     #[cfg(windows)]
     {
@@ -483,6 +499,68 @@ fn restore_agent_runtime_after_aborted_clear(
     }
     agent.current_status = prepared.termination.current_status.clone();
     agent.current_status.clone()
+}
+
+async fn release_zellij_pane_before_runtime_replacement(
+    agent: &mut ActiveAgent,
+) -> Result<(), String> {
+    let Some(lease) = agent.zellij_pane.take() else {
+        return Ok(());
+    };
+    lease.close().await
+}
+
+struct CommittedZellijReplacementFinalizer<'a> {
+    engine: &'a crate::state::zellij_terminal::ZellijTerminalEngine,
+    session_id: &'a str,
+}
+
+impl Drop for CommittedZellijReplacementFinalizer<'_> {
+    fn drop(&mut self) {
+        self.engine.finalize_replacement(self.session_id);
+    }
+}
+
+async fn settle_committed_running_replacement(
+    state: &AppState,
+    engine: &std::sync::Arc<crate::state::zellij_terminal::ZellijTerminalEngine>,
+    session_id: &str,
+    old_agent: &mut ActiveAgent,
+) -> Result<(), String> {
+    let _reservation_finalizer = CommittedZellijReplacementFinalizer {
+        engine,
+        session_id,
+    };
+    let mut errors = Vec::new();
+    let runtime_generation = state
+        .agents
+        .lock()
+        .await
+        .get(session_id)
+        .and_then(|agent| agent.runtime_generation);
+    match runtime_generation {
+        Some(runtime_generation) => {
+            if let Err(error) = state
+                .terminal_sessions
+                .commit_runtime_replacement(session_id, runtime_generation)
+                .await
+            {
+                errors.push(format!(
+                    "Failed to commit terminal runtime replacement: {error}"
+                ));
+            }
+        }
+        None => errors.push("Committed replacement has no terminal runtime".to_string()),
+    }
+    if let Err(error) = release_zellij_pane_before_runtime_replacement(old_agent).await {
+        errors.push(format!("Failed to retire the previous agent terminal: {error}"));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 fn clone_quote_custom_arg(arg: &str) -> String {
@@ -1193,7 +1271,41 @@ struct ResumeRuntimeSnapshot {
     init_timestamp: Option<String>,
     query_count: usize,
     log_path: Option<std::path::PathBuf>,
-    current_status: String,
+    runtime_generation: Option<u64>,
+    zellij_generation: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeZellijMode {
+    ReplaceRunning,
+    RecoverStale,
+}
+
+fn classify_resume_zellij_mode(
+    expected_generation: u64,
+    binding: Option<&crate::state::zellij_terminal::ZellijPaneBinding>,
+) -> Result<ResumeZellijMode, String> {
+    let Some(binding) = binding else {
+        return Ok(ResumeZellijMode::RecoverStale);
+    };
+    if binding.generation != expected_generation {
+        return Err(
+            "Agent runtime and Zellij pane generations are inconsistent; restart was not started"
+                .to_string(),
+        );
+    }
+    match binding.phase {
+        crate::state::zellij_terminal::ZellijPanePhase::Running => {
+            Ok(ResumeZellijMode::ReplaceRunning)
+        }
+        crate::state::zellij_terminal::ZellijPanePhase::Exited
+        | crate::state::zellij_terminal::ZellijPanePhase::Closing => {
+            Ok(ResumeZellijMode::RecoverStale)
+        }
+        crate::state::zellij_terminal::ZellijPanePhase::Starting => Err(
+            "Agent Zellij pane transition is still in progress; restart was not started".to_string(),
+        ),
+    }
 }
 
 fn restore_runtime_state_after_resume(
@@ -1217,11 +1329,8 @@ fn capture_resume_runtime_snapshot(agent: &crate::state::ActiveAgent) -> ResumeR
         init_timestamp: agent.init_timestamp.lock().unwrap().clone(),
         query_count: agent.query_count.lock().map(|count| *count).unwrap_or(0),
         log_path: agent.log_path.lock().ok().and_then(|path| path.clone()),
-        current_status: agent
-            .current_status
-            .lock()
-            .map(|status| status.clone())
-            .unwrap_or_else(|_| "Off".to_string()),
+        runtime_generation: agent.runtime_generation,
+        zellij_generation: agent.zellij_pane.as_ref().map(|lease| lease.generation()),
     }
 }
 
@@ -1240,6 +1349,150 @@ async fn restore_agent_status_after_failed_runtime_start(
     if let Some(status_arc) = status_arc {
         manager::publish_agent_status(app, session_id, &status_arc);
     }
+}
+
+fn prepare_failed_runtime_replacement(
+    agent: &mut crate::state::ActiveAgent,
+) -> (
+    std::sync::Arc<std::sync::Mutex<String>>,
+    AgentConfig,
+    Option<String>,
+) {
+    agent.runtime_generation = None;
+    agent.process_id = None;
+    agent.zellij_pane = None;
+    let config = {
+        let mut config = agent.config.lock().unwrap();
+        config.is_off = true;
+        config.clone()
+    };
+    let created_at = agent
+        .init_timestamp
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
+    let status = replace_agent_status_incarnation(agent, "Error");
+    (status, config, created_at)
+}
+
+async fn remove_failed_runtime_generation(
+    state: &AppState,
+    session_id: &str,
+    runtime_generation: Option<u64>,
+) {
+    let Some(runtime_generation) = runtime_generation else {
+        return;
+    };
+    if let Err(error) = state
+        .terminal_sessions
+        .terminate_and_remove_runtime(session_id, runtime_generation)
+        .await
+    {
+        manager::log_debug(&format!(
+            "[WARDIAN] terminal broker cleanup failed after restart error for {session_id}: {error}"
+        ));
+    }
+}
+
+async fn terminate_uncommitted_runtime(state: &AppState, active: &mut ActiveAgent) {
+    let session_id = active.config.lock().unwrap().session_id.clone();
+    let runtime_generation = active.runtime_generation.take();
+    if let Err(error) = release_zellij_pane_before_runtime_replacement(active).await {
+        manager::log_debug(&format!(
+            "[WARDIAN] Zellij pane cleanup remained pending for {session_id}: {error}"
+        ));
+    }
+    manager::terminate_active_agent_process(active);
+    remove_failed_runtime_generation(state, &session_id, runtime_generation).await;
+}
+
+async fn rollback_running_runtime_replacement(
+    state: &AppState,
+    engine: &std::sync::Arc<crate::state::zellij_terminal::ZellijTerminalEngine>,
+    session_id: &str,
+    provider_input_snapshot: &crate::state::interactions::ProviderInputRollbackSnapshot,
+    active: &mut ActiveAgent,
+    pane_promoted: bool,
+) -> Result<(), String> {
+    if let Some(runtime_generation) = active.runtime_generation {
+        if let Err(error) = state
+            .terminal_sessions
+            .rollback_runtime_replacement(session_id, runtime_generation)
+            .await
+        {
+            manager::log_debug(&format!(
+                "[WARDIAN] terminal broker replacement rollback failed for {session_id}: {error}"
+            ));
+        }
+    }
+    if pane_promoted {
+        if let Some(generation) = active.zellij_pane.as_ref().map(|lease| lease.generation()) {
+            if let Err(error) = engine
+                .rollback_promoted_replacement(session_id, generation)
+                .await
+            {
+                manager::log_debug(&format!(
+                    "[WARDIAN] Zellij replacement rollback failed for {session_id}: {error}"
+                ));
+            }
+        }
+    }
+    terminate_uncommitted_runtime(state, active).await;
+    if let Err(error) = engine.cancel_replacement(session_id).await {
+        manager::log_debug(&format!(
+            "[WARDIAN] Zellij replacement cancellation remained pending for {session_id}: {error}"
+        ));
+    }
+    state
+        .interactions
+        .restore_provider_input_rollback_snapshot(session_id, provider_input_snapshot)
+        .await
+}
+
+fn append_runtime_rollback_error(error: String, rollback: Result<(), String>) -> String {
+    match rollback {
+        Ok(()) => error,
+        Err(rollback_error) => {
+            format!("{error}; provider-input rollback remains recoverable: {rollback_error}")
+        }
+    }
+}
+
+async fn settle_failed_runtime_replacement(
+    state: &AppState,
+    app: &AppHandle,
+    session_id: &str,
+    runtime_generation: Option<u64>,
+) {
+    remove_failed_runtime_generation(state, session_id, runtime_generation).await;
+    let (status, config, created_at, state_snapshot) = {
+        let mut agents = state.agents.lock().await;
+        let order = state.agent_order.lock().await;
+        let Some(agent) = agents.get_mut(session_id) else {
+            return;
+        };
+        let (status, config, created_at) = prepare_failed_runtime_replacement(agent);
+        let state_snapshot = manager::state_configs_snapshot(&agents, &order);
+        (status, config, created_at, state_snapshot)
+    };
+    if let Err(error) = manager::try_save_state_snapshot(&state_snapshot) {
+        manager::log_debug(&format!(
+            "[WARDIAN] failed to persist restart error state for {session_id}: {error}"
+        ));
+    }
+    if let Err(error) = crate::manager::spawn::persist_agent_record(&config, created_at.as_deref())
+    {
+        manager::log_debug(&format!(
+            "[WARDIAN] failed to persist restart error row for {session_id}: {error}"
+        ));
+    }
+    if let Err(error) = wardian_core::db::update_agent_status(session_id, "Error", None) {
+        manager::log_debug(&format!(
+            "[WARDIAN] failed to persist restart error status for {session_id}: {error}"
+        ));
+    }
+    manager::publish_agent_status(app, session_id, &status);
+    let _ = app.emit("agents-updated", ());
 }
 
 #[cfg(test)]
@@ -2992,6 +3245,11 @@ async fn remove_agent<R: tauri::Runtime>(
             .ok()
             .map(|config| config.folder.clone())
             .filter(|folder| !folder.trim().is_empty());
+        if let Err(error) = release_zellij_pane_before_runtime_replacement(&mut agent).await {
+            manager::log_debug(&format!(
+                "[WARDIAN] Zellij pane cleanup remained pending while deleting {session_id}: {error}"
+            ));
+        }
         manager::terminate_active_agent_process(&mut agent);
 
         // Durable state was deleted before detaching the live agent. Post-commit
@@ -3148,6 +3406,12 @@ pub async fn pause_agent(
     }
 
     lifecycle_heartbeat.ensure_active("pause")?;
+    if let Err(error) = release_zellij_pane_before_runtime_replacement(&mut termination).await {
+        manager::terminate_active_agent_process(&mut termination);
+        return Err(format!(
+            "Failed to confirm the agent terminal closed while pausing: {error}"
+        ));
+    }
     manager::terminate_active_agent_process(&mut termination);
 
     let state_snapshot = {
@@ -3175,6 +3439,9 @@ pub async fn resume_agent(
         acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "resume").await?;
     let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(_lifecycle_lease.owner().clone());
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
+    // Every external terminal writer takes this same gate. Holding it through
+    // pane and broker promotion prevents input from observing split generations.
+    let _delivery_guard = state.lock_agent_delivery(&session_id).await;
     let snapshot = {
         let agents = state.agents.lock().await;
         let agent = agents
@@ -3184,33 +3451,12 @@ pub async fn resume_agent(
     };
     lifecycle_heartbeat.ensure_active("resume")?;
 
-    // Detach the paused runtime's status incarnation before a new provider is
-    // spawned. A late event from the old PTY must not become current while the
-    // replacement is bootstrapping.
-    let staged_status_arc = {
-        let mut agents = state.agents.lock().await;
-        let agent = agents
-            .get_mut(&session_id)
-            .ok_or_else(|| format!("Agent {} not found", session_id))?;
-        lifecycle_heartbeat.ensure_active("resume")?;
-        replace_agent_status_incarnation(agent, "Processing...")
-    };
-    manager::publish_agent_status(&app, &session_id, &staged_status_arc);
-
-    let status_before_resume = snapshot.current_status.clone();
     let mut config = snapshot.config.clone();
     let starts_fresh = resolved_session_persistence(&config) == AgentSessionPersistence::Fresh;
     let fresh_pending_boundary = if starts_fresh {
         let snapshot = match crate::commands::chat::agent_archive_capture_snapshot(&state, &session_id).await {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                restore_agent_status_after_failed_runtime_start(
-                    &state,
-                    &app,
-                    &session_id,
-                    &status_before_resume,
-                )
-                .await;
                 return Err(format!(
                     "Failed to capture the closing conversation before fresh resume: {error}"
                 ));
@@ -3219,26 +3465,12 @@ pub async fn resume_agent(
         let pending = match prepare_conversation_boundary(snapshot) {
             Ok(pending) => pending,
             Err(error) => {
-                restore_agent_status_after_failed_runtime_start(
-                    &state,
-                    &app,
-                    &session_id,
-                    &status_before_resume,
-                )
-                .await;
                 return Err(format!(
                     "Failed to prepare the closing conversation before fresh resume: {error}"
                 ));
             }
         };
         if let Err(error) = stage_conversation_boundary(&state, &pending) {
-            restore_agent_status_after_failed_runtime_start(
-                &state,
-                &app,
-                &session_id,
-                &status_before_resume,
-            )
-            .await;
             return Err(format!(
                 "Failed to stage the closing conversation before fresh resume: {error}"
             ));
@@ -3247,57 +3479,139 @@ pub async fn resume_agent(
     } else {
         None
     };
-    if let Err(error) = prepare_resume_config_for_runtime(&mut config, snapshot.query_count) {
-        restore_agent_status_after_failed_runtime_start(
-            &state,
-            &app,
-            &session_id,
-            &status_before_resume,
-        )
-        .await;
-        return Err(error);
-    }
-    if let Err(error) = prepare_provider_owned_fresh_identity(&mut config).await {
-        restore_agent_status_after_failed_runtime_start(
-            &state,
-            &app,
-            &session_id,
-            &status_before_resume,
-        )
-        .await;
-        return Err(error);
-    }
-    let mut new_active = match manager::spawn_agent(
-        app.clone(),
-        config.clone(),
-        !starts_fresh,
-        (!starts_fresh)
-            .then_some(snapshot.init_timestamp.clone())
-            .flatten(),
-    )
-    .await
+    prepare_resume_config_for_runtime(&mut config, snapshot.query_count)?;
+    prepare_provider_owned_fresh_identity(&mut config).await?;
+    lifecycle_heartbeat.ensure_active("resume")?;
+
+    let running_runtime = match (snapshot.runtime_generation, snapshot.zellij_generation) {
+        (Some(runtime_generation), Some(zellij_generation)) => {
+            Some((runtime_generation, zellij_generation))
+        }
+        (None, None) => None,
+        _ => {
+            return Err(
+                "Agent runtime and Zellij pane generations are inconsistent; restart was not started"
+                    .to_string(),
+            )
+        }
+    };
+    let mut running_replacement = None;
+    let replacement_engine = if let Some((runtime_generation, zellij_generation)) = running_runtime
     {
+        let engine = state
+            .zellij_terminal
+            .get()
+            .cloned()
+            .ok_or_else(|| "Bundled Zellij terminal engine is unavailable".to_string())?;
+        let binding = engine.binding(&session_id).await;
+        match classify_resume_zellij_mode(zellij_generation, binding.as_ref())? {
+            ResumeZellijMode::ReplaceRunning => {
+                engine
+                    .reserve_replacement(&session_id, zellij_generation)
+                    .await?;
+                running_replacement = Some((runtime_generation, zellij_generation));
+                Some(engine)
+            }
+            ResumeZellijMode::RecoverStale => None,
+        }
+    } else {
+        None
+    };
+    let provider_input_snapshot = if replacement_engine.is_some() {
+        Some(
+            state
+                .interactions
+                .capture_provider_input_rollback_snapshot(&session_id)
+                .await,
+        )
+    } else {
+        None
+    };
+
+    // Off agents have no live runtime to preserve and use the ordinary start
+    // path. A running restart keeps its old ActiveAgent, pane, and broker actor
+    // intact while the replacement is staged.
+    if running_replacement.is_none() {
+        let mut prepared = {
+            let mut agents = state.agents.lock().await;
+            let agent = agents
+                .get_mut(&session_id)
+                .ok_or_else(|| format!("Agent {} not found", session_id))?;
+            lifecycle_heartbeat.ensure_active("resume")?;
+            prepare_runtime_replacement(agent)
+        };
+        manager::publish_agent_status(&app, &session_id, &prepared.status_arc);
+        if let Err(error) =
+            release_zellij_pane_before_runtime_replacement(&mut prepared.termination).await
+        {
+            manager::terminate_active_agent_process(&mut prepared.termination);
+            settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
+            return Err(format!(
+                "Failed to confirm the previous agent terminal closed: {error}"
+            ));
+        }
+        manager::terminate_active_agent_process(&mut prepared.termination);
+    }
+
+    let spawn = if running_replacement.is_some() {
+        manager::spawn_agent_replacement(
+            app.clone(),
+            config.clone(),
+            !starts_fresh,
+            (!starts_fresh)
+                .then_some(snapshot.init_timestamp.clone())
+                .flatten(),
+        )
+        .await
+    } else {
+        manager::spawn_agent(
+            app.clone(),
+            config.clone(),
+            !starts_fresh,
+            (!starts_fresh)
+                .then_some(snapshot.init_timestamp.clone())
+                .flatten(),
+        )
+        .await
+    };
+    let mut new_active = match spawn {
         Ok(active) => active,
         Err(error) => {
-            restore_agent_status_after_failed_runtime_start(
-                &state,
-                &app,
-                &session_id,
-                &status_before_resume,
-            )
-            .await;
+            if let Some(engine) = replacement_engine.as_ref() {
+                let _ = engine.cancel_replacement(&session_id).await;
+                let rollback = state
+                    .interactions
+                    .restore_provider_input_rollback_snapshot(
+                        &session_id,
+                        provider_input_snapshot
+                            .as_ref()
+                            .expect("running replacement has an input snapshot"),
+                    )
+                    .await;
+                return Err(append_runtime_rollback_error(error, rollback));
+            }
+            settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
             return Err(error);
         }
     };
     if let Err(error) = lifecycle_heartbeat.ensure_active("resume") {
-        manager::terminate_active_agent_process(&mut new_active);
-        restore_agent_status_after_failed_runtime_start(
-            &state,
-            &app,
-            &session_id,
-            &status_before_resume,
-        )
-        .await;
+        if let Some(engine) = replacement_engine.as_ref() {
+            let rollback = rollback_running_runtime_replacement(
+                &state,
+                engine,
+                &session_id,
+                provider_input_snapshot
+                    .as_ref()
+                    .expect("running replacement has an input snapshot"),
+                &mut new_active,
+                false,
+            )
+            .await;
+            return Err(append_runtime_rollback_error(error, rollback));
+        } else {
+            terminate_uncommitted_runtime(&state, &mut new_active).await;
+            settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
+        }
         return Err(error);
     }
     restore_runtime_state_after_resume(&mut new_active, &snapshot, starts_fresh);
@@ -3308,17 +3622,77 @@ pub async fn resume_agent(
     let mut pending_new_active = Some(new_active);
     if let Err(error) = lifecycle_heartbeat.ensure_active("resume") {
         if let Some(mut active) = pending_new_active.take() {
-            manager::terminate_active_agent_process(&mut active);
+            if let Some(engine) = replacement_engine.as_ref() {
+                let rollback = rollback_running_runtime_replacement(
+                    &state,
+                    engine,
+                    &session_id,
+                    provider_input_snapshot
+                        .as_ref()
+                        .expect("running replacement has an input snapshot"),
+                    &mut active,
+                    false,
+                )
+                .await;
+                return Err(append_runtime_rollback_error(error, rollback));
+            } else {
+                terminate_uncommitted_runtime(&state, &mut active).await;
+            }
         }
-        restore_agent_status_after_failed_runtime_start(
-            &state,
-            &app,
-            &session_id,
-            &status_before_resume,
-        )
-        .await;
+        if replacement_engine.is_none() {
+            settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
+        }
         return Err(error);
     }
+    let pane_promoted = if let Some(engine) = replacement_engine.as_ref() {
+        let generation = match pending_new_active
+            .as_ref()
+            .and_then(|active| active.zellij_pane.as_ref())
+            .map(|lease| lease.generation())
+        {
+            Some(generation) => generation,
+            None => {
+                if let Some(mut active) = pending_new_active.take() {
+                    let rollback = rollback_running_runtime_replacement(
+                        &state,
+                        engine,
+                        &session_id,
+                        provider_input_snapshot
+                            .as_ref()
+                            .expect("running replacement has an input snapshot"),
+                        &mut active,
+                        false,
+                    )
+                    .await;
+                    return Err(append_runtime_rollback_error(
+                        "Staged replacement has no Zellij pane lease".to_string(),
+                        rollback,
+                    ));
+                }
+                return Err("Staged replacement has no Zellij pane lease".to_string());
+            }
+        };
+        if let Err(error) = engine.promote_replacement(&session_id, generation).await {
+            if let Some(mut active) = pending_new_active.take() {
+                let rollback = rollback_running_runtime_replacement(
+                    &state,
+                    engine,
+                    &session_id,
+                    provider_input_snapshot
+                        .as_ref()
+                        .expect("running replacement has an input snapshot"),
+                    &mut active,
+                    false,
+                )
+                .await;
+                return Err(append_runtime_rollback_error(error, rollback));
+            }
+            return Err(error);
+        }
+        true
+    } else {
+        false
+    };
     let commit_result = {
         let mut agents = state.agents.lock().await;
         let order = state.agent_order.lock().await;
@@ -3342,21 +3716,38 @@ pub async fn resume_agent(
         Ok(result) => result,
         Err(error) => {
             if let Some(mut active) = pending_new_active.take() {
-                manager::terminate_active_agent_process(&mut active);
+                if let Some(engine) = replacement_engine.as_ref() {
+                    let rollback = rollback_running_runtime_replacement(
+                        &state,
+                        engine,
+                        &session_id,
+                        provider_input_snapshot
+                            .as_ref()
+                            .expect("running replacement has an input snapshot"),
+                        &mut active,
+                        pane_promoted,
+                    )
+                    .await;
+                    return Err(append_runtime_rollback_error(error, rollback));
+                } else {
+                    terminate_uncommitted_runtime(&state, &mut active).await;
+                }
             }
-            restore_agent_status_after_failed_runtime_start(
-                &state,
-                &app,
-                &session_id,
-                &status_before_resume,
-            )
-            .await;
+            if replacement_engine.is_none() {
+                settle_failed_runtime_replacement(&state, &app, &session_id, None).await;
+            }
             return Err(error);
         }
     };
     manager::publish_agent_status(&app, &session_id, &new_status_arc);
 
+    let replacement_settlement = if let Some(engine) = replacement_engine.as_ref() {
+        settle_committed_running_replacement(&state, engine, &session_id, &mut old_agent).await
+    } else {
+        Ok(())
+    };
     manager::terminate_active_agent_process(&mut old_agent);
+    replacement_settlement?;
 
     let _ = app.emit(
         "agent-terminal-cleared",
@@ -3537,22 +3928,7 @@ fn state_snapshot_with_replacement(
 }
 
 fn persist_agent_config(config: &AgentConfig, created_at: Option<&str>) -> Result<(), String> {
-    let workspace = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id)
-        .to_string_lossy()
-        .to_string();
-    let project = wardian_core::db::project_name_from_workspace(&workspace);
-    wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
-        session_id: &config.session_id,
-        session_name: &config.session_name,
-        description: &config.description,
-        agent_class: &config.agent_class,
-        provider: &config.provider,
-        workspace: Some(&workspace),
-        project: project.as_deref(),
-        is_off: config.is_off,
-        created_at,
-    })
-    .map_err(|error| error.to_string())
+    crate::manager::spawn::persist_agent_record(config, created_at)
 }
 
 fn rollback_agent_replacement(
@@ -4171,6 +4547,15 @@ async fn clear_agent_session_inner(
                 "[WARDIAN] terminal broker pause failed while clearing {session_id}: {error}"
             ));
         }
+    }
+    if let Err(error) =
+        release_zellij_pane_before_runtime_replacement(&mut prepared.termination).await
+    {
+        manager::terminate_active_agent_process(&mut prepared.termination);
+        restore_agent_status_after_failed_runtime_start(&state, &app, &session_id, "Error").await;
+        return Err(format!(
+            "Failed to confirm the previous agent terminal closed: {error}"
+        ));
     }
     manager::terminate_active_agent_process(&mut prepared.termination);
 
@@ -5254,10 +5639,10 @@ mod tests {
         acquire_agent_lifecycle_transition_lease_for_session, agent_status_update_payload,
         apply_agent_model_selection_update, apply_agent_update_fields,
         archive_agent_lifecycle_boundary, archive_agent_lifecycle_boundary_from_snapshot,
-        assign_worktree_config, build_agent_cli_command_for_session_id_with_shells,
-        build_agent_cli_command_with_shells, build_agent_clone_preview,
-        build_session_close_context, commit_clear_replacement, commit_resume_replacement,
-        agent_has_running_process, capture_resume_runtime_snapshot,
+        agent_has_running_process, assign_worktree_config,
+        build_agent_cli_command_for_session_id_with_shells, build_agent_cli_command_with_shells,
+        build_agent_clone_preview, build_session_close_context, capture_resume_runtime_snapshot,
+        classify_resume_zellij_mode, commit_clear_replacement, commit_resume_replacement,
         clone_cleanup_created_profile_dirs,
         clone_collect_eligible_file_tree, clone_copy_agent_profile_files, clone_copy_profile_plan,
         clone_copy_selected_agent_profile_files, clone_copy_selected_agent_skills,
@@ -5280,13 +5665,16 @@ mod tests {
         normalize_spawn_folder, normalize_workspace_record_path,
         persisted_resume_session_for_provider, prepare_agent_for_clear, prepare_clear_config,
         prepare_conversation_boundary, prepare_restored_config_for_spawn, prepare_resume_config,
-        prepare_resume_config_for_runtime, promote_fresh_provider_session_after_resume,
+        prepare_failed_runtime_replacement, prepare_resume_config_for_runtime,
+        prepare_runtime_replacement,
+        promote_fresh_provider_session_after_resume,
         provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
         replace_agent_status_incarnation, release_spawn_name_reservation, remove_agent,
         reserve_spawn_session_name, reserve_rename_session_name,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
         resolve_external_resume_session, resolve_requested_spawn_session_name, restore_agent_config_in_state,
         restore_agent_runtime_after_aborted_clear,
+        release_zellij_pane_before_runtime_replacement,
         restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
         restore_runtime_state_snapshot_after_resume, stage_conversation_boundary,
         persist_agent_config, strip_claude_embedded_stream_flags,
@@ -5297,6 +5685,7 @@ mod tests {
         workspace_paths_match, worktree_deletion_is_already_complete, AgentOrderPlacement,
         AgentUpdateFields, AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
         DeletedAgentReferenceCleanup, DiscoveredGitWorktree, ResumeRuntimeSnapshot,
+        ResumeZellijMode,
         GIT_WORKTREE_DISCOVERY_CONCURRENCY, MAX_AGENT_DESCRIPTION_CHARS,
     };
     use crate::commands::terminal_session::{
@@ -5332,6 +5721,7 @@ mod tests {
             background_processes: Vec::new(),
             memory_capability: None,
             runtime_generation: None,
+            zellij_pane: None,
             process_id: None,
             query_count: Arc::new(Mutex::new(0)),
             init_timestamp: Arc::new(Mutex::new(None)),
@@ -8951,6 +9341,66 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[test]
+    fn aborted_clear_restores_the_zellij_pane_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = Arc::new(crate::state::zellij_terminal::ZellijTerminalEngine::new(
+            crate::state::zellij_terminal::ZellijTerminalConfig {
+                executable: root.path().join("zellij-test"),
+                wardian_cli: root.path().join("wardian-cli-test"),
+                runtime_root: root.path().join("runtime"),
+                wardian_home: root.path().join("home"),
+                session_name: "wardian-clear-test".to_string(),
+            },
+        ));
+        let mut active = make_test_agent();
+        active.zellij_pane = Some(crate::state::zellij_terminal::ZellijPaneLease::new(
+            engine,
+            "agent-1".to_string(),
+            7,
+        ));
+
+        let mut prepared = prepare_agent_for_clear(&mut active);
+        assert!(active.zellij_pane.is_none());
+        assert!(prepared.termination.zellij_pane.is_some());
+
+        restore_agent_runtime_after_aborted_clear(&mut active, &mut prepared);
+
+        assert_eq!(
+            active.zellij_pane.as_ref().map(|lease| lease.generation()),
+            Some(7)
+        );
+        assert!(prepared.termination.zellij_pane.is_none());
+    }
+
+    #[tokio::test]
+    async fn clear_detaches_the_old_zellij_lease_before_replacement_spawn() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = Arc::new(crate::state::zellij_terminal::ZellijTerminalEngine::new(
+            crate::state::zellij_terminal::ZellijTerminalConfig {
+                executable: root.path().join("zellij-test"),
+                wardian_cli: root.path().join("wardian-cli-test"),
+                runtime_root: root.path().join("runtime"),
+                wardian_home: root.path().join("home"),
+                session_name: "wardian-clear-test".to_string(),
+            },
+        ));
+        let mut active = make_test_agent();
+        active.zellij_pane = Some(crate::state::zellij_terminal::ZellijPaneLease::new(
+            engine,
+            "agent-1".to_string(),
+            7,
+        ));
+
+        let mut prepared = prepare_agent_for_clear(&mut active);
+        let result =
+            release_zellij_pane_before_runtime_replacement(&mut prepared.termination).await;
+
+        assert!(active.zellij_pane.is_none());
+        assert!(prepared.termination.zellij_pane.is_none());
+        assert!(result.is_err(), "fixture has no registered pane to close");
+    }
+
+    #[test]
     fn runtime_replacement_status_incarnation_rejects_late_runtime_writers() {
         let mut active = make_test_agent();
         let old_status = active.current_status.clone();
@@ -8963,6 +9413,71 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         );
         assert!(Arc::ptr_eq(&replacement_status, &active.current_status));
         assert_eq!(replacement_status.lock().unwrap().as_str(), "Off");
+    }
+
+    #[test]
+    fn nontransactional_runtime_preparation_moves_the_complete_old_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = Arc::new(crate::state::zellij_terminal::ZellijTerminalEngine::new(
+            crate::state::zellij_terminal::ZellijTerminalConfig {
+                executable: root.path().join("zellij-test"),
+                wardian_cli: root.path().join("wardian-cli-test"),
+                runtime_root: root.path().join("runtime"),
+                wardian_home: root.path().join("home"),
+                session_name: "wardian-restart-test".to_string(),
+            },
+        ));
+        let mut active = make_test_agent();
+        active.runtime_generation = Some(4);
+        active.process_id = Some(12345);
+        active.zellij_pane = Some(crate::state::zellij_terminal::ZellijPaneLease::new(
+            engine,
+            "agent-1".to_string(),
+            9,
+        ));
+        let old_status = active.current_status.clone();
+
+        let prepared = prepare_runtime_replacement(&mut active);
+
+        assert_eq!(prepared.termination.runtime_generation, Some(4));
+        assert_eq!(prepared.termination.process_id, Some(12345));
+        assert_eq!(
+            prepared
+                .termination
+                .zellij_pane
+                .as_ref()
+                .map(|lease| lease.generation()),
+            Some(9)
+        );
+        assert_eq!(active.runtime_generation, None);
+        assert_eq!(active.process_id, None);
+        assert!(active.zellij_pane.is_none());
+        assert!(!Arc::ptr_eq(&old_status, &active.current_status));
+        assert!(Arc::ptr_eq(&prepared.status_arc, &active.current_status));
+        assert_eq!(
+            active.current_status.lock().unwrap().as_str(),
+            "Processing..."
+        );
+    }
+
+    #[test]
+    fn failed_runtime_replacement_is_a_durable_off_error_shell() {
+        let mut active = make_test_agent();
+        active.runtime_generation = Some(8);
+        active.process_id = Some(12345);
+        active.config.lock().unwrap().is_off = false;
+        let previous_status = active.current_status.clone();
+
+        let (status, config, _) = prepare_failed_runtime_replacement(&mut active);
+
+        assert!(config.is_off);
+        assert!(active.config.lock().unwrap().is_off);
+        assert_eq!(active.runtime_generation, None);
+        assert_eq!(active.process_id, None);
+        assert!(active.zellij_pane.is_none());
+        assert!(!Arc::ptr_eq(&previous_status, &status));
+        assert!(Arc::ptr_eq(&active.current_status, &status));
+        assert_eq!(status.lock().unwrap().as_str(), "Error");
     }
 
     #[test]
@@ -9009,7 +9524,39 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             snapshot.log_path.as_deref(),
             Some(std::path::Path::new("D:/tmp/agent.log"))
         );
-        assert_eq!(snapshot.current_status, "Idle");
+    }
+
+    #[test]
+    fn resume_recreates_exited_closing_and_missing_zellij_generations() {
+        use crate::state::zellij_terminal::{
+            ZellijPaneBinding, ZellijPaneId, ZellijPanePhase,
+        };
+
+        let binding = |phase| ZellijPaneBinding {
+            session_id: "agent-1".to_string(),
+            pane_id: Some(ZellijPaneId::parse("terminal_1").unwrap()),
+            generation: 7,
+            phase,
+        };
+
+        assert_eq!(
+            classify_resume_zellij_mode(7, Some(&binding(ZellijPanePhase::Running))).unwrap(),
+            ResumeZellijMode::ReplaceRunning
+        );
+        assert_eq!(
+            classify_resume_zellij_mode(7, Some(&binding(ZellijPanePhase::Exited))).unwrap(),
+            ResumeZellijMode::RecoverStale
+        );
+        assert_eq!(
+            classify_resume_zellij_mode(7, Some(&binding(ZellijPanePhase::Closing))).unwrap(),
+            ResumeZellijMode::RecoverStale
+        );
+        assert_eq!(
+            classify_resume_zellij_mode(7, None).unwrap(),
+            ResumeZellijMode::RecoverStale
+        );
+        assert!(classify_resume_zellij_mode(6, Some(&binding(ZellijPanePhase::Exited))).is_err());
+        assert!(classify_resume_zellij_mode(7, Some(&binding(ZellijPanePhase::Starting))).is_err());
     }
 
     #[test]
@@ -10433,7 +10980,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             init_timestamp: Some("2026-04-12T17:00:00.000Z".to_string()),
             query_count: 3,
             log_path: Some(std::path::PathBuf::from("C:/tmp/old-session.jsonl")),
-            current_status: "Off".to_string(),
+            runtime_generation: None,
+            zellij_generation: None,
         };
 
         restore_runtime_state_after_resume(&mut new_active, &snapshot, true);

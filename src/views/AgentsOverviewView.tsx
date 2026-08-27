@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentConfig, AgentTelemetry, AgentsOverviewMode, CloneMode } from "../types";
 import { AgentChatView } from "../features/grid/AgentChatView";
-import { AgentTerminal } from "../features/terminal/AgentTerminal";
+import { ZellijAgentTerminal } from "../features/terminal/ZellijAgentTerminal";
 import type { Watchlist } from "../layout/watchlist/types";
 import { AgentContextMenu } from "../components/AgentContextMenu";
 import { useLayoutStore } from "../store/useLayoutStore";
@@ -126,13 +126,12 @@ const AgentTerminalSlot = React.memo(function AgentTerminalSlot({
   }, [onTitleChange, sessionId]);
 
   return (
-    <AgentTerminal
+    <ZellijAgentTerminal
       sessionId={sessionId}
       presentationId={presentationId}
       visibility={visibility}
       renderState={renderState}
       requestedInteraction="interactive"
-      autoActivateWhenUnowned
       provider={provider}
       isMaximized={isMaximized}
       theme={theme}

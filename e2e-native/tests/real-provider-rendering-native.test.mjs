@@ -376,9 +376,12 @@ async function readAgentConfig(driver, sessionId) {
 async function activateAgentTerminalPresentation(driver, sessionId) {
   const presentationId = await resolveAgentTerminalPresentationId(driver, sessionId, 60_000);
   const focused = await driver.executeScript((sid, pid) => {
-    const card = document.getElementById(`agent-card-${sid}`);
-    const host = [...(card?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
-      .find((candidate) => candidate.getAttribute("data-terminal-presentation-id") === pid);
+    const host = [...document.querySelectorAll(
+      '[data-zellij-singleton-viewport="true"] [data-testid="agent-terminal-host"]',
+    )].find((candidate) => (
+      candidate.getAttribute("data-terminal-session-id") === sid
+      && candidate.getAttribute("data-terminal-presentation-id") === pid
+    ));
     if (!host) return false;
     host.focus();
     host.click();
@@ -414,11 +417,18 @@ async function waitForAgentTerminal(driver, sessionId) {
     60000,
   );
   await driver.wait(until.elementIsVisible(card), 60000);
-  await card.click();
+  await driver.executeScript((sid) => {
+    const preview = document.querySelector(
+      `[data-zellij-presentation="preview"][data-zellij-agent-id="${CSS.escape(sid)}"]`,
+    );
+    preview?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  }, sessionId);
 
   const host = await driver.wait(async () => {
     return await driver.executeScript((sid) => {
-      return Boolean(document.getElementById(`agent-card-${sid}`)?.querySelector('[data-testid="agent-terminal-host"]'));
+      return Boolean(document.querySelector(
+        `[data-zellij-singleton-viewport="true"] [data-testid="agent-terminal-host"][data-terminal-session-id="${CSS.escape(sid)}"]`,
+      ));
     }, sessionId);
   }, 30000);
   assert.equal(host, true, `Expected terminal host for ${sessionId}`);
@@ -428,7 +438,12 @@ async function readTerminalCapture(driver, sessionId) {
   const presentationId = await resolveAgentTerminalPresentationId(driver, sessionId, 60_000);
   return await driver.executeScript((sid, pid) => {
     const card = document.getElementById(`agent-card-${sid}`);
-    const host = card?.querySelector('[data-testid="agent-terminal-host"]') ?? null;
+    const host = [...document.querySelectorAll(
+      '[data-zellij-singleton-viewport="true"] [data-testid="agent-terminal-host"]',
+    )].find((candidate) => (
+      candidate.getAttribute("data-terminal-session-id") === sid
+      && candidate.getAttribute("data-terminal-presentation-id") === pid
+    )) ?? null;
     const screen = host?.querySelector(".xterm-screen") ?? null;
     const viewport = host?.querySelector(".xterm-viewport") ?? null;
     const scrollable = host?.querySelector(".xterm-scrollable-element") ?? null;
@@ -1753,8 +1768,12 @@ async function dispatchTerminalWheel(driver, sessionId, deltaY) {
   const presentationId = await resolveAgentTerminalPresentationId(driver, sessionId, 60_000);
   return await driver.executeScript((sid, pid, wheelDeltaY) => {
     const card = document.getElementById(`agent-card-${sid}`);
-    const host = [...(card?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
-      .find((candidate) => candidate.getAttribute("data-terminal-presentation-id") === pid);
+    const host = [...document.querySelectorAll(
+      '[data-zellij-singleton-viewport="true"] [data-testid="agent-terminal-host"]',
+    )].find((candidate) => (
+      candidate.getAttribute("data-terminal-session-id") === sid
+      && candidate.getAttribute("data-terminal-presentation-id") === pid
+    ));
     const targets = [
       host?.querySelector(".xterm-screen"),
       host?.querySelector(".xterm-viewport"),

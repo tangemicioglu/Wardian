@@ -93,7 +93,10 @@ type TerminalRendererEntry = {
   serializeAddon: SerializeAddon;
   webglAddon: WebglAddon | null;
   webglAttempted: boolean;
+  webglAttemptCount: number;
   webglActivatedOnce: boolean;
+  webglActivationCount: number;
+  lifetimeStable: boolean;
   host: HTMLDivElement;
   terminalLinkOptions: TerminalLinkProviderOptions;
   // Pixel-perfect still of the last WebGL frame, overlaid while the terminal
@@ -292,6 +295,8 @@ declare global {
           fontSize: number | null;
           webglActive: boolean;
           webglAttempted: boolean;
+          webglAttemptCount: number;
+          webglActivationCount: number;
           cssCellWidth: number | null;
           cssCellHeight: number | null;
           deviceCellWidth: number | null;
@@ -482,6 +487,8 @@ if (typeof window !== "undefined" && shouldExposeTerminalDebug()) {
                 fontSize: nullableNumber(rendererTerm.options.fontSize),
                 webglActive: renderer.webglAddon !== null,
                 webglAttempted: renderer.webglAttempted,
+                webglAttemptCount: renderer.webglAttemptCount,
+                webglActivationCount: renderer.webglActivationCount,
                 cssCellWidth: nullableNumber(renderDimensions?.css?.cell?.width),
                 cssCellHeight: nullableNumber(renderDimensions?.css?.cell?.height),
                 deviceCellWidth: nullableNumber(renderDimensions?.device?.cell?.width),
@@ -976,6 +983,7 @@ function loadWebglForRenderer(renderer: TerminalRendererEntry, sessionId: string
       // Clear ownership before disposal so a synchronous/repeated loss signal
       // cannot release a newer lease for this presentation.
       renderer.webglAddon = null;
+      renderer.host.dataset.terminalWebglActive = "false";
       webglAddon.dispose();
       webglPool.delete(sessionId);
       terminalRendererBudget.release("webgl", sessionId);
@@ -984,12 +992,18 @@ function loadWebglForRenderer(renderer: TerminalRendererEntry, sessionId: string
     renderer.term.loadAddon(webglAddon);
     renderer.webglAddon = webglAddon;
     renderer.webglActivatedOnce = true;
+    renderer.webglActivationCount += 1;
+    renderer.host.dataset.terminalWebglActive = "true";
+    renderer.host.dataset.terminalWebglActivationCount = String(
+      renderer.webglActivationCount,
+    );
     webglPool.add(sessionId);
     removeSnapshotOverlay(renderer);
     renderer.term.refresh(0, Math.max(renderer.term.rows - 1, 0));
   } catch (error) {
     terminalRendererBudget.release("webgl", sessionId);
     renderer.webglAddon = null;
+    renderer.host.dataset.terminalWebglActive = "false";
     console.warn("WebGL terminal renderer unavailable; using DOM renderer.", error);
   }
 }
@@ -1005,7 +1019,13 @@ function promoteSessionToWebgl(sessionId: string) {
     touchWebglPool(sessionId);
     return;
   }
+  if (renderer.lifetimeStable && renderer.webglAttempted) {
+    return;
+  }
   renderer.webglAttempted = true;
+  renderer.webglAttemptCount += 1;
+  renderer.host.dataset.terminalWebglAttempted = "true";
+  renderer.host.dataset.terminalWebglAttemptCount = String(renderer.webglAttemptCount);
   loadWebglForRenderer(renderer, sessionId);
 }
 
@@ -1809,11 +1829,46 @@ async function getOrCreateTerminalSession(
   isCancelled?: () => boolean,
 ) {
   const existing = terminalSessionMap.get(terminalKey);
-  const resolvedProvider = await resolveTerminalProvider(sessionId, provider ?? existing?.provider);
+  const resolvedProvider = await resolveTerminalProvider(
+    sessionId,
+    provider ?? (existing?.sessionId === sessionId ? existing.provider : undefined),
+  );
   if (isCancelled?.()) {
     return null;
   }
   if (existing) {
+    if (existing.sessionId !== sessionId) {
+      existing.outputReadyUnlisten?.();
+      existing.terminalClearedUnlisten?.();
+      existing.outputReadyUnlisten = null;
+      existing.terminalClearedUnlisten = null;
+      existing.sessionId = sessionId;
+      existing.brokerState = null;
+      existing.presentationState = null;
+      existing.geometrySequence = 0;
+      existing.applyingCanonicalGeometry = false;
+      existing.brokerDecoder = new TextDecoder();
+      existing.legacyMode = false;
+      existing.lastReportedSize = null;
+      existing.lastMeasuredHostSize = null;
+      existing.recentWritePreviews = [];
+      existing.recentNormalizedWritePreviews = [];
+      existing.rawOutputLog = [];
+      existing.rawOutputLogChars = 0;
+      existing.latestTitle = null;
+      existing.pendingForceResize = true;
+      existing.generation += 1;
+      existing.terminalOutputFilter.reset();
+      const parserWithReset = existing.parser as HeadlessTerminal & { reset?: () => void };
+      if (typeof parserWithReset.reset === "function") parserWithReset.reset();
+      else existing.parser.write("\x1bc");
+      if (existing.renderer) {
+        existing.renderer.ready = false;
+        existing.renderer.revealGeneration += 1;
+        existing.renderer.term.reset();
+        removeSnapshotOverlay(existing.renderer);
+      }
+    }
     existing.terminalClient = terminalSessionClientFor(sessionId);
     existing.presentationId = presentationId;
     setSessionProvider(existing, resolvedProvider);
@@ -2047,11 +2102,17 @@ function createRenderer(terminalKey: string, entry: TerminalSessionEntry) {
   }
 
   const host = document.createElement("div");
+  const instanceId = nextTerminalRendererInstanceId++;
   host.className = "w-full h-full";
   host.style.width = "100%";
   host.style.height = "100%";
   // Anchor for the absolute-positioned snapshot overlay.
   host.style.position = "relative";
+  host.dataset.terminalRendererInstanceId = String(instanceId);
+  host.dataset.terminalWebglActive = "false";
+  host.dataset.terminalWebglAttempted = "false";
+  host.dataset.terminalWebglAttemptCount = "0";
+  host.dataset.terminalWebglActivationCount = "0";
   const wheelRowRemainder = { current: 0 };
   host.addEventListener(
     "wheel",
@@ -2064,7 +2125,7 @@ function createRenderer(terminalKey: string, entry: TerminalSessionEntry) {
   );
 
   const renderer: TerminalRendererEntry = {
-    instanceId: nextTerminalRendererInstanceId++,
+    instanceId,
     ready: false,
     revealGeneration: 0,
     resizeTimeout: null,
@@ -2077,7 +2138,10 @@ function createRenderer(terminalKey: string, entry: TerminalSessionEntry) {
     serializeAddon,
     webglAddon: null,
     webglAttempted: false,
+    webglAttemptCount: 0,
     webglActivatedOnce: false,
+    webglActivationCount: 0,
+    lifetimeStable: false,
     host,
     terminalLinkOptions,
     snapshotOverlay: null,
@@ -2152,6 +2216,9 @@ function activateWebglRenderer(renderer: TerminalRendererEntry, sessionId: strin
     return;
   }
   renderer.webglAttempted = true;
+  renderer.webglAttemptCount += 1;
+  renderer.host.dataset.terminalWebglAttempted = "true";
+  renderer.host.dataset.terminalWebglAttemptCount = String(renderer.webglAttemptCount);
   loadWebglForRenderer(renderer, sessionId);
 }
 
@@ -2259,6 +2326,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   onPresentationStateChange,
   autoActivateWhenUnowned = false,
   autoFocus = false,
+  lifetimeStableRenderer = false,
 }: {
   sessionId: string;
   presentationId: string;
@@ -2279,6 +2347,11 @@ export const AgentTerminal = memo(function AgentTerminal({
   autoActivateWhenUnowned?: boolean;
   /** Focuses and activates this visible presentation once after it becomes ready. */
   autoFocus?: boolean;
+  /**
+   * Keeps the one Habitat renderer and WebGL context alive across agent bindings.
+   * Zellij owns provider terminal state; this renderer is only its stable viewport.
+   */
+  lifetimeStableRenderer?: boolean;
   onPresentationStateChange?: (
     brokerState: TerminalBrokerState,
     presentationState: TerminalPresentationState | null,
@@ -2308,6 +2381,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   const rendererRestoreRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoreEvictedRendererRef = useRef<() => Promise<void>>(async () => undefined);
   const rendererReadyRef = useRef(false);
+  const rendererReadySessionIdRef = useRef<string | null>(null);
   const autoFocusAttemptedRef = useRef(false);
   const revealGenerationRef = useRef(0);
   const physicalIntersectionRef = useRef(typeof IntersectionObserver === "undefined");
@@ -2353,12 +2427,13 @@ export const AgentTerminal = memo(function AgentTerminal({
 
   const markRendererReady = useCallback((ready: boolean) => {
     rendererReadyRef.current = ready;
+    rendererReadySessionIdRef.current = ready ? sessionId : null;
     const renderer = terminalSessionMap.get(terminalKey)?.renderer;
     if (renderer) {
       renderer.ready = ready;
     }
     setRendererReady(ready);
-  }, [terminalKey]);
+  }, [sessionId, terminalKey]);
 
   const invalidateRendererReveal = useCallback(() => {
     revealGenerationRef.current += 1;
@@ -2832,7 +2907,12 @@ export const AgentTerminal = memo(function AgentTerminal({
         session.currentTheme = sessionTermTheme;
         lastThemeSignalRef.current = sessionTermTheme;
 
-        const renderer = mountRenderer(terminalKey, session, terminalRef.current);
+        const renderer = mountRenderer(
+          terminalKey,
+          session,
+          terminalRef.current,
+          lifetimeStableRenderer ? { evictExisting: false } : undefined,
+        );
         if (!renderer) {
           return;
         }
@@ -2844,6 +2924,10 @@ export const AgentTerminal = memo(function AgentTerminal({
         fitAddonRef.current = renderer.fitAddon;
         rendererEvictedRef.current = false;
         setRendererEvicted(false);
+        if (lifetimeStableRenderer) {
+          renderer.lifetimeStable = true;
+          activateWebglRenderer(renderer, terminalKey);
+        }
 
         const checkSizing = async (options?: { force?: boolean; reportUnchanged?: boolean }) => {
           if (!isMounted || !terminalRef.current) {
@@ -2903,7 +2987,7 @@ export const AgentTerminal = memo(function AgentTerminal({
               } else {
                 invalidateRendererReveal();
                 settleBackend();
-                if (!visibilityDemoteTimer) {
+                if (!lifetimeStableRenderer && !visibilityDemoteTimer) {
                   visibilityDemoteTimer = setTimeout(() => {
                     visibilityDemoteTimer = null;
                     if (isMounted && !physicalIntersectionRef.current) {
@@ -3164,7 +3248,7 @@ export const AgentTerminal = memo(function AgentTerminal({
           }
           rendererEvictedRef.current = false;
           markRendererReady(false);
-        } else {
+        } else if (!lifetimeStableRenderer) {
           scheduleRendererDisposal(terminalKey);
         }
       }
@@ -3188,6 +3272,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   }, [
     autoActivateWhenUnowned,
     invalidateRendererReveal,
+    lifetimeStableRenderer,
     markRendererReady,
     presentationId,
     prepareRendererForReveal,
@@ -3455,7 +3540,10 @@ export const AgentTerminal = memo(function AgentTerminal({
         }}
         style={{
           visibility:
-            rendererReady && visibility === "visible" && renderState === "mounted"
+            rendererReady &&
+            rendererReadySessionIdRef.current === sessionId &&
+            visibility === "visible" &&
+            renderState === "mounted"
               ? "visible"
               : "hidden",
         }}
