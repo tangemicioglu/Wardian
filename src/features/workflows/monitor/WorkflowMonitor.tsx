@@ -67,7 +67,7 @@ export function WorkflowMonitor({ onOpenRun, onEditSchedule }: WorkflowMonitorPr
     const timer = window.setInterval(() => {
       void load();
       void loadRuns();
-    }, 1500);
+    }, 5000);
     return () => window.clearInterval(timer);
   }, [load, loadRuns]);
 

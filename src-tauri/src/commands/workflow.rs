@@ -144,7 +144,18 @@ pub struct WorkflowRunListResult {
 }
 
 #[tauri::command]
-pub fn workflow_list_runs(offset: Option<usize>) -> Result<WorkflowRunListResult, String> {
+pub async fn workflow_list_runs(offset: Option<usize>) -> Result<WorkflowRunListResult, String> {
+    tokio::task::spawn_blocking(move || workflow_list_runs_blocking(offset))
+        .await
+        .map_err(|error| format!("workflow run listing task failed: {error}"))?
+}
+
+/// Execute the filesystem-heavy run listing away from Tauri's event-loop
+/// thread. The desktop polls this command while rendering the workbench, and
+/// a long-lived run history must never turn a routine refresh into a UI stall.
+pub(crate) fn workflow_list_runs_blocking(
+    offset: Option<usize>,
+) -> Result<WorkflowRunListResult, String> {
     let root = wardian_core::paths::workflow_runs_dir().ok_or("no wardian home")?;
     workflow_list_runs_page_from_root(&root, resolve_blueprint_path, offset.unwrap_or(0))
 }

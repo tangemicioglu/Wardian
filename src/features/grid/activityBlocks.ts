@@ -81,7 +81,7 @@ export function isLowSignalActivityTitle(title: string | null | undefined): bool
   const normalized = title?.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
   return Boolean(
     normalized &&
-      /^(?:exec(?: command)?|command|task|tool)\s+(?:start|starting|started|begin|began|running|run|end|ended|finish|finishing|finished|complete|completing|completed|result)$/.test(
+      /^(?:(?:exec|output|command|task|tool)(?:\s+(?:command|script))?\s+(?:start|starting|started|begin|began|running|run|end|ended|finish|finishing|finished|complete|completing|completed|result)|exec|output|output\s+script\s+(?:complete|completed|finish|finished))$/.test(
         normalized,
       ),
   );
