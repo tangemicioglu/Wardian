@@ -98,6 +98,7 @@ const TELEMETRY_FIELDS = Object.keys({
   uptime_seconds: true,
   query_count: true,
   init_timestamp: true,
+  last_query_timestamp: true,
   current_status: true,
   log_path: true,
 } satisfies Record<keyof AgentTelemetry, true>) as (keyof AgentTelemetry)[];

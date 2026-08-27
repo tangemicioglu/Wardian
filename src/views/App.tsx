@@ -670,25 +670,10 @@ function AppBody() {
     [activeList, agents, teams],
   );
   const recentAgentIds = useMemo(
-    () => {
-      const latest = { ...agentInteractions };
-      for (const [agentId, metric] of Object.entries(telemetry)) {
-        const timestamp = metric.last_query_timestamp;
-        if (timestamp) {
-          const current = latest[agentId];
-          if (!current || isLaterTimestamp(timestamp, current)) latest[agentId] = timestamp;
-        }
-      }
-      return Object.entries(latest)
-        .sort(([, left], [, right]) => {
-          const leftMs = Date.parse(left);
-          const rightMs = Date.parse(right);
-          if (Number.isFinite(leftMs) && Number.isFinite(rightMs)) return rightMs - leftMs;
-          return right.localeCompare(left);
-        })
-        .map(([agentId]) => agentId);
-    },
-    [agentInteractions, telemetry],
+    () => Object.entries(agentInteractions)
+      .sort(([, left], [, right]) => right.localeCompare(left))
+      .map(([agentId]) => agentId),
+    [agentInteractions],
   );
   const sourceControlStatus = useSelectedAgentGitStatus(selectedAgentIds, agents);
 

@@ -385,7 +385,7 @@ describe("useAgentResourceController", () => {
       metric("agent-1", "Idle", 4, "agent-1.jsonl", "2026-08-20T15:30:00.000Z"),
     ]));
 
-    expect(result.current.telemetry["agent-1"].last_query_timestamp)
+    expect(useAgentTelemetryStore.getState().telemetry["agent-1"].last_query_timestamp)
       .toBe("2026-08-20T15:30:00.000Z");
     expect(on_agent_interactions).toHaveBeenCalledWith({
       "agent-1": "2026-08-20T15:30:00.000Z",
