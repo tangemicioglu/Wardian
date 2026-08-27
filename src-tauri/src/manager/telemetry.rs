@@ -183,6 +183,10 @@ fn discover_gemini_log_in_tmp(
 /// time.
 const LOG_PARSE_TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Restart hydration gets one larger, still bounded, lookback for a provider
+/// user record that sits just before a very large assistant/tool record.
+const LOG_QUERY_TIMESTAMP_LOOKBACK_BYTES: u64 = 64 * 1024 * 1024;
+
 fn read_log_bounded(path: &std::path::Path) -> std::io::Result<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path)?;
@@ -201,6 +205,92 @@ fn read_log_bounded(path: &std::path::Path) -> std::io::Result<String> {
         .split_once('\n')
         .map(|(_, rest)| rest.to_string())
         .unwrap_or_default())
+}
+
+fn read_log_suffix(path: &std::path::Path, max_bytes: u64) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(max_bytes);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut bytes)?;
+    if start > 0 {
+        let Some(first_line_end) = bytes.iter().position(|byte| *byte == b'\n') else {
+            return Ok(String::new());
+        };
+        bytes.drain(..=first_line_end);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn is_user_query_log_record(provider: &str, value: &serde_json::Value) -> bool {
+    match provider {
+        "codex" => {
+            value.get("type").and_then(|value| value.as_str()) == Some("event_msg")
+                && value
+                    .get("payload")
+                    .and_then(|payload| payload.get("type"))
+                    .and_then(|value| value.as_str())
+                    == Some("user_message")
+        }
+        "claude" => {
+            value.get("type").and_then(|value| value.as_str()) == Some("user")
+                && claude_is_real_user_query(value)
+        }
+        "pi" => {
+            value.get("type").and_then(|value| value.as_str()) == Some("message")
+                && value
+                    .get("message")
+                    .and_then(|message| message.get("role"))
+                    .and_then(|value| value.as_str())
+                    == Some("user")
+        }
+        "antigravity" => {
+            value.get("source").and_then(|value| value.as_str()) == Some("USER_EXPLICIT")
+                && value.get("type").and_then(|value| value.as_str()) == Some("USER_INPUT")
+        }
+        "gemini" => gemini_message_kind(value) == Some("user"),
+        _ => false,
+    }
+}
+
+fn query_timestamp_from_log_record(
+    provider: &str,
+    value: &serde_json::Value,
+) -> Option<String> {
+    let timestamp = match provider {
+        "codex" => value.get("timestamp").or_else(|| {
+            value
+                .get("payload")
+                .and_then(|payload| payload.get("timestamp"))
+        }),
+        "pi" => value
+            .get("timestamp")
+            .or_else(|| value.get("message").and_then(|message| message.get("timestamp"))),
+        "antigravity" => value.get("created_at"),
+        _ => value.get("timestamp"),
+    };
+    query_timestamp_from_value(timestamp)
+}
+
+fn latest_query_timestamp_from_log_suffix(
+    path: &std::path::Path,
+    provider: &str,
+) -> Option<String> {
+    if provider == "opencode" {
+        return None;
+    }
+    read_log_suffix(path, LOG_QUERY_TIMESTAMP_LOOKBACK_BYTES)
+        .ok()?
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find_map(|value| {
+            is_user_query_log_record(provider, &value)
+                .then(|| query_timestamp_from_log_record(provider, &value))
+                .flatten()
+        })
 }
 
 fn is_antigravity_database(provider: &str, path: &std::path::Path) -> bool {
@@ -1767,6 +1857,15 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                                         }
                                     }
                                 }
+                                if is_initial_log_replay {
+                                    update_latest_query_timestamp(
+                                        &mut last_query_timestamp,
+                                        latest_query_timestamp_from_log_suffix(
+                                            path,
+                                            snap.provider.as_str(),
+                                        ),
+                                    );
+                                }
                             }
                         }
                     }
@@ -2088,6 +2187,42 @@ mod tests {
         let after = super::telemetry_source_modified("antigravity", &database)
             .expect("updated database watermark");
         assert!(after > before, "WAL activity must invalidate the cache");
+    }
+
+    #[test]
+    fn restart_hydration_recovers_a_user_timestamp_before_a_large_jsonl_tail() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let log = temp.path().join("rollout.jsonl");
+        let user_message = serde_json::json!({
+            "type": "event_msg",
+            "timestamp": "2026-08-26T12:00:00.000Z",
+            "payload": { "type": "user_message", "message": "hello" },
+        });
+        let large_assistant_record = serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": "x".repeat((super::LOG_PARSE_TAIL_BYTES + 1024) as usize),
+            },
+        });
+        std::fs::write(
+            &log,
+            format!(
+                "{}\n{}\n",
+                user_message,
+                serde_json::to_string(&large_assistant_record).expect("serialize assistant")
+            ),
+        )
+        .expect("write oversized provider log");
+
+        assert!(
+            std::fs::metadata(&log).expect("log metadata").len() > super::LOG_PARSE_TAIL_BYTES
+        );
+        assert_eq!(
+            super::latest_query_timestamp_from_log_suffix(&log, "codex").as_deref(),
+            Some("2026-08-26T12:00:00.000Z")
+        );
     }
 
     #[test]
