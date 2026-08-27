@@ -1,6 +1,6 @@
 use wardian_core::conversations::{
-    ConversationBoundaryReason, ConversationNarrativeRecord, ConversationRecordKind,
-    ConversationSourceRecord, ConversationSpeakerType, CONVERSATION_SCHEMA,
+    ConversationBoundaryReason, ConversationInputOrigin, ConversationNarrativeRecord,
+    ConversationRecordKind, ConversationSourceRecord, ConversationSpeakerType, CONVERSATION_SCHEMA,
 };
 use wardian_core::models::chat::{
     AgentChatEvent, AgentChatEventKind, AgentChatRole, AgentChatStatus,
@@ -14,6 +14,16 @@ pub fn narrative_from_chat_event(
 ) -> Option<ConversationNarrativeRecord> {
     let kind = record_kind_from_chat_event_kind(&event.kind)?;
     let role = event.role.as_ref().map(role_to_string);
+    let input_origin = input_origin_from_chat_event(event);
+    let input_purpose = metadata_string(&event.metadata, "input_purpose").or_else(|| {
+        input_origin.as_ref().map(|origin| match origin {
+            ConversationInputOrigin::HumanInput | ConversationInputOrigin::AgentInput => {
+                "request".to_string()
+            }
+            ConversationInputOrigin::ContextInjection => "context".to_string(),
+            ConversationInputOrigin::ProviderInternal => "internal".to_string(),
+        })
+    });
 
     Some(ConversationNarrativeRecord {
         schema: CONVERSATION_SCHEMA,
@@ -34,6 +44,17 @@ pub fn narrative_from_chat_event(
                 speaker_type_from_role(role)
             }
         }),
+        input_origin,
+        input_purpose,
+        request_root_id: metadata_string(&event.metadata, "request_root_id").or_else(|| {
+            matches!(
+                input_origin,
+                Some(ConversationInputOrigin::HumanInput | ConversationInputOrigin::AgentInput)
+            )
+            .then(|| event.turn_id.clone())
+            .flatten()
+        }),
+        causal_ref: metadata_string(&event.metadata, "causal_ref"),
         text: event.text.clone(),
         tool: tool_name_from_chat_event(event),
         status: event.status.as_ref().map(status_to_string),
@@ -172,6 +193,10 @@ pub(super) fn generated_event_from_record(
         metadata: serde_json::json!({
             "generated": true,
             "conversation_record_kind": record_kind_to_string(record.kind),
+            "input_origin": record.input_origin.map(input_origin_to_string),
+            "input_purpose": record.input_purpose.clone(),
+            "request_root_id": record.request_root_id.clone(),
+            "causal_ref": record.causal_ref.clone(),
         }),
     }
 }
@@ -264,6 +289,14 @@ pub fn narrative_from_delivered_input(
         } else {
             ConversationSpeakerType::Unknown
         }),
+        input_origin: Some(if sender_agent_id.is_some() {
+            ConversationInputOrigin::AgentInput
+        } else {
+            ConversationInputOrigin::HumanInput
+        }),
+        input_purpose: Some("request".to_string()),
+        request_root_id: Some(format!("wardian:input:{seq}")),
+        causal_ref: sender_agent_id.map(|sender| format!("wardian:agent:{sender}")),
         text: Some(text.to_string()),
         tool: None,
         status: None,
@@ -290,6 +323,10 @@ pub fn lifecycle_record(
         kind: ConversationRecordKind::Lifecycle,
         role: Some("system".to_string()),
         speaker_type: Some(ConversationSpeakerType::System),
+        input_origin: None,
+        input_purpose: None,
+        request_root_id: None,
+        causal_ref: None,
         text: None,
         tool: None,
         status: Some(boundary_reason_to_string(reason)),
@@ -301,6 +338,47 @@ pub fn lifecycle_record(
         event_refs: Vec::new(),
         source_refs: Vec::new(),
         artifact_refs: Vec::new(),
+    }
+}
+
+pub(super) fn input_origin_from_chat_event(
+    event: &AgentChatEvent,
+) -> Option<ConversationInputOrigin> {
+    metadata_string(&event.metadata, "input_origin")
+        .and_then(|value| parse_input_origin(&value))
+        .or_else(|| {
+            if event.kind != AgentChatEventKind::Message {
+                return None;
+            }
+            match event.role.as_ref() {
+                Some(AgentChatRole::User)
+                    if metadata_string(&event.metadata, "sender_agent_id").is_some() =>
+                {
+                    Some(ConversationInputOrigin::AgentInput)
+                }
+                Some(AgentChatRole::User) => Some(ConversationInputOrigin::HumanInput),
+                Some(AgentChatRole::System) => Some(ConversationInputOrigin::ProviderInternal),
+                _ => None,
+            }
+        })
+}
+
+fn parse_input_origin(value: &str) -> Option<ConversationInputOrigin> {
+    match value.trim() {
+        "human_input" => Some(ConversationInputOrigin::HumanInput),
+        "agent_input" => Some(ConversationInputOrigin::AgentInput),
+        "context_injection" => Some(ConversationInputOrigin::ContextInjection),
+        "provider_internal" => Some(ConversationInputOrigin::ProviderInternal),
+        _ => None,
+    }
+}
+
+fn input_origin_to_string(origin: ConversationInputOrigin) -> &'static str {
+    match origin {
+        ConversationInputOrigin::HumanInput => "human_input",
+        ConversationInputOrigin::AgentInput => "agent_input",
+        ConversationInputOrigin::ContextInjection => "context_injection",
+        ConversationInputOrigin::ProviderInternal => "provider_internal",
     }
 }
 

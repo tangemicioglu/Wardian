@@ -1,16 +1,16 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use wardian_core::conversations::{
-    ConversationManifest, ConversationNarrativeRecord, ConversationProviderNativeRef,
-    ConversationRecordKind, ConversationSourceRecord, ConversationTurnAssistantResult,
-    ConversationTurnCounts, ConversationTurnFailureSignal, ConversationTurnFiles,
-    ConversationTurnProviderRef, ConversationTurnRecord, ConversationTurnRecordRefs,
-    ConversationTurnRequest, ConversationTurnSideEffect, ConversationTurnStatus,
-    CONVERSATION_TURNS_SCHEMA,
+    ConversationInputOrigin, ConversationManifest, ConversationNarrativeRecord,
+    ConversationProviderNativeRef, ConversationRecordKind, ConversationSourceRecord,
+    ConversationTurnAssistantResult, ConversationTurnCounts, ConversationTurnFailureSignal,
+    ConversationTurnFiles, ConversationTurnProviderRef, ConversationTurnRecord,
+    ConversationTurnRecordRefs, ConversationTurnRequest, ConversationTurnSideEffect,
+    ConversationTurnStatus, CONVERSATION_TURNS_SCHEMA,
 };
 use wardian_core::models::chat::{AgentChatEvent, AgentChatEventKind, AgentChatStatus};
 
-use super::records::metadata_string;
+use super::records::{input_origin_from_chat_event, metadata_string};
 
 const TURN_TEXT_LIMIT_CHARS: usize = 4_000;
 
@@ -70,25 +70,46 @@ pub(super) fn derive_turn_records_with_context(
     ordered_records.sort_by_key(|record| record.seq);
 
     let mut turns: Vec<TurnAccumulator> = Vec::new();
+    let mut turns_by_request_root = HashMap::new();
     let mut current_turn: Option<usize> = None;
 
     for record in ordered_records {
-        let starts_request_turn = is_user_request_record(record);
+        let record_events = || {
+            record
+                .event_refs
+                .iter()
+                .filter_map(|event_id| events_by_id.get(event_id.as_str()).copied())
+        };
+        let input_origin = input_origin_for_record(record, record_events());
+        let starts_request_turn = is_request_record(record, record_events());
         let starts_lifecycle_turn =
             record.kind == ConversationRecordKind::Lifecycle && current_turn.is_none();
-        let turn_index = match current_turn {
-            Some(index) if !starts_request_turn && !starts_lifecycle_turn => index,
-            _ => {
-                turns.push(TurnAccumulator {
-                    records: Vec::new(),
-                    events: Vec::new(),
-                    sources: Vec::new(),
-                });
-                let index = turns.len() - 1;
-                current_turn = Some(index);
-                index
-            }
+        let context_turn = (input_origin == Some(ConversationInputOrigin::ContextInjection))
+            .then(|| request_root_id_for_record(record, record_events()))
+            .flatten()
+            .and_then(|request_root_id| turns_by_request_root.get(&request_root_id).copied());
+        let turn_index = match context_turn {
+            Some(index) => index,
+            None => match current_turn {
+                Some(index) if !starts_request_turn && !starts_lifecycle_turn => index,
+                _ => {
+                    turns.push(TurnAccumulator {
+                        records: Vec::new(),
+                        events: Vec::new(),
+                        sources: Vec::new(),
+                    });
+                    let index = turns.len() - 1;
+                    current_turn = Some(index);
+                    index
+                }
+            },
         };
+
+        if starts_request_turn {
+            if let Some(request_root_id) = request_root_id_for_record(record, record_events()) {
+                turns_by_request_root.insert(request_root_id, turn_index);
+            }
+        }
 
         let turn = &mut turns[turn_index];
         turn.events.extend(
@@ -159,7 +180,7 @@ fn turn_record_from_accumulator(
     let request_record = turn
         .records
         .iter()
-        .find(|record| is_user_request_record(record))
+        .find(|record| is_request_record(record, turn.events.iter()))
         .or_else(|| turn.records.first());
     let assistant_message = turn.records.iter().rev().find(|record| {
         record.kind == ConversationRecordKind::Message
@@ -379,8 +400,12 @@ fn turn_record_from_accumulator(
         .all(|record| record.kind == ConversationRecordKind::Lifecycle);
     let interrupted = turn.records.iter().any(is_interruption_record);
     let is_final_open_turn = is_open;
+    let has_request_record = turn
+        .records
+        .iter()
+        .any(|record| is_request_record(record, turn.events.iter()));
     let mut request = request_record
-        .map(request_from_record)
+        .map(|record| request_from_record(record, &turn.events))
         .unwrap_or(ConversationTurnRequest {
             seq: seq_start,
             kind: "unknown".to_string(),
@@ -409,6 +434,16 @@ fn turn_record_from_accumulator(
         (
             ConversationTurnStatus::ContextOnly,
             "mechanical_context_only".to_string(),
+        )
+    } else if !has_request_record
+        && matches!(
+            request.kind.as_str(),
+            "context_injection" | "provider_internal"
+        )
+    {
+        (
+            ConversationTurnStatus::ContextOnly,
+            "mechanical_context_injection_only".to_string(),
         )
     } else if request.kind == "tool_only" {
         (
@@ -672,8 +707,36 @@ fn extend_unique(values: &mut Vec<String>, next_values: Vec<String>) {
     }
 }
 
-fn is_user_request_record(record: &ConversationNarrativeRecord) -> bool {
-    record.kind == ConversationRecordKind::Message && record.role.as_deref() == Some("user")
+fn input_origin_for_record<'a>(
+    record: &ConversationNarrativeRecord,
+    events: impl IntoIterator<Item = &'a AgentChatEvent>,
+) -> Option<ConversationInputOrigin> {
+    record
+        .input_origin
+        .or_else(|| events.into_iter().find_map(input_origin_from_chat_event))
+}
+
+fn request_root_id_for_record<'a>(
+    record: &ConversationNarrativeRecord,
+    events: impl IntoIterator<Item = &'a AgentChatEvent>,
+) -> Option<String> {
+    record.request_root_id.clone().or_else(|| {
+        events.into_iter().find_map(|event| {
+            metadata_string(&event.metadata, "request_root_id").or_else(|| event.turn_id.clone())
+        })
+    })
+}
+
+fn is_request_record<'a>(
+    record: &ConversationNarrativeRecord,
+    events: impl IntoIterator<Item = &'a AgentChatEvent>,
+) -> bool {
+    record.kind == ConversationRecordKind::Message
+        && record.role.as_deref() == Some("user")
+        && matches!(
+            input_origin_for_record(record, events),
+            Some(ConversationInputOrigin::HumanInput | ConversationInputOrigin::AgentInput) | None
+        )
 }
 
 fn is_tool_only_turn(records: &[ConversationNarrativeRecord]) -> bool {
@@ -701,9 +764,12 @@ fn tool_only_request_text(record: &ConversationNarrativeRecord) -> Option<String
         .map(ToString::to_string)
 }
 
-fn request_from_record(record: &ConversationNarrativeRecord) -> ConversationTurnRequest {
+fn request_from_record(
+    record: &ConversationNarrativeRecord,
+    events: &[AgentChatEvent],
+) -> ConversationTurnRequest {
     let (text, text_truncated) = bounded_record_text(record);
-    let kind = request_kind_for_record(record);
+    let kind = request_kind_for_record(record, events.iter());
     let (objective_text, objective_text_truncated) = objective_text_for_request(&kind, record);
     ConversationTurnRequest {
         seq: record.seq,
@@ -726,12 +792,20 @@ fn assistant_result_from_record(
     }
 }
 
-fn request_kind_for_record(record: &ConversationNarrativeRecord) -> String {
+fn request_kind_for_record<'a>(
+    record: &ConversationNarrativeRecord,
+    events: impl IntoIterator<Item = &'a AgentChatEvent>,
+) -> String {
     if record.kind == ConversationRecordKind::Lifecycle {
         return "lifecycle".to_string();
     }
     if record.kind != ConversationRecordKind::Message || record.role.as_deref() != Some("user") {
         return "unknown".to_string();
+    }
+    match input_origin_for_record(record, events) {
+        Some(ConversationInputOrigin::ContextInjection) => return "context_injection".to_string(),
+        Some(ConversationInputOrigin::ProviderInternal) => return "provider_internal".to_string(),
+        Some(ConversationInputOrigin::AgentInput | ConversationInputOrigin::HumanInput) | None => {}
     }
     let text = record
         .text
