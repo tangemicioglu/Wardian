@@ -203,6 +203,35 @@ fn read_log_bounded(path: &std::path::Path) -> std::io::Result<String> {
         .unwrap_or_default())
 }
 
+fn is_antigravity_database(provider: &str, path: &std::path::Path) -> bool {
+    provider == "antigravity"
+        && path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("db"))
+}
+
+/// SQLite commits can update the write-ahead log while leaving the main
+/// database file's mtime unchanged. Include both sidecars in the watermark so
+/// a live Antigravity conversation is re-read when a new turn reaches WAL.
+fn telemetry_source_modified(
+    provider: &str,
+    path: &std::path::Path,
+) -> Option<std::time::SystemTime> {
+    let mut latest = std::fs::metadata(path).ok()?.modified().ok()?;
+    if is_antigravity_database(provider, path) {
+        let file_name = path.file_name()?.to_string_lossy();
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = path.with_file_name(format!("{file_name}{suffix}"));
+            if let Ok(modified) = std::fs::metadata(sidecar).and_then(|meta| meta.modified()) {
+                if modified > latest {
+                    latest = modified;
+                }
+            }
+        }
+    }
+    Some(latest)
+}
+
 fn gemini_fallback_scan_due(session_id: &str) -> bool {
     let attempts = GEMINI_FALLBACK_SCAN_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
     let Ok(mut attempts) = attempts.lock() else {
@@ -1494,24 +1523,20 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                             .lock()
                             .map(|last| last.is_none())
                             .unwrap_or(false);
-                        if let Ok(metadata) = std::fs::metadata(path) {
-                            if let Ok(modified) = metadata.modified() {
-                                let last_mod = *snap.log_last_modified.lock().unwrap();
-                                if last_mod == Some(modified) {
-                                    should_parse = false;
-                                } else {
-                                    is_initial_log_replay = last_mod.is_none();
-                                    new_mtime = Some(modified);
-                                }
+                        if let Some(modified) =
+                            telemetry_source_modified(snap.provider.as_str(), path)
+                        {
+                            let last_mod = *snap.log_last_modified.lock().unwrap();
+                            if last_mod == Some(modified) {
+                                should_parse = false;
+                            } else {
+                                is_initial_log_replay = last_mod.is_none();
+                                new_mtime = Some(modified);
                             }
                         }
 
                         if should_parse {
-                            let is_antigravity_database = snap.provider == "antigravity"
-                                && path
-                                    .extension()
-                                    .is_some_and(|extension| extension.eq_ignore_ascii_case("db"));
-                            if is_antigravity_database {
+                            if is_antigravity_database(snap.provider.as_str(), path) {
                                 if let Ok(metrics) =
                                     AntigravityProvider::conversation_metrics_from_database(path)
                                 {
@@ -1985,6 +2010,7 @@ pub async fn get_app_metrics(state: &AppState) -> AppTelemetry {
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::Connection;
     use super::{AgentSnapshot, TelemetryPassTimings, TelemetrySlowAgent};
     use std::collections::{BTreeSet, HashMap};
     use std::sync::{Arc, Mutex};
@@ -2033,6 +2059,35 @@ mod tests {
     #[test]
     fn stopped_agents_reconcile_provider_logs_even_with_durable_queries() {
         assert!(super::should_run_provider_log_telemetry("Off", Some(false)));
+    }
+
+    #[test]
+    fn antigravity_wal_activity_advances_the_telemetry_watermark() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database = temp.path().join("conversation.db");
+        let writer = Connection::open(&database).expect("open database");
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 CREATE TABLE steps (idx INTEGER, step_type INTEGER, metadata BLOB);
+                 INSERT INTO steps (idx, step_type) VALUES (1, 14);",
+            )
+            .expect("create WAL fixture");
+        let before = super::telemetry_source_modified("antigravity", &database)
+            .expect("initial database watermark");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        writer
+            .execute(
+                "INSERT INTO steps (idx, step_type) VALUES (?1, ?2)",
+                rusqlite::params![2_i64, 14_i64],
+            )
+            .expect("append WAL user message");
+
+        assert!(database.with_file_name("conversation.db-wal").exists());
+        let after = super::telemetry_source_modified("antigravity", &database)
+            .expect("updated database watermark");
+        assert!(after > before, "WAL activity must invalidate the cache");
     }
 
     #[test]
