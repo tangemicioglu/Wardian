@@ -999,44 +999,43 @@ function ChatPane({
   );
   const liveApprovalId = useMemo(() => liveApprovalEventId(sortTranscriptEvents(visibleEvents)), [visibleEvents]);
   return (
-    <section
-      className="min-h-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto px-3 py-3"
-      aria-label={`${agent.session_name} chat`}
-    >
-      {error && <div className="rounded-md border border-wardian-error px-3 py-2 text-xs text-wardian-error">{error}</div>}
-      {loading && visibleEvents.length === 0 && (
-        <div className="inline-flex items-center gap-2 text-sm text-muted-neutral">
-          <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
-          Loading chat...
-        </div>
-      )}
-      {!loading && visibleEvents.length === 0 && (
-        <div className="rounded-md border border-dashed border-wardian-border px-3 py-4 text-xs text-muted-neutral">
-          No chat transcript yet.
-        </div>
-      )}
-      {hasOlder ? (
-        <button
-          type="button"
-          className="w-full rounded border border-wardian-border bg-wardian-card px-3 py-2 text-xs font-semibold leading-5 text-muted-neutral hover:text-primary"
-          onClick={onLoadOlder}
-          disabled={loadingOlder}
-        >
-          {loadingOlder ? "Loading older transcript..." : "Load older transcript"}
-        </button>
-      ) : null}
-      {rows.map((row) => (
-        <ChatTranscriptRow
-          key={chatTranscriptRowKey(row)}
-          agentIsWorking={isProcessingAgentStatus(agent.status) || isSubmitting}
-          isSubmitting={isSubmitting}
-          layout="full_width"
-          liveApprovalId={liveApprovalId}
-          onApprovalSubmit={onApprovalSubmit}
-          row={row}
-        />
-      ))}
-      <div ref={endRef} aria-hidden="true" />
+    <section className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-3 py-3" aria-label={`${agent.session_name} chat`}>
+      <div className="chat-transcript-list space-y-3">
+        {error && <div className="rounded-md border border-wardian-error px-3 py-2 text-xs text-wardian-error">{error}</div>}
+        {loading && visibleEvents.length === 0 && (
+          <div className="inline-flex items-center gap-2 text-sm text-muted-neutral">
+            <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
+            Loading chat...
+          </div>
+        )}
+        {!loading && visibleEvents.length === 0 && (
+          <div className="rounded-md border border-dashed border-wardian-border px-3 py-4 text-xs text-muted-neutral">
+            No chat transcript yet.
+          </div>
+        )}
+        {hasOlder ? (
+          <button
+            type="button"
+            className="w-full rounded border border-wardian-border bg-wardian-card px-3 py-2 text-xs font-semibold leading-5 text-muted-neutral hover:text-primary"
+            onClick={onLoadOlder}
+            disabled={loadingOlder}
+          >
+            {loadingOlder ? "Loading older transcript..." : "Load older transcript"}
+          </button>
+        ) : null}
+        {rows.map((row) => (
+          <ChatTranscriptRow
+            key={chatTranscriptRowKey(row)}
+            agentIsWorking={isProcessingAgentStatus(agent.status) || isSubmitting}
+            isSubmitting={isSubmitting}
+            layout="full_width"
+            liveApprovalId={liveApprovalId}
+            onApprovalSubmit={onApprovalSubmit}
+            row={row}
+          />
+        ))}
+        <div ref={endRef} aria-hidden="true" />
+      </div>
     </section>
   );
 }
