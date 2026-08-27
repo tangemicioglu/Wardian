@@ -37,6 +37,15 @@ limitation is reported as `context_observation: "unreported"` on the
 normalized event, with the absence of `context_injection` evidence; the raw
 provider record remains available for later adapter improvements.
 
+OpenCode is an exception to that fallback: its provider-owned SQLite parts mark
+synthetic editor context with `metadata.kind: "editor_context"` while the
+parent message remains `role: "user"`. Those parts are classified as
+`context_injection`, linked to the most recent real request, and retain a
+provider-message causal reference. Codex currently emits host context in
+user-role response items without an origin field; those records remain
+`unreported` because their origin cannot be recovered without matching or
+guessing from prompt text.
+
 ## Compatibility and regeneration
 
 The provenance fields are optional for backward compatibility with existing
@@ -54,6 +63,7 @@ retained for auditability.
 ## Conformance fixtures
 
 Archive and transcript tests cover Claude skill calls followed by one or more
-user-role injections, Claude context without a dedicated skill call, providers
-without observable context evidence, legacy records regenerated from archived
-events, and normal human and Wardian-agent inputs.
+user-role injections, Claude context without a dedicated skill call, OpenCode
+synthetic editor-context parts, providers without observable context evidence,
+legacy records regenerated from archived events, and normal human and
+Wardian-agent inputs.
