@@ -139,7 +139,6 @@ function renderPane({
       setSelectedAgentIds={vi.fn()}
       agents={agents}
       agentClasses={agentClasses}
-      telemetry={{}}
       sourceControlStatus={sourceControlStatus}
       turnRevision={7}
       onAgentsUpdated={vi.fn()}
@@ -232,7 +231,7 @@ describe("SidebarContentPane", () => {
       renderPane({ activeTab: "workflows" });
 
       loadRunsMock.mockClear();
-      vi.advanceTimersByTime(1500);
+      vi.advanceTimersByTime(5000);
 
       expect(loadRunsMock).toHaveBeenCalled();
     } finally {

@@ -35,15 +35,31 @@ const initialState = {
   scrubIndex: 0,
 };
 
+let loadRunsInFlight: Promise<void> | null = null;
+
 export const useRunStore = create<RunStoreState>((set, get) => ({
   ...initialState,
-  async loadRuns() {
-    const result = await invoke<RunSummaryListResult | RunSummary[]>('workflow_list_runs');
-    const runs = Array.isArray(result) ? result : result.runs;
-    const runsTruncated = Array.isArray(result) ? false : result.truncated;
-    const runsNextOffset = Array.isArray(result) ? null : result.next_offset ?? null;
-    if (runSummariesEqual(get().runs, runs) && get().runsTruncated === runsTruncated && get().runsNextOffset === runsNextOffset) return;
-    set({ runs, runsTruncated, runsNextOffset });
+  loadRuns() {
+    if (loadRunsInFlight) return loadRunsInFlight;
+
+    const request = (async () => {
+      const result = await invoke<RunSummaryListResult | RunSummary[]>('workflow_list_runs');
+      const runs = Array.isArray(result) ? result : result.runs;
+      const runsTruncated = Array.isArray(result) ? false : result.truncated;
+      const runsNextOffset = Array.isArray(result) ? null : result.next_offset ?? null;
+      if (runSummariesEqual(get().runs, runs) && get().runsTruncated === runsTruncated && get().runsNextOffset === runsNextOffset) return;
+      set({ runs, runsTruncated, runsNextOffset });
+    })();
+    loadRunsInFlight = request;
+    void request.then(
+      () => {
+        if (loadRunsInFlight === request) loadRunsInFlight = null;
+      },
+      () => {
+        if (loadRunsInFlight === request) loadRunsInFlight = null;
+      },
+    );
+    return request;
   },
   async loadMoreRuns() {
     const offset = get().runsNextOffset;

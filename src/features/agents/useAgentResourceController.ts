@@ -11,6 +11,10 @@ import type {
 } from "../../types";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { classifyJsonEvent } from "../../utils/statusUtils";
+import {
+  resetAgentTelemetryStore,
+  useAgentTelemetryStore,
+} from "./useAgentTelemetryStore";
 import { normalizeAgentConfig, normalizeAgentConfigs } from "./configUtils";
 
 export type AgentStatusTransitionSource = "metrics" | "status_event";
@@ -43,11 +47,6 @@ export type AgentResourceControllerOptions = {
 
 export type AgentResourceController = {
   agents: AgentConfig[];
-  telemetry: Record<string, AgentTelemetry>;
-  app_telemetry: AppTelemetry;
-  terminal_titles: Record<string, string>;
-  current_thoughts: Record<string, string>;
-  agent_statuses: Record<string, string>;
   off_agent_ids: Set<string>;
   refresh_agents: (spawned_agent?: AgentConfig) => Promise<readonly AgentConfig[]>;
   apply_agent_config: (agent: AgentConfig) => void;
@@ -64,7 +63,6 @@ export type AgentResourceController = {
   reorder_agents: (session_ids: readonly string[]) => Promise<void>;
 };
 
-const EMPTY_APP_TELEMETRY: AppTelemetry = { cpu_usage: 0, memory_mb: 0 };
 const AGENT_ROSTER_REFRESH_DEBOUNCE_MS = 100;
 
 function makeStatusTelemetry(
@@ -86,6 +84,54 @@ function makeStatusTelemetry(
 }
 
 /**
+ * Every field of `AgentTelemetry`, listed so the compiler can enforce it.
+ *
+ * The comparison below decides whether a tick is dropped, so a field missing
+ * from it would be silently discarded rather than displayed. Keying off
+ * `Record<keyof AgentTelemetry, true>` turns adding a field without comparing
+ * it into a type error instead of a reporting bug.
+ */
+const TELEMETRY_FIELDS = Object.keys({
+  session_id: true,
+  cpu_usage: true,
+  memory_mb: true,
+  uptime_seconds: true,
+  query_count: true,
+  init_timestamp: true,
+  current_status: true,
+  log_path: true,
+} satisfies Record<keyof AgentTelemetry, true>) as (keyof AgentTelemetry)[];
+
+function telemetryEquals(
+  left: AgentTelemetry | undefined,
+  right: AgentTelemetry,
+): boolean {
+  if (left === undefined) return false;
+  return TELEMETRY_FIELDS.every((field) => left[field] === right[field]);
+}
+
+/**
+ * Folds one agent's telemetry into the map, preserving identity where nothing moved.
+ *
+ * The backend re-serializes every metric on each tick, so payload identity always
+ * differs even when no value did. Reusing the previous record keeps memoized
+ * consumers from invalidating, and returning the previous map keeps an unchanged
+ * tick from re-rendering the application at all.
+ */
+function mergeTelemetry(
+  previous: Record<string, AgentTelemetry>,
+  metrics: readonly AgentTelemetry[],
+): Record<string, AgentTelemetry> {
+  let next: Record<string, AgentTelemetry> | null = null;
+  for (const metric of metrics) {
+    if (telemetryEquals(previous[metric.session_id], metric)) continue;
+    next ??= { ...previous };
+    next[metric.session_id] = metric;
+  }
+  return next ?? previous;
+}
+
+/**
  * Owns the single desktop subscription and load path for shared agent resources.
  * Inbox, watchlist, confirmation, and interaction persistence policies enter only
  * through callbacks or returned operation results; they are not mirrored here.
@@ -98,11 +144,36 @@ export function useAgentResourceController(
 
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const agents_ref = useRef(agents);
-  const [telemetry, setTelemetry] = useState<Record<string, AgentTelemetry>>({});
-  const telemetry_ref = useRef(telemetry);
-  const [appTelemetry, setAppTelemetry] = useState<AppTelemetry>(EMPTY_APP_TELEMETRY);
-  const [terminalTitles, setTerminalTitles] = useState<Record<string, string>>({});
-  const [currentThoughts, setCurrentThoughts] = useState<Record<string, string>>({});
+  // Telemetry, titles and thoughts live in a store rather than in state here,
+  // so a five-second tick or a line of provider output re-renders only what
+  // displays them. See `useAgentTelemetryStore`.
+  const setTelemetry = useCallback((next: Record<string, AgentTelemetry>) => {
+    useAgentTelemetryStore.setState({ telemetry: next });
+  }, []);
+  const setAppTelemetry = useCallback(
+    (update: (previous: AppTelemetry) => AppTelemetry) => {
+      useAgentTelemetryStore.setState((state) => ({
+        app_telemetry: update(state.app_telemetry),
+      }));
+    },
+    [],
+  );
+  const setTerminalTitles = useCallback(
+    (update: (previous: Record<string, string>) => Record<string, string>) => {
+      useAgentTelemetryStore.setState((state) => ({
+        terminal_titles: update(state.terminal_titles),
+      }));
+    },
+    [],
+  );
+  const setCurrentThoughts = useCallback(
+    (update: (previous: Record<string, string>) => Record<string, string>) => {
+      useAgentTelemetryStore.setState((state) => ({
+        current_thoughts: update(state.current_thoughts),
+      }));
+    },
+    [],
+  );
   const [offAgentIds, setOffAgentIds] = useState<Set<string>>(new Set());
   const agent_status_ref = useRef<Record<string, string>>({});
   const fetch_request_ref = useRef(0);
@@ -256,6 +327,7 @@ export function useAgentResourceController(
 
   useEffect(() => {
     mounted_ref.current = true;
+    resetAgentTelemetryStore();
     void refreshAgents();
 
     const subscriptions = [
@@ -264,21 +336,26 @@ export function useAgentResourceController(
         const json_data = data as Record<string, unknown>;
         options_ref.current.on_agent_json_event?.(session_id, json_data);
         const effect = classifyJsonEvent(json_data);
+        // One event per JSON line of provider output. Without the identity check
+        // a streaming agent re-rendered the whole application per line, including
+        // for the common case of the thought not having changed.
         if (effect.type === "progress") {
-          setCurrentThoughts((previous) => ({
-            ...previous,
-            [session_id]: effect.thought,
-          }));
+          setCurrentThoughts((previous) => (
+            previous[session_id] === effect.thought
+              ? previous
+              : { ...previous, [session_id]: effect.thought }
+          ));
         } else if (effect.type === "clear_thought") {
-          setCurrentThoughts((previous) => ({ ...previous, [session_id]: "" }));
+          setCurrentThoughts((previous) => (
+            previous[session_id] === "" ? previous : { ...previous, [session_id]: "" }
+          ));
         }
       }),
       listen("agents-updated", () => {
         scheduleRefreshAgents();
       }),
       listen<AgentTelemetry[]>("agent-metrics", (event) => {
-        const previous_telemetry = telemetry_ref.current;
-        const next_telemetry = { ...previous_telemetry };
+        const previous_telemetry = useAgentTelemetryStore.getState().telemetry;
         const interaction_updates: Record<string, string> = {};
         for (const metric of event.payload) {
           applyStatus(metric.session_id, metric.current_status, "metrics", false);
@@ -309,16 +386,21 @@ export function useAgentResourceController(
             const occurred_at = options_ref.current.now?.() ?? new Date().toISOString();
             interaction_updates[metric.session_id] = occurred_at;
           }
-          next_telemetry[metric.session_id] = metric;
         }
         if (Object.keys(interaction_updates).length > 0) {
           options_ref.current.on_agent_interactions?.(interaction_updates);
         }
-        telemetry_ref.current = next_telemetry;
+        const next_telemetry = mergeTelemetry(previous_telemetry, event.payload);
+        if (next_telemetry === previous_telemetry) return;
         setTelemetry(next_telemetry);
       }),
       listen<AppTelemetry>("app-metrics", (event) => {
-        setAppTelemetry(event.payload);
+        setAppTelemetry((previous) => (
+          previous.cpu_usage === event.payload.cpu_usage
+            && previous.memory_mb === event.payload.memory_mb
+            ? previous
+            : event.payload
+        ));
       }),
       listen<AgentStatusUpdate>("agent-status-updated", (event) => {
         const { session_id, current_status } = event.payload;
@@ -327,18 +409,18 @@ export function useAgentResourceController(
           || current_status === "Off"
           || current_status === "Action Needed"
         ) {
-          setCurrentThoughts((previous) => ({ ...previous, [session_id]: "" }));
+          setCurrentThoughts((previous) => (
+            previous[session_id] === "" ? previous : { ...previous, [session_id]: "" }
+          ));
         }
         applyStatus(session_id, current_status, "status_event", true);
-        const next_telemetry = {
-          ...telemetry_ref.current,
-          [session_id]: makeStatusTelemetry(
-            session_id,
-            current_status,
-            telemetry_ref.current[session_id],
-          ),
-        };
-        telemetry_ref.current = next_telemetry;
+        const previous_telemetry = useAgentTelemetryStore.getState().telemetry;
+        const next_telemetry = mergeTelemetry(previous_telemetry, [makeStatusTelemetry(
+          session_id,
+          current_status,
+          previous_telemetry[session_id],
+        )]);
+        if (next_telemetry === previous_telemetry) return;
         setTelemetry(next_telemetry);
       }),
       listen<{ session_id: string }>("agent-turn-completed", (event) => {
@@ -456,33 +538,8 @@ export function useAgentResourceController(
     }
   }, [commitAgents, refreshAgents]);
 
-  const agentStatuses = useMemo(() => {
-    const statuses: Record<string, string> = {};
-    for (const agent of agents) {
-      const metricStatus = telemetry[agent.session_id]?.current_status;
-      statuses[agent.session_id] = metricStatus === "Headless"
-        ? "Headless"
-        : offAgentIds.has(agent.session_id)
-          ? "Off"
-          : metricStatus ?? "Idle";
-    }
-    for (const [session_id, metric] of Object.entries(telemetry)) {
-      statuses[session_id] = metric.current_status === "Headless"
-        ? "Headless"
-        : offAgentIds.has(session_id)
-          ? "Off"
-          : metric.current_status;
-    }
-    return statuses;
-  }, [agents, offAgentIds, telemetry]);
-
   return useMemo(() => ({
     agents,
-    telemetry,
-    app_telemetry: appTelemetry,
-    terminal_titles: terminalTitles,
-    current_thoughts: currentThoughts,
-    agent_statuses: agentStatuses,
     off_agent_ids: offAgentIds,
     refresh_agents: refreshAgents,
     apply_agent_config: applyAgentConfig,
@@ -495,13 +552,10 @@ export function useAgentResourceController(
     delete_agents: deleteAgents,
     reorder_agents: reorderAgents,
   }), [
-    agentStatuses,
     agents,
     applyAgentConfig,
-    appTelemetry,
     clearAgent,
     cloneAgent,
-    currentThoughts,
     deleteAgents,
     offAgentIds,
     pauseAgent,
@@ -509,8 +563,6 @@ export function useAgentResourceController(
     renameAgent,
     reorderAgents,
     resumeAgent,
-    telemetry,
-    terminalTitles,
     setTerminalTitle,
   ]);
 }

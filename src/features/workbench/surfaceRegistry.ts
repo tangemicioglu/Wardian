@@ -120,6 +120,44 @@ function invalidRestore(error: string): SurfaceRestoreResult {
   return deepFreeze({ ok: false, error });
 }
 
+/**
+ * The part of reading a surface that depends only on the surface and its
+ * definition: canonicalize, restore, and freeze. Everything downstream of this
+ * — titles, icons, badges — may consult live state and is never cached.
+ */
+type CanonicalSurfaceEntry =
+  | { kind: "missing"; snapshot: WorkbenchSurfaceV1 }
+  | {
+    kind: "known";
+    definition: SurfaceDefinition;
+    snapshot: WorkbenchSurfaceV1;
+    restore_result: SurfaceRestoreResult;
+    /** Filled on first presentation read; `resolve_surface` never needs it. */
+    presentation_surface?: WorkbenchSurfaceV1 | null;
+  };
+
+/**
+ * The restored, frozen surface the presentation callbacks receive.
+ *
+ * Built on demand and memoized on the entry: `resolve_surface` is the busier of
+ * the two readers and has no use for it, so building it eagerly charged every
+ * panel render for work only the tab strip needs.
+ */
+function presentationSurfaceFor(
+  entry: Extract<CanonicalSurfaceEntry, { kind: "known" }>,
+): WorkbenchSurfaceV1 | null {
+  if (entry.presentation_surface !== undefined) return entry.presentation_surface;
+  const restored = entry.restore_result;
+  entry.presentation_surface = restored.ok
+    ? deepFreeze({
+      ...entry.snapshot,
+      state_schema_version: entry.definition.state_schema_version,
+      state: restored.state,
+    })
+    : null;
+  return entry.presentation_surface;
+}
+
 function copyDefinition<TState extends SurfaceState>(
   definition: SurfaceDefinition<TState>,
 ): SurfaceDefinition {
@@ -154,6 +192,9 @@ function stateValidationDocument(state: unknown): WorkbenchDocumentV1 {
   };
 }
 
+/** Allocating one per canonicalization showed up on the tab-strip render path. */
+const stateByteCounter = new TextEncoder();
+
 function canonicalizeState(state: unknown, maxBytes: number): unknown {
   const validation = validateWorkbenchDocument(stateValidationDocument(state));
   if (!validation.valid) {
@@ -166,7 +207,7 @@ function canonicalizeState(state: unknown, maxBytes: number): unknown {
 
   const json = JSON.stringify(state);
   if (json === undefined) throw new Error("surface state is not serializable JSON");
-  const byteLength = new TextEncoder().encode(json).byteLength;
+  const byteLength = stateByteCounter.encode(json).byteLength;
   if (byteLength > maxBytes) {
     throw new Error(`serialized surface state exceeds the ${maxBytes} bytes limit`);
   }
@@ -307,8 +348,29 @@ class SurfaceRegistry implements WorkbenchSurfaceRegistry {
   >();
   private presentationVersion = 0;
 
+  /**
+   * Memo cache for the canonicalize-and-restore step shared by the two hot reads.
+   *
+   * Canonicalization validates, serializes, re-parses and deep-freezes, and the
+   * tab strip and panel set ask for it once per surface per render — 20 surfaces
+   * against ~8 commits per tab click, every pass producing the same answer.
+   * Surfaces are frozen and replaced whenever the document changes, so their
+   * identity is a sound key, and `cacheEpoch` covers the registered definitions.
+   *
+   * Only this step is cached. Title, icon and badge callbacks read live state
+   * that no epoch tracks — an open editor going dirty, presentation data synced
+   * from a store — so they are re-run on every call, on top of the cached
+   * snapshot.
+   */
+  private cacheEpoch = 0;
+  private readonly canonicalCache = new WeakMap<
+    object,
+    { epoch: number; value: CanonicalSurfaceEntry }
+  >();
+
   private readonly invalidatePresentation = () => {
     this.presentationVersion += 1;
+    this.cacheEpoch += 1;
     for (const listener of this.presentationListeners) listener();
   };
 
@@ -317,6 +379,7 @@ class SurfaceRegistry implements WorkbenchSurfaceRegistry {
     if (this.rawDefinitionsByType.has(definition.type)) {
       throw new Error(`surface type ${definition.type} is already registered`);
     }
+    this.cacheEpoch += 1;
     const rawDefinition = copyDefinition(definition);
     this.rawDefinitionsByType.set(rawDefinition.type, rawDefinition);
     const publicDefinition = this.safeDefinition(rawDefinition);
@@ -396,40 +459,62 @@ class SurfaceRegistry implements WorkbenchSurfaceRegistry {
   }
 
   resolve_surface(surface: WorkbenchSurfaceV1): ResolvedSurface {
-    const rawDefinition = this.rawDefinitionsByType.get(surface.surface_type);
-    if (!rawDefinition) {
-      try {
-        const snapshot = canonicalSurface(surface, MAX_WORKBENCH_SURFACE_STATE_BYTES);
+    const isKnown = this.rawDefinitionsByType.has(surface.surface_type);
+    try {
+      const entry = this.canonicalEntry(surface);
+      if (entry.kind === "missing") {
         return {
-          definition: missingDefinition(snapshot),
+          definition: missingDefinition(entry.snapshot),
           missing_surface_type: surface.surface_type,
-          restore_result: deepFreeze({ ok: true, state: snapshot.state }),
-        };
-      } catch (error) {
-        const sanitized = { ...surface, state: null };
-        return {
-          definition: missingDefinition(sanitized),
-          missing_surface_type: surface.surface_type,
-          restore_result: invalidRestore(
-            `restore failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
+          restore_result: deepFreeze({ ok: true, state: entry.snapshot.state }),
         };
       }
-    }
-    try {
-      const snapshot = canonicalSurface(surface, rawDefinition.max_state_bytes);
       return {
         definition: this.require(surface.surface_type),
-        restore_result: this.restoreKnownSurface(rawDefinition, snapshot),
+        restore_result: entry.restore_result,
       };
     } catch (error) {
+      const message = `restore failed: ${error instanceof Error ? error.message : String(error)}`;
+      if (isKnown) {
+        return {
+          definition: this.require(surface.surface_type),
+          restore_result: invalidRestore(message),
+        };
+      }
       return {
-        definition: this.require(surface.surface_type),
-        restore_result: invalidRestore(
-          `restore failed: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+        definition: missingDefinition({ ...surface, state: null }),
+        missing_surface_type: surface.surface_type,
+        restore_result: invalidRestore(message),
       };
     }
+  }
+
+  /** Canonicalize and restore once per surface identity; see `canonicalCache`. */
+  private canonicalEntry(surface: WorkbenchSurfaceV1): CanonicalSurfaceEntry {
+    const cached = this.canonicalCache.get(surface);
+    if (cached !== undefined && cached.epoch === this.cacheEpoch) return cached.value;
+
+    const rawDefinition = this.rawDefinitionsByType.get(surface.surface_type);
+    let value: CanonicalSurfaceEntry;
+    if (!rawDefinition) {
+      value = {
+        kind: "missing",
+        snapshot: canonicalSurface(surface, MAX_WORKBENCH_SURFACE_STATE_BYTES),
+      };
+    } else {
+      const snapshot = canonicalSurface(surface, rawDefinition.max_state_bytes);
+      const restored = this.restoreKnownSurface(rawDefinition, snapshot);
+      value = {
+        kind: "known",
+        definition: rawDefinition,
+        snapshot,
+        restore_result: restored,
+      };
+    }
+    // A throw above is left uncached: the failure path is rare, and recomputing
+    // it keeps the cache holding only well-formed entries.
+    this.canonicalCache.set(surface, { epoch: this.cacheEpoch, value });
+    return value;
   }
 
   resolve_existing(
@@ -467,20 +552,19 @@ class SurfaceRegistry implements WorkbenchSurfaceRegistry {
   }
 
   presentation(surface: WorkbenchSurfaceV1): SurfacePresentationMetadata {
-    const rawDefinition = this.rawDefinitionsByType.get(surface.surface_type);
-    if (!rawDefinition) {
-      const snapshot = canonicalSurface(surface, MAX_WORKBENCH_SURFACE_STATE_BYTES);
-      const definition = missingDefinition(snapshot);
+    const entry = this.canonicalEntry(surface);
+    if (entry.kind === "missing") {
+      const definition = missingDefinition(entry.snapshot);
       return deepFreeze({
-        title: definition.title(snapshot),
+        title: definition.title(entry.snapshot),
         icon: definition.icon,
         commands: definition.commands.map((command) => ({ ...command })),
-        badges: definition.badges?.(snapshot) ?? [],
+        badges: definition.badges?.(entry.snapshot) ?? [],
       });
     }
-    const snapshot = canonicalSurface(surface, rawDefinition.max_state_bytes);
-    const restored = this.restoreKnownSurface(rawDefinition, snapshot);
-    if (!restored.ok) {
+    const rawDefinition = entry.definition;
+    const presentationSurface = presentationSurfaceFor(entry);
+    if (presentationSurface === null) {
       return deepFreeze({
         title: rawDefinition.type,
         icon: rawDefinition.icon,
@@ -488,11 +572,6 @@ class SurfaceRegistry implements WorkbenchSurfaceRegistry {
         badges: [{ badge_id: "recovery", label: "Recovery needed" }],
       });
     }
-    const presentationSurface = deepFreeze({
-      ...snapshot,
-      state_schema_version: rawDefinition.state_schema_version,
-      state: restored.state,
-    });
     const title = rawDefinition.title(presentationSurface);
     if (typeof title !== "string") throw new Error("title callback must return a string");
     const icon = rawDefinition.presentation_icon?.(presentationSurface) ?? rawDefinition.icon;

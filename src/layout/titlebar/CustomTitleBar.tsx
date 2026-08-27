@@ -1,7 +1,8 @@
 import React from "react";
 import { LeftSidebarControls } from "./LeftSidebarControls";
 import { RightWindowControls } from "./RightWindowControls";
-import type { AgentTelemetry, AgentConfig, AppTelemetry } from "../../types";
+import type { AgentConfig } from "../../types";
+import { useAgentTelemetryStore } from "../../features/agents/useAgentTelemetryStore";
 
 const DEFAULT_LEFT_RAIL_WIDTH = 48;
 const MAC_COLLAPSED_LEFT_CHROME_WIDTH = 112;
@@ -18,14 +19,17 @@ interface CustomTitleBarProps {
   setRightCollapsed: (collapsed: boolean) => void;
   leftSidebarWidth: number;
   rightSidebarWidth: number;
-  telemetry: Record<string, AgentTelemetry>;
-  appTelemetry: AppTelemetry;
   agents: AgentConfig[];
   offAgentIds: Set<string>;
   titlebarTelemetryVisible: boolean;
 }
 
 export const CustomTitleBar: React.FC<CustomTitleBarProps> = (props) => {
+  // Read straight from the store. These change on every telemetry tick and,
+  // for thoughts, on every line of provider output; routing them through
+  // `App` made each of those a whole-application render.
+  const telemetry = useAgentTelemetryStore((state) => state.telemetry);
+  const appTelemetry = useAgentTelemetryStore((state) => state.app_telemetry);
   const isMac = isMacPlatform();
   const leftWidth = props.leftCollapsed && isMac
     ? MAC_COLLAPSED_LEFT_CHROME_WIDTH
@@ -50,8 +54,8 @@ export const CustomTitleBar: React.FC<CustomTitleBarProps> = (props) => {
         disabled={props.workbenchBusy}
         leftCollapsed={props.leftCollapsed}
         setLeftCollapsed={props.setLeftCollapsed}
-        telemetry={props.telemetry}
-        appTelemetry={props.appTelemetry}
+        telemetry={telemetry}
+        appTelemetry={appTelemetry}
         agents={props.agents}
         offAgentIds={props.offAgentIds}
         titlebarTelemetryVisible={props.titlebarTelemetryVisible}

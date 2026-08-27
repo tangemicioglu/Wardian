@@ -146,6 +146,7 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
             })
         });
     let workflow_approvals = crate::commands::inbox::list_workflow_inbox_approvals()
+        .await
         .unwrap_or_default()
         .into_iter()
         .map(|approval| serde_json::json!({

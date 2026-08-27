@@ -467,6 +467,26 @@ describe("useQueueStore - persistence", () => {
     expect(useQueueStore.getState().items[0].id).toBe("new");
   });
 
+  it("coalesces overlapping queue loads into one backend request", async () => {
+    let resolveQueue!: (items: QueueItem[]) => void;
+    const pendingQueue = new Promise<QueueItem[]>((resolve) => {
+      resolveQueue = resolve;
+    });
+    mockInvoke.mockImplementation((command) => {
+      if (command === "load_queue_items") return pendingQueue;
+      return Promise.resolve([]);
+    });
+    const loadCallsBefore = mockInvoke.mock.calls.filter(([command]) => command === "load_queue_items").length;
+
+    const first = useQueueStore.getState().loadItems();
+    const second = useQueueStore.getState().loadItems();
+
+    await Promise.resolve();
+    expect(mockInvoke.mock.calls.filter(([command]) => command === "load_queue_items")).toHaveLength(loadCallsBefore + 1);
+    resolveQueue([]);
+    await Promise.all([first, second]);
+  });
+
   it("reconciles completed and failed workflow runs that predate the Inbox listener", async () => {
     mockInvoke.mockImplementation((command) => {
       if (command === "load_queue_items") return Promise.resolve([]);

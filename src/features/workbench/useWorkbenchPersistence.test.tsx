@@ -93,6 +93,61 @@ describe("useWorkbenchPersistence", () => {
     expect(store.getState().durable_token).toBe("opaque-three");
   });
 
+  it("does not re-render consumers for store notifications it does not project", async () => {
+    const loaded = {
+      ...makeSingleGroupDocument([makeSurface("only-surface")]),
+      revision: 1,
+    };
+    const adapter = createAdapter({
+      load: vi.fn().mockResolvedValue({
+        source: "document",
+        document: loaded,
+        notice: null,
+        durable_revision: 1,
+        durable_token: "opaque-one",
+      }),
+    });
+    const store = createWorkbenchStore({ loading: true });
+    let renders = 0;
+
+    const { result } = renderHook(() => {
+      renders += 1;
+      return useWorkbenchPersistence({
+        enabled: true,
+        adapter,
+        store,
+        request_id: () => "request-1",
+      });
+    });
+
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const activeGroupId = store.getState().document.active_group_id;
+    const activeSurfaceId = store.getState()
+      .document.groups[activeGroupId].active_surface_id as string;
+    expect(activeSurfaceId).toBeTruthy();
+    const activate = () => act(() => {
+      store.getState().apply_commands([{
+        type: "set_active_surface",
+        group_id: activeGroupId,
+        surface_id: activeSurfaceId,
+      }]);
+    });
+
+    // The first activation marks the document dirty, which this hook projects.
+    activate();
+    expect(result.current.is_dirty).toBe(true);
+    const settled = renders;
+
+    // Every later one still notifies every store subscriber while moving none of
+    // the four fields projected here. App renders the whole application tree per
+    // consumer render, so these must collapse rather than accumulate. React
+    // still renders once more before it settles on an unchanged state, so the
+    // guarantee is a constant, not zero.
+    for (let index = 0; index < 10; index += 1) activate();
+    expect(renders).toBeLessThanOrEqual(settled + 1);
+    expect(result.current.is_dirty).toBe(true);
+  });
+
   it("queues the first exact pending snapshot within 250 ms", async () => {
     const save = vi.fn().mockResolvedValue({
       outcome: "saved",

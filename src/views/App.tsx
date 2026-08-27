@@ -65,6 +65,7 @@ import {
 } from "../features/agents/useAgentResourceController";
 import { RosterProvider } from "../features/agents/RosterContext";
 import { useRosterController } from "../features/agents/useRosterController";
+import { useAgentTelemetryStore } from "../features/agents/useAgentTelemetryStore";
 import {
   AgentsOverviewSurface,
   normalizeAgentsOverviewSurfaceState,
@@ -121,6 +122,8 @@ import type {
   OpenFileResourceRequestV1,
 } from "../types";
 import type { SurfaceResourceProvision } from "../features/workbench/coreSurfaceRegistry";
+import type { DeepReadonly } from "../features/workbench/useWorkbenchStore";
+import type { WorkbenchSurfaceV1 } from "../types";
 
 declare global {
   interface Window {
@@ -647,10 +650,6 @@ function AppBody() {
   });
   const {
     agents,
-    telemetry,
-    app_telemetry: appTelemetry,
-    terminal_titles: terminalTitles,
-    current_thoughts: currentThoughts,
     off_agent_ids: offAgentIds,
     refresh_agents: fetchAgents,
     set_terminal_title: handleTitleChange,
@@ -709,13 +708,16 @@ function AppBody() {
     if (import.meta.env.DEV) {
       window.__wardianAppDebug = {
       snapshot: (sessionId: string) => {
-        const metrics = telemetry[sessionId] ?? null;
-        if (!metrics && !terminalTitles[sessionId] && !currentThoughts[sessionId]) {
+        // Read on demand rather than subscribing: this is a debug hook, and
+        // subscribing would put App back on the every-tick render path.
+        const projections = useAgentTelemetryStore.getState();
+        const metrics = projections.telemetry[sessionId] ?? null;
+        const title = projections.terminal_titles[sessionId] || "";
+        const thought = projections.current_thoughts[sessionId] || "";
+        if (!metrics && !title && !thought) {
           return null;
         }
 
-        const title = terminalTitles[sessionId] || "";
-        const thought = currentThoughts[sessionId] || "";
         const { status } = deriveCurrentThought(title, thought, metrics, offAgentIds.has(sessionId));
 
         return {
@@ -731,7 +733,7 @@ function AppBody() {
     return () => {
       delete window.__wardianAppDebug;
     };
-  }, [telemetry, terminalTitles, currentThoughts, offAgentIds]);
+  }, [offAgentIds]);
 
   const loadWatchlistState = useCallback(async () => {
       try {
@@ -1324,14 +1326,15 @@ function AppBody() {
     setSelectedAgentIds(new Set([sessionId]));
     const currentState = normalizeAgentsOverviewSurfaceState(overviewSurface.state);
     const targetAgent = agents.find((agent) => agent.session_id === sessionId);
+    const projections = useAgentTelemetryStore.getState();
     const nextState = targetAgent
       ? revealAgentInOverviewState(
         currentState,
         targetAgent,
         deriveCurrentThought(
-          terminalTitles[sessionId] ?? "",
-          currentThoughts[sessionId] ?? "",
-          telemetry[sessionId],
+          projections.terminal_titles[sessionId] ?? "",
+          projections.current_thoughts[sessionId] ?? "",
+          projections.telemetry[sessionId],
           offAgentIds.has(sessionId),
         ).status,
       )
@@ -1345,7 +1348,7 @@ function AppBody() {
     }]);
     scheduleAgentOverviewScroll(sessionId);
     return true;
-  }, [agents, currentThoughts, offAgentIds, scheduleAgentOverviewScroll, setSelectedAgentIds, telemetry, terminalTitles, workbenchNavigation, workbenchPersistence.store]);
+  }, [agents, offAgentIds, scheduleAgentOverviewScroll, setSelectedAgentIds, workbenchNavigation, workbenchPersistence.store]);
 
   const openAgentFromSurface = useCallback((sourceSurfaceId: string, sessionId: string) => {
     const state = workbenchPersistence.store.getState();
@@ -1502,6 +1505,16 @@ function AppBody() {
       });
     });
   }, [workbenchNavigation, workbenchReady]);
+
+  // The tab strip reads this for every tab. Keeping its identity stable across
+  // unrelated app state means activating a tab re-renders no tab header at all.
+  const workbenchSurfaceTitle = useCallback((surface: DeepReadonly<WorkbenchSurfaceV1>) => {
+    if (surface.surface_type === "agent-session" && surface.resource_key) {
+      return agents.find((agent) => agent.session_id === surface.resource_key)
+        ?.session_name ?? `Agent Session: ${surface.resource_key}`;
+    }
+    return workbenchRegistry.presentation(surface).title;
+  }, [agents, workbenchRegistry]);
 
   const renderWorkbenchSurface: WorkbenchSurfaceRenderer = (surface, lifecycle) => {
     const resolvedSurface = workbenchRegistry.resolve_surface(surface);
@@ -1699,14 +1712,7 @@ function AppBody() {
               state: { prefs },
             }]);
           }}
-          // The instant columns read live agent state; every rate comes from the
-          // telemetry store. Joining them here keeps that boundary explicit.
-          live={agents.map((agent) => ({
-            session_id: agent.session_id,
-            status: telemetry[agent.session_id]?.current_status ?? null,
-            cpu_usage: telemetry[agent.session_id]?.cpu_usage ?? null,
-            memory_mb: telemetry[agent.session_id]?.memory_mb ?? null,
-          }))}
+          live_agents={agents}
           onOpenAgent={(sessionId) => openAgentFromSurface(surface.surface_id, sessionId)}
           onOpenAnalytics={(sessionId) =>
             workbenchNavigation.open({
@@ -1756,9 +1762,6 @@ function AppBody() {
           visibility={visibility}
           filteredAgents={filteredAgents}
           allAgents={agents}
-          telemetry={telemetry}
-          terminalTitles={terminalTitles}
-          currentThoughts={currentThoughts}
           selectedAgentIds={selectedAgentIds}
           offAgentIds={offAgentIds}
           watchlists={watchlists}
@@ -1805,7 +1808,6 @@ function AppBody() {
           state={normalizeGardenSurfaceState(restoredSurface)}
           visibility={visibility}
           filteredAgents={filteredAgents}
-          telemetry={telemetry}
           teams={teams}
           activeList={activeList}
           interactions={agentInteractions}
@@ -1860,9 +1862,6 @@ function AppBody() {
         state={normalizeAgentsOverviewSurfaceState(restoredSurface.state)}
         agents={roster.filteredAgents}
         recentAgentIds={recentAgentIds}
-        telemetry={telemetry}
-        terminalTitles={terminalTitles}
-        currentThoughts={currentThoughts}
         selectedAgentIds={selectedAgentIds}
         offAgentIds={offAgentIds}
         theme={theme}
@@ -1917,8 +1916,6 @@ function AppBody() {
         setRightCollapsed={setRightCollapsed}
         leftSidebarWidth={leftSidebarWidth}
         rightSidebarWidth={rightSidebarWidth}
-        telemetry={telemetry}
-        appTelemetry={appTelemetry}
         agents={agents}
         offAgentIds={offAgentIds}
         titlebarTelemetryVisible={resolvedTitlebarTelemetryVisible}
@@ -1982,7 +1979,6 @@ function AppBody() {
           setSelectedAgentIds={setSelectedAgentIds}
           agents={agents}
           agentClasses={agentClasses}
-          telemetry={telemetry}
           sourceControlStatus={sourceControlStatus}
           turnRevision={changeReviewTurnRevision}
           onAgentsUpdated={fetchAgents}
@@ -2006,13 +2002,7 @@ function AppBody() {
               resource_key={selectedWorkbenchResourceKey}
               render_surface={renderWorkbenchSurface}
               provision_surface_resource={provisionWorkbenchSurfaceResource}
-              surface_title={(surface) => {
-                if (surface.surface_type === "agent-session" && surface.resource_key) {
-                  return agents.find((agent) => agent.session_id === surface.resource_key)
-                    ?.session_name ?? `Agent Session: ${surface.resource_key}`;
-                }
-                return workbenchRegistry.presentation(surface).title;
-              }}
+              surface_title={workbenchSurfaceTitle}
             />
           )}
           mainOverlays={<>
@@ -2060,9 +2050,6 @@ function AppBody() {
           roster={<AgentWatchlist
           focus_target_ref={agentWatchlistRef}
           agents={agents}
-          telemetry={telemetry}
-          terminalTitles={terminalTitles}
-          currentThoughts={currentThoughts}
           selectedAgentIds={selectedAgentIds}
           offAgentIds={offAgentIds}
           onSelectionChange={setSelectedAgentIds}

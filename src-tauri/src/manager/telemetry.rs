@@ -744,10 +744,12 @@ fn refresh_system_process_snapshot(
             || cache.refreshed_at.elapsed() >= PROCESS_INVENTORY_REFRESH_TTL
     });
     #[cfg(windows)]
-    let discovery_due = session_root_discovery_due(session_ids)
-        || inventory_cache
-            .as_ref()
-            .is_none_or(|cache| cache.agent_key != agent_key);
+    // Process-ID changes invalidate the lightweight inventory cache, but they
+    // do not mean that every process's command line and environment need to
+    // be re-read. Provider restarts are common, and coupling them to marker
+    // discovery turns a cheap inventory refresh into an expensive Windows PEB
+    // scan. Marker discovery has its own session/TTL invalidation above.
+    let discovery_due = session_root_discovery_due(session_ids);
     #[cfg(not(windows))]
     let discovery_due = false;
 
@@ -2105,6 +2107,42 @@ mod tests {
         ]);
 
         assert_eq!(left, right);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn changing_agent_process_id_does_not_force_marker_discovery() {
+        let session_id = "pid-churn-marker-discovery-test".to_string();
+        let session_ids = vec![session_id.clone()];
+        let cached_markers = HashMap::from([(session_id.clone(), vec![12345])]);
+
+        *super::process_inventory_cache().lock().unwrap() = None;
+        *super::session_roots_cache().lock().unwrap() = Some(super::SessionRootsCache {
+            roots: cached_markers.clone(),
+            refreshed_at: std::time::Instant::now(),
+            session_key: super::sorted_session_key(&session_ids),
+        });
+
+        let system = tokio::sync::Mutex::new(sysinfo::System::new());
+        super::refresh_system_process_snapshot(
+            &system,
+            &session_ids,
+            &[(session_id.clone(), Some(101))],
+        )
+        .expect("initial inventory refresh should succeed");
+
+        // Re-seed the marker cache so the assertion observes whether the PID
+        // change caused a second marker scan, rather than its initial setup.
+        *super::session_roots_cache().lock().unwrap() = Some(super::SessionRootsCache {
+            roots: cached_markers.clone(),
+            refreshed_at: std::time::Instant::now(),
+            session_key: super::sorted_session_key(&session_ids),
+        });
+
+        super::refresh_system_process_snapshot(&system, &session_ids, &[(session_id, Some(202))])
+            .expect("PID-churn inventory refresh should succeed");
+
+        assert_eq!(super::cached_session_roots(), cached_markers);
     }
 
     #[test]

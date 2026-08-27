@@ -1,0 +1,523 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Layer, Stage } from "react-konva";
+import type Konva from "konva";
+import { AgentUnit, AGENT_UNIT_NAME } from "./AgentUnit";
+import { WorkflowUnit } from "./WorkflowUnit";
+import { GardenContextMenu } from "./GardenContextMenu";
+import { gardenDetailForScale, type GardenSkillGlyph } from "./skillGlyphs";
+import { useGardenPulse } from "./useGardenPulse";
+import { MAX_SCALE, MIN_SCALE, fitTransform, zoomAt } from "./gardenViewport";
+import type { GardenAgentUnit, GardenEntityRef, GardenWorkflowUnit } from "./garden.types";
+import { unitKey } from "./garden.types";
+import { isActiveAgentStatus, isActiveWorkflowStatus } from "./gardenStatus";
+import { useGardenTheme } from "./useGardenTheme";
+import { TerrainLayer } from "./TerrainLayer";
+import { AttributionLayer } from "./AttributionLayer";
+import type { TerrainCell, TerrainDistrict } from "./terrain";
+import type { TerrainPaint } from "./terrainPaint";
+import type { TerrainViewport } from "./terrainFrontier";
+import { wheelZoomFactor } from "../../utils/wheelZoom";
+
+export interface GardenCanvasProps {
+  agentUnits: GardenAgentUnit[];
+  workflowUnits: GardenWorkflowUnit[];
+  selectedKey: string | null;
+  /** Agents carrying the selected skill; empty unless a skill is selected. */
+  highlightedAgentIds?: ReadonlySet<string>;
+  /** Ground cells drawn beneath the units. Empty until terrain is ingested. */
+  terrainCells?: readonly TerrainCell[];
+  terrainDistricts?: ReadonlyMap<string, TerrainDistrict>;
+  /** Change tint per terrain path. Absent until a change set has loaded. */
+  terrainPaint?: ReadonlyMap<string, TerrainPaint>;
+  /** Ground written to by the current selection, highlighted across districts. */
+  highlightedPaths?: ReadonlySet<string>;
+  onSelectPath?: (path: string) => void;
+  onOpenPath?: (path: string) => void;
+  /**
+   * Reports the visible world rectangle and zoom.
+   *
+   * Terrain ingestion is driven by what is on screen and how large it is, so
+   * the viewport has to leave the canvas. It is coalesced to one report per
+   * animation frame: a wheel gesture fires dozens of events, and each one
+   * reaching React would re-render the map for a value only the debounced
+   * expansion pass reads.
+   */
+  onViewportChange?: (viewport: TerrainViewport) => void;
+  onSelect: (ref: GardenEntityRef) => void;
+  onOpenAgent: (id: string) => void;
+  onOpenSkill?: (glyph: GardenSkillGlyph) => void;
+  onMoveUnit: (key: string, x: number, y: number) => void;
+  onResetLayout: () => void;
+}
+
+interface GardenMenuState {
+  x: number;
+  y: number;
+  agentId: string | null;
+}
+
+/** Coarser than the wheel: a keypress is a deliberate step, not a nudge. */
+const KEY_ZOOM_STEP = 1.25;
+/** Screen pixels moved per arrow press, so panning feels the same at any zoom. */
+const PAN_STEP = 80;
+
+export const GardenCanvas: React.FC<GardenCanvasProps> = ({
+  agentUnits,
+  workflowUnits,
+  selectedKey,
+  highlightedAgentIds,
+  terrainCells,
+  terrainDistricts,
+  terrainPaint,
+  highlightedPaths,
+  onSelectPath,
+  onOpenPath,
+  onViewportChange,
+  onSelect,
+  onOpenAgent,
+  onOpenSkill,
+  onMoveUnit,
+  onResetLayout,
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<Konva.Stage>(null);
+  const layerRef = useRef<Konva.Layer>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [scale, setScale] = useState(1);
+  const transformRef = useRef({ scale: 1, position: { x: 0, y: 0 } });
+  const [menu, setMenu] = useState<GardenMenuState | null>(null);
+  // The transform the last automatic fit applied, published on the container as
+  // `data-garden-fit`. Canvas units have no DOM handles, so this is the only way
+  // a test (or a bug report) can turn a world position into a screen point. It
+  // is not updated once the user takes over the viewport.
+  const [fit, setFit] = useState<string | null>(null);
+  const fitRef = useRef<string | null>(null);
+  const minScaleRef = useRef(MIN_SCALE);
+  const theme = useGardenTheme();
+
+  // Publish the visible world rectangle, coalesced to one report per frame.
+  //
+  // A wheel gesture fires dozens of events and a drag fires one per pointer
+  // move; letting each reach React would re-render the map for a value only the
+  // debounced expansion pass reads. The world rect is the inverse of the stage
+  // transform: world = (screen - position) / scale.
+  const onViewportChangeRef = useRef(onViewportChange);
+  onViewportChangeRef.current = onViewportChange;
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
+  const viewportFrameRef = useRef<number | null>(null);
+  const reportViewport = useCallback(() => {
+    if (!onViewportChangeRef.current) return;
+    if (viewportFrameRef.current !== null) return;
+    viewportFrameRef.current = requestAnimationFrame(() => {
+      viewportFrameRef.current = null;
+      const { scale: current, position } = transformRef.current;
+      const { width, height } = sizeRef.current;
+      if (!Number.isFinite(current) || current <= 0 || width <= 0 || height <= 0) return;
+      onViewportChangeRef.current?.({
+        scale: current,
+        world: {
+          x: -position.x / current,
+          y: -position.y / current,
+          width: width / current,
+          height: height / current,
+        },
+      });
+    });
+  }, []);
+  useEffect(
+    () => () => {
+      if (viewportFrameRef.current !== null) cancelAnimationFrame(viewportFrameRef.current);
+    },
+    [],
+  );
+
+  // Konva owns the live viewport transform. React still receives the scale so
+  // detail labels and the readout can react to it, but the Stage transform is
+  // not passed back as props: doing both lets reconciliation briefly restore a
+  // stale scale while a wheel event is moving the stage position.
+  const applyTransform = useCallback((transform: { scale: number; position: { x: number; y: number } }) => {
+    const stage = stageRef.current;
+    transformRef.current = transform;
+    if (stage) {
+      stage.scale({ x: transform.scale, y: transform.scale });
+      stage.position(transform.position);
+      stage.batchDraw();
+    }
+    setScale(transform.scale);
+    reportViewport();
+  }, [reportViewport]);
+
+  // Progressive disclosure. Detail is a pure function of zoom and touches only
+  // what is painted — the layout reserved the crown's footprint regardless, so
+  // crossing a threshold cannot move a unit.
+  const detail = useMemo(() => gardenDetailForScale(scale), [scale]);
+  const selectedSkillRef = selectedKey?.startsWith("skill:")
+    ? selectedKey.slice("skill:".length)
+    : null;
+  const selectedTerrainPath = selectedKey?.startsWith("path:")
+    ? selectedKey.slice("path:".length)
+    : null;
+  const selectedAgentIdForThreads = selectedKey?.startsWith("agent:")
+    ? selectedKey.slice("agent:".length)
+    : null;
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => setSize({ width: el.clientWidth, height: el.clientHeight });
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // A resize changes the visible world rectangle without touching the transform,
+  // so terrain would keep expanding against the old viewport without this.
+  useEffect(() => {
+    reportViewport();
+  }, [size, reportViewport]);
+
+  // Open the menu on right-click via a native listener on the container (the
+  // contextmenu event bubbles up from Konva's canvas, but binding directly to
+  // the DOM node is more reliable than React delegation through the canvas).
+  // Resolve which agent, if any, sits under the cursor via Konva hit-testing.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      let agentId: string | null = null;
+      try {
+        const stage = stageRef.current;
+        const pointer = stage?.getPointerPosition();
+        if (stage && pointer) {
+          const hit = stage.getIntersection(pointer);
+          const group = hit?.findAncestor(`.${AGENT_UNIT_NAME}`, true);
+          if (group) agentId = group.id() || null;
+        }
+      } catch {
+        agentId = null;
+      }
+      setMenu({ x: e.clientX, y: e.clientY, agentId });
+    };
+    el.addEventListener("contextmenu", onContextMenu);
+    return () => el.removeEventListener("contextmenu", onContextMenu);
+  }, []);
+
+  // Zoom about a fixed screen point, keeping the world point under it still.
+  //
+  // Scaling without this moves everything except the stage's own origin, so the
+  // map slides across the viewport as it grows — which reads as panning, not
+  // zooming, and is why the wheel felt like it was scrolling the canvas.
+  const zoomAround = useCallback((screenPoint: { x: number; y: number }, factor: number) => {
+    if (!stageRef.current) return;
+    userAdjustedRef.current = true;
+    const next = zoomAt(screenPoint, transformRef.current, factor, {
+      min: minScaleRef.current,
+      max: MAX_SCALE,
+    });
+    if (next.scale === transformRef.current.scale) return;
+    applyTransform(next);
+  }, [applyTransform]);
+
+  /** Zoom about the middle of the viewport, for the keyboard and the buttons. */
+  const zoomByStep = useCallback(
+    (factor: number) => zoomAround({ x: size.width / 2, y: size.height / 2 }, factor),
+    [zoomAround, size.width, size.height],
+  );
+
+  const panBy = useCallback((dx: number, dy: number) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    userAdjustedRef.current = true;
+    applyTransform({
+      scale: transformRef.current.scale,
+      position: { x: stage.x() - dx, y: stage.y() - dy },
+    });
+  }, [applyTransform]);
+
+  // Fit the map into view until the user takes control of the viewport.
+  //
+  // The layout places units around each district's own origin, so coordinates
+  // are freely negative and a district can sit hundreds of pixels off the
+  // Stage's top-left. Opening onto a viewport that happens to show two of five
+  // districts is not a map.
+  //
+  // Fitting only once is not enough: the container is measured by a
+  // ResizeObserver, and its first measurement can precede the surrounding
+  // layout settling. A single fit against that early size leaves the content
+  // permanently off-centre. So it re-fits on every size and content change, and
+  // stops for good the moment the user pans, zooms, or moves a unit — after
+  // which the viewport is theirs and must never be yanked back.
+  const userAdjustedRef = useRef(false);
+  const applyFit = useCallback(
+    (force: boolean) => {
+      const stage = stageRef.current;
+      if (!stage) return;
+      const transform = fitTransform(
+        [...agentUnits, ...workflowUnits].map((unit) => unit.position),
+        size,
+      );
+      if (!transform) return;
+
+      // This runs on every telemetry tick, because the unit arrays are rebuilt
+      // to keep status live. Writing an unchanged transform back would redraw
+      // the layer each time for nothing.
+      const applied = `${transform.position.x},${transform.position.y},${transform.scale}`;
+      if (!force && applied === fitRef.current) return;
+      fitRef.current = applied;
+      // The wheel must not snap the user back the moment they touch it.
+      minScaleRef.current = Math.min(MIN_SCALE, transform.scale);
+      applyTransform(transform);
+      setFit(applied);
+    },
+    [agentUnits, workflowUnits, size, applyTransform],
+  );
+
+  useEffect(() => {
+    if (userAdjustedRef.current) return;
+    applyFit(false);
+  }, [applyFit]);
+
+  /**
+   * Fit on demand. Unlike the automatic fit this does not hand the viewport
+   * back: the user asked for this framing, so it is theirs until they move
+   * again, and a later telemetry tick must not re-frame around them.
+   */
+  const fitNow = useCallback(() => {
+    applyFit(true);
+    userAdjustedRef.current = true;
+  }, [applyFit]);
+
+  /**
+   * Reset the arrangement, and hand the viewport back.
+   *
+   * Resetting only the layout is not a reset from where the user sits: if they
+   * had zoomed into a corner, the map rearranges somewhere off screen and
+   * nothing appears to happen. Releasing `userAdjusted` lets the automatic fit
+   * re-frame the new arrangement, which is the visible half of the action.
+   */
+  const handleResetLayout = useCallback(() => {
+    onResetLayout();
+    userAdjustedRef.current = false;
+    fitRef.current = null;
+  }, [onResetLayout]);
+
+  // One animation for every breathing halo. See `useGardenPulse` for why this
+  // is not per unit.
+  //
+  // Keyed on *which* units are breathing rather than on the unit arrays: those
+  // are rebuilt on every telemetry tick, and re-running the effect that often
+  // would rescan the scene graph for no reason. Only a status crossing the
+  // active boundary, or a unit appearing or leaving, changes what to animate.
+  const pulsingKey = useMemo(
+    () =>
+      [
+        ...agentUnits.filter((unit) => isActiveAgentStatus(unit.status)).map((u) => u.ref.id),
+        ...workflowUnits
+          .filter((unit) => isActiveWorkflowStatus(unit.runStatus))
+          .map((u) => u.ref.id),
+      ].join(","),
+    [agentUnits, workflowUnits],
+  );
+  useGardenPulse(layerRef, pulsingKey);
+
+  // Stable identities so `AgentUnit` can skip re-rendering agents that did not
+  // change. A closure created per unit per render would defeat that.
+  const handleSelectAgent = useCallback(
+    (id: string) => onSelect({ kind: "agent", id }),
+    [onSelect],
+  );
+  const handleSelectSkill = useCallback(
+    (glyph: GardenSkillGlyph) => onSelect({ kind: "skill", id: glyph.entryRef }),
+    [onSelect],
+  );
+  const handleOpenSkill = useCallback(
+    (glyph: GardenSkillGlyph) => onOpenSkill?.(glyph),
+    [onOpenSkill],
+  );
+  const handleDragAgent = useCallback(
+    (id: string, x: number, y: number) => {
+      userAdjustedRef.current = true;
+      onMoveUnit(unitKey({ kind: "agent", id }), x, y);
+    },
+    [onMoveUnit],
+  );
+
+  // The wheel always zooms, and never scrolls. A canvas that pans on wheel and
+  // zooms on modifier-wheel forces the user to discover which they are doing by
+  // trying it; one gesture with one meaning does not.
+  const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
+    e.evt.preventDefault();
+    const stage = stageRef.current;
+    const pointer = stage?.getPointerPosition() ?? { x: size.width / 2, y: size.height / 2 };
+    zoomAround(pointer, wheelZoomFactor(e.evt.deltaY, e.evt.deltaMode));
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // A pan step in screen pixels, so it feels the same at every zoom level.
+    const step = e.shiftKey ? PAN_STEP * 4 : PAN_STEP;
+    const actions: Record<string, () => void> = {
+      "+": () => zoomByStep(KEY_ZOOM_STEP),
+      "=": () => zoomByStep(KEY_ZOOM_STEP),
+      "-": () => zoomByStep(1 / KEY_ZOOM_STEP),
+      _: () => zoomByStep(1 / KEY_ZOOM_STEP),
+      "0": fitNow,
+      f: fitNow,
+      ArrowLeft: () => panBy(-step, 0),
+      ArrowRight: () => panBy(step, 0),
+      ArrowUp: () => panBy(0, -step),
+      ArrowDown: () => panBy(0, step),
+    };
+    const action = actions[e.key];
+    if (!action) return;
+    e.preventDefault();
+    action();
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative flex-1 min-h-0 min-w-0 overflow-hidden garden-canvas"
+      data-garden-fit={fit ?? undefined}
+      // Focusable so the canvas can own its navigation keys. Without a tabIndex
+      // the map is reachable only by mouse, which is the one input the report
+      // said was confusing.
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      role="img"
+      aria-label={`Garden canvas showing ${agentUnits.length} agents and ${workflowUnits.length} workflows. Select a unit to read its status. Scroll to zoom, drag to pan, or use plus and minus to zoom, arrow keys to pan, and zero to fit.`}
+    >
+      <Stage
+        ref={stageRef}
+        width={size.width}
+        height={size.height}
+        draggable
+        onWheel={handleWheel}
+        onDragEnd={(event) => {
+          // Only a pan of the Stage itself; a unit drag reports the unit as
+          // target and is handled by onMoveUnit.
+          if (event.target !== event.currentTarget) return;
+          userAdjustedRef.current = true;
+          const stage = stageRef.current;
+          if (stage) {
+            transformRef.current = {
+              scale: transformRef.current.scale,
+              position: { x: stage.x(), y: stage.y() },
+            };
+            reportViewport();
+          }
+        }}
+      >
+        <Layer ref={layerRef}>
+          {terrainCells && terrainCells.length > 0 && terrainDistricts && (
+            <>
+              <TerrainLayer
+                cells={terrainCells}
+                districts={terrainDistricts}
+                scale={scale}
+                theme={theme}
+                paint={terrainPaint}
+                selectedPath={selectedTerrainPath}
+                highlightedPaths={highlightedPaths}
+                onSelectPath={onSelectPath}
+                onOpenPath={onOpenPath}
+              />
+              {terrainPaint && (
+                <AttributionLayer
+                  cells={terrainCells}
+                  paint={terrainPaint}
+                  agentUnits={agentUnits}
+                  selectedAgentId={selectedAgentIdForThreads}
+                  selectedPath={selectedTerrainPath}
+                  theme={theme}
+                />
+              )}
+            </>
+          )}
+          {workflowUnits.map((unit) => (
+            <WorkflowUnit
+              key={unitKey(unit.ref)}
+              unit={unit}
+              selected={selectedKey === unitKey(unit.ref)}
+              theme={theme}
+              onSelect={() => onSelect(unit.ref)}
+              onDragEnd={(x, y) => onMoveUnit(unitKey(unit.ref), x, y)}
+            />
+          ))}
+          {agentUnits.map((unit) => (
+            <AgentUnit
+              key={unitKey(unit.ref)}
+              unit={unit}
+              selected={selectedKey === unitKey(unit.ref)}
+              highlighted={highlightedAgentIds?.has(unit.ref.id) ?? false}
+              detail={detail}
+              theme={theme}
+              selectedSkillRef={selectedSkillRef}
+              onSelect={handleSelectAgent}
+              onOpen={onOpenAgent}
+              onSelectSkill={handleSelectSkill}
+              onOpenSkill={handleOpenSkill}
+              onDragEnd={handleDragAgent}
+            />
+          ))}
+        </Layer>
+      </Stage>
+      <div
+        data-testid="garden-viewport-controls"
+        className="absolute bottom-3 right-3 z-10 flex items-center gap-1 rounded-md border border-wardian-border bg-[var(--color-wardian-bg)]/90 px-1 py-1 text-[11px] shadow-sm backdrop-blur"
+      >
+        <button
+          type="button"
+          aria-label="Zoom out"
+          title="Zoom out (-)"
+          className="rounded px-1.5 py-0.5 text-muted hover:text-primary"
+          onClick={() => zoomByStep(1 / KEY_ZOOM_STEP)}
+        >
+          &minus;
+        </button>
+        {/* Doubles as the readout that tells you how far out you are, which is
+            the thing a blank-looking canvas never explains by itself. */}
+        <span
+          data-testid="garden-zoom-level"
+          className="min-w-[3.5rem] text-center tabular-nums text-muted"
+        >
+          {Math.round(scale * 100)}%
+        </span>
+        <button
+          type="button"
+          aria-label="Zoom in"
+          title="Zoom in (+)"
+          className="rounded px-1.5 py-0.5 text-muted hover:text-primary"
+          onClick={() => zoomByStep(KEY_ZOOM_STEP)}
+        >
+          +
+        </button>
+        <span className="mx-0.5 h-3 w-px bg-wardian-border" aria-hidden="true" />
+        <button
+          type="button"
+          data-testid="garden-fit-view"
+          title="Fit everything in view (0)"
+          className="rounded px-1.5 py-0.5 text-muted hover:text-primary"
+          onClick={fitNow}
+        >
+          Fit
+        </button>
+      </div>
+      <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-md border border-wardian-border bg-[var(--color-wardian-bg)]/80 px-2 py-1 text-[10px] text-muted-neutral shadow-sm backdrop-blur">
+        Scroll to zoom · drag to pan · arrows to move · 0 to fit
+      </div>
+      {menu && (
+        <GardenContextMenu
+          x={menu.x}
+          y={menu.y}
+          agentId={menu.agentId}
+          onOpenAgent={onOpenAgent}
+          onResetLayout={handleResetLayout}
+          onClose={() => setMenu(null)}
+        />
+      )}
+    </div>
+  );
+};

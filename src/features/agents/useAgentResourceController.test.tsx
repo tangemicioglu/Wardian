@@ -11,6 +11,7 @@ import type {
   AppTelemetry,
 } from "../../types";
 import { useAgentResourceController } from "./useAgentResourceController";
+import { useAgentTelemetryStore } from "./useAgentTelemetryStore";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -134,6 +135,11 @@ beforeEach(() => {
   });
 });
 
+/** Telemetry, titles and thoughts live in a store now, not on the controller. */
+function projections() {
+  return useAgentTelemetryStore.getState();
+}
+
 describe("useAgentResourceController", () => {
   it("owns one load and subscription path across consumer rerenders", async () => {
     const on_agent_json_event = vi.fn();
@@ -153,7 +159,6 @@ describe("useAgentResourceController", () => {
       "agent-turn-completed",
     ]);
     expect(result.current.off_agent_ids).toEqual(new Set(["agent-2"]));
-    expect(result.current.agent_statuses["agent-2"]).toBe("Off");
 
     const replacement_callback = vi.fn();
     rerender({ callback: replacement_callback });
@@ -182,6 +187,97 @@ describe("useAgentResourceController", () => {
     });
   });
 
+  it("does not re-render its host when telemetry, thoughts or titles change", async () => {
+    let renders = 0;
+    const { result } = renderHook(() => {
+      renders += 1;
+      return useAgentResourceController({});
+    });
+    await waitFor(() => expect(result.current.agents).toHaveLength(2));
+    const settled = renders;
+
+    // This hook runs in App, which builds the whole tree in one JSX expression.
+    // A five-second tick, or one line of provider output, must not cost a
+    // whole-application render — the components that display these subscribe to
+    // the store themselves.
+    act(() => emit("agent-metrics", [{
+      session_id: "agent-1",
+      cpu_usage: 7,
+      memory_mb: 256,
+      uptime_seconds: 120,
+      query_count: 3,
+      init_timestamp: null,
+      current_status: "Processing",
+      log_path: null,
+    }]));
+    act(() => emit("app-metrics", { cpu_usage: 41, memory_mb: 900 }));
+    act(() => emit("agent-json-event", {
+      session_id: "agent-1",
+      data: { type: "progress", content: "Reading files" },
+    }));
+    act(() => result.current.set_terminal_title("agent-1", "npm test"));
+
+    expect(renders).toBe(settled);
+
+    // The values still landed; they just landed somewhere App does not watch.
+    expect(projections().telemetry["agent-1"].current_status).toBe("Processing");
+    expect(projections().app_telemetry).toEqual({ cpu_usage: 41, memory_mb: 900 });
+    expect(projections().current_thoughts["agent-1"]).toBe("Reading files");
+    expect(projections().terminal_titles["agent-1"]).toBe("npm test");
+  });
+
+  it("keeps projection identity when a repeated event carries no new value", async () => {
+    const { result } = renderHook(() => useAgentResourceController({}));
+    await waitFor(() => expect(result.current.agents).toHaveLength(2));
+
+    const metric = {
+      session_id: "agent-1",
+      cpu_usage: 4,
+      memory_mb: 128,
+      uptime_seconds: 90,
+      query_count: 2,
+      init_timestamp: null,
+      current_status: "Idle",
+      log_path: null,
+    };
+    act(() => emit("agent-metrics", [metric]));
+    const settled = projections().telemetry;
+    const settledAgent = settled["agent-1"];
+    expect(settledAgent).toBeDefined();
+
+    // The backend re-serializes every metric on each 5s tick, so payload
+    // identity always differs even when no value did. Rebuilding the map here
+    // re-rendered the whole application on every tick.
+    act(() => emit("agent-metrics", [{ ...metric }]));
+    expect(projections().telemetry).toBe(settled);
+    expect(projections().telemetry["agent-1"]).toBe(settledAgent);
+
+    act(() => emit("agent-metrics", [{ ...metric, uptime_seconds: 95 }]));
+    expect(projections().telemetry).not.toBe(settled);
+    expect(projections().telemetry["agent-1"].uptime_seconds).toBe(95);
+
+    // One agent-json-event per line of provider output; an unchanged thought
+    // must not re-render.
+    act(() => emit("agent-json-event", {
+      session_id: "agent-1",
+      data: { type: "progress", content: "Indexing files" },
+    }));
+    const thoughts = projections().current_thoughts;
+    expect(thoughts["agent-1"]).toBe("Indexing files");
+    act(() => emit("agent-json-event", {
+      session_id: "agent-1",
+      data: { type: "progress", content: "Indexing files" },
+    }));
+    expect(projections().current_thoughts).toBe(thoughts);
+
+    const appTelemetry = projections().app_telemetry;
+    act(() => emit("app-metrics", {
+      cpu_usage: appTelemetry.cpu_usage,
+      memory_mb: appTelemetry.memory_mb,
+    }));
+    expect(projections().app_telemetry).toBe(appTelemetry);
+  });
+
   it("projects JSON thoughts, terminal titles, status events, and app telemetry", async () => {
     const on_agent_json_event = vi.fn();
     const on_agent_status_transition = vi.fn();
@@ -200,9 +296,9 @@ describe("useAgentResourceController", () => {
       emit("app-metrics", { cpu_usage: 12, memory_mb: 34 });
     });
 
-    expect(result.current.terminal_titles["agent-1"]).toBe("Running tests");
-    expect(result.current.current_thoughts["agent-1"]).toBe("Indexing files");
-    expect(result.current.app_telemetry).toEqual({ cpu_usage: 12, memory_mb: 34 });
+    expect(projections().terminal_titles["agent-1"]).toBe("Running tests");
+    expect(projections().current_thoughts["agent-1"]).toBe("Indexing files");
+    expect(projections().app_telemetry).toEqual({ cpu_usage: 12, memory_mb: 34 });
     expect(on_agent_json_event).toHaveBeenCalledWith(
       "agent-1",
       { type: "progress", content: "Indexing files" },
@@ -212,9 +308,8 @@ describe("useAgentResourceController", () => {
       emit("agent-status-updated", { session_id: "agent-1", current_status: "Idle" });
     });
 
-    expect(result.current.current_thoughts["agent-1"]).toBe("");
-    expect(result.current.telemetry["agent-1"].current_status).toBe("Idle");
-    expect(result.current.agent_statuses["agent-1"]).toBe("Idle");
+    expect(projections().current_thoughts["agent-1"]).toBe("");
+    expect(projections().telemetry["agent-1"].current_status).toBe("Idle");
     expect(on_agent_status_transition).toHaveBeenLastCalledWith({
       session_id: "agent-1",
       current_status: "Idle",
@@ -233,8 +328,7 @@ describe("useAgentResourceController", () => {
       emit("agent-status-updated", { session_id: "agent-2", current_status: "Headless" });
     });
 
-    expect(result.current.telemetry["agent-2"].current_status).toBe("Headless");
-    expect(result.current.agent_statuses["agent-2"]).toBe("Headless");
+    expect(projections().telemetry["agent-2"].current_status).toBe("Headless");
     expect(result.current.off_agent_ids.has("agent-2")).toBe(true);
   });
 
@@ -405,8 +499,8 @@ describe("useAgentResourceController", () => {
       });
     });
     await act(async () => result.current.clear_agent("agent-1"));
-    expect(result.current.terminal_titles["agent-1"]).toBe("");
-    expect(result.current.current_thoughts["agent-1"]).toBe("");
+    expect(projections().terminal_titles["agent-1"]).toBe("");
+    expect(projections().current_thoughts["agent-1"]).toBe("");
 
     let cloned: AgentConfig | undefined;
     await act(async () => {

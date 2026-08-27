@@ -3,9 +3,9 @@ import { SidebarTab } from "./SidebarIconRail";
 import {
   AgentConfig,
   AgentClassDefinition,
-  AgentTelemetry,
   type OpenSurfaceRequest,
 } from "../types";
+import { useAgentTelemetryStore } from "../features/agents/useAgentTelemetryStore";
 import { useLayoutStore } from "../store/useLayoutStore";
 import { SidebarResizeHandle } from "../components/SidebarResizeHandle";
 import { ConfigureAgentPanel } from "../features/agents/ConfigureAgentPanel";
@@ -27,7 +27,6 @@ interface SidebarContentPaneProps {
   setSelectedAgentIds: (ids: Set<string>) => void;
   agents: AgentConfig[];
   agentClasses: AgentClassDefinition[];
-  telemetry: Record<string, AgentTelemetry>;
   sourceControlStatus: SelectedAgentGitStatus;
   turnRevision: number;
   onAgentsUpdated: (agent?: AgentConfig) => void;
@@ -44,7 +43,6 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
   setSelectedAgentIds,
   agents,
   agentClasses,
-  telemetry,
   sourceControlStatus,
   turnRevision,
   onAgentsUpdated,
@@ -53,6 +51,9 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
   onBroadcast,
   onOpenSurface,
 }) => {
+  // Read straight from the store; a telemetry tick should not re-render
+  // the application just to update a sidebar pane.
+  const telemetry = useAgentTelemetryStore((state) => state.telemetry);
   return (
     <aside className={`relative h-full bg-[var(--color-wardian-sidebar-secondary)]/30 border-r border-wardian-border sidebar-transition overflow-hidden flex flex-col ${leftCollapsed ? 'w-0' : 'w-[var(--sidebar-content-width)]'}`}>
       <div className="px-[var(--density-panel-padding-x)] py-[var(--density-panel-padding-y)] flex-1 overflow-y-auto no-scrollbar min-w-[var(--sidebar-content-width)] flex flex-col min-h-0 h-full">
@@ -151,7 +152,7 @@ const WorkflowsGlancePane: React.FC<WorkflowsGlancePaneProps> = ({ agents, onOpe
       void loadSchedules();
     }
     void loadRuns();
-    const timer = window.setInterval(() => void loadRuns(), 1500);
+    const timer = window.setInterval(() => void loadRuns(), 5000);
     return () => window.clearInterval(timer);
   }, [loadRuns, loadSchedules, schedules.length]);
 

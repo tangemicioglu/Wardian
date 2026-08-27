@@ -12,6 +12,7 @@ const SUMMARY_MAX_CHARS = 500;
 const DEDUP_WINDOW_MS = 1_000;
 let persistQueue: Promise<void> = Promise.resolve();
 let queueMutationRevision = 0;
+let loadItemsInFlight: Promise<void> | null = null;
 
 type WorkflowRunIdentity = {
   workflow_id: string;
@@ -313,57 +314,71 @@ export const useQueueStore = create<QueueState>((set, get) => ({
   _readNotificationIds: [],
   _dismissedWorkflowRuns: [],
 
-  async loadItems() {
-    try {
-      const loadRevision = queueMutationRevision;
-      await persistQueue;
-      if (loadRevision !== queueMutationRevision) return;
-      const raw = await invoke<QueueItem[]>("load_queue_items");
-      const cutoff = Date.now() - QUEUE_MAX_AGE_MS;
-      const persistedItems = (Array.isArray(raw) ? raw : []).filter((i) => i.timestamp > cutoff);
-      const readNotificationIds = new Set(
-        persistedItems
-          .filter((item) => item.type === "agent_update" && item.read && item.inbox_notification_id)
-          .map((item) => item.inbox_notification_id!),
-      );
-      const dismissedWorkflowRuns = persistedItems
-        .filter((item) => item.dismissed)
-        .map(workflowRunKey)
-        .filter((key): key is string => key !== undefined);
-      const legacyItems = persistedItems.filter(
-        (item) => !item.inbox_notification_id && !item.workflow_approval && !item.dismissed,
-      );
-      const [notificationResult, workflowApprovals, workflowTerminals] = await Promise.all([
-        loadInboxNotificationItems(readNotificationIds),
-        loadWorkflowApprovalItems(),
-        loadWorkflowTerminalItems(),
-      ]);
-      const persistedWorkflowRuns = new Set(
-        persistedItems
-          .filter((item) => !item.inbox_notification_id && !item.workflow_approval)
+  loadItems() {
+    if (loadItemsInFlight) return loadItemsInFlight;
+
+    const request = (async () => {
+      try {
+        const loadRevision = queueMutationRevision;
+        await persistQueue;
+        if (loadRevision !== queueMutationRevision) return;
+        const raw = await invoke<QueueItem[]>("load_queue_items");
+        const cutoff = Date.now() - QUEUE_MAX_AGE_MS;
+        const persistedItems = (Array.isArray(raw) ? raw : []).filter((i) => i.timestamp > cutoff);
+        const readNotificationIds = new Set(
+          persistedItems
+            .filter((item) => item.type === "agent_update" && item.read && item.inbox_notification_id)
+            .map((item) => item.inbox_notification_id!),
+        );
+        const dismissedWorkflowRuns = persistedItems
+          .filter((item) => item.dismissed)
           .map(workflowRunKey)
-          .filter((key): key is string => key !== undefined),
-      );
-      const reconciledTerminals = workflowTerminals.filter((item) => {
-        const key = workflowRunKey(item);
-        return !key || !persistedWorkflowRuns.has(key);
-      });
-      const items = [...notificationResult.items, ...workflowApprovals, ...reconciledTerminals, ...legacyItems]
-        .sort((left, right) => right.timestamp - left.timestamp);
-      if (loadRevision !== queueMutationRevision) return;
-      set({
-        items,
-        inboxNotificationsTruncated: notificationResult.truncated,
-        inboxNotificationsNextOffset: notificationResult.nextOffset,
-        _readNotificationIds: [...readNotificationIds],
-        _dismissedWorkflowRuns: [...new Set(dismissedWorkflowRuns)],
-      });
-      if (reconciledTerminals.length > 0) {
-        persistItems(items, [...readNotificationIds], dismissedWorkflowRuns);
+          .filter((key): key is string => key !== undefined);
+        const legacyItems = persistedItems.filter(
+          (item) => !item.inbox_notification_id && !item.workflow_approval && !item.dismissed,
+        );
+        const [notificationResult, workflowApprovals, workflowTerminals] = await Promise.all([
+          loadInboxNotificationItems(readNotificationIds),
+          loadWorkflowApprovalItems(),
+          loadWorkflowTerminalItems(),
+        ]);
+        const persistedWorkflowRuns = new Set(
+          persistedItems
+            .filter((item) => !item.inbox_notification_id && !item.workflow_approval)
+            .map(workflowRunKey)
+            .filter((key): key is string => key !== undefined),
+        );
+        const reconciledTerminals = workflowTerminals.filter((item) => {
+          const key = workflowRunKey(item);
+          return !key || !persistedWorkflowRuns.has(key);
+        });
+        const items = [...notificationResult.items, ...workflowApprovals, ...reconciledTerminals, ...legacyItems]
+          .sort((left, right) => right.timestamp - left.timestamp);
+        if (loadRevision !== queueMutationRevision) return;
+        set({
+          items,
+          inboxNotificationsTruncated: notificationResult.truncated,
+          inboxNotificationsNextOffset: notificationResult.nextOffset,
+          _readNotificationIds: [...readNotificationIds],
+          _dismissedWorkflowRuns: [...new Set(dismissedWorkflowRuns)],
+        });
+        if (reconciledTerminals.length > 0) {
+          persistItems(items, [...readNotificationIds], dismissedWorkflowRuns);
+        }
+      } catch {
+        // First run or unavailable: leave items empty.
       }
-    } catch {
-      // First run or unavailable: leave items empty.
-    }
+    })();
+    loadItemsInFlight = request;
+    void request.then(
+      () => {
+        if (loadItemsInFlight === request) loadItemsInFlight = null;
+      },
+      () => {
+        if (loadItemsInFlight === request) loadItemsInFlight = null;
+      },
+    );
+    return request;
   },
 
   async loadMoreInboxNotifications() {

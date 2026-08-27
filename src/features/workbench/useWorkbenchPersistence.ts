@@ -269,13 +269,25 @@ export function useWorkbenchPersistence(
             }
           }
           if (!isCurrentEffect()) return;
-          setHookStatus((current) => ({
-            ...current,
-            conflict: state.conflict,
-            save_error: state.save_error,
-            is_dirty: state.is_dirty,
-            save_pending: state.save_pending,
-          }));
+          // Every workbench command notifies this subscriber, and activating a
+          // tab produces three of them (is_dirty, then save_pending, then the
+          // save completing). Returning a fresh object each time re-rendered the
+          // whole app on each one, so identity is preserved when nothing this
+          // hook projects has actually changed.
+          setHookStatus((current) => (
+            current.conflict === state.conflict
+              && current.save_error === state.save_error
+              && current.is_dirty === state.is_dirty
+              && current.save_pending === state.save_pending
+              ? current
+              : {
+                ...current,
+                conflict: state.conflict,
+                save_error: state.save_error,
+                is_dirty: state.is_dirty,
+                save_pending: state.save_pending,
+              }
+          ));
         };
         if (!isCurrentEffect()) return;
         unsubscribeStore = store.subscribe(publishStoreStatus);
