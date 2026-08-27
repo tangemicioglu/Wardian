@@ -3,6 +3,7 @@ use super::{
     narrative_from_chat_event, narrative_from_delivered_input, new_conversation_id,
     ActiveConversationHandle, ConversationArchiveContext, ConversationArchiveState,
 };
+use crate::providers::chat_transcript::normalize_chat_lines;
 use wardian_core::conversations::{
     read_jsonl_records, AgentConversationLoggingSetting, ConversationBoundaryReason,
     ConversationInputOrigin, ConversationLoggingSetting, ConversationManifest,
@@ -509,6 +510,38 @@ fn provider_context_injections_stay_with_the_root_request_turn() {
         records[1].causal_ref.as_deref(),
         Some("provider:tool_use:skill-call-1")
     );
+}
+
+#[test]
+fn codex_context_before_and_after_request_does_not_create_fake_turns() {
+    let lines = [
+        r#"{"type":"response_item","payload":{"type":"message","id":"context-1","role":"user","content":[{"type":"input_text","text":"Host context."}],"internal_chat_message_metadata_passthrough":{"turn_id":"codex-turn-1"}}}"#,
+        r#"{"type":"event_msg","payload":{"type":"user_message","message":"Inspect the archive."}}"#,
+        r#"{"type":"response_item","payload":{"type":"message","id":"context-2","role":"user","content":[{"type":"input_text","text":"Skill context."}],"internal_chat_message_metadata_passthrough":{"turn_id":"codex-turn-1"}}}"#,
+        r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Archive inspected."}]}}"#,
+    ];
+    let events = normalize_chat_lines("agent-1", "codex", lines);
+    let records = events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| narrative_from_chat_event(event, index as u64 + 1))
+        .collect::<Vec<_>>();
+
+    let turns = derive_turn_records("conv-codex-context", &records, &events, &[], false);
+
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].request.kind, "user_request");
+    assert_eq!(turns[0].status, ConversationTurnStatus::Responded);
+    assert_eq!(
+        records[0].input_origin,
+        Some(ConversationInputOrigin::ContextInjection)
+    );
+    assert_eq!(records[0].request_root_id.as_deref(), Some("agent-1:2"));
+    assert_eq!(
+        records[2].input_origin,
+        Some(ConversationInputOrigin::ContextInjection)
+    );
+    assert_eq!(records[2].request_root_id.as_deref(), Some("agent-1:2"));
 }
 
 #[test]

@@ -41,10 +41,13 @@ OpenCode is an exception to that fallback: its provider-owned SQLite parts mark
 synthetic editor context with `metadata.kind: "editor_context"` while the
 parent message remains `role: "user"`. Those parts are classified as
 `context_injection`, linked to the most recent real request, and retain a
-provider-message causal reference. Codex currently emits host context in
-user-role response items without an origin field; those records remain
-`unreported` because their origin cannot be recovered without matching or
-guessing from prompt text.
+provider-message causal reference. Codex also exposes a structural boundary:
+provider-supplied host context is emitted as a `response_item` user message
+with batched `content`, while the canonical human request is emitted as the
+separate `event_msg` `user_message` record. Codex response-item context is
+classified as `context_injection`, carries its provider message and
+passthrough-turn references, and is attached to the canonical request root
+without inspecting or matching the injected text.
 
 ## Compatibility and regeneration
 
@@ -53,7 +56,9 @@ archives. Turn derivation first uses fields persisted on the narrative record,
 then recovers classification and root references from the archived normalized
 provider events. This makes `turns.jsonl` regeneration deterministic whenever
 the provider supplied sufficient evidence, without rewriting raw provider
-ordering or event/source references.
+ordering or event/source references. When a rooted context record precedes its
+request record, derivation holds that context until the root request is seen;
+an unmatched rooted context remains a context-only turn.
 
 The existing `turns.jsonl` schema remains version 3. Readers must use the
 request kind and status rather than the physical manifest row count when
@@ -64,6 +69,6 @@ retained for auditability.
 
 Archive and transcript tests cover Claude skill calls followed by one or more
 user-role injections, Claude context without a dedicated skill call, OpenCode
-synthetic editor-context parts, providers without observable context evidence,
-legacy records regenerated from archived events, and normal human and
-Wardian-agent inputs.
+synthetic editor-context parts, Codex response-item host context, providers
+without observable context evidence, legacy records regenerated from archived
+events, and normal human and Wardian-agent inputs.

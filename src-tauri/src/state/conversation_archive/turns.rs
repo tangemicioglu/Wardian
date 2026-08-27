@@ -30,6 +30,27 @@ struct TurnAccumulator {
     sources: Vec<ConversationSourceRecord>,
 }
 
+fn append_record_to_turn<'a>(
+    turn: &mut TurnAccumulator,
+    record: &ConversationNarrativeRecord,
+    events_by_id: &HashMap<&'a str, &'a AgentChatEvent>,
+    sources_by_id: &HashMap<&'a str, &'a ConversationSourceRecord>,
+) {
+    turn.events.extend(
+        record
+            .event_refs
+            .iter()
+            .filter_map(|event_id| events_by_id.get(event_id.as_str()).copied().cloned()),
+    );
+    turn.sources.extend(
+        record
+            .source_refs
+            .iter()
+            .filter_map(|source_id| sources_by_id.get(source_id.as_str()).copied().cloned()),
+    );
+    turn.records.push(record.clone());
+}
+
 #[cfg(test)]
 pub(super) fn derive_turn_records(
     conversation_id: &str,
@@ -71,6 +92,8 @@ pub(super) fn derive_turn_records_with_context(
 
     let mut turns: Vec<TurnAccumulator> = Vec::new();
     let mut turns_by_request_root = HashMap::new();
+    let mut pending_rooted_contexts: HashMap<String, Vec<&ConversationNarrativeRecord>> =
+        HashMap::new();
     let mut current_turn: Option<usize> = None;
 
     for record in ordered_records {
@@ -84,10 +107,28 @@ pub(super) fn derive_turn_records_with_context(
         let starts_request_turn = is_request_record(record, record_events());
         let starts_lifecycle_turn =
             record.kind == ConversationRecordKind::Lifecycle && current_turn.is_none();
-        let context_turn = (input_origin == Some(ConversationInputOrigin::ContextInjection))
+        let context_root_id = (input_origin == Some(ConversationInputOrigin::ContextInjection))
             .then(|| request_root_id_for_record(record, record_events()))
-            .flatten()
-            .and_then(|request_root_id| turns_by_request_root.get(&request_root_id).copied());
+            .flatten();
+        let has_explicit_context_root = record.request_root_id.is_some()
+            || record_events()
+                .any(|event| metadata_string(&event.metadata, "request_root_id").is_some());
+        let context_turn = context_root_id
+            .as_ref()
+            .and_then(|request_root_id| turns_by_request_root.get(request_root_id).copied());
+        if input_origin == Some(ConversationInputOrigin::ContextInjection)
+            && has_explicit_context_root
+            && context_turn.is_none()
+            && !starts_request_turn
+        {
+            if let Some(request_root_id) = context_root_id {
+                pending_rooted_contexts
+                    .entry(request_root_id)
+                    .or_default()
+                    .push(record);
+                continue;
+            }
+        }
         let turn_index = match context_turn {
             Some(index) => index,
             None => match current_turn {
@@ -107,26 +148,38 @@ pub(super) fn derive_turn_records_with_context(
 
         if starts_request_turn {
             if let Some(request_root_id) = request_root_id_for_record(record, record_events()) {
-                turns_by_request_root.insert(request_root_id, turn_index);
+                turns_by_request_root.insert(request_root_id.clone(), turn_index);
+                if let Some(pending_records) = pending_rooted_contexts.remove(&request_root_id) {
+                    let turn = &mut turns[turn_index];
+                    for pending_record in pending_records {
+                        append_record_to_turn(
+                            turn,
+                            pending_record,
+                            &events_by_id,
+                            &sources_by_id,
+                        );
+                    }
+                }
             }
         }
 
         let turn = &mut turns[turn_index];
-        turn.events.extend(
-            record
-                .event_refs
-                .iter()
-                .filter_map(|event_id| events_by_id.get(event_id.as_str()).copied().cloned()),
-        );
-        turn.sources.extend(
-            record
-                .source_refs
-                .iter()
-                .filter_map(|source_id| sources_by_id.get(source_id.as_str()).copied().cloned()),
-        );
-        turn.records.push(record.clone());
+        append_record_to_turn(turn, record, &events_by_id, &sources_by_id);
     }
 
+    for pending_records in pending_rooted_contexts.into_values() {
+        let mut turn = TurnAccumulator {
+            records: Vec::new(),
+            events: Vec::new(),
+            sources: Vec::new(),
+        };
+        for pending_record in pending_records {
+            append_record_to_turn(&mut turn, pending_record, &events_by_id, &sources_by_id);
+        }
+        turns.push(turn);
+    }
+
+    turns.sort_by_key(|turn| turn.records.first().map(|record| record.seq).unwrap_or(0));
     let turn_count = turns.len();
     turns
         .into_iter()
