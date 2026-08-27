@@ -1333,6 +1333,19 @@ describe("DockviewLayoutAdapter", () => {
     expect(firstTab).toHaveAttribute("aria-selected", "false");
   });
 
+  it("reuses pane targets for an unchanged layout tree", () => {
+    const documentModel = makeMixedDepthThreeDocument();
+    const first = workbenchPaneTargets(documentModel.root, "group-1");
+    // Tab headers ask per render. Recomputing allocated a new array each time,
+    // which also denied the tab any chance to memoize on the result.
+    expect(workbenchPaneTargets(documentModel.root, "group-1")).toBe(first);
+
+    const relaidOut = makeMixedDepthThreeDocument();
+    const recomputed = workbenchPaneTargets(relaidOut.root, "group-1");
+    expect(recomputed).not.toBe(first);
+    expect(recomputed).toEqual(first);
+  });
+
   it("offers contextual previous/next pane actions without exposing internal group IDs", async () => {
     const documentModel = makeMixedDepthThreeDocument();
     const onJoinGroup = vi.fn();

@@ -139,7 +139,6 @@ function renderPane({
       setSelectedAgentIds={vi.fn()}
       agents={agents}
       agentClasses={agentClasses}
-      telemetry={{}}
       sourceControlStatus={sourceControlStatus}
       turnRevision={7}
       onAgentsUpdated={vi.fn()}

@@ -249,6 +249,30 @@ describe("GardenView", () => {
     expect(screen.getByText(/renderer paused while hidden/i)).toBeInTheDocument();
   });
 
+  it("reads as preparing, not paused, while a visible surface mounts its renderer", () => {
+    // The renderer mounts from an effect even when the surface is visible, so
+    // this branch is what a first open paints before the Konva chunk arrives.
+    const agents = [{ session_id: "a1", session_name: "Alpha" } as AgentConfig];
+    render(
+      <GardenView
+        visibility="visible"
+        rendererActive={false}
+        filteredAgents={agents}
+        telemetry={{}}
+        teams={[]}
+        activeList={null}
+        interactions={{}}
+        selectedAgentIds={new Set()}
+        offAgentIds={new Set()}
+        onSelectionChange={vi.fn()}
+        onOpenAgent={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/preparing the garden/i)).toBeInTheDocument();
+    expect(screen.queryByText(/paused while hidden/i)).not.toBeInTheDocument();
+  });
+
   it("settles in a bounded number of renders when the layout writes positions back", () => {
     // Regression for React error #185. The layout used to depend on the scene it
     // produced: every pass wrote new positions, which provoked another pass. The

@@ -138,8 +138,11 @@ describe("useWorkbenchPersistence", () => {
     expect(result.current.is_dirty).toBe(true);
     const settled = renders;
 
-    // Later notifications still reach the store subscriber, but do not change
-    // any of the four fields projected by this hook.
+    // Every later one still notifies every store subscriber while moving none of
+    // the four fields projected here. App renders the whole application tree per
+    // consumer render, so these must collapse rather than accumulate. React
+    // still renders once more before it settles on an unchanged state, so the
+    // guarantee is a constant, not zero.
     for (let index = 0; index < 10; index += 1) activate();
     expect(renders).toBeLessThanOrEqual(settled + 1);
     expect(result.current.is_dirty).toBe(true);

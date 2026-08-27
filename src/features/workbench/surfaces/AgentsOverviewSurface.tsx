@@ -12,6 +12,7 @@ import {
   type AgentsOverviewViewProps,
 } from "../../../views/AgentsOverviewView";
 import { keepHiddenSurfaceSnapshot } from "./hiddenSurfaceMemo";
+import { useAgentTelemetryStore } from "../../agents/useAgentTelemetryStore";
 
 type ManagedViewProps =
   | "filteredAgents"
@@ -20,7 +21,12 @@ type ManagedViewProps =
   | "onFocusedAgentChange"
   | "onExitSingle"
   | "onModeChange"
-  | "surfaceId";
+  | "surfaceId"
+  // Read from the store instead: they change on every telemetry tick and on
+  // every line of provider output.
+  | "telemetry"
+  | "terminalTitles"
+  | "currentThoughts";
 
 export interface AgentsOverviewSurfaceProps
   extends Omit<AgentsOverviewViewProps, ManagedViewProps> {
@@ -118,6 +124,9 @@ export const AgentsOverviewSurface = memo(function AgentsOverviewSurface({
   on_state_change,
   ...viewProps
 }: AgentsOverviewSurfaceProps) {
+  const telemetry = useAgentTelemetryStore((store) => store.telemetry);
+  const terminalTitles = useAgentTelemetryStore((store) => store.terminal_titles);
+  const currentThoughts = useAgentTelemetryStore((store) => store.current_thoughts);
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -131,9 +140,9 @@ export const AgentsOverviewSurface = memo(function AgentsOverviewSurface({
       if (!matchesSearch(agent, normalizedQuery)) return false;
       if (normalizedStatuses.size === 0) return true;
       const agentId = agent.session_id.toString();
-      const metrics = viewProps.telemetry[agentId];
-      const title = viewProps.terminalTitles[agentId] ?? "";
-      const thought = viewProps.currentThoughts[agentId] ?? "";
+      const metrics = telemetry[agentId];
+      const title = terminalTitles[agentId] ?? "";
+      const thought = currentThoughts[agentId] ?? "";
       const status = viewProps.deriveCurrentThought(
         title,
         thought,
@@ -146,19 +155,19 @@ export const AgentsOverviewSurface = memo(function AgentsOverviewSurface({
     agents,
     state.search_query,
     state.status_filter,
-    viewProps.currentThoughts,
+    currentThoughts,
     viewProps.deriveCurrentThought,
     viewProps.offAgentIds,
-    viewProps.telemetry,
-    viewProps.terminalTitles,
+    telemetry,
+    terminalTitles,
   ]);
 
   const telemetryGeneration = useMemo(() => {
     if (!PERFORMANCE_TELEMETRY_MARKER_ENABLED || agents.length === 0) return null;
-    if (!agents.every((agent) => viewProps.telemetry[agent.session_id] !== undefined)) return null;
-    const generation = viewProps.telemetry[agents[0].session_id]?.query_count;
+    if (!agents.every((agent) => telemetry[agent.session_id] !== undefined)) return null;
+    const generation = telemetry[agents[0].session_id]?.query_count;
     return Number.isSafeInteger(generation) ? generation : null;
-  }, [agents, viewProps.telemetry]);
+  }, [agents, telemetry]);
 
   useEffect(() => {
     if (telemetryGeneration === null) return;
@@ -228,6 +237,9 @@ export const AgentsOverviewSurface = memo(function AgentsOverviewSurface({
       <div className="min-h-0 min-w-0 flex-1">
         <AgentsOverviewView
           {...viewProps}
+          telemetry={telemetry}
+          terminalTitles={terminalTitles}
+          currentThoughts={currentThoughts}
           filteredAgents={filteredAgents}
           focusedAgentId={state.focused_agent_id}
           mode={state.mode}

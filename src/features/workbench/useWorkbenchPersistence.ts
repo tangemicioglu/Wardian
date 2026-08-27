@@ -269,6 +269,11 @@ export function useWorkbenchPersistence(
             }
           }
           if (!isCurrentEffect()) return;
+          // Every workbench command notifies this subscriber, and activating a
+          // tab produces three of them (is_dirty, then save_pending, then the
+          // save completing). Returning a fresh object each time re-rendered the
+          // whole app on each one, so identity is preserved when nothing this
+          // hook projects has actually changed.
           setHookStatus((current) => (
             current.conflict === state.conflict
               && current.save_error === state.save_error

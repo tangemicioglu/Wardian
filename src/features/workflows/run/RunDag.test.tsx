@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
-import { RunDag } from './RunDag';
+import { RunDag } from './RunDagImpl';
 import type { Blueprint } from '../builder/blueprintTypes';
 
 const fitViewMock = vi.fn();

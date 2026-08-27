@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { BuilderCanvas } from './BuilderCanvas';
+import { BuilderCanvas } from './BuilderCanvasImpl';
 import type { Blueprint } from './blueprintTypes';
 
 const fitViewMock = vi.fn();

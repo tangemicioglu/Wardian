@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentConfig, AgentsOverviewSurfaceState } from "../../../types";
 import type { AgentsOverviewViewProps } from "../../../views/AgentsOverviewView";
@@ -9,6 +9,10 @@ import {
   revealAgentInOverviewState,
   type AgentsOverviewSurfaceProps,
 } from "./AgentsOverviewSurface";
+import {
+  resetAgentTelemetryStore,
+  useAgentTelemetryStore,
+} from "../../agents/useAgentTelemetryStore";
 
 const viewSpy = vi.hoisted(() => vi.fn());
 
@@ -47,8 +51,6 @@ function surfaceProps(overrides: Partial<AgentsOverviewSurfaceProps> = {}): Agen
     surface_id: "surface-1",
     state,
     agents,
-    telemetry: {},
-    terminalTitles: {},
     selectedAgentIds: new Set(),
     theme: "dark",
     onCardClick: vi.fn(),
@@ -64,7 +66,6 @@ function surfaceProps(overrides: Partial<AgentsOverviewSurfaceProps> = {}): Agen
       thought: thought ?? "",
       status: thought || "Idle",
     }),
-    currentThoughts: { "agent-1": "Idle", "agent-2": "Processing" },
     offAgentIds: new Set(),
     onMouseEnterCard: vi.fn(),
     onMouseDown: vi.fn(),
@@ -84,6 +85,14 @@ function surfaceProps(overrides: Partial<AgentsOverviewSurfaceProps> = {}): Agen
 }
 
 describe("AgentsOverviewSurface", () => {
+  beforeEach(() => {
+    // The surface reads these from the store rather than from props.
+    resetAgentTelemetryStore();
+    useAgentTelemetryStore.setState({
+      current_thoughts: { "agent-1": "Idle", "agent-2": "Processing" },
+    });
+  });
+
   it("normalizes legacy and invalid persisted state", () => {
     expect(normalizeAgentsOverviewSurfaceState({
       presentation_mode: "single",

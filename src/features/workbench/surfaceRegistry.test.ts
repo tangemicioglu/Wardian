@@ -555,6 +555,61 @@ describe("surface registry", () => {
     }
   });
 
+  it("reuses the canonicalize/restore result per surface without caching live presentation", () => {
+    let restores = 0;
+    let badgeReads = 0;
+    let dirty = false;
+    const registry = createSurfaceRegistry();
+    registry.register(definition("notes", {
+      restore_state: (value) => {
+        restores += 1;
+        return typeof value === "object" && value !== null && "label" in value
+          ? { ok: true, state: { label: String(value.label) } }
+          : { ok: false, error: "label is required" };
+      },
+      badges: () => {
+        badgeReads += 1;
+        return dirty ? [{ badge_id: "dirty", label: "Unsaved changes" }] : [];
+      },
+    }));
+    const notes = surface("notes-1", "notes");
+
+    // The tab strip and panel set ask for these once per surface per render.
+    // Canonicalizing and restoring is the expensive half and is pure, so it
+    // runs once per surface identity.
+    expect(registry.presentation(notes).badges).toEqual([]);
+    expect(registry.resolve_surface(notes).restore_result).toEqual({
+      ok: true,
+      state: { label: "notes-1" },
+    });
+    registry.presentation(notes);
+    registry.resolve_surface(notes);
+    expect(restores).toBe(1);
+
+    // Badges are not: they read live state that no cache epoch tracks, so a
+    // surface going dirty must show up on the very next read.
+    dirty = true;
+    expect(registry.presentation(notes).badges).toEqual([
+      { badge_id: "dirty", label: "Unsaved changes" },
+    ]);
+    expect(badgeReads).toBeGreaterThan(1);
+    expect(restores).toBe(1);
+
+    // A different surface object is a different key, cached separately.
+    registry.presentation(surface("notes-1", "notes"));
+    expect(restores).toBe(2);
+  });
+
+  it("recomputes cached surface reads after a new registration", () => {
+    const registry = createSurfaceRegistry();
+    const orphan = surface("orphan-1", "later");
+    expect(registry.resolve_surface(orphan).missing_surface_type).toBe("later");
+
+    registry.register(definition("later"));
+    expect(registry.resolve_surface(orphan).missing_surface_type).toBeUndefined();
+    expect(registry.presentation(orphan).title).toBe("later:orphan-1");
+  });
+
   it("rejects mutable built-in state/request data before invoking callbacks", () => {
     const serialize = vi.fn((state: TestState) => state);
     const resource = vi.fn(() => "resource");

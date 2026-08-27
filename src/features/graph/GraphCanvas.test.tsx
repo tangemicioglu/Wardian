@@ -2,7 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Sigma from "sigma";
 import type { AgentGraphProjection } from "./graphProjection";
-import { GraphCanvas } from "./GraphCanvas";
+import { GraphCanvas } from "./GraphCanvasImpl";
 
 const mocks = vi.hoisted(() => {
   const edgeIds = new Set<string>();

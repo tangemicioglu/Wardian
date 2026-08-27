@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import type { AgentConfig, AgentTelemetry, CloneMode } from "../../types";
+import type { AgentConfig, CloneMode } from "../../types";
 import type { Watchlist, ContextMenuState, WatchlistPrefs, AgentInteractions, SortableColumnId, OptionalColumnId, AgentTeam, WatchlistDisplayItem, WatchlistEntry } from "./types";
 import { DEFAULT_WATCHLIST_PREFS } from "./types";
 
@@ -24,6 +24,7 @@ import {
   getWatchlistEntries,
 } from "./watchlistUtils";
 import { deriveCurrentThought, getStatusColorClass, getAgentStatusLabel, getAgentStatusTextClass } from "../../utils/statusUtils";
+import { useAgentTelemetryStore } from "../../features/agents/useAgentTelemetryStore";
 import { AgentContextMenu } from "../../../src/components/AgentContextMenu";
 import { useContextMenuSurface } from "../../components/useContextMenuSurface";
 import { ColumnPicker } from "./ColumnPicker";
@@ -90,9 +91,6 @@ function SortableHeader({ columnId, sort, onSort, label }: {
 
 interface AgentWatchlistProps {
   agents: AgentConfig[];
-  telemetry: Record<string, AgentTelemetry>;
-  terminalTitles: Record<string, string>;
-  currentThoughts: Record<string, string>;
   selectedAgentIds: Set<string>;
   offAgentIds: Set<string>;
   onSelectionChange: (ids: Set<string>) => void;
@@ -146,9 +144,6 @@ interface AgentWatchlistProps {
 
 export default function AgentWatchlist({
   agents,
-  telemetry,
-  terminalTitles,
-  currentThoughts,
   selectedAgentIds,
   offAgentIds,
   onSelectionChange,
@@ -190,6 +185,13 @@ export default function AgentWatchlist({
   teams = [],
   focus_target_ref,
 }: AgentWatchlistProps) {
+  // Read straight from the store rather than taking these as props. They
+  // change on every telemetry tick and on every line of provider output, and
+  // routing them through `App` made each of those a whole-application render.
+  const telemetry = useAgentTelemetryStore((state) => state.telemetry);
+  const terminalTitles = useAgentTelemetryStore((state) => state.terminal_titles);
+  const currentThoughts = useAgentTelemetryStore((state) => state.current_thoughts);
+
   // ── Column picker state ────────────────────────────────────────────
   const [pickerOpen, setPickerOpen] = useState(false);
 

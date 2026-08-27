@@ -225,6 +225,15 @@ describe("GraphView", () => {
     expect(screen.getByTestId("mock-graph-node")).toBeInTheDocument();
   });
 
+  it("reads as preparing, not paused, while a visible surface mounts its renderer", () => {
+    // The renderer mounts from an effect even when the surface is visible, so
+    // this branch is what a first open paints before the Sigma chunk arrives.
+    render(<GraphView {...defaultProps} visibility="visible" rendererActive={false} />);
+
+    expect(screen.getByText(/preparing the graph/i)).toBeInTheDocument();
+    expect(screen.queryByText(/paused while hidden/i)).not.toBeInTheDocument();
+  });
+
   it("centers relationship lenses in the stable toolbar center", () => {
     const { container } = render(<GraphView {...defaultProps} />);
 

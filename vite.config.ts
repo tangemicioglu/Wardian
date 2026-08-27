@@ -71,12 +71,28 @@ export default defineConfig(async () => ({
           if (normalized.includes("/node_modules/@xterm/xterm/")) {
             return "vendor-terminal-core";
           }
+          // Sigma, xyflow and konva each back exactly one surface's canvas, and
+          // each of those canvases is behind a dynamic import. Keeping them in
+          // one shared chunk would pin all three into startup as soon as any
+          // one of them was reachable eagerly, so they are split apart.
+          // `graphology` is matched without a trailing slash on purpose, so the
+          // `graphology-*` helpers Sigma pulls in transitively land beside it
+          // rather than in the shared vendor chunk. Nothing outside the graph
+          // depends on any of them.
           if (
-            normalized.includes("/node_modules/@xyflow/react/") ||
-            normalized.includes("/node_modules/graphology/") ||
+            normalized.includes("/node_modules/graphology") ||
             normalized.includes("/node_modules/sigma/")
           ) {
-            return "vendor-graph";
+            return "vendor-graph-sigma";
+          }
+          if (normalized.includes("/node_modules/@xyflow/react/")) {
+            return "vendor-graph-flow";
+          }
+          if (
+            normalized.includes("/node_modules/konva/") ||
+            normalized.includes("/node_modules/react-konva/")
+          ) {
+            return "vendor-garden-konva";
           }
           if (
             normalized.includes("/node_modules/react/") ||
