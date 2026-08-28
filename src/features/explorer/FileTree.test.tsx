@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { FileTree } from './FileTree';
 import { invoke } from '@tauri-apps/api/core';
+import { WARDIAN_FILE_PATH_MIME, WARDIAN_FILE_PATHS_MIME } from '../../utils/fileDrop';
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
@@ -44,6 +45,28 @@ describe('FileTree Component', () => {
     await waitFor(() => {
       expect(screen.getByText('subfile.js')).toBeInTheDocument();
     });
+  });
+
+  it('makes workspace files draggable with a Wardian path payload', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([
+      { name: 'notes.md', path: '/test/notes.md', is_dir: false, extension: 'md' },
+    ]);
+
+    render(<FileTree path="/test" />);
+
+    const file = await screen.findByRole('treeitem', { name: 'notes.md' });
+    const values = new Map<string, string>();
+    const dataTransfer = {
+      setData: (type: string, value: string) => values.set(type, value),
+      effectAllowed: '',
+    } as unknown as DataTransfer;
+
+    fireEvent.dragStart(file, { dataTransfer });
+
+    expect(values.get(WARDIAN_FILE_PATH_MIME)).toBe('/test/notes.md');
+    expect(values.get(WARDIAN_FILE_PATHS_MIME)).toBe('/test/notes.md');
+    expect(dataTransfer.effectAllowed).toBe('copy');
+    expect(file).toHaveAttribute('draggable', 'true');
   });
 
   it('shows when a directory listing is partial', async () => {

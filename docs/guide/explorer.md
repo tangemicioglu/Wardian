@@ -26,6 +26,17 @@ Use it when you need to inspect generated files, logs, prompt assets, or the sel
 6. Use open, open externally, reveal, copy path, or delete from the file context menu.
 7. Move to [Source Control](./source-control.md) when the selected root is a Git workspace and you need to review changes.
 
+## Send Files to an Agent
+
+Drag a file row from the Explorer onto an agent's **Chat** composer to add it
+as an attachment. Drag the same row onto an agent's **Terminal** to insert its
+quoted path at the prompt. You can also drop files from the operating system
+onto either surface. Chat shows attachment chips; Terminal inserts paths but
+does not run the command, so review the line and press Enter when ready.
+
+Folders are not draggable in this workflow. Local paths are inserted as local
+paths; Wardian does not upload them to a remote workspace automatically.
+
 ## Root Behavior
 
 The Explorer is context-aware and automatically re-roots itself based on your selection:

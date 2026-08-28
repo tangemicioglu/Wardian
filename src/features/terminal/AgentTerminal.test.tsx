@@ -19,6 +19,7 @@ import { terminalRendererBudget } from "./terminalRendererBudget";
 import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { mockOpenFileResource } from "../../test/fileResourceMock";
+import { WARDIAN_FILE_PATH_MIME } from "../../utils/fileDrop";
 
 vi.mock("../../layout/AppShell", () => ({
   useAppShellWorkbenchNavigation: vi.fn(),
@@ -151,6 +152,7 @@ describe("AgentTerminal scrollback", () => {
     terminalLinkText = "src/App.tsx:12";
     vi.mocked(useAppShellWorkbenchNavigation).mockReturnValue(navigationMock);
     useSettingsStore.setState({
+      shell_id: "powershell",
       terminalFontSize: 14,
       terminalFontFamily: "",
       externalEditor: "system",
@@ -3189,6 +3191,67 @@ describe("AgentTerminal scrollback", () => {
       sessionId: "codex-text",
       input: "abc",
     });
+  });
+
+  it("inserts a Wardian Explorer file path into the terminal without executing it", async () => {
+    render(<AgentTerminal sessionId="codex-file-drop" theme="dark" />);
+
+    await waitFor(() => {
+      expect(mockTerminal).toHaveBeenCalled();
+    });
+
+    const host = screen.getByTestId("agent-terminal-host");
+    const dataTransfer = {
+      types: [WARDIAN_FILE_PATH_MIME],
+      files: [],
+      getData: (type: string) => type === WARDIAN_FILE_PATH_MIME ? "C:\\repo\\notes draft.md" : "",
+    };
+
+    fireEvent.drop(host, { dataTransfer });
+
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("send_input_to_agent", {
+      sessionId: "codex-file-drop",
+      input: "'C:\\repo\\notes draft.md' ",
+    }));
+    expect(mockInvoke).not.toHaveBeenCalledWith("send_input_to_agent", {
+      sessionId: "codex-file-drop",
+      input: '"C:\\repo\\notes draft.md" \r',
+    });
+  });
+
+  it("inserts an external native file drop into the terminal", async () => {
+    const previousDevicePixelRatio = window.devicePixelRatio;
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
+    const listeners = new Map<string, (event: { payload: unknown }) => void>();
+    mockListen.mockImplementation(async (eventName, handler) => {
+      listeners.set(eventName, handler as (event: { payload: unknown }) => void);
+      return () => listeners.delete(eventName);
+    });
+
+    try {
+      render(<AgentTerminal sessionId="codex-native-file-drop" theme="dark" />);
+
+      await waitFor(() => {
+        expect(mockTerminal).toHaveBeenCalled();
+        expect(listeners.has("tauri://drag-drop")).toBe(true);
+      });
+
+      const nativeDrop = listeners.get("tauri://drag-drop");
+      if (!nativeDrop) throw new Error("expected native drag-drop listener");
+      act(() => nativeDrop({
+        payload: {
+          paths: ["C:\\repo\\external notes.md"],
+          position: { x: 1600, y: 1000 },
+        },
+      }));
+
+      await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("send_input_to_agent", {
+        sessionId: "codex-native-file-drop",
+        input: "'C:\\repo\\external notes.md' ",
+      }));
+    } finally {
+      Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: previousDevicePixelRatio });
+    }
   });
 
   it("scrolls to the bottom before forwarding text input when the user has scrolled up", async () => {
