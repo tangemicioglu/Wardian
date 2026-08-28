@@ -1,14 +1,23 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import "../../styles/App.css";
 import { RefreshCw } from "lucide-react";
-import { RemoteAgentDetailView } from "./RemoteAgentDetailView";
 import { RemoteBottomNav } from "./RemoteBottomNav";
-import { RemotePairingView } from "./RemotePairingView";
-import { RemoteInboxView } from "./RemoteInboxView";
-import { RemoteSettingsView } from "./RemoteSettingsView";
 import { RemoteWatchlistView } from "./RemoteWatchlistView";
 import { useRemoteStore } from "./useRemoteStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
+
+const RemoteAgentDetailView = lazy(() =>
+  import("./RemoteAgentDetailView").then((module) => ({ default: module.RemoteAgentDetailView }))
+);
+const RemoteInboxView = lazy(() =>
+  import("./RemoteInboxView").then((module) => ({ default: module.RemoteInboxView }))
+);
+const RemotePairingView = lazy(() =>
+  import("./RemotePairingView").then((module) => ({ default: module.RemotePairingView }))
+);
+const RemoteSettingsView = lazy(() =>
+  import("./RemoteSettingsView").then((module) => ({ default: module.RemoteSettingsView }))
+);
 
 const REMOTE_HISTORY_SETTINGS_VIEW = "settings";
 
@@ -27,6 +36,15 @@ const resolveTheme = (theme: "system" | "light" | "dark") => {
   if (theme !== "system") return theme;
   return window.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "light" : "dark";
 };
+
+const RemoteSurfaceFallback: React.FC = () => (
+  <main className="flex min-h-screen items-center justify-center bg-wardian-bg p-4 text-primary">
+    <div className="inline-flex items-center gap-2 text-sm text-muted-neutral">
+      <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
+      Loading Wardian...
+    </div>
+  </main>
+);
 
 export const RemoteMobileApp: React.FC = () => {
   const agents = useRemoteStore((state) => state.agents);
@@ -111,33 +129,34 @@ export const RemoteMobileApp: React.FC = () => {
     );
   }
 
+  let pairingView: React.ReactNode = null;
   if (status === "session_expired") {
-    return <RemotePairingView state="session_expired" actionLabel="Re-authenticate" onAction={() => void load()} />;
+    pairingView = (
+      <RemotePairingView state="session_expired" actionLabel="Re-authenticate" onAction={() => void load()} />
+    );
+  } else if (status === "pairing_pending") {
+    pairingView = <RemotePairingView state="pending" />;
+  } else if (status === "pairing_expired") {
+    pairingView = <RemotePairingView state="expired" />;
+  } else if (status === "gateway_identity_changed") {
+    pairingView = <RemotePairingView state="identity_changed" />;
+  } else if (status === "device_revoked") {
+    pairingView = <RemotePairingView state="revoked" />;
+  } else if (status === "unreachable") {
+    pairingView = <RemotePairingView state="unreachable" actionLabel="Retry" onAction={() => void load()} />;
   }
 
-  if (status === "pairing_pending") {
-    return <RemotePairingView state="pending" />;
-  }
-
-  if (status === "pairing_expired") {
-    return <RemotePairingView state="expired" />;
-  }
-
-  if (status === "gateway_identity_changed") {
-    return <RemotePairingView state="identity_changed" />;
-  }
-
-  if (status === "device_revoked") {
-    return <RemotePairingView state="revoked" />;
-  }
-
-  if (status === "unreachable") {
-    return <RemotePairingView state="unreachable" actionLabel="Retry" onAction={() => void load()} />;
+  if (pairingView) {
+    return <Suspense fallback={<RemoteSurfaceFallback />}>{pairingView}</Suspense>;
   }
 
   const activeAgent = agents.find((agent) => agent.session_id === activeAgentId);
   if (activeAgent) {
-    return <RemoteAgentDetailView agent={activeAgent} />;
+    return (
+      <Suspense fallback={<RemoteSurfaceFallback />}>
+        <RemoteAgentDetailView agent={activeAgent} />
+      </Suspense>
+    );
   }
 
   const openSettings = () => {
@@ -170,7 +189,11 @@ export const RemoteMobileApp: React.FC = () => {
   };
 
   if (settingsOpen) {
-    return <RemoteSettingsView onClose={closeSettings} />;
+    return (
+      <Suspense fallback={<RemoteSurfaceFallback />}>
+        <RemoteSettingsView onClose={closeSettings} />
+      </Suspense>
+    );
   }
 
   return (
@@ -178,7 +201,9 @@ export const RemoteMobileApp: React.FC = () => {
       {activeRemoteTab === "watchlist" ? (
         <RemoteWatchlistView onOpenSettings={openSettings} />
       ) : activeRemoteTab === "queue" ? (
-        <RemoteInboxView />
+        <Suspense fallback={<RemoteSurfaceFallback />}>
+          <RemoteInboxView />
+        </Suspense>
       ) : (
         <RemotePlaceholderPanel tab={activeRemoteTab} />
       )}

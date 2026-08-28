@@ -496,7 +496,7 @@ describe("RemoteMobileApp", () => {
 
     render(<RemoteMobileApp />);
 
-    const detail = screen.getByTestId("remote-agent-detail");
+    const detail = await screen.findByTestId("remote-agent-detail");
     const transcriptText = within(screen.getByLabelText("assistant message")).getByText("Select this transcript text.");
     fireEvent.touchStart(transcriptText, { touches: [{ clientX: 12, clientY: 240 }] });
     expect(fireEvent.touchMove(transcriptText, { touches: [{ clientX: 104, clientY: 246 }] })).toBe(true);
@@ -533,7 +533,7 @@ describe("RemoteMobileApp", () => {
     render(<RemoteMobileApp />);
 
     await userEvent.click(screen.getByRole("button", { name: "Open Alpha details" }));
-    expect(screen.getByTestId("remote-agent-detail")).toBeVisible();
+    expect(await screen.findByTestId("remote-agent-detail")).toBeVisible();
 
     act(() => {
       window.dispatchEvent(new PopStateEvent("popstate", { state: {} }));
@@ -559,7 +559,7 @@ describe("RemoteMobileApp", () => {
     render(<RemoteMobileApp />);
 
     await userEvent.click(screen.getByRole("button", { name: "Open remote settings" }));
-    expect(screen.getByRole("heading", { name: "Settings" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeVisible();
     expect(screen.queryByTestId("remote-watchlist-view")).not.toBeInTheDocument();
 
     act(() => {
@@ -3954,7 +3954,7 @@ describe("RemoteMobileApp", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Inbox" }));
 
-    expect(screen.getByText("Approval requested")).toBeVisible();
+    expect(await screen.findByText("Approval requested")).toBeVisible();
     expect(screen.getByText("Release workflow")).toBeVisible();
     expect(screen.getByText("Approve the release deployment.")).toBeVisible();
   });
