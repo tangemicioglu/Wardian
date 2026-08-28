@@ -251,6 +251,8 @@ pub enum MemoryError {
     Validation(String),
     #[error("memory record not found: {0}")]
     NotFound(String),
+    #[error("memory id prefix is ambiguous: {0}")]
+    MemoryIdAmbiguous(String),
     #[error("memory access denied for agent {actor_agent_id} on subject {subject_agent_id}")]
     AccessDenied {
         actor_agent_id: String,
@@ -475,7 +477,7 @@ impl MemoryStore {
             idempotent_record(&transaction, actor, idempotency_key.as_deref())?
         {
             existing.sources = sources_for_revision(&transaction, &existing.revision_id)?;
-            if existing.memory_id != memory_id
+            if (existing.memory_id != memory_id && !existing.memory_id.starts_with(&memory_id))
                 || existing.text != text
                 || existing.evidence_excerpt != evidence
                 || existing.sources != sources
@@ -487,6 +489,7 @@ impl MemoryStore {
             transaction.commit()?;
             return self.attach_sources(existing);
         }
+        let memory_id = resolve_memory_id(&transaction, actor, &memory_id, true)?;
         let previous = query_active_for_actor(&transaction, actor, &memory_id)?
             .ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
         let revision_id = Uuid::new_v4().to_string();
@@ -505,7 +508,7 @@ impl MemoryStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10, ?11, ?11, ?11, ?12)",
             params![
                 revision_id,
-                memory_id,
+                &memory_id,
                 previous.revision + 1,
                 previous.agent_id,
                 previous.workspace,
@@ -548,6 +551,7 @@ impl MemoryStore {
         let transaction = connection.transaction()?;
         let mut record = query_active_for_actor(&transaction, actor, &memory_id)?
             .ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
+        let resolved_memory_id = record.memory_id.clone();
         let now = Utc::now().to_rfc3339();
         transaction.execute(
             "UPDATE memory_records SET status='removed', updated_at=?1 WHERE revision_id=?2 AND agent_id=?3",
@@ -556,7 +560,7 @@ impl MemoryStore {
         insert_event(
             &transaction,
             &record.agent_id,
-            Some(&memory_id),
+            Some(&resolved_memory_id),
             Some(&record.revision_id),
             "removed",
             None,
@@ -569,6 +573,7 @@ impl MemoryStore {
 
     pub fn get(&self, actor: &MemoryActor, memory_id: &str) -> Result<MemoryRecord, MemoryError> {
         let connection = self.connection()?;
+        let memory_id = resolve_memory_id(&connection, actor, memory_id, false)?;
         let record = match actor.agent_id()? {
             Some(agent_id) => connection
                 .query_row(
@@ -580,7 +585,7 @@ impl MemoryStore {
             None => connection
                 .query_row(
                     "SELECT * FROM memory_records WHERE memory_id=?1 ORDER BY revision DESC LIMIT 1",
-                    [memory_id],
+                    [&memory_id],
                     row_to_record,
                 )
                 .optional()?,
@@ -595,6 +600,7 @@ impl MemoryStore {
         memory_id: &str,
     ) -> Result<Vec<MemoryRecord>, MemoryError> {
         let connection = self.connection()?;
+        let memory_id = resolve_memory_id(&connection, actor, memory_id, false)?;
         let records = match actor.agent_id()? {
             Some(agent_id) => {
                 let mut statement = connection.prepare(
@@ -610,7 +616,7 @@ impl MemoryStore {
                     "SELECT * FROM memory_records WHERE memory_id=?1 ORDER BY revision ASC",
                 )?;
                 let records = statement
-                    .query_map([memory_id], row_to_record)?
+                    .query_map([&memory_id], row_to_record)?
                     .collect::<Result<Vec<_>, _>>()?;
                 records
             }
@@ -941,8 +947,18 @@ impl MemoryStore {
                     evidence_excerpt,
                     sources,
                 } => {
-                    let prior = query_active_for_agent(&transaction, &agent_id, memory_id)?
-                        .ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
+                    let resolved_memory_id = resolve_memory_id(
+                        &transaction,
+                        &MemoryActor::agent(&agent_id),
+                        memory_id,
+                        true,
+                    )?;
+                    let prior = query_active_for_agent_resolved(
+                        &transaction,
+                        &agent_id,
+                        &resolved_memory_id,
+                    )?
+                    .ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
                     if prior.agent_id != agent_id {
                         return Err(MemoryError::Validation(format!(
                             "memory {memory_id} belongs to another agent"
@@ -964,7 +980,7 @@ impl MemoryStore {
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10, ?11, ?11, ?11)",
                         params![
                             revision_id,
-                            memory_id,
+                            &resolved_memory_id,
                             prior.revision + 1,
                             agent_id,
                             prior.workspace,
@@ -980,7 +996,7 @@ impl MemoryStore {
                     insert_event(
                         &transaction,
                         &agent_id,
-                        Some(memory_id),
+                        Some(&resolved_memory_id),
                         Some(&revision_id),
                         "updated",
                         Some(&serde_json::json!({
@@ -992,11 +1008,21 @@ impl MemoryStore {
                             "sources": sources
                         })),
                     )?;
-                    memory_ids.push(memory_id.clone());
+                    memory_ids.push(resolved_memory_id);
                 }
                 MemoryMutation::Remove { memory_id } => {
-                    let prior = query_active_for_agent(&transaction, &agent_id, memory_id)?
-                        .ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
+                    let resolved_memory_id = resolve_memory_id(
+                        &transaction,
+                        &MemoryActor::agent(&agent_id),
+                        memory_id,
+                        true,
+                    )?;
+                    let prior = query_active_for_agent_resolved(
+                        &transaction,
+                        &agent_id,
+                        &resolved_memory_id,
+                    )?
+                    .ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
                     if prior.agent_id != agent_id {
                         return Err(MemoryError::Validation(format!(
                             "memory {memory_id} belongs to another agent"
@@ -1009,12 +1035,12 @@ impl MemoryStore {
                     insert_event(
                         &transaction,
                         &agent_id,
-                        Some(memory_id),
+                        Some(&resolved_memory_id),
                         Some(&prior.revision_id),
                         "removed",
                         None,
                     )?;
-                    memory_ids.push(memory_id.clone());
+                    memory_ids.push(resolved_memory_id);
                 }
             }
         }
@@ -1265,6 +1291,59 @@ fn to_sql_conversion(error: MemoryError) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
 }
 
+/// Resolves a full memory ID or a unique actor-scoped prefix without exposing
+/// records outside the actor's authorization boundary.
+fn resolve_memory_id(
+    connection: &Connection,
+    actor: &MemoryActor,
+    requested: &str,
+    active_only: bool,
+) -> Result<String, MemoryError> {
+    let requested = required("memory_id", requested)?;
+    let status_filter = if active_only {
+        " AND status='active'"
+    } else {
+        ""
+    };
+    let agent_id = actor.agent_id()?;
+    let sql = match agent_id {
+        Some(_) => format!(
+            "SELECT DISTINCT memory_id FROM memory_records WHERE agent_id=?1{status_filter}"
+        ),
+        None => format!("SELECT DISTINCT memory_id FROM memory_records WHERE 1=1{status_filter}"),
+    };
+    let mut statement = connection.prepare(&sql)?;
+    let candidates = match agent_id.as_deref() {
+        Some(agent_id) => statement
+            .query_map([agent_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?,
+        None => statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    resolve_memory_id_from_candidates(&requested, &candidates)
+}
+
+fn resolve_memory_id_from_candidates(
+    requested: &str,
+    candidates: &[String],
+) -> Result<String, MemoryError> {
+    let requested = required("memory_id", requested)?;
+    if candidates.iter().any(|candidate| candidate == &requested) {
+        return Ok(requested);
+    }
+    let mut matches = candidates
+        .iter()
+        .filter(|candidate| candidate.starts_with(&requested));
+    let Some(first) = matches.next() else {
+        return Err(MemoryError::NotFound(requested));
+    };
+    if matches.next().is_some() {
+        return Err(MemoryError::MemoryIdAmbiguous(requested));
+    }
+    Ok(first.clone())
+}
+
 fn query_active(
     transaction: &Transaction<'_>,
     memory_id: &str,
@@ -1280,13 +1359,14 @@ fn query_active_for_actor(
     actor: &MemoryActor,
     memory_id: &str,
 ) -> Result<Option<MemoryRecord>, MemoryError> {
+    let memory_id = resolve_memory_id(transaction, actor, memory_id, true)?;
     match actor.agent_id()? {
-        Some(agent_id) => query_active_for_agent(transaction, &agent_id, memory_id),
-        None => query_active(transaction, memory_id),
+        Some(agent_id) => query_active_for_agent_resolved(transaction, &agent_id, &memory_id),
+        None => query_active(transaction, &memory_id),
     }
 }
 
-fn query_active_for_agent(
+fn query_active_for_agent_resolved(
     transaction: &Transaction<'_>,
     agent_id: &str,
     memory_id: &str,
@@ -1652,6 +1732,46 @@ mod tests {
     }
 
     #[test]
+    fn agent_memory_lifecycle_accepts_the_injected_short_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let first = store
+            .save(
+                &MemoryActor::Operator,
+                request("agent-a", Some("one"), "Remember this preference"),
+            )
+            .unwrap();
+        let short_id = first.memory_id[..8].to_string();
+        let actor = MemoryActor::agent("agent-a");
+
+        assert_eq!(
+            store.get(&actor, &short_id).unwrap().memory_id,
+            first.memory_id
+        );
+        assert_eq!(store.history(&actor, &short_id).unwrap().len(), 1);
+
+        let updated = store
+            .update(
+                &actor,
+                UpdateMemoryRequest {
+                    memory_id: short_id.clone(),
+                    text: "Remember this preference precisely".into(),
+                    evidence_excerpt: "The user clarified the preference".into(),
+                    sources: vec![],
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.memory_id, first.memory_id);
+        assert_eq!(updated.revision, 2);
+        assert_eq!(store.history(&actor, &short_id).unwrap().len(), 2);
+
+        let removed = store.remove(&actor, &short_id).unwrap();
+        assert_eq!(removed.memory_id, first.memory_id);
+        assert_eq!(removed.status, MemoryStatus::Removed);
+    }
+
+    #[test]
     fn recall_isolates_agents_and_workspaces() {
         let temp = tempfile::tempdir().unwrap();
         let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
@@ -1894,6 +2014,32 @@ mod tests {
     }
 
     #[test]
+    fn memory_id_prefix_resolution_prefers_exact_ids_and_rejects_ambiguity() {
+        let candidates = vec![
+            "deadbeef-0000-0000-0000-000000000001".to_string(),
+            "deadbeef-0000-0000-0000-000000000002".to_string(),
+            "cafebabe-0000-0000-0000-000000000003".to_string(),
+        ];
+
+        assert_eq!(
+            resolve_memory_id_from_candidates("cafebabe", &candidates).unwrap(),
+            candidates[2]
+        );
+        assert_eq!(
+            resolve_memory_id_from_candidates(&candidates[0], &candidates).unwrap(),
+            candidates[0]
+        );
+        assert!(matches!(
+            resolve_memory_id_from_candidates("deadbeef", &candidates),
+            Err(MemoryError::MemoryIdAmbiguous(prefix)) if prefix == "deadbeef"
+        ));
+        assert!(matches!(
+            resolve_memory_id_from_candidates("01234567", &candidates),
+            Err(MemoryError::NotFound(id)) if id == "01234567"
+        ));
+    }
+
+    #[test]
     fn consolidation_batch_is_atomic_and_idempotent() {
         let temp = tempfile::tempdir().unwrap();
         let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
@@ -1930,6 +2076,45 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn consolidation_batch_mutations_canonicalize_short_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
+        let first = store
+            .save(
+                &MemoryActor::Operator,
+                request("agent-a", Some("one"), "Use the short ID safely"),
+            )
+            .unwrap();
+        let short_id = first.memory_id[..8].to_string();
+        let result = store
+            .commit_batch(
+                &MemoryActor::agent("agent-a"),
+                MemoryCommitBatch {
+                    agent_id: "agent-a".into(),
+                    workspace: Some("one".into()),
+                    idempotency_key: "run-short-id".into(),
+                    operations: vec![MemoryMutation::Update {
+                        memory_id: short_id.clone(),
+                        text: "Use the canonical ID safely".into(),
+                        evidence_excerpt: "The short ID resolved to this memory.".into(),
+                        sources: vec![],
+                    }],
+                    cursor: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(result.memory_ids, vec![first.memory_id]);
+        assert_eq!(
+            store
+                .history(&MemoryActor::agent("agent-a"), &short_id)
+                .unwrap()
+                .len(),
+            2
         );
     }
 

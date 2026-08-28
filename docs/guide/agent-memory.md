@@ -45,8 +45,10 @@ convention that should follow the agent between projects. Every save requires an
 evidence excerpt. Optional `--source` values preserve a link for deeper
 inspection without coupling retention.
 
-Use `show`, `history`, `update`, and `remove` with the returned memory ID. Update
-and remove preserve audit history.
+Use `show`, `history`, `update`, and `remove` with the returned memory ID. The
+full ID and any unique prefix are accepted, including the eight-character IDs
+shown in startup-injected memory instructions. If a prefix matches more than
+one memory, use a longer prefix. Update and remove preserve audit history.
 
 Inside a Wardian-managed terminal, memory commands are restricted to that
 agent's own records and authenticated with a launch-scoped capability. Run them

@@ -498,9 +498,9 @@ pub enum MemoryCommand {
         #[arg(long)]
         workspace: Option<String>,
     },
-    /// Show the latest revision of a memory.
+    /// Show the latest revision of a memory by full ID or unique prefix.
     Show { memory_id: String },
-    /// Replace an active memory with a new revision.
+    /// Replace an active memory with a new revision by full ID or unique prefix.
     Update {
         memory_id: String,
         text: String,
@@ -511,7 +511,7 @@ pub enum MemoryCommand {
         #[arg(long)]
         idempotency_key: Option<String>,
     },
-    /// Remove the active revision while retaining audit history.
+    /// Remove the active revision by full ID or unique prefix while retaining audit history.
     Remove { memory_id: String },
     /// Compile the active stable/current recall set.
     Recall {
@@ -520,7 +520,7 @@ pub enum MemoryCommand {
         #[arg(long)]
         workspace: Option<String>,
     },
-    /// Show every revision of a logical memory.
+    /// Show every revision of a logical memory by full ID or unique prefix.
     History { memory_id: String },
 }
 
