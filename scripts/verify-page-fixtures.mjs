@@ -46,6 +46,27 @@ function walk(dir, predicate, found = []) {
 // Fixtures and helpers count, not just spec files. The first version of this
 // check scanned only `*.spec.ts` and missed `e2e/fixtures/workbenchIpcMock.ts`,
 // whose bare-array defaults broke five workbench navigation tests.
+/**
+ * The first `return` inside the block a command guard opens.
+ *
+ * Returns null when the line is not a guard, or when the block has no return.
+ * Brace counting is enough here: these are hand-written mock bodies, not
+ * arbitrary source.
+ */
+function returnInGuardBlock(lines, index, command) {
+  const start = lines[index];
+  if (!new RegExp(String.raw`${command}["'\s)]*\)?\s*\{\s*$`).test(start)) return null;
+  let depth = 1;
+  for (let i = index + 1; i < lines.length && depth > 0; i += 1) {
+    const current = lines[i];
+    const match = /^\s*return\s/.exec(current);
+    if (match && depth === 1) return current;
+    depth += (current.match(/\{/g) ?? []).length;
+    depth -= (current.match(/\}/g) ?? []).length;
+  }
+  return null;
+}
+
 const testFiles = [
   ...walk("src", (f) => /\.test\.tsx?$/.test(f) || f.includes(`${path.sep}test${path.sep}`)),
   ...walk("e2e", (f) => /\.(ts|tsx|mjs)$/.test(f)),
@@ -64,14 +85,21 @@ for (const file of testFiles) {
       const asMapEntry = new RegExp(String.raw`\b${command}\s*:\s*\[`).test(line);
       // A guard and its return on one line: `if (c === "x") return [...]`.
       const inline = new RegExp(`${command}[^\\n]*?\\breturn\\s*(\\[|\\w+\\s*;)`).exec(line);
-      // A guard whose return is the next non-blank line.
-      const next = lines.slice(index + 1, index + 3).find((candidate) => candidate.trim() !== "") ?? "";
-      const followsWithArray = /^\s*return\s*\[/.test(next) && line.includes(command);
 
-      const suspect = asMapEntry || (inline && inline[1].startsWith("[")) || followsWithArray;
+      // A guard whose return is further down its block. Checking only the next
+      // line or two is not enough: `workbenchIpcMock.ts` builds the listing over
+      // twenty lines before returning it, and that gap is what let the Explorer
+      // tree break with this check passing.
+      const blockReturn = returnInGuardBlock(lines, index, command);
+
+      const suspect = asMapEntry
+        || (inline && inline[1].startsWith("["))
+        || (blockReturn !== null && /^\s*return\s*\[/.test(blockReturn));
       if (!suspect) continue;
       // Already page-shaped or routed through a helper.
-      if (new RegExp(`\\b${key}\\s*:`).test(line) || /Page\s*\(/.test(line) || /Page\s*\(/.test(next)) continue;
+      const shaped = new RegExp(`\\b${key}\\s*:`);
+      if (shaped.test(line) || /Page\s*\(/.test(line)) continue;
+      if (blockReturn !== null && (shaped.test(blockReturn) || /Page\s*\(/.test(blockReturn))) continue;
 
       violations.push({
         file: file.split(path.sep).join("/"),

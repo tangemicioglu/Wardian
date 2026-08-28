@@ -451,7 +451,11 @@ export async function installWorkbenchIpcMock(
                 extension: isDirectory || !name.includes(".") ? null : name.split(".").pop() ?? null,
               });
             }
-            return [...children.values()].sort((left, right) => left.name.localeCompare(right.name));
+            return {
+              nodes: [...children.values()].sort((left, right) => left.name.localeCompare(right.name)),
+              truncated: false,
+              next_offset: null,
+            };
           }
           if (command === "git_status") return { files: [] };
           if (command === "explorer_watch" || command === "explorer_unwatch") return null;

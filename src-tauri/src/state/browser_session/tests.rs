@@ -1799,6 +1799,15 @@ async fn cookies_round_trip_through_the_sessions_own_profile() {
         .await
         .expect("open");
 
+    // A cookie with no explicit url or domain is scoped to the page's own
+    // address, so the navigation has to have landed before the first `Set`.
+    // Without this the test passes on a fast machine and fails on a loaded CI
+    // runner with "this page has no address to scope a cookie to".
+    session
+        .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
+        .await
+        .expect("load");
+
     assert!(
         session
             .cookies(&CookieAction::List { all: false })
