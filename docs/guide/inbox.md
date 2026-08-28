@@ -141,6 +141,7 @@ Startup hydration can restore existing Inbox records, statuses, interactions, an
 Inbox alert preferences live in **Settings > Inbox** and are per event type. Desktop and sound alerts are enabled by default only for **Action needed**; passive completions and updates stay quiet unless you opt in.
 
 - Items older than seven days are ignored by the legacy completion projection when it loads.
+- CLI Inbox reads use the same seven-day cutoff and a bounded 200-item source page; a `truncated` result includes `next_offset` for older data.
 - Automatic completion cards use only a canonical final provider response. Open the source session or ask the agent for a summary when no automatic card appears.
 - Provider approval-looking text does not create generic manual choices. Wardian shows buttons only for explicit provider choices or a structured `notify approval` request.
 - Clearing read items removes the completion projection for the active Wardian home. Durable notify history and workflow state retain their own lifecycle; cleared workflow run identities are retained only as Inbox triage markers.

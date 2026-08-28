@@ -13,14 +13,22 @@ running, the CLI falls back to persisted queue items, durable interaction
 records for `notify update` and `notify approval` events, and workflow-run
 checkpoints for awaiting approvals and terminal outcomes.
 
-The command returns schema-versioned JSON, sorted newest first, with bounded
-pages. It supports:
+The command returns schema-versioned JSON, sorted newest first, with a maximum
+200-item read page per source. `--limit` cannot exceed 200. A source that has
+older eligible records sets `truncated: true` and returns `next_offset` so the
+caller can continue without making one unbounded read.
+
+It supports:
 
 - `--type <type,...>` for `action_needed`, `agent_update`, `agent_completed`,
   `workflow_completed`, `workflow_failed`, and `approval_request`.
 - `--source <source,...>` for evidence sources such as `provider_runtime`,
   `interaction_store`, and `live_runtime`.
 - `--unread`, `--limit <n>`, and `--offset <n>` for polling and pagination.
+
+The offline queue projection applies the same seven-day retention cutoff as
+desktop Inbox hydration. Malformed optional queue JSON does not hide durable
+interaction or workflow sources.
 
 Reading has no side effects. The command does not mark, dismiss, or resolve
 Inbox items. Existing write commands remain the authoritative paths for agent

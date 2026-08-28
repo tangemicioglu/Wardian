@@ -39,18 +39,19 @@ fn seed_queue() -> TempDir {
     let home = TempDir::new().unwrap();
     let queue_dir = home.path().join("queue");
     fs::create_dir_all(&queue_dir).unwrap();
+    let now = chrono::Utc::now().timestamp_millis();
     let items = serde_json::json!([
         {
             "id": "old-completion",
             "type": "agent_completed",
-            "timestamp": 100,
+            "timestamp": now - 8 * 24 * 60 * 60 * 1000,
             "read": true,
             "evidence_source": "provider_runtime"
         },
         {
             "id": "new-update",
             "type": "action_needed",
-            "timestamp": 300,
+            "timestamp": now - 1_000,
             "read": false,
             "evidence_source": "provider_runtime",
             "summary": "Provider needs a selection"
@@ -58,7 +59,7 @@ fn seed_queue() -> TempDir {
         {
             "id": "middle-approval",
             "type": "approval_request",
-            "timestamp": 200,
+            "timestamp": now - 2_000,
             "read": false,
             "evidence_source": "interaction_store",
             "summary": "Review deployment"
@@ -256,6 +257,20 @@ fn list_paginates_after_filtering() {
     assert_eq!(response["items"].as_array().unwrap().len(), 1);
     assert_eq!(response["items"][0]["id"], "middle-approval");
     assert_eq!(response["truncated"], false);
+}
+
+#[test]
+fn list_ignores_legacy_items_older_than_seven_days() {
+    let home = seed_queue();
+    let output = Command::new(bin())
+        .args(["inbox", "list", "--type", "agent_completed"])
+        .env("WARDIAN_HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(response["items"].as_array().unwrap().is_empty());
 }
 
 #[test]

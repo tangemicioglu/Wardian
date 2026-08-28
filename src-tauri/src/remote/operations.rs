@@ -106,14 +106,18 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
 /// Builds one bounded page of the Inbox projection while preserving the
 /// durable-notification pagination boundary for callers that need to continue
 /// reading older events.
+const MAX_INBOX_SOURCE_ITEMS: usize = 200;
+const QUEUE_MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
 pub async fn remote_queue_items_page(
     state: &AppState,
     offset: usize,
 ) -> (Vec<serde_json::Value>, bool, Option<usize>) {
-    let persisted_items = crate::utils::fs::get_wardian_home()
-        .and_then(|home| std::fs::read_to_string(home.join("queue").join("items.json")).ok())
-        .and_then(|data| serde_json::from_str::<Vec<serde_json::Value>>(&data).ok())
-        .unwrap_or_default();
+    let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
+    let (persisted_items, persisted_truncated) = crate::utils::queue::load_recent_items(
+        MAX_INBOX_SOURCE_ITEMS,
+        cutoff,
+    );
     let read_notification_ids = persisted_items
         .iter()
         .filter(|item| {
@@ -177,9 +181,11 @@ pub async fn remote_queue_items_page(
                 "expires_at": notification.expires_at,
             })
         });
-    let workflow_approvals = crate::commands::inbox::list_workflow_inbox_approvals()
-        .await
-        .unwrap_or_default()
+    let (workflow_approvals, approvals_truncated) =
+        crate::commands::inbox::list_workflow_inbox_approvals_page(offset)
+            .await
+            .unwrap_or_default();
+    let workflow_approvals = workflow_approvals
         .into_iter()
         .map(|approval| serde_json::json!({
             "id": format!("workflow-approval:{}:{}:{}", approval.blueprint_id, approval.run_id, approval.node),
@@ -197,9 +203,11 @@ pub async fn remote_queue_items_page(
             "approval_choices": ["Approve", "Reject"],
             "workflow_approval": { "blueprint_id": approval.blueprint_id, "blueprint_path": approval.blueprint_path, "run_id": approval.run_id, "node": approval.node },
         }));
-    let workflow_terminals = crate::commands::inbox::list_workflow_inbox_terminal_runs()
-        .await
-        .unwrap_or_default()
+    let (workflow_terminals, terminals_truncated) =
+        crate::commands::inbox::list_workflow_inbox_terminal_runs_page(offset)
+            .await
+            .unwrap_or_default();
+    let workflow_terminals = workflow_terminals
         .into_iter()
         .filter(|run| {
             !persisted_workflow_runs
@@ -232,6 +240,9 @@ pub async fn remote_queue_items_page(
                 .unwrap_or_default(),
         )
     });
+    let truncated = truncated || approvals_truncated || terminals_truncated || persisted_truncated;
+    let next_offset = truncated
+        .then_some(next_offset.unwrap_or_else(|| offset.saturating_add(MAX_INBOX_SOURCE_ITEMS)));
     (items, truncated, next_offset)
 }
 

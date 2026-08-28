@@ -33,7 +33,10 @@ resolve an event.
 The CLI asks the running Wardian app for its assembled projection when the app
 uses the same `WARDIAN_HOME`. Without the app, it reads persisted queue items,
 durable `notify` records, and workflow-run checkpoints for awaiting approvals
-and terminal outcomes where available.
+and terminal outcomes where available. Each source is read through a bounded
+200-item page; `truncated: true` and `next_offset` identify older source data.
+Legacy queue items older than seven days are excluded, matching desktop Inbox
+hydration. `--limit` cannot exceed 200.
 
 ## Write
 

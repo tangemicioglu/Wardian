@@ -4,16 +4,28 @@ use crate::{
     live,
 };
 use rusqlite::Connection;
+use serde::de::{SeqAccess, Visitor};
+use serde::Deserializer;
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    io::BufReader,
 };
 use wardian_core::control::{
     InboxNotificationDecision, InboxNotificationPayload, InteractionBodyRef, InteractionKind,
     InteractionRecord, InteractionStatus,
 };
 use wardian_core::engine::{EventKind, RunStatus};
+
+const MAX_INBOX_SOURCE_ITEMS: usize = 200;
+const QUEUE_MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+struct InboxProjection {
+    items: Vec<Value>,
+    truncated: bool,
+    next_offset: Option<usize>,
+}
 
 /// Read-only Inbox commands. Live reads use the app-owned projection first so
 /// the CLI and remote Inbox see the same notification and workflow records.
@@ -33,10 +45,23 @@ pub fn handle_inbox(args: InboxArgs) -> Result<String, CliError> {
                     "--limit must be greater than zero",
                 ));
             }
+            if limit > MAX_INBOX_SOURCE_ITEMS {
+                return Err(CliError::backend(
+                    ExitCode::Generic,
+                    "invalid_limit",
+                    format!("--limit must not exceed {MAX_INBOX_SOURCE_ITEMS}"),
+                ));
+            }
             let types = normalize_filter(types, "--type")?;
             let sources = normalize_filter(sources, "--source")?;
-            let items = live::inbox_list().or_else(|_| load_persisted_items())?;
-            render_list(&items, &types, &sources, unread, limit, offset)
+            let projection = live::inbox_list_page(0)
+                .map(|page| InboxProjection {
+                    items: page.items,
+                    truncated: page.truncated,
+                    next_offset: page.next_offset,
+                })
+                .or_else(|_| load_persisted_items())?;
+            render_list(&projection, &types, &sources, unread, limit, offset)
         }
     }
 }
@@ -58,14 +83,15 @@ fn normalize_filter(values: Vec<String>, flag: &str) -> Result<HashSet<String>, 
 }
 
 fn render_list(
-    items: &[Value],
+    projection: &InboxProjection,
     types: &HashSet<String>,
     sources: &HashSet<String>,
     unread: bool,
     limit: usize,
     offset: usize,
 ) -> Result<String, CliError> {
-    let mut filtered = items
+    let mut filtered = projection
+        .items
         .iter()
         .filter(|item| type_matches(item, types))
         .filter(|item| source_matches(item, sources))
@@ -84,12 +110,18 @@ fn render_list(
     } else {
         Vec::new()
     };
-    let truncated = end < filtered.len();
+    let filtered_truncated = end < filtered.len();
+    let truncated = projection.truncated || filtered_truncated;
+    let next_offset = if projection.truncated {
+        projection.next_offset
+    } else {
+        filtered_truncated.then_some(end)
+    };
     let response = json!({
         "schema": 1,
         "items": page,
         "truncated": truncated,
-        "next_offset": truncated.then_some(end),
+        "next_offset": next_offset,
     });
     serde_json::to_string_pretty(&response)
         .map(|json| format!("{json}\n"))
@@ -131,6 +163,17 @@ fn item_id(item: &Value) -> &str {
     item.get("id").and_then(Value::as_str).unwrap_or_default()
 }
 
+fn queue_item_is_recent(item: &Value, cutoff: i64) -> bool {
+    item.get("timestamp")
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            item.get("timestamp")
+                .and_then(Value::as_u64)
+                .and_then(|value| i64::try_from(value).ok())
+        })
+        .is_none_or(|timestamp| timestamp > cutoff)
+}
+
 fn workflow_identity(item: &Value) -> Option<(String, String)> {
     if item.get("type").and_then(Value::as_str) != Some("workflow_completed") {
         return None;
@@ -143,21 +186,88 @@ fn workflow_identity(item: &Value) -> Option<(String, String)> {
     ))
 }
 
-fn load_persisted_items() -> Result<Vec<Value>, CliError> {
+fn retain_newest<I>(items: I, limit: usize) -> (Vec<Value>, bool)
+where
+    I: IntoIterator<Item = Value>,
+{
+    let mut retained = Vec::with_capacity(limit.saturating_add(1));
+    let mut truncated = false;
+    for item in items {
+        retained.push(item);
+        retained.sort_by(|left, right| {
+            item_timestamp(right)
+                .cmp(&item_timestamp(left))
+                .then_with(|| item_id(right).cmp(item_id(left)))
+        });
+        if retained.len() > limit {
+            retained.pop();
+            truncated = true;
+        }
+    }
+    (retained, truncated)
+}
+
+struct RecentQueueVisitor {
+    cutoff: i64,
+    limit: usize,
+}
+
+impl<'de> Visitor<'de> for RecentQueueVisitor {
+    type Value = (Vec<Value>, bool);
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an Inbox queue array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut retained = Vec::new();
+        let mut truncated = false;
+        while let Some(item) = sequence.next_element::<Value>()? {
+            if !queue_item_is_recent(&item, self.cutoff) {
+                continue;
+            }
+            let (next, item_truncated) =
+                retain_newest(retained.drain(..).chain(std::iter::once(item)), self.limit);
+            retained = next;
+            truncated |= item_truncated;
+        }
+        Ok((retained, truncated))
+    }
+}
+
+fn read_recent_queue_items(path: &std::path::Path, cutoff: i64) -> (Vec<Value>, bool) {
+    let Ok(file) = fs::File::open(path) else {
+        return (Vec::new(), false);
+    };
+    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(file));
+    deserializer
+        .deserialize_seq(RecentQueueVisitor {
+            cutoff,
+            limit: MAX_INBOX_SOURCE_ITEMS,
+        })
+        .unwrap_or_default()
+}
+
+fn projection(items: Vec<Value>, truncated: bool) -> InboxProjection {
+    InboxProjection {
+        items: sort_items(items),
+        truncated,
+        next_offset: truncated.then_some(MAX_INBOX_SOURCE_ITEMS),
+    }
+}
+
+fn load_persisted_items() -> Result<InboxProjection, CliError> {
     let Some(home) = wardian_core::paths::wardian_home() else {
-        return Ok(Vec::new());
+        return Ok(projection(Vec::new(), false));
     };
     let queue_path = home.join("queue").join("items.json");
     // The legacy queue is optional. A damaged queue must not hide the durable
     // SQLite notifications or workflow run projections below it.
-    let persisted = if queue_path.exists() {
-        std::fs::read_to_string(&queue_path)
-            .ok()
-            .and_then(|content| serde_json::from_str::<Vec<Value>>(&content).ok())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
+    let (persisted, persisted_truncated) = read_recent_queue_items(&queue_path, cutoff);
     let persisted_workflow_runs = persisted
         .iter()
         .filter_map(workflow_identity)
@@ -174,53 +284,89 @@ fn load_persisted_items() -> Result<Vec<Value>, CliError> {
                 .map(str::to_string)
         })
         .collect::<HashSet<_>>();
-    let mut items = persisted
-        .into_iter()
-        .filter(|item| {
+    let (legacy_items, legacy_truncated) = retain_newest(
+        persisted.into_iter().filter(|item| {
             item.get("inbox_notification_id").is_none()
                 && item.get("workflow_approval").is_none()
                 && item.get("dismissed").is_none()
-        })
-        .collect::<Vec<_>>();
-    items.extend(workflow_approval_items()?);
-    items.extend(workflow_terminal_items()?.into_iter().filter(|item| {
+        }),
+        MAX_INBOX_SOURCE_ITEMS,
+    );
+    let (workflow_approvals, approvals_truncated) = workflow_approval_items()?;
+    let (workflow_terminals, terminals_truncated) = workflow_terminal_items()?;
+    let mut items = legacy_items;
+    items.extend(workflow_approvals);
+    items.extend(workflow_terminals.into_iter().filter(|item| {
         workflow_identity(item).is_none_or(|key| !persisted_workflow_runs.contains(&key))
     }));
 
+    let source_truncated =
+        persisted_truncated || legacy_truncated || approvals_truncated || terminals_truncated;
+
     let Some(db_path) = wardian_core::paths::state_db_path() else {
-        return Ok(sort_items(items));
+        return Ok(projection(items, source_truncated));
     };
     if !db_path.exists() {
-        return Ok(sort_items(items));
+        return Ok(projection(items, source_truncated));
     }
     let conn =
         Connection::open(&db_path).map_err(|error| CliError::db_unavailable(error.to_string()))?;
     wardian_core::db::run_migrations(&conn)
         .map_err(|error| CliError::db_unavailable(error.to_string()))?;
-    let records = wardian_core::db::list_interaction_records_with_conn(&conn)
+    let mut notification_records =
+        wardian_core::db::list_recent_interaction_records_by_kind_with_conn(
+            &conn,
+            "notification",
+            MAX_INBOX_SOURCE_ITEMS + 1,
+            0,
+        )
         .map_err(|error| CliError::db_unavailable(error.to_string()))?;
+    let notification_truncated = notification_records.len() > MAX_INBOX_SOURCE_ITEMS;
+    notification_records.truncate(MAX_INBOX_SOURCE_ITEMS);
+    let mut decisions = HashMap::new();
+    for record in &notification_records {
+        let Some(reply) =
+            wardian_core::db::list_interaction_replies_for_parent_with_conn(&conn, &record.id)
+                .map_err(|error| CliError::db_unavailable(error.to_string()))?
+                .into_iter()
+                .next()
+        else {
+            continue;
+        };
+        if let Some(decision) = match &reply.body_ref {
+            InteractionBodyRef::Inline { body } => serde_json::from_str(body).ok(),
+            InteractionBodyRef::File { .. } => None,
+        } {
+            decisions.insert(record.id.clone(), decision);
+        }
+    }
     let agent_names = wardian_core::db::get_all_agents_with_conn(&conn)
         .map_err(|error| CliError::db_unavailable(error.to_string()))?
         .into_iter()
         .map(|agent| (agent.session_id, agent.session_name))
         .collect::<HashMap<_, _>>();
     items.extend(notification_items(
-        &records,
+        &notification_records,
         &read_notification_ids,
         &agent_names,
+        &decisions,
     ));
-    Ok(sort_items(items))
+    Ok(projection(
+        items,
+        source_truncated || notification_truncated,
+    ))
 }
 
-fn workflow_approval_items() -> Result<Vec<Value>, CliError> {
+fn workflow_approval_items() -> Result<(Vec<Value>, bool), CliError> {
     let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     };
     if !runs_root.exists() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     }
 
     let mut items = Vec::new();
+    let mut truncated = false;
     for blueprint_entry in
         fs::read_dir(&runs_root).map_err(|error| CliError::generic(error.to_string()))?
     {
@@ -275,7 +421,7 @@ fn workflow_approval_items() -> Result<Vec<Value>, CliError> {
                 wardian_core::workflow::resolve_blueprint_path(&state.blueprint_id)
                     .map(|path| path.to_string_lossy().into_owned());
 
-            items.push(json!({
+            let item = json!({
                 "id": format!("workflow-approval:{}:{}:{}", state.blueprint_id, state.run_id, node),
                 "type": "approval_request",
                 "timestamp": timestamp_millis(&timestamp),
@@ -295,21 +441,28 @@ fn workflow_approval_items() -> Result<Vec<Value>, CliError> {
                     "run_id": state.run_id,
                     "node": node,
                 },
-            }));
+            });
+            let (retained, item_truncated) = retain_newest(
+                items.drain(..).chain(std::iter::once(item)),
+                MAX_INBOX_SOURCE_ITEMS,
+            );
+            items = retained;
+            truncated |= item_truncated;
         }
     }
-    Ok(items)
+    Ok((items, truncated))
 }
 
-fn workflow_terminal_items() -> Result<Vec<Value>, CliError> {
+fn workflow_terminal_items() -> Result<(Vec<Value>, bool), CliError> {
     let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     };
     if !runs_root.exists() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     }
 
     let mut items = Vec::new();
+    let mut truncated = false;
     for blueprint_entry in
         fs::read_dir(&runs_root).map_err(|error| CliError::generic(error.to_string()))?
     {
@@ -350,7 +503,7 @@ fn workflow_terminal_items() -> Result<Vec<Value>, CliError> {
                 .map(|blueprint| blueprint.name)
                 .unwrap_or_else(|| state.blueprint_id.clone());
 
-            items.push(json!({
+            let item = json!({
                 "id": format!("workflow-completion:{}:{}", state.blueprint_id, state.run_id),
                 "type": "workflow_completed",
                 "timestamp": updated_at.map(timestamp_millis).unwrap_or_default(),
@@ -362,16 +515,23 @@ fn workflow_terminal_items() -> Result<Vec<Value>, CliError> {
                 "status": status,
                 "error": state.failure,
                 "summary": summary,
-            }));
+            });
+            let (retained, item_truncated) = retain_newest(
+                items.drain(..).chain(std::iter::once(item)),
+                MAX_INBOX_SOURCE_ITEMS,
+            );
+            items = retained;
+            truncated |= item_truncated;
         }
     }
-    Ok(items)
+    Ok((items, truncated))
 }
 
 fn notification_items(
     records: &[InteractionRecord],
     read_notification_ids: &HashSet<String>,
     agent_names: &HashMap<String, String>,
+    decisions: &HashMap<String, InboxNotificationDecision>,
 ) -> Vec<Value> {
     records
         .iter()
@@ -401,8 +561,8 @@ fn notification_items(
             if let Some(agent_name) = agent_names.get(sender_session_id) {
                 item["agent_name"] = Value::String(agent_name.clone());
             }
-            if let Some(decision) = notification_decision(record, records) {
-                item["approval_decision"] = Value::String(decision.choice);
+            if let Some(decision) = decisions.get(notification_id) {
+                item["approval_decision"] = Value::String(decision.choice.clone());
             }
             Some(item)
         })
@@ -414,22 +574,6 @@ fn notification_payload(record: &InteractionRecord) -> Option<InboxNotificationP
         return None;
     };
     serde_json::from_str(body).ok()
-}
-
-fn notification_decision(
-    notification: &InteractionRecord,
-    records: &[InteractionRecord],
-) -> Option<InboxNotificationDecision> {
-    records
-        .iter()
-        .find(|record| {
-            record.kind == InteractionKind::Reply
-                && record.parent_interaction_id.as_deref() == Some(notification.id.as_str())
-        })
-        .and_then(|record| match &record.body_ref {
-            InteractionBodyRef::Inline { body } => serde_json::from_str(body).ok(),
-            InteractionBodyRef::File { .. } => None,
-        })
 }
 
 fn notification_status(
@@ -497,7 +641,19 @@ mod tests {
         let types = HashSet::from(["action_needed".to_string(), "agent_completed".to_string()]);
         let sources = HashSet::from(["provider_runtime".to_string()]);
 
-        let output = render_list(&items, &types, &sources, false, 1, 0).unwrap();
+        let output = render_list(
+            &InboxProjection {
+                items,
+                truncated: false,
+                next_offset: None,
+            },
+            &types,
+            &sources,
+            false,
+            1,
+            0,
+        )
+        .unwrap();
         let output: Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(output["items"][0]["id"], "new");

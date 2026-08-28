@@ -47,14 +47,26 @@ pub struct WorkflowInboxApprovalDto {
 /// low-latency path for a currently open window.
 #[tauri::command]
 pub async fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
-    tokio::task::spawn_blocking(list_workflow_inbox_terminal_runs_blocking)
+    Ok(list_workflow_inbox_terminal_runs_page(0).await?.0)
+}
+
+/// Lists one bounded page of terminal workflow Inbox evidence and preserves
+/// the workflow-run continuation state for other projections.
+pub async fn list_workflow_inbox_terminal_runs_page(
+    offset: usize,
+) -> Result<(Vec<runs::WorkflowInboxUpdate>, bool), String> {
+    tokio::task::spawn_blocking(move || list_workflow_inbox_terminal_runs_blocking(offset))
         .await
         .map_err(|error| format!("workflow terminal inbox task failed: {error}"))?
 }
 
-fn list_workflow_inbox_terminal_runs_blocking() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
+fn list_workflow_inbox_terminal_runs_blocking(
+    offset: usize,
+) -> Result<(Vec<runs::WorkflowInboxUpdate>, bool), String> {
     let mut updates = Vec::new();
-    for run in crate::commands::workflow::workflow_list_runs_blocking(None)?.runs {
+    let page = crate::commands::workflow::workflow_list_runs_blocking(Some(offset))?;
+    let truncated = page.truncated;
+    for run in page.runs {
         let Some(run_root) = run.get("path").and_then(serde_json::Value::as_str) else {
             continue;
         };
@@ -76,7 +88,7 @@ fn list_workflow_inbox_terminal_runs_blocking() -> Result<Vec<runs::WorkflowInbo
             updates.push(update);
         }
     }
-    Ok(updates)
+    Ok((updates, truncated))
 }
 
 #[tauri::command]
@@ -155,15 +167,25 @@ pub async fn resolve_inbox_notification(
 
 #[tauri::command]
 pub async fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
-    tokio::task::spawn_blocking(list_workflow_inbox_approvals_blocking)
+    Ok(list_workflow_inbox_approvals_page(0).await?.0)
+}
+
+/// Lists one bounded page of awaiting workflow approval evidence.
+pub async fn list_workflow_inbox_approvals_page(
+    offset: usize,
+) -> Result<(Vec<WorkflowInboxApprovalDto>, bool), String> {
+    tokio::task::spawn_blocking(move || list_workflow_inbox_approvals_blocking(offset))
         .await
         .map_err(|error| format!("workflow approval inbox task failed: {error}"))?
 }
 
-fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
-    let runs = crate::commands::workflow::workflow_list_runs_blocking(None)?.runs;
+fn list_workflow_inbox_approvals_blocking(
+    offset: usize,
+) -> Result<(Vec<WorkflowInboxApprovalDto>, bool), String> {
+    let page = crate::commands::workflow::workflow_list_runs_blocking(Some(offset))?;
+    let truncated = page.truncated;
     let mut approvals = Vec::new();
-    for run in runs {
+    for run in page.runs {
         if run.get("status").and_then(serde_json::Value::as_str) != Some("awaiting_approval") {
             continue;
         }
@@ -233,7 +255,7 @@ fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalD
                 .map(str::to_string),
         });
     }
-    Ok(approvals)
+    Ok((approvals, truncated))
 }
 
 fn notification_payload(

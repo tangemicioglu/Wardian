@@ -1,11 +1,88 @@
+use serde::de::{SeqAccess, Visitor};
+use serde::Deserializer;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::{collections::HashSet, fs::File, io::BufReader};
 
 pub fn load_items() -> Vec<Value> {
     crate::utils::fs::get_wardian_home()
         .and_then(|home| std::fs::read_to_string(home.join("queue").join("items.json")).ok())
         .and_then(|data| serde_json::from_str::<Vec<Value>>(&data).ok())
         .unwrap_or_default()
+}
+
+/// Loads only the newest recent queue items while streaming the JSON array.
+/// The queue is a compatibility projection and may grow independently of the
+/// bounded Inbox surfaces, so read paths must not deserialize it wholesale.
+pub fn load_recent_items(limit: usize, cutoff: i64) -> (Vec<Value>, bool) {
+    let Some(path) =
+        crate::utils::fs::get_wardian_home().map(|home| home.join("queue").join("items.json"))
+    else {
+        return (Vec::new(), false);
+    };
+    let Ok(file) = File::open(path) else {
+        return (Vec::new(), false);
+    };
+    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(file));
+    deserializer
+        .deserialize_seq(RecentQueueVisitor { limit, cutoff })
+        .unwrap_or_default()
+}
+
+struct RecentQueueVisitor {
+    limit: usize,
+    cutoff: i64,
+}
+
+impl<'de> Visitor<'de> for RecentQueueVisitor {
+    type Value = (Vec<Value>, bool);
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an Inbox queue array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut retained = Vec::new();
+        let mut truncated = false;
+        while let Some(item) = sequence.next_element::<Value>()? {
+            if !queue_item_is_recent(&item, self.cutoff) {
+                continue;
+            }
+            retained.push(item);
+            retained.sort_by(compare_items);
+            if retained.len() > self.limit {
+                retained.pop();
+                truncated = true;
+            }
+        }
+        Ok((retained, truncated))
+    }
+}
+
+fn queue_item_is_recent(item: &Value, cutoff: i64) -> bool {
+    item_timestamp(item).is_none_or(|timestamp| timestamp > cutoff)
+}
+
+fn item_timestamp(item: &Value) -> Option<i64> {
+    item.get("timestamp").and_then(Value::as_i64).or_else(|| {
+        item.get("timestamp")
+            .and_then(Value::as_u64)
+            .and_then(|value| i64::try_from(value).ok())
+    })
+}
+
+fn compare_items(left: &Value, right: &Value) -> std::cmp::Ordering {
+    item_timestamp(right)
+        .unwrap_or_default()
+        .cmp(&item_timestamp(left).unwrap_or_default())
+        .then_with(|| {
+            right
+                .get("id")
+                .and_then(Value::as_str)
+                .cmp(&left.get("id").and_then(Value::as_str))
+        })
 }
 
 pub fn save_items(items: &[Value]) -> Result<(), String> {
