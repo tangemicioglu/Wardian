@@ -55,9 +55,9 @@ describe('FileTree Component', () => {
   });
 
   it('makes workspace files draggable with a Wardian path payload', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce([
+    vi.mocked(invoke).mockResolvedValueOnce(dirPage([
       { name: 'notes.md', path: '/test/notes.md', is_dir: false, extension: 'md' },
-    ]);
+    ]));
 
     render(<FileTree path="/test" />);
 
