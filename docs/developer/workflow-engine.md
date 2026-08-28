@@ -58,6 +58,10 @@ During execution the engine keeps a registry of run data:
 
 Template fields resolve against this registry before each node executes.
 
+Blueprint validation is fail-closed: decision choices must be unique,
+non-empty, valid port identifiers with outgoing edges; edges must name ports
+declared by both endpoint node types; and loop containers must have a body.
+
 ## Execution Flow
 
 1. The frontend or scheduler calls `workflow_run` with a blueprint path and
@@ -82,6 +86,11 @@ Resume, startup recovery, and human approval use the same durable run records:
 - `workflow_cancel` writes a cancellation marker; the engine consumes it at the
   next dispatch boundary, or immediately records a durable `run_failed`
   cancellation event when the run is parked for approval.
+
+The append-only event sequence is validated identically by replay and resume.
+New `run_started` events carry the durable run id, allowing recovery to retain
+identity when a checkpoint is missing. Observe mode folds branch, decision,
+loop, and approval transitions from the same event stream.
 
 ## Agent Execution
 

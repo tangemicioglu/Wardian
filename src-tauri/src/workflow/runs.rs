@@ -779,7 +779,11 @@ pub async fn drive_resume_with_catalog(
 mod tests {
     use super::*;
     use std::sync::MutexGuard;
-    use wardian_core::engine::{event::EventKind, store::read_events, RunState, RunStatus};
+    use wardian_core::engine::{
+        event::EventKind,
+        store::{read_checkpoint, read_events},
+        RunState, RunStatus,
+    };
     use wardian_core::models::{AgentConversationMode, BusyPolicy, WorkflowRoleAssignment};
 
     const INVOKER_BLUEPRINT: &str = r#"---
@@ -859,6 +863,26 @@ edges:
         assert!(script.exists(), "mock-agent.cjs not found at {:?}", script);
         script
     }
+
+    const EXECUTOR_BLUEPRINT: &str = r#"---
+schema: 2
+id: executor
+name: Executor
+nodes:
+  - id: trigger-1
+    type: manual_trigger
+  - id: plan
+    type: task
+    fields:
+      agent: role:coder
+      prompt: Return a tiny plan
+edges:
+  - from: trigger-1
+    to: plan
+---
+
+# Executor
+"#;
 
     #[test]
     fn scan_interrupted_marks_running_runs() {
@@ -1052,6 +1076,43 @@ edges:
             events.first().map(|event| &event.kind),
             Some(EventKind::RunStarted { .. })
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_provider_drives_a_workflow_run_to_completion() {
+        let home = tempfile::tempdir().unwrap();
+        let workflows_dir = home.path().join("library").join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        let blueprint_path = workflows_dir.join("executor.md");
+        std::fs::write(&blueprint_path, EXECUTOR_BLUEPRINT).unwrap();
+
+        let _env = EnvGuard::set(home.path(), &mock_script_path());
+        let blueprint = wardian_core::workflow::parse_file(&blueprint_path).unwrap();
+        let report = wardian_core::workflow::validate(&blueprint);
+        assert!(report.is_valid(), "diagnostics: {:?}", report.diagnostics);
+
+        let run_id = wardian_core::engine::driver::new_run_id();
+        let run_root = wardian_core::paths::workflow_run_dir(&blueprint.id, &run_id).unwrap();
+        drive_new_run(
+            blueprint,
+            run_id,
+            run_root.clone(),
+            home.path().to_path_buf(),
+            "mock".into(),
+            serde_json::json!({}),
+            HashMap::new(),
+        )
+        .await
+        .unwrap();
+
+        let state = read_checkpoint(&run_root).unwrap().unwrap();
+        assert_eq!(state.status, RunStatus::Completed);
+        assert!(run_root.join("events.jsonl").is_file());
+        assert!(state.node_output("plan").is_some());
+        assert!(read_events(&run_root)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::NodeCompleted { ref node, .. } if node == "plan")));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -33,6 +33,7 @@ Agent chooses one of the declared outgoing branches.
 - `agent` — Agent [agentref (required)]
 - `prompt` — Prompt [prompt (required)]
 - `choices` — Choices [branchport (required), multiple]
+  Help: Unique non-empty port ids the agent may choose between; each must connect to an outgoing edge.
 
 Outgoing ports are derived from the `choices` field.
 

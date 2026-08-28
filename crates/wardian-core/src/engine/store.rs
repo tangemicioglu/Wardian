@@ -68,6 +68,7 @@ mod tests {
                 0,
                 "t0".into(),
                 EventKind::RunStarted {
+                    run_id: Some("run-1".into()),
                     blueprint_id: "wf".into(),
                     schema: 2,
                     trigger: serde_json::json!({}),

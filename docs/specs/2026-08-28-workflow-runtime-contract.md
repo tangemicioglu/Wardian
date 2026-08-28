@@ -37,6 +37,13 @@ The same path grammar applies to a loop's optional `until` field. Bounded
 comparisons can be added as a versioned language extension later; they must not
 be inferred from the current text field.
 
+Decision choices are output-port identifiers. They must be non-empty, unique,
+and use the same ASCII identifier shape as other workflow ports (a letter or
+underscore followed by letters, digits, underscores, or hyphens). Every
+declared choice must have an outgoing edge, and every edge must name a declared
+source port and a declared target input port. This keeps dynamic React Flow
+handles and runtime routing in agreement before a blueprint is saved or run.
+
 ## Sub-workflows
 
 `sub_workflow` remains in the registry as a reserved taxonomy entry, but is
@@ -69,6 +76,15 @@ progress finishes before this cooperative boundary is observed.
 Checkpoints written before run storage was introduced are normalized on load by
 adding an empty storage object, so resuming an older durable run uses the same
 state shape as a new run.
+
+Every new `run_started` event also carries its run id. If a process appends an
+event but fails before writing its checkpoint, recovery folds that event log and
+keeps the original run identity. Replay and resume share strict contiguous
+sequence validation; a missing or reordered event is rejected by both paths.
+
+Loop containers must contain at least one body node. The direct engine boundary
+also emits an immediate `loop_completed` transition for an empty loop so a
+legacy or bypassed blueprint cannot leave a run permanently active.
 
 Notifications continue to write the workflow run log and, for app-owned runs,
 are now sent through `tauri-plugin-notification`. Headless/CLI execution keeps

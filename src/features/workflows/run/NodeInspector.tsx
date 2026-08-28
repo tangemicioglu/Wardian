@@ -14,7 +14,7 @@ function nodePayload(events: RunEvent[], nodeId: string): { output?: unknown; er
     if (!('node' in event) || event.node !== nodeId) {
       continue;
     }
-    if (event.kind === 'node_completed') {
+    if (event.kind === 'node_completed' || event.kind === 'decision_completed') {
       payload.output = event.output;
       payload.error = undefined;
     }

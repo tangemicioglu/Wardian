@@ -106,7 +106,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
                 FieldDef::new("choices", FieldType::BranchPort, "Choices")
                     .multiple()
                     .required()
-                    .help("Named branches the agent may choose between."),
+                    .help("Unique non-empty port ids the agent may choose between; each must connect to an outgoing edge."),
             ],
             inputs: default_in(),
             outputs: vec![],

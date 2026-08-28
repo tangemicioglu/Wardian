@@ -30,6 +30,11 @@ impl Event {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
     RunStarted {
+        /// Optional for compatibility with pre-contract event logs. New runs
+        /// always persist the run id so checkpoint-less recovery can preserve
+        /// the identity chosen by the caller.
+        #[serde(default)]
+        run_id: Option<String>,
         blueprint_id: String,
         schema: u32,
         trigger: serde_json::Value,
@@ -122,6 +127,7 @@ mod tests {
         let ev = Event::new(
             1,
             EventKind::RunStarted {
+                run_id: Some("run-1".into()),
                 blueprint_id: "wf".into(),
                 schema: 2,
                 trigger: serde_json::json!({"x":1}),

@@ -154,6 +154,10 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
             }
         }
 
+        if node.r#type == "decision" {
+            validate_decision_choices(&mut report, blueprint, node);
+        }
+
         // Container parents must point at a loop node.
         if let Some(parent_id) = &node.parent {
             let parent_is_loop = blueprint
@@ -170,6 +174,25 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
                     Some(&node.id),
                 ));
             }
+        }
+    }
+
+    // A loop without a body has no executable transition and would otherwise
+    // leave the run active forever after its entry event.
+    for node in blueprint.nodes.iter().filter(|node| node.r#type == "loop") {
+        if !blueprint
+            .nodes
+            .iter()
+            .any(|child| child.parent.as_deref() == Some(node.id.as_str()))
+        {
+            report.diagnostics.push(Diagnostic::error(
+                "empty_loop_body",
+                format!(
+                    "loop node `{}` must contain at least one body node",
+                    node.id
+                ),
+                Some(&node.id),
+            ));
         }
     }
 
@@ -249,6 +272,84 @@ fn declares_output_port(
             .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(port)));
     }
     def.outputs.iter().any(|output| output.id == port)
+}
+
+fn is_valid_port_id(port: &str) -> bool {
+    let mut chars = port.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        })
+}
+
+fn validate_decision_choices(
+    report: &mut ValidationReport,
+    blueprint: &Blueprint,
+    node: &crate::workflow::blueprint::Node,
+) {
+    let Some(choices) = node
+        .fields
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    if choices.is_empty() {
+        report.diagnostics.push(Diagnostic::error(
+            "empty_decision_choices",
+            format!(
+                "decision node `{}` must declare at least one choice",
+                node.id
+            ),
+            Some(&node.id),
+        ));
+        return;
+    }
+
+    let mut seen = HashSet::new();
+    for choice in choices {
+        let Some(choice) = choice.as_str() else {
+            continue;
+        };
+        if !is_valid_port_id(choice) {
+            report.diagnostics.push(Diagnostic::error(
+                "invalid_decision_choice",
+                format!(
+                    "decision node `{}` choice `{choice}` is not a valid output port id",
+                    node.id
+                ),
+                Some(&node.id),
+            ));
+        }
+        if !seen.insert(choice) {
+            report.diagnostics.push(Diagnostic::error(
+                "duplicate_decision_choice",
+                format!(
+                    "decision node `{}` declares choice `{choice}` more than once",
+                    node.id
+                ),
+                Some(&node.id),
+            ));
+        }
+        if is_valid_port_id(choice)
+            && !blueprint
+                .edges
+                .iter()
+                .any(|edge| edge.from == node.id && edge.from_port == choice)
+        {
+            report.diagnostics.push(Diagnostic::error(
+                "unconnected_decision_choice",
+                format!(
+                    "decision node `{}` choice `{choice}` has no outgoing edge",
+                    node.id
+                ),
+                Some(&node.id),
+            ));
+        }
+    }
 }
 
 fn check_loop_max_iterations(value: &serde_json::Value) -> Option<String> {
@@ -516,6 +617,14 @@ mod tests {
     }
 
     #[test]
+    fn empty_loop_body_is_an_error() {
+        let report = validate(&base(vec![loop_node(serde_json::json!(2))], vec![]));
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "empty_loop_body" && diagnostic.node.as_deref() == Some("lp")
+        }));
+    }
+
+    #[test]
     fn missing_required_field_is_an_error() {
         let mut plan = task("plan");
         plan.fields.remove("prompt");
@@ -594,6 +703,70 @@ mod tests {
     }
 
     #[test]
+    fn decision_choices_reject_empty_duplicate_malformed_and_unconnected_ports() {
+        let decision = Node {
+            id: "choose".into(),
+            r#type: "decision".into(),
+            name: None,
+            parent: None,
+            fields: serde_json::json!({
+                "agent": "role:coder",
+                "prompt": "choose",
+                "choices": ["yes", "yes", "bad choice"]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            position: None,
+        };
+        let report = validate(&base(vec![decision], vec![]));
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "duplicate_decision_choice"));
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "invalid_decision_choice"));
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unconnected_decision_choice"));
+
+        let mut empty = base(
+            vec![Node {
+                id: "choose".into(),
+                r#type: "decision".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::json!({
+                    "agent": "role:coder",
+                    "prompt": "choose",
+                    "choices": []
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+                position: None,
+            }],
+            vec![],
+        );
+        let report = validate(&empty);
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "empty_decision_choices"));
+        empty.nodes[0]
+            .fields
+            .insert("choices".into(), serde_json::json!("yes"));
+        let report = validate(&empty);
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "invalid_field_value"));
+    }
+
+    #[test]
     fn cycle_is_an_error_because_graph_must_be_a_dag() {
         let bp = base(
             vec![task("a"), task("b")],
@@ -627,10 +800,13 @@ mod tests {
 
     #[test]
     fn loop_max_iterations_accepts_template_string() {
+        let mut child = task("body");
+        child.parent = Some("lp".into());
         let bp = base(
-            vec![loop_node(serde_json::json!(
-                "{{trigger.output.max_cycles}}"
-            ))],
+            vec![
+                loop_node(serde_json::json!("{{trigger.output.max_cycles}}")),
+                child,
+            ],
             vec![],
         );
 
@@ -649,8 +825,13 @@ mod tests {
 
     #[test]
     fn loop_max_iterations_warns_for_malformed_template_string() {
+        let mut child = task("body");
+        child.parent = Some("lp".into());
         let bp = base(
-            vec![loop_node(serde_json::json!("{{trigger.output.max_cycles"))],
+            vec![
+                loop_node(serde_json::json!("{{trigger.output.max_cycles")),
+                child,
+            ],
             vec![],
         );
 
@@ -666,7 +847,9 @@ mod tests {
 
     #[test]
     fn loop_max_iterations_warns_for_non_positive_literal() {
-        let bp = base(vec![loop_node(serde_json::json!(0))], vec![]);
+        let mut child = task("body");
+        child.parent = Some("lp".into());
+        let bp = base(vec![loop_node(serde_json::json!(0)), child], vec![]);
 
         let report = validate(&bp);
 

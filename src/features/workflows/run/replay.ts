@@ -1,7 +1,12 @@
+import type { Blueprint } from '../builder/blueprintTypes';
 import type { NodeStatusKind, RunEvent } from './runTypes';
 
 /** Fold events[0..=index] into node statuses. Unlisted nodes are pending in the UI. */
-export function nodeStatusesAt(events: RunEvent[], index: number): Record<string, NodeStatusKind> {
+export function nodeStatusesAt(
+  events: RunEvent[],
+  index: number,
+  blueprint?: Blueprint | null,
+): Record<string, NodeStatusKind> {
   const out: Record<string, NodeStatusKind> = {};
   for (let i = 0; i <= index && i < events.length; i += 1) {
     const event = events[i];
@@ -15,6 +20,10 @@ export function nodeStatusesAt(events: RunEvent[], index: number): Record<string
       case 'decision_completed':
         out[event.node] = 'completed';
         break;
+      case 'branch_taken':
+      case 'decision_made':
+        out[event.node] = 'completed';
+        break;
       case 'node_failed':
         out[event.node] = 'failed';
         break;
@@ -23,6 +32,21 @@ export function nodeStatusesAt(events: RunEvent[], index: number): Record<string
         break;
       case 'awaiting_approval':
         out[event.node] = 'running';
+        break;
+      case 'approval_granted':
+        out[event.node] = 'completed';
+        break;
+      case 'approval_rejected':
+        out[event.node] = 'failed';
+        break;
+      case 'loop_iteration':
+        out[event.node] = 'running';
+        for (const node of blueprint?.nodes ?? []) {
+          if (node.parent === event.node) out[node.id] = 'pending';
+        }
+        break;
+      case 'loop_completed':
+        out[event.node] = 'completed';
         break;
       default:
         break;

@@ -1318,6 +1318,7 @@ edges:
                 0,
                 "2026-05-31T12:00:00Z".into(),
                 EventKind::RunStarted {
+                    run_id: None,
                     blueprint_id: "wf".into(),
                     schema: 2,
                     trigger: serde_json::json!({}),

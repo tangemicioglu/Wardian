@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { nodeStatusesAt } from './replay';
+import type { Blueprint } from '../builder/blueprintTypes';
 import type { RunEvent } from './runTypes';
 
 const events: RunEvent[] = [
@@ -41,5 +42,43 @@ describe('nodeStatusesAt', () => {
     ];
 
     expect(nodeStatusesAt(decisionEvents, 1).choose).toBe('completed');
+  });
+
+  it('folds branch, decision, and approval control transitions', () => {
+    const controlEvents: RunEvent[] = [
+      { seq: 0, ts: 't0', kind: 'branch_taken', node: 'branch', port: 'on_true' },
+      { seq: 1, ts: 't1', kind: 'decision_made', node: 'decision', port: 'yes' },
+      { seq: 2, ts: 't2', kind: 'approval_granted', node: 'approved', actor: 'user' },
+      { seq: 3, ts: 't3', kind: 'approval_rejected', node: 'rejected', actor: 'user' },
+    ];
+
+    expect(nodeStatusesAt(controlEvents, 3)).toEqual({
+      branch: 'completed',
+      decision: 'completed',
+      approved: 'completed',
+      rejected: 'failed',
+    });
+  });
+
+  it('resets loop body statuses when replay reaches a new iteration', () => {
+    const blueprint: Blueprint = {
+      schema: 2,
+      id: 'loop',
+      name: 'Loop',
+      nodes: [
+        { id: 'repeat', type: 'loop' },
+        { id: 'body', type: 'task', parent: 'repeat' },
+      ],
+      edges: [],
+    };
+    const loopEvents: RunEvent[] = [
+      { seq: 0, ts: 't0', kind: 'loop_iteration', node: 'repeat', iteration: 0 },
+      { seq: 1, ts: 't1', kind: 'node_completed', node: 'body', output: { ok: true } },
+      { seq: 2, ts: 't2', kind: 'loop_iteration', node: 'repeat', iteration: 1 },
+      { seq: 3, ts: 't3', kind: 'loop_completed', node: 'repeat' },
+    ];
+
+    expect(nodeStatusesAt(loopEvents, 2, blueprint)).toEqual({ repeat: 'running', body: 'pending' });
+    expect(nodeStatusesAt(loopEvents, 3, blueprint)).toEqual({ repeat: 'completed', body: 'pending' });
   });
 });

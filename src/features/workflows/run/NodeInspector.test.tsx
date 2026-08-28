@@ -51,6 +51,29 @@ describe('NodeInspector', () => {
     expect(screen.queryByText(/2026-06-05T03:03:35/)).toBeNull();
   });
 
+  it('shows output recorded by a decision completion event', () => {
+    render(
+      <NodeInspector
+        selectedNodeId="choose"
+        state={state}
+        currentStatuses={{ choose: 'completed' }}
+        events={[
+          {
+            seq: 0,
+            ts: 't0',
+            kind: 'decision_completed',
+            node: 'choose',
+            output: { chosen: 'yes' },
+            port: 'yes',
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/"chosen": "yes"/)).toBeInTheDocument();
+    expect(screen.queryByText('No output recorded.')).toBeNull();
+  });
+
   it('allows selecting text in the inspector', () => {
     render(<NodeInspector selectedNodeId="a" state={state} currentStatuses={{ a: 'failed' }} events={events} />);
 

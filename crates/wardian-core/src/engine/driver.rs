@@ -51,11 +51,13 @@ impl Engine {
     ) -> crate::engine::Result<RunState> {
         let g = Graph::new(bp);
         let mut s = RunState::new(run_id.into(), &bp.id);
+        let started_run_id = s.run_id.clone();
         emit(
             run_root,
             &g,
             &mut s,
             EventKind::RunStarted {
+                run_id: Some(started_run_id),
                 blueprint_id: bp.id.clone(),
                 schema: bp.schema,
                 trigger,
@@ -138,9 +140,8 @@ impl Engine {
     pub fn replay(bp: &Blueprint, run_root: &Path) -> crate::engine::Result<RunState> {
         let g = Graph::new(bp);
         let mut s = RunState::new("replay", &bp.id);
-        for ev in read_events(run_root)? {
-            core::apply(&g, &mut s, &ev)?;
-        }
+        let events = read_events(run_root)?;
+        fold_event_log(&g, &mut s, &events)?;
         Ok(s)
     }
 
@@ -241,21 +242,47 @@ fn load_state(g: &Graph<'_>, run_root: &Path) -> crate::engine::Result<RunState>
         // No checkpoint: rebuild from the log.
         RunState::new("rebuilt", &g.blueprint().id)
     });
-    for ev in read_events(run_root)? {
-        // A checkpoint may lag the append-only log if the process stopped
-        // between append and checkpoint. Fold only its tail, in sequence.
-        if ev.seq < s.next_seq {
-            continue;
-        }
-        if ev.seq != s.next_seq {
+    let events = read_events(run_root)?;
+    fold_event_log(g, &mut s, &events)?;
+    Ok(s)
+}
+
+/// Validate the append-only event sequence once for both replay and resume,
+/// then fold only the portion not already represented by the checkpoint.
+fn fold_event_log(g: &Graph<'_>, s: &mut RunState, events: &[Event]) -> crate::engine::Result<()> {
+    if events.is_empty() {
+        return Err(EngineError::InvalidState(
+            "workflow event log is empty".into(),
+        ));
+    }
+    let checkpoint_next_seq = s.next_seq;
+    let mut expected = 0u64;
+    for ev in events {
+        if ev.seq != expected {
             return Err(EngineError::InvalidState(format!(
-                "workflow event sequence gap: expected {}, got {}",
-                s.next_seq, ev.seq
+                "workflow event sequence gap: expected {expected}, got {}",
+                ev.seq
             )));
         }
-        core::apply(g, &mut s, &ev)?;
+        if ev.seq >= checkpoint_next_seq {
+            if ev.seq != s.next_seq {
+                return Err(EngineError::InvalidState(format!(
+                    "workflow event sequence gap: expected {}, got {}",
+                    s.next_seq, ev.seq
+                )));
+            }
+            core::apply(g, s, ev)?;
+        }
+        expected += 1;
     }
-    Ok(s)
+    if expected < checkpoint_next_seq {
+        return Err(EngineError::InvalidState(format!(
+            "workflow event log ends at sequence {}, checkpoint expects {}",
+            expected.saturating_sub(1),
+            checkpoint_next_seq.saturating_sub(1)
+        )));
+    }
+    Ok(())
 }
 
 /// Emit: stamp seq, fold via `apply`, append to log, checkpoint.
@@ -1631,6 +1658,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_loop_completes_instead_of_leaving_the_run_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "empty-loop".into(),
+            name: "Empty loop".into(),
+            nodes: vec![Node {
+                id: "repeat".into(),
+                r#type: "loop".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::json!({"max_iterations": 2})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                position: None,
+            }],
+            edges: vec![],
+            body: String::new(),
+        };
+
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-empty-loop",
+            serde_json::json!({}),
+            dir.path(),
+            &MockExecutor::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.status, RunStatus::Completed);
+        assert_eq!(state.status_or_pending("repeat"), NodeStatus::Completed);
+        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
+            matches!(&event.kind, EventKind::LoopCompleted { node } if node == "repeat")
+        }));
+        assert!(!dir.path().join("cancel.marker").exists());
+    }
+
+    #[tokio::test]
     async fn resume_folds_events_appended_after_a_stale_checkpoint() {
         let dir = tempfile::tempdir().unwrap();
         let blueprint = Blueprint {
@@ -1675,6 +1742,140 @@ mod tests {
 
         assert_eq!(state.registry["storage"]["recovered"], true);
         assert_eq!(state.status, RunStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn checkpointless_recovery_preserves_the_run_id_from_run_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "checkpointless-recovery".into(),
+            name: "Checkpointless recovery".into(),
+            nodes: vec![Node {
+                id: "trigger".into(),
+                r#type: "manual_trigger".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::Map::new(),
+                position: None,
+            }],
+            edges: vec![],
+            body: String::new(),
+        };
+        Engine::initialize_with_id(
+            &blueprint,
+            "run-original-id",
+            serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+        std::fs::remove_file(dir.path().join("state.json")).unwrap();
+
+        let state = Engine::resume(&blueprint, dir.path(), &MockExecutor::new())
+            .await
+            .unwrap();
+
+        assert_eq!(state.run_id, "run-original-id");
+        assert_eq!(
+            read_checkpoint(dir.path()).unwrap().unwrap().run_id,
+            "run-original-id"
+        );
+    }
+
+    fn sequence_blueprint() -> Blueprint {
+        Blueprint {
+            schema: 2,
+            id: "sequence-contract".into(),
+            name: "Sequence contract".into(),
+            nodes: vec![Node {
+                id: "trigger".into(),
+                r#type: "manual_trigger".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::Map::new(),
+                position: None,
+            }],
+            edges: vec![],
+            body: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_and_resume_reject_a_sequence_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = sequence_blueprint();
+        Engine::initialize_with_id(
+            &blueprint,
+            "run-sequence-gap",
+            serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+        append_event(
+            dir.path(),
+            &Event::at(
+                2,
+                "gap".into(),
+                EventKind::NodeCompleted {
+                    node: "trigger".into(),
+                    output: serde_json::json!({}),
+                },
+            ),
+        )
+        .unwrap();
+
+        assert!(Engine::replay(&blueprint, dir.path())
+            .unwrap_err()
+            .to_string()
+            .contains("expected 1, got 2"));
+        assert!(Engine::resume(&blueprint, dir.path(), &MockExecutor::new())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("expected 1, got 2"));
+    }
+
+    #[tokio::test]
+    async fn replay_and_resume_reject_out_of_order_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = sequence_blueprint();
+        Engine::initialize_with_id(
+            &blueprint,
+            "run-sequence-order",
+            serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+        let first = read_events(dir.path()).unwrap().remove(0);
+        let second = Event::at(
+            1,
+            "second".into(),
+            EventKind::NodeCompleted {
+                node: "trigger".into(),
+                output: serde_json::json!({}),
+            },
+        );
+        let third = Event::at(2, "third".into(), EventKind::RunCompleted);
+        std::fs::write(
+            dir.path().join("events.jsonl"),
+            format!(
+                "{}\n{}\n{}\n",
+                serde_json::to_string(&first).unwrap(),
+                serde_json::to_string(&third).unwrap(),
+                serde_json::to_string(&second).unwrap()
+            ),
+        )
+        .unwrap();
+
+        assert!(Engine::replay(&blueprint, dir.path())
+            .unwrap_err()
+            .to_string()
+            .contains("expected 1, got 2"));
+        assert!(Engine::resume(&blueprint, dir.path(), &MockExecutor::new())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("expected 1, got 2"));
     }
 
     #[tokio::test]

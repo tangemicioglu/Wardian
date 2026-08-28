@@ -38,7 +38,12 @@ pub fn step(g: &Graph, s: &RunState) -> Vec<String> {
 /// `apply` reconstructs `RunState` exactly.
 pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<()> {
     match &ev.kind {
-        EventKind::RunStarted { trigger, .. } => {
+        EventKind::RunStarted {
+            run_id, trigger, ..
+        } => {
+            if let Some(run_id) = run_id {
+                s.run_id = run_id.clone();
+            }
             s.set_trigger(runtime_trigger_output(trigger, &ev.ts));
         }
         EventKind::NodeStarted { node } => s.set_node_status(node, NodeStatus::Running),
@@ -271,6 +276,7 @@ pub fn advance_loops(g: &Graph, s: &RunState) -> crate::engine::Result<Vec<Event
     for lp in loop_ids {
         let body = g.body_nodes(&lp);
         if body.is_empty() {
+            events.push(EventKind::LoopCompleted { node: lp });
             continue;
         }
         let body_terminal = body.iter().all(|b| {
