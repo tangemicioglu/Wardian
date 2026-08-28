@@ -86,6 +86,15 @@ Managed callers may resolve and mutate only themselves; changing an environment
 variable alone does not authorize another identity. Keep persisted `state.db` resolution
 available when the desktop control endpoint is offline, but reject unknown or
 ambiguous names rather than treating them as memory owner IDs.
+Memory reads and mutations accept a full memory ID or a unique prefix. Resolution
+is centralized in `MemoryStore` and scopes candidates to the authenticated actor;
+exact IDs take precedence, a unique prefix resolves to its canonical full ID, and
+an ambiguous prefix returns a distinct error without disclosing candidate IDs.
+Mutation events, revisions, and workflow-batch results always persist and return
+the canonical full ID. Batch idempotency hashes are computed from that canonical
+representation, including historical IDs needed to replay an inactive batch.
+Unknown or cross-agent IDs retain the managed CLI's redacted access-denied
+response.
 The CLI has no operator fallback: absence of `WARDIAN_SESSION_ID` or its matching
 capability fails closed. Cross-agent user administration belongs to the desktop
 host's explicit operator path.

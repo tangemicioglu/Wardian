@@ -262,7 +262,18 @@ fn memory_access_denied(caller: &str, target: &str) -> CliError {
     )
 }
 
+fn memory_id_ambiguous(prefix: &str) -> CliError {
+    CliError::backend(
+        ExitCode::Ambiguous,
+        "memory_id_ambiguous",
+        format!("memory id prefix {prefix} matches multiple memories; use a longer prefix"),
+    )
+}
+
 fn actor_memory_error(actor: &MemoryActor, error: wardian_core::memory::MemoryError) -> CliError {
+    if let wardian_core::memory::MemoryError::MemoryIdAmbiguous(prefix) = &error {
+        return memory_id_ambiguous(prefix);
+    }
     if let MemoryActor::Agent(agent_id) = actor {
         if matches!(
             error,
@@ -418,6 +429,71 @@ mod tests {
     }
 
     #[test]
+    fn managed_agent_can_read_and_mutate_self_memory_by_short_id() {
+        let _home = TestHome::new();
+        let record = seed("agent-a", "C:/work/alpha", "Alpha preference");
+        let short_id = record.memory_id[..8].to_string();
+        let capability = MemoryStore::from_default_home()
+            .unwrap()
+            .issue_capability("agent-a")
+            .unwrap();
+        unsafe {
+            std::env::set_var("WARDIAN_SESSION_ID", "agent-a");
+            std::env::set_var(wardian_core::memory::MEMORY_CAPABILITY_ENV, capability);
+        }
+
+        let shown = handle_memory(MemoryArgs {
+            command: MemoryCommand::Show {
+                memory_id: short_id.clone(),
+            },
+        })
+        .unwrap();
+        let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
+        assert_eq!(shown["memory"]["memory_id"], record.memory_id);
+
+        let updated = handle_memory(MemoryArgs {
+            command: MemoryCommand::Update {
+                memory_id: short_id.clone(),
+                text: "Alpha preference refined".into(),
+                evidence: "The user clarified the preference.".into(),
+                source: vec![],
+                idempotency_key: None,
+            },
+        })
+        .unwrap();
+        let updated: serde_json::Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(updated["memory"]["memory_id"], record.memory_id);
+        assert_eq!(updated["memory"]["revision"], 2);
+
+        let history = handle_memory(MemoryArgs {
+            command: MemoryCommand::History {
+                memory_id: short_id.clone(),
+            },
+        })
+        .unwrap();
+        let history: serde_json::Value = serde_json::from_str(&history).unwrap();
+        assert_eq!(history["history"].as_array().unwrap().len(), 2);
+
+        let removed = handle_memory(MemoryArgs {
+            command: MemoryCommand::Remove {
+                memory_id: short_id,
+            },
+        })
+        .unwrap();
+        let removed: serde_json::Value = serde_json::from_str(&removed).unwrap();
+        assert_eq!(removed["memory"]["memory_id"], record.memory_id);
+        assert_eq!(removed["memory"]["status"], "removed");
+    }
+
+    #[test]
+    fn ambiguous_memory_prefix_has_a_distinct_cli_error() {
+        let error = memory_id_ambiguous("deadbeef");
+        assert_eq!(error.code, "memory_id_ambiguous");
+        assert_eq!(error.code_i32(), 5);
+        assert!(error.message.contains("use a longer prefix"));
+    }
+
+    #[test]
     fn clearing_managed_identity_does_not_grant_operator_memory_access() {
         let _home = TestHome::new();
         seed("agent-b", "C:/work/beta", "Beta preference");
@@ -532,6 +608,15 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(record_error.code, "memory_access_denied");
+
+        let short_peer_id = peer.memory_id[..8].to_string();
+        let short_record_error = handle_memory(MemoryArgs {
+            command: MemoryCommand::Show {
+                memory_id: short_peer_id,
+            },
+        })
+        .unwrap_err();
+        assert_eq!(short_record_error.code, "memory_access_denied");
 
         let update_error = handle_memory(MemoryArgs {
             command: MemoryCommand::Update {
