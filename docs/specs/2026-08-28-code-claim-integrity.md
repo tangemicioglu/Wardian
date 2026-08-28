@@ -178,12 +178,38 @@ cost and false-positive rate rather than weakening enforcement.
 The gate fails closed. A stale, missing, malformed, or unconfirmed artifact
 withholds a blocking result rather than passing clean.
 
+## Protocol
+
+Evolver, 2026-08-28, deployed to `class:Reviewer` and reported as passing an
+independent re-review with no material findings.
+
+The protocol uses two fresh invocations: an audit report first, then a separate
+confirmation report. Model reports carry no claim about reviewer identity,
+isolation, independent confirmation, pass or block, provider, model, or
+transport. Harness receipts own identity and isolation. Project QA joins
+exact-SHA artifacts and owns predicate execution and CI policy.
+
+This closes a hole in the design recorded above, where the reviewer asserted its
+own isolation. A model report stating that it was isolated is itself an
+unverified claim of exactly the kind this whole mechanism exists to reject.
+Moving that assertion to the harness makes it evidence rather than testimony.
+
+Two constraints from this spec survive into the protocol unchanged: a machine
+directive still requires parser or real-consumer evidence rather than an
+assertion, and predicates remain path plus regex plus a present or absent
+expectation.
+
 ## Open
 
-Evolver owns the provider-invariant `audit-code-claims` protocol that QA
-depends on: request JSON in, report JSON out, isolated reviewer, exact SHAs,
-evidence-bearing findings, and no provider-specific transport or model
-assumptions. Notified 2026-08-28, unanswered at time of writing.
+QA holds a scaffold adaptation brief covering closed-schema and RFC3339
+enforcement, realpath containment against symlink and junction escape, bounded
+regex execution, and advisory-only behaviour until trusted distinct-run receipts
+exist.
+
+That last condition composes with the blocking policy above rather than
+contradicting it. A finding is not independently confirmed until receipts prove
+the audit and confirmation came from distinct runs, so until receipts exist
+nothing reaches the state in which Reviewer's rule blocks a protected merge.
 
 The divergent IPC mock in `e2e/tests/workbench-adapter-proof.spec.ts` is a
 separate harness risk. QA's position is that it belongs in a shared
