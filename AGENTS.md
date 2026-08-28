@@ -15,7 +15,7 @@ Before requesting a commit or finalizing a task, ensure the following steps are 
 1. **Validation & Build**:
    - [ ] **Frontend**: Run `npm run typecheck`, `npm run lint`, `npm run test`, and `npm run build`.
    - [ ] **Backend**: Run `cargo clippy`, `cargo fmt --all -- --check`, `cargo test`, and `cargo check` (in `src-tauri`).
-   - [ ] **Gates**: Run `npm run check:test-reachability`, `npm run check:deadcode`, and `npm run check:budgets`. These fail on debt this repository has decided not to take on again; see the rules below.
+   - [ ] **Gates**: Run `npm run check:test-reachability`, `npm run check:deadcode`, `npm run check:budgets`, and `npm run check:page-fixtures`. These fail on debt this repository has decided not to take on again; each failure message names the file and the fix.
 2. **Documentation**:
    - [ ] Document strategic decisions in a new **Spec** in `docs/specs/`.
    - [ ] Update related guides in `docs/guide/` or `docs/developer/`.
@@ -39,39 +39,21 @@ Before requesting a commit or finalizing a task, ensure the following steps are 
 
 ## 🚫 What Not To Do
 
-These six are named after failures that actually happened here, each with a
-signature you can recognise in your own diff. An audit of thirty consecutive
-merged PRs found the checklist above was followed closely and the debt
-accumulated anyway, so these describe habits rather than steps.
+Named after failures that actually happened here; the audit is in
+`docs/specs/2026-08-28-debt-gates.md`.
+
+A gate catches four of them and names the file and the fix when it fires: do not
+fork a function behind `#[cfg(test)]` to keep tests passing, do not call a test
+no job runs coverage, do not defend against a shape the producer cannot emit,
+and remove the path you replaced in the same PR.
+
+Two have no gate:
 
 1. **Do not widen a matcher a second time.** If a classifier needs another
    literal and it has been widened before, the producer is emitting the wrong
-   data — fix the producer. Three PRs in a row appended alternatives to one
-   regex in the chat rendering layer while the correct backend fix sat beside
-   it.
-2. **Do not fork a function to keep tests passing.** If a signature change
-   breaks tests, update the tests. A second copy behind `#[cfg(test)]` is not a
-   smaller change; it is a deferred one with the coverage silently removed.
-3. **A test that no job runs is not coverage.** Report it as a gap, never as
-   verification. If it cannot run per-PR, give it a `// @tier` and a tracking
-   issue. Check that CI actually invokes a suite before describing it as
-   covering anything.
-4. **Do not defend against a shape the producer cannot emit.** Read the
-   producing signature before adding a union, a fallback branch, or a null
-   guard. One speculative union became 27 sites of permanent ambiguity that
-   also degraded toward the wrong default.
-5. **Removing the replaced path is part of the change.** Not a follow-up, not
-   an issue. When a PR supersedes a behaviour, the old code, its exports, and
-   its tests leave in the same PR. Thirty PRs added eight lines for every one
-   they removed; this is the rule that addresses it.
-6. **Report what failed.** If a test is failing when you finish, say so and let
-   a reviewer judge whether it is related. That judgement is not yours to make
-   on your own work.
-
-Suppressing a lint, adding a `#[cfg(test)]` seam, skipping a test, or growing
-one of the tracked files is sometimes right. All of them are counted in
-`budgets.json`, so doing it means lowering something else or arguing for the
-increase.
+   data. Fix the producer.
+2. **Report what failed.** If a test is failing when you finish, say so. Whether
+   it is related is a reviewer's judgement, not yours to make on your own work.
 
 ## 🏛️ Architecture & Naming Standards
 
