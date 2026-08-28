@@ -75,10 +75,12 @@ pub fn workflow_inbox_update_with_name(
 
     let events = read_events(run_root).unwrap_or_default();
     let summary = events.iter().rev().find_map(|event| match &event.kind {
-        EventKind::NodeCompleted { output, .. } => output
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .map(ToString::to_string),
+        EventKind::NodeCompleted { output, .. } | EventKind::DecisionCompleted { output, .. } => {
+            output
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
+        }
         _ => None,
     });
     let updated_at = events.last().map(|event| event.ts.clone());

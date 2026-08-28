@@ -532,23 +532,25 @@ async fn dispatch(
                     },
                 )?;
             }
-            emit(
-                run_root,
-                g,
-                s,
-                EventKind::NodeCompleted {
-                    node: node.id.clone(),
-                    output: step.output,
-                },
-            )?;
             if let Some(port) = step.chosen_port {
                 emit(
                     run_root,
                     g,
                     s,
-                    EventKind::DecisionMade {
+                    EventKind::DecisionCompleted {
                         node: node.id.clone(),
+                        output: step.output,
                         port,
+                    },
+                )?;
+            } else {
+                emit(
+                    run_root,
+                    g,
+                    s,
+                    EventKind::NodeCompleted {
+                        node: node.id.clone(),
+                        output: step.output,
                     },
                 )?;
             }
@@ -1090,7 +1092,7 @@ mod tests {
         assert!(exec.calls().contains(&"task:denied".to_string()));
         assert!(!exec.calls().contains(&"task:approved".to_string()));
         assert!(read_events(dir.path()).unwrap().iter().any(|event| {
-            matches!(&event.kind, EventKind::DecisionMade { node, port }
+            matches!(&event.kind, EventKind::DecisionCompleted { node, port, .. }
                 if node == "choose" && port == "deny")
         }));
         assert!(state.delivered.get("denied").is_some());
@@ -1101,6 +1103,111 @@ mod tests {
         assert_eq!(replayed.nodes, state.nodes);
         assert_eq!(replayed.delivered, state.delivered);
         assert_eq!(replayed.skipped_edges, state.skipped_edges);
+    }
+
+    #[tokio::test]
+    async fn decision_completion_event_replays_routing_after_a_stale_checkpoint() {
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "decision-resume".into(),
+            name: "Decision resume".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                Node {
+                    id: "choose".into(),
+                    r#type: "decision".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({
+                        "agent": "role:arbiter",
+                        "prompt": "choose",
+                        "choices": ["approve", "deny"]
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+                Node {
+                    id: "denied".into(),
+                    r#type: "task".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({
+                        "agent": "role:worker",
+                        "prompt": "deny"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+            ],
+            edges: vec![
+                crate::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "choose".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "choose".into(),
+                    from_port: "deny".into(),
+                    to: "denied".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint = Engine::initialize_with_id(
+            &blueprint,
+            "run-decision-resume",
+            serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+        append_event(
+            dir.path(),
+            &Event::at(
+                checkpoint.next_seq,
+                "decision-started".into(),
+                EventKind::NodeStarted {
+                    node: "choose".into(),
+                },
+            ),
+        )
+        .unwrap();
+        append_event(
+            dir.path(),
+            &Event::at(
+                checkpoint.next_seq + 1,
+                "decision-completed".into(),
+                EventKind::DecisionCompleted {
+                    node: "choose".into(),
+                    output: serde_json::json!({"chosen": "deny"}),
+                    port: "deny".into(),
+                },
+            ),
+        )
+        .unwrap();
+
+        let exec = MockExecutor::new();
+        let state = Engine::resume(&blueprint, dir.path(), &exec).await.unwrap();
+
+        assert_eq!(state.status, RunStatus::Completed);
+        assert!(exec.calls().contains(&"task:denied".to_string()));
+        assert_eq!(
+            Engine::replay(&blueprint, dir.path()).unwrap().delivered,
+            state.delivered
+        );
     }
 
     #[tokio::test]

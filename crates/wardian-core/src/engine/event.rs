@@ -41,6 +41,11 @@ pub enum EventKind {
         node: String,
         output: serde_json::Value,
     },
+    DecisionCompleted {
+        node: String,
+        output: serde_json::Value,
+        port: String,
+    },
     StateUpdated {
         node: String,
         op: String,

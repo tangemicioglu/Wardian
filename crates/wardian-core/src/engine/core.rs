@@ -45,8 +45,8 @@ pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<(
         EventKind::NodeCompleted { node, output } => {
             s.set_node_output(node, output.clone());
             s.set_node_status(node, NodeStatus::Completed);
-            // Decision nodes must route through their durable DecisionMade
-            // event; they do not have a normal `out` port.
+            // Decision nodes route through their durable completion event;
+            // they do not have a normal `out` port.
             if g.blueprint()
                 .find_node(node)
                 .map(|definition| definition.r#type != "decision")
@@ -54,6 +54,11 @@ pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<(
             {
                 deliver_from_port(g, s, node, "out");
             }
+        }
+        EventKind::DecisionCompleted { node, output, port } => {
+            s.set_node_output(node, output.clone());
+            s.set_node_status(node, NodeStatus::Completed);
+            deliver_chosen_port(g, s, node, port);
         }
         EventKind::StateUpdated { op, entries, .. } => {
             apply_state_update(s, op, entries)?;

@@ -843,6 +843,18 @@ pub async fn approve_workflow_for_surface(
 pub fn workflow_cancel(blueprint_id: String, run_id: String) -> Result<serde_json::Value, String> {
     let run_root =
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
+    let checkpoint = read_checkpoint(&run_root).map_err(|error| error.to_string())?;
+    if let Some(state) = checkpoint.as_ref() {
+        if state.status == RunStatus::Running {
+            std::fs::write(run_root.join("cancel.marker"), "cancelled")
+                .map_err(|error| error.to_string())?;
+            return Ok(serde_json::json!({ "ok": true, "status": state.status }));
+        }
+        if matches!(state.status, RunStatus::Completed | RunStatus::Failed) {
+            let _ = std::fs::remove_file(run_root.join("cancel.marker"));
+            return Ok(serde_json::json!({ "ok": true, "status": state.status }));
+        }
+    }
     let blueprint_path = resolve_blueprint_path(&blueprint_id)
         .ok_or_else(|| format!("workflow blueprint not found: {blueprint_id}"))?;
     let blueprint = workflow::parse_file(&blueprint_path).map_err(|error| error.to_string())?;
@@ -1209,6 +1221,21 @@ mod tests {
         assert_eq!(page.runs.len(), 1);
         assert!(!page.truncated);
         assert_eq!(page.next_offset, None);
+    }
+
+    #[test]
+    fn workflow_cancel_marks_running_run_without_loading_blueprint() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(temp.path());
+        let blueprint_id = "missing-blueprint";
+        let run_id = "run-cancel";
+        let run_root = wardian_core::paths::workflow_run_dir(blueprint_id, run_id).unwrap();
+        write_checkpoint(&run_root, &RunState::new(run_id, blueprint_id)).unwrap();
+
+        let result = workflow_cancel(blueprint_id.into(), run_id.into()).unwrap();
+
+        assert_eq!(result["status"], "running");
+        assert!(run_root.join("cancel.marker").exists());
     }
 
     fn sample_schedule() -> WorkflowSchedule {

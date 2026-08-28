@@ -13,7 +13,7 @@ function eventNode(event: RunEvent): string | null {
 }
 
 function eventDetail(event: RunEvent): string | null {
-  if (event.kind === 'branch_taken' || event.kind === 'decision_made') return `port ${event.port}`;
+  if (event.kind === 'branch_taken' || event.kind === 'decision_made' || event.kind === 'decision_completed') return `port ${event.port}`;
   if (event.kind === 'loop_iteration') return `iteration ${event.iteration}`;
   if (event.kind === 'notification') return event.message;
   if (event.kind === 'loop_completed') return 'completed';
