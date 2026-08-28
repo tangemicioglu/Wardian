@@ -25,7 +25,9 @@ anti-enumeration access-denied response, obscuring the actual usability bug.
    resolve only their own records; the explicit operator actor can resolve
    records available to the desktop administration path.
 5. Resolved IDs are used for every new revision, audit event, and batch result,
-   so a shortcut never creates a second logical memory.
+   so a shortcut never creates a second logical memory. Batch idempotency hashes
+   use the canonical representation, and replay resolution includes historical
+   records so an inactive original can still be replayed.
 6. Unknown and cross-agent references continue to use the managed CLI's generic
    access-denied response, preserving the existing anti-enumeration contract.
 
@@ -38,4 +40,5 @@ removed memory remains inspectable by its canonical ID or unique prefix.
 The core store tests cover show, history, update, and remove through an injected
 short ID, exact-ID precedence, unique-prefix resolution, and ambiguity. CLI
 tests cover the managed self-memory lifecycle, the distinct ambiguity error,
-and continued denial of a peer's full and short IDs.
+and continued denial of a peer's full and short IDs. Batch tests cover retries
+that switch between short and full IDs after removal.

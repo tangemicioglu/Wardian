@@ -868,11 +868,25 @@ impl MemoryStore {
         let agent_id = actor.authorize_subject(&batch.agent_id)?;
         let key = required("idempotency_key", &batch.idempotency_key)?;
         let workspace = normalize_workspace(batch.workspace.as_deref());
-        let request_hash = hash_text(&serde_json::to_string(&batch)?);
         let mut connection = self.connection()?;
         // Acquire the writer lock before reading the idempotency receipt or
         // cursor so overlapping consolidators observe one serialized order.
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut canonical_batch = batch;
+        for mutation in &mut canonical_batch.operations {
+            let memory_id = match mutation {
+                MemoryMutation::Update { memory_id, .. }
+                | MemoryMutation::Remove { memory_id } => memory_id,
+                MemoryMutation::Save { .. } => continue,
+            };
+            *memory_id = resolve_memory_id(
+                &transaction,
+                &MemoryActor::agent(&agent_id),
+                memory_id,
+                false,
+            )?;
+        }
+        let request_hash = hash_text(&serde_json::to_string(&canonical_batch)?);
         if let Some((stored_hash, stored_result)) = transaction
             .query_row(
                 "SELECT request_hash, result_json FROM memory_commits WHERE idempotency_key=?1",
@@ -892,7 +906,7 @@ impl MemoryStore {
             return Ok(result);
         }
 
-        if let Some(cursor) = &batch.cursor {
+        if let Some(cursor) = &canonical_batch.cursor {
             advance_consolidation_cursor(
                 &transaction,
                 &agent_id,
@@ -902,7 +916,7 @@ impl MemoryStore {
         }
 
         let mut memory_ids = Vec::new();
-        for mutation in &batch.operations {
+        for mutation in &canonical_batch.operations {
             match mutation {
                 MemoryMutation::Save {
                     kind,
@@ -2108,7 +2122,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(result.memory_ids, vec![first.memory_id]);
+        assert_eq!(result.memory_ids, vec![first.memory_id.clone()]);
         assert_eq!(
             store
                 .history(&MemoryActor::agent("agent-a"), &short_id)
@@ -2116,6 +2130,29 @@ mod tests {
                 .len(),
             2
         );
+
+        store
+            .remove(&MemoryActor::agent("agent-a"), &short_id)
+            .unwrap();
+        let replay = store
+            .commit_batch(
+                &MemoryActor::agent("agent-a"),
+                MemoryCommitBatch {
+                    agent_id: "agent-a".into(),
+                    workspace: Some("one".into()),
+                    idempotency_key: "run-short-id".into(),
+                    operations: vec![MemoryMutation::Update {
+                        memory_id: first.memory_id.clone(),
+                        text: "Use the canonical ID safely".into(),
+                        evidence_excerpt: "The short ID resolved to this memory.".into(),
+                        sources: vec![],
+                    }],
+                    cursor: None,
+                },
+            )
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.memory_ids, vec![first.memory_id]);
     }
 
     #[test]

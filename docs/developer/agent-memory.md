@@ -91,8 +91,10 @@ is centralized in `MemoryStore` and scopes candidates to the authenticated actor
 exact IDs take precedence, a unique prefix resolves to its canonical full ID, and
 an ambiguous prefix returns a distinct error without disclosing candidate IDs.
 Mutation events, revisions, and workflow-batch results always persist and return
-the canonical full ID. Unknown or cross-agent IDs retain the managed CLI's
-redacted access-denied response.
+the canonical full ID. Batch idempotency hashes are computed from that canonical
+representation, including historical IDs needed to replay an inactive batch.
+Unknown or cross-agent IDs retain the managed CLI's redacted access-denied
+response.
 The CLI has no operator fallback: absence of `WARDIAN_SESSION_ID` or its matching
 capability fails closed. Cross-agent user administration belongs to the desktop
 host's explicit operator path.
