@@ -131,19 +131,37 @@ fn item_id(item: &Value) -> &str {
     item.get("id").and_then(Value::as_str).unwrap_or_default()
 }
 
+fn workflow_identity(item: &Value) -> Option<(String, String)> {
+    if item.get("type").and_then(Value::as_str) != Some("workflow_completed") {
+        return None;
+    }
+    Some((
+        item.get("workflow_id").and_then(Value::as_str)?.to_string(),
+        item.get("workflow_run_id")
+            .and_then(Value::as_str)?
+            .to_string(),
+    ))
+}
+
 fn load_persisted_items() -> Result<Vec<Value>, CliError> {
     let Some(home) = wardian_core::paths::wardian_home() else {
         return Ok(Vec::new());
     };
     let queue_path = home.join("queue").join("items.json");
+    // The legacy queue is optional. A damaged queue must not hide the durable
+    // SQLite notifications or workflow run projections below it.
     let persisted = if queue_path.exists() {
-        let content = std::fs::read_to_string(&queue_path)
-            .map_err(|error| CliError::generic(format!("could not read Inbox items: {error}")))?;
-        serde_json::from_str::<Vec<Value>>(&content)
-            .map_err(|error| CliError::generic(format!("could not parse Inbox items: {error}")))?
+        std::fs::read_to_string(&queue_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<Vec<Value>>(&content).ok())
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
+    let persisted_workflow_runs = persisted
+        .iter()
+        .filter_map(workflow_identity)
+        .collect::<HashSet<_>>();
     let read_notification_ids = persisted
         .iter()
         .filter(|item| {
@@ -165,6 +183,9 @@ fn load_persisted_items() -> Result<Vec<Value>, CliError> {
         })
         .collect::<Vec<_>>();
     items.extend(workflow_approval_items()?);
+    items.extend(workflow_terminal_items()?.into_iter().filter(|item| {
+        workflow_identity(item).is_none_or(|key| !persisted_workflow_runs.contains(&key))
+    }));
 
     let Some(db_path) = wardian_core::paths::state_db_path() else {
         return Ok(sort_items(items));
@@ -274,6 +295,73 @@ fn workflow_approval_items() -> Result<Vec<Value>, CliError> {
                     "run_id": state.run_id,
                     "node": node,
                 },
+            }));
+        }
+    }
+    Ok(items)
+}
+
+fn workflow_terminal_items() -> Result<Vec<Value>, CliError> {
+    let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
+        return Ok(Vec::new());
+    };
+    if !runs_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut items = Vec::new();
+    for blueprint_entry in
+        fs::read_dir(&runs_root).map_err(|error| CliError::generic(error.to_string()))?
+    {
+        let blueprint_dir = blueprint_entry
+            .map_err(|error| CliError::generic(error.to_string()))?
+            .path();
+        if !blueprint_dir.is_dir() {
+            continue;
+        }
+        for run_entry in
+            fs::read_dir(&blueprint_dir).map_err(|error| CliError::generic(error.to_string()))?
+        {
+            let run_dir = run_entry
+                .map_err(|error| CliError::generic(error.to_string()))?
+                .path();
+            if !run_dir.is_dir() {
+                continue;
+            }
+            let Ok(Some(state)) = wardian_core::engine::store::read_checkpoint(&run_dir) else {
+                continue;
+            };
+            let status = match state.status {
+                RunStatus::Completed => "completed",
+                RunStatus::Failed => "failed",
+                RunStatus::Running | RunStatus::AwaitingApproval => continue,
+            };
+            let events = wardian_core::engine::store::read_events(&run_dir).unwrap_or_default();
+            let summary = events.iter().rev().find_map(|event| match &event.kind {
+                EventKind::NodeCompleted { output, .. } => output
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                _ => None,
+            });
+            let updated_at = events.last().map(|event| event.ts.as_str());
+            let workflow_name = wardian_core::workflow::resolve_blueprint_path(&state.blueprint_id)
+                .and_then(|path| wardian_core::workflow::parse_file(&path).ok())
+                .map(|blueprint| blueprint.name)
+                .unwrap_or_else(|| state.blueprint_id.clone());
+
+            items.push(json!({
+                "id": format!("workflow-completion:{}:{}", state.blueprint_id, state.run_id),
+                "type": "workflow_completed",
+                "timestamp": updated_at.map(timestamp_millis).unwrap_or_default(),
+                "read": false,
+                "evidence_source": "live_runtime",
+                "workflow_id": state.blueprint_id,
+                "workflow_run_id": state.run_id,
+                "workflow_name": workflow_name,
+                "status": status,
+                "error": state.failure,
+                "summary": summary,
             }));
         }
     }

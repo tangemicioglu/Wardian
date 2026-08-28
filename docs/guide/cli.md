@@ -53,8 +53,9 @@ wardian inbox list --limit 100 --offset 100
 `provider_runtime`, `interaction_store`, and `live_runtime`. Filters are
 comma-separated and combine with `--unread`. A live app for the same
 `WARDIAN_HOME` supplies the assembled projection; when it is unavailable, the
-CLI reads persisted queue items and durable Inbox notifications. The command
-is read-only: it does not acknowledge, dismiss, or resolve an item.
+CLI reads persisted queue items, durable Inbox notifications, and workflow-run
+checkpoints for awaiting approvals and terminal outcomes. The command is
+read-only: it does not acknowledge, dismiss, or resolve an item.
 
 Use the write path when an event changes the user's understanding or requires a
 decision:

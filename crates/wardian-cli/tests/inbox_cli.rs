@@ -161,6 +161,56 @@ edges: []
     home
 }
 
+fn seed_terminal_workflows() -> TempDir {
+    let home = TempDir::new().unwrap();
+    for (blueprint_id, run_id, status, event) in [
+        (
+            "completed-workflow",
+            "run-completed",
+            RunStatus::Completed,
+            EventKind::RunCompleted,
+        ),
+        (
+            "failed-workflow",
+            "run-failed",
+            RunStatus::Failed,
+            EventKind::RunFailed {
+                error: "provider exited".to_string(),
+            },
+        ),
+    ] {
+        let run_root = home
+            .path()
+            .join("logs/workflows")
+            .join(blueprint_id)
+            .join(run_id);
+        let mut state = RunState::new(run_id, blueprint_id);
+        state.status = status;
+        if status == RunStatus::Failed {
+            state.failure = Some("provider exited".to_string());
+        }
+        write_checkpoint(&run_root, &state).unwrap();
+        append_event(
+            &run_root,
+            &Event::at(
+                0,
+                "2026-08-28T10:03:00.000Z".to_string(),
+                EventKind::NodeCompleted {
+                    node: "finish".to_string(),
+                    output: serde_json::json!({ "text": "Workflow result" }),
+                },
+            ),
+        )
+        .unwrap();
+        append_event(
+            &run_root,
+            &Event::at(1, "2026-08-28T10:04:00.000Z".to_string(), event),
+        )
+        .unwrap();
+    }
+    home
+}
+
 #[test]
 fn list_reads_persisted_inbox_and_applies_type_source_and_unread_filters() {
     let home = seed_queue();
@@ -268,4 +318,58 @@ fn list_includes_persisted_workflow_approvals_when_the_app_is_offline() {
         response["items"][0]["summary"],
         "Approve the production deployment?"
     );
+}
+
+#[test]
+fn list_includes_durable_terminal_workflow_runs_and_failed_filter_alias() {
+    let home = seed_terminal_workflows();
+    let output = Command::new(bin())
+        .args([
+            "inbox",
+            "list",
+            "--type",
+            "workflow_failed",
+            "--source",
+            "live_runtime",
+        ])
+        .env("WARDIAN_HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        response["items"][0]["id"],
+        "workflow-completion:failed-workflow:run-failed"
+    );
+    assert_eq!(response["items"][0]["status"], "failed");
+    assert_eq!(response["items"][0]["error"], "provider exited");
+}
+
+#[test]
+fn list_keeps_durable_sources_available_when_the_legacy_queue_is_malformed() {
+    let home = seed_notification();
+    let queue_dir = home.path().join("queue");
+    fs::create_dir_all(&queue_dir).unwrap();
+    fs::write(queue_dir.join("items.json"), b"not-json").unwrap();
+
+    let output = Command::new(bin())
+        .args(["inbox", "list", "--source", "interaction_store"])
+        .env("WARDIAN_HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["items"].as_array().unwrap().len(), 1);
+    assert_eq!(response["items"][0]["id"], "notification:notify-1");
 }

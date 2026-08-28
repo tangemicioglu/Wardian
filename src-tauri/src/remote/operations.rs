@@ -126,6 +126,24 @@ pub async fn remote_queue_items_page(
         })
         .map(str::to_string)
         .collect::<std::collections::HashSet<_>>();
+    let persisted_workflow_runs = persisted_items
+        .iter()
+        .filter_map(|item| {
+            if item.get("type").and_then(serde_json::Value::as_str)
+                != Some("workflow_completed")
+            {
+                return None;
+            }
+            Some((
+                item.get("workflow_id")
+                    .and_then(serde_json::Value::as_str)?
+                    .to_string(),
+                item.get("workflow_run_id")
+                    .and_then(serde_json::Value::as_str)?
+                    .to_string(),
+            ))
+        })
+        .collect::<std::collections::HashSet<_>>();
     let legacy_items = persisted_items.into_iter().filter(|item| {
         item.get("inbox_notification_id").is_none()
             && item.get("workflow_approval").is_none()
@@ -179,8 +197,32 @@ pub async fn remote_queue_items_page(
             "approval_choices": ["Approve", "Reject"],
             "workflow_approval": { "blueprint_id": approval.blueprint_id, "blueprint_path": approval.blueprint_path, "run_id": approval.run_id, "node": approval.node },
         }));
+    let workflow_terminals = crate::commands::inbox::list_workflow_inbox_terminal_runs()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|run| {
+            !persisted_workflow_runs
+                .contains(&(run.workflow_id.clone(), run.run_instance_id.clone()))
+        })
+        .map(|run| {
+            serde_json::json!({
+                "id": format!("workflow-completion:{}:{}", run.workflow_id, run.run_instance_id),
+                "type": "workflow_completed",
+                "timestamp": run.updated_at.as_deref().map(queue_timestamp).unwrap_or_default(),
+                "read": false,
+                "evidence_source": "live_runtime",
+                "workflow_id": run.workflow_id,
+                "workflow_run_id": run.run_instance_id,
+                "workflow_name": run.workflow_name,
+                "status": run.status,
+                "error": run.error,
+                "summary": run.summary,
+            })
+        });
     let mut items = notifications
         .chain(workflow_approvals)
+        .chain(workflow_terminals)
         .chain(legacy_items)
         .collect::<Vec<_>>();
     items.sort_by_key(|item| {
