@@ -44,8 +44,10 @@ pay off the debt that the new gates would otherwise start red on.
   run listing created when #981 added pagination. Two of three run-listing
   tests exercised a copy that never shipped, and the copies had diverged.
 - Collapse the `Page | T[]` union at 28 call sites across 9 files. No command
-  returns the array shape; the unit-test fixtures did, so production carried a
-  permanent branch to keep stale fixtures working. Correct the fixtures.
+  returns the array shape; the test fixtures did, so production carried a
+  permanent branch to keep stale fixtures working. Correct the fixtures, and
+  add `src/test/pageFixtures.ts` so the shape is written once rather than at
+  each mock.
 - Delete 8 unreachable modules and 31 unreferenced exports. Keep and tag
   `@ipcContract` the 23 types that mirror live Rust request and response
   structs: absence of a TypeScript consumer is not evidence a contract type is
@@ -66,6 +68,12 @@ pay off the debt that the new gates would otherwise start red on.
   `test.skip` with no tag. Existing skips are listed explicitly with the reason
   each is still present; that list may only shrink.
 - `check:deadcode` runs knip over the same include set that was verified clean.
+- `check:page-fixtures` fails on a test mocking one of the five bounded list
+  commands with a bare array. Added after the first fixture pass missed
+  sixteen of them: it fixed the mocks whose bad shape surfaced as a failed
+  assertion and missed every one that surfaced only as an unhandled
+  rejection, plus all seven in `e2e/tests`. Patching by hand is how they
+  were missed, so the count is gated rather than audited.
 
 ### Ratchet what cannot be fixed at once
 
@@ -93,9 +101,10 @@ files. They move to `crates/wardian-core/src/limits.rs`, beside `paths.rs`.
 2. A metric in `budgets.json` may fall but never rise without a deliberate,
    reviewed edit to the budget.
 3. `npm run <name>` does what `<name>` says.
-4. A rule lands as `error` only where the codebase is already clean, so a
+4. A test fixture never describes a response the backend cannot produce.
+5. A rule lands as `error` only where the codebase is already clean, so a
    violation always means a new one rather than an old one.
-5. A contract type kept without a consumer carries `@ipcContract` and names the
+6. A contract type kept without a consumer carries `@ipcContract` and names the
    Rust struct it mirrors.
 
 ## Verification
@@ -103,7 +112,8 @@ files. They move to `crates/wardian-core/src/limits.rs`, beside `paths.rs`.
 - `npm run typecheck`, `npm run lint` (0 errors), `npm run test`,
   `npm run build`.
 - `npm run check:test-reachability`, `check:deadcode`, `check:budgets`,
-  `check:workbench-cutover` — all pass.
+  `check:page-fixtures`, `check:workbench-cutover` — all pass.
+- `npm run test:e2e` — 143 passed, 16 skipped.
 - `cargo clippy --workspace -- -D warnings` and `cargo fmt --all -- --check`
   pass.
 - `cargo test --workspace -- --test-threads=1`: 1,695 passed, 45 ignored, and
