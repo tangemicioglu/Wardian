@@ -40,7 +40,7 @@ pub fn reference_doc() -> String {
                     mult
                 );
                 if !field.help.is_empty() {
-                    let _ = writeln!(out, "  Help: {}", field.help);
+                    let _ = writeln!(out, "  Help: {}", escape_template_delimiters(&field.help));
                 }
             }
             let _ = writeln!(out);
@@ -65,6 +65,11 @@ fn kind_label(kind: NodeKind) -> &'static str {
         NodeKind::Engine => "engine",
         NodeKind::Trigger => "trigger",
     }
+}
+
+fn escape_template_delimiters(text: &str) -> String {
+    text.replace("{{", "&#123;&#123;")
+        .replace("}}", "&#125;&#125;")
 }
 
 fn type_label(ty: &FieldType) -> String {
@@ -106,6 +111,13 @@ mod tests {
         let start = md.find("## Sub-workflow").expect("sub-workflow section");
         let section = &md[start..];
         assert!(section.contains("**status:** unsupported"));
+    }
+
+    #[test]
+    fn doc_escapes_template_delimiters_for_vitepress() {
+        let md = reference_doc();
+        assert!(md.contains("&#123;&#123;trigger.output.agent_id&#125;&#125;"));
+        assert!(!md.contains("only {{trigger.output.agent_id}}"));
     }
 
     #[test]

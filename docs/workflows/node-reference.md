@@ -161,7 +161,7 @@ Validate and atomically commit structured agent-memory changes.
 
 - `source_node` — Source node [text (required)]
 - `agent_id` — Memory agent [text (required)]
-  Help: Engine-owned invocation agent; only {{trigger.output.agent_id}} is accepted.
+  Help: Engine-owned invocation agent; only &#123;&#123;trigger.output.agent_id&#125;&#125; is accepted.
 
 Outgoing ports: out
 
