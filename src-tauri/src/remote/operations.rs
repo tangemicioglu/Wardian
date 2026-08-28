@@ -292,6 +292,33 @@ fn current_queue_item<'a>(
         .ok_or_else(|| "inbox_item_not_found".to_string())
 }
 
+fn workflow_identity(item: &serde_json::Value) -> Option<(String, String)> {
+    if item.get("type").and_then(serde_json::Value::as_str) != Some("workflow_completed") {
+        return None;
+    }
+    Some((
+        item.get("workflow_id")
+            .and_then(serde_json::Value::as_str)?
+            .to_string(),
+        item.get("workflow_run_id")
+            .and_then(serde_json::Value::as_str)?
+            .to_string(),
+    ))
+}
+
+fn workflow_dismissal_marker(item: &serde_json::Value) -> Option<serde_json::Value> {
+    let (workflow_id, run_id) = workflow_identity(item)?;
+    Some(serde_json::json!({
+        "id": format!("workflow-dismissed:{workflow_id}:{run_id}"),
+        "type": "workflow_completed",
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+        "read": true,
+        "dismissed": true,
+        "workflow_id": workflow_id,
+        "workflow_run_id": run_id,
+    }))
+}
+
 fn validate_remote_mark_read(item: &serde_json::Value) -> Result<(), String> {
     if is_pending_approval(item) {
         return Err("pending_approval_cannot_be_marked_read".to_string());
@@ -337,6 +364,10 @@ pub async fn apply_remote_inbox_action(
                 candidate.get("id").and_then(serde_json::Value::as_str) == Some(item_id)
             }) {
                 candidate["read"] = serde_json::Value::Bool(true);
+            } else if workflow_identity(item).is_some() {
+                let mut persisted_item = item.clone();
+                persisted_item["read"] = serde_json::Value::Bool(true);
+                persisted.push(persisted_item);
             } else {
                 return Err("inbox_item_not_persisted".to_string());
             }
@@ -373,17 +404,45 @@ pub async fn apply_remote_inbox_action(
                     }
                 }
             }
+            let known_workflow_runs = persisted
+                .iter()
+                .filter_map(workflow_identity)
+                .collect::<std::collections::HashSet<_>>();
+            for item in projected_items.iter().filter(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("workflow_completed")
+            }) {
+                let Some(identity) = workflow_identity(item) else {
+                    continue;
+                };
+                if known_workflow_runs.contains(&identity) {
+                    continue;
+                }
+                let mut persisted_item = item.clone();
+                persisted_item["read"] = serde_json::Value::Bool(true);
+                persisted.push(persisted_item);
+            }
             save_persisted_queue_items(&persisted)?;
         }
         "clear_read" => {
             let persisted = persisted_queue_items();
+            let mut workflow_dismissals = Vec::new();
             let next = persisted
                 .into_iter()
-                .filter(|item| {
-                    !(is_clearable_legacy_completion(item)
-                        && item.get("read").and_then(serde_json::Value::as_bool) == Some(true))
+                .filter_map(|item| {
+                    let clear = is_clearable_legacy_completion(&item)
+                        && item.get("read").and_then(serde_json::Value::as_bool) == Some(true);
+                    if clear {
+                        if let Some(marker) = workflow_dismissal_marker(&item) {
+                            workflow_dismissals.push(marker);
+                        }
+                        None
+                    } else {
+                        Some(item)
+                    }
                 })
                 .collect::<Vec<_>>();
+            let mut next = next;
+            next.extend(workflow_dismissals);
             save_persisted_queue_items(&next)?;
         }
         "dismiss" => {
@@ -404,6 +463,7 @@ pub async fn apply_remote_inbox_action(
                 .filter(|candidate| {
                     candidate.get("id").and_then(serde_json::Value::as_str) != Some(item_id)
                 })
+                .chain(workflow_dismissal_marker(item))
                 .collect::<Vec<_>>();
             save_persisted_queue_items(&next)?;
         }
@@ -1157,6 +1217,23 @@ mod tests {
             "read": false,
             "provider_choice_sent": "1"
         })));
+    }
+
+    #[test]
+    fn workflow_dismissal_marker_preserves_run_identity() {
+        let marker = workflow_dismissal_marker(&serde_json::json!({
+            "type": "workflow_completed",
+            "workflow_id": "release",
+            "workflow_run_id": "run-1",
+        }))
+        .expect("workflow item should produce a dismissal marker");
+
+        assert_eq!(marker["id"], "workflow-dismissed:release:run-1");
+        assert_eq!(marker["dismissed"], true);
+        assert_eq!(workflow_identity(&marker), Some((
+            "release".to_string(),
+            "run-1".to_string(),
+        )));
     }
 
     #[tokio::test]
