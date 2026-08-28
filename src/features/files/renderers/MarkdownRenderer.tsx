@@ -265,26 +265,57 @@ function codeText(children: ReactNode) {
   return headingText(children).replace(/\n$/, "");
 }
 
+async function writeMarkdownClipboardText(value: string) {
+  try {
+    await writeText(value);
+    return;
+  } catch (nativeError) {
+    const browserWriteText = typeof navigator === "undefined" ? undefined : navigator.clipboard?.writeText;
+    if (!browserWriteText) throw nativeError;
+    await browserWriteText.call(navigator.clipboard, value);
+  }
+}
+
 function MarkdownCodeBlock({
   children,
   ...props
 }: ComponentProps<"pre">) {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const resetTimer = useRef<number | null>(null);
   const text = codeText(children);
   const language = codeLanguage(children);
-  const copy = useCallback(() => {
-    void writeText(text).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1_500);
-    }).catch(() => undefined);
-  }, [text]);
+  const scheduleReset = useCallback((delay: number) => {
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+    resetTimer.current = window.setTimeout(() => {
+      resetTimer.current = null;
+      setCopyState("idle");
+    }, delay);
+  }, []);
+  useEffect(() => () => {
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+  }, []);
+  const copy = useCallback(async () => {
+    try {
+      await writeMarkdownClipboardText(text);
+      setCopyState("copied");
+      scheduleReset(1_500);
+    } catch {
+      setCopyState("error");
+      scheduleReset(2_200);
+    }
+  }, [scheduleReset, text]);
 
   return (
     <div className="files-markdown-code-block">
       <div className="files-markdown-code-toolbar">
         <span>{language}</span>
-        <button type="button" onClick={copy} aria-label={`Copy ${language} code`}>
-          {copied ? "Copied" : "Copy"}
+        <button
+          type="button"
+          onClick={() => void copy()}
+          aria-label={copyState === "idle" ? `Copy ${language} code` : `Copy ${language} code ${copyState}`}
+          title={copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : `Copy ${language} code`}
+        >
+          {copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : "Copy"}
         </button>
       </div>
       <pre {...props}>{children}</pre>

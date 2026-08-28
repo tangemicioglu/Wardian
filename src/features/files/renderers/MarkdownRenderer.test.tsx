@@ -159,6 +159,46 @@ describe("MarkdownRenderer", () => {
     expect(screen.getByText("Copied")).toBeInTheDocument();
   });
 
+  it("falls back to the browser clipboard when the desktop command is unavailable", async () => {
+    const browserWriteText = vi.fn().mockResolvedValue(undefined);
+    mockWriteText.mockRejectedValueOnce(new Error("native clipboard unavailable"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: browserWriteText },
+    });
+    const client = { readText: vi.fn().mockResolvedValue({
+      schema: 1,
+      resource_id: snapshot().resource_id,
+      revision: 1,
+      text: "```ts\nconst copied = true;\n```",
+    }) } as unknown as FileResourceClient;
+    render(<MarkdownRenderer {...props(client)} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy Ts code" }));
+
+    await waitFor(() => expect(browserWriteText).toHaveBeenCalledWith("const copied = true;"));
+    expect(screen.getByText("Copied")).toBeInTheDocument();
+  });
+
+  it("shows a copy failure when neither clipboard is available", async () => {
+    mockWriteText.mockRejectedValueOnce(new Error("native clipboard unavailable"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("browser clipboard unavailable")) },
+    });
+    const client = { readText: vi.fn().mockResolvedValue({
+      schema: 1,
+      resource_id: snapshot().resource_id,
+      revision: 1,
+      text: "```ts\nconst copied = true;\n```",
+    }) } as unknown as FileResourceClient;
+    render(<MarkdownRenderer {...props(client)} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy Ts code" }));
+
+    expect(await screen.findByText("Copy failed")).toBeInTheDocument();
+  });
+
   it("loads relative images through an authorized file resource ticket", async () => {
     const imageSnapshot = {
       ...snapshot(2),
