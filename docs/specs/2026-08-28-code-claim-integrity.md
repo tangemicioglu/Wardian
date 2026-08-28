@@ -133,13 +133,21 @@ courtesy.
 
 ## Settled mechanism
 
-Wardian-QA, 2026-08-28, scaffolded in `745bff37` and `31c02ec3`.
+Wardian-QA, 2026-08-28, scaffolded in `745bff37` and `31c02ec3`, then aligned
+to the split protocol in `f28f5abd`.
 
-The canonical CI input is `qa/code-claim-review.json` in the checkout, carrying
-`schema_version`, exact `base_sha` and `head_sha`, the isolated reviewer's
-identity, scope, findings, and derived result. CI checks head freshness and
-base ancestry without invoking a model. `gh attach` was rejected as a CI input,
-being presentation evidence with no revision binding.
+**`docs/specs/2026-08-28-code-claim-review.md` is the normative implementation
+spec.** This document is the trial evidence and the decision trail. Where the
+two disagree, that one wins. Read this one for why the mechanism exists and
+what it was measured against, not for how it works.
+
+The single-artifact design first agreed here did not survive the split
+protocol. CI now reads one cold audit report at `qa/code-claim-audit.json` plus
+one cold confirmation report per proposed false claim under
+`qa/code-claim-confirmations/`. Review generation stays outside CI, which
+checks head freshness and base ancestry without invoking a model. GitHub issue
+attachments were rejected as CI input, being presentation evidence that is
+neither reliably available to a checkout nor head-bound.
 
 Only `confirmed_false` findings may block, and each must carry a
 repository-safe pattern predicate of path plus regex plus a present or absent
@@ -201,10 +209,10 @@ expectation.
 
 ## Open
 
-QA holds a scaffold adaptation brief covering closed-schema and RFC3339
-enforcement, realpath containment against symlink and junction escape, bounded
-regex execution, and advisory-only behaviour until trusted distinct-run receipts
-exist.
+The scaffold is committed and remains advisory until Wardian supplies trusted
+run receipts. That provenance requirement is tracked on issue #872. The brief
+behind it covers closed-schema and RFC3339 enforcement, realpath containment
+against symlink and junction escape, and bounded regex execution.
 
 That last condition composes with the blocking policy above rather than
 contradicting it. A finding is not independently confirmed until receipts prove
