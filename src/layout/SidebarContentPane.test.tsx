@@ -164,17 +164,20 @@ describe("SidebarContentPane", () => {
     workflowMonitorGlanceMock.mockReset();
   });
 
-  it("gives agent creation one prominent title and a consistently spaced description", () => {
+  it("uses the shared heading-to-subheading spacing for agent creation", () => {
     renderPane();
 
     expect(screen.getByRole("heading", { name: "Agent Configuration", level: 2 })).toHaveClass("text-sm");
-    expect(screen.getByText("Create an agent with the workspace, provider, and capabilities it needs."))
-      .toHaveClass("mt-1");
+    expect(screen.getByRole("heading", { name: "Spawn Agent", level: 3 })).toHaveClass(
+      "mt-1",
+      "text-xs",
+      "font-bold",
+      "tracking-wide",
+    );
     expect(screen.getByTestId("spawn-agent-panel-mock")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
   });
 
-  it("keeps the same title-to-description rhythm while configuring a selected agent", () => {
+  it("uses the shared heading-to-subheading spacing while configuring a selected agent", () => {
     const setSelectedAgentIds = vi.fn();
     render(
       <SidebarContentPane
@@ -194,7 +197,12 @@ describe("SidebarContentPane", () => {
       />,
     );
 
-    expect(screen.getByText("Update Workflow Owner's workspace, provider, and capabilities.")).toHaveClass("mt-1");
+    expect(screen.getByRole("heading", { name: "Configure Agent", level: 3 })).toHaveClass(
+      "mt-1",
+      "text-xs",
+      "font-bold",
+      "tracking-wide",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
     expect(setSelectedAgentIds).toHaveBeenCalledWith(new Set());
     expect(screen.getByTestId("configure-agent-panel-mock")).toBeInTheDocument();

@@ -87,9 +87,7 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
           <section aria-labelledby="agent-configuration-heading">
             <SidebarPaneHeader
               title="Agent Configuration"
-              description={selectedAgent
-                ? `Update ${selectedAgent.session_name}'s workspace, provider, and capabilities.`
-                : "Create an agent with the workspace, provider, and capabilities it needs."}
+              subheading={selectedAgent ? "Configure Agent" : "Spawn Agent"}
               action={selectedAgent ? (
                 <button
                   type="button"
@@ -145,18 +143,18 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
 
 function SidebarPaneHeader({
   title,
-  description,
+  subheading,
   action = null,
 }: {
   title: string;
-  description: string;
+  subheading: string;
   action?: React.ReactNode;
 }) {
   return (
     <header className="mb-4 flex min-h-7 items-start gap-2">
       <div className="min-w-0 flex-1">
         <h2 id="agent-configuration-heading" className="text-sm font-bold tracking-tight text-primary">{title}</h2>
-        <p className="mt-1 text-xs leading-4 text-muted-neutral">{description}</p>
+        <h3 className="mt-1 text-xs font-bold tracking-wide text-muted-neutral">{subheading}</h3>
       </div>
       {action}
     </header>
