@@ -76,11 +76,11 @@ describe("CI workflow contract", () => {
     );
     expect(native).toContain("run: npm run setup:e2e:native");
     expect(native).toContain("run: npm run tauri -- build --debug --no-bundle");
-    expect(native).toContain("npm run test:e2e:native:fast --");
-    expect(native).toContain("e2e-native/tests/workbench-persistence-native.test.mjs");
-    expect(native).toContain("e2e-native/tests/terminal-presentation-broker-native.test.mjs");
-    expect(native).toContain("e2e-native/tests/workbench-runtime-lifecycle-native.test.mjs");
-    expect(native).toContain("e2e-native/tests/remote-gateway-native.test.mjs");
+    // The job selects a tier rather than naming files, so a new native test
+    // joins CI by declaring `// @tier ci`. The membership assertion moved to
+    // nativeE2eTargets.test.ts, which reads the declarations themselves.
+    expect(native).toContain("run: npm run test:e2e:native:ci");
+    expect(native).not.toMatch(/e2e-native\/tests\/\S+\.test\.mjs/);
     expect(native).not.toContain("${{ runner.temp }}\\wardian-e2e-native-workbench");
     expect(native.match(/WARDIAN_HOME: \$\{\{ github\.workspace \}\}\\\.tmp\\e2e-native\\wardian-e2e-native-workbench/g))
       .toHaveLength(2);

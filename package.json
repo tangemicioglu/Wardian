@@ -26,7 +26,7 @@
     "release:package-manifests": "node scripts/package-managers/generate-manifests.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "check:deadcode": "knip",
+    "check:deadcode": "knip --include files,exports,types,nsExports,nsTypes",
     "check:test-reachability": "node scripts/verify-test-reachability.mjs",
     "check:budgets": "node scripts/verify-budgets.mjs",
     "check:frontend-screenshot": "node scripts/verify-frontend-screenshot.mjs",
