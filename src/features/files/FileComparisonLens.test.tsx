@@ -8,6 +8,7 @@ import { FileComparisonLens } from "./FileComparisonLens";
 
 const createDiffEditor = vi.fn();
 const createModel = vi.fn();
+const defineTheme = vi.fn();
 const getModel = vi.fn();
 const uriFrom = vi.fn((parts: { path: string }) => ({ path: parts.path }));
 const addCommand = vi.fn();
@@ -20,6 +21,7 @@ vi.mock("monaco-editor", () => ({
     create: vi.fn(),
     createDiffEditor,
     createModel,
+    defineTheme,
     getModel,
     setModelLanguage: vi.fn(),
     setTheme: vi.fn(),
@@ -157,6 +159,10 @@ describe("FileComparisonLens", () => {
       setModel: ReturnType<typeof vi.fn>;
     };
     expect(diffEditor.setModel).toHaveBeenCalledOnce();
+    expect(createDiffEditor).toHaveBeenCalledWith(expect.any(HTMLElement), expect.objectContaining({
+      theme: "wardian-light",
+    }));
+    expect(defineTheme).toHaveBeenCalledWith("wardian-light", expect.any(Object));
     const pair = diffEditor.setModel.mock.calls[0]?.[0] as {
       original: FakeModel;
       modified: FakeModel;

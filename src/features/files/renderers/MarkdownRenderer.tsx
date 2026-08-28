@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import Markdown, { type Components } from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -254,6 +255,85 @@ function filesMarkdownUrlTransform(rawUrl: string) {
     : markdownUrlTransform(rawUrl);
 }
 
+function codeLanguage(children: ReactNode) {
+  if (!isValidElement<{ className?: string }>(children)) return "text";
+  const language = children.props.className?.match(/(?:^|\s)language-([^\s]+)/)?.[1];
+  return language?.replace(/^./, (letter) => letter.toUpperCase()) ?? "text";
+}
+
+function codeText(children: ReactNode) {
+  return headingText(children).replace(/\n$/, "");
+}
+
+async function writeMarkdownClipboardText(value: string) {
+  try {
+    await writeText(value);
+    return;
+  } catch (nativeError) {
+    const browserWriteText = typeof navigator === "undefined" ? undefined : navigator.clipboard?.writeText;
+    if (!browserWriteText) throw nativeError;
+    await browserWriteText.call(navigator.clipboard, value);
+  }
+}
+
+function MarkdownCodeBlock({
+  children,
+  ...props
+}: ComponentProps<"pre">) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const resetTimer = useRef<number | null>(null);
+  const text = codeText(children);
+  const language = codeLanguage(children);
+  const scheduleReset = useCallback((delay: number) => {
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+    resetTimer.current = window.setTimeout(() => {
+      resetTimer.current = null;
+      setCopyState("idle");
+    }, delay);
+  }, []);
+  useEffect(() => () => {
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+  }, []);
+  const copy = useCallback(async () => {
+    try {
+      await writeMarkdownClipboardText(text);
+      setCopyState("copied");
+      scheduleReset(1_500);
+    } catch {
+      setCopyState("error");
+      scheduleReset(2_200);
+    }
+  }, [scheduleReset, text]);
+
+  return (
+    <div className="files-markdown-code-block">
+      <div className="files-markdown-code-toolbar">
+        <span>{language}</span>
+        <button
+          type="button"
+          onClick={() => void copy()}
+          aria-label={copyState === "idle" ? `Copy ${language} code` : `Copy ${language} code ${copyState}`}
+          title={copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : `Copy ${language} code`}
+        >
+          {copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : "Copy"}
+        </button>
+      </div>
+      <pre {...props}>{children}</pre>
+    </div>
+  );
+}
+
+function MarkdownTable({
+  children,
+  ...props
+}: ComponentProps<"table">) {
+  return (
+    <div className="files-markdown-table-scroll" tabIndex={0} aria-label="Scrollable table">
+      <table {...props}>{children}</table>
+    </div>
+  );
+}
+
 type MarkdownImageProps = ComponentProps<"img"> & {
   source_path: string;
   resource_request: FileRendererProps["resource_request"];
@@ -419,6 +499,8 @@ export default function MarkdownRenderer({
         lifecycle={{ visible: lifecycle.visible }}
       />
     ),
+    pre: MarkdownCodeBlock,
+    table: MarkdownTable,
   }), [client, embeddedResourceRequest, lifecycle.visible, openFragment, sourcePath]);
 
   useEffect(() => {

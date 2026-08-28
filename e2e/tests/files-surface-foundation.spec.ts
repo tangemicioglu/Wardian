@@ -400,6 +400,14 @@ test("renders a complete Markdown document without flashing during revision refr
     "| --- | --- |",
     "| Files | Active |",
     "",
+    "```ts",
+    "const preview = 'accurate';",
+    "```",
+    "",
+    "See the source note.[^source]",
+    "",
+    "[^source]: Markdown stays portable.",
+    "",
     "<details open><summary>Details</summary>Sanitized HTML content.</details>",
   ].join("\n");
   const ipc = await bootFilesWorkbench(page, {
@@ -426,7 +434,12 @@ test("renders a complete Markdown document without flashing during revision refr
     .toBeGreaterThan(0);
   await title.evaluate((element) => { element.setAttribute("data-render-identity", "heading"); });
   await figure.evaluate((element) => { element.setAttribute("data-render-identity", "image"); });
-  await expect(surface.getByRole("table")).toContainText("Files");
+  const table = surface.getByRole("table");
+  await expect(table).toContainText("Files");
+  await expect(table.locator("xpath=.."))
+    .toHaveClass(/files-markdown-table-scroll/);
+  await expect(surface.getByRole("button", { name: "Copy Ts code" })).toBeVisible();
+  await expect(surface.getByText("Markdown stays portable.")).toBeVisible();
   await expect(surface.getByText("Sanitized HTML content.")).toBeVisible();
   const titleStyle = await title.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -434,6 +447,12 @@ test("renders a complete Markdown document without flashing during revision refr
   });
   expect(titleStyle.fontSize).toBeGreaterThan(24);
   expect(titleStyle.fontWeight).toBeGreaterThanOrEqual(600);
+
+  await surface.screenshot({
+    path: path.resolve(
+      "e2e/screenshots/files-markdown-monaco/2026-08-28/rendered-markdown.png",
+    ),
+  });
 
   await surface.evaluate((element) => {
     (window as Window & { __markdownSawLoading?: boolean }).__markdownSawLoading = false;
@@ -496,6 +515,12 @@ test("switches Markdown source without reopening the resource and preserves it p
     .locator("svg.lucide-pencil")).toBeVisible();
   expect((await ipc.calls("open_file_resource")).length).toBe(openCount);
 
+  await page.getByTestId("files-surface").screenshot({
+    path: path.resolve(
+      "e2e/screenshots/files-markdown-monaco/2026-08-28/markdown-source-editor-wide.png",
+    ),
+  });
+
   await betaRow.dblclick();
   await expect(page.getByRole("heading", { name: "Beta document" })).toBeVisible();
   await filesTab(page, ALPHA_PATH).click();
@@ -532,7 +557,7 @@ test("switches Markdown source without reopening the resource and preserves it p
 
   await page.screenshot({
     path: path.resolve(
-      "e2e/screenshots/files-editor/2026-07-18/markdown-editor-toggle.png",
+      "e2e/screenshots/files-markdown-monaco/2026-08-28/markdown-source-editor.png",
     ),
     fullPage: true,
   });

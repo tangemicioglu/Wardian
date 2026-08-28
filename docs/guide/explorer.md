@@ -92,11 +92,18 @@ already reloaded its stable backend revision.
 
 Rendered Markdown includes a compact presentation icon beside the file actions.
 The reading icon indicates rendered Markdown; activating it switches the current
-Preview presentation to the read-only Monaco source view. The pencil indicates
+Preview presentation to the editable Monaco source view. The pencil indicates
 source; activating it switches back to rendered Markdown. The tooltip and
 accessible label describe that action. This does not create another tab or file
 subscription. Plain text is already source, while images and PDFs keep their
 media-specific controls.
+
+Markdown previews preserve the file as the source of truth while making long
+documents easier to scan: GitHub-flavored tables stay semantic and scroll when
+they are wider than the pane, footnotes and task lists render as document
+content, and fenced code blocks show their language with a **Copy** action.
+The source editor uses the active Wardian theme, wraps Markdown for reading and
+editing, and keeps ordinary code horizontally scrollable.
 
 Windows paths are shown without the internal `\\?\` extended-length prefix.
 Wardian still retains and authorizes the original canonical path behind the

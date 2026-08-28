@@ -23,6 +23,7 @@ import {
   releaseCanonicalFileModel,
   releaseFileBaselineModel,
 } from "./fileMonacoModels";
+import { configureFileMonacoTheme, fileMonacoThemeName } from "./fileMonacoTheme";
 import { resolveFilesComparisonLayout } from "./filesSurfaceState";
 
 type ComparisonLayoutPreference = FilesSurfaceStateV2["comparison_layout_preference"];
@@ -42,10 +43,6 @@ export type FileComparisonLensProps = {
   /** Exact immutable text for artifact/checkpoint baselines. */
   baseline_text?: string | null;
 };
-
-function theme(): string {
-  return document.documentElement.getAttribute("data-theme") === "dark" ? "vs-dark" : "vs";
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -210,6 +207,7 @@ export function FileComparisonLens({
     void loadFileMonaco().then((monaco) => {
       if (cancelled) return;
       modified = acquireCanonicalFileModel(monaco, resourceId, controller, language);
+      configureFileMonacoTheme(monaco);
       diffEditor = monaco.editor.createDiffEditor(host, {
         automaticLayout: false,
         fontSize: 13,
@@ -220,7 +218,7 @@ export function FileComparisonLens({
         useInlineViewWhenSpaceIsLimited: false,
         renderValidationDecorations: "off",
         scrollBeyondLastLine: false,
-        theme: theme(),
+        theme: fileMonacoThemeName(),
         wordWrap: "off",
       });
       diffEditorRef.current = diffEditor;
@@ -245,7 +243,10 @@ export function FileComparisonLens({
           }
         },
       );
-      themeObserver = new MutationObserver(() => monaco.editor.setTheme(theme()));
+      themeObserver = new MutationObserver(() => {
+        configureFileMonacoTheme(monaco);
+        monaco.editor.setTheme(fileMonacoThemeName());
+      });
       themeObserver.observe(document.documentElement, {
         attributes: true,
         attributeFilter: ["data-theme"],

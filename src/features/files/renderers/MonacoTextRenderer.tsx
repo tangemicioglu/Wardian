@@ -7,6 +7,7 @@ import {
   loadFileMonaco,
   releaseCanonicalFileModel,
 } from "../fileMonacoModels";
+import { configureFileMonacoTheme, fileMonacoThemeName } from "../fileMonacoTheme";
 import {
   fileDiffDecorations,
   fileDiffForController,
@@ -34,10 +35,6 @@ function canEditText(descriptor: FileRendererProps["snapshot"]["descriptor"]) {
     && descriptor.size_bytes <= MONACO_MAX_SIZE_BYTES
     && descriptor.line_count !== null
     && descriptor.line_count <= MONACO_MAX_LINE_COUNT;
-}
-
-function monacoTheme() {
-  return document.documentElement.getAttribute("data-theme") === "dark" ? "vs-dark" : "vs";
 }
 
 type ViewAnnotations = {
@@ -216,16 +213,38 @@ export default function MonacoTextRenderer({
       const host = hostRef.current;
       if (!host) return;
       model = acquireCanonicalFileModel(monaco, modelKey, controller, language);
+      configureFileMonacoTheme(monaco);
       editor = monaco.editor.create(host, {
         automaticLayout: false,
-        fontSize: 13,
+        accessibilitySupport: "auto",
+        bracketPairColorization: { enabled: true },
+        cursorBlinking: "smooth",
+        cursorSmoothCaretAnimation: "on",
+        fontFamily: "'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace",
+        fontLigatures: true,
+        fontSize: 14,
+        guides: { bracketPairs: true, indentation: true },
+        lineHeight: 22,
+        lineNumbersMinChars: 3,
         minimap: { enabled: false },
         model,
+        padding: { top: 12, bottom: 16 },
         readOnly: readOnlyRef.current,
+        renderLineHighlight: "all",
         renderValidationDecorations: "off",
+        scrollbar: {
+          horizontalScrollbarSize: 10,
+          verticalScrollbarSize: 10,
+          useShadows: false,
+        },
+        selectionHighlight: true,
+        smoothScrolling: true,
         scrollBeyondLastLine: false,
-        theme: monacoTheme(),
-        wordWrap: "off",
+        stickyScroll: { enabled: true },
+        tabSize: 2,
+        theme: fileMonacoThemeName(),
+        wordWrap: language === "markdown" ? "on" : "off",
+        wrappingIndent: "same",
       });
       editorRef.current = editor;
       annotations = installViewAnnotations(editor, controller, baselineRef.current, updateChanges);
@@ -244,7 +263,10 @@ export default function MonacoTextRenderer({
           if (!cancelled) setSaveError(`Save failed: ${errorMessage(cause)}`);
         }
       });
-      themeObserver = new MutationObserver(() => monaco.editor.setTheme(monacoTheme()));
+      themeObserver = new MutationObserver(() => {
+        configureFileMonacoTheme(monaco);
+        monaco.editor.setTheme(fileMonacoThemeName());
+      });
       themeObserver.observe(document.documentElement, {
         attributes: true,
         attributeFilter: ["data-theme"],
