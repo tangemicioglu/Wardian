@@ -3170,6 +3170,7 @@ pub async fn resume_agent(
         acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "resume").await?;
     let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(_lifecycle_lease.owner().clone());
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
+    state.native_delivery.dispose_agent(&session_id).await;
     let snapshot = {
         let agents = state.agents.lock().await;
         let agent = agents
@@ -4035,6 +4036,7 @@ async fn clear_agent_session_inner(
         .unwrap_or_else(|| LifecycleLeaseHeartbeat::start(lifecycle_lease.owner().clone()));
     let _lifecycle_guard =
         acquire_agent_lifecycle_guard(&state, &session_id, lifecycle.guard).await;
+    state.native_delivery.dispose_agent(&session_id).await;
     let original_config = {
         let agents = state.agents.lock().await;
         let agent = agents

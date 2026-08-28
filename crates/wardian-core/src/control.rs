@@ -148,6 +148,8 @@ pub enum ControlRequest {
         /// Upper bound for a provider process started for an offline target.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         headless_timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orchestration: Option<OrchestrationDeliveryOptions>,
     },
     NotifyCreate {
         notification: InboxNotificationPayload,
@@ -166,6 +168,8 @@ pub enum ControlRequest {
         timeout_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin: Option<MessageOrigin>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orchestration: Option<OrchestrationDeliveryOptions>,
     },
     AskMany {
         targets: Vec<String>,
@@ -175,6 +179,8 @@ pub enum ControlRequest {
         timeout_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin: Option<MessageOrigin>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orchestration: Option<OrchestrationDeliveryOptions>,
     },
     SubmitReply {
         request_id: String,
@@ -182,6 +188,27 @@ pub enum ControlRequest {
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin: Option<MessageOrigin>,
+    },
+    DeliveryGet {
+        interaction_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evidence_limit: Option<usize>,
+    },
+    DeliveryCancel {
+        interaction_id: String,
+    },
+    DeliveryWithdraw {
+        interaction_id: String,
+    },
+    DeliveryReplace {
+        interaction_id: String,
+        message: String,
+        idempotency_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_at: Option<String>,
+    },
+    DeliveryCapabilities {
+        target: String,
     },
     AgentWatch {
         target: String,
@@ -359,6 +386,40 @@ impl QueuePolicy {
     pub fn is_queue_if_busy(&self) -> bool {
         matches!(self, Self::QueueIfBusy)
     }
+}
+
+/// Provider-neutral delivery controls shared by ask and notify/send. These
+/// fields are owned by Wardian and never projected as provider topology.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrchestrationDeliveryOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_generation: Option<u64>,
+    #[serde(default)]
+    pub operation: crate::native_transport::NativeMessageOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeDeliveryInspectResponse {
+    pub schema: u8,
+    pub record: crate::native_transport::NativeDeliveryRecord,
+    pub evidence: Vec<crate::native_transport::NativeDeliveryEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeDeliveryCapabilitiesResponse {
+    pub schema: u8,
+    pub target_agent_id: String,
+    pub broker_queue_withdrawal: bool,
+    pub broker_queue_replacement: bool,
+    pub native_negotiated: bool,
+    pub capabilities: crate::native_transport::NativeTransportCapabilities,
+    pub candidate_capabilities: crate::native_transport::NativeTransportCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<crate::native_transport::NativeSessionBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -744,6 +805,7 @@ pub struct InteractionRecord {
 pub enum DeliveryTransportKind {
     LiveSurface,
     HeadlessProcess,
+    NativeProvider,
     ProviderHook,
     ProviderPlugin,
     LocalControl,
@@ -1325,6 +1387,7 @@ mod tests {
             origin: None,
             target_scope: None,
             headless_timeout_ms: None,
+            orchestration: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains(r#""command":"send_message""#));
@@ -1346,6 +1409,7 @@ mod tests {
             }),
             target_scope: None,
             headless_timeout_ms: None,
+            orchestration: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1369,6 +1433,7 @@ mod tests {
             }),
             target_scope: None,
             headless_timeout_ms: None,
+            orchestration: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1390,6 +1455,7 @@ mod tests {
             origin: None,
             target_scope: None,
             headless_timeout_ms: None,
+            orchestration: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1419,6 +1485,7 @@ mod tests {
                 origin: None,
                 target_scope: None,
                 headless_timeout_ms: None,
+                orchestration: None,
             }
         );
     }
@@ -1557,6 +1624,7 @@ mod tests {
             origin: Some(MessageOrigin::WardianAgent {
                 session_id: "source-1".to_string(),
             }),
+            orchestration: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1579,6 +1647,7 @@ mod tests {
             tail_bytes: Some(65_536),
             timeout_ms: Some(30_000),
             origin: None,
+            orchestration: None,
         };
         let request_json = serde_json::to_string(&req).unwrap();
         assert!(request_json.contains(r#""command":"ask_many""#));
