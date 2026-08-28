@@ -4,6 +4,7 @@ mod browser;
 mod disk;
 mod errors;
 mod graph;
+mod inbox;
 mod library;
 mod live;
 mod memory;
@@ -61,6 +62,7 @@ fn run() -> i32 {
         Command::Artifact(args) => artifact::handle_artifact(args),
         Command::Browser(args) => browser::handle_browser(args),
         Command::Conversation(args) => handle_conversation(args),
+        Command::Inbox(args) => inbox::handle_inbox(args),
         Command::Memory(args) => memory::handle_memory(args),
         Command::Library(args) => library::handle_library(args),
         Command::Workflow(args) => handle_workflow(args),

@@ -83,6 +83,7 @@ pub enum ControlRequest {
     ConversationShow {
         conversation_id: String,
     },
+    InboxList,
     ArtifactPresent {
         path: String,
         title: Option<String>,
@@ -457,6 +458,21 @@ impl AgentListResponse {
 pub struct ConversationListResponse {
     pub schema: u8,
     pub conversations: Vec<ConversationIndexEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InboxListResponse {
+    pub schema: u8,
+    pub items: Vec<serde_json::Value>,
+}
+
+impl InboxListResponse {
+    pub fn new(items: Vec<serde_json::Value>) -> Self {
+        Self {
+            schema: CONTROL_SCHEMA,
+            items,
+        }
+    }
 }
 
 impl ConversationListResponse {
@@ -1737,6 +1753,24 @@ mod tests {
                 conversation_id: "conv_20260615_agent_1".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn inbox_list_request_and_response_use_current_schema() {
+        let request = ControlRequest::InboxList;
+        let value = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(value["command"], "inbox_list");
+        assert_eq!(
+            serde_json::from_value::<ControlRequest>(value).expect("roundtrip"),
+            request
+        );
+
+        let response = InboxListResponse::new(vec![serde_json::json!({
+            "id": "item-1",
+            "type": "agent_update",
+        })]);
+        assert_eq!(response.schema, CONTROL_SCHEMA);
+        assert_eq!(response.items[0]["id"], "item-1");
     }
 
     #[test]

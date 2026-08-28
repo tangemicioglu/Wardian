@@ -134,6 +134,7 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
                 "timestamp": queue_timestamp(&notification.created_at),
                 "read": if is_approval { notification.status != InteractionStatus::AwaitingReply } else { read_notification_ids.contains(notification.id.as_str()) },
                 "agent_session_id": notification.sender_session_id,
+                "evidence_source": "interaction_store",
                 "notification_title": notification.title,
                 "inbox_notification_id": notification.id,
                 "notification_status": notification.status,
@@ -154,6 +155,7 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
             "type": "approval_request",
             "timestamp": approval.created_at.as_deref().map(queue_timestamp).unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
             "read": false,
+            "evidence_source": "live_runtime",
             "workflow_id": approval.blueprint_id,
             "workflow_run_id": approval.run_id,
             "workflow_name": approval.title,
@@ -1135,6 +1137,7 @@ mod tests {
             .find(|item| item["inbox_notification_id"] == notification.id)
             .expect("live inbox notification");
         assert_eq!(item["type"], "approval_request");
+        assert_eq!(item["evidence_source"], "interaction_store");
         assert_eq!(item["notification_title"], "Approve deployment");
         assert_eq!(
             item["approval_choices"],

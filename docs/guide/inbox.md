@@ -78,9 +78,33 @@ history remains intact without recreating the Inbox card on the next refresh.
 Durable notification history and read **Action needed** prompts remain visible,
 and the control is disabled when there are no completion items to clear.
 
-## Agent Notifications
+## Agent Read and Write Paths
 
-From a Wardian-managed agent session, use the CLI rather than writing a terminal message that looks like a request:
+Agents have a read path and a write path. Read the shared Inbox projection
+before deciding whether another update or action is needed:
+
+```bash
+wardian inbox list
+wardian inbox list --unread --type action_needed,approval_request \
+  --source provider_runtime,interaction_store
+```
+
+PowerShell:
+
+```powershell
+wardian inbox list
+wardian inbox list --unread --type action_needed,approval_request `
+  --source provider_runtime,interaction_store
+```
+
+The result is newest first and includes a schema, item type, read state,
+timestamp, and evidence source. Use `--limit` and `--offset` for bounded
+polling. The read command is side-effect-free; it does not mark, dismiss, or
+resolve an item. If the desktop app is unavailable, the CLI uses persisted
+queue and durable notification records.
+
+From a Wardian-managed agent session, use the write path rather than writing a
+terminal message that looks like a request:
 
 ```bash
 wardian notify update "Implemented the migration and found one compatibility risk" \

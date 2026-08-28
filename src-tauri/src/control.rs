@@ -17,7 +17,8 @@ use wardian_core::control::{
     AskManyResponse, AskResponse, AskTargetOutcome, AskTargetResponse, CodexPluginDiagnostic,
     ControlRequest, ConversationListResponse, ConversationShowResponse, DeliveryDetail,
     DeliveryErrorDetail, DeliveryTransportKind, InboxNotificationKind, InboxNotificationPayload,
-    InboxNotificationResponse, InteractionBodyRef, InteractionStatus, MessageInputMode,
+    InboxListResponse, InboxNotificationResponse, InteractionBodyRef, InteractionStatus,
+    MessageInputMode,
     MessageOrigin, OkResponse, ProviderInputReadiness, ProviderReadyEvidence, QueuePolicy,
     ReplyResponse, ReplyStatus, SendMessageResponse, StructuredReply, WatchAgentSnapshot,
     WatchDeliverySnapshot, WatchEvidenceError,
@@ -643,6 +644,12 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 )
                 .map_err(ControlError::request_failed)?;
             ok_json(&response)
+        }
+
+        ControlRequest::InboxList => {
+            let state = app.state::<AppState>();
+            let items = crate::remote::operations::remote_queue_items(state.inner()).await;
+            ok_json(&InboxListResponse::new(items))
         }
 
         ControlRequest::ArtifactPresent {
