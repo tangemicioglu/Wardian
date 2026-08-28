@@ -1,3 +1,4 @@
+use crate::limits::{MAX_LIBRARY_DEPLOYMENTS, MAX_LIBRARY_SKILL_SOURCES};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,9 +30,6 @@ pub struct DeploymentScan {
     pub orphans: Vec<OrphanDeployment>,
     pub truncated: bool,
 }
-
-pub const MAX_LIBRARY_SKILL_SOURCES: usize = 1_000;
-pub const MAX_LIBRARY_DEPLOYMENTS: usize = 2_000;
 
 /// Recursively walk `library/skills` collecting every directory containing
 /// a `SKILL.md`. Port of `collect_library_skill_sources` from

@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use tauri::{AppHandle, Emitter};
+use wardian_core::limits::{MAX_ACTIVITY_PAIRS, MAX_ACTIVITY_RECORDS};
 use wardian_core::topology::{
     load_reconciled_topology, load_topology, pair_activity_from_records, resolve_neighbors,
     save_topology, PairActivity, Topology,
@@ -128,9 +129,6 @@ pub async fn ignore_topology_pair(app: AppHandle, a: String, b: String) -> Resul
 pub async fn unignore_topology_pair(app: AppHandle, a: String, b: String) -> Result<bool, String> {
     mutate(&app, |topology| topology.unignore_pair(&a, &b))
 }
-
-const MAX_ACTIVITY_RECORDS: usize = 5_000;
-const MAX_ACTIVITY_PAIRS: usize = 1_000;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PairActivityResult {

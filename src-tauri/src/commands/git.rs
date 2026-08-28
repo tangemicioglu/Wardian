@@ -7,12 +7,11 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter};
+use wardian_core::limits::MAX_GIT_STATUS_FILES;
 use wardian_core::models::git::{
     GitBranchSummary, GitCommitChangeEntry, GitFileEntry, GitLogEntry, GitStashEntry,
     GitStatusResult,
 };
-
-const MAX_GIT_STATUS_FILES: usize = 1_000;
 
 /// Run a git command in the given directory and return stdout as a String.
 ///

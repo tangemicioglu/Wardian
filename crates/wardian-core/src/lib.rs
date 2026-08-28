@@ -11,6 +11,7 @@ pub mod engine;
 pub mod files;
 pub mod identity;
 pub mod library;
+pub mod limits;
 pub mod memory;
 pub mod models;
 pub mod paths;

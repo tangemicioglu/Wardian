@@ -8,6 +8,7 @@ use tauri::{AppHandle, State};
 use wardian_core::control::WorkflowRunResponse;
 use wardian_core::engine::store::{read_checkpoint, read_events};
 use wardian_core::engine::RunStatus;
+use wardian_core::limits::{MAX_WORKFLOW_BLUEPRINTS, MAX_WORKFLOW_RUNS};
 use wardian_core::models::{
     InvocationKind, WorkflowAssignments, WorkflowRoleAssignment, WorkflowSchedule,
 };
@@ -95,8 +96,6 @@ pub fn workflow_write(path: String, mut blueprint: Blueprint) -> Result<serde_js
     Ok(serde_json::json!({ "written": true, "diagnostics": [] }))
 }
 
-pub const MAX_WORKFLOW_BLUEPRINTS: usize = 500;
-
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkflowBlueprintListResult {
     pub blueprints: Vec<serde_json::Value>,
@@ -134,7 +133,6 @@ pub fn workflow_list_blueprints(
 
 /// List the 200 newest workflow runs under
 /// `<home>/logs/workflows/<id>/<run_id>/`.
-pub const MAX_WORKFLOW_RUNS: usize = 200;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkflowRunListResult {
