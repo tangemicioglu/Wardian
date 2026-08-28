@@ -91,7 +91,6 @@ export function fileNameFromPath(path: string): string {
   return segments[segments.length - 1] || path;
 }
 
-/** Formats paths for insertion without submitting the terminal prompt. */
 /** Resolves the configured shell, including the platform's automatic choice. */
 export function resolveTerminalShellId(
   shellId: string,

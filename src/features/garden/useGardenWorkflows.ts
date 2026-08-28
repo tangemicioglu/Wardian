@@ -71,17 +71,14 @@ export async function loadGardenWorkflowInputs(
   invoker: GardenInvoke = invoke as GardenInvoke,
   blueprintOffset = 0,
 ): Promise<GardenWorkflowInputsResult> {
-  // `invoke` can resolve to null (not just reject), so every read below is
-  // null-guarded. The failure value keeps the page shape the command declares,
-  // so no consumer has to branch on a collection the backend cannot return.
   const blueprintResult = (await (
     blueprintOffset > 0
       ? invoker("workflow_list_blueprints", { offset: blueprintOffset })
       : invoker("workflow_list_blueprints")
-  ).catch(() => EMPTY_BLUEPRINT_PAGE)) as BlueprintListResult | null;
-  const refs = blueprintResult?.blueprints ?? [];
-  const truncated = Boolean(blueprintResult?.truncated);
-  const nextOffset = blueprintResult?.next_offset ?? null;
+  ).catch(() => EMPTY_BLUEPRINT_PAGE)) as BlueprintListResult;
+  const refs = blueprintResult.blueprints;
+  const truncated = blueprintResult.truncated;
+  const nextOffset = blueprintResult.next_offset;
   const nextBlueprintKey = blueprintRefsKey(refs);
   let blueprints = cachedBlueprintKey === nextBlueprintKey ? cachedBlueprints : null;
 
@@ -110,15 +107,14 @@ export async function loadGardenWorkflowInputs(
   // cached with the blueprints: run status changes constantly, and a schedule
   // can be rebound without the blueprint file changing at all.
   const [runResult, schedules] = await Promise.all([
-    invoker("workflow_list_runs").catch(() => EMPTY_RUN_PAGE) as Promise<RunSummaryListResult | null>,
+    invoker("workflow_list_runs").catch(() => EMPTY_RUN_PAGE) as Promise<RunSummaryListResult>,
     invoker("schedule_list").catch(() => []) as Promise<WorkflowScheduleRecord[]>,
   ]);
-  const runs = runResult?.runs ?? [];
   return {
     workflows: mergeWorkflowRunStatus(
       blueprints,
-      runs ?? [],
-      deploymentsByBlueprint(schedules ?? []),
+      runResult.runs,
+      deploymentsByBlueprint(schedules),
     ),
     truncated,
     nextOffset,

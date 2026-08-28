@@ -17,7 +17,7 @@ const TIER_PATTERN = /^\s*\/\/\s*@tier\s+([a-z]+)/m;
 export function nativeE2eTier(file) {
   const match = TIER_PATTERN.exec(readFileSync(file, "utf8"));
   if (!match) return null;
-  return NATIVE_E2E_TIERS.includes(match[1]) ? match[1] : match[1];
+  return NATIVE_E2E_TIERS.includes(match[1]) ? match[1] : null;
 }
 
 /**
