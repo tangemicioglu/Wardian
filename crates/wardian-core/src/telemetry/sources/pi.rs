@@ -541,7 +541,10 @@ mod tests {
             second.edits.first().map(|edit| edit.workspace.clone()),
             None
         );
-        assert_eq!(second.carry.cwd.as_deref(), Some("D:\\Development\\Wardian"));
+        assert_eq!(
+            second.carry.cwd.as_deref(),
+            Some("D:\\Development\\Wardian")
+        );
     }
 
     #[test]

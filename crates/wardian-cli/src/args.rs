@@ -269,11 +269,18 @@ pub enum BrowserCookieCommand {
 /// Storage verbs. A bare key reads it; no key at all lists the area.
 #[derive(Debug, Subcommand)]
 pub enum BrowserStorageCommand {
-    Set { key: String, value: String },
-    Remove { key: String },
+    Set {
+        key: String,
+        value: String,
+    },
+    Remove {
+        key: String,
+    },
     Clear,
     /// Read one key. Also reached by writing the key with no verb.
-    Get { key: String },
+    Get {
+        key: String,
+    },
     /// A bare key, which clap sees as an unrecognized subcommand.
     #[command(external_subcommand)]
     Key(Vec<String>),
@@ -2210,14 +2217,8 @@ mod tests {
 
     #[test]
     fn parses_agent_rename() {
-        let cli = Cli::try_parse_from([
-            "wardian",
-            "agent",
-            "rename",
-            "coder-a1",
-            "release-coder",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["wardian", "agent", "rename", "coder-a1", "release-coder"])
+            .unwrap();
         let Command::Agent(args) = cli.command else {
             panic!("expected Agent command")
         };

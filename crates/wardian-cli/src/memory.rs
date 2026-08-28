@@ -169,8 +169,10 @@ fn managed_caller(store: &MemoryStore) -> Result<String, CliError> {
 
 /// Full roster with the persisted database as the offline authority.
 fn agent_snapshot() -> Result<Vec<AgentIdentity>, CliError> {
-    let pending = wardian_core::agent_replacement::pending_replacement_status()
-        .map_err(|error| CliError::generic(format!("failed to inspect agent replacement: {error}")))?;
+    let pending =
+        wardian_core::agent_replacement::pending_replacement_status().map_err(|error| {
+            CliError::generic(format!("failed to inspect agent replacement: {error}"))
+        })?;
     match pending {
         wardian_core::agent_replacement::PendingReplacementStatus::Busy => {
             return Err(CliError::generic(
@@ -324,8 +326,7 @@ mod tests {
             let home = tempfile::tempdir().expect("temp home");
             let previous_home = std::env::var_os("WARDIAN_HOME");
             let previous_session = std::env::var_os("WARDIAN_SESSION_ID");
-            let previous_capability =
-                std::env::var_os(wardian_core::memory::MEMORY_CAPABILITY_ENV);
+            let previous_capability = std::env::var_os(wardian_core::memory::MEMORY_CAPABILITY_ENV);
             unsafe {
                 std::env::set_var("WARDIAN_HOME", home.path());
                 std::env::remove_var("WARDIAN_SESSION_ID");
@@ -375,10 +376,9 @@ mod tests {
                     None => std::env::remove_var("WARDIAN_SESSION_ID"),
                 }
                 match self.previous_capability.take() {
-                    Some(value) => std::env::set_var(
-                        wardian_core::memory::MEMORY_CAPABILITY_ENV,
-                        value,
-                    ),
+                    Some(value) => {
+                        std::env::set_var(wardian_core::memory::MEMORY_CAPABILITY_ENV, value)
+                    }
                     None => std::env::remove_var(wardian_core::memory::MEMORY_CAPABILITY_ENV),
                 }
             }

@@ -1,5 +1,5 @@
-pub mod artifacts;
 pub mod agent_replacement;
+pub mod artifacts;
 mod atomic_file;
 pub mod browser;
 pub mod classes;

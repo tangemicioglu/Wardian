@@ -1556,7 +1556,11 @@ impl IntoResponse for RemoteGatewayError {
             "ok": false,
             "code": self.code,
         });
-        if let Some(detail) = self.detail.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(detail) = self
+            .detail
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             body["detail"] = serde_json::Value::String(detail.to_string());
         }
         let body = axum::Json(body);
@@ -1617,11 +1621,9 @@ mod tests {
 
         let response = error.into_response();
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-        let body = tauri::async_runtime::block_on(axum::body::to_bytes(
-            response.into_body(),
-            usize::MAX,
-        ))
-        .expect("response body");
+        let body =
+            tauri::async_runtime::block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+                .expect("response body");
         let payload: serde_json::Value = serde_json::from_slice(&body).expect("json body");
         assert_eq!(payload["code"], "agent_action_failed");
         assert_eq!(
@@ -1633,11 +1635,9 @@ mod tests {
     #[test]
     fn gateway_error_without_detail_omits_detail_field() {
         let response = RemoteGatewayError::bad_request("agent_action_failed").into_response();
-        let body = tauri::async_runtime::block_on(axum::body::to_bytes(
-            response.into_body(),
-            usize::MAX,
-        ))
-        .expect("response body");
+        let body =
+            tauri::async_runtime::block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+                .expect("response body");
         let payload: serde_json::Value = serde_json::from_slice(&body).expect("json body");
 
         assert!(payload.get("detail").is_none());

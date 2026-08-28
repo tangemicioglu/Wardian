@@ -37,7 +37,10 @@ const FIXTURE: &str = r#"<!doctype html>
 
 /// A label longer than the field cap, so the clamp path is exercised.
 fn fixture_with_long_label() -> String {
-    FIXTURE.replace("VERBOSE_LABEL", &"Download the quarterly report ".repeat(12))
+    FIXTURE.replace(
+        "VERBOSE_LABEL",
+        &"Download the quarterly report ".repeat(12),
+    )
 }
 
 const SECOND_PAGE: &str = r#"<!doctype html>
@@ -273,7 +276,10 @@ async fn opens_a_page_and_reads_it_back() {
         "Wardian Fixture"
     );
     let text = session.get(PageField::Text, None).await.expect("text");
-    assert!(text.contains("Browser surface fixture"), "text was {text:?}");
+    assert!(
+        text.contains("Browser surface fixture"),
+        "text was {text:?}"
+    );
     let scoped = session
         .get(PageField::Text, Some("#heading"))
         .await
@@ -319,7 +325,10 @@ async fn snapshots_mint_refs_that_actions_can_use() {
         .expect("the button should be in an interactive snapshot");
 
     session
-        .act(&search.element_ref, &ElementAction::Fill("wardian".to_string()))
+        .act(
+            &search.element_ref,
+            &ElementAction::Fill("wardian".to_string()),
+        )
         .await
         .expect("fill");
     session
@@ -331,10 +340,7 @@ async fn snapshots_mint_refs_that_actions_can_use() {
         .await
         .expect("the click should have run the page's handler");
 
-    broker
-        .close(session.browser_id())
-        .await
-        .expect("close");
+    broker.close(session.browser_id()).await.expect("close");
     server.abort();
 }
 
@@ -355,7 +361,12 @@ async fn a_navigation_makes_earlier_refs_stale_instead_of_misclicking() {
         .await
         .expect("load");
     let snapshot = session.snapshot(true).await.expect("snapshot");
-    let stale_ref = snapshot.elements.first().expect("an element").element_ref.clone();
+    let stale_ref = snapshot
+        .elements
+        .first()
+        .expect("an element")
+        .element_ref
+        .clone();
 
     session
         .navigate(&format!("{base_url}second"))
@@ -507,8 +518,15 @@ async fn a_popup_is_presented_in_place_of_its_opener() {
         .await
         .expect("the popup should become the presented page");
     let presenting = session.summary().await;
-    assert!(presenting.popup, "the session must report that a popup is up");
-    assert!(presenting.url.ends_with("/second"), "url was {}", presenting.url);
+    assert!(
+        presenting.popup,
+        "the session must report that a popup is up"
+    );
+    assert!(
+        presenting.url.ends_with("/second"),
+        "url was {}",
+        presenting.url
+    );
 
     // The popup is drivable, not merely visible: a snapshot has to describe
     // the page that is presented.
@@ -526,7 +544,10 @@ async fn a_popup_is_presented_in_place_of_its_opener() {
         .await
         .expect("close the popup");
     session
-        .wait(&WaitCondition::UrlContains("/popup-host".to_string()), 10_000)
+        .wait(
+            &WaitCondition::UrlContains("/popup-host".to_string()),
+            10_000,
+        )
         .await
         .expect("the opener should come back");
     assert!(!session.summary().await.popup);
@@ -563,12 +584,18 @@ async fn a_popup_that_closes_itself_returns_to_its_opener() {
         .await
         .expect("open a popup");
     session
-        .wait(&WaitCondition::UrlContains("/self-closing".to_string()), 10_000)
+        .wait(
+            &WaitCondition::UrlContains("/self-closing".to_string()),
+            10_000,
+        )
         .await
         .expect("the popup should be presented");
 
     session
-        .wait(&WaitCondition::UrlContains("/popup-host".to_string()), 10_000)
+        .wait(
+            &WaitCondition::UrlContains("/popup-host".to_string()),
+            10_000,
+        )
         .await
         .expect("the opener should come back on its own");
     assert!(!session.summary().await.popup);
@@ -600,7 +627,10 @@ async fn a_watched_session_holds_its_dialog_until_it_is_answered() {
     // A surface is watching, so the dialog is the operator's to answer.
     let attachment = session.attach_screencast("pane-1").await.expect("attach");
 
-    session.eval("window.raise('confirm'); 'queued'").await.expect("queue");
+    session
+        .eval("window.raise('confirm'); 'queued'")
+        .await
+        .expect("queue");
     let dialog = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if let Some(dialog) = session.summary().await.dialog {
@@ -651,7 +681,10 @@ async fn an_unwatched_session_answers_its_own_dialogs() {
 
     // No presentation is attached, so nobody could answer. Before this, the
     // page stopped here for good and every later call timed out.
-    session.eval("window.raise('alert'); 'queued'").await.expect("queue");
+    session
+        .eval("window.raise('alert'); 'queued'")
+        .await
+        .expect("queue");
     let responsive = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         session.wait(&WaitCondition::Selector("#heading".to_string()), 8_000),
@@ -735,7 +768,9 @@ async fn a_first_load_that_fails_still_leaves_a_usable_session() {
     let broker = broker();
     // Nothing is listening on this port, so the first navigation cannot commit.
     let dead_port = {
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let port = probe.local_addr().expect("addr").port();
         drop(probe);
         port
@@ -757,7 +792,10 @@ async fn a_first_load_that_fails_still_leaves_a_usable_session() {
         .await
         .expect("the session must still resolve");
 
-    session.navigate(&base_url).await.expect("recovery navigate");
+    session
+        .navigate(&base_url)
+        .await
+        .expect("recovery navigate");
     session
         .wait(&WaitCondition::LoadState(LoadState::Complete), 15_000)
         .await
@@ -770,12 +808,19 @@ async fn a_first_load_that_fails_still_leaves_a_usable_session() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn closing_a_session_removes_its_profile_directory() {
-    let browser_root = std::env::temp_dir().join(format!("wardian-profile-{}", uuid::Uuid::new_v4()));
+    let browser_root =
+        std::env::temp_dir().join(format!("wardian-profile-{}", uuid::Uuid::new_v4()));
     let profile_root = browser_root.join("profiles");
     let broker = BrowserSessionBroker::new(browser_root.clone());
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
     let profile = profile_root.join(session.browser_id());
-    assert!(profile.is_dir(), "the session should own a profile directory");
+    assert!(
+        profile.is_dir(),
+        "the session should own a profile directory"
+    );
 
     broker.close(session.browser_id()).await.expect("close");
     assert!(
@@ -791,7 +836,10 @@ async fn closing_a_session_removes_its_profile_directory() {
 async fn a_browser_that_exits_reports_the_session_closed() {
     let broker = broker();
     let mut events = broker.subscribe();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
     let browser_id = session.browser_id().to_string();
 
     // Kill the process without going through `close`, which is what a crash
@@ -861,7 +909,10 @@ async fn concurrent_attaches_serialize_into_one_stream() {
 
     assert_eq!(session.attachment_count().await, 4);
     assert_eq!(
-        attachments.iter().filter(|attachment| attachment.can_drive).count(),
+        attachments
+            .iter()
+            .filter(|attachment| attachment.can_drive)
+            .count(),
         1,
         "exactly one attachment may hold the lease"
     );
@@ -880,7 +931,10 @@ async fn concurrent_attaches_serialize_into_one_stream() {
     assert!(framed.is_ok(), "no frame arrived after concurrent attaches");
 
     for attachment in &attachments {
-        session.detach_screencast(&attachment.token).await.expect("detach");
+        session
+            .detach_screencast(&attachment.token)
+            .await
+            .expect("detach");
     }
     assert_eq!(session.attachment_count().await, 0);
 
@@ -957,7 +1011,10 @@ async fn an_iframe_routing_itself_leaves_the_outer_page_and_its_refs_alone() {
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn a_surface_open_stays_outstanding_until_it_is_acknowledged() {
     let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
     let summary = session.summary().await;
     broker.queue_surface_open(summary.clone()).await;
 
@@ -985,7 +1042,10 @@ async fn a_surface_open_stays_outstanding_until_it_is_acknowledged() {
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn queueing_the_same_open_twice_does_not_duplicate_it() {
     let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
     let summary = session.summary().await;
 
     broker.queue_surface_open(summary.clone()).await;
@@ -999,7 +1059,10 @@ async fn queueing_the_same_open_twice_does_not_duplicate_it() {
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn a_queued_open_for_a_closed_session_is_dropped() {
     let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
     let summary = session.summary().await;
     broker.queue_surface_open(summary.clone()).await;
     broker.close(&summary.browser_id).await.expect("close");
@@ -1013,14 +1076,21 @@ async fn a_queued_open_for_a_closed_session_is_dropped() {
 async fn closing_a_session_twice_announces_exactly_once() {
     let broker = broker();
     let mut events = broker.subscribe();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
     let browser_id = session.browser_id().to_string();
 
     broker.close(&browser_id).await.expect("first close");
     // A crash racing an explicit close takes the same path; only whoever
     // removed the session from the broker may announce it.
     assert_eq!(
-        broker.close(&browser_id).await.expect_err("already gone").code(),
+        broker
+            .close(&browser_id)
+            .await
+            .expect_err("already gone")
+            .code(),
         "browser_not_found"
     );
 
@@ -1030,20 +1100,32 @@ async fn closing_a_session_twice_announces_exactly_once() {
             closures += 1;
         }
     }
-    assert_eq!(closures, 1, "a session must report its closure exactly once");
+    assert_eq!(
+        closures, 1,
+        "a session must report its closure exactly once"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn only_the_first_attachment_may_drive_the_page() {
     let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
 
     let driver = session.attach_screencast("pane-a").await.expect("first");
     let mirror = session.attach_screencast("pane-b").await.expect("second");
     assert!(driver.can_drive);
-    assert!(!mirror.can_drive, "a mirroring pane must not drive the shared page");
-    assert_ne!(driver.token, mirror.token, "each attachment needs its own credential");
+    assert!(
+        !mirror.can_drive,
+        "a mirroring pane must not drive the shared page"
+    );
+    assert_ne!(
+        driver.token, mirror.token,
+        "each attachment needs its own credential"
+    );
 
     let event = PointerEvent {
         event_type: "mousePressed",
@@ -1077,10 +1159,16 @@ async fn only_the_first_attachment_may_drive_the_page() {
         .expect("the CLI path is not gated by the surface lease");
 
     // When the driver leaves, the lease passes rather than stranding the page.
-    session.detach_screencast(&driver.token).await.expect("detach");
+    session
+        .detach_screencast(&driver.token)
+        .await
+        .expect("detach");
     assert!(session.token_may_drive(&mirror.token).await);
 
-    session.detach_screencast(&mirror.token).await.expect("detach");
+    session
+        .detach_screencast(&mirror.token)
+        .await
+        .expect("detach");
     assert_eq!(session.attachment_count().await, 0);
     broker.close(session.browser_id()).await.expect("close");
 }
@@ -1089,7 +1177,10 @@ async fn only_the_first_attachment_may_drive_the_page() {
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn navigation_and_viewport_also_require_the_lease() {
     let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
     let driver = session.attach_screencast("pane-a").await.expect("first");
     let mirror = session.attach_screencast("pane-b").await.expect("second");
 
@@ -1115,7 +1206,10 @@ async fn navigation_and_viewport_also_require_the_lease() {
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn re_attaching_the_same_presentation_supersedes_the_older_attachment() {
     let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
 
     // A hidden/shown race, or a reloaded webview, produces a second attach for
     // one presentation. The newer one replaces the older and inherits the
@@ -1134,7 +1228,10 @@ async fn re_attaching_the_same_presentation_supersedes_the_older_attachment() {
     );
     assert!(!session.token_may_drive(&first.token).await);
 
-    session.detach_screencast(&first.token).await.expect("stale detach");
+    session
+        .detach_screencast(&first.token)
+        .await
+        .expect("stale detach");
     assert_eq!(
         session.attachment_count().await,
         1,
@@ -1145,7 +1242,10 @@ async fn re_attaching_the_same_presentation_supersedes_the_older_attachment() {
         "the lease must stay with the surviving attachment"
     );
 
-    session.detach_screencast(&second.token).await.expect("detach");
+    session
+        .detach_screencast(&second.token)
+        .await
+        .expect("detach");
     broker.close(session.browser_id()).await.expect("close");
 }
 
@@ -1153,7 +1253,10 @@ async fn re_attaching_the_same_presentation_supersedes_the_older_attachment() {
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn the_lease_moves_to_the_remaining_presentation_when_the_driver_leaves() {
     let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
     let mut events = broker.subscribe();
 
     let driver = session.attach_screencast("pane-a").await.expect("first");
@@ -1161,7 +1264,10 @@ async fn the_lease_moves_to_the_remaining_presentation_when_the_driver_leaves() 
     assert!(driver.can_drive);
     assert!(!mirror.can_drive);
 
-    session.detach_screencast(&driver.token).await.expect("detach");
+    session
+        .detach_screencast(&driver.token)
+        .await
+        .expect("detach");
     assert!(
         session.token_may_drive(&mirror.token).await,
         "the mirror inherits the lease once the driver leaves"
@@ -1185,7 +1291,10 @@ async fn the_lease_moves_to_the_remaining_presentation_when_the_driver_leaves() 
     .await;
     assert!(announced.is_ok(), "the handover was never announced");
 
-    session.detach_screencast(&mirror.token).await.expect("detach");
+    session
+        .detach_screencast(&mirror.token)
+        .await
+        .expect("detach");
     broker.close(session.browser_id()).await.expect("close");
 }
 
@@ -1206,7 +1315,12 @@ async fn a_same_document_navigation_invalidates_refs_and_updates_the_url() {
         .await
         .expect("load");
     let snapshot = session.snapshot(true).await.expect("snapshot");
-    let stale_ref = snapshot.elements.first().expect("an element").element_ref.clone();
+    let stale_ref = snapshot
+        .elements
+        .first()
+        .expect("an element")
+        .element_ref
+        .clone();
 
     // A History API route change never commits a frame, so it would otherwise
     // leave both the URL and the refs pointing at the previous route.
@@ -1327,15 +1441,29 @@ async fn an_element_with_a_clamped_name_is_still_actionable() {
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn short_refs_and_id_prefixes_both_resolve() {
     let broker = Arc::new(broker());
-    let first = broker.open(OpenBrowserRequest::default()).await.expect("first");
-    let second = broker.open(OpenBrowserRequest::default()).await.expect("second");
+    let first = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("first");
+    let second = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("second");
 
     assert_eq!(
-        broker.resolve("browser:1").await.expect("short ref").browser_id(),
+        broker
+            .resolve("browser:1")
+            .await
+            .expect("short ref")
+            .browser_id(),
         first.browser_id()
     );
     assert_eq!(
-        broker.resolve(second.browser_id()).await.expect("uuid").browser_id(),
+        broker
+            .resolve(second.browser_id())
+            .await
+            .expect("uuid")
+            .browser_id(),
         second.browser_id()
     );
     let prefix = &second.browser_id()[..8];
@@ -1364,7 +1492,10 @@ async fn closing_an_agents_sessions_leaves_other_sessions_running() {
         })
         .await
         .expect("owned");
-    let unowned = broker.open(OpenBrowserRequest::default()).await.expect("unowned");
+    let unowned = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("unowned");
 
     let closed = broker.close_for_agent("agent-1").await;
     assert_eq!(closed, vec![owned.browser_id().to_string()]);
@@ -1565,7 +1696,10 @@ async fn a_request_detail_carries_its_headers_and_can_read_its_body_back() {
         .expect("detail");
     assert_eq!(detail.entry.status, Some(200));
     assert_eq!(
-        detail.response_headers.get("x-wardian-fixture").map(String::as_str),
+        detail
+            .response_headers
+            .get("x-wardian-fixture")
+            .map(String::as_str),
         Some("yes"),
         "header names are lowercased so a caller need not guess the casing"
     );
@@ -1632,7 +1766,9 @@ async fn the_ledger_survives_the_navigation_that_clears_the_console() {
         "the earlier requests stay and the navigation adds its own"
     );
     assert!(
-        after.iter().any(|entry| entry.url.ends_with("/api/missing")),
+        after
+            .iter()
+            .any(|entry| entry.url.ends_with("/api/missing")),
         "a navigation must not discard the record an agent is investigating"
     );
     assert!(after.iter().any(|entry| entry.url.ends_with("/second")));
@@ -1724,7 +1860,10 @@ async fn cookies_round_trip_through_the_sessions_own_profile() {
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn a_cookie_needs_somewhere_to_live_and_says_so_on_a_blank_page() {
     let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
 
     let error = session
         .cookies(&CookieAction::Set {
@@ -1870,17 +2009,17 @@ async fn the_two_storage_areas_round_trip_and_stay_separate() {
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn storage_on_an_opaque_origin_names_the_fix() {
     let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
 
     let error = session
         .storage(StorageArea::Local)
         .await
         .expect_err("refused");
     assert_eq!(error.code(), "browser_invalid_request");
-    assert!(
-        error.to_string().contains("http or https"),
-        "got {error}"
-    );
+    assert!(error.to_string().contains("http or https"), "got {error}");
 
     broker.shutdown_all().await;
 }
@@ -1966,7 +2105,8 @@ async fn a_download_lands_under_its_suggested_name_and_outlives_the_session() {
     assert_eq!(record.suggested_filename, "report.csv");
     let path = PathBuf::from(record.path.expect("a resolved path"));
     assert_eq!(
-        path.file_name().map(|name| name.to_string_lossy().to_string()),
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_string()),
         Some("report.csv".to_string()),
         "a GUID is no use to a caller"
     );
@@ -1998,7 +2138,10 @@ async fn a_download_lands_under_its_suggested_name_and_outlives_the_session() {
 #[ignore = "requires a Chromium-based browser on the host"]
 async fn the_console_can_be_filtered_and_emptied() {
     let broker = broker();
-    let session = broker.open(OpenBrowserRequest::default()).await.expect("open");
+    let session = broker
+        .open(OpenBrowserRequest::default())
+        .await
+        .expect("open");
 
     session
         .eval("console.error('boom'); console.log('chatter'); true")

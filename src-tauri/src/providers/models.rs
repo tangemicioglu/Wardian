@@ -418,10 +418,12 @@ fn parse_codex_catalog(output: &str) -> Result<Vec<ProviderModelOption>, String>
 }
 
 fn reasoning_effort_rank(effort: &str) -> usize {
-    ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
-        .iter()
-        .position(|candidate| candidate.eq_ignore_ascii_case(effort))
-        .unwrap_or(usize::MAX)
+    [
+        "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    ]
+    .iter()
+    .position(|candidate| candidate.eq_ignore_ascii_case(effort))
+    .unwrap_or(usize::MAX)
 }
 
 fn parse_line_catalog(output: &str) -> Vec<ProviderModelOption> {
@@ -550,11 +552,7 @@ mod tests {
             vec![ProviderModelOption {
                 id: "gpt-5.6-sol".to_string(),
                 display_name: "GPT-5.6-Sol".to_string(),
-                effort_options: vec![
-                    "low".to_string(),
-                    "medium".to_string(),
-                    "high".to_string(),
-                ],
+                effort_options: vec!["low".to_string(), "medium".to_string(), "high".to_string(),],
                 default_effort: Some("medium".to_string()),
                 is_default: true,
             }],

@@ -12,8 +12,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::state::browser_session::{
     detect_workspace_url, discover_engine, BrowserError, BrowserSession, BrowserSessionBroker,
-    ElementAction, LoadState,
-    OpenBrowserRequest, PageField, PointerEvent, ScreencastAttachment, Viewport, WaitCondition,
+    ElementAction, LoadState, OpenBrowserRequest, PageField, PointerEvent, ScreencastAttachment,
+    Viewport, WaitCondition,
 };
 use crate::state::AppState;
 use wardian_core::browser::{
@@ -92,9 +92,7 @@ pub fn wait_condition_from_parts(
     let mut chosen: Vec<WaitCondition> = Vec::new();
     if let Some(load_state) = load_state {
         let parsed = LoadState::parse(load_state).ok_or_else(|| BrowserError::Invalid {
-            detail: format!(
-                "{load_state} is not a load state; use idle, loading, or complete"
-            ),
+            detail: format!("{load_state} is not a load state; use idle, loading, or complete"),
         })?;
         chosen.push(WaitCondition::LoadState(parsed));
     }
@@ -112,8 +110,9 @@ pub fn wait_condition_from_parts(
     }
     match chosen.len() {
         0 => Err(BrowserError::Invalid {
-            detail: "wait needs one of --load-state, --selector, --text, --url-contains, or --function"
-                .to_string(),
+            detail:
+                "wait needs one of --load-state, --selector, --text, --url-contains, or --function"
+                    .to_string(),
         }),
         1 => Ok(chosen.into_iter().next().expect("one condition")),
         _ => Err(BrowserError::Invalid {
@@ -170,7 +169,10 @@ pub enum OpenAddress {
 ///
 /// Split from the probing so the decision can be tested without a socket.
 pub fn open_address(url: Option<String>, blank: bool) -> OpenAddress {
-    match url.map(|url| url.trim().to_string()).filter(|url| !url.is_empty()) {
+    match url
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+    {
         Some(url) => OpenAddress::Explicit(url),
         None if blank => OpenAddress::Blank,
         None => OpenAddress::Detect,
@@ -859,7 +861,9 @@ mod tests {
     #[test]
     fn an_unknown_action_lists_the_supported_verbs() {
         let error = element_action_from_parts("teleport", None).expect_err("unknown");
-        assert!(error.to_string().contains("click, fill, press, select, hover, or scroll"));
+        assert!(error
+            .to_string()
+            .contains("click, fill, press, select, hover, or scroll"));
     }
 
     #[test]
@@ -870,7 +874,10 @@ mod tests {
             assert!(status.detail.is_none());
         } else {
             assert!(
-                status.detail.expect("detail").contains("WARDIAN_BROWSER_BINARY"),
+                status
+                    .detail
+                    .expect("detail")
+                    .contains("WARDIAN_BROWSER_BINARY"),
                 "an unavailable engine must name the override"
             );
         }
@@ -906,9 +913,18 @@ mod tests {
 
     #[test]
     fn an_empty_or_blank_string_is_not_an_address() {
-        assert_eq!(open_address(Some(String::new()), false), OpenAddress::Detect);
-        assert_eq!(open_address(Some("   ".to_string()), false), OpenAddress::Detect);
-        assert_eq!(open_address(Some("  ".to_string()), true), OpenAddress::Blank);
+        assert_eq!(
+            open_address(Some(String::new()), false),
+            OpenAddress::Detect
+        );
+        assert_eq!(
+            open_address(Some("   ".to_string()), false),
+            OpenAddress::Detect
+        );
+        assert_eq!(
+            open_address(Some("  ".to_string()), true),
+            OpenAddress::Blank
+        );
     }
 
     #[test]

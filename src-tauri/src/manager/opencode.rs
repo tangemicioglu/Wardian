@@ -99,7 +99,12 @@ pub(crate) fn opencode_recent_session_for_workspace(
             .replace('/', "\\");
         let created = session.get("created").and_then(|value| value.as_i64())?;
         (directory.eq_ignore_ascii_case(&expected) && created >= created_after_ms)
-            .then(|| session.get("id").and_then(|value| value.as_str()).map(str::to_string))
+            .then(|| {
+                session
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            })
             .flatten()
     })
 }

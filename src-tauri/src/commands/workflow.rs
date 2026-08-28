@@ -1282,15 +1282,19 @@ edges:
         }
         let resolve_count = std::cell::Cell::new(0);
 
-        let result = workflow_list_runs_page_from_root(&root, |blueprint_id| {
-            resolve_count.set(resolve_count.get() + 1);
-            Some(
-                dir.path()
-                    .join("library")
-                    .join("workflows")
-                    .join(format!("{blueprint_id}.md")),
-            )
-        }, 0)
+        let result = workflow_list_runs_page_from_root(
+            &root,
+            |blueprint_id| {
+                resolve_count.set(resolve_count.get() + 1);
+                Some(
+                    dir.path()
+                        .join("library")
+                        .join("workflows")
+                        .join(format!("{blueprint_id}.md")),
+                )
+            },
+            0,
+        )
         .unwrap();
 
         assert_eq!(result.runs.len(), 3);

@@ -1,18 +1,18 @@
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::{HashMap, HashSet},
     io,
     sync::{Arc, Mutex},
 };
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 use wardian_core::conversations::{
     append_index_upsert, append_jsonl_record, read_jsonl_records, read_jsonl_records_resilient,
     write_json_atomic, write_jsonl_atomic, AgentConversationLoggingSetting,
     ConversationBoundaryReason, ConversationIndexEntry, ConversationLoggingSetting,
-    ConversationManifest, ConversationNarrativeRecord, ConversationRecordKind, ConversationSourceRecord,
-    ConversationSpeakerType, ConversationTurnRecord,
+    ConversationManifest, ConversationNarrativeRecord, ConversationRecordKind,
+    ConversationSourceRecord, ConversationSpeakerType, ConversationTurnRecord,
 };
 use wardian_core::models::chat::AgentChatEvent;
 

@@ -28,7 +28,11 @@ fn fixture() -> String {
 }
 
 fn ctx() -> SourceContext {
-    SourceContext::new("agent-1", "antigravity", std::path::Path::new("turns.jsonl"))
+    SourceContext::new(
+        "agent-1",
+        "antigravity",
+        std::path::Path::new("turns.jsonl"),
+    )
 }
 
 /// Far enough past the newest record that every turn has settled.
@@ -42,7 +46,10 @@ fn well_after() -> DateTime<Utc> {
 fn a_provider_with_no_native_log_still_yields_its_turns() {
     let (facts, _) = parse_turns(&ctx(), &fixture(), 0, well_after());
     assert_eq!(facts.turns.len(), EXPECTED_TURNS);
-    assert!(facts.turns.iter().all(|turn| turn.provider == "antigravity"));
+    assert!(facts
+        .turns
+        .iter()
+        .all(|turn| turn.provider == "antigravity"));
 }
 
 #[test]

@@ -1,8 +1,8 @@
-use crate::commands::git::{
-    git_diff_numstat_for_cwd, git_status_for_cwd, run_git, GitNumstatEntry,
-};
 use crate::commands::change_snapshot::{
     baseline_diverged, commit_resolves, first_snapshot_commit, latest_snapshot_commit,
+};
+use crate::commands::git::{
+    git_diff_numstat_for_cwd, git_status_for_cwd, run_git, GitNumstatEntry,
 };
 use crate::state::{conversation_archive::ConversationArchiveState, AppState};
 use crate::utils::fs::get_wardian_home;
@@ -675,8 +675,7 @@ fn revision_for_baseline(
     match baseline {
         ChangeReviewBaseline::BranchPoint => branch_point(cwd, head),
         ChangeReviewBaseline::Head => head.map(ToString::to_string),
-        ChangeReviewBaseline::LastEffectiveTurn
-        | ChangeReviewBaseline::ConversationStart => {
+        ChangeReviewBaseline::LastEffectiveTurn | ChangeReviewBaseline::ConversationStart => {
             snapshot_revision_for_baseline(cwd, baseline, agent_id, conversation_id)
                 .or_else(|| head.map(ToString::to_string))
         }
@@ -852,9 +851,10 @@ pub async fn save_change_review_watermark(watermark: ChangeReviewWatermark) -> R
     // The content anchor is resolved here rather than sent by the caller: the
     // frontend has no notion of snapshot commits, and the latest snapshot at the
     // moment of review is exactly what "what I looked at" means.
-    let reviewed_snapshot = watermark.reviewed_snapshot.clone().or_else(|| {
-        latest_snapshot_commit(&watermark.workspace, &watermark.agent_id, None)
-    });
+    let reviewed_snapshot = watermark
+        .reviewed_snapshot
+        .clone()
+        .or_else(|| latest_snapshot_commit(&watermark.workspace, &watermark.agent_id, None));
     index.insert(
         watermark_key(&watermark.agent_id, &watermark.workspace),
         ChangeReviewWatermark {
@@ -1355,7 +1355,12 @@ mod tests {
             let previous_home = std::env::var_os("WARDIAN_HOME");
             std::env::set_var("WARDIAN_HOME", home.path());
 
-            let this = Self { _home: home, repo, previous_home, _env_guard };
+            let this = Self {
+                _home: home,
+                repo,
+                previous_home,
+                _env_guard,
+            };
             let cwd = this.cwd().to_string();
             run_git(&cwd, &["init"]).unwrap();
             run_git(&cwd, &["config", "user.email", "test@example.com"]).unwrap();
@@ -1407,7 +1412,9 @@ mod tests {
         // working directory therefore builds real-looking absolute paths that
         // point nowhere, silently, whenever an agent is scoped below the root.
         let repo = SnapshotRepo::new();
-        let nested = std::path::Path::new(repo.cwd()).join("packages").join("app");
+        let nested = std::path::Path::new(repo.cwd())
+            .join("packages")
+            .join("app");
         std::fs::create_dir_all(&nested).unwrap();
 
         let from_root = repository_root(repo.cwd()).expect("root from the repository root");
@@ -1524,7 +1531,10 @@ mod tests {
             &mut files,
             Some(&watermark),
         );
-        assert!(files[0].reviewed, "content identical to the snapshot is reviewed");
+        assert!(
+            files[0].reviewed,
+            "content identical to the snapshot is reviewed"
+        );
 
         // Edit it, and it stops being reviewed.
         repo.write("tracked.txt", "edited after review\n");
@@ -1534,7 +1544,10 @@ mod tests {
             &mut files,
             Some(&watermark),
         );
-        assert!(!files[0].reviewed, "content differing from the snapshot is not reviewed");
+        assert!(
+            !files[0].reviewed,
+            "content differing from the snapshot is not reviewed"
+        );
 
         // Revert it, and it is reviewed again. Phase 1 could not reach this.
         repo.write("tracked.txt", "reviewed state\n");
@@ -1544,7 +1557,10 @@ mod tests {
             &mut files,
             Some(&watermark),
         );
-        assert!(files[0].reviewed, "a revert to the reviewed bytes reads as reviewed");
+        assert!(
+            files[0].reviewed,
+            "a revert to the reviewed bytes reads as reviewed"
+        );
     }
 
     #[test]
