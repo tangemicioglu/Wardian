@@ -1,3 +1,4 @@
+import { dirPage } from "../../test/pageFixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
@@ -22,16 +23,14 @@ const VIEWPORT: TerrainViewport = {
 
 /** `get_directory_tree` returns a page, never a bare array. */
 function directoryTree(...names: string[]) {
-  return {
-    nodes: names.map((name) => ({
+  return dirPage(
+    names.map((name) => ({
       name,
       path: `D:\\work\\repo\\${name}`,
       is_dir: false,
       extension: null,
     })),
-    truncated: false,
-    next_offset: null,
-  };
+  );
 }
 
 beforeEach(() => {

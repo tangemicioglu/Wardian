@@ -1,3 +1,4 @@
+import { runPage } from "../../../test/pageFixtures";
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const invokeMock = vi.fn();
@@ -36,13 +37,6 @@ const result: RunReadResult = {
   blueprint: { schema: 2, id: 'wf', name: 'Workflow', nodes: [], edges: [] },
   blueprint_path: '/library/workflows/wf.md',
 };
-
-/** `workflow_list_runs` returns a page, never a bare array. */
-const runPage = (runs: unknown[], next: number | null = null) => ({
-  runs,
-  truncated: next !== null,
-  next_offset: next,
-});
 
 describe('useRunStore', () => {
   beforeEach(() => {

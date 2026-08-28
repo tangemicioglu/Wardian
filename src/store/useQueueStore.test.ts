@@ -1,3 +1,4 @@
+import { notificationPage } from "../test/pageFixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { useQueueStore } from "./useQueueStore";
@@ -16,13 +17,6 @@ function resetStore() {
     preferences: normalizeQueuePreferences({}),
   });
 }
-
-/** `list_inbox_notifications` returns a page, never a bare array. */
-const notificationPage = (notifications: unknown[], next: number | null = null) => ({
-  notifications,
-  truncated: next !== null,
-  next_offset: next,
-});
 
 describe("useQueueStore - preferences", () => {
   beforeEach(() => {

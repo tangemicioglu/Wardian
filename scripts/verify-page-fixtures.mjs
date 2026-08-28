@@ -43,9 +43,13 @@ function walk(dir, predicate, found = []) {
   return found;
 }
 
+// Fixtures and helpers count, not just spec files. The first version of this
+// check scanned only `*.spec.ts` and missed `e2e/fixtures/workbenchIpcMock.ts`,
+// whose bare-array defaults broke five workbench navigation tests.
 const testFiles = [
-  ...walk("src", (f) => /\.test\.tsx?$/.test(f)),
-  ...walk("e2e", (f) => f.endsWith(".spec.ts")),
+  ...walk("src", (f) => /\.test\.tsx?$/.test(f) || f.includes(`${path.sep}test${path.sep}`)),
+  ...walk("e2e", (f) => /\.(ts|tsx|mjs)$/.test(f)),
+  ...walk("e2e-native", (f) => /\.mjs$/.test(f)),
 ];
 
 for (const file of testFiles) {
@@ -54,13 +58,17 @@ for (const file of testFiles) {
     for (const [command, key] of Object.entries(PAGED_COMMANDS)) {
       if (!line.includes(command)) continue;
 
+      // A response map keyed by command: `workflow_list_runs: [],`. This is the
+      // form `e2e/fixtures/workbenchIpcMock.ts` uses, and the one the first
+      // version of this check missed.
+      const asMapEntry = new RegExp(String.raw`\b${command}\s*:\s*\[`).test(line);
       // A guard and its return on one line: `if (c === "x") return [...]`.
       const inline = new RegExp(`${command}[^\\n]*?\\breturn\\s*(\\[|\\w+\\s*;)`).exec(line);
       // A guard whose return is the next non-blank line.
       const next = lines.slice(index + 1, index + 3).find((candidate) => candidate.trim() !== "") ?? "";
       const followsWithArray = /^\s*return\s*\[/.test(next) && line.includes(command);
 
-      const suspect = (inline && inline[1].startsWith("[")) || followsWithArray;
+      const suspect = asMapEntry || (inline && inline[1].startsWith("[")) || followsWithArray;
       if (!suspect) continue;
       // Already page-shaped or routed through a helper.
       if (new RegExp(`\\b${key}\\s*:`).test(line) || /Page\s*\(/.test(line) || /Page\s*\(/.test(next)) continue;

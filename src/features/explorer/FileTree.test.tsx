@@ -1,3 +1,4 @@
+import { dirPage } from "../../test/pageFixtures";
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -8,13 +9,6 @@ import { WARDIAN_FILE_PATH_MIME, WARDIAN_FILE_PATHS_MIME } from '../../utils/fil
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
 }));
-
-/** `get_directory_tree` returns a page, never a bare array. Fixtures must match. */
-const dirPage = (nodes: unknown[], next: number | null = null) => ({
-  nodes,
-  truncated: next !== null,
-  next_offset: next,
-});
 
 describe('FileTree Component', () => {
   beforeEach(() => {

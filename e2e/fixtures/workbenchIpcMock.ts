@@ -365,8 +365,9 @@ export async function installWorkbenchIpcMock(
         list_workflows: [],
         list_scheduled_runs: [],
         load_workflow_library: { folders: [], rootWorkflowIds: [] },
-        workflow_list_blueprints: [],
-        workflow_list_runs: [],
+        // Both return a page, never a bare array; see src/test/pageFixtures.ts.
+        workflow_list_blueprints: { blueprints: [], truncated: false, next_offset: null },
+        workflow_list_runs: { runs: [], truncated: false, next_offset: null },
         get_library_index: emptyLibraryIndex,
         get_library_tree: { type: "Folder", path: "", name: "Root", children: [] },
         list_deployed_skills: [],
@@ -375,7 +376,7 @@ export async function installWorkbenchIpcMock(
         list_available_shells: [],
         sync_provider_theme_settings: null,
         get_topology: { edges: [], ignored_pairs: [], fallback_groups: [] },
-        get_pair_activity: [],
+        get_pair_activity: { pairs: [], truncated: false, next_offset: null },
         library_watch: null,
         library_unwatch: null,
       };

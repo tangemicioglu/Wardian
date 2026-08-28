@@ -1,3 +1,4 @@
+import { blueprintPage } from "../../../test/pageFixtures";
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
@@ -41,13 +42,6 @@ function renderWorkflowDetail(entry: LibraryEntry = workflowEntry()) {
 // on raw strings, which false-positives whenever an absolute path happens
 // to end in the same substring as the entry's relative path without a real
 // segment boundary (e.g. `.../other-a/foo.md` "ends with" `a/foo.md`).
-/** `workflow_list_blueprints` returns a page, never a bare array. */
-const blueprintPage = (blueprints: unknown[], next: number | null = null) => ({
-  blueprints,
-  truncated: next !== null,
-  next_offset: next,
-});
-
 describe('WorkflowDetail blueprint resolution', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
