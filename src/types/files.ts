@@ -99,6 +99,7 @@ export type FileResourceTextV1 = {
   text: string;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type UserFileGrantV1 = {
   schema: 1;
   capability_id: string;
@@ -172,16 +173,19 @@ export type OpenFileResourceRequestV1 = {
   user_file_capability_id: string | null;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type CloseFileResourceRequestV1 = {
   subscription_id: string;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type ReadFileResourceTextRequestV1 = {
   resource_id: string;
   subscription_id: string;
   revision: number;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type IssueFileResourceTicketRequestV1 = {
   resource_id: string;
   subscription_id: string;
@@ -189,12 +193,14 @@ export type IssueFileResourceTicketRequestV1 = {
   renderer_lease_id: string;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type CloseFileRendererLeaseRequestV1 = {
   resource_id: string;
   subscription_id: string;
   renderer_lease_id: string;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type PickFileResourceRequestV1 = {
   title: string | null;
 };

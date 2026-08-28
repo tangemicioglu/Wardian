@@ -26,16 +26,6 @@ export type WatchlistDisplayItem =
   | { type: "team"; team: AgentTeam; agents: import("../../types").AgentConfig[] };
 
 /**
- * Context menu action types available for agent rows.
- */
-export type AgentContextAction =
-  | { type: "rename" }
-  | { type: "query" }
-  | { type: "delete" }
-  | { type: "add_to_list"; listId: string }
-  | { type: "remove_from_list"; listId: string };
-
-/**
  * Position for the right-click context menu.
  */
 export interface ContextMenuState {

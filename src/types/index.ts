@@ -503,6 +503,7 @@ export interface CloneFileTreeNode {
     children: CloneFileTreeNode[];
 }
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export interface CloneProfileSelection {
     files: string[];
     skills: DeployedSkillRef[];
@@ -696,8 +697,6 @@ export type SurfaceDefinition<TState extends SurfaceState = SurfaceState> = {
 
 // --- Authoritative terminal session broker DTOs ---------------------------
 
-export const MAX_TERMINAL_IDENTIFIER_BYTES = 512;
-
 export type TerminalGeometry = {
     rows: number;
     cols: number;
@@ -721,6 +720,7 @@ export type TerminalPresentationRegistration = {
     observed_lease_epoch: number;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalPresentationUpdateRequest = {
     presentation_id: string;
     session_id: string;
@@ -774,6 +774,7 @@ export type TerminalPresentationUpdateResult = {
     broker_state: TerminalBrokerState;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalPresentationViewportRequest = {
     session_id: string;
     presentation_id: string;
@@ -789,6 +790,7 @@ export type TerminalLeaseIdentity = {
     lease_epoch: number;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalActivationBeginRequest = {
     session_id: string;
     presentation_id: string;
@@ -796,6 +798,7 @@ export type TerminalActivationBeginRequest = {
     observed_lease_epoch: number;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalActivationAckRequest = {
     session_id: string;
     presentation_id: string;
@@ -839,6 +842,7 @@ export type TerminalActivationAckResult = {
     snapshot: TerminalSnapshot | null;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalOwnerResyncBeginRequest = {
     session_id: string;
     presentation_id: string;
@@ -853,6 +857,7 @@ export type TerminalOwnerResyncBeginResult = {
     sequence_barrier: number;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalOwnerResyncAckRequest = {
     session_id: string;
     presentation_id: string;
@@ -866,11 +871,13 @@ export type TerminalOwnerResyncAckResult = {
     broker_state: TerminalBrokerState;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalInputRequest = {
     lease: TerminalLeaseIdentity;
     bytes: number[];
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalGeometryRequest = {
     lease: TerminalLeaseIdentity;
     geometry_sequence: number;
@@ -928,6 +935,7 @@ export type TerminalSessionLifecycleNotification = {
     lifecycle: TerminalSessionLifecycleEvent;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalEventSubscriptionRequest = {
     session_id: string;
     consumer_id: string;
@@ -940,6 +948,7 @@ export type TerminalEventSubscriptionResult = {
     initial_snapshot: TerminalSnapshot;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalEventReadRequest = {
     session_id: string;
     consumer_id: string;
@@ -965,6 +974,7 @@ export type TerminalEventBatch = {
     recovery_snapshot: TerminalSnapshot | null;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalEventAckRequest = {
     session_id: string;
     consumer_id: string;
@@ -977,6 +987,7 @@ export type TerminalEventAckResult = {
     latest_sequence: number;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type TerminalEventUnsubscribeRequest = {
     session_id: string;
     consumer_id: string;
@@ -1099,6 +1110,7 @@ export type AgentReachResponse = {
     skipped_turn_records: number;
 };
 
+/** @ipcContract Mirrors the Rust request struct of the same name. */
 export type GitNumstatEntry = {
     path: string;
     old_path: string | null;

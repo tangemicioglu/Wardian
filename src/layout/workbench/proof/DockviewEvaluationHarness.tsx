@@ -856,6 +856,10 @@ export function DockviewEvaluationHarness({
   );
 }
 
+/**
+ * @ipcContract Mounted by `e2e/tests/workbench-adapter-proof.spec.ts` through a
+ * runtime `import()` string, which static analysis cannot follow.
+ */
 export function mountDockviewEvaluationHarness(target: HTMLElement): { unmount: () => void } {
   const root: Root = createRoot(target);
   root.render(<DockviewEvaluationHarness />);

@@ -48,9 +48,6 @@ vi.mock('../features/workflows/builder/BuilderCanvas', () => ({
     </div>
   ),
 }));
-vi.mock('../features/workflows/builder/BuilderToolbar', () => ({
-  BuilderToolbar: () => <div data-testid="builder-toolbar" />,
-}));
 vi.mock('../features/workflows/builder/DiagnosticsPanel', () => ({
   DiagnosticsPanel: () => <div data-testid="diagnostics-panel" />,
 }));

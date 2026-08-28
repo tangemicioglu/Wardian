@@ -223,9 +223,3 @@ export function resolveFilesComparisonLayout(
   if (preference === "unified") return "unified";
   return contentWidth >= 720 ? "side_by_side" : "unified";
 }
-
-/** Compatibility projection removed with the legacy Files mode bar. */
-export function legacyFilesMode(state: FilesSurfaceStateV2): FilesSurfaceStateV1["mode"] {
-  if (state.comparison_open) return "changes";
-  return state.presentation === "rendered" ? "preview" : "draft";
-}
