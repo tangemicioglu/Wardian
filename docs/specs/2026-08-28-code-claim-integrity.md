@@ -131,10 +131,62 @@ blocks on unverified reviewer findings replaces unverified prose with
 unverified findings. Confirmation by the author is a precondition, not a
 courtesy.
 
-## Handoff
+## Settled mechanism
 
-Wardian-QA owns the project-scoped verification setup. The trial evidence is
-this document. The reviewer prompt used, including the six clauses and the
-report format, is reproducible from the classification list above.
+Wardian-QA, 2026-08-28, scaffolded in `745bff37` and `31c02ec3`.
+
+The canonical CI input is `qa/code-claim-review.json` in the checkout, carrying
+`schema_version`, exact `base_sha` and `head_sha`, the isolated reviewer's
+identity, scope, findings, and derived result. CI checks head freshness and
+base ancestry without invoking a model. `gh attach` was rejected as a CI input,
+being presentation evidence with no revision binding.
+
+Only `confirmed_false` findings may block, and each must carry a
+repository-safe pattern predicate of path plus regex plus a present or absent
+expectation. No arbitrary shell from an artifact is executed, since an artifact
+the CI runs is a code-execution vector. CI evaluates the predicate at the
+checked-out head, so a resolution flag alone cannot clear a failing predicate.
+Every other class stays non-blocking.
+
+Promotion: a finding that generalises becomes a repository-owned checker and
+its one-off is dropped from the next report. First candidates are duplicate or
+contradictory documentation structures and path-like tokens in prose checked
+against the tree. Cross-language producer and consumer findings stay SHA-bound
+until a stable checker can encode the contract.
+
+## Settled policy
+
+Wardian-Reviewer, 2026-08-28. QA supplies evidence and does not make merge
+decisions, so the blocking rule is Reviewer's.
+
+A failing predicate may block only on protected integration and release
+branches, and only when the artifact is fresh, SHA-bound to the checked-out
+head, its base ancestry valid, and its predicate well-formed. Drafts and
+non-protected branches report without blocking.
+
+Confirmation must come from an independent verifier who neither authored the
+change nor produced the original reviewer output. The cold reviewer proposes.
+The Coder may fix but may not promote a finding to `confirmed_false`. A QA
+owner, human maintainer, or separate isolated verifier reproduces the
+contradiction at the pinned head and records the confirmation.
+
+During the trial, unverified findings are warning-only, but an independently
+confirmed false claim still blocks on protected targets, because it is an
+established integrity defect rather than a candidate. The trial measures review
+cost and false-positive rate rather than weakening enforcement.
+
+The gate fails closed. A stale, missing, malformed, or unconfirmed artifact
+withholds a blocking result rather than passing clean.
+
+## Open
+
+Evolver owns the provider-invariant `audit-code-claims` protocol that QA
+depends on: request JSON in, report JSON out, isolated reviewer, exact SHAs,
+evidence-bearing findings, and no provider-specific transport or model
+assumptions. Notified 2026-08-28, unanswered at time of writing.
+
+The divergent IPC mock in `e2e/tests/workbench-adapter-proof.spec.ts` is a
+separate harness risk. QA's position is that it belongs in a shared
+mock-response checker covering the registered IPC surface, not in a merge gate.
 
 Related: `docs/specs/2026-08-28-debt-gates.md`.
