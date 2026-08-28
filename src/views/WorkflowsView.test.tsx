@@ -170,6 +170,13 @@ import { useOnboardingStore } from '../store/useOnboardingStore';
 import { WorkflowsView } from './WorkflowsView';
 import type { Blueprint } from '../features/workflows/builder/blueprintTypes';
 
+/** `workflow_list_blueprints` returns a page, never a bare array. */
+const blueprintPage = (blueprints: unknown[], next: number | null = null) => ({
+  blueprints,
+  truncated: next !== null,
+  next_offset: next,
+});
+
 describe('WorkflowsView', () => {
   beforeEach(() => {
     invokeMock.mockImplementation(async (command: string) => {
@@ -536,9 +543,9 @@ describe('WorkflowsView', () => {
       if (command === 'workflow_list_runs') return [];
       if (command === 'schedule_list') return [];
       if (command === 'workflow_list_blueprints') {
-        return [
+        return blueprintPage([
           { id: 'heartbeat', name: 'Heartbeat', path: '<absolute-workspace-path>/library/workflows/heartbeat.md' },
-        ];
+        ]);
       }
       if (command === 'workflow_parse' && args?.path?.endsWith('heartbeat.md')) {
         return {

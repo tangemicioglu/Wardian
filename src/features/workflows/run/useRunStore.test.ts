@@ -4,7 +4,7 @@ const invokeMock = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invokeMock(...args) }));
 
 import { useRunStore } from './useRunStore';
-import type { RunEvent, RunReadResult, RunState, RunSummary } from './runTypes';
+import type { RunEvent, RunReadResult, RunState, RunSummary, RunSummaryListResult } from './runTypes';
 
 const summary: RunSummary = {
   run_id: 'run-1',
@@ -37,6 +37,13 @@ const result: RunReadResult = {
   blueprint_path: '/library/workflows/wf.md',
 };
 
+/** `workflow_list_runs` returns a page, never a bare array. */
+const runPage = (runs: unknown[], next: number | null = null) => ({
+  runs,
+  truncated: next !== null,
+  next_offset: next,
+});
+
 describe('useRunStore', () => {
   beforeEach(() => {
     invokeMock.mockReset();
@@ -44,7 +51,7 @@ describe('useRunStore', () => {
   });
 
   it('loads run summaries with workflow_list_runs', async () => {
-    invokeMock.mockResolvedValueOnce([summary]);
+    invokeMock.mockResolvedValueOnce(runPage([summary]));
 
     await useRunStore.getState().loadRuns();
 
@@ -54,8 +61,8 @@ describe('useRunStore', () => {
 
   it('keeps the existing run summary array when polling returns unchanged summaries', async () => {
     invokeMock
-      .mockResolvedValueOnce([summary])
-      .mockResolvedValueOnce([{ ...summary }]);
+      .mockResolvedValueOnce(runPage([summary]))
+      .mockResolvedValueOnce(runPage([{ ...summary }]));
 
     await useRunStore.getState().loadRuns();
     const firstRuns = useRunStore.getState().runs;
@@ -65,8 +72,8 @@ describe('useRunStore', () => {
   });
 
   it('coalesces overlapping run polls into one backend request', async () => {
-    let resolveRequest!: (value: RunSummary[]) => void;
-    const pending = new Promise<RunSummary[]>((resolve) => {
+    let resolveRequest!: (value: RunSummaryListResult) => void;
+    const pending = new Promise<RunSummaryListResult>((resolve) => {
       resolveRequest = resolve;
     });
     invokeMock.mockReturnValueOnce(pending);
@@ -75,7 +82,7 @@ describe('useRunStore', () => {
     const second = useRunStore.getState().loadRuns();
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
-    resolveRequest([summary]);
+    resolveRequest(runPage([summary]) as RunSummaryListResult);
     await Promise.all([first, second]);
     expect(useRunStore.getState().runs).toEqual([summary]);
   });

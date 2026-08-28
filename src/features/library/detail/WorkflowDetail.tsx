@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { RunLaunchDialog } from '../../workflows/RunLaunchDialog';
 import type { Blueprint } from '../../workflows/builder/blueprintTypes';
-import type { BlueprintListResult, BlueprintRef } from '../../workflows/workflowTypes';
+import type { BlueprintListResult } from '../../workflows/workflowTypes';
 import { DetailPanelCommonProps } from '../DetailPane';
 import { MarkdownEditor } from '../MarkdownEditor';
 
@@ -58,8 +58,8 @@ export const WorkflowDetail: React.FC<WorkflowDetailProps> = ({
         setResolveError(null);
         setResolving(true);
         try {
-            const result = await invoke<BlueprintListResult | BlueprintRef[]>('workflow_list_blueprints');
-            const refs = Array.isArray(result) ? result : result.blueprints;
+            const result = await invoke<BlueprintListResult>('workflow_list_blueprints');
+            const refs = result.blueprints;
             const ref = refs.find((r) => matchesEntryPath(r.path, entry.path));
             if (!ref) {
                 setResolveError('Could not locate this workflow file on disk.');

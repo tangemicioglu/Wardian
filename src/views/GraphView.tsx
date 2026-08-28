@@ -128,14 +128,14 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
   const refreshActivity = useCallback(async (offset = 0, append = false) => {
     if (props.visibility === "hidden") return;
     try {
-      const result = await invoke<PairActivityResult | PairActivityEntry[]>(
+      const result = await invoke<PairActivityResult>(
         "get_pair_activity",
         offset > 0 ? { offset } : undefined,
       );
-      const page = Array.isArray(result) ? result : result.pairs;
+      const page = result.pairs;
       setPairActivity((current) => append ? mergePairActivity(current, page) : page);
-      setPairActivityTruncated(Array.isArray(result) ? false : result.truncated);
-      setPairActivityNextOffset(Array.isArray(result) ? null : result.next_offset ?? null);
+      setPairActivityTruncated(result.truncated);
+      setPairActivityNextOffset(result.next_offset ?? null);
     } catch {
       // Silently ignore errors
     }

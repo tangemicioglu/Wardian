@@ -20,13 +20,18 @@ const VIEWPORT: TerrainViewport = {
   scale: 1,
 };
 
+/** `get_directory_tree` returns a page, never a bare array. */
 function directoryTree(...names: string[]) {
-  return names.map((name) => ({
-    name,
-    path: `D:\\work\\repo\\${name}`,
-    is_dir: false,
-    extension: null,
-  }));
+  return {
+    nodes: names.map((name) => ({
+      name,
+      path: `D:\\work\\repo\\${name}`,
+      is_dir: false,
+      extension: null,
+    })),
+    truncated: false,
+    next_offset: null,
+  };
 }
 
 beforeEach(() => {
@@ -162,16 +167,24 @@ describe("useGardenTerrain", () => {
       if (command !== "get_directory_tree") return undefined;
       const path = (args as { path: string }).path;
       if (path === "d:/work/repo") {
-        return [
-          { name: "src", path: "D:\\work\\repo\\src", is_dir: true, extension: null },
-        ];
+        return {
+          nodes: [
+            { name: "src", path: "D:\\work\\repo\\src", is_dir: true, extension: null },
+          ],
+          truncated: false,
+          next_offset: null,
+        };
       }
-      return srcChildren.map((name) => ({
-        name,
-        path: `D:\\work\\repo\\src\\${name}`,
-        is_dir: false,
-        extension: null,
-      }));
+      return {
+        nodes: srcChildren.map((name) => ({
+          name,
+          path: `D:\\work\\repo\\src\\${name}`,
+          is_dir: false,
+          extension: null,
+        })),
+        truncated: false,
+        next_offset: null,
+      };
     });
 
     const lengths: number[] = [];

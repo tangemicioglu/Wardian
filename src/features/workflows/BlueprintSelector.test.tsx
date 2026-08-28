@@ -9,13 +9,20 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import { BlueprintSelector } from './BlueprintSelector';
 
+/** `workflow_list_blueprints` returns a page, never a bare array. */
+const blueprintPage = (blueprints: unknown[], next: number | null = null) => ({
+  blueprints,
+  truncated: next !== null,
+  next_offset: next,
+});
+
 describe('BlueprintSelector', () => {
   beforeEach(() => {
     invokeMock.mockReset();
   });
 
   it('lists blueprints from workflow_list_blueprints and opens one', async () => {
-    invokeMock.mockResolvedValueOnce([{ id: 'wf', name: 'WF', path: '/x/wf.md' }]);
+    invokeMock.mockResolvedValueOnce(blueprintPage([{ id: 'wf', name: 'WF', path: '/x/wf.md' }]));
     const onOpen = vi.fn();
 
     render(<BlueprintSelector onOpen={onOpen} onNew={() => {}} />);
@@ -27,7 +34,7 @@ describe('BlueprintSelector', () => {
   });
 
   it('fires onNew', async () => {
-    invokeMock.mockResolvedValueOnce([]);
+    invokeMock.mockResolvedValueOnce(blueprintPage([]));
     const onNew = vi.fn();
 
     render(<BlueprintSelector onOpen={() => {}} onNew={onNew} />);

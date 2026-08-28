@@ -122,6 +122,13 @@ const defaultProps = {
   ...handlers,
 };
 
+/** `get_pair_activity` returns a page, never a bare array. */
+const pairPage = (pairs: unknown[], next: number | null = null) => ({
+  pairs,
+  truncated: next !== null,
+  next_offset: next,
+});
+
 describe("GraphView", () => {
   beforeEach(async () => {
     Object.values(handlers).forEach((handler) => handler.mockClear());
@@ -373,7 +380,7 @@ describe("GraphView", () => {
         };
       }
       if (command === "get_pair_activity") {
-        return [];
+        return pairPage([]);
       }
       return undefined;
     });
@@ -456,9 +463,9 @@ describe("GraphView", () => {
           };
         }
         if (command === "get_pair_activity") {
-          return [
+          return pairPage([
             { a: "a", b: "b", last_message_at: new Date(Date.now() - 60000).toISOString(), active_ask: false },
-          ];
+          ]);
         }
         return undefined;
       });
@@ -484,9 +491,9 @@ describe("GraphView", () => {
         }
         if (command === "get_pair_activity") {
           // Ghost edge with recent activity
-          return [
+          return pairPage([
             { a: "a", b: "b", last_message_at: new Date(Date.now() - 60000).toISOString(), active_ask: false },
-          ];
+          ]);
         }
         return undefined;
       });
@@ -513,9 +520,9 @@ describe("GraphView", () => {
           return { edges: [], ignored_pairs: [] };
         }
         if (command === "get_pair_activity") {
-          return [
+          return pairPage([
             { a: "a", b: "b", last_message_at: new Date(Date.now() - 60000).toISOString(), active_ask: false },
-          ];
+          ]);
         }
         return undefined;
       });
@@ -545,9 +552,9 @@ describe("GraphView", () => {
           return { edges: [], ignored_pairs: [] };
         }
         if (command === "get_pair_activity") {
-          return [
+          return pairPage([
             { a: "a", b: "b", last_message_at: new Date(Date.now() - 60000).toISOString(), active_ask: false },
-          ];
+          ]);
         }
         return undefined;
       });
@@ -577,7 +584,7 @@ describe("GraphView", () => {
           };
         }
         if (command === "get_pair_activity") {
-          return [];
+          return pairPage([]);
         }
         return undefined;
       });
@@ -607,7 +614,7 @@ describe("GraphView", () => {
           };
         }
         if (command === "get_pair_activity") {
-          return [];
+          return pairPage([]);
         }
         return undefined;
       });
@@ -668,7 +675,7 @@ describe("GraphView", () => {
           };
         }
         if (command === "get_pair_activity") {
-          return [];
+          return pairPage([]);
         }
         return undefined;
       });
@@ -701,7 +708,7 @@ describe("GraphView", () => {
           return { edges: [], ignored_pairs: [] };
         }
         if (command === "get_pair_activity") {
-          return [];
+          return pairPage([]);
         }
         return undefined;
       });
@@ -751,7 +758,7 @@ describe("GraphView", () => {
           return { edges: [], ignored_pairs: [] };
         }
         if (command === "get_pair_activity") {
-          return [];
+          return pairPage([]);
         }
         return undefined;
       });

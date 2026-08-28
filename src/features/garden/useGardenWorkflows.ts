@@ -19,6 +19,10 @@ interface ParsedBlueprint {
 
 type GardenInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 
+/** Failure values that keep the page shape `workflow_list_*` declares. */
+const EMPTY_BLUEPRINT_PAGE: BlueprintListResult = { blueprints: [], truncated: false, next_offset: null };
+const EMPTY_RUN_PAGE: RunSummaryListResult = { runs: [], truncated: false, next_offset: null };
+
 export interface GardenWorkflowInputsResult {
   workflows: GardenWorkflowInput[];
   truncated: boolean;
@@ -67,15 +71,17 @@ export async function loadGardenWorkflowInputs(
   invoker: GardenInvoke = invoke as GardenInvoke,
   blueprintOffset = 0,
 ): Promise<GardenWorkflowInputsResult> {
-  // `invoke` can resolve to null (not just reject), so coalesce to [] before mapping.
+  // `invoke` can resolve to null (not just reject), so every read below is
+  // null-guarded. The failure value keeps the page shape the command declares,
+  // so no consumer has to branch on a collection the backend cannot return.
   const blueprintResult = (await (
     blueprintOffset > 0
       ? invoker("workflow_list_blueprints", { offset: blueprintOffset })
       : invoker("workflow_list_blueprints")
-  ).catch(() => [])) as BlueprintListResult | BlueprintRef[];
-  const refs = Array.isArray(blueprintResult) ? blueprintResult : blueprintResult?.blueprints ?? [];
-  const truncated = !Array.isArray(blueprintResult) && Boolean(blueprintResult?.truncated);
-  const nextOffset = Array.isArray(blueprintResult) ? null : blueprintResult?.next_offset ?? null;
+  ).catch(() => EMPTY_BLUEPRINT_PAGE)) as BlueprintListResult | null;
+  const refs = blueprintResult?.blueprints ?? [];
+  const truncated = Boolean(blueprintResult?.truncated);
+  const nextOffset = blueprintResult?.next_offset ?? null;
   const nextBlueprintKey = blueprintRefsKey(refs);
   let blueprints = cachedBlueprintKey === nextBlueprintKey ? cachedBlueprints : null;
 
@@ -104,10 +110,10 @@ export async function loadGardenWorkflowInputs(
   // cached with the blueprints: run status changes constantly, and a schedule
   // can be rebound without the blueprint file changing at all.
   const [runResult, schedules] = await Promise.all([
-    invoker("workflow_list_runs").catch(() => []) as Promise<RunSummaryListResult | RunSummary[]>,
+    invoker("workflow_list_runs").catch(() => EMPTY_RUN_PAGE) as Promise<RunSummaryListResult | null>,
     invoker("schedule_list").catch(() => []) as Promise<WorkflowScheduleRecord[]>,
   ]);
-  const runs = Array.isArray(runResult) ? runResult : runResult?.runs ?? [];
+  const runs = runResult?.runs ?? [];
   return {
     workflows: mergeWorkflowRunStatus(
       blueprints,

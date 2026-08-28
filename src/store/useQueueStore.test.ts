@@ -17,6 +17,13 @@ function resetStore() {
   });
 }
 
+/** `list_inbox_notifications` returns a page, never a bare array. */
+const notificationPage = (notifications: unknown[], next: number | null = null) => ({
+  notifications,
+  truncated: next !== null,
+  next_offset: next,
+});
+
 describe("useQueueStore - preferences", () => {
   beforeEach(() => {
     resetStore();
@@ -645,7 +652,7 @@ describe("useQueueStore - persistence", () => {
         }]);
       }
       if (command === "list_inbox_notifications") {
-        return Promise.resolve([{
+        return Promise.resolve(notificationPage([{
           id: "notice-1",
           kind: "update",
           sender_session_id: "agent-1",
@@ -663,7 +670,7 @@ describe("useQueueStore - persistence", () => {
           body: "This has not been read yet.",
           choices: [],
           created_at: new Date(timestamp).toISOString(),
-        }]);
+        }]));
       }
       return Promise.resolve([]);
     });

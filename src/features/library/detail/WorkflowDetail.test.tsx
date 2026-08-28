@@ -41,6 +41,13 @@ function renderWorkflowDetail(entry: LibraryEntry = workflowEntry()) {
 // on raw strings, which false-positives whenever an absolute path happens
 // to end in the same substring as the entry's relative path without a real
 // segment boundary (e.g. `.../other-a/foo.md` "ends with" `a/foo.md`).
+/** `workflow_list_blueprints` returns a page, never a bare array. */
+const blueprintPage = (blueprints: unknown[], next: number | null = null) => ({
+  blueprints,
+  truncated: next !== null,
+  next_offset: next,
+});
+
 describe('WorkflowDetail blueprint resolution', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
@@ -49,12 +56,12 @@ describe('WorkflowDetail blueprint resolution', () => {
   it('resolves via an exact trailing-segment match, ignoring a colliding endsWith substring', async () => {
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'workflow_list_blueprints') {
-        return [
+        return blueprintPage([
           // Colliding path: string-wise `endsWith('a/foo.md')` would match
           // this too, even though its real leaf folder is `other-a`, not `a`.
           { id: 'collision', name: 'collision', path: 'C:/workspace/other-a/foo.md' },
           { id: 'correct', name: 'correct', path: 'C:/workspace/workflows/a/foo.md' },
-        ];
+        ]);
       }
       if (cmd === 'workflow_parse') {
         return { blueprint: { schema: 1, id: 'correct', name: 'correct', nodes: [], edges: [] }, diagnostics: [] };
@@ -78,7 +85,7 @@ describe('WorkflowDetail blueprint resolution', () => {
   it('shows a resolve error when no ref has a real matching trailing segment', async () => {
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'workflow_list_blueprints') {
-        return [{ id: 'collision', name: 'collision', path: 'C:/workspace/other-a/foo.md' }];
+        return blueprintPage([{ id: 'collision', name: 'collision', path: 'C:/workspace/other-a/foo.md' }]);
       }
       return null;
     });
