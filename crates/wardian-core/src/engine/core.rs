@@ -47,6 +47,9 @@ pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<(
             s.set_node_status(node, NodeStatus::Completed);
             deliver_from_port(g, s, node, "out");
         }
+        EventKind::StateUpdated { op, entries, .. } => {
+            apply_state_update(s, op, entries)?;
+        }
         EventKind::NodeFailed { node, error } => {
             s.set_node_status(node, NodeStatus::Failed);
             s.status = RunStatus::Failed;
@@ -87,6 +90,46 @@ pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<(
         }
     }
     s.next_seq = ev.seq + 1;
+    Ok(())
+}
+
+fn apply_state_update(
+    s: &mut RunState,
+    op: &str,
+    entries: &serde_json::Value,
+) -> crate::engine::Result<()> {
+    let Some(entries) = entries.as_object() else {
+        return Err(crate::engine::EngineError::InvalidState(
+            "state entries must be an object".into(),
+        ));
+    };
+    let Some(storage) = s.registry.get_mut("storage") else {
+        return Err(crate::engine::EngineError::InvalidState(
+            "run registry is missing storage".into(),
+        ));
+    };
+    let Some(storage) = storage.as_object_mut() else {
+        return Err(crate::engine::EngineError::InvalidState(
+            "run registry storage must be an object".into(),
+        ));
+    };
+    match op {
+        "set" | "merge" => {
+            for (key, value) in entries {
+                storage.insert(key.clone(), value.clone());
+            }
+        }
+        "delete" => {
+            for key in entries.keys() {
+                storage.remove(key);
+            }
+        }
+        other => {
+            return Err(crate::engine::EngineError::InvalidState(format!(
+                "unknown state op: {other}"
+            )))
+        }
+    }
     Ok(())
 }
 
@@ -228,7 +271,7 @@ pub fn advance_loops(g: &Graph, s: &mut RunState) {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|condition| !condition.is_empty())
-            .map(|condition| lookup_truthy(&s.registry, condition))
+            .map(|condition| crate::workflow::condition::lookup_truthy(&s.registry, condition))
             .unwrap_or(false);
 
         if !until_met && iter + 1 < max {
@@ -263,23 +306,6 @@ pub fn advance_loops(g: &Graph, s: &mut RunState) {
             s.set_node_status(&lp, NodeStatus::Completed);
             deliver_from_port(g, s, &lp, "done");
         }
-    }
-}
-
-pub(crate) fn lookup_truthy(registry: &serde_json::Value, path: &str) -> bool {
-    let mut cur = registry;
-    for seg in path.split('.') {
-        match cur.get(seg) {
-            Some(v) => cur = v,
-            None => return false,
-        }
-    }
-    match cur {
-        serde_json::Value::Bool(b) => *b,
-        serde_json::Value::Null => false,
-        serde_json::Value::String(s) => !s.is_empty(),
-        serde_json::Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
-        _ => true,
     }
 }
 
@@ -741,5 +767,44 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.status, RunStatus::Failed);
+    }
+
+    #[test]
+    fn state_updates_are_folded_into_replayable_storage() {
+        let blueprint = bp(vec![node("state", "state")], vec![]);
+        let g = Graph::new(&blueprint);
+        let mut s = RunState::new("r", "wf");
+
+        apply(
+            &g,
+            &mut s,
+            &crate::engine::event::Event::new(
+                0,
+                EventKind::StateUpdated {
+                    node: "state".into(),
+                    op: "set".into(),
+                    entries: serde_json::json!({"branch": "main", "ready": true}),
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(s.registry["storage"]["branch"], "main");
+        assert_eq!(s.registry["storage"]["ready"], true);
+
+        let next_seq = s.next_seq;
+        apply(
+            &g,
+            &mut s,
+            &crate::engine::event::Event::new(
+                next_seq,
+                EventKind::StateUpdated {
+                    node: "state".into(),
+                    op: "delete".into(),
+                    entries: serde_json::json!({"ready": null}),
+                },
+            ),
+        )
+        .unwrap();
+        assert!(s.registry["storage"].get("ready").is_none());
     }
 }

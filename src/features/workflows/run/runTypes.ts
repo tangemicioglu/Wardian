@@ -7,6 +7,7 @@ export type RunEvent = { seq: number; ts: string } & (
   | { kind: 'run_started'; blueprint_id: string; schema: number; trigger: unknown }
   | { kind: 'node_started'; node: string }
   | { kind: 'node_completed'; node: string; output: unknown }
+  | { kind: 'state_updated'; node: string; op: string; entries: unknown }
   | { kind: 'node_failed'; node: string; error: string }
   | { kind: 'branch_taken'; node: string; port: string }
   | { kind: 'decision_made'; node: string; port: string }

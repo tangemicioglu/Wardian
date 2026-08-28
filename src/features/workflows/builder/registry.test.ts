@@ -13,6 +13,10 @@ describe('node registry', () => {
     expect(task?.kind).toBe('agent');
     expect(task?.fields.some((f) => f.id === 'prompt')).toBe(true);
   });
+  it('does not advertise unsupported runtime nodes in the Builder', () => {
+    expect(nodeTypes().some((node) => node.id === 'sub_workflow')).toBe(false);
+    expect(findNodeType('sub_workflow')).toMatchObject({ supported: false });
+  });
   it('enumerates the closed field-type kinds', () => {
     expect(fieldTypeKinds()).toContain('prompt');
     expect(fieldTypeKinds()).toContain('branch_port');

@@ -836,8 +836,8 @@ pub async fn approve_workflow_for_surface(
     }
 }
 
-/// Record a cancel request for a run. Cooperative cancellation of the live loop
-/// is deferred; the marker gives the UI a durable cancellation request.
+/// Record a durable cancel request. The engine consumes the marker at its next
+/// dispatch boundary and emits a terminal cancellation failure.
 #[tauri::command]
 pub fn workflow_cancel(blueprint_id: String, run_id: String) -> Result<serde_json::Value, String> {
     let run_root =

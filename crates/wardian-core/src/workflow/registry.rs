@@ -38,6 +38,8 @@ pub struct NodeTypeDef {
     pub label: String,
     pub icon: String,
     pub description: String,
+    /// Whether this node has a complete runtime contract and may be authored.
+    pub supported: bool,
     pub fields: Vec<FieldDef>,
     pub inputs: Vec<PortDef>,
     pub outputs: Vec<PortDef>,
@@ -77,6 +79,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Task".into(),
             icon: "robot".into(),
             description: "Delegate work to an agent; returns structured output.".into(),
+            supported: true,
             fields: vec![
                 FieldDef::new("agent", FieldType::AgentRef, "Agent")
                     .required()
@@ -96,6 +99,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Decision".into(),
             icon: "git-branch".into(),
             description: "Agent chooses one of the declared outgoing branches.".into(),
+            supported: true,
             fields: vec![
                 FieldDef::new("agent", FieldType::AgentRef, "Agent").required(),
                 FieldDef::new("prompt", FieldType::Prompt, "Prompt").required(),
@@ -117,7 +121,10 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Branch".into(),
             icon: "git-fork".into(),
             description: "Deterministic condition on run state.".into(),
-            fields: vec![FieldDef::new("condition", FieldType::Text, "Condition").required()],
+            supported: true,
+            fields: vec![FieldDef::new("condition", FieldType::Text, "Condition")
+                .required()
+                .help(crate::workflow::condition::CONDITION_HELP)],
             inputs: default_in(),
             outputs: vec![
                 PortDef::new("on_true", "True"),
@@ -133,9 +140,11 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Loop".into(),
             icon: "repeat".into(),
             description: "Container: repeats its body subgraph until a bound is hit.".into(),
+            supported: true,
             fields: vec![
                 FieldDef::new("max_iterations", FieldType::Number, "Max iterations"),
-                FieldDef::new("until", FieldType::Text, "Until condition"),
+                FieldDef::new("until", FieldType::Text, "Until condition")
+                    .help(crate::workflow::condition::CONDITION_HELP),
             ],
             inputs: default_in(),
             outputs: vec![PortDef::new("body", "Body"), PortDef::new("done", "Done")],
@@ -149,6 +158,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Join".into(),
             icon: "merge".into(),
             description: "Synchronization barrier; waits for all inbound edges.".into(),
+            supported: true,
             fields: vec![],
             inputs: default_in(),
             outputs: default_out(),
@@ -162,6 +172,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Approval".into(),
             icon: "shield-check".into(),
             description: "Human-in-the-loop gate; parks the run until a person approves.".into(),
+            supported: true,
             fields: vec![
                 FieldDef::new("prompt", FieldType::Prompt, "Approval prompt")
                     .help("What the approver is signing off on."),
@@ -178,6 +189,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Shell".into(),
             icon: "terminal".into(),
             description: "Run a shell command.".into(),
+            supported: true,
             fields: vec![
                 FieldDef::new("command", FieldType::LongText, "Command").required(),
                 FieldDef::new("cwd", FieldType::Path, "Working directory"),
@@ -194,6 +206,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Script".into(),
             icon: "file-code".into(),
             description: "Run a local script through a selected runtime.".into(),
+            supported: true,
             fields: vec![
                 FieldDef::new(
                     "runtime",
@@ -217,11 +230,12 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "State".into(),
             icon: "database".into(),
             description: "Read or write run or shared storage.".into(),
+            supported: true,
             fields: vec![
                 FieldDef::new(
                     "op",
                     FieldType::Enum {
-                        options: vec!["get".into(), "set".into(), "delete".into()],
+                        options: vec!["get".into(), "set".into(), "merge".into(), "delete".into()],
                     },
                     "Operation",
                 )
@@ -240,6 +254,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Memory commit".into(),
             icon: "database".into(),
             description: "Validate and atomically commit structured agent-memory changes.".into(),
+            supported: true,
             fields: vec![
                 FieldDef::new("source_node", FieldType::Text, "Source node").required(),
                 FieldDef::new("agent_id", FieldType::Text, "Memory agent")
@@ -259,6 +274,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Notify".into(),
             icon: "bell".into(),
             description: "Send an operator-facing notification.".into(),
+            supported: true,
             fields: vec![FieldDef::new("message", FieldType::Prompt, "Message").required()],
             inputs: default_in(),
             outputs: default_out(),
@@ -271,7 +287,8 @@ fn build_registry() -> Vec<NodeTypeDef> {
             category: "Action".into(),
             label: "Sub-workflow".into(),
             icon: "workflow".into(),
-            description: "Call another workflow blueprint.".into(),
+            description: "Reserved for durable child workflow runs; not available for execution yet.".into(),
+            supported: false,
             fields: vec![FieldDef::new("workflow", FieldType::WorkflowRef, "Workflow").required()],
             inputs: default_in(),
             outputs: default_out(),
@@ -286,6 +303,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
             label: "Manual Trigger".into(),
             icon: "play".into(),
             description: "Entry point. Runs on demand or when an invoker fires it.".into(),
+            supported: true,
             fields: vec![FieldDef::new(
                 "input_schema",
                 FieldType::JsonSchema,
@@ -342,6 +360,12 @@ mod tests {
     #[test]
     fn lookup_unknown_returns_none() {
         assert!(find_node_type("nope").is_none());
+    }
+
+    #[test]
+    fn sub_workflow_is_visible_but_marked_unsupported() {
+        let sub_workflow = find_node_type("sub_workflow").expect("sub_workflow exists");
+        assert!(!sub_workflow.supported);
     }
 
     #[test]

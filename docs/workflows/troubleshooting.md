@@ -10,7 +10,7 @@ Interval-based scheduled workflows do not fire at creation time. They schedule t
 
 Check:
 
-- whether the workflow uses a **Scheduled Trigger** instead of a **Manual Trigger**
+- whether the blueprint was invoked by a schedule instead of a manual run
 - whether the schedule card shows `Live` with a future next-run time
 - whether you expected a listener but actually created a scheduled task
 
@@ -44,15 +44,15 @@ Check whether the workflow has:
 
 If yes, the modal is working as designed.
 
-## My Workflow Became a Live Listener Instead of Running
+## My Workflow Did Not Start From an Event
 
-That usually means the workflow was launched through a listener-style trigger.
+Event-driven invocation is an invoker integration, not a blueprint trigger node.
 
-Expected listener-style behavior:
+Expected behavior:
 
-- File Watcher and webhook-style workflows activate as live listeners
-- scheduled workflows should not appear under live listeners
-- manual workflows should run immediately instead of entering listener mode
+- event sources create normal durable runs with their event payload
+- scheduled invocations do not become listeners
+- manual workflows run immediately
 
 ## A Scheduled Task Was Deleted but the Workflow Still Exists
 
@@ -72,9 +72,22 @@ Wardian allows multiple scheduled instances of the same workflow. Distinguish th
 
 ## A Node Exists in the Model but Not in the Builder
 
-The workflow model currently includes a few reserved or partially wired node types.
+The workflow model may include reserved node types for forward compatibility.
 
-If you see names like `parallel`, `governance`, `tool`, or `subflow` in exported data or internal references, confirm their current support level in [Node Reference](./node-reference.md) before assuming they are fully available.
+`sub_workflow` is currently registered as unsupported because it lacks a durable
+child-run contract. Validation reports `unsupported_node_type`, and the Builder
+does not offer it. Confirm the support level in [Node Reference](./node-reference.md)
+before assuming an exported node is executable.
+
+## A Branch Condition Always Took the False Path
+
+Branch and loop conditions currently accept only a dot-separated registry path,
+such as `nodes.agent-1.output.ready`. Expressions such as `===`, `&&`, or
+quoted literals are rejected with `invalid_condition`; they are not evaluated as
+JavaScript or another expression language.
+
+Use the run registry values produced by prior nodes, or remove the comparison
+until a versioned condition language is available.
 
 ## Where to Go Next
 

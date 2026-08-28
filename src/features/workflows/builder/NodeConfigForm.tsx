@@ -5,6 +5,13 @@ import type { ReactNode } from 'react';
 export function NodeConfigForm({ node, onChange }: { node: BlueprintNode; onChange: (field: string, value: unknown) => void }) {
   const def = findNodeType(node.type);
   if (!def) return <div className="config-error">Unknown node type: {node.type}</div>;
+  if (def.supported === false) {
+    return (
+      <div className="config-error" data-testid="unsupported-node-type">
+        Node type <code>{node.type}</code> is registered but not supported by the workflow runtime.
+      </div>
+    );
+  }
   return (
     <div className="grid gap-3" data-testid="node-config-form">
       {def.fields.map((f) => (

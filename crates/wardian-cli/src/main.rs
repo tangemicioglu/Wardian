@@ -533,11 +533,13 @@ fn render_workflow_node_types(json: bool) -> Result<String, CliError> {
     // Human summary: one line per node type.
     let mut lines = String::from("NODE TYPES\n");
     for def in wardian_core::workflow::node_types() {
+        let status = if def.supported { "" } else { " [unsupported]" };
         lines.push_str(&format!(
-            "  {:<18} {:<8} {}\n",
+            "  {:<18} {:<8} {}{}\n",
             def.id,
             format!("{:?}", def.kind).to_lowercase(),
-            def.description
+            def.description,
+            status
         ));
     }
     Ok(lines)

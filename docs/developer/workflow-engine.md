@@ -64,8 +64,8 @@ Template fields resolve against this registry before each node executes.
    The CLI's default `wardian workflow exec <path>` path sends the same request
    through the Wardian live control endpoint.
 2. The backend parses and validates the blueprint.
-3. `LiveStepExecutor` resolves agents, shell/script actions, notify operations,
-   and state operations.
+3. `LiveStepExecutor` resolves agents, shell/script actions, and app
+   notifications. Deterministic state operations run in the core engine.
 4. `wardian_core::engine` drives runnable nodes, records events, and checkpoints
    state.
 5. Observe and Monitor refresh durable run state through `workflow_read_run`.
@@ -78,7 +78,8 @@ Resume, startup recovery, and human approval use the same durable run records:
   with an interruption reason, because their worker tasks and provider
   processes are no longer owned by the new app process;
 - `workflow_approve` grants or rejects an approval gate;
-- `workflow_cancel` writes a cancellation marker for a live run.
+- `workflow_cancel` writes a cancellation marker; the engine consumes it at the
+  next dispatch boundary and records a durable `run_failed` cancellation event.
 
 ## Agent Execution
 

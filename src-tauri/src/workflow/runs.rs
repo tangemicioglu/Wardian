@@ -242,12 +242,13 @@ pub fn live_executor_with_catalog_and_app(
 ) -> LiveStepExecutor {
     LiveStepExecutor::new_with_live_runner(
         Arc::new(TauriHeadlessAgentRunner::new(app.clone())),
-        Some(Arc::new(TauriLiveAgentRunner::new(app))),
+        Some(Arc::new(TauriLiveAgentRunner::new(app.clone()))),
         workspace,
         default_provider,
         bindings,
         agent_catalog,
     )
+    .with_notification_app(app)
 }
 
 pub fn live_executor_with_catalog_assignments_and_app(
@@ -260,13 +261,14 @@ pub fn live_executor_with_catalog_assignments_and_app(
 ) -> LiveStepExecutor {
     LiveStepExecutor::new_with_assignments_and_live_runner(
         Arc::new(TauriHeadlessAgentRunner::new(app.clone())),
-        Some(Arc::new(TauriLiveAgentRunner::new(app))),
+        Some(Arc::new(TauriLiveAgentRunner::new(app.clone()))),
         workspace,
         default_provider,
         bindings,
         assignments,
         agent_catalog,
     )
+    .with_notification_app(app)
 }
 
 fn invocation_path(run_root: &Path) -> PathBuf {

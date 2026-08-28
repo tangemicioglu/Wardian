@@ -243,6 +243,17 @@ async fn drive(
     exec: &dyn StepExecutor,
 ) -> crate::engine::Result<()> {
     loop {
+        if consume_cancellation_request(run_root)? {
+            emit(
+                run_root,
+                g,
+                s,
+                EventKind::RunFailed {
+                    error: "workflow cancelled by operator".into(),
+                },
+            )?;
+            return Ok(());
+        }
         core::advance_loops(g, s);
         finalize_if_done(g, s);
         write_checkpoint(run_root, s)?;
@@ -262,7 +273,26 @@ async fn drive(
             if s.status == RunStatus::AwaitingApproval || s.status == RunStatus::Failed {
                 return Ok(());
             }
+            if consume_cancellation_request(run_root)? {
+                emit(
+                    run_root,
+                    g,
+                    s,
+                    EventKind::RunFailed {
+                        error: "workflow cancelled by operator".into(),
+                    },
+                )?;
+                return Ok(());
+            }
         }
+    }
+}
+
+fn consume_cancellation_request(run_root: &Path) -> crate::engine::Result<bool> {
+    match std::fs::remove_file(run_root.join("cancel.marker")) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -279,6 +309,23 @@ async fn dispatch(
         .find_node(node_id)
         .ok_or_else(|| EngineError::InvalidState(format!("missing node {node_id}")))?
         .clone();
+
+    if crate::workflow::find_node_type(&node.r#type).is_some_and(|definition| !definition.supported)
+    {
+        emit(
+            run_root,
+            g,
+            s,
+            EventKind::NodeFailed {
+                node: node.id.clone(),
+                error: format!(
+                    "node type `{}` is registered but not supported by the workflow runtime",
+                    node.r#type
+                ),
+            },
+        )?;
+        return Ok(());
+    }
 
     // Triggers + join: pass-through completion.
     if node.r#type.ends_with("_trigger") || node.r#type == "manual_trigger" || node.r#type == "join"
@@ -329,6 +376,52 @@ async fn dispatch(
                 port,
             },
         )?;
+        return Ok(());
+    }
+
+    if node.r#type == "state" {
+        emit(
+            run_root,
+            g,
+            s,
+            EventKind::NodeStarted {
+                node: node.id.clone(),
+            },
+        )?;
+        match execute_state(s, &node) {
+            Ok((output, update)) => {
+                if let Some((op, entries)) = update {
+                    emit(
+                        run_root,
+                        g,
+                        s,
+                        EventKind::StateUpdated {
+                            node: node.id.clone(),
+                            op,
+                            entries,
+                        },
+                    )?;
+                }
+                emit(
+                    run_root,
+                    g,
+                    s,
+                    EventKind::NodeCompleted {
+                        node: node.id.clone(),
+                        output,
+                    },
+                )?;
+            }
+            Err(error) => emit(
+                run_root,
+                g,
+                s,
+                EventKind::NodeFailed {
+                    node: node.id.clone(),
+                    error: error.0,
+                },
+            )?,
+        }
         return Ok(());
     }
 
@@ -401,18 +494,97 @@ fn emit_loop_enter(
 }
 
 fn eval_branch(s: &RunState, node: &Node) -> crate::engine::Result<String> {
-    // Minimal condition: truthiness of a registry path named in `condition`.
     let cond = node
         .fields
         .get("condition")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let truthy = core::lookup_truthy(&s.registry, cond);
+    let path = crate::workflow::condition::validate_path(cond).map_err(|message| {
+        EngineError::InvalidState(format!("branch condition is invalid: {message}"))
+    })?;
+    let truthy = crate::workflow::condition::lookup_truthy(&s.registry, &path);
     Ok(if truthy {
         "on_true".into()
     } else {
         "on_false".into()
     })
+}
+
+fn resolve_json(
+    value: &serde_json::Value,
+    registry: &serde_json::Value,
+) -> Result<serde_json::Value, StepError> {
+    match value {
+        serde_json::Value::String(text) => resolve(text, registry)
+            .map(serde_json::Value::String)
+            .map_err(|path| StepError::new(format!("unresolved {{{{{path}}}}}"))),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .map(|value| resolve_json(value, registry))
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        serde_json::Value::Object(values) => values
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), resolve_json(value, registry)?)))
+            .collect::<Result<serde_json::Map<_, _>, StepError>>()
+            .map(serde_json::Value::Object),
+        other => Ok(other.clone()),
+    }
+}
+
+/// Execute the deterministic state node and return its durable mutation.
+fn execute_state(
+    s: &RunState,
+    node: &Node,
+) -> Result<(serde_json::Value, Option<(String, serde_json::Value)>), StepError> {
+    let op = node
+        .fields
+        .get("op")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| StepError::new("state node requires an operation"))?;
+    let entries = resolve_json(
+        node.fields
+            .get("entries")
+            .unwrap_or(&serde_json::Value::Object(serde_json::Map::new())),
+        &s.registry,
+    )?;
+    let entry_map = entries
+        .as_object()
+        .ok_or_else(|| StepError::new("state entries must be an object"))?;
+    let storage = s
+        .registry
+        .get("storage")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| StepError::new("run registry storage must be an object"))?;
+
+    match op {
+        "get" => {
+            let output = if entry_map.is_empty() {
+                serde_json::Value::Object(storage.clone())
+            } else {
+                entry_map
+                    .keys()
+                    .map(|key| {
+                        (
+                            key.clone(),
+                            storage.get(key).cloned().unwrap_or(serde_json::Value::Null),
+                        )
+                    })
+                    .collect::<serde_json::Map<_, _>>()
+                    .into()
+            };
+            Ok((output, None))
+        }
+        "set" | "merge" | "delete" => Ok((
+            if op == "delete" {
+                serde_json::json!({})
+            } else {
+                entries.clone()
+            },
+            Some((op.to_string(), entries)),
+        )),
+        other => Err(StepError::new(format!("unknown state op: {other}"))),
+    }
 }
 
 /// Interpolate the node's string fields and call the matching executor method.
@@ -492,18 +664,6 @@ async fn run_side_effect(
             .await?;
             Ok(serde_json::json!({}))
         }
-        "state" => Ok(exec
-            .state_op(StateRequest {
-                node: node.id.clone(),
-                op: f("op")?,
-                entries: node
-                    .fields
-                    .get("entries")
-                    .cloned()
-                    .unwrap_or(serde_json::json!({})),
-            })
-            .await?
-            .0),
         "memory_commit" => {
             let source_node = f("source_node")?;
             let principal_template = node
@@ -523,7 +683,10 @@ async fn run_side_effect(
                     "memory_commit source node `{source_node}` has no output"
                 ))
             })?;
-            let trigger_output = s.registry.get("trigger").and_then(|value| value.get("output"));
+            let trigger_output = s
+                .registry
+                .get("trigger")
+                .and_then(|value| value.get("output"));
             let trigger_string = |field: &str| {
                 trigger_output
                     .and_then(|value| value.get(field))
@@ -592,6 +755,289 @@ mod tests {
         assert_eq!(state.run_id, "run-xyz");
         let checkpoint = read_checkpoint(dir.path()).unwrap().unwrap();
         assert_eq!(checkpoint.run_id, "run-xyz");
+    }
+
+    fn branch_blueprint() -> Blueprint {
+        let task = |id: &str| Node {
+            id: id.into(),
+            r#type: "task".into(),
+            name: None,
+            parent: None,
+            fields: serde_json::json!({
+                "agent": "role:worker",
+                "prompt": "work"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            position: None,
+        };
+        Blueprint {
+            schema: 2,
+            id: "branch-contract".into(),
+            name: "Branch contract".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                task("agent-1"),
+                Node {
+                    id: "route".into(),
+                    r#type: "branch".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({
+                        "condition": "nodes.agent-1.output.ready"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+                task("yes"),
+                task("no"),
+            ],
+            edges: vec![
+                crate::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "agent-1".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "agent-1".into(),
+                    from_port: "out".into(),
+                    to: "route".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "route".into(),
+                    from_port: "on_true".into(),
+                    to: "yes".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "route".into(),
+                    from_port: "on_false".into(),
+                    to: "no".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn branch_routes_boolean_truthiness_and_replays_the_same_decision() {
+        for (ready, expected_port, expected_task, skipped_task) in [
+            (true, "on_true", "task:yes", "no"),
+            (false, "on_false", "task:no", "yes"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let blueprint = branch_blueprint();
+            let exec = MockExecutor::new()
+                .with_task_output("agent-1", serde_json::json!({"ready": ready}));
+
+            let state = Engine::start_with_id(
+                &blueprint,
+                format!("run-{ready}"),
+                serde_json::json!({}),
+                dir.path(),
+                &exec,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(state.status, RunStatus::Completed);
+            assert!(exec.calls().contains(&expected_task.to_string()));
+            assert_eq!(state.status_or_pending(skipped_task), NodeStatus::Skipped);
+            let events = read_events(dir.path()).unwrap();
+            assert!(events.iter().any(|event| {
+                matches!(&event.kind, EventKind::BranchTaken { node, port } if node == "route" && port == expected_port)
+            }));
+
+            let replayed = Engine::replay(&blueprint, dir.path()).unwrap();
+            assert_eq!(replayed.registry, state.registry);
+            assert_eq!(replayed.status, state.status);
+        }
+    }
+
+    #[tokio::test]
+    async fn branch_rejects_an_expression_at_runtime_instead_of_taking_false_port() {
+        let mut blueprint = branch_blueprint();
+        blueprint
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "route")
+            .unwrap()
+            .fields
+            .insert(
+                "condition".into(),
+                serde_json::json!("nodes.agent-1.output.ready === true"),
+            );
+        let dir = tempfile::tempdir().unwrap();
+
+        let error = Engine::start_with_id(
+            &blueprint,
+            "run-invalid-condition",
+            serde_json::json!({}),
+            dir.path(),
+            &MockExecutor::new(),
+        )
+        .await
+        .expect_err("invalid branch conditions must not silently choose false");
+
+        assert!(error.to_string().contains("branch condition is invalid"));
+        assert!(error.to_string().contains("operators and comparisons"));
+    }
+
+    #[tokio::test]
+    async fn state_nodes_mutate_storage_and_replay_the_mutation() {
+        let state_node = |id: &str, op: &str, entries: serde_json::Value| Node {
+            id: id.into(),
+            r#type: "state".into(),
+            name: None,
+            parent: None,
+            fields: serde_json::json!({"op": op, "entries": entries})
+                .as_object()
+                .unwrap()
+                .clone(),
+            position: None,
+        };
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "state-contract".into(),
+            name: "State contract".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                state_node("set", "set", serde_json::json!({"branch": "main"})),
+                state_node("get", "get", serde_json::json!({"branch": null})),
+            ],
+            edges: vec![
+                crate::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "set".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "set".into(),
+                    from_port: "out".into(),
+                    to: "get".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-state",
+            serde_json::json!({}),
+            dir.path(),
+            &MockExecutor::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.registry["storage"]["branch"], "main");
+        assert_eq!(state.node_output("get").unwrap()["branch"], "main");
+        assert!(read_events(dir.path())
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::StateUpdated { .. })));
+        let replayed = Engine::replay(&blueprint, dir.path()).unwrap();
+        assert_eq!(replayed.registry, state.registry);
+    }
+
+    #[tokio::test]
+    async fn unsupported_sub_workflow_fails_durably_when_validation_is_bypassed() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "sub-workflow-contract".into(),
+            name: "Sub-workflow contract".into(),
+            nodes: vec![Node {
+                id: "child".into(),
+                r#type: "sub_workflow".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::json!({"workflow": "nested"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                position: None,
+            }],
+            edges: vec![],
+            body: String::new(),
+        };
+
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-sub-workflow",
+            serde_json::json!({}),
+            dir.path(),
+            &MockExecutor::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.status, RunStatus::Failed);
+        assert_eq!(state.status_or_pending("child"), NodeStatus::Failed);
+        assert!(state
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("not supported by the workflow runtime")));
+    }
+
+    #[tokio::test]
+    async fn cancellation_marker_is_consumed_at_the_next_driver_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "cancel-contract".into(),
+            name: "Cancel contract".into(),
+            nodes: vec![Node {
+                id: "trigger".into(),
+                r#type: "manual_trigger".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::Map::new(),
+                position: None,
+            }],
+            edges: vec![],
+            body: String::new(),
+        };
+        let state =
+            Engine::initialize_with_id(&blueprint, "run-cancel", serde_json::json!({}), dir.path())
+                .unwrap();
+        std::fs::write(dir.path().join("cancel.marker"), "cancelled").unwrap();
+
+        let state = Engine::drive_from_state(&blueprint, state, dir.path(), &MockExecutor::new())
+            .await
+            .unwrap();
+
+        assert_eq!(state.status, RunStatus::Failed);
+        assert_eq!(
+            state.failure.as_deref(),
+            Some("workflow cancelled by operator")
+        );
+        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
+            matches!(&event.kind, EventKind::RunFailed { error } if error == "workflow cancelled by operator")
+        }));
+        assert!(!dir.path().join("cancel.marker").exists());
     }
 
     fn approval_blueprint() -> Blueprint {

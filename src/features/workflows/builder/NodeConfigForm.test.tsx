@@ -58,4 +58,13 @@ describe('NodeConfigForm', () => {
 
     expect(onChange).toHaveBeenLastCalledWith('max_iterations', '{{trigger.output.review_cap}}');
   });
+  it('identifies a registered node whose runtime is unsupported', () => {
+    const node: BlueprintNode = { id: 'child', type: 'sub_workflow', fields: { workflow: 'nested' } };
+
+    render(<NodeConfigForm node={node} onChange={() => {}} />);
+
+    expect(screen.getByTestId('unsupported-node-type')).toHaveTextContent(
+      'not supported by the workflow runtime',
+    );
+  });
 });

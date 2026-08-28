@@ -1,4 +1,5 @@
 use crate::workflow::blueprint::Blueprint;
+use crate::workflow::condition::validate_path;
 use crate::workflow::field_type::FieldType;
 use crate::workflow::registry::find_node_type;
 use serde::Serialize;
@@ -97,6 +98,18 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
             continue;
         };
 
+        if !def.supported {
+            report.diagnostics.push(Diagnostic::error(
+                "unsupported_node_type",
+                format!(
+                    "node type `{}` is registered but not supported by the workflow runtime",
+                    node.r#type
+                ),
+                Some(&node.id),
+            ));
+            continue;
+        }
+
         for field in &def.fields {
             let present = node.fields.get(&field.id);
             if field.required && present.is_none() {
@@ -119,6 +132,19 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
                         ));
                     }
                     continue;
+                }
+                if (node.r#type == "branch" && field.id == "condition")
+                    || (node.r#type == "loop" && field.id == "until")
+                {
+                    if let Some(condition) = value.as_str() {
+                        if let Err(message) = validate_path(condition) {
+                            report.diagnostics.push(Diagnostic::error(
+                                "invalid_condition",
+                                format!("node `{}` field `{}`: {}", node.id, field.id, message),
+                                Some(&node.id),
+                            ));
+                        }
+                    }
                 }
                 if let Some(msg) = check_value_kind(&field.field_type, value) {
                     report.diagnostics.push(Diagnostic::error(
@@ -347,6 +373,91 @@ mod tests {
             .errors()
             .iter()
             .any(|d| d.code == "unknown_node_type"));
+    }
+
+    #[test]
+    fn registered_but_unsupported_node_type_is_an_error() {
+        let bp = base(
+            vec![Node {
+                id: "child".into(),
+                r#type: "sub_workflow".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::json!({"workflow": "nested"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                position: None,
+            }],
+            vec![],
+        );
+        let report = validate(&bp);
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "unsupported_node_type"
+                && diagnostic.node.as_deref() == Some("child")
+        }));
+    }
+
+    #[test]
+    fn branch_rejects_expression_conditions() {
+        let bp = base(
+            vec![Node {
+                id: "route".into(),
+                r#type: "branch".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::json!({
+                    "condition": "nodes.agent-1.output.decision === 'HEARTBEAT_ACTION'"
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+                position: None,
+            }],
+            vec![],
+        );
+        let report = validate(&bp);
+        let diagnostic = report
+            .errors()
+            .into_iter()
+            .find(|diagnostic| diagnostic.code == "invalid_condition")
+            .expect("expression should have a stable condition diagnostic");
+        assert_eq!(diagnostic.node.as_deref(), Some("route"));
+        assert!(diagnostic
+            .message
+            .contains("operators and comparisons are not supported"));
+    }
+
+    #[test]
+    fn branch_accepts_a_registry_path_condition() {
+        let bp = base(
+            vec![Node {
+                id: "route".into(),
+                r#type: "branch".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::json!({"condition": "nodes.agent-1.output.ready"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                position: None,
+            }],
+            vec![],
+        );
+        assert!(validate(&bp).is_valid());
+    }
+
+    #[test]
+    fn loop_rejects_expression_until_conditions() {
+        let mut loop_node = loop_node(serde_json::json!(2));
+        loop_node.fields.insert(
+            "until".into(),
+            serde_json::json!("nodes.worker.output.count > 2"),
+        );
+        let report = validate(&base(vec![loop_node], vec![]));
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "invalid_condition" && diagnostic.node.as_deref() == Some("lp")
+        }));
     }
 
     #[test]

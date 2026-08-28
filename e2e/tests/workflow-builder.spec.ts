@@ -221,3 +221,33 @@ test("workflow builder authors, validates, and saves a workflow blueprint", asyn
       ?.fields.prompt,
   ).toBe("Plan the work.");
 });
+
+test("shows an explicit unsupported state for a reserved sub-workflow node", async ({ page }, testInfo) => {
+  await installWorkflowBuilderIpcMock(page);
+  await openWorkflowBuilder(page);
+  await page.evaluate(async () => {
+    const { useBuilderStore } = await import("/src/store/useBuilderStore.ts");
+    useBuilderStore.getState().setBlueprint({
+      schema: 2,
+      id: "unsupported-sub-workflow",
+      name: "Unsupported sub-workflow",
+      nodes: [{
+        id: "child",
+        type: "sub_workflow",
+        name: "Sub-workflow",
+        fields: { workflow: "nested.md" },
+      }],
+      edges: [],
+    });
+  });
+
+  await page.locator(".react-flow__node").filter({ hasText: "Sub-workflow" }).click();
+  await expect(page.getByTestId("unsupported-node-type")).toContainText(
+    "not supported by the workflow runtime",
+  );
+
+  const screenshotPath = process.env.WARDIAN_WORKFLOW_RUNTIME_SCREENSHOT
+    ?? testInfo.outputPath("unsupported-sub-workflow.png");
+  await page.getByTestId("workflows-edit-mode").screenshot({ path: screenshotPath, animations: "disabled" });
+  await testInfo.attach("unsupported-sub-workflow", { path: screenshotPath, contentType: "image/png" });
+});

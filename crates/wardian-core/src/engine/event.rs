@@ -41,6 +41,11 @@ pub enum EventKind {
         node: String,
         output: serde_json::Value,
     },
+    StateUpdated {
+        node: String,
+        op: String,
+        entries: serde_json::Value,
+    },
     NodeFailed {
         node: String,
         error: String,

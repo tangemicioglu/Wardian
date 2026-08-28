@@ -20,6 +20,7 @@ function eventDetail(event: RunEvent): string | null {
   if (event.kind === 'node_failed' || event.kind === 'run_failed') return event.error;
   if (event.kind === 'node_skipped') return 'skipped';
   if (event.kind === 'node_completed') return 'output ready';
+  if (event.kind === 'state_updated') return `${event.op} storage`;
   return null;
 }
 

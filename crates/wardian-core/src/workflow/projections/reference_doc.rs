@@ -16,6 +16,9 @@ pub fn reference_doc() -> String {
         let _ = writeln!(out, "- **kind:** {}", kind_label(def.kind));
         let _ = writeln!(out, "- **category:** {}", def.category);
         let _ = writeln!(out, "- **version:** {}", def.version);
+        if !def.supported {
+            let _ = writeln!(out, "- **status:** unsupported");
+        }
         let _ = writeln!(out);
         let _ = writeln!(out, "{}", def.description);
         let _ = writeln!(out);
@@ -36,6 +39,9 @@ pub fn reference_doc() -> String {
                     req,
                     mult
                 );
+                if !field.help.is_empty() {
+                    let _ = writeln!(out, "  Help: {}", field.help);
+                }
             }
             let _ = writeln!(out);
         }
@@ -92,6 +98,14 @@ mod tests {
         // `task.prompt` is required.
         assert!(md.contains("`prompt`"));
         assert!(md.contains("required"));
+    }
+
+    #[test]
+    fn doc_marks_reserved_node_types_as_unsupported() {
+        let md = reference_doc();
+        let start = md.find("## Sub-workflow").expect("sub-workflow section");
+        let section = &md[start..];
+        assert!(section.contains("**status:** unsupported"));
     }
 
     #[test]

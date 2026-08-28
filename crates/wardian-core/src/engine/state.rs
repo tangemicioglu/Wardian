@@ -29,7 +29,7 @@ pub struct RunState {
     pub status: RunStatus,
     /// Node id -> status. Absent = Pending (never reached yet).
     pub nodes: BTreeMap<String, NodeStatus>,
-    /// `{ "nodes": { id: { "output": .. , "prev": .. } }, "trigger": {"output": ..} }`.
+    /// `{ "nodes": { id: { "output": .. , "prev": .. } }, "trigger": {"output": ..}, "storage": {} }`.
     pub registry: serde_json::Value,
     /// Loop node id -> current 0-based iteration.
     pub loop_iter: BTreeMap<String, u32>,
@@ -48,7 +48,7 @@ impl RunState {
             blueprint_id: blueprint_id.into(),
             status: RunStatus::Running,
             nodes: BTreeMap::new(),
-            registry: serde_json::json!({ "nodes": {}, "trigger": { "output": {} } }),
+            registry: serde_json::json!({ "nodes": {}, "trigger": { "output": {} }, "storage": {} }),
             loop_iter: BTreeMap::new(),
             delivered: BTreeMap::new(),
             skipped_edges: BTreeSet::new(),
