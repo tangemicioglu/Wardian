@@ -72,7 +72,6 @@ describe("ConfigureAgentPanel", () => {
         agentClasses={classes}
         telemetry={{}}
         onSaved={() => {}}
-        onBackToSpawn={() => {}}
       />,
     );
 
@@ -104,7 +103,6 @@ describe("ConfigureAgentPanel", () => {
         agentClasses={classes}
         telemetry={{}}
         onSaved={() => {}}
-        onBackToSpawn={() => {}}
       />,
     );
 
@@ -138,7 +136,6 @@ describe("ConfigureAgentPanel", () => {
         agentClasses={classes}
         telemetry={{}}
         onSaved={() => {}}
-        onBackToSpawn={() => {}}
       />,
     );
 
@@ -167,7 +164,6 @@ describe("ConfigureAgentPanel", () => {
         agentClasses={classes}
         telemetry={{}}
         onSaved={() => {}}
-        onBackToSpawn={() => {}}
       />,
     );
 
@@ -197,7 +193,6 @@ describe("ConfigureAgentPanel", () => {
         agentClasses={classes}
         telemetry={{}}
         onSaved={() => {}}
-        onBackToSpawn={() => {}}
       />,
     );
 
@@ -230,7 +225,6 @@ describe("ConfigureAgentPanel", () => {
         agentClasses={classes}
         telemetry={{}}
         onSaved={() => {}}
-        onBackToSpawn={() => {}}
       />,
     );
 
@@ -261,7 +255,6 @@ describe("ConfigureAgentPanel", () => {
         agentClasses={classes}
         telemetry={{}}
         onSaved={() => {}}
-        onBackToSpawn={() => {}}
       />,
     );
 

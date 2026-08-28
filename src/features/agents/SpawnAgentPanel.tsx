@@ -174,9 +174,6 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
 
   return (
     <div className="mb-8">
-      <h3 className="text-xs font-bold text-muted tracking-wide mb-4">
-        Spawn Agent
-      </h3>
       <div className="mb-4">
         <OnboardingHint
           id={FIRST_AGENT_ONBOARDING_HINT_ID}

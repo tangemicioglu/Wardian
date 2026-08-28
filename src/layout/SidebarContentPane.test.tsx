@@ -16,11 +16,11 @@ const setModeMock = vi.hoisted(() => vi.fn());
 const workflowMonitorGlanceMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../features/agents/ConfigureAgentPanel", () => ({
-  ConfigureAgentPanel: () => <h3 className="text-xs">Configure Agent</h3>,
+  ConfigureAgentPanel: () => <div data-testid="configure-agent-panel-mock" />,
 }));
 
 vi.mock("../features/agents/SpawnAgentPanel", () => ({
-  SpawnAgentPanel: () => <h3 className="text-xs">Spawn Agent</h3>,
+  SpawnAgentPanel: () => <div data-testid="spawn-agent-panel-mock" />,
 }));
 
 vi.mock("../features/commands/CommandPanel", () => ({
@@ -164,11 +164,40 @@ describe("SidebarContentPane", () => {
     workflowMonitorGlanceMock.mockReset();
   });
 
-  it("uses compact sidebar title typography for agent configuration", () => {
+  it("gives agent creation one prominent title and a consistently spaced description", () => {
     renderPane();
 
     expect(screen.getByRole("heading", { name: "Agent Configuration", level: 2 })).toHaveClass("text-sm");
-    expect(screen.getByRole("heading", { name: "Spawn Agent", level: 3 })).toHaveClass("text-xs");
+    expect(screen.getByText("Create an agent with the workspace, provider, and capabilities it needs."))
+      .toHaveClass("mt-1");
+    expect(screen.getByTestId("spawn-agent-panel-mock")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
+  });
+
+  it("keeps the same title-to-description rhythm while configuring a selected agent", () => {
+    const setSelectedAgentIds = vi.fn();
+    render(
+      <SidebarContentPane
+        activeTab="agent-config"
+        leftCollapsed={false}
+        selectedAgentIds={new Set(["agent-1"])}
+        setSelectedAgentIds={setSelectedAgentIds}
+        agents={agents}
+        agentClasses={agentClasses}
+        sourceControlStatus={sourceControlStatus}
+        turnRevision={7}
+        onAgentsUpdated={vi.fn()}
+        broadcastMessage=""
+        setBroadcastMessage={vi.fn()}
+        onBroadcast={vi.fn()}
+        onOpenSurface={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Update Workflow Owner's workspace, provider, and capabilities.")).toHaveClass("mt-1");
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    expect(setSelectedAgentIds).toHaveBeenCalledWith(new Set());
+    expect(screen.getByTestId("configure-agent-panel-mock")).toBeInTheDocument();
   });
 
   it("renders the Changes pane with the sidebar visibility and turn revision", () => {

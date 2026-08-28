@@ -54,6 +54,9 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
   // Read straight from the store; a telemetry tick should not re-render
   // the application just to update a sidebar pane.
   const telemetry = useAgentTelemetryStore((state) => state.telemetry);
+  const selectedAgent = selectedAgentIds.size === 1
+    ? agents.find((agent) => agent.session_id === Array.from(selectedAgentIds)[0])
+    : undefined;
   return (
     <aside className={`relative h-full bg-[var(--color-wardian-sidebar-secondary)]/30 border-r border-wardian-border sidebar-transition overflow-hidden flex flex-col ${leftCollapsed ? 'w-0' : 'w-[var(--sidebar-content-width)]'}`}>
       <div className="px-[var(--density-panel-padding-x)] py-[var(--density-panel-padding-y)] flex-1 overflow-y-auto no-scrollbar min-w-[var(--sidebar-content-width)] flex flex-col min-h-0 h-full">
@@ -81,19 +84,30 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
         )}
 
         {activeTab === "agent-config" && (
-          <>
-            <div className="flex items-center gap-4">
-              <h2 className="text-sm font-bold text-primary tracking-tight">Agent Configuration</h2>
-            </div>
+          <section aria-labelledby="agent-configuration-heading">
+            <SidebarPaneHeader
+              title="Agent Configuration"
+              description={selectedAgent
+                ? `Update ${selectedAgent.session_name}'s workspace, provider, and capabilities.`
+                : "Create an agent with the workspace, provider, and capabilities it needs."}
+              action={selectedAgent ? (
+                <button
+                  type="button"
+                  onClick={() => setSelectedAgentIds(new Set())}
+                  className="shrink-0 rounded border border-wardian-border px-2 py-1 text-[10px] font-bold text-muted transition-colors hover:border-[var(--color-wardian-accent)] hover:text-[var(--color-wardian-accent)]"
+                >
+                  Create agent
+                </button>
+              ) : null}
+            />
 
-            {selectedAgentIds.size === 1 ? (
+            {selectedAgent ? (
                <ConfigureAgentPanel 
-                  agentId={Array.from(selectedAgentIds)[0]} 
+                  agentId={selectedAgent.session_id}
                   agents={agents} 
                   agentClasses={agentClasses} 
                   telemetry={telemetry}
                   onSaved={onAgentsUpdated}
-                  onBackToSpawn={() => setSelectedAgentIds(new Set())}
                />
             ) : (
               <SpawnAgentPanel 
@@ -101,7 +115,7 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
                 onSpawned={onAgentsUpdated} 
               />
             )}
-          </>
+          </section>
         )}
 
         {activeTab === "command" && (
@@ -128,6 +142,26 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
     </aside>
   );
 };
+
+function SidebarPaneHeader({
+  title,
+  description,
+  action = null,
+}: {
+  title: string;
+  description: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <header className="mb-4 flex min-h-7 items-start gap-2">
+      <div className="min-w-0 flex-1">
+        <h2 id="agent-configuration-heading" className="text-sm font-bold tracking-tight text-primary">{title}</h2>
+        <p className="mt-1 text-xs leading-4 text-muted-neutral">{description}</p>
+      </div>
+      {action}
+    </header>
+  );
+}
 
 interface WorkflowsGlancePaneProps {
   agents: AgentConfig[];
