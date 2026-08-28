@@ -12,6 +12,9 @@ export function nodeStatusesAt(events: RunEvent[], index: number): Record<string
       case 'node_completed':
         out[event.node] = 'completed';
         break;
+      case 'decision_completed':
+        out[event.node] = 'completed';
+        break;
       case 'node_failed':
         out[event.node] = 'failed';
         break;

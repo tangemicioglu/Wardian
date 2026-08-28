@@ -70,8 +70,6 @@ impl ValidationReport {
 /// false.
 pub fn validate(blueprint: &Blueprint) -> ValidationReport {
     let mut report = ValidationReport::default();
-    let node_ids: HashSet<&str> = blueprint.nodes.iter().map(|n| n.id.as_str()).collect();
-
     // Duplicate ids.
     let mut seen: HashSet<&str> = HashSet::new();
     for node in &blueprint.nodes {
@@ -177,7 +175,7 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
 
     // Edges reference existing nodes.
     for edge in &blueprint.edges {
-        if !node_ids.contains(edge.from.as_str()) || !node_ids.contains(edge.to.as_str()) {
+        let Some(from_node) = blueprint.find_node(&edge.from) else {
             report.diagnostics.push(Diagnostic::error(
                 "dangling_edge",
                 format!(
@@ -186,6 +184,43 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
                 ),
                 None,
             ));
+            continue;
+        };
+        let Some(to_node) = blueprint.find_node(&edge.to) else {
+            report.diagnostics.push(Diagnostic::error(
+                "dangling_edge",
+                format!(
+                    "edge `{}` -> `{}` references a missing node",
+                    edge.from, edge.to
+                ),
+                None,
+            ));
+            continue;
+        };
+
+        if let Some(def) = find_node_type(&from_node.r#type) {
+            if def.supported && !declares_output_port(def, from_node, &edge.from_port) {
+                report.diagnostics.push(Diagnostic::error(
+                    "unknown_output_port",
+                    format!(
+                        "edge `{}` -> `{}` uses unknown output port `{}` on node `{}`",
+                        edge.from, edge.to, edge.from_port, edge.from
+                    ),
+                    Some(&edge.from),
+                ));
+            }
+        }
+        if let Some(def) = find_node_type(&to_node.r#type) {
+            if def.supported && !def.inputs.iter().any(|port| port.id == edge.to_port) {
+                report.diagnostics.push(Diagnostic::error(
+                    "unknown_input_port",
+                    format!(
+                        "edge `{}` -> `{}` uses unknown input port `{}` on node `{}`",
+                        edge.from, edge.to, edge.to_port, edge.to
+                    ),
+                    Some(&edge.to),
+                ));
+            }
         }
     }
 
@@ -199,6 +234,21 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
     }
 
     report
+}
+
+fn declares_output_port(
+    def: &crate::workflow::registry::NodeTypeDef,
+    node: &crate::workflow::blueprint::Node,
+    port: &str,
+) -> bool {
+    if let Some(field) = &def.outputs_from_field {
+        return node
+            .fields
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(port)));
+    }
+    def.outputs.iter().any(|output| output.id == port)
 }
 
 fn check_loop_max_iterations(value: &serde_json::Value) -> Option<String> {
@@ -240,6 +290,11 @@ fn check_value_kind(field_type: &FieldType, value: &serde_json::Value) -> Option
             .is_object()
             .then_some(())
             .map_or(Some("expected an object".into()), |_| None),
+        FieldType::BranchPort => value
+            .as_array()
+            .is_some_and(|values| values.iter().all(serde_json::Value::is_string))
+            .then_some(())
+            .map_or(Some("expected an array of strings".into()), |_| None),
         FieldType::Enum { options } => match value.as_str() {
             Some(s) if options.iter().any(|o| o == s) => None,
             Some(s) => Some(format!("`{s}` is not one of {options:?}")),
@@ -485,6 +540,57 @@ mod tests {
         );
         let report = validate(&bp);
         assert!(report.errors().iter().any(|d| d.code == "dangling_edge"));
+    }
+
+    #[test]
+    fn edge_ports_must_be_declared_by_both_nodes() {
+        let bp = base(
+            vec![task("plan"), task("next")],
+            vec![Edge {
+                from: "plan".into(),
+                to: "next".into(),
+                from_port: "typo".into(),
+                to_port: "also-typo".into(),
+            }],
+        );
+        let report = validate(&bp);
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unknown_output_port"));
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unknown_input_port"));
+    }
+
+    #[test]
+    fn decision_choices_declare_dynamic_output_ports() {
+        let decision = Node {
+            id: "choose".into(),
+            r#type: "decision".into(),
+            name: None,
+            parent: None,
+            fields: serde_json::json!({
+                "agent": "role:coder",
+                "prompt": "choose",
+                "choices": ["yes"]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            position: None,
+        };
+        let bp = base(
+            vec![decision, task("next")],
+            vec![Edge {
+                from: "choose".into(),
+                to: "next".into(),
+                from_port: "yes".into(),
+                to_port: "in".into(),
+            }],
+        );
+        assert!(validate(&bp).is_valid());
     }
 
     #[test]

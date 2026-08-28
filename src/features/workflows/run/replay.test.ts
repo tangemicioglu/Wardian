@@ -26,4 +26,20 @@ describe('nodeStatusesAt', () => {
     expect(m.a).toBe('completed');
     expect(m.b).toBe('failed');
   });
+
+  it('folds decision completion into the replayed node status', () => {
+    const decisionEvents: RunEvent[] = [
+      { seq: 0, ts: 't0', kind: 'node_started', node: 'choose' },
+      {
+        seq: 1,
+        ts: 't1',
+        kind: 'decision_completed',
+        node: 'choose',
+        output: { chosen: 'yes' },
+        port: 'yes',
+      },
+    ];
+
+    expect(nodeStatusesAt(decisionEvents, 1).choose).toBe('completed');
+  });
 });

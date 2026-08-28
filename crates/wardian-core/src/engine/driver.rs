@@ -281,16 +281,25 @@ async fn drive(
 ) -> crate::engine::Result<()> {
     loop {
         if cancellation_requested(run_root)? {
-            emit(
-                run_root,
-                g,
-                s,
-                EventKind::RunFailed {
-                    error: "workflow cancelled by operator".into(),
-                },
-            )?;
-            clear_cancellation_request(run_root)?;
-            return Ok(());
+            match s.status {
+                RunStatus::Running => {
+                    emit(
+                        run_root,
+                        g,
+                        s,
+                        EventKind::RunFailed {
+                            error: "workflow cancelled by operator".into(),
+                        },
+                    )?;
+                    clear_cancellation_request(run_root)?;
+                    return Ok(());
+                }
+                RunStatus::Completed | RunStatus::Failed => {
+                    clear_cancellation_request(run_root)?;
+                    return Ok(());
+                }
+                RunStatus::AwaitingApproval => return Ok(()),
+            }
         }
         match core::advance_loops(g, s) {
             Ok(events) => {
@@ -340,19 +349,26 @@ async fn drive(
         }
         for node_id in runnable {
             dispatch(g, s, run_root, exec, &node_id).await?;
-            if s.status == RunStatus::AwaitingApproval || s.status == RunStatus::Failed {
+            if s.status == RunStatus::AwaitingApproval {
                 return Ok(());
             }
             if cancellation_requested(run_root)? {
-                emit(
-                    run_root,
-                    g,
-                    s,
-                    EventKind::RunFailed {
-                        error: "workflow cancelled by operator".into(),
-                    },
-                )?;
-                clear_cancellation_request(run_root)?;
+                if s.status == RunStatus::Running {
+                    emit(
+                        run_root,
+                        g,
+                        s,
+                        EventKind::RunFailed {
+                            error: "workflow cancelled by operator".into(),
+                        },
+                    )?;
+                }
+                if matches!(s.status, RunStatus::Completed | RunStatus::Failed) {
+                    clear_cancellation_request(run_root)?;
+                }
+                return Ok(());
+            }
+            if s.status == RunStatus::Failed {
                 return Ok(());
             }
         }
@@ -1773,6 +1789,46 @@ mod tests {
 
         assert!(result.is_err());
         assert!(dir.path().join("cancel.marker").exists());
+    }
+
+    #[tokio::test]
+    async fn terminal_runs_clear_stale_cancellation_markers_without_emitting_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "cancel-terminal".into(),
+            name: "Cancel terminal".into(),
+            nodes: vec![Node {
+                id: "trigger".into(),
+                r#type: "manual_trigger".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::Map::new(),
+                position: None,
+            }],
+            edges: vec![],
+            body: String::new(),
+        };
+        let mut state = Engine::initialize_with_id(
+            &blueprint,
+            "run-cancel-terminal",
+            serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+        state.status = RunStatus::Failed;
+        state.failure = Some("original failure".into());
+        write_checkpoint(dir.path(), &state).unwrap();
+        std::fs::write(dir.path().join("cancel.marker"), "cancelled").unwrap();
+
+        let resumed = Engine::resume(&blueprint, dir.path(), &MockExecutor::new())
+            .await
+            .unwrap();
+
+        assert_eq!(resumed.status, RunStatus::Failed);
+        assert_eq!(resumed.failure.as_deref(), Some("original failure"));
+        assert!(!dir.path().join("cancel.marker").exists());
+        assert_eq!(read_events(dir.path()).unwrap().len(), 1);
     }
 
     fn approval_blueprint() -> Blueprint {
