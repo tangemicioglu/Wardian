@@ -368,6 +368,7 @@ export async function installWorkbenchIpcMock(
         // Both return a page, never a bare array; see src/test/pageFixtures.ts.
         workflow_list_blueprints: { blueprints: [], truncated: false, next_offset: null },
         workflow_list_runs: { runs: [], truncated: false, next_offset: null },
+        schedule_list: [],
         get_library_index: emptyLibraryIndex,
         get_library_tree: { type: "Folder", path: "", name: "Root", children: [] },
         list_deployed_skills: [],
