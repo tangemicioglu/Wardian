@@ -36,8 +36,52 @@ function canEditText(descriptor: FileRendererProps["snapshot"]["descriptor"]) {
     && descriptor.line_count <= MONACO_MAX_LINE_COUNT;
 }
 
-function monacoTheme() {
-  return document.documentElement.getAttribute("data-theme") === "dark" ? "vs-dark" : "vs";
+function wardianColor(name: string, fallback: string) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+function monacoThemeName() {
+  return document.documentElement.getAttribute("data-theme") === "dark"
+    ? "wardian-dark"
+    : "wardian-light";
+}
+
+function configureMonacoTheme(monaco: typeof Monaco) {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const background = wardianColor("--color-wardian-bg", dark ? "#191919" : "#fcfaf5");
+  const card = wardianColor("--color-wardian-card", dark ? "#212121" : "#f3f4f6");
+  const text = wardianColor("--color-wardian-text", dark ? "#ececec" : "#111827");
+  const muted = wardianColor("--color-wardian-text-muted-neutral", dark ? "#a9a9a9" : "#4b5563");
+  const accent = wardianColor("--color-wardian-accent", dark ? "#f2c14e" : "#926a09");
+  const border = wardianColor("--color-wardian-border", dark ? "#2f2f2f" : "#e5e7eb");
+  const color = (value: string) => value.replace(/^#/, "");
+  monaco.editor.defineTheme(monacoThemeName(), {
+    base: dark ? "vs-dark" : "vs",
+    inherit: true,
+    rules: [
+      { token: "comment", foreground: color(muted), fontStyle: "italic" },
+      { token: "keyword", foreground: color(accent) },
+      { token: "string", foreground: color(dark ? "#b7d990" : "#397a46") },
+      { token: "number", foreground: color(dark ? "#d6a8ff" : "#7c3f9e") },
+      { token: "type", foreground: color(dark ? "#77d7ea" : "#007f91") },
+    ],
+    colors: {
+      "editor.background": background,
+      "editor.foreground": text,
+      "editor.lineHighlightBackground": card,
+      "editorLineNumber.foreground": muted,
+      "editorLineNumber.activeForeground": accent,
+      "editorCursor.foreground": accent,
+      "editor.selectionBackground": `${accent}3d`,
+      "editor.inactiveSelectionBackground": `${accent}24`,
+      "editorIndentGuide.background1": border,
+      "editorIndentGuide.activeBackground1": accent,
+      "editorBracketHighlight.foreground1": accent,
+      "editorWidget.background": card,
+      "editorWidget.border": border,
+      "editorGutter.background": background,
+    },
+  });
 }
 
 type ViewAnnotations = {
@@ -216,16 +260,38 @@ export default function MonacoTextRenderer({
       const host = hostRef.current;
       if (!host) return;
       model = acquireCanonicalFileModel(monaco, modelKey, controller, language);
+      configureMonacoTheme(monaco);
       editor = monaco.editor.create(host, {
         automaticLayout: false,
-        fontSize: 13,
+        accessibilitySupport: "auto",
+        bracketPairColorization: { enabled: true },
+        cursorBlinking: "smooth",
+        cursorSmoothCaretAnimation: "on",
+        fontFamily: "'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace",
+        fontLigatures: true,
+        fontSize: 14,
+        guides: { bracketPairs: true, indentation: true },
+        lineHeight: 22,
+        lineNumbersMinChars: 3,
         minimap: { enabled: false },
         model,
+        padding: { top: 12, bottom: 16 },
         readOnly: readOnlyRef.current,
+        renderLineHighlight: "all",
         renderValidationDecorations: "off",
+        scrollbar: {
+          horizontalScrollbarSize: 10,
+          verticalScrollbarSize: 10,
+          useShadows: false,
+        },
+        selectionHighlight: true,
+        smoothScrolling: true,
         scrollBeyondLastLine: false,
-        theme: monacoTheme(),
-        wordWrap: "off",
+        stickyScroll: { enabled: true },
+        tabSize: 2,
+        theme: monacoThemeName(),
+        wordWrap: language === "markdown" ? "on" : "off",
+        wrappingIndent: "same",
       });
       editorRef.current = editor;
       annotations = installViewAnnotations(editor, controller, baselineRef.current, updateChanges);
@@ -244,7 +310,10 @@ export default function MonacoTextRenderer({
           if (!cancelled) setSaveError(`Save failed: ${errorMessage(cause)}`);
         }
       });
-      themeObserver = new MutationObserver(() => monaco.editor.setTheme(monacoTheme()));
+      themeObserver = new MutationObserver(() => {
+        configureMonacoTheme(monaco);
+        monaco.editor.setTheme(monacoThemeName());
+      });
       themeObserver.observe(document.documentElement, {
         attributes: true,
         attributeFilter: ["data-theme"],

@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import Markdown, { type Components } from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -254,6 +255,54 @@ function filesMarkdownUrlTransform(rawUrl: string) {
     : markdownUrlTransform(rawUrl);
 }
 
+function codeLanguage(children: ReactNode) {
+  if (!isValidElement<{ className?: string }>(children)) return "text";
+  const language = children.props.className?.match(/(?:^|\s)language-([^\s]+)/)?.[1];
+  return language?.replace(/^./, (letter) => letter.toUpperCase()) ?? "text";
+}
+
+function codeText(children: ReactNode) {
+  return headingText(children).replace(/\n$/, "");
+}
+
+function MarkdownCodeBlock({
+  children,
+  ...props
+}: ComponentProps<"pre">) {
+  const [copied, setCopied] = useState(false);
+  const text = codeText(children);
+  const language = codeLanguage(children);
+  const copy = useCallback(() => {
+    void writeText(text).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    }).catch(() => undefined);
+  }, [text]);
+
+  return (
+    <div className="files-markdown-code-block">
+      <div className="files-markdown-code-toolbar">
+        <span>{language}</span>
+        <button type="button" onClick={copy} aria-label={`Copy ${language} code`}>
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre {...props}>{children}</pre>
+    </div>
+  );
+}
+
+function MarkdownTable({
+  children,
+  ...props
+}: ComponentProps<"table">) {
+  return (
+    <div className="files-markdown-table-scroll" tabIndex={0} aria-label="Scrollable table">
+      <table {...props}>{children}</table>
+    </div>
+  );
+}
+
 type MarkdownImageProps = ComponentProps<"img"> & {
   source_path: string;
   resource_request: FileRendererProps["resource_request"];
@@ -419,6 +468,8 @@ export default function MarkdownRenderer({
         lifecycle={{ visible: lifecycle.visible }}
       />
     ),
+    pre: MarkdownCodeBlock,
+    table: MarkdownTable,
   }), [client, embeddedResourceRequest, lifecycle.visible, openFragment, sourcePath]);
 
   useEffect(() => {

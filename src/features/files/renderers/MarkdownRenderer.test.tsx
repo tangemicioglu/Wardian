@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { describe, expect, it, vi } from "vitest";
 
 import type { FileResourceSnapshotV1 } from "../../../types";
@@ -7,6 +8,11 @@ import type { FileResourceClient } from "../fileResourceClient";
 import MarkdownRenderer, { resolveLocalMarkdownTarget } from "./MarkdownRenderer";
 
 const mockOpenUrl = vi.mocked(openUrl);
+const mockWriteText = vi.mocked(writeText);
+
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  writeText: vi.fn(),
+}));
 
 function snapshot(revision = 1): FileResourceSnapshotV1 {
   return {
@@ -117,6 +123,10 @@ describe("MarkdownRenderer", () => {
         "```ts",
         "const ready = true;",
         "```",
+        "",
+        "A note[^1].",
+        "",
+        "[^1]: Footnote content.",
       ].join("\n"),
     }) } as unknown as FileResourceClient;
     render(<MarkdownRenderer {...props(client)} />);
@@ -125,8 +135,28 @@ describe("MarkdownRenderer", () => {
       .toBeInTheDocument();
     expect(screen.getByText("A quoted note").closest("blockquote")).not.toBeNull();
     expect(screen.getAllByRole("checkbox")).toHaveLength(2);
-    expect(screen.getByRole("table")).toHaveTextContent("Wardian");
+    const table = screen.getByRole("table");
+    expect(table).toHaveTextContent("Wardian");
+    expect(table.parentElement).toHaveClass("files-markdown-table-scroll");
     expect(screen.getByText("const ready = true;").closest("pre")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Copy Ts code" })).toBeInTheDocument();
+    expect(screen.getByText("Footnote content.").closest("section")).toHaveClass("footnotes");
+  });
+
+  it("copies fenced source with the desktop clipboard integration", async () => {
+    const client = { readText: vi.fn().mockResolvedValue({
+      schema: 1,
+      resource_id: snapshot().resource_id,
+      revision: 1,
+      text: "```ts\nconst copied = true;\n```",
+    }) } as unknown as FileResourceClient;
+    mockWriteText.mockResolvedValue(undefined);
+    render(<MarkdownRenderer {...props(client)} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy Ts code" }));
+
+    await waitFor(() => expect(mockWriteText).toHaveBeenCalledWith("const copied = true;"));
+    expect(screen.getByText("Copied")).toBeInTheDocument();
   });
 
   it("loads relative images through an authorized file resource ticket", async () => {
