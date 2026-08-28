@@ -71,7 +71,7 @@ fn render_list(
     filtered.sort_by(|left, right| {
         item_timestamp(right)
             .cmp(&item_timestamp(left))
-            .then_with(|| item_id(right).cmp(&item_id(left)))
+            .then_with(|| item_id(right).cmp(item_id(left)))
     });
 
     let end = offset.saturating_add(limit).min(filtered.len());
@@ -285,7 +285,7 @@ fn sort_items(mut items: Vec<Value>) -> Vec<Value> {
     items.sort_by(|left, right| {
         item_timestamp(right)
             .cmp(&item_timestamp(left))
-            .then_with(|| item_id(right).cmp(&item_id(left)))
+            .then_with(|| item_id(right).cmp(item_id(left)))
     });
     items
 }
