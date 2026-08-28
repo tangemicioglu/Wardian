@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEvent, AgentConfig, AgentModelSelectionUpdateResult } from "../../types";
+import { WARDIAN_FILE_PATH_MIME } from "../../utils/fileDrop";
 import { AppShell } from "../../layout/AppShell";
 import type { WorkbenchNavigationService } from "../workbench/navigationService";
 import { AgentChatView } from "./AgentChatView";
@@ -2082,6 +2083,83 @@ describe("AgentChatView", () => {
 
     expect(await screen.findByText("dropped.txt")).toBeInTheDocument();
     expect(screen.getByText("pasted.md")).toBeInTheDocument();
+  });
+
+  it("accepts a file dragged from the Wardian Explorer", async () => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+
+    render(<AgentChatView sessionId="agent-1" status="Idle" />);
+    await screen.findByText("No chat transcript yet");
+    const composer = screen.getByTestId("chat-composer");
+    const dataTransfer = {
+      types: [WARDIAN_FILE_PATH_MIME],
+      files: [],
+      getData: (type: string) => type === WARDIAN_FILE_PATH_MIME ? "C:\\repo\\src\\App.tsx" : "",
+    };
+
+    fireEvent.dragEnter(composer, { dataTransfer });
+    expect(composer.className).toContain("color-wardian-accent");
+    fireEvent.drop(composer, { dataTransfer });
+
+    expect(await screen.findByText("App.tsx")).toBeInTheDocument();
+  });
+
+  it("accepts a native OS file drop once and ignores a duplicate browser drop", async () => {
+    const previousDevicePixelRatio = window.devicePixelRatio;
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
+    const composerBounds = vi.spyOn(HTMLFormElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 150,
+      height: 100,
+      top: 50,
+      left: 100,
+      right: 250,
+      bottom: 150,
+      x: 100,
+      y: 50,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const listeners = new Map<string, (event: { payload: unknown }) => void>();
+    listenMock.mockImplementation(async (eventName, handler) => {
+      listeners.set(eventName, handler as (event: { payload: unknown }) => void);
+      return () => {};
+    });
+    invokeMock.mockImplementation((command) => {
+      if (command === "load_agent_chat_transcript") return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+
+    try {
+      render(<AgentChatView sessionId="agent-1" status="Idle" />);
+      await screen.findByText("No chat transcript yet");
+      await waitFor(() => expect(listeners.has("tauri://drag-drop")).toBe(true));
+
+      const nativeDrop = listeners.get("tauri://drag-drop");
+      if (!nativeDrop) throw new Error("expected native drag-drop listener");
+      act(() => nativeDrop({
+        payload: {
+          paths: ["C:\\repo\\src\\App.tsx"],
+          position: { x: 300, y: 180 },
+        },
+      }));
+
+      const composer = screen.getByTestId("chat-composer");
+      fireEvent.drop(composer, {
+        dataTransfer: {
+          types: [WARDIAN_FILE_PATH_MIME],
+          files: [],
+          getData: (type: string) => type === WARDIAN_FILE_PATH_MIME ? "C:\\repo\\src\\App.tsx" : "",
+        },
+      });
+
+      expect(await screen.findByText("App.tsx")).toBeInTheDocument();
+      expect(screen.getAllByText("App.tsx")).toHaveLength(1);
+    } finally {
+      composerBounds.mockRestore();
+      Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: previousDevicePixelRatio });
+    }
   });
 
   it("captures a clipboard image without a filesystem path as an attachment", async () => {

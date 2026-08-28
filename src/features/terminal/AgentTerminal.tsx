@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, memo } from "react";
+import { useRef, useState, useEffect, useCallback, memo, type DragEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
@@ -52,6 +52,13 @@ import {
   type WardianTerminalTheme,
 } from "./terminalThemes";
 import { proposeTerminalRows, renderedTerminalRowHeight } from "./terminalSizing";
+import {
+  formatDroppedPathsForTerminal,
+  getDroppedFilePaths,
+  hasWardianFileDropData,
+  isNativeFileDropInsideBounds,
+  resolveTerminalShellId,
+} from "../../utils/fileDrop";
 
 const TERMINAL_SCROLLBACK_LINES = 1_000;
 const TERMINAL_INITIAL_PTY_TAIL_BYTES = 128 * 1024;
@@ -2286,6 +2293,9 @@ export const AgentTerminal = memo(function AgentTerminal({
 }) {
   const terminalKey = presentationId;
   const terminalRef = useRef<HTMLDivElement>(null);
+  const [isFileDragOver, setIsFileDragOver] = useState(false);
+  const fileDragCounterRef = useRef(0);
+  const lastFileDropRef = useRef<{ key: string; at: number } | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const onTitleChangeRef = useRef(onTitleChange);
@@ -2675,6 +2685,92 @@ export const AgentTerminal = memo(function AgentTerminal({
   const focusTerminal = useCallback(() => {
     xtermRef.current?.focus();
   }, []);
+
+  const resetFileDragState = useCallback(() => {
+    fileDragCounterRef.current = 0;
+    setIsFileDragOver(false);
+  }, []);
+
+  const handleFileDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!hasWardianFileDropData(event.dataTransfer)) return;
+    event.preventDefault();
+    fileDragCounterRef.current += 1;
+    setIsFileDragOver(true);
+  }, []);
+
+  const handleFileDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!hasWardianFileDropData(event.dataTransfer)) return;
+    fileDragCounterRef.current -= 1;
+    if (fileDragCounterRef.current <= 0) resetFileDragState();
+  }, [resetFileDragState]);
+
+  const handleFileDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+    const paths = getDroppedFilePaths(event.dataTransfer);
+    resetFileDragState();
+    if (paths.length === 0) return;
+    const key = paths.map((path) => path.toLocaleLowerCase()).join("\u0000");
+    const now = Date.now();
+    const previous = lastFileDropRef.current;
+    if (previous?.key === key && now - previous.at < 1_000) return;
+    lastFileDropRef.current = { key, at: now };
+    event.preventDefault();
+    event.stopPropagation();
+    const settings = useSettingsStore.getState();
+    const shellId = resolveTerminalShellId(
+      settings.shell_id,
+      settings.available_shells.map((shell) => shell.id),
+      IS_WINDOWS,
+    );
+    queueAgentInput(terminalKey, formatDroppedPathsForTerminal(paths, shellId));
+    focusTerminal();
+  }, [focusTerminal, resetFileDragState, terminalKey]);
+
+  useEffect(() => {
+    const reset = () => resetFileDragState();
+    document.addEventListener("drop", reset, true);
+    document.addEventListener("dragend", reset, true);
+    return () => {
+      document.removeEventListener("drop", reset, true);
+      document.removeEventListener("dragend", reset, true);
+    };
+  }, [resetFileDragState]);
+
+  useEffect(() => {
+    if (visibility !== "visible" || renderState !== "mounted") return;
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen<{ paths?: string[]; position?: { x?: number; y?: number } }>("tauri://drag-drop", (event) => {
+      if (disposed || !event.payload?.paths?.length) return;
+      const position = event.payload.position;
+      const bounds = terminalRef.current?.getBoundingClientRect();
+      if (!position || !bounds) return;
+      if (!isNativeFileDropInsideBounds(position, bounds, window.devicePixelRatio)) return;
+      const key = event.payload.paths.map((path) => path.toLocaleLowerCase()).join("\u0000");
+      const now = Date.now();
+      const previous = lastFileDropRef.current;
+      if (previous?.key === key && now - previous.at < 1_000) return;
+      lastFileDropRef.current = { key, at: now };
+
+      const settings = useSettingsStore.getState();
+      const shellId = resolveTerminalShellId(
+        settings.shell_id,
+        settings.available_shells.map((shell) => shell.id),
+        IS_WINDOWS,
+      );
+      queueAgentInput(terminalKey, formatDroppedPathsForTerminal(event.payload.paths, shellId));
+      focusTerminal();
+      resetFileDragState();
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    }).catch((error) => console.warn("Failed to listen for terminal file drops:", error));
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [focusTerminal, renderState, resetFileDragState, terminalKey, visibility]);
 
   const requestActivation = useCallback(() => {
     const entry = terminalSessionMap.get(terminalKey);
@@ -3459,7 +3555,17 @@ export const AgentTerminal = memo(function AgentTerminal({
               ? "visible"
               : "hidden",
         }}
-        className="w-full h-full overflow-hidden"
+        className={`w-full h-full overflow-hidden ${
+          isFileDragOver ? "border-2 border-[var(--color-wardian-accent)]" : ""
+        }`}
+        onDragEnter={handleFileDragEnter}
+        onDragOver={(event) => {
+          if (!hasWardianFileDropData(event.dataTransfer)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={handleFileDragLeave}
+        onDrop={handleFileDrop}
       />
     </div>
   );

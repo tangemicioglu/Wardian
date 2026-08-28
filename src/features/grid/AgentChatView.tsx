@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { FileText, Hand, Image as ImageIcon, Loader2, Plus, SendHorizontal, Square, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { DragEvent, KeyboardEvent } from "react";
 import type { AgentChatEvent, AgentConfig, AgentModelSelectionUpdateResult, AgentTelemetry } from "../../types";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { reasoningEffortForConfig } from "../agents/configUtils";
@@ -28,6 +28,12 @@ import { useAppShellWorkbenchNavigation } from "../../layout/AppShell";
 import { openFileWithSettings } from "../files/fileOpenRouting";
 import { type ChatMarkdownLinkHandling } from "./markdown/ChatMarkdown";
 import { derivePresentedChatRows } from "./workLogPresentation";
+import {
+  fileNameFromPath,
+  getDroppedFilePaths,
+  hasWardianFileDropData,
+  isNativeFileDropInsideBounds,
+} from "../../utils/fileDrop";
 
 interface AgentChatViewBaseProps {
   sessionId: string;
@@ -484,6 +490,9 @@ function ChatComposer({
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [isFileDragOver, setIsFileDragOver] = useState(false);
+  const fileDragCounterRef = useRef(0);
+  const lastFileDropRef = useRef<{ key: string; at: number } | null>(null);
   const placeholder = disabledReason ?? (hasActionRequired ? "Respond to action required..." : "Message agent...");
   const canSubmit = (draft.trim().length > 0 || attachments.length > 0) && !disabledReason;
   const isInterruptAction = isExecuting && !canSubmit;
@@ -570,6 +579,33 @@ function ChatComposer({
     }
   };
 
+  const shouldAcceptFileDrop = (paths: readonly string[]) => {
+    const key = paths.map((path) => path.toLocaleLowerCase()).join("\u0000");
+    const now = Date.now();
+    const previous = lastFileDropRef.current;
+    if (previous?.key === key && now - previous.at < 1_000) return false;
+    lastFileDropRef.current = { key, at: now };
+    return true;
+  };
+
+  const resetFileDragState = () => {
+    fileDragCounterRef.current = 0;
+    setIsFileDragOver(false);
+  };
+
+  const handleFileDragEnter = (event: DragEvent<HTMLFormElement>) => {
+    if (!hasWardianFileDropData(event.dataTransfer)) return;
+    event.preventDefault();
+    fileDragCounterRef.current += 1;
+    setIsFileDragOver(true);
+  };
+
+  const handleFileDragLeave = (event: DragEvent<HTMLFormElement>) => {
+    if (!hasWardianFileDropData(event.dataTransfer)) return;
+    fileDragCounterRef.current -= 1;
+    if (fileDragCounterRef.current <= 0) resetFileDragState();
+  };
+
   const captureClipboardImage = async () => {
     try {
       const image = await readImage();
@@ -596,16 +632,6 @@ function ChatComposer({
     );
   };
 
-  const pathsFromDataTransfer = (dataTransfer: DataTransfer): string[] => {
-    const files = Array.from(dataTransfer.files) as Array<File & { path?: string }>;
-    const filePaths = files.map((file) => file.path).filter((path): path is string => Boolean(path));
-    if (filePaths.length > 0) return filePaths;
-    return (typeof dataTransfer.getData === "function" ? dataTransfer.getData("text/uri-list") : "")
-      .split(/\r?\n/)
-      .filter((value) => value.startsWith("file://"))
-      .map((value) => decodeURIComponent(value.replace(/^file:\/\//, "")));
-  };
-
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
@@ -613,9 +639,10 @@ function ChatComposer({
       if (disposed || disabledReason || isSubmitting || !event.payload?.paths?.length) return;
       const position = event.payload.position;
       const bounds = composerRef.current?.getBoundingClientRect();
-      if (position && bounds && (position.x ?? -1) >= bounds.left && (position.x ?? -1) <= bounds.right
-        && (position.y ?? -1) >= bounds.top && (position.y ?? -1) <= bounds.bottom) {
+      if (position && bounds && isNativeFileDropInsideBounds(position, bounds, window.devicePixelRatio)) {
+        if (!shouldAcceptFileDrop(event.payload.paths)) return;
         addAttachmentPaths(event.payload.paths);
+        resetFileDragState();
       }
     }).then((dispose) => {
       if (disposed) dispose();
@@ -626,6 +653,16 @@ function ChatComposer({
       unlisten?.();
     };
   }, [attachments, disabledReason, isSubmitting]);
+
+  useEffect(() => {
+    const reset = () => resetFileDragState();
+    document.addEventListener("drop", reset, true);
+    document.addEventListener("dragend", reset, true);
+    return () => {
+      document.removeEventListener("drop", reset, true);
+      document.removeEventListener("dragend", reset, true);
+    };
+  }, []);
 
   useEffect(() => {
     if (!autoFocus) {
@@ -651,24 +688,31 @@ function ChatComposer({
 
   return (
     <form
-      className="chat-composer relative mx-2.5 mb-2.5 rounded-xl border border-wardian-light bg-[var(--color-wardian-input-bg)] px-3 pb-1 pt-1.5 shadow-sm"
+      className={`chat-composer relative mx-2.5 mb-2.5 rounded-xl border bg-[var(--color-wardian-input-bg)] px-3 pb-1 pt-1.5 shadow-sm ${
+        isFileDragOver
+          ? "border-[var(--color-wardian-accent)] bg-[var(--color-wardian-accent)]/10"
+          : "border-wardian-light"
+      }`}
       data-testid="chat-composer"
       ref={composerRef}
+      onDragEnter={handleFileDragEnter}
       onDragOver={(event) => {
-        if (pathsFromDataTransfer(event.dataTransfer).length > 0) {
+        if (hasWardianFileDropData(event.dataTransfer)) {
           event.preventDefault();
           event.dataTransfer.dropEffect = "copy";
         }
       }}
+      onDragLeave={handleFileDragLeave}
       onDrop={(event) => {
-        const paths = pathsFromDataTransfer(event.dataTransfer);
-        if (paths.length > 0) {
+        const paths = getDroppedFilePaths(event.dataTransfer);
+        resetFileDragState();
+        if (paths.length > 0 && shouldAcceptFileDrop(paths)) {
           event.preventDefault();
           addAttachmentPaths(paths);
         }
       }}
       onPaste={(event) => {
-        const paths = pathsFromDataTransfer(event.clipboardData);
+        const paths = getDroppedFilePaths(event.clipboardData);
         if (paths.length > 0) {
           event.preventDefault();
           addAttachmentPaths(paths);
@@ -904,12 +948,6 @@ function ChatModelSelection({
       {saveError ? <p className="mt-1 text-[10px] text-wardian-error" role="alert">{saveError}</p> : null}
     </div>
   );
-}
-
-function fileNameFromPath(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const segments = normalized.split("/").filter(Boolean);
-  return segments[segments.length - 1] || path;
 }
 
 function shouldSubmitComposerKey(event: KeyboardEvent<HTMLTextAreaElement>): boolean {

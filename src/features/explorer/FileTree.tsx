@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { ChevronRight, ChevronDown, File, FileText, Image, Code } from 'lucide-react';
 import { normalizeExplorerPathForCompare } from './pathUtils';
 import { gitStatusColor } from '../git/gitStatusPresentation';
+import { setWardianFileDragData } from '../../utils/fileDrop';
 
 export interface FileNode {
   name: string;
@@ -302,9 +303,13 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
             aria-label={node.name}
             aria-expanded={node.is_dir ? Boolean(expanded[node.path]) : undefined}
             data-file-tree-path={node.path}
+            draggable={!node.is_dir}
             tabIndex={(
               interaction.activePath ?? (depth === 0 ? nodes[0]?.path : null)
             ) === node.path ? 0 : -1}
+            onDragStart={(event) => {
+              setWardianFileDragData(event.dataTransfer, [node.path]);
+            }}
             onClick={(e) => {
               if ((e.target as Element).closest('[role="treeitem"]') === e.currentTarget) {
                 handleClick(e, node);

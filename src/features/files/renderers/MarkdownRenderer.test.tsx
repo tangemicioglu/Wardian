@@ -156,7 +156,7 @@ describe("MarkdownRenderer", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Copy Ts code" }));
 
     await waitFor(() => expect(mockWriteText).toHaveBeenCalledWith("const copied = true;"));
-    expect(screen.getByText("Copied")).toBeInTheDocument();
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
   });
 
   it("falls back to the browser clipboard when the desktop command is unavailable", async () => {
@@ -177,7 +177,7 @@ describe("MarkdownRenderer", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Copy Ts code" }));
 
     await waitFor(() => expect(browserWriteText).toHaveBeenCalledWith("const copied = true;"));
-    expect(screen.getByText("Copied")).toBeInTheDocument();
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
   });
 
   it("shows a copy failure when neither clipboard is available", async () => {
