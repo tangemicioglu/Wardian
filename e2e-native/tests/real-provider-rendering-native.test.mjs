@@ -1,3 +1,4 @@
+// @tier manual — Needs a real provider or a logged-in CLI. Run it deliberately.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";

@@ -110,7 +110,7 @@ export const ListEditor: React.FC<ListEditorProps> = ({
             <button
               type="button"
               onClick={() => onChange(safeValues.filter((_, i) => i !== idx))}
-              className="text-muted-neutral hover:text-red-400 p-0.5 transition-colors shrink-0"
+              className="text-muted-neutral hover:text-wardian-error p-0.5 transition-colors shrink-0"
               aria-label={`Remove ${label.toLowerCase()} value ${idx + 1}`}
               title={`Remove ${label.toLowerCase()} value ${idx + 1}`}
             >

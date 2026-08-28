@@ -3501,7 +3501,7 @@ export const AgentTerminal = memo(function AgentTerminal({
   return (
     <div className="relative w-full h-full overflow-hidden">
       {initError && (
-        <div className="absolute inset-0 z-50 bg-red-900 text-primary p-4 overflow-auto rounded m-2">
+        <div className="absolute inset-0 z-50 bg-wardian-error-surface text-primary p-4 overflow-auto rounded m-2">
           <h3 className="font-bold mb-2">Terminal Initialization Fatal Error:</h3>
           <pre className="text-xs whitespace-pre-wrap">{initError}</pre>
         </div>

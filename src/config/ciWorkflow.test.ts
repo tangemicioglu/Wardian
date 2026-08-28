@@ -12,7 +12,7 @@ function jobDefinition(jobName: string) {
 
   const nextJobOffset = lines
     .slice(start + 1)
-    .findIndex((line) => /^  [a-z0-9-]+:$/.test(line));
+    .findIndex((line) => /^ {2}[a-z0-9-]+:$/.test(line));
   const end = nextJobOffset === -1 ? lines.length : start + 1 + nextJobOffset;
   return lines.slice(start, end).join("\n");
 }
@@ -26,7 +26,7 @@ describe("CI workflow contract", () => {
 
     expect(ciWorkflow).toMatch(/pull_request:\s+branches: \[main\]/);
     for (const requiredJob of [frontend, backend, backendCoverage, docs]) {
-      expect(requiredJob).not.toMatch(/^    if:/m);
+      expect(requiredJob).not.toMatch(/^ {4}if:/m);
     }
     expect(frontend).toContain("run: npm run lint");
     expect(frontend).toContain("run: npm run test");
@@ -67,7 +67,7 @@ describe("CI workflow contract", () => {
     const native = jobDefinition("native-workbench-smoke");
 
     expect(native).toContain("runs-on: windows-latest");
-    expect(native).not.toMatch(/^    if:/m);
+    expect(native).not.toMatch(/^ {4}if:/m);
     expect(native).toContain(
       "WARDIAN_HOME: ${{ github.workspace }}\\.tmp\\e2e-native\\wardian-e2e-native-workbench",
     );

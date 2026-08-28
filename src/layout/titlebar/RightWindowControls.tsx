@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
+const isTauri =
+  typeof window !== "undefined"
+  && !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 const isMac = typeof navigator !== "undefined" && navigator.userAgent.includes("Macintosh");
 
 interface RightWindowControlsProps {

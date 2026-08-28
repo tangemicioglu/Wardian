@@ -1675,7 +1675,7 @@ export const GitPanel: React.FC<GitPanelProps> = ({
       <div className="flex flex-col h-full w-full">
         <h2 className="text-sm font-bold text-primary tracking-tight mb-4">Source Control</h2>
         <div className="flex flex-col items-center justify-center flex-1 text-center p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="w-16 h-16 mb-4 text-gray-700/40">
+          <div className="w-16 h-16 mb-4 text-muted-neutral opacity-40">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="7" cy="5" r="2" style={{fill:'none'}} /><circle cx="7" cy="19" r="2" style={{fill:'none'}} /><circle cx="17" cy="12" r="2" style={{fill:'none'}} />
               <line x1="7" y1="7" x2="7" y2="17" /><path style={{fill:'none'}} d="M7 17 C7 13 17 13 17 12" />

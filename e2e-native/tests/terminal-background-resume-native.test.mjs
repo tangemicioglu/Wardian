@@ -1,3 +1,4 @@
+// @tier nightly — Runs on the nightly schedule; too slow or too broad for every pull request.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

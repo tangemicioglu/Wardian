@@ -190,7 +190,7 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
     }
     // `rootKey` is the content of `roots`; the array identity changes on every
     // layout pass and would make this run constantly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [enabled, rootKey]);
 
   const requestListings = useCallback(async function request(paths: readonly string[]) {

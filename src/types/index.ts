@@ -301,7 +301,7 @@ export interface AgentOutputPayload {
 
 export interface AgentJsonEvent {
     session_id: string;
-    data: any;
+    data: unknown;
 }
 
 export interface AgentStatusUpdate {

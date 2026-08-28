@@ -59,7 +59,7 @@ async function installQueueV2IpcMock(page: Page) {
     ];
     let queuePreferences = {};
     let workflowApprovals: Array<Record<string, unknown>> = [];
-    let workflowTerminalRuns: Array<Record<string, unknown>> = Array.isArray(
+    const workflowTerminalRuns: Array<Record<string, unknown>> = Array.isArray(
       (window as Window & { __WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__?: unknown })
         .__WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__,
     )

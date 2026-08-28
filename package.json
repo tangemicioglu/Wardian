@@ -24,7 +24,11 @@
     "stage-cli:dev": "node scripts/stage-cli.mjs --profile dev",
     "release:apt-repo": "node scripts/package-managers/generate-apt-repo.mjs",
     "release:package-manifests": "node scripts/package-managers/generate-manifests.mjs",
-    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "check:deadcode": "knip",
+    "check:test-reachability": "node scripts/verify-test-reachability.mjs",
+    "check:budgets": "node scripts/verify-budgets.mjs",
     "check:frontend-screenshot": "node scripts/verify-frontend-screenshot.mjs",
     "check:workbench-cutover": "node scripts/verify-workbench-cutover.mjs",
     "docs:dev": "vitepress dev docs",
@@ -46,7 +50,8 @@
     "test:e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",
     "test:e2e:native": "node scripts/run-native-e2e.mjs",
     "test:e2e:native:fast": "node scripts/run-native-e2e-fast.mjs",
-    "test:e2e:native:workbench": "node scripts/run-native-e2e-fast.mjs e2e-native/tests/workbench-persistence-native.test.mjs e2e-native/tests/terminal-presentation-broker-native.test.mjs e2e-native/tests/workbench-runtime-lifecycle-native.test.mjs e2e-native/tests/remote-gateway-native.test.mjs",
+    "test:e2e:native:ci": "node scripts/run-native-e2e-fast.mjs --tier ci",
+    "test:e2e:native:nightly": "node scripts/run-native-e2e-fast.mjs --tier nightly",
     "test:e2e:native:watch": "node scripts/run-native-e2e-watch.mjs",
     "setup:e2e:native": "node scripts/setup-native-e2e.mjs",
     "setup:e2e:native:windows": "npm run setup:e2e:native"
@@ -82,6 +87,7 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.3.1",
     "@tauri-apps/cli": "2.11.2",
@@ -96,6 +102,9 @@
     "@vitejs/plugin-react": "^4.6.0",
     "@vitest/coverage-v8": "^4.1.8",
     "autoprefixer": "^10.4.24",
+    "eslint": "^10.9.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.11.0",
     "jsdom": "^28.1.0",
     "knip": "^6.32.3",
     "lucide-react": "^0.577.0",
@@ -104,6 +113,7 @@
     "tailwindcss": "^4.3.1",
     "terser": "^5.46.1",
     "typescript": "~5.8.3",
+    "typescript-eslint": "^8.68.0",
     "vite": "6.4.3",
     "vitepress": "^1.6.4",
     "vitest": "^4.1.8"

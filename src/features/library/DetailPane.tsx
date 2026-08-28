@@ -321,7 +321,7 @@ export const DetailPane: React.FC<DetailPaneProps> = ({
         }
         setDraft(selectedContent);
         setBaseline(selectedContent);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+         
     }, [selectedContent, selection?.entryRef]);
 
     useEffect(() => {
