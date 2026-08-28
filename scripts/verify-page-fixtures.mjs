@@ -92,8 +92,23 @@ for (const file of testFiles) {
       // tree break with this check passing.
       const blockReturn = returnInGuardBlock(lines, index, command);
 
+      // `return activityFixture;` — a variable, so there is no literal to
+      // match. The Graph inspector broke this way: the helper took
+      // `PairActivity[]` and handed it straight back. A page-shaped value is an
+      // object literal or a `*Page(...)` call, so a bare identifier is wrong
+      // here — except for the absent-value returns a mock legitimately makes.
+      const ABSENT = /^(null|undefined)$/;
+      const identifierReturn = (candidate) =>
+        candidate !== null
+        && /^\s*return\s+([A-Za-z_$][\w$]*)\s*;\s*$/.test(candidate)
+        && !ABSENT.test(/^\s*return\s+([A-Za-z_$][\w$]*)\s*;\s*$/.exec(candidate)[1]);
+
+      const returnsIdentifier = identifierReturn(blockReturn)
+        || (inline !== null && inline[1].endsWith(";") && !ABSENT.test(inline[1].replace(";", "").trim()));
+
       const suspect = asMapEntry
         || (inline && inline[1].startsWith("["))
+        || returnsIdentifier
         || (blockReturn !== null && /^\s*return\s*\[/.test(blockReturn));
       if (!suspect) continue;
       // Already page-shaped or routed through a helper.

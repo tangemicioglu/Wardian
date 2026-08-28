@@ -108,7 +108,10 @@ async function installGraphTopologyIpcMock(
         if (command === "get_topology") {
           return topologyFixture;
         }
-        if (command === "get_pair_activity") return activityFixture;
+        // Callers pass a plain array; the command returns a page.
+        if (command === "get_pair_activity") {
+          return { pairs: activityFixture, truncated: false, next_offset: null };
+        }
         if (command === "plugin:event|listen") return callbackId++;
         if (command === "plugin:event|unlisten") return null;
         if (command === "sync_provider_theme_settings") return null;
