@@ -152,7 +152,7 @@ async function installQueueV2IpcMock(page: Page) {
         }
         if (command === "load_queue_items") return queueItems;
         if (command === "list_inbox_notifications") {
-          return [{
+          return { notifications: [{
             id: "important-update-1",
             kind: "update",
             sender_session_id: "mock-session-e2e-001",
@@ -172,7 +172,7 @@ async function installQueueV2IpcMock(page: Page) {
             risk: "This changes live traffic and may require rollback.",
             choices: ["Deploy", "Do not deploy"],
             created_at: new Date(now).toISOString(),
-          }];
+          }], truncated: false, next_offset: null };
         }
         if (command === "list_workflow_inbox_approvals") return workflowApprovals;
         if (command === "list_workflow_inbox_terminal_runs") return workflowTerminalRuns;

@@ -1,3 +1,4 @@
+import { pairPage } from "../test/pageFixtures";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -121,13 +122,6 @@ const defaultProps = {
   deriveCurrentThought: () => ({ thought: "", status: "Idle" }),
   ...handlers,
 };
-
-/** `get_pair_activity` returns a page, never a bare array. */
-const pairPage = (pairs: unknown[], next: number | null = null) => ({
-  pairs,
-  truncated: next !== null,
-  next_offset: next,
-});
 
 describe("GraphView", () => {
   beforeEach(async () => {
@@ -645,7 +639,7 @@ describe("GraphView", () => {
         if (command === "get_topology") {
           return { edges: [{ a: "a", b: "b", origin: "manual" }], ignored_pairs: [] };
         }
-        if (command === "get_pair_activity") return [];
+        if (command === "get_pair_activity") return pairPage([]);
         return undefined;
       });
       const view = render(
@@ -802,7 +796,7 @@ describe("GraphView", () => {
         if (command === "get_topology") {
           return { edges, ignored_pairs: [], fallback_groups: [] };
         }
-        if (command === "get_pair_activity") return [];
+        if (command === "get_pair_activity") return pairPage([]);
         return undefined;
       });
 

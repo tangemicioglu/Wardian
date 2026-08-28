@@ -1,3 +1,4 @@
+import { blueprintPage, runPage } from "../test/pageFixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
@@ -167,17 +168,10 @@ import { useOnboardingStore } from '../store/useOnboardingStore';
 import { WorkflowsView } from './WorkflowsView';
 import type { Blueprint } from '../features/workflows/builder/blueprintTypes';
 
-/** `workflow_list_blueprints` returns a page, never a bare array. */
-const blueprintPage = (blueprints: unknown[], next: number | null = null) => ({
-  blueprints,
-  truncated: next !== null,
-  next_offset: next,
-});
-
 describe('WorkflowsView', () => {
   beforeEach(() => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'workflow_list_runs') return [];
+      if (command === 'workflow_list_runs') return runPage([]);
       if (command === 'workflow_read_run') {
         return {
           state: useRunStore.getState().state,
@@ -427,7 +421,7 @@ describe('WorkflowsView', () => {
       selectedRunIdsByBlueprint: {},
     });
     invokeMock.mockImplementation(async (command: string, args?: { path?: string; runId?: string }) => {
-      if (command === 'workflow_list_runs') return useRunStore.getState().runs;
+      if (command === 'workflow_list_runs') return runPage(useRunStore.getState().runs);
       if (command === 'workflow_parse') return { blueprint: workflowBlueprint(), diagnostics: [] };
       if (command === 'workflow_read_run') return readRunResult(args?.runId ?? 'run-new');
       if (command === 'schedule_list') return [];
@@ -481,7 +475,7 @@ describe('WorkflowsView', () => {
       selectedRunIdsByBlueprint: { wf: 'run-old' },
     });
     invokeMock.mockImplementation(async (command: string, args?: { path?: string; runId?: string }) => {
-      if (command === 'workflow_list_runs') return useRunStore.getState().runs;
+      if (command === 'workflow_list_runs') return runPage(useRunStore.getState().runs);
       if (command === 'workflow_parse') return { blueprint: workflowBlueprint(), diagnostics: [] };
       if (command === 'workflow_read_run') return readRunResult(args?.runId ?? 'run-old');
       if (command === 'schedule_list') return [];
@@ -537,7 +531,7 @@ describe('WorkflowsView', () => {
       selectedRunId: null,
     });
     invokeMock.mockImplementation(async (command: string, args?: { path?: string }) => {
-      if (command === 'workflow_list_runs') return [];
+      if (command === 'workflow_list_runs') return runPage([]);
       if (command === 'schedule_list') return [];
       if (command === 'workflow_list_blueprints') {
         return blueprintPage([
@@ -620,7 +614,7 @@ describe('WorkflowsView', () => {
       selectedRunIdsByBlueprint: { wf: 'run-wf-new' },
     });
     invokeMock.mockImplementation(async (command: string, args?: { blueprintId?: string; runId?: string }) => {
-      if (command === 'workflow_list_runs') return useRunStore.getState().runs;
+      if (command === 'workflow_list_runs') return runPage(useRunStore.getState().runs);
       if (command === 'workflow_read_run') {
         return new Promise((resolve) => {
           resolveRead = resolve;

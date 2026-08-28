@@ -67,6 +67,8 @@ jobs:
         run: npm run check:deadcode
       - name: Verify Debt Budgets
         run: npm run check:budgets
+      - name: Verify Page Fixtures
+        run: npm run check:page-fixtures
       - name: Coverage Report
         run: npm run test:coverage
       - name: Upload Frontend Coverage
