@@ -48,7 +48,9 @@ pub fn read_checkpoint(root: &Path) -> crate::engine::Result<Option<RunState>> {
     if !path.exists() {
         return Ok(None);
     }
-    Ok(Some(serde_json::from_str(&std::fs::read_to_string(path)?)?))
+    let mut state: RunState = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    state.normalize_legacy();
+    Ok(Some(state))
 }
 
 #[cfg(test)]
@@ -91,5 +93,31 @@ mod tests {
         write_checkpoint(dir.path(), &s).unwrap();
         let back = read_checkpoint(dir.path()).unwrap().unwrap();
         assert_eq!(back.next_seq, 9);
+    }
+
+    #[test]
+    fn legacy_checkpoint_gets_run_storage_during_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(CHECKPOINT),
+            serde_json::json!({
+                "run_id": "legacy",
+                "blueprint_id": "wf",
+                "status": "running",
+                "nodes": {},
+                "registry": {"nodes": {}, "trigger": {"output": {}}},
+                "loop_iter": {},
+                "delivered": {},
+                "skipped_edges": [],
+                "next_seq": 2,
+                "failure": null
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let state = read_checkpoint(dir.path()).unwrap().unwrap();
+
+        assert_eq!(state.registry["storage"], serde_json::json!({}));
     }
 }

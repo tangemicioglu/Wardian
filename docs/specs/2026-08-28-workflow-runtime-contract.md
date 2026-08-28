@@ -57,12 +57,18 @@ State nodes are deterministic engine operations. `set` and `merge` update the
 run registry's `storage` object, `delete` removes named keys, and `get` returns
 the requested keys or the complete storage object when no keys are supplied.
 Mutations are represented by `state_updated` events, so checkpoints and replay
-produce the same storage state.
+produce the same storage state. This storage is scoped to one run; it is not a
+cross-run or cross-agent shared store.
 
 `workflow_cancel` writes a durable marker. The engine consumes it before the
 next dispatch boundary and records `run_failed` with
-`workflow cancelled by operator`. A provider call already in progress finishes
-before this cooperative boundary is observed.
+`workflow cancelled by operator`. If the run is parked for approval, the
+command records that terminal event immediately. A provider call already in
+progress finishes before this cooperative boundary is observed.
+
+Checkpoints written before run storage was introduced are normalized on load by
+adding an empty storage object, so resuming an older durable run uses the same
+state shape as a new run.
 
 Notifications continue to write the workflow run log and, for app-owned runs,
 are now sent through `tauri-plugin-notification`. Headless/CLI execution keeps

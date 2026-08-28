@@ -137,7 +137,7 @@ Outgoing ports: out
 - **category:** State
 - **version:** 1
 
-Read or write run or shared storage.
+Read or write storage scoped to the current workflow run.
 
 ### Fields
 

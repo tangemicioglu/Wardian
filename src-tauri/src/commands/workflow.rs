@@ -837,13 +837,19 @@ pub async fn approve_workflow_for_surface(
 }
 
 /// Record a durable cancel request. The engine consumes the marker at its next
-/// dispatch boundary and emits a terminal cancellation failure.
+/// dispatch boundary, or immediately persists cancellation for an approval-
+/// parked run.
 #[tauri::command]
 pub fn workflow_cancel(blueprint_id: String, run_id: String) -> Result<serde_json::Value, String> {
     let run_root =
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
+    let blueprint_path = resolve_blueprint_path(&blueprint_id)
+        .ok_or_else(|| format!("workflow blueprint not found: {blueprint_id}"))?;
+    let blueprint = workflow::parse_file(&blueprint_path).map_err(|error| error.to_string())?;
     std::fs::write(run_root.join("cancel.marker"), "cancelled").map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "ok": true }))
+    let state = wardian_core::engine::Engine::cancel(&blueprint, &run_root)
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({ "ok": true, "status": state.status }))
 }
 
 fn now_ms() -> u64 {

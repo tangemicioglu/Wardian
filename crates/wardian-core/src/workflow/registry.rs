@@ -229,7 +229,7 @@ fn build_registry() -> Vec<NodeTypeDef> {
             category: "State".into(),
             label: "State".into(),
             icon: "database".into(),
-            description: "Read or write run or shared storage.".into(),
+            description: "Read or write storage scoped to the current workflow run.".into(),
             supported: true,
             fields: vec![
                 FieldDef::new(

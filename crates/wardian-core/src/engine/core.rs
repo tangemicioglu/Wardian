@@ -212,8 +212,6 @@ pub fn enter_loop(g: &Graph, s: &mut RunState, loop_id: &str) {
     deliver_from_port(g, s, loop_id, "body");
 }
 
-/// For each Running loop whose body is fully terminal, evaluate its bound and
-/// either start the next iteration or finish (pulse `done`).
 fn resolve_u32_field(
     fields: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -236,7 +234,13 @@ fn resolve_u32_field(
         .unwrap_or(default)
 }
 
-pub fn advance_loops(g: &Graph, s: &mut RunState) {
+/// For each Running loop whose body is fully terminal, evaluate its bound and
+/// either start the next iteration or finish (pulse `done`).
+///
+/// The condition is validated here as well as during blueprint validation so
+/// direct engine callers cannot turn an unsupported expression into a false
+/// condition.
+pub fn advance_loops(g: &Graph, s: &mut RunState) -> crate::engine::Result<()> {
     let loop_ids: Vec<String> = g
         .blueprint()
         .nodes
@@ -266,13 +270,23 @@ pub fn advance_loops(g: &Graph, s: &mut RunState) {
             .map(|nd| resolve_u32_field(&nd.fields, "max_iterations", &s.registry, 1))
             .unwrap_or(1)
             .max(1);
-        let until_met = loop_node
-            .and_then(|nd| nd.fields.get("until"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|condition| !condition.is_empty())
-            .map(|condition| crate::workflow::condition::lookup_truthy(&s.registry, condition))
-            .unwrap_or(false);
+        let until_met = match loop_node.and_then(|nd| nd.fields.get("until")) {
+            None => false,
+            Some(value) => {
+                let condition = value.as_str().ok_or_else(|| {
+                    crate::engine::EngineError::InvalidState(format!(
+                        "loop `{lp}` until condition must be a registry path"
+                    ))
+                })?;
+                let condition =
+                    crate::workflow::condition::validate_path(condition).map_err(|message| {
+                        crate::engine::EngineError::InvalidState(format!(
+                            "loop `{lp}` until condition is invalid: {message}"
+                        ))
+                    })?;
+                crate::workflow::condition::lookup_truthy(&s.registry, &condition)
+            }
+        };
 
         if !until_met && iter + 1 < max {
             // Snapshot this iteration's outputs as `prev`, then reset the body.
@@ -307,6 +321,7 @@ pub fn advance_loops(g: &Graph, s: &mut RunState) {
             deliver_from_port(g, s, &lp, "done");
         }
     }
+    Ok(())
 }
 
 /// True if the node is an approval gate (driver parks instead of executing).
@@ -503,12 +518,12 @@ mod tests {
         assert!(step(&g, &s).contains(&"b".to_string())); // body entry runnable
                                                           // iteration 0 body completes
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
         assert_eq!(s.loop_iter["lp"], 1); // continued to iteration 1
         assert_eq!(s.status_or_pending("b"), NodeStatus::Pending); // body reset
                                                                    // iteration 1 body completes -> reaches max (2), so done
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
         assert!(step(&g, &s).contains(&"ship".to_string())); // done port delivered
     }
@@ -540,17 +555,17 @@ mod tests {
         enter_loop(&g, &mut s, "lp");
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
         assert_eq!(s.loop_iter["lp"], 1);
         assert_eq!(s.status_or_pending("b"), NodeStatus::Pending);
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
         assert_eq!(s.loop_iter["lp"], 2);
         assert_eq!(s.status_or_pending("b"), NodeStatus::Pending);
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
         assert!(step(&g, &s).contains(&"ship".to_string()));
     }
@@ -576,11 +591,11 @@ mod tests {
         enter_loop(&g, &mut s, "lp");
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
         assert_eq!(s.loop_iter["lp"], 1);
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
     }
 
@@ -610,7 +625,7 @@ mod tests {
         enter_loop(&g, &mut s, "lp");
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
 
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
         assert!(step(&g, &s).contains(&"ship".to_string()));
@@ -640,7 +655,7 @@ mod tests {
         enter_loop(&g, &mut s, "lp");
 
         complete(&g, &mut s, "b", serde_json::json!({ "done": true }));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
 
         assert_eq!(s.loop_iter["lp"], 0);
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
@@ -671,13 +686,13 @@ mod tests {
         enter_loop(&g, &mut s, "lp");
 
         complete(&g, &mut s, "b", serde_json::json!({ "done": false }));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
 
         assert_eq!(s.loop_iter["lp"], 1);
         assert_eq!(s.status_or_pending("b"), NodeStatus::Pending);
 
         complete(&g, &mut s, "b", serde_json::json!({ "done": false }));
-        advance_loops(&g, &mut s);
+        advance_loops(&g, &mut s).unwrap();
 
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
         assert!(step(&g, &s).contains(&"ship".to_string()));

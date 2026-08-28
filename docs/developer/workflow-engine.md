@@ -53,7 +53,8 @@ During execution the engine keeps a registry of run data:
 
 - `nodes.<id>.output`: the output from completed nodes;
 - `trigger.output`: the invocation input payload;
-- `storage`: persistent workflow storage made available to interpolation.
+- `storage`: persistent storage scoped to this workflow run and made available
+  to interpolation. It is not shared across runs or agents.
 
 Template fields resolve against this registry before each node executes.
 
@@ -79,7 +80,8 @@ Resume, startup recovery, and human approval use the same durable run records:
   processes are no longer owned by the new app process;
 - `workflow_approve` grants or rejects an approval gate;
 - `workflow_cancel` writes a cancellation marker; the engine consumes it at the
-  next dispatch boundary and records a durable `run_failed` cancellation event.
+  next dispatch boundary, or immediately records a durable `run_failed`
+  cancellation event when the run is parked for approval.
 
 ## Agent Execution
 

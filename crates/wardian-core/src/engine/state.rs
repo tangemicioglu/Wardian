@@ -57,6 +57,16 @@ impl RunState {
         }
     }
 
+    /// Add fields introduced after the first checkpoint format without
+    /// changing the meaning of an existing durable run.
+    pub fn normalize_legacy(&mut self) {
+        if let Some(registry) = self.registry.as_object_mut() {
+            registry
+                .entry("storage")
+                .or_insert_with(|| serde_json::json!({}));
+        }
+    }
+
     pub fn node_status(&self, id: &str) -> Option<NodeStatus> {
         self.nodes.get(id).copied()
     }

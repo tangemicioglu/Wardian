@@ -310,7 +310,7 @@
       "category": "State",
       "label": "State",
       "icon": "database",
-      "description": "Read or write run or shared storage.",
+      "description": "Read or write storage scoped to the current workflow run.",
       "supported": true,
       "fields": [
         {

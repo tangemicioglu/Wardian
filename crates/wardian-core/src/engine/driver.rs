@@ -107,6 +107,33 @@ impl Engine {
         Ok(s)
     }
 
+    /// Cancel a run immediately when it is parked for approval. Running runs
+    /// retain the marker for the active driver to consume at its next
+    /// cooperative boundary; terminal runs clean up a stale marker.
+    pub fn cancel(bp: &Blueprint, run_root: &Path) -> crate::engine::Result<RunState> {
+        let _approval_decision = acquire_approval_decision_guard(run_root)?;
+        let g = Graph::new(bp);
+        let mut s = load_state(&g, run_root)?;
+        match s.status {
+            RunStatus::AwaitingApproval => {
+                emit(
+                    run_root,
+                    &g,
+                    &mut s,
+                    EventKind::RunFailed {
+                        error: "workflow cancelled by operator".into(),
+                    },
+                )?;
+                let _ = consume_cancellation_request(run_root)?;
+            }
+            RunStatus::Completed | RunStatus::Failed => {
+                let _ = consume_cancellation_request(run_root)?;
+            }
+            RunStatus::Running => {}
+        }
+        Ok(s)
+    }
+
     /// Reconstruct `RunState` purely by replaying the event log (no execution).
     pub fn replay(bp: &Blueprint, run_root: &Path) -> crate::engine::Result<RunState> {
         let g = Graph::new(bp);
@@ -254,7 +281,17 @@ async fn drive(
             )?;
             return Ok(());
         }
-        core::advance_loops(g, s);
+        if let Err(error) = core::advance_loops(g, s) {
+            emit(
+                run_root,
+                g,
+                s,
+                EventKind::RunFailed {
+                    error: error.to_string(),
+                },
+            )?;
+            return Ok(());
+        }
         finalize_if_done(g, s);
         write_checkpoint(run_root, s)?;
         if s.status != RunStatus::Running {
@@ -366,16 +403,26 @@ async fn dispatch(
         return Ok(());
     }
     if node.r#type == "branch" {
-        let port = eval_branch(s, &node)?;
-        emit(
-            run_root,
-            g,
-            s,
-            EventKind::BranchTaken {
-                node: node.id.clone(),
-                port,
-            },
-        )?;
+        match eval_branch(s, &node) {
+            Ok(port) => emit(
+                run_root,
+                g,
+                s,
+                EventKind::BranchTaken {
+                    node: node.id.clone(),
+                    port,
+                },
+            )?,
+            Err(error) => emit(
+                run_root,
+                g,
+                s,
+                EventKind::NodeFailed {
+                    node: node.id.clone(),
+                    error: error.to_string(),
+                },
+            )?,
+        }
         return Ok(());
     }
 
@@ -868,7 +915,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn branch_rejects_an_expression_at_runtime_instead_of_taking_false_port() {
+    async fn branch_rejects_an_expression_at_runtime_with_durable_failure() {
         let mut blueprint = branch_blueprint();
         blueprint
             .nodes
@@ -882,7 +929,7 @@ mod tests {
             );
         let dir = tempfile::tempdir().unwrap();
 
-        let error = Engine::start_with_id(
+        let state = Engine::start_with_id(
             &blueprint,
             "run-invalid-condition",
             serde_json::json!({}),
@@ -890,10 +937,110 @@ mod tests {
             &MockExecutor::new(),
         )
         .await
-        .expect_err("invalid branch conditions must not silently choose false");
+        .expect("invalid branch conditions should be durably recorded as a failure");
 
-        assert!(error.to_string().contains("branch condition is invalid"));
-        assert!(error.to_string().contains("operators and comparisons"));
+        assert_eq!(state.status, RunStatus::Failed);
+        assert!(state
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("branch condition is invalid")));
+        assert!(read_checkpoint(dir.path())
+            .unwrap()
+            .unwrap()
+            .failure
+            .is_some());
+        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
+            matches!(&event.kind, EventKind::NodeFailed { node, error }
+                if node == "route" && error.contains("operators and comparisons"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn loop_rejects_an_expression_at_runtime_with_durable_failure() {
+        let loop_node = Node {
+            id: "lp".into(),
+            r#type: "loop".into(),
+            name: None,
+            parent: None,
+            fields: serde_json::json!({
+                "max_iterations": 3,
+                "until": "nodes.body.output.count > 2"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            position: None,
+        };
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "loop-condition-contract".into(),
+            name: "Loop condition contract".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                loop_node.clone(),
+                Node {
+                    id: "body".into(),
+                    r#type: "task".into(),
+                    name: None,
+                    parent: Some("lp".into()),
+                    fields: serde_json::json!({
+                        "agent": "role:worker",
+                        "prompt": "work"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+            ],
+            edges: vec![
+                crate::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "lp".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "lp".into(),
+                    from_port: "body".into(),
+                    to: "body".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-invalid-loop-condition",
+            serde_json::json!({}),
+            dir.path(),
+            &MockExecutor::new(),
+        )
+        .await
+        .expect("invalid loop conditions should be durably recorded as a failure");
+
+        assert_eq!(state.status, RunStatus::Failed);
+        assert!(state
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("loop `lp` until condition is invalid")));
+        assert_eq!(
+            read_checkpoint(dir.path()).unwrap().unwrap().status,
+            RunStatus::Failed
+        );
+        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
+            matches!(&event.kind, EventKind::RunFailed { error }
+                if error.contains("loop `lp` until condition is invalid"))
+        }));
     }
 
     #[tokio::test]
@@ -1093,6 +1240,41 @@ mod tests {
             ],
             body: String::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn cancel_approval_parked_run_persists_terminal_failure_and_cleans_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = approval_blueprint();
+
+        let parked = Engine::start_with_id(
+            &blueprint,
+            "run-cancel-approval",
+            serde_json::json!({}),
+            dir.path(),
+            &MockExecutor::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(parked.status, RunStatus::AwaitingApproval);
+        std::fs::write(dir.path().join("cancel.marker"), "cancelled").unwrap();
+
+        let cancelled = Engine::cancel(&blueprint, dir.path()).unwrap();
+
+        assert_eq!(cancelled.status, RunStatus::Failed);
+        assert_eq!(
+            cancelled.failure.as_deref(),
+            Some("workflow cancelled by operator")
+        );
+        assert_eq!(
+            read_checkpoint(dir.path()).unwrap().unwrap().status,
+            RunStatus::Failed
+        );
+        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
+            matches!(&event.kind, EventKind::RunFailed { error }
+                if error == "workflow cancelled by operator")
+        }));
+        assert!(!dir.path().join("cancel.marker").exists());
     }
 
     #[tokio::test]
