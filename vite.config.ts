@@ -107,7 +107,10 @@ export default defineConfig(async () => ({
           if (normalized.includes("/node_modules/qrcode/")) {
             return "vendor-qrcode";
           }
-          return "vendor";
+          // Leave unclassified dependencies to Rollup's graph partitioning.
+          // A catch-all vendor chunk would make every package shared by a
+          // deferred surface part of the remote PWA's initial request set.
+          return undefined;
         },
       },
     },

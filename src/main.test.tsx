@@ -40,6 +40,7 @@ describe("main", () => {
     expect(reactDomMock.renderRoot).toHaveBeenCalledTimes(1);
 
     render(reactDomMock.renderRoot.mock.calls[0][0]);
+    expect(await screen.findByTestId("app-root")).toBeVisible();
     expect(screen.getByTestId("confirm-provider")).toContainElement(screen.getByTestId("app-root"));
   });
 });

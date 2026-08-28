@@ -193,6 +193,18 @@ The PWA still reaches the Wardian desktop through Tailscale. If the phone is
 offline, disconnected from Tailscale, revoked in Wardian, or outside the
 tailnet access rules, the installed app cannot send commands.
 
+### Startup behavior
+
+The installed remote app loads the watchlist shell first. Desktop workbench
+code and heavier remote surfaces such as terminal/chat, Inbox, and Settings
+are loaded when their surface is opened. This keeps the initial watchlist
+paint small while preserving the same remote navigation behavior.
+
+If the first load is still slow, check the tailnet connection and gateway
+response before diagnosing the browser bundle. The startup split reduces local
+JavaScript transfer and evaluation work; it cannot remove DNS, TLS, Tailscale,
+or remote gateway latency.
+
 ## Troubleshooting Setup
 
 - **The phone cannot open `/remote`:** confirm Tailscale is connected on both
