@@ -10,6 +10,7 @@ import MonacoTextRenderer from "./MonacoTextRenderer";
 
 const createModel = vi.fn();
 const createEditor = vi.fn();
+const defineTheme = vi.fn();
 const setTheme = vi.fn();
 const setModelLanguage = vi.fn();
 const getModel = vi.fn();
@@ -22,7 +23,14 @@ vi.mock("monaco-editor", () => ({
   KeyCode: { F7: 65, KeyS: 49 },
   KeyMod: { CtrlCmd: 2048, Shift: 1024 },
   Uri: { from: uriFrom },
-  editor: { create: createEditor, createModel, getModel, setModelLanguage, setTheme },
+  editor: {
+    create: createEditor,
+    createModel,
+    defineTheme,
+    getModel,
+    setModelLanguage,
+    setTheme,
+  },
 }));
 
 vi.mock("monaco-editor/esm/vs/editor/editor.worker.js?worker", () => ({
@@ -171,6 +179,14 @@ describe("MonacoTextRenderer", () => {
     expect(createEditor).toHaveBeenCalledWith(expect.any(HTMLElement), expect.objectContaining({
       model: createModel.mock.results[0]?.value,
       readOnly: false,
+      bracketPairColorization: { enabled: true },
+      fontLigatures: true,
+      renderLineHighlight: "all",
+      stickyScroll: { enabled: true },
+      wordWrap: "off",
+    }));
+    expect(defineTheme).toHaveBeenCalledWith("wardian-light", expect.objectContaining({
+      colors: expect.objectContaining({ "editor.background": expect.any(String) }),
     }));
 
     const model = createModel.mock.results[0]?.value as FakeModel;
@@ -487,10 +503,10 @@ describe("MonacoTextRenderer", () => {
     const view = render(<MonacoTextRenderer {...props("files-a")} />);
     await waitFor(() => expect(createEditor).toHaveBeenCalledOnce());
     expect(createEditor).toHaveBeenCalledWith(expect.any(HTMLElement), expect.objectContaining({
-      theme: "vs-dark",
+      theme: "wardian-dark",
     }));
     document.documentElement.setAttribute("data-theme", "light");
-    await waitFor(() => expect(setTheme).toHaveBeenCalledWith("vs"));
+    await waitFor(() => expect(setTheme).toHaveBeenCalledWith("wardian-light"));
     expect(createEditor).toHaveBeenCalledOnce();
     view.unmount();
   });
