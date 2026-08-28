@@ -18,20 +18,18 @@ test.describe("Sidebar Navigation", () => {
   test("sidebar icon rail has navigation buttons", async () => {
     const rail = page.locator('[data-testid="sidebar-icon-rail"]');
     const buttons = rail.locator("button");
-    // Should have at least explorer, workflows, settings tabs
-    await expect(buttons.first()).toBeVisible();
+    await expect(buttons.nth(0)).toHaveAttribute("data-testid", "sidebar-tab-explorer");
+    await expect(buttons.nth(1)).toHaveAttribute("data-testid", "sidebar-tab-agent-config");
     const count = await buttons.count();
     expect(count).toBeGreaterThanOrEqual(3);
   });
 
-  test("clicking sidebar tabs switches content pane", async () => {
+  test("clicking Agent Configuration opens its pane through its stable target", async () => {
     const rail = page.locator('[data-testid="sidebar-icon-rail"]');
-    const buttons = rail.locator("button");
-    // Click the second tab (workflows)
-    const workflowTab = buttons.nth(1);
-    await workflowTab.click();
-    // The content pane should update (we just verify no crash)
-    await page.waitForTimeout(500);
-    await expect(page.locator('[data-testid="app-shell"]')).toBeVisible();
+    await rail.getByTestId("sidebar-tab-explorer").click();
+    await rail.getByTestId("sidebar-tab-agent-config").click();
+
+    await expect(rail.getByTestId("sidebar-tab-agent-config")).toHaveAttribute("data-sidebar-active", "true");
+    await expect(page.getByRole("heading", { name: "Agent Configuration" })).toBeVisible();
   });
 });

@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SidebarIconRail } from "./SidebarIconRail";
 
@@ -22,6 +23,32 @@ describe("SidebarIconRail density", () => {
     expect(explorerIcon).toHaveClass("w-6");
     expect(explorerIcon).toHaveClass("h-6");
     expect(screen.getByTestId("sidebar-tab-changes")).toHaveAttribute("title", "Changes");
+    const titles = screen.getAllByRole("button").map((button) => button.getAttribute("title"));
+    expect(titles.indexOf("File Explorer")).toBe(0);
+    expect(titles.indexOf("Agent Configuration")).toBe(1);
+    expect(titles.indexOf("Agent Configuration")).toBeLessThan(titles.indexOf("Source Control"));
+  });
+
+  it("opens Agent Configuration when its stable rail target is selected", async () => {
+    const user = userEvent.setup();
+    const setActiveTab = vi.fn();
+    const setCollapsed = vi.fn();
+    render(
+      <SidebarIconRail
+        activeTab="explorer"
+        setActiveTab={setActiveTab}
+        setCollapsed={setCollapsed}
+        userTerminalOpen={false}
+        settingsOpen={false}
+        onToggleUserTerminal={vi.fn()}
+        onToggleSettings={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByTestId("sidebar-tab-agent-config"));
+
+    expect(setActiveTab).toHaveBeenCalledWith("agent-config");
+    expect(setCollapsed).toHaveBeenCalledWith(false);
   });
 
   it("does not reserve a persistent help slot on the icon rail", () => {
