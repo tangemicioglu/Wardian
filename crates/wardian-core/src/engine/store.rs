@@ -38,7 +38,7 @@ pub fn read_events(root: &Path) -> crate::engine::Result<Vec<Event>> {
 /// Write the checkpoint snapshot to `<root>/state.json`.
 pub fn write_checkpoint(root: &Path, state: &RunState) -> crate::engine::Result<()> {
     std::fs::create_dir_all(root)?;
-    std::fs::write(root.join(CHECKPOINT), serde_json::to_string_pretty(state)?)?;
+    crate::atomic_file::write_json_atomic(&root.join(CHECKPOINT), state)?;
     Ok(())
 }
 

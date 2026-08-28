@@ -1,6 +1,6 @@
 import { findNodeType } from './registry';
 import type { BlueprintNode, FieldDef } from './blueprintTypes';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 export function NodeConfigForm({ node, onChange }: { node: BlueprintNode; onChange: (field: string, value: unknown) => void }) {
   const def = findNodeType(node.type);
@@ -33,7 +33,10 @@ function FieldInput({
   onChange: (v: unknown) => void;
 }) {
   const id = `field-${field.id}`;
-  const str = (value as string) ?? '';
+  const str = typeof value === 'string' ? value : value == null ? '' : String(value);
+  const kvMapText = formatKvMap(value);
+  const [jsonDraft, setJsonDraft] = useState(kvMapText);
+  useEffect(() => setJsonDraft(kvMapText), [kvMapText]);
   const label = (
     <label htmlFor={id} className="flex min-w-0 items-center gap-1 text-[10px] font-bold text-muted">
       <span className="truncate">{field.label}</span>
@@ -105,7 +108,23 @@ function FieldInput({
       return shell(<input id={id} type="number" value={str} onChange={(e) => onChange(e.target.value)} className={controlClass} />);
     case 'branch_port':
       return shell(<PortListEditor value={(value as string[]) ?? []} onChange={onChange} />);
-    // text, path, *_ref, cron, secret_ref, kv_map -> text input (richer pickers are a follow-up)
+    case 'kv_map':
+      return shell(
+        <textarea
+          id={id}
+          value={jsonDraft}
+          onChange={(e) => {
+            const raw = e.target.value;
+            setJsonDraft(raw);
+            const parsed = parseKvMap(raw);
+            if (parsed) onChange(parsed);
+          }}
+          className={`${controlClass} min-h-[132px] resize-y font-mono leading-relaxed`}
+          spellCheck={false}
+          placeholder={'{"key": "value"}'}
+        />,
+      );
+    // text, path, *_ref, cron, secret_ref -> text input (richer pickers are a follow-up)
     default:
       return shell(
         <input
@@ -118,6 +137,24 @@ function FieldInput({
         />,
       );
   }
+}
+
+function formatKvMap(value: unknown): string {
+  if (isObjectRecord(value)) return JSON.stringify(value, null, 2);
+  return typeof value === 'string' ? value : '{}';
+}
+
+function parseKvMap(value: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isObjectRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function loopMaxIterationsValue(raw: string) {

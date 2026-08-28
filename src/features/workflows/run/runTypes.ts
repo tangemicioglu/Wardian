@@ -8,10 +8,12 @@ export type RunEvent = { seq: number; ts: string } & (
   | { kind: 'node_started'; node: string }
   | { kind: 'node_completed'; node: string; output: unknown }
   | { kind: 'state_updated'; node: string; op: string; entries: unknown }
+  | { kind: 'notification'; node: string; message: string }
   | { kind: 'node_failed'; node: string; error: string }
   | { kind: 'branch_taken'; node: string; port: string }
   | { kind: 'decision_made'; node: string; port: string }
   | { kind: 'loop_iteration'; node: string; iteration: number }
+  | { kind: 'loop_completed'; node: string }
   | { kind: 'node_skipped'; node: string }
   | { kind: 'awaiting_approval'; node: string }
   | { kind: 'approval_granted'; node: string; actor: string; note?: string | null }

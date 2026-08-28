@@ -46,6 +46,10 @@ pub enum EventKind {
         op: String,
         entries: serde_json::Value,
     },
+    Notification {
+        node: String,
+        message: String,
+    },
     NodeFailed {
         node: String,
         error: String,
@@ -61,6 +65,9 @@ pub enum EventKind {
     LoopIteration {
         node: String,
         iteration: u32,
+    },
+    LoopCompleted {
+        node: String,
     },
     NodeSkipped {
         node: String,

@@ -124,10 +124,10 @@ impl Engine {
                         error: "workflow cancelled by operator".into(),
                     },
                 )?;
-                let _ = consume_cancellation_request(run_root)?;
+                clear_cancellation_request(run_root)?;
             }
             RunStatus::Completed | RunStatus::Failed => {
-                let _ = consume_cancellation_request(run_root)?;
+                clear_cancellation_request(run_root)?;
             }
             RunStatus::Running => {}
         }
@@ -237,12 +237,22 @@ pub fn new_run_id() -> String {
 }
 
 fn load_state(g: &Graph<'_>, run_root: &Path) -> crate::engine::Result<RunState> {
-    if let Some(s) = read_checkpoint(run_root)? {
-        return Ok(s);
-    }
-    // No checkpoint: rebuild from the log.
-    let mut s = RunState::new("rebuilt", &g.blueprint().id);
+    let mut s = read_checkpoint(run_root)?.unwrap_or_else(|| {
+        // No checkpoint: rebuild from the log.
+        RunState::new("rebuilt", &g.blueprint().id)
+    });
     for ev in read_events(run_root)? {
+        // A checkpoint may lag the append-only log if the process stopped
+        // between append and checkpoint. Fold only its tail, in sequence.
+        if ev.seq < s.next_seq {
+            continue;
+        }
+        if ev.seq != s.next_seq {
+            return Err(EngineError::InvalidState(format!(
+                "workflow event sequence gap: expected {}, got {}",
+                s.next_seq, ev.seq
+            )));
+        }
         core::apply(g, &mut s, &ev)?;
     }
     Ok(s)
@@ -270,7 +280,7 @@ async fn drive(
     exec: &dyn StepExecutor,
 ) -> crate::engine::Result<()> {
     loop {
-        if consume_cancellation_request(run_root)? {
+        if cancellation_requested(run_root)? {
             emit(
                 run_root,
                 g,
@@ -279,23 +289,46 @@ async fn drive(
                     error: "workflow cancelled by operator".into(),
                 },
             )?;
+            clear_cancellation_request(run_root)?;
             return Ok(());
         }
-        if let Err(error) = core::advance_loops(g, s) {
-            emit(
-                run_root,
-                g,
-                s,
-                EventKind::RunFailed {
-                    error: error.to_string(),
-                },
-            )?;
-            return Ok(());
+        match core::advance_loops(g, s) {
+            Ok(events) => {
+                for event in events {
+                    emit(run_root, g, s, event)?;
+                }
+            }
+            Err(error) => {
+                emit(
+                    run_root,
+                    g,
+                    s,
+                    EventKind::RunFailed {
+                        error: error.to_string(),
+                    },
+                )?;
+                return Ok(());
+            }
         }
-        finalize_if_done(g, s);
+        // Plan finalization on a clone so every skip discovered by the
+        // cascade is persisted as a NodeSkipped event before it affects the
+        // live state. The same keeps replay and checkpoint state aligned.
+        let mut finalized = s.clone();
+        finalize_if_done(g, &mut finalized);
+        let newly_skipped: Vec<String> = finalized
+            .nodes
+            .iter()
+            .filter(|(node, status)| {
+                **status == NodeStatus::Skipped && s.status_or_pending(node) != NodeStatus::Skipped
+            })
+            .map(|(node, _)| node.clone())
+            .collect();
+        for node in newly_skipped {
+            emit(run_root, g, s, EventKind::NodeSkipped { node })?;
+        }
         write_checkpoint(run_root, s)?;
-        if s.status != RunStatus::Running {
-            if s.status == RunStatus::Completed {
+        if finalized.status != RunStatus::Running {
+            if finalized.status == RunStatus::Completed {
                 emit(run_root, g, s, EventKind::RunCompleted)?;
             }
             return Ok(());
@@ -310,7 +343,7 @@ async fn drive(
             if s.status == RunStatus::AwaitingApproval || s.status == RunStatus::Failed {
                 return Ok(());
             }
-            if consume_cancellation_request(run_root)? {
+            if cancellation_requested(run_root)? {
                 emit(
                     run_root,
                     g,
@@ -319,16 +352,21 @@ async fn drive(
                         error: "workflow cancelled by operator".into(),
                     },
                 )?;
+                clear_cancellation_request(run_root)?;
                 return Ok(());
             }
         }
     }
 }
 
-fn consume_cancellation_request(run_root: &Path) -> crate::engine::Result<bool> {
+fn cancellation_requested(run_root: &Path) -> crate::engine::Result<bool> {
+    Ok(run_root.join("cancel.marker").exists())
+}
+
+fn clear_cancellation_request(run_root: &Path) -> crate::engine::Result<()> {
     match std::fs::remove_file(run_root.join("cancel.marker")) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
 }
@@ -482,15 +520,39 @@ async fn dispatch(
     )?;
     let result = run_side_effect(g, s, exec, &node).await;
     match result {
-        Ok(out) => emit(
-            run_root,
-            g,
-            s,
-            EventKind::NodeCompleted {
-                node: node.id.clone(),
-                output: out,
-            },
-        )?,
+        Ok(step) => {
+            if let Some(message) = step.notification {
+                emit(
+                    run_root,
+                    g,
+                    s,
+                    EventKind::Notification {
+                        node: node.id.clone(),
+                        message,
+                    },
+                )?;
+            }
+            emit(
+                run_root,
+                g,
+                s,
+                EventKind::NodeCompleted {
+                    node: node.id.clone(),
+                    output: step.output,
+                },
+            )?;
+            if let Some(port) = step.chosen_port {
+                emit(
+                    run_root,
+                    g,
+                    s,
+                    EventKind::DecisionMade {
+                        node: node.id.clone(),
+                        port,
+                    },
+                )?;
+            }
+        }
         Err(error) => {
             if error.skipped_reason().is_some() {
                 emit(
@@ -517,27 +579,22 @@ async fn dispatch(
     Ok(())
 }
 
-/// Loop entry must record the iteration event AND run the core `enter_loop` side
-/// effects (status/ports). We emit `LoopIteration{0}` (folded by apply) then
-/// pulse the body via the core helper, persisting the resulting state.
+/// Record loop entry as the durable event that also pulses the body in the core.
 fn emit_loop_enter(
     run_root: &Path,
     g: &Graph<'_>,
     s: &mut RunState,
     loop_id: &str,
 ) -> crate::engine::Result<()> {
-    let ev = Event::new(
-        s.next_seq,
+    emit(
+        run_root,
+        g,
+        s,
         EventKind::LoopIteration {
             node: loop_id.into(),
             iteration: 0,
         },
-    );
-    core::apply(g, s, &ev)?;
-    append_event(run_root, &ev)?;
-    core::enter_loop(g, s, loop_id);
-    write_checkpoint(run_root, s)?;
-    Ok(())
+    )
 }
 
 fn eval_branch(s: &RunState, node: &Node) -> crate::engine::Result<String> {
@@ -640,15 +697,15 @@ async fn run_side_effect(
     s: &RunState,
     exec: &dyn StepExecutor,
     node: &Node,
-) -> Result<serde_json::Value, StepError> {
+) -> Result<ExecutedStep, StepError> {
     let _ = g;
     let f = |key: &str| -> Result<String, StepError> {
         let raw = node.fields.get(key).and_then(|v| v.as_str()).unwrap_or("");
         resolve(raw, &s.registry).map_err(|p| StepError::new(format!("unresolved {{{{{p}}}}}")))
     };
     match node.r#type.as_str() {
-        "task" => Ok(exec
-            .run_agent_task(AgentTaskRequest {
+        "task" => Ok(ExecutedStep::output(
+            exec.run_agent_task(AgentTaskRequest {
                 node: node.id.clone(),
                 agent: f("agent")?,
                 prompt: f("prompt")?,
@@ -659,9 +716,10 @@ async fn run_side_effect(
                     .map(str::to_string),
             })
             .await?
-            .0),
+            .0,
+        )),
         "decision" => {
-            let choices = node
+            let choices: Vec<String> = node
                 .fields
                 .get("choices")
                 .and_then(|v| v.as_array())
@@ -676,15 +734,23 @@ async fn run_side_effect(
                     node: node.id.clone(),
                     agent: f("agent")?,
                     prompt: f("prompt")?,
-                    choices,
+                    choices: choices.clone(),
                 })
                 .await?
                 .0;
-            // Encode the chosen port as output; routing handled by DecisionMade in a follow-up.
-            Ok(serde_json::json!({ "chosen": port }))
+            if !choices.iter().any(|choice| choice == &port) {
+                return Err(StepError::new(format!(
+                    "decision chose undeclared port `{port}`"
+                )));
+            }
+            Ok(ExecutedStep {
+                output: serde_json::json!({ "chosen": port }),
+                chosen_port: Some(port),
+                notification: None,
+            })
         }
-        "shell" => Ok(exec
-            .run_shell(ShellRequest {
+        "shell" => Ok(ExecutedStep::output(
+            exec.run_shell(ShellRequest {
                 node: node.id.clone(),
                 command: f("command")?,
                 cwd: node
@@ -694,22 +760,29 @@ async fn run_side_effect(
                     .map(str::to_string),
             })
             .await?
-            .0),
-        "script" => Ok(exec
-            .run_script(ScriptRequest {
+            .0,
+        )),
+        "script" => Ok(ExecutedStep::output(
+            exec.run_script(ScriptRequest {
                 node: node.id.clone(),
                 runtime: f("runtime")?,
                 path: f("path")?,
             })
             .await?
-            .0),
+            .0,
+        )),
         "notify" => {
+            let message = f("message")?;
             exec.notify(NotifyRequest {
                 node: node.id.clone(),
-                message: f("message")?,
+                message: message.clone(),
             })
             .await?;
-            Ok(serde_json::json!({}))
+            Ok(ExecutedStep {
+                output: serde_json::json!({}),
+                chosen_port: None,
+                notification: Some(message),
+            })
         }
         "memory_commit" => {
             let source_node = f("source_node")?;
@@ -740,8 +813,8 @@ async fn run_side_effect(
                     .and_then(|value| value.as_str())
                     .map(str::to_string)
             };
-            Ok(exec
-                .memory_commit(MemoryCommitRequest {
+            Ok(ExecutedStep::output(
+                exec.memory_commit(MemoryCommitRequest {
                     node: node.id.clone(),
                     agent_id,
                     workspace: trigger_string("workspace"),
@@ -756,11 +829,28 @@ async fn run_side_effect(
                     payload,
                 })
                 .await?
-                .0)
+                .0,
+            ))
         }
         other => Err(StepError::new(format!(
             "no executor for node type `{other}`"
         ))),
+    }
+}
+
+struct ExecutedStep {
+    output: serde_json::Value,
+    chosen_port: Option<String>,
+    notification: Option<String>,
+}
+
+impl ExecutedStep {
+    fn output(output: serde_json::Value) -> Self {
+        Self {
+            output,
+            chosen_port: None,
+            notification: None,
+        }
     }
 }
 
@@ -912,6 +1002,144 @@ mod tests {
             assert_eq!(replayed.registry, state.registry);
             assert_eq!(replayed.status, state.status);
         }
+    }
+
+    #[tokio::test]
+    async fn decision_routes_only_the_declared_choice_and_replays_routing() {
+        let task = |id: &str| Node {
+            id: id.into(),
+            r#type: "task".into(),
+            name: None,
+            parent: None,
+            fields: serde_json::json!({
+                "agent": "role:worker",
+                "prompt": "work"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            position: None,
+        };
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "decision-contract".into(),
+            name: "Decision contract".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                Node {
+                    id: "choose".into(),
+                    r#type: "decision".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({
+                        "agent": "role:arbiter",
+                        "prompt": "choose",
+                        "choices": ["approve", "deny"]
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+                task("approved"),
+                task("denied"),
+            ],
+            edges: vec![
+                crate::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "choose".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "choose".into(),
+                    from_port: "approve".into(),
+                    to: "approved".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "choose".into(),
+                    from_port: "deny".into(),
+                    to: "denied".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let exec = MockExecutor::new().with_decision("choose", "deny");
+
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-decision",
+            serde_json::json!({}),
+            dir.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.status, RunStatus::Completed);
+        assert!(exec.calls().contains(&"task:denied".to_string()));
+        assert!(!exec.calls().contains(&"task:approved".to_string()));
+        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
+            matches!(&event.kind, EventKind::DecisionMade { node, port }
+                if node == "choose" && port == "deny")
+        }));
+        assert!(state.delivered.get("denied").is_some());
+        assert!(state.skipped_edges.contains(&1));
+
+        let replayed = Engine::replay(&blueprint, dir.path()).unwrap();
+        assert_eq!(replayed.registry, state.registry);
+        assert_eq!(replayed.nodes, state.nodes);
+        assert_eq!(replayed.delivered, state.delivered);
+        assert_eq!(replayed.skipped_edges, state.skipped_edges);
+    }
+
+    #[tokio::test]
+    async fn decision_rejects_an_undeclared_port_with_durable_failure() {
+        let mut blueprint = branch_blueprint();
+        let route = blueprint
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "route")
+            .unwrap();
+        route.r#type = "decision".into();
+        route.fields = serde_json::json!({
+            "agent": "role:arbiter",
+            "prompt": "choose",
+            "choices": ["approve", "deny"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        blueprint.edges[2].from_port = "approve".into();
+        blueprint.edges[3].from_port = "deny".into();
+        let dir = tempfile::tempdir().unwrap();
+        let exec = MockExecutor::new().with_decision("route", "unexpected");
+
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-invalid-decision",
+            serde_json::json!({}),
+            dir.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.status, RunStatus::Failed);
+        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
+            matches!(&event.kind, EventKind::NodeFailed { node, error }
+                if node == "route" && error.contains("undeclared port"))
+        }));
     }
 
     #[tokio::test]
@@ -1110,6 +1338,223 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn notify_is_recorded_as_durable_run_evidence() {
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "notify-contract".into(),
+            name: "Notify contract".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                Node {
+                    id: "notice".into(),
+                    r#type: "notify".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({"message": "ready"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    position: None,
+                },
+            ],
+            edges: vec![crate::workflow::Edge {
+                from: "trigger".into(),
+                from_port: "out".into(),
+                to: "notice".into(),
+                to_port: "in".into(),
+            }],
+            body: String::new(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let exec = MockExecutor::new();
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-notify",
+            serde_json::json!({}),
+            dir.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+
+        assert!(exec.calls().contains(&"notify:notice".to_string()));
+        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
+            matches!(&event.kind, EventKind::Notification { node, message }
+                if node == "notice" && message == "ready")
+        }));
+        assert_eq!(
+            Engine::replay(&blueprint, dir.path()).unwrap().registry,
+            state.registry
+        );
+    }
+
+    #[tokio::test]
+    async fn loop_transitions_are_durable_and_replay_to_the_live_state() {
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "loop-replay-contract".into(),
+            name: "Loop replay contract".into(),
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    r#type: "manual_trigger".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::Map::new(),
+                    position: None,
+                },
+                Node {
+                    id: "repeat".into(),
+                    r#type: "loop".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({"max_iterations": 2})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    position: None,
+                },
+                Node {
+                    id: "body".into(),
+                    r#type: "task".into(),
+                    name: None,
+                    parent: Some("repeat".into()),
+                    fields: serde_json::json!({
+                        "agent": "role:worker",
+                        "prompt": "iterate"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+                Node {
+                    id: "ship".into(),
+                    r#type: "task".into(),
+                    name: None,
+                    parent: None,
+                    fields: serde_json::json!({
+                        "agent": "role:worker",
+                        "prompt": "ship"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    position: None,
+                },
+            ],
+            edges: vec![
+                crate::workflow::Edge {
+                    from: "trigger".into(),
+                    from_port: "out".into(),
+                    to: "repeat".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "repeat".into(),
+                    from_port: "body".into(),
+                    to: "body".into(),
+                    to_port: "in".into(),
+                },
+                crate::workflow::Edge {
+                    from: "repeat".into(),
+                    from_port: "done".into(),
+                    to: "ship".into(),
+                    to_port: "in".into(),
+                },
+            ],
+            body: String::new(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let exec = MockExecutor::new();
+        let state = Engine::start_with_id(
+            &blueprint,
+            "run-loop-replay",
+            serde_json::json!({}),
+            dir.path(),
+            &exec,
+        )
+        .await
+        .unwrap();
+
+        let events = read_events(dir.path()).unwrap();
+        assert!(events.iter().any(|event| {
+            matches!(&event.kind, EventKind::LoopIteration { node, iteration }
+                if node == "repeat" && *iteration == 0)
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(&event.kind, EventKind::LoopIteration { node, iteration }
+                if node == "repeat" && *iteration == 1)
+        }));
+        assert!(events.iter().any(
+            |event| matches!(&event.kind, EventKind::LoopCompleted { node } if node == "repeat")
+        ));
+
+        let replayed = Engine::replay(&blueprint, dir.path()).unwrap();
+        assert_eq!(replayed.status, state.status);
+        assert_eq!(replayed.nodes, state.nodes);
+        assert_eq!(replayed.registry, state.registry);
+        assert_eq!(replayed.loop_iter, state.loop_iter);
+        assert_eq!(replayed.delivered, state.delivered);
+        assert_eq!(replayed.skipped_edges, state.skipped_edges);
+        assert_eq!(replayed.next_seq, state.next_seq);
+    }
+
+    #[tokio::test]
+    async fn resume_folds_events_appended_after_a_stale_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "resume-tail".into(),
+            name: "Resume tail".into(),
+            nodes: vec![Node {
+                id: "trigger".into(),
+                r#type: "manual_trigger".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::Map::new(),
+                position: None,
+            }],
+            edges: vec![],
+            body: String::new(),
+        };
+        Engine::initialize_with_id(
+            &blueprint,
+            "run-resume-tail",
+            serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+        append_event(
+            dir.path(),
+            &Event::at(
+                1,
+                "tail".into(),
+                EventKind::StateUpdated {
+                    node: "state".into(),
+                    op: "set".into(),
+                    entries: serde_json::json!({"recovered": true}),
+                },
+            ),
+        )
+        .unwrap();
+
+        let state = Engine::resume(&blueprint, dir.path(), &MockExecutor::new())
+            .await
+            .unwrap();
+
+        assert_eq!(state.registry["storage"]["recovered"], true);
+        assert_eq!(state.status, RunStatus::Completed);
+    }
+
+    #[tokio::test]
     async fn unsupported_sub_workflow_fails_durably_when_validation_is_bypassed() {
         let dir = tempfile::tempdir().unwrap();
         let blueprint = Blueprint {
@@ -1185,6 +1630,42 @@ mod tests {
             matches!(&event.kind, EventKind::RunFailed { error } if error == "workflow cancelled by operator")
         }));
         assert!(!dir.path().join("cancel.marker").exists());
+    }
+
+    #[tokio::test]
+    async fn cancellation_marker_survives_event_persistence_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = Blueprint {
+            schema: 2,
+            id: "cancel-persistence".into(),
+            name: "Cancel persistence".into(),
+            nodes: vec![Node {
+                id: "trigger".into(),
+                r#type: "manual_trigger".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::Map::new(),
+                position: None,
+            }],
+            edges: vec![],
+            body: String::new(),
+        };
+        let state = Engine::initialize_with_id(
+            &blueprint,
+            "run-cancel-persistence",
+            serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+        std::fs::remove_file(dir.path().join("events.jsonl")).unwrap();
+        std::fs::create_dir(dir.path().join("events.jsonl")).unwrap();
+        std::fs::write(dir.path().join("cancel.marker"), "cancelled").unwrap();
+
+        let result =
+            Engine::drive_from_state(&blueprint, state, dir.path(), &MockExecutor::new()).await;
+
+        assert!(result.is_err());
+        assert!(dir.path().join("cancel.marker").exists());
     }
 
     fn approval_blueprint() -> Blueprint {

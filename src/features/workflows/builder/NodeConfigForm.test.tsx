@@ -67,4 +67,20 @@ describe('NodeConfigForm', () => {
       'not supported by the workflow runtime',
     );
   });
+  it('edits state entries as a JSON object while preserving object values', () => {
+    const onChange = vi.fn();
+    const stateNode: BlueprintNode = {
+      id: 'state-1',
+      type: 'state',
+      fields: { op: 'set', entries: { branch: 'main', retries: 2 } },
+    };
+
+    render(<NodeConfigForm node={stateNode} onChange={onChange} />);
+
+    const entries = screen.getByLabelText(/Entries/i) as HTMLTextAreaElement;
+    expect(entries.value).toContain('"branch": "main"');
+    fireEvent.change(entries, { target: { value: '{"branch":"release"}' } });
+
+    expect(onChange).toHaveBeenCalledWith('entries', { branch: 'release' });
+  });
 });

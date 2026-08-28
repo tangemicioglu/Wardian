@@ -141,7 +141,7 @@ Read or write storage scoped to the current workflow run.
 
 ### Fields
 
-- `op` — Operation [enum:get|set|delete (required)]
+- `op` — Operation [enum:get|set|merge|delete (required)]
 - `entries` — Entries [kvmap]
 
 Outgoing ports: out
@@ -167,8 +167,13 @@ Outgoing ports: out
 - **kind:** engine
 - **category:** Action
 - **version:** 1
+- **status:** unsupported
 
-Call another workflow blueprint.
+Reserved for durable child workflow runs; not available for execution yet.
+
+This node type remains visible in the reference so older blueprints can be
+diagnosed, but validation and the runtime reject it with an explicit
+unsupported-node error.
 
 ### Fields
 
