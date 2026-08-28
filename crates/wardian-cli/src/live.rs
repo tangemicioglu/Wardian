@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fmt, io,
     time::{Duration, Instant},
 };
@@ -521,15 +522,48 @@ pub fn conversation_show(conversation_id: &str) -> io::Result<ConversationShowRe
 }
 
 pub fn inbox_list() -> io::Result<Vec<serde_json::Value>> {
+    let mut offset = 0;
+    let mut items = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    loop {
+        let page = inbox_list_page(offset)?;
+        for item in page.items {
+            let Some(id) = item.get("id").and_then(serde_json::Value::as_str) else {
+                items.push(item);
+                continue;
+            };
+            if seen_ids.insert(id.to_string()) {
+                items.push(item);
+            }
+        }
+        if !page.truncated {
+            return Ok(items);
+        }
+        let Some(next_offset) = page.next_offset else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Inbox page was truncated without a continuation offset",
+            ));
+        };
+        if next_offset <= offset {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Inbox page returned a non-advancing continuation offset",
+            ));
+        }
+        offset = next_offset;
+    }
+}
+
+pub fn inbox_list_page(offset: usize) -> io::Result<InboxListResponse> {
     let runtime = build_runtime()?;
     let value = timeout_block(
         &runtime,
         ControlOperation::InboxList,
-        send_request(ControlRequest::InboxList),
+        send_request(ControlRequest::InboxList { offset }),
     )?;
-    let response: InboxListResponse =
-        serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))?;
-    Ok(response.items)
+    serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]

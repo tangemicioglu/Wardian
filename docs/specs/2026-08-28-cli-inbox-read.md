@@ -9,8 +9,9 @@ Accepted for the Inbox CLI slice requested by issue #1006.
 Add `wardian inbox list` as a read-only CLI surface over the Inbox projection.
 When the desktop app is running for the same `WARDIAN_HOME`, the CLI asks the
 app for the assembled projection used by the remote Inbox. If the app is not
-running, the CLI falls back to persisted queue items and durable interaction
-records for `notify update` and `notify approval` events.
+running, the CLI falls back to persisted queue items, durable interaction
+records for `notify update` and `notify approval` events, and awaiting
+workflow-run checkpoints.
 
 The command returns schema-versioned JSON, sorted newest first, with bounded
 pages. It supports:

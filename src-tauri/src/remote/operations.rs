@@ -100,6 +100,16 @@ pub fn remote_watchlist_state() -> Result<RemoteWatchlistResponse, String> {
 
 /// Builds the same Inbox projection as the desktop queue store.
 pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
+    remote_queue_items_page(state, 0).await.0
+}
+
+/// Builds one bounded page of the Inbox projection while preserving the
+/// durable-notification pagination boundary for callers that need to continue
+/// reading older events.
+pub async fn remote_queue_items_page(
+    state: &AppState,
+    offset: usize,
+) -> (Vec<serde_json::Value>, bool, Option<usize>) {
     let persisted_items = crate::utils::fs::get_wardian_home()
         .and_then(|home| std::fs::read_to_string(home.join("queue").join("items.json")).ok())
         .and_then(|data| serde_json::from_str::<Vec<serde_json::Value>>(&data).ok())
@@ -121,10 +131,13 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
             && item.get("workflow_approval").is_none()
             && item.get("dismissed").is_none()
     });
-    let notifications = crate::commands::inbox::list_inbox_notifications_for_state(state)
-        .await
-        .map(|result| result.notifications)
-        .unwrap_or_default()
+    let notification_page =
+        crate::commands::inbox::list_inbox_notifications_for_state_with_offset(state, offset).await;
+    let (notifications, truncated, next_offset) = match notification_page {
+        Ok(result) => (result.notifications, result.truncated, result.next_offset),
+        Err(_) => (Vec::new(), false, None),
+    };
+    let notifications = notifications
         .into_iter()
         .map(|notification| {
             let is_approval = matches!(&notification.kind, InboxNotificationKind::Approval);
@@ -177,7 +190,7 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
                 .unwrap_or_default(),
         )
     });
-    items
+    (items, truncated, next_offset)
 }
 
 fn persisted_queue_items() -> Vec<serde_json::Value> {

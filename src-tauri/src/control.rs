@@ -646,10 +646,11 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             ok_json(&response)
         }
 
-        ControlRequest::InboxList => {
+        ControlRequest::InboxList { offset } => {
             let state = app.state::<AppState>();
-            let items = crate::remote::operations::remote_queue_items(state.inner()).await;
-            ok_json(&InboxListResponse::new(items))
+            let (items, truncated, next_offset) =
+                crate::remote::operations::remote_queue_items_page(state.inner(), offset).await;
+            ok_json(&InboxListResponse::new(items, truncated, next_offset))
         }
 
         ControlRequest::ArtifactPresent {

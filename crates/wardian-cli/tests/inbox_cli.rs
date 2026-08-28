@@ -10,6 +10,9 @@ use wardian_core::control::{
 use wardian_core::db::{
     run_migrations, upsert_agent_with_conn, upsert_interaction_record_with_conn, AgentUpsert,
 };
+use wardian_core::engine::{
+    store::append_event, store::write_checkpoint, Event, EventKind, RunState, RunStatus,
+};
 
 fn bin() -> std::path::PathBuf {
     if let Ok(path) = std::env::var("CARGO_BIN_EXE_wardian-cli") {
@@ -116,6 +119,48 @@ fn seed_notification() -> TempDir {
     home
 }
 
+fn seed_workflow_approval() -> TempDir {
+    let home = TempDir::new().unwrap();
+    let blueprint_path = home.path().join("library/workflows/deploy.md");
+    fs::create_dir_all(blueprint_path.parent().unwrap()).unwrap();
+    fs::write(
+        &blueprint_path,
+        r#"---
+schema: 2
+id: deploy
+name: Deploy
+nodes:
+  - id: approve
+    type: approval
+    name: Deploy production
+    fields:
+      prompt: Approve the production deployment?
+edges: []
+---
+
+# Deploy
+"#,
+    )
+    .unwrap();
+
+    let run_root = home.path().join("logs/workflows/deploy/run-1");
+    let mut state = RunState::new("run-1", "deploy");
+    state.status = RunStatus::AwaitingApproval;
+    write_checkpoint(&run_root, &state).unwrap();
+    append_event(
+        &run_root,
+        &Event::at(
+            0,
+            "2026-08-28T10:02:00.000Z".to_string(),
+            EventKind::AwaitingApproval {
+                node: "approve".to_string(),
+            },
+        ),
+    )
+    .unwrap();
+    home
+}
+
 #[test]
 fn list_reads_persisted_inbox_and_applies_type_source_and_unread_filters() {
     let home = seed_queue();
@@ -189,4 +234,38 @@ fn list_reads_durable_notify_records_with_the_interaction_source() {
     assert_eq!(response["items"][0]["id"], "notification:notify-1");
     assert_eq!(response["items"][0]["agent_name"], "coder-a1");
     assert_eq!(response["items"][0]["summary"], "The migration passed.");
+}
+
+#[test]
+fn list_includes_persisted_workflow_approvals_when_the_app_is_offline() {
+    let home = seed_workflow_approval();
+    let output = Command::new(bin())
+        .args([
+            "inbox",
+            "list",
+            "--type",
+            "approval_request",
+            "--source",
+            "live_runtime",
+        ])
+        .env("WARDIAN_HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        response["items"][0]["id"],
+        "workflow-approval:deploy:run-1:approve"
+    );
+    assert_eq!(response["items"][0]["workflow_name"], "Deploy production");
+    assert_eq!(
+        response["items"][0]["summary"],
+        "Approve the production deployment?"
+    );
 }

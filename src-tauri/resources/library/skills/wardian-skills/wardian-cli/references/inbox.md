@@ -31,8 +31,8 @@ projection: common values are `provider_runtime`, `interaction_store`, and
 resolve an event.
 
 The CLI asks the running Wardian app for its assembled projection when the app
-uses the same `WARDIAN_HOME`. Without the app, it reads persisted queue items
-and durable `notify` records where available.
+uses the same `WARDIAN_HOME`. Without the app, it reads persisted queue items,
+durable `notify` records, and awaiting workflow-run checkpoints where available.
 
 ## Write
 

@@ -101,7 +101,8 @@ The result is newest first and includes a schema, item type, read state,
 timestamp, and evidence source. Use `--limit` and `--offset` for bounded
 polling. The read command is side-effect-free; it does not mark, dismiss, or
 resolve an item. If the desktop app is unavailable, the CLI uses persisted
-queue and durable notification records.
+queue items, durable notification records, and awaiting workflow-run
+checkpoints.
 
 From a Wardian-managed agent session, use the write path rather than writing a
 terminal message that looks like a request:

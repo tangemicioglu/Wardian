@@ -5,11 +5,15 @@ use crate::{
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+};
 use wardian_core::control::{
     InboxNotificationDecision, InboxNotificationPayload, InteractionBodyRef, InteractionKind,
     InteractionRecord, InteractionStatus,
 };
+use wardian_core::engine::{EventKind, RunStatus};
 
 /// Read-only Inbox commands. Live reads use the app-owned projection first so
 /// the CLI and remote Inbox see the same notification and workflow records.
@@ -160,6 +164,7 @@ fn load_persisted_items() -> Result<Vec<Value>, CliError> {
                 && item.get("dismissed").is_none()
         })
         .collect::<Vec<_>>();
+    items.extend(workflow_approval_items()?);
 
     let Some(db_path) = wardian_core::paths::state_db_path() else {
         return Ok(sort_items(items));
@@ -184,6 +189,95 @@ fn load_persisted_items() -> Result<Vec<Value>, CliError> {
         &agent_names,
     ));
     Ok(sort_items(items))
+}
+
+fn workflow_approval_items() -> Result<Vec<Value>, CliError> {
+    let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
+        return Ok(Vec::new());
+    };
+    if !runs_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut items = Vec::new();
+    for blueprint_entry in
+        fs::read_dir(&runs_root).map_err(|error| CliError::generic(error.to_string()))?
+    {
+        let blueprint_dir = blueprint_entry
+            .map_err(|error| CliError::generic(error.to_string()))?
+            .path();
+        if !blueprint_dir.is_dir() {
+            continue;
+        }
+        for run_entry in
+            fs::read_dir(&blueprint_dir).map_err(|error| CliError::generic(error.to_string()))?
+        {
+            let run_dir = run_entry
+                .map_err(|error| CliError::generic(error.to_string()))?
+                .path();
+            if !run_dir.is_dir() {
+                continue;
+            }
+            let Ok(Some(state)) = wardian_core::engine::store::read_checkpoint(&run_dir) else {
+                continue;
+            };
+            if state.status != RunStatus::AwaitingApproval {
+                continue;
+            }
+            let Ok(events) = wardian_core::engine::store::read_events(&run_dir) else {
+                continue;
+            };
+            let Some((node, timestamp)) = events.iter().rev().find_map(|event| match &event.kind {
+                EventKind::AwaitingApproval { node } => Some((node.clone(), event.ts.clone())),
+                _ => None,
+            }) else {
+                continue;
+            };
+
+            let blueprint = wardian_core::workflow::resolve_blueprint_path(&state.blueprint_id)
+                .and_then(|path| wardian_core::workflow::parse_file(&path).ok());
+            let workflow_name = blueprint
+                .as_ref()
+                .map(|blueprint| blueprint.name.clone())
+                .unwrap_or_else(|| state.blueprint_id.clone());
+            let approval_node = blueprint
+                .as_ref()
+                .and_then(|blueprint| blueprint.find_node(&node));
+            let title = approval_node
+                .and_then(|node| node.name.clone())
+                .unwrap_or_else(|| format!("{workflow_name} approval"));
+            let prompt = approval_node
+                .and_then(|node| node.fields.get("prompt"))
+                .and_then(Value::as_str)
+                .unwrap_or("Approve this workflow step?");
+            let blueprint_path =
+                wardian_core::workflow::resolve_blueprint_path(&state.blueprint_id)
+                    .map(|path| path.to_string_lossy().into_owned());
+
+            items.push(json!({
+                "id": format!("workflow-approval:{}:{}:{}", state.blueprint_id, state.run_id, node),
+                "type": "approval_request",
+                "timestamp": timestamp_millis(&timestamp),
+                "read": false,
+                "evidence_source": "live_runtime",
+                "workflow_id": state.blueprint_id,
+                "workflow_run_id": state.run_id,
+                "workflow_name": title,
+                "notification_title": title,
+                "summary": prompt,
+                "proposed_action": "Continue this workflow beyond its approval gate",
+                "risk": "The workflow will execute the next authored steps after approval.",
+                "approval_choices": ["Approve", "Reject"],
+                "workflow_approval": {
+                    "blueprint_id": state.blueprint_id,
+                    "blueprint_path": blueprint_path.unwrap_or_default(),
+                    "run_id": state.run_id,
+                    "node": node,
+                },
+            }));
+        }
+    }
+    Ok(items)
 }
 
 fn notification_items(

@@ -83,7 +83,10 @@ pub enum ControlRequest {
     ConversationShow {
         conversation_id: String,
     },
-    InboxList,
+    InboxList {
+        #[serde(default)]
+        offset: usize,
+    },
     ArtifactPresent {
         path: String,
         title: Option<String>,
@@ -464,13 +467,17 @@ pub struct ConversationListResponse {
 pub struct InboxListResponse {
     pub schema: u8,
     pub items: Vec<serde_json::Value>,
+    pub truncated: bool,
+    pub next_offset: Option<usize>,
 }
 
 impl InboxListResponse {
-    pub fn new(items: Vec<serde_json::Value>) -> Self {
+    pub fn new(items: Vec<serde_json::Value>, truncated: bool, next_offset: Option<usize>) -> Self {
         Self {
             schema: CONTROL_SCHEMA,
             items,
+            truncated,
+            next_offset,
         }
     }
 }
@@ -1757,20 +1764,27 @@ mod tests {
 
     #[test]
     fn inbox_list_request_and_response_use_current_schema() {
-        let request = ControlRequest::InboxList;
+        let request = ControlRequest::InboxList { offset: 200 };
         let value = serde_json::to_value(&request).expect("serialize");
         assert_eq!(value["command"], "inbox_list");
+        assert_eq!(value["offset"], 200);
         assert_eq!(
             serde_json::from_value::<ControlRequest>(value).expect("roundtrip"),
             request
         );
 
-        let response = InboxListResponse::new(vec![serde_json::json!({
-            "id": "item-1",
-            "type": "agent_update",
-        })]);
+        let response = InboxListResponse::new(
+            vec![serde_json::json!({
+                "id": "item-1",
+                "type": "agent_update",
+            })],
+            true,
+            Some(400),
+        );
         assert_eq!(response.schema, CONTROL_SCHEMA);
         assert_eq!(response.items[0]["id"], "item-1");
+        assert!(response.truncated);
+        assert_eq!(response.next_offset, Some(400));
     }
 
     #[test]
