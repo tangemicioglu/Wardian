@@ -104,8 +104,14 @@ files. They move to `crates/wardian-core/src/limits.rs`, beside `paths.rs`.
   `npm run build`.
 - `npm run check:test-reachability`, `check:deadcode`, `check:budgets`,
   `check:workbench-cutover` — all pass.
-- `cargo clippy --workspace -- -D warnings`, `cargo fmt --all -- --check`,
-  `cargo test --workspace -- --test-threads=1`.
+- `cargo clippy --workspace -- -D warnings` and `cargo fmt --all -- --check`
+  pass.
+- `cargo test --workspace -- --test-threads=1`: 1,695 passed, 45 ignored, and
+  one failure. The failure is `snapshots_stay_within_their_measured_budgets`,
+  the wall-clock p95 gate, on a run that shared the machine with a concurrent
+  vitest suite. It passes alone in 7.2s. PR #991 disclosed the same test
+  failing for the same reason; a timing assertion that depends on machine load
+  is worth revisiting, and is not changed here.
 - `cargo test --lib browser_session::tests -- --ignored --test-threads=1`:
   44 passed, 0 failed, 40s. These had never been executed by any job.
 
