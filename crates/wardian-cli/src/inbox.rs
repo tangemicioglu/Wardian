@@ -22,7 +22,27 @@ struct InboxProjection {
     items: Vec<Value>,
     truncated: bool,
     next_offset: Option<usize>,
-    source_offset: usize,
+}
+
+#[derive(Clone, Copy)]
+enum InboxSource {
+    Notifications,
+    WorkflowApprovals,
+    WorkflowTerminals,
+    LegacyQueue,
+}
+
+struct InboxSourcePage {
+    items: Vec<Value>,
+    truncated: bool,
+}
+
+struct InboxPageRequest<'a> {
+    offset: usize,
+    limit: usize,
+    types: &'a HashSet<String>,
+    sources: &'a HashSet<String>,
+    unread: bool,
 }
 
 /// Read-only Inbox commands. Live reads use the app-owned projection first so
@@ -52,15 +72,20 @@ pub fn handle_inbox(args: InboxArgs) -> Result<String, CliError> {
             }
             let types = normalize_filter(types, "--type")?;
             let sources = normalize_filter(sources, "--source")?;
-            let projection = live::inbox_list_page(offset)
-                .map(|page| InboxProjection {
-                    items: page.items,
-                    truncated: page.truncated,
-                    next_offset: page.next_offset,
-                    source_offset: offset,
-                })
-                .or_else(|_| load_persisted_items(offset))?;
-            render_list(&projection, &types, &sources, unread, limit)
+            let projection = live::inbox_list_page(
+                offset,
+                types.iter().cloned().collect(),
+                sources.iter().cloned().collect(),
+                unread,
+                limit,
+            )
+            .map(|page| InboxProjection {
+                items: page.items,
+                truncated: page.truncated,
+                next_offset: page.next_offset,
+            })
+            .or_else(|_| load_persisted_items(offset, &types, &sources, unread, limit))?;
+            render_list(&projection)
         }
     }
 }
@@ -81,42 +106,12 @@ fn normalize_filter(values: Vec<String>, flag: &str) -> Result<HashSet<String>, 
     Ok(values.into_iter().collect())
 }
 
-fn render_list(
-    projection: &InboxProjection,
-    types: &HashSet<String>,
-    sources: &HashSet<String>,
-    unread: bool,
-    limit: usize,
-) -> Result<String, CliError> {
-    let mut filtered = projection
-        .items
-        .iter()
-        .filter(|item| type_matches(item, types))
-        .filter(|item| source_matches(item, sources))
-        .filter(|item| !unread || item.get("read").and_then(Value::as_bool) != Some(true))
-        .cloned()
-        .collect::<Vec<_>>();
-    filtered.sort_by(|left, right| {
-        item_timestamp(right)
-            .cmp(&item_timestamp(left))
-            .then_with(|| item_id(right).cmp(item_id(left)))
-    });
-
-    let filtered_len = filtered.len();
-    let end = limit.min(filtered_len);
-    let page = filtered.into_iter().take(limit).collect::<Vec<_>>();
-    let filtered_truncated = end < filtered_len;
-    let truncated = projection.truncated || filtered_truncated;
-    let next_offset = if projection.truncated {
-        projection.next_offset
-    } else {
-        filtered_truncated.then_some(projection.source_offset.saturating_add(end))
-    };
+fn render_list(projection: &InboxProjection) -> Result<String, CliError> {
     let response = json!({
         "schema": 1,
-        "items": page,
-        "truncated": truncated,
-        "next_offset": next_offset,
+        "items": projection.items,
+        "truncated": projection.truncated,
+        "next_offset": projection.next_offset,
     });
     serde_json::to_string_pretty(&response)
         .map(|json| format!("{json}\n"))
@@ -191,58 +186,166 @@ where
     (retained, truncated)
 }
 
-fn projection(items: Vec<Value>, truncated: bool, source_offset: usize) -> InboxProjection {
-    InboxProjection {
-        items: sort_items(items),
-        truncated,
-        next_offset: truncated.then_some(source_offset.saturating_add(MAX_INBOX_SOURCE_ITEMS)),
-        source_offset,
-    }
-}
-
-fn load_persisted_items(offset: usize) -> Result<InboxProjection, CliError> {
+fn load_persisted_items(
+    offset: usize,
+    types: &HashSet<String>,
+    sources: &HashSet<String>,
+    unread: bool,
+    limit: usize,
+) -> Result<InboxProjection, CliError> {
     // The legacy queue is optional. A damaged queue must not hide the durable
     // SQLite notifications or workflow run projections below it.
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
-    let persisted = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, offset, cutoff);
-    let persisted_workflow_runs = persisted.workflow_runs;
-    let read_notification_ids = persisted.read_notification_ids;
-    let legacy_items = persisted.items;
-    let persisted_truncated = persisted.truncated;
-    let (workflow_approvals, approvals_truncated) = workflow_approval_items(offset)?;
-    let (workflow_terminals, terminals_truncated) = workflow_terminal_items(offset)?;
-    let mut items = legacy_items;
-    items.extend(workflow_approvals);
-    items.extend(workflow_terminals.into_iter().filter(|item| {
-        workflow_identity(item).is_none_or(|key| !persisted_workflow_runs.contains(&key))
-    }));
-
-    let source_truncated = persisted_truncated || approvals_truncated || terminals_truncated;
-
-    let Some(db_path) = wardian_core::paths::state_db_path() else {
-        return Ok(projection(items, source_truncated, offset));
+    let metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
+    let read_notification_ids = metadata.read_notification_ids;
+    let persisted_workflow_runs = metadata.workflow_runs;
+    let conn = match wardian_core::paths::state_db_path() {
+        Some(path) if path.exists() => Some(
+            Connection::open(path).map_err(|error| CliError::db_unavailable(error.to_string()))?,
+        ),
+        _ => None,
     };
-    if !db_path.exists() {
-        return Ok(projection(items, source_truncated, offset));
+    let agent_names = conn
+        .as_ref()
+        .map(wardian_core::db::get_all_agents_with_conn)
+        .transpose()
+        .map_err(|error| CliError::db_unavailable(error.to_string()))?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|agent| (agent.session_id, agent.session_name))
+        .collect::<HashMap<_, _>>();
+    let source_kinds = [
+        InboxSource::Notifications,
+        InboxSource::WorkflowApprovals,
+        InboxSource::WorkflowTerminals,
+        InboxSource::LegacyQueue,
+    ];
+    let mut pages = source_kinds
+        .into_iter()
+        .map(|source| {
+            load_persisted_source_page(
+                source,
+                0,
+                cutoff,
+                &read_notification_ids,
+                &persisted_workflow_runs,
+                conn.as_ref(),
+                &agent_names,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut source_offsets = [0usize; 4];
+    let request = InboxPageRequest {
+        offset,
+        limit,
+        types,
+        sources,
+        unread,
+    };
+    let (items, truncated, next_offset) = merge_persisted_pages(
+        &request,
+        &mut pages,
+        &mut |index, source_offset| {
+            load_persisted_source_page(
+                source_kinds[index],
+                source_offset,
+                cutoff,
+                &read_notification_ids,
+                &persisted_workflow_runs,
+                conn.as_ref(),
+                &agent_names,
+            )
+        },
+        &mut source_offsets,
+    )?;
+    Ok(InboxProjection {
+        items,
+        truncated,
+        next_offset,
+    })
+}
+
+fn load_persisted_source_page(
+    source: InboxSource,
+    offset: usize,
+    cutoff: i64,
+    read_notification_ids: &HashSet<String>,
+    persisted_workflow_runs: &HashSet<(String, String)>,
+    conn: Option<&Connection>,
+    agent_names: &HashMap<String, String>,
+) -> Result<InboxSourcePage, CliError> {
+    match source {
+        InboxSource::Notifications => {
+            let Some(conn) = conn else {
+                return Ok(InboxSourcePage {
+                    items: Vec::new(),
+                    truncated: false,
+                });
+            };
+            let mut records = wardian_core::db::list_recent_interaction_records_by_kind_with_conn(
+                conn,
+                "notification",
+                MAX_INBOX_SOURCE_ITEMS + 1,
+                offset,
+            )
+            .map_err(|error| CliError::db_unavailable(error.to_string()))?;
+            let truncated = records.len() > MAX_INBOX_SOURCE_ITEMS;
+            records.truncate(MAX_INBOX_SOURCE_ITEMS);
+            let decisions = notification_decisions(conn, &records)?;
+            Ok(InboxSourcePage {
+                items: sort_items(notification_items(
+                    &records,
+                    read_notification_ids,
+                    agent_names,
+                    &decisions,
+                )),
+                truncated,
+            })
+        }
+        InboxSource::WorkflowApprovals => {
+            let (items, truncated) = workflow_approval_items(offset)?;
+            Ok(InboxSourcePage { items, truncated })
+        }
+        InboxSource::WorkflowTerminals => {
+            let (items, truncated) = workflow_terminal_items(offset)?;
+            Ok(InboxSourcePage {
+                items: items
+                    .into_iter()
+                    .filter(|item| {
+                        workflow_identity(item)
+                            .is_none_or(|key| !persisted_workflow_runs.contains(&key))
+                    })
+                    .collect(),
+                truncated,
+            })
+        }
+        InboxSource::LegacyQueue => {
+            let persisted =
+                wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, offset, cutoff);
+            Ok(InboxSourcePage {
+                items: persisted
+                    .items
+                    .into_iter()
+                    .filter(|item| {
+                        item.get("inbox_notification_id").is_none()
+                            && item.get("workflow_approval").is_none()
+                            && item.get("dismissed").is_none()
+                    })
+                    .collect(),
+                truncated: persisted.truncated,
+            })
+        }
     }
-    let conn =
-        Connection::open(&db_path).map_err(|error| CliError::db_unavailable(error.to_string()))?;
-    wardian_core::db::run_migrations(&conn)
-        .map_err(|error| CliError::db_unavailable(error.to_string()))?;
-    let mut notification_records =
-        wardian_core::db::list_recent_interaction_records_by_kind_with_conn(
-            &conn,
-            "notification",
-            MAX_INBOX_SOURCE_ITEMS + 1,
-            offset,
-        )
-        .map_err(|error| CliError::db_unavailable(error.to_string()))?;
-    let notification_truncated = notification_records.len() > MAX_INBOX_SOURCE_ITEMS;
-    notification_records.truncate(MAX_INBOX_SOURCE_ITEMS);
+}
+
+fn notification_decisions(
+    conn: &Connection,
+    records: &[InteractionRecord],
+) -> Result<HashMap<String, InboxNotificationDecision>, CliError> {
     let mut decisions = HashMap::new();
-    for record in &notification_records {
+    for record in records {
         let Some(reply) =
-            wardian_core::db::list_interaction_replies_for_parent_with_conn(&conn, &record.id)
+            wardian_core::db::list_interaction_replies_for_parent_with_conn(conn, &record.id)
                 .map_err(|error| CliError::db_unavailable(error.to_string()))?
                 .into_iter()
                 .next()
@@ -256,22 +359,77 @@ fn load_persisted_items(offset: usize) -> Result<InboxProjection, CliError> {
             decisions.insert(record.id.clone(), decision);
         }
     }
-    let agent_names = wardian_core::db::get_all_agents_with_conn(&conn)
-        .map_err(|error| CliError::db_unavailable(error.to_string()))?
-        .into_iter()
-        .map(|agent| (agent.session_id, agent.session_name))
-        .collect::<HashMap<_, _>>();
-    items.extend(notification_items(
-        &notification_records,
-        &read_notification_ids,
-        &agent_names,
-        &decisions,
-    ));
-    Ok(projection(
-        items,
-        source_truncated || notification_truncated,
-        offset,
-    ))
+    Ok(decisions)
+}
+
+fn merge_persisted_pages<F>(
+    request: &InboxPageRequest<'_>,
+    pages: &mut [InboxSourcePage],
+    refill: &mut F,
+    source_offsets: &mut [usize],
+) -> Result<(Vec<Value>, bool, Option<usize>), CliError>
+where
+    F: FnMut(usize, usize) -> Result<InboxSourcePage, CliError>,
+{
+    let mut skipped = 0usize;
+    let mut items = Vec::with_capacity(request.limit);
+    loop {
+        let Some(source_index) = pages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, page)| {
+                page.items
+                    .first()
+                    .map(|item| (index, item_timestamp(item), item_id(item)))
+            })
+            .max_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(right.2)))
+            .map(|candidate| candidate.0)
+        else {
+            let mut refilled = false;
+            for (index, page) in pages.iter_mut().enumerate() {
+                if !page.truncated {
+                    continue;
+                }
+                source_offsets[index] =
+                    source_offsets[index].saturating_add(MAX_INBOX_SOURCE_ITEMS);
+                *page = refill(index, source_offsets[index])?;
+                refilled = true;
+            }
+            if refilled {
+                continue;
+            }
+            break;
+        };
+
+        let item = pages[source_index].items.remove(0);
+        if !inbox_item_matches(&item, request.types, request.sources, request.unread) {
+            continue;
+        }
+        if skipped < request.offset {
+            skipped += 1;
+            continue;
+        }
+        if items.len() >= request.limit {
+            return Ok((
+                items,
+                true,
+                Some(request.offset.saturating_add(request.limit)),
+            ));
+        }
+        items.push(item);
+    }
+    Ok((items, false, None))
+}
+
+fn inbox_item_matches(
+    item: &Value,
+    types: &HashSet<String>,
+    sources: &HashSet<String>,
+    unread: bool,
+) -> bool {
+    type_matches(item, types)
+        && source_matches(item, sources)
+        && (!unread || item.get("read").and_then(Value::as_bool) != Some(true))
 }
 
 fn page_source_items(items: Vec<Value>, truncated: bool, offset: usize) -> (Vec<Value>, bool) {
@@ -570,26 +728,110 @@ mod tests {
             json!({"id": "new", "type": "action_needed", "timestamp": 2, "read": false, "evidence_source": "provider_runtime"}),
             json!({"id": "old", "type": "agent_completed", "timestamp": 1, "read": true, "evidence_source": "provider_runtime"}),
         ];
-        let types = HashSet::from(["action_needed".to_string(), "agent_completed".to_string()]);
-        let sources = HashSet::from(["provider_runtime".to_string()]);
-
-        let output = render_list(
-            &InboxProjection {
-                items,
-                truncated: false,
-                next_offset: None,
-                source_offset: 0,
-            },
-            &types,
-            &sources,
-            false,
-            1,
-        )
+        let output = render_list(&InboxProjection {
+            items,
+            truncated: true,
+            next_offset: Some(1),
+        })
         .unwrap();
         let output: Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(output["items"][0]["id"], "new");
         assert_eq!(output["truncated"], true);
         assert_eq!(output["next_offset"], 1);
+    }
+
+    #[test]
+    fn merged_pagination_filters_before_advancing_the_global_cursor() {
+        let mut pages = vec![
+            InboxSourcePage {
+                items: vec![
+                    json!({
+                        "id": "read-new",
+                        "timestamp": 4,
+                        "read": true,
+                        "type": "agent_update",
+                        "evidence_source": "interaction_store"
+                    }),
+                    json!({
+                        "id": "unread-new",
+                        "timestamp": 3,
+                        "read": false,
+                        "type": "agent_update",
+                        "evidence_source": "interaction_store"
+                    }),
+                ],
+                truncated: false,
+            },
+            InboxSourcePage {
+                items: vec![json!({
+                    "id": "unread-old",
+                    "timestamp": 2,
+                    "read": false,
+                    "type": "agent_completed",
+                    "evidence_source": "provider_runtime"
+                })],
+                truncated: false,
+            },
+        ];
+        let types = HashSet::new();
+        let sources = HashSet::new();
+        let request = InboxPageRequest {
+            offset: 1,
+            limit: 1,
+            types: &types,
+            sources: &sources,
+            unread: true,
+        };
+        let mut source_offsets = [0; 2];
+        let (items, truncated, next_offset) = merge_persisted_pages(
+            &request,
+            &mut pages,
+            &mut |_index, _offset| unreachable!("fixture has no continuation"),
+            &mut source_offsets,
+        )
+        .unwrap();
+
+        assert_eq!(items[0]["id"], "unread-old");
+        assert!(!truncated);
+        assert_eq!(next_offset, None);
+    }
+
+    #[test]
+    fn merged_pagination_continues_across_sources_before_returning_a_cursor() {
+        let mut pages = vec![
+            InboxSourcePage {
+                items: vec![json!({"id": "notification", "timestamp": 3})],
+                truncated: false,
+            },
+            InboxSourcePage {
+                items: vec![
+                    json!({"id": "queue-new", "timestamp": 2}),
+                    json!({"id": "queue-old", "timestamp": 1}),
+                ],
+                truncated: false,
+            },
+        ];
+        let types = HashSet::new();
+        let sources = HashSet::new();
+        let request = InboxPageRequest {
+            offset: 1,
+            limit: 1,
+            types: &types,
+            sources: &sources,
+            unread: false,
+        };
+        let mut source_offsets = [0; 2];
+        let (items, truncated, next_offset) = merge_persisted_pages(
+            &request,
+            &mut pages,
+            &mut |_index, _offset| unreachable!("fixture has no continuation"),
+            &mut source_offsets,
+        )
+        .unwrap();
+
+        assert_eq!(items[0]["id"], "queue-new");
+        assert!(truncated);
+        assert_eq!(next_offset, Some(2));
     }
 }

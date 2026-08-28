@@ -86,6 +86,14 @@ pub enum ControlRequest {
     InboxList {
         #[serde(default)]
         offset: usize,
+        #[serde(default)]
+        types: Vec<String>,
+        #[serde(default)]
+        sources: Vec<String>,
+        #[serde(default)]
+        unread: bool,
+        #[serde(default = "default_inbox_page_limit")]
+        limit: usize,
     },
     ArtifactPresent {
         path: String,
@@ -480,6 +488,10 @@ impl InboxListResponse {
             next_offset,
         }
     }
+}
+
+fn default_inbox_page_limit() -> usize {
+    200
 }
 
 impl ConversationListResponse {
@@ -1764,10 +1776,17 @@ mod tests {
 
     #[test]
     fn inbox_list_request_and_response_use_current_schema() {
-        let request = ControlRequest::InboxList { offset: 200 };
+        let request = ControlRequest::InboxList {
+            offset: 200,
+            types: vec!["agent_update".to_string()],
+            sources: vec!["interaction_store".to_string()],
+            unread: true,
+            limit: 25,
+        };
         let value = serde_json::to_value(&request).expect("serialize");
         assert_eq!(value["command"], "inbox_list");
         assert_eq!(value["offset"], 200);
+        assert_eq!(value["limit"], 25);
         assert_eq!(
             serde_json::from_value::<ControlRequest>(value).expect("roundtrip"),
             request

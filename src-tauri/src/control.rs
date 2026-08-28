@@ -646,10 +646,23 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             ok_json(&response)
         }
 
-        ControlRequest::InboxList { offset } => {
+        ControlRequest::InboxList {
+            offset,
+            types,
+            sources,
+            unread,
+            limit,
+        } => {
             let state = app.state::<AppState>();
-            let (items, truncated, next_offset) =
-                crate::remote::operations::remote_queue_items_page(state.inner(), offset).await;
+            let (items, truncated, next_offset) = crate::remote::operations::remote_inbox_list_page(
+                state.inner(),
+                offset,
+                &types,
+                &sources,
+                unread,
+                limit,
+            )
+            .await;
             ok_json(&InboxListResponse::new(items, truncated, next_offset))
         }
 

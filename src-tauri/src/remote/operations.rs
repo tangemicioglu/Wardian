@@ -113,7 +113,295 @@ pub async fn remote_queue_items_page(
     state: &AppState,
     offset: usize,
 ) -> (Vec<serde_json::Value>, bool, Option<usize>) {
-    remote_queue_items_page_internal(state, offset, true).await
+    remote_inbox_list_page(state, offset, &[], &[], false, MAX_INBOX_SOURCE_ITEMS).await
+}
+
+#[derive(Clone, Copy)]
+enum InboxSource {
+    Notifications,
+    WorkflowApprovals,
+    WorkflowTerminals,
+    LegacyQueue,
+}
+
+struct InboxSourcePage {
+    items: Vec<serde_json::Value>,
+    truncated: bool,
+}
+
+/// Builds one globally ordered, filter-aware Inbox page. Each source is
+/// advanced independently behind a single merged cursor so filtering and
+/// pagination cannot skip records from another source.
+pub async fn remote_inbox_list_page(
+    state: &AppState,
+    offset: usize,
+    types: &[String],
+    sources: &[String],
+    unread: bool,
+    limit: usize,
+) -> (Vec<serde_json::Value>, bool, Option<usize>) {
+    if limit == 0 {
+        return (Vec::new(), false, None);
+    }
+    let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
+    let queue_metadata = wardian_core::queue::load_recent_items(
+        MAX_INBOX_SOURCE_ITEMS,
+        0,
+        cutoff,
+    );
+    let read_notification_ids = queue_metadata.read_notification_ids;
+    let persisted_workflow_runs = queue_metadata.workflow_runs;
+    let source_kinds = [
+        InboxSource::Notifications,
+        InboxSource::WorkflowApprovals,
+        InboxSource::WorkflowTerminals,
+        InboxSource::LegacyQueue,
+    ];
+    let mut pages = Vec::with_capacity(source_kinds.len());
+    for source in source_kinds {
+        pages.push(
+            remote_inbox_source_page(
+                state,
+                source,
+                0,
+                cutoff,
+                &read_notification_ids,
+                &persisted_workflow_runs,
+            )
+            .await,
+        );
+    }
+    let mut offsets = [0usize; 4];
+    let mut skipped = 0usize;
+    let mut items = Vec::with_capacity(limit);
+    loop {
+        let Some(source_index) = pages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, page)| {
+                page.items
+                    .first()
+                    .map(|item| (index, item_timestamp(item), item_id(item)))
+            })
+            .max_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(right.2)))
+            .map(|candidate| candidate.0)
+        else {
+            let mut refilled = false;
+            for (index, page) in pages.iter_mut().enumerate() {
+                if !page.truncated {
+                    continue;
+                }
+                offsets[index] = offsets[index].saturating_add(MAX_INBOX_SOURCE_ITEMS);
+                *page = remote_inbox_source_page(
+                    state,
+                    source_kinds[index],
+                    offsets[index],
+                    cutoff,
+                    &read_notification_ids,
+                    &persisted_workflow_runs,
+                )
+                .await;
+                refilled = true;
+            }
+            if refilled {
+                continue;
+            }
+            break;
+        };
+
+        let item = pages[source_index].items.remove(0);
+        if !inbox_item_matches(&item, types, sources, unread) {
+            continue;
+        }
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+        if items.len() >= limit {
+            return (
+                items,
+                true,
+                Some(offset.saturating_add(limit)),
+            );
+        }
+        items.push(item);
+    }
+
+    (items, false, None)
+}
+
+async fn remote_inbox_source_page(
+    state: &AppState,
+    source: InboxSource,
+    offset: usize,
+    cutoff: i64,
+    read_notification_ids: &std::collections::HashSet<String>,
+    persisted_workflow_runs: &std::collections::HashSet<(String, String)>,
+) -> InboxSourcePage {
+    match source {
+        InboxSource::Notifications => {
+            let notification_page =
+                crate::commands::inbox::list_inbox_notifications_for_state_with_offset(
+                    state, offset,
+                )
+                .await;
+            let (notifications, truncated) = match notification_page {
+                Ok(result) => (result.notifications, result.truncated),
+                Err(_) => (Vec::new(), false),
+            };
+            InboxSourcePage {
+                items: notifications
+                    .into_iter()
+                    .map(|notification| {
+                        let is_approval =
+                            matches!(&notification.kind, InboxNotificationKind::Approval);
+                        serde_json::json!({
+                            "id": format!("notification:{}", notification.id),
+                            "type": if is_approval { "approval_request" } else { "agent_update" },
+                            "timestamp": queue_timestamp(&notification.created_at),
+                            "read": if is_approval { notification.status != InteractionStatus::AwaitingReply } else { read_notification_ids.contains(notification.id.as_str()) },
+                            "agent_session_id": notification.sender_session_id,
+                            "evidence_source": "interaction_store",
+                            "inbox_notification_id": notification.id,
+                            "notification_status": notification.status,
+                            "summary": notification.body,
+                            "notification_title": notification.title,
+                            "proposed_action": notification.proposed_action,
+                            "risk": notification.risk,
+                            "approval_choices": notification.choices,
+                            "approval_decision": notification.decision.map(|decision| decision.choice),
+                            "expires_at": notification.expires_at,
+                        })
+                    })
+                    .collect(),
+                truncated,
+            }
+        }
+        InboxSource::WorkflowApprovals => {
+            let (approvals, truncated) = crate::commands::inbox::list_workflow_inbox_approvals_page(
+                offset,
+            )
+            .await
+            .unwrap_or_default();
+            InboxSourcePage {
+                items: approvals
+                    .into_iter()
+                    .map(|approval| {
+                        serde_json::json!({
+                            "id": format!("workflow-approval:{}:{}:{}", approval.blueprint_id, approval.run_id, approval.node),
+                            "type": "approval_request",
+                            "timestamp": approval.created_at.as_deref().map(queue_timestamp).unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
+                            "read": false,
+                            "evidence_source": "live_runtime",
+                            "workflow_id": approval.blueprint_id,
+                            "workflow_run_id": approval.run_id,
+                            "workflow_name": approval.title,
+                            "notification_title": approval.title,
+                            "summary": approval.prompt,
+                            "proposed_action": "Continue this workflow beyond its approval gate",
+                            "risk": "The workflow will execute the next authored steps after approval.",
+                            "approval_choices": ["Approve", "Reject"],
+                            "workflow_approval": { "blueprint_id": approval.blueprint_id, "blueprint_path": approval.blueprint_path, "run_id": approval.run_id, "node": approval.node },
+                        })
+                    })
+                    .collect(),
+                truncated,
+            }
+        }
+        InboxSource::WorkflowTerminals => {
+            let (terminals, truncated) =
+                crate::commands::inbox::list_workflow_inbox_terminal_runs_page(offset)
+                    .await
+                    .unwrap_or_default();
+            InboxSourcePage {
+                items: terminals
+                    .into_iter()
+                    .filter(|run| {
+                        !persisted_workflow_runs
+                            .contains(&(run.workflow_id.clone(), run.run_instance_id.clone()))
+                    })
+                    .map(|run| {
+                        serde_json::json!({
+                            "id": format!("workflow-completion:{}:{}", run.workflow_id, run.run_instance_id),
+                            "type": "workflow_completed",
+                            "timestamp": run.updated_at.as_deref().map(queue_timestamp).unwrap_or_default(),
+                            "read": false,
+                            "evidence_source": "live_runtime",
+                            "workflow_id": run.workflow_id,
+                            "workflow_run_id": run.run_instance_id,
+                            "workflow_name": run.workflow_name,
+                            "status": run.status,
+                            "error": run.error,
+                            "summary": run.summary,
+                        })
+                    })
+                    .collect(),
+                truncated,
+            }
+        }
+        InboxSource::LegacyQueue => {
+            let persisted = wardian_core::queue::load_recent_items(
+                MAX_INBOX_SOURCE_ITEMS,
+                offset,
+                cutoff,
+            );
+            InboxSourcePage {
+                items: persisted
+                    .items
+                    .into_iter()
+                    .filter(|item| {
+                        item.get("inbox_notification_id").is_none()
+                            && item.get("workflow_approval").is_none()
+                            && item.get("dismissed").is_none()
+                    })
+                    .collect(),
+                truncated: persisted.truncated,
+            }
+        }
+    }
+}
+
+fn inbox_item_matches(
+    item: &serde_json::Value,
+    types: &[String],
+    sources: &[String],
+    unread: bool,
+) -> bool {
+    let type_matches = types.is_empty()
+        || types.iter().any(|kind| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some(kind.as_str())
+                || (kind == "workflow_failed"
+                    && item.get("type").and_then(serde_json::Value::as_str)
+                        == Some("workflow_completed")
+                    && item.get("status").and_then(serde_json::Value::as_str) == Some("failed"))
+        });
+    let source_matches = sources.is_empty()
+        || sources.iter().any(|source| {
+            item.get("evidence_source")
+                .and_then(serde_json::Value::as_str)
+                == Some(source.as_str())
+        });
+    type_matches
+        && source_matches
+        && (!unread
+            || item.get("read").and_then(serde_json::Value::as_bool) != Some(true))
+}
+
+fn item_timestamp(item: &serde_json::Value) -> i64 {
+    item.get("timestamp")
+        .and_then(serde_json::Value::as_i64)
+        .or_else(|| {
+            item.get("timestamp")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| i64::try_from(value).ok())
+        })
+        .unwrap_or_default()
+}
+
+fn item_id(item: &serde_json::Value) -> &str {
+    item.get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
 }
 
 async fn remote_queue_items_page_internal(

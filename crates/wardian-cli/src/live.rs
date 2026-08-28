@@ -520,12 +520,24 @@ pub fn conversation_show(conversation_id: &str) -> io::Result<ConversationShowRe
     serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))
 }
 
-pub fn inbox_list_page(offset: usize) -> io::Result<InboxListResponse> {
+pub fn inbox_list_page(
+    offset: usize,
+    types: Vec<String>,
+    sources: Vec<String>,
+    unread: bool,
+    limit: usize,
+) -> io::Result<InboxListResponse> {
     let runtime = build_runtime()?;
     let value = timeout_block(
         &runtime,
         ControlOperation::InboxList,
-        send_request(ControlRequest::InboxList { offset }),
+        send_request(ControlRequest::InboxList {
+            offset,
+            types,
+            sources,
+            unread,
+            limit,
+        }),
     )?;
     serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))
 }
