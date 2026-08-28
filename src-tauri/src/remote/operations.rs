@@ -100,7 +100,7 @@ pub fn remote_watchlist_state() -> Result<RemoteWatchlistResponse, String> {
 
 /// Builds the same Inbox projection as the desktop queue store.
 pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
-    remote_queue_items_page(state, 0).await.0
+    remote_queue_items_page_internal(state, 0, false).await.0
 }
 
 /// Builds one bounded page of the Inbox projection while preserving the
@@ -113,41 +113,53 @@ pub async fn remote_queue_items_page(
     state: &AppState,
     offset: usize,
 ) -> (Vec<serde_json::Value>, bool, Option<usize>) {
+    remote_queue_items_page_internal(state, offset, true).await
+}
+
+async fn remote_queue_items_page_internal(
+    state: &AppState,
+    offset: usize,
+    bounded: bool,
+) -> (Vec<serde_json::Value>, bool, Option<usize>) {
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
-    let (persisted_items, persisted_truncated) = crate::utils::queue::load_recent_items(
-        MAX_INBOX_SOURCE_ITEMS,
-        cutoff,
-    );
-    let read_notification_ids = persisted_items
-        .iter()
-        .filter(|item| {
-            item.get("type").and_then(serde_json::Value::as_str) == Some("agent_update")
-                && item.get("read").and_then(serde_json::Value::as_bool) == Some(true)
-        })
-        .filter_map(|item| {
-            item.get("inbox_notification_id")
-                .and_then(serde_json::Value::as_str)
-        })
-        .map(str::to_string)
-        .collect::<std::collections::HashSet<_>>();
-    let persisted_workflow_runs = persisted_items
-        .iter()
-        .filter_map(|item| {
-            if item.get("type").and_then(serde_json::Value::as_str)
-                != Some("workflow_completed")
-            {
-                return None;
-            }
-            Some((
-                item.get("workflow_id")
-                    .and_then(serde_json::Value::as_str)?
-                    .to_string(),
-                item.get("workflow_run_id")
-                    .and_then(serde_json::Value::as_str)?
-                    .to_string(),
-            ))
-        })
-        .collect::<std::collections::HashSet<_>>();
+    let (persisted_items, read_notification_ids, persisted_workflow_runs, persisted_truncated) =
+        if bounded {
+            let persisted = wardian_core::queue::load_recent_items(
+                MAX_INBOX_SOURCE_ITEMS,
+                offset,
+                cutoff,
+            );
+            (
+                persisted.items,
+                persisted.read_notification_ids,
+                persisted.workflow_runs,
+                persisted.truncated,
+            )
+        } else {
+            let persisted_items = crate::utils::queue::load_items();
+            let read_notification_ids = persisted_items
+                .iter()
+                .filter(|item| {
+                    item.get("type").and_then(serde_json::Value::as_str) == Some("agent_update")
+                        && item.get("read").and_then(serde_json::Value::as_bool) == Some(true)
+                })
+                .filter_map(|item| {
+                    item.get("inbox_notification_id")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .map(str::to_string)
+                .collect::<std::collections::HashSet<_>>();
+            let persisted_workflow_runs = persisted_items
+                .iter()
+                .filter_map(workflow_identity)
+                .collect::<std::collections::HashSet<_>>();
+            (
+                persisted_items,
+                read_notification_ids,
+                persisted_workflow_runs,
+                false,
+            )
+        };
     let legacy_items = persisted_items.into_iter().filter(|item| {
         item.get("inbox_notification_id").is_none()
             && item.get("workflow_approval").is_none()

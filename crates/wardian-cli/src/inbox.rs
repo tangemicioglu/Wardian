@@ -4,13 +4,10 @@ use crate::{
     live,
 };
 use rusqlite::Connection;
-use serde::de::{SeqAccess, Visitor};
-use serde::Deserializer;
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::BufReader,
 };
 use wardian_core::control::{
     InboxNotificationDecision, InboxNotificationPayload, InteractionBodyRef, InteractionKind,
@@ -25,6 +22,7 @@ struct InboxProjection {
     items: Vec<Value>,
     truncated: bool,
     next_offset: Option<usize>,
+    source_offset: usize,
 }
 
 /// Read-only Inbox commands. Live reads use the app-owned projection first so
@@ -54,14 +52,15 @@ pub fn handle_inbox(args: InboxArgs) -> Result<String, CliError> {
             }
             let types = normalize_filter(types, "--type")?;
             let sources = normalize_filter(sources, "--source")?;
-            let projection = live::inbox_list_page(0)
+            let projection = live::inbox_list_page(offset)
                 .map(|page| InboxProjection {
                     items: page.items,
                     truncated: page.truncated,
                     next_offset: page.next_offset,
+                    source_offset: offset,
                 })
-                .or_else(|_| load_persisted_items())?;
-            render_list(&projection, &types, &sources, unread, limit, offset)
+                .or_else(|_| load_persisted_items(offset))?;
+            render_list(&projection, &types, &sources, unread, limit)
         }
     }
 }
@@ -88,7 +87,6 @@ fn render_list(
     sources: &HashSet<String>,
     unread: bool,
     limit: usize,
-    offset: usize,
 ) -> Result<String, CliError> {
     let mut filtered = projection
         .items
@@ -104,18 +102,15 @@ fn render_list(
             .then_with(|| item_id(right).cmp(item_id(left)))
     });
 
-    let end = offset.saturating_add(limit).min(filtered.len());
-    let page = if offset < filtered.len() {
-        filtered[offset..end].to_vec()
-    } else {
-        Vec::new()
-    };
-    let filtered_truncated = end < filtered.len();
+    let filtered_len = filtered.len();
+    let end = limit.min(filtered_len);
+    let page = filtered.into_iter().take(limit).collect::<Vec<_>>();
+    let filtered_truncated = end < filtered_len;
     let truncated = projection.truncated || filtered_truncated;
     let next_offset = if projection.truncated {
         projection.next_offset
     } else {
-        filtered_truncated.then_some(end)
+        filtered_truncated.then_some(projection.source_offset.saturating_add(end))
     };
     let response = json!({
         "schema": 1,
@@ -163,17 +158,6 @@ fn item_id(item: &Value) -> &str {
     item.get("id").and_then(Value::as_str).unwrap_or_default()
 }
 
-fn queue_item_is_recent(item: &Value, cutoff: i64) -> bool {
-    item.get("timestamp")
-        .and_then(Value::as_i64)
-        .or_else(|| {
-            item.get("timestamp")
-                .and_then(Value::as_u64)
-                .and_then(|value| i64::try_from(value).ok())
-        })
-        .is_none_or(|timestamp| timestamp > cutoff)
-}
-
 fn workflow_identity(item: &Value) -> Option<(String, String)> {
     if item.get("type").and_then(Value::as_str) != Some("workflow_completed") {
         return None;
@@ -207,107 +191,39 @@ where
     (retained, truncated)
 }
 
-struct RecentQueueVisitor {
-    cutoff: i64,
-    limit: usize,
-}
-
-impl<'de> Visitor<'de> for RecentQueueVisitor {
-    type Value = (Vec<Value>, bool);
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("an Inbox queue array")
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut retained = Vec::new();
-        let mut truncated = false;
-        while let Some(item) = sequence.next_element::<Value>()? {
-            if !queue_item_is_recent(&item, self.cutoff) {
-                continue;
-            }
-            let (next, item_truncated) =
-                retain_newest(retained.drain(..).chain(std::iter::once(item)), self.limit);
-            retained = next;
-            truncated |= item_truncated;
-        }
-        Ok((retained, truncated))
-    }
-}
-
-fn read_recent_queue_items(path: &std::path::Path, cutoff: i64) -> (Vec<Value>, bool) {
-    let Ok(file) = fs::File::open(path) else {
-        return (Vec::new(), false);
-    };
-    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(file));
-    deserializer
-        .deserialize_seq(RecentQueueVisitor {
-            cutoff,
-            limit: MAX_INBOX_SOURCE_ITEMS,
-        })
-        .unwrap_or_default()
-}
-
-fn projection(items: Vec<Value>, truncated: bool) -> InboxProjection {
+fn projection(items: Vec<Value>, truncated: bool, source_offset: usize) -> InboxProjection {
     InboxProjection {
         items: sort_items(items),
         truncated,
-        next_offset: truncated.then_some(MAX_INBOX_SOURCE_ITEMS),
+        next_offset: truncated.then_some(source_offset.saturating_add(MAX_INBOX_SOURCE_ITEMS)),
+        source_offset,
     }
 }
 
-fn load_persisted_items() -> Result<InboxProjection, CliError> {
-    let Some(home) = wardian_core::paths::wardian_home() else {
-        return Ok(projection(Vec::new(), false));
-    };
-    let queue_path = home.join("queue").join("items.json");
+fn load_persisted_items(offset: usize) -> Result<InboxProjection, CliError> {
     // The legacy queue is optional. A damaged queue must not hide the durable
     // SQLite notifications or workflow run projections below it.
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
-    let (persisted, persisted_truncated) = read_recent_queue_items(&queue_path, cutoff);
-    let persisted_workflow_runs = persisted
-        .iter()
-        .filter_map(workflow_identity)
-        .collect::<HashSet<_>>();
-    let read_notification_ids = persisted
-        .iter()
-        .filter(|item| {
-            item.get("type").and_then(Value::as_str) == Some("agent_update")
-                && item.get("read").and_then(Value::as_bool) == Some(true)
-        })
-        .filter_map(|item| {
-            item.get("inbox_notification_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .collect::<HashSet<_>>();
-    let (legacy_items, legacy_truncated) = retain_newest(
-        persisted.into_iter().filter(|item| {
-            item.get("inbox_notification_id").is_none()
-                && item.get("workflow_approval").is_none()
-                && item.get("dismissed").is_none()
-        }),
-        MAX_INBOX_SOURCE_ITEMS,
-    );
-    let (workflow_approvals, approvals_truncated) = workflow_approval_items()?;
-    let (workflow_terminals, terminals_truncated) = workflow_terminal_items()?;
+    let persisted = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, offset, cutoff);
+    let persisted_workflow_runs = persisted.workflow_runs;
+    let read_notification_ids = persisted.read_notification_ids;
+    let legacy_items = persisted.items;
+    let persisted_truncated = persisted.truncated;
+    let (workflow_approvals, approvals_truncated) = workflow_approval_items(offset)?;
+    let (workflow_terminals, terminals_truncated) = workflow_terminal_items(offset)?;
     let mut items = legacy_items;
     items.extend(workflow_approvals);
     items.extend(workflow_terminals.into_iter().filter(|item| {
         workflow_identity(item).is_none_or(|key| !persisted_workflow_runs.contains(&key))
     }));
 
-    let source_truncated =
-        persisted_truncated || legacy_truncated || approvals_truncated || terminals_truncated;
+    let source_truncated = persisted_truncated || approvals_truncated || terminals_truncated;
 
     let Some(db_path) = wardian_core::paths::state_db_path() else {
-        return Ok(projection(items, source_truncated));
+        return Ok(projection(items, source_truncated, offset));
     };
     if !db_path.exists() {
-        return Ok(projection(items, source_truncated));
+        return Ok(projection(items, source_truncated, offset));
     }
     let conn =
         Connection::open(&db_path).map_err(|error| CliError::db_unavailable(error.to_string()))?;
@@ -318,7 +234,7 @@ fn load_persisted_items() -> Result<InboxProjection, CliError> {
             &conn,
             "notification",
             MAX_INBOX_SOURCE_ITEMS + 1,
-            0,
+            offset,
         )
         .map_err(|error| CliError::db_unavailable(error.to_string()))?;
     let notification_truncated = notification_records.len() > MAX_INBOX_SOURCE_ITEMS;
@@ -354,10 +270,24 @@ fn load_persisted_items() -> Result<InboxProjection, CliError> {
     Ok(projection(
         items,
         source_truncated || notification_truncated,
+        offset,
     ))
 }
 
-fn workflow_approval_items() -> Result<(Vec<Value>, bool), CliError> {
+fn page_source_items(items: Vec<Value>, truncated: bool, offset: usize) -> (Vec<Value>, bool) {
+    let page_end = offset.saturating_add(MAX_INBOX_SOURCE_ITEMS);
+    let truncated = truncated || items.len() > page_end;
+    (
+        items
+            .into_iter()
+            .skip(offset)
+            .take(MAX_INBOX_SOURCE_ITEMS)
+            .collect(),
+        truncated,
+    )
+}
+
+fn workflow_approval_items(offset: usize) -> Result<(Vec<Value>, bool), CliError> {
     let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
         return Ok((Vec::new(), false));
     };
@@ -367,6 +297,9 @@ fn workflow_approval_items() -> Result<(Vec<Value>, bool), CliError> {
 
     let mut items = Vec::new();
     let mut truncated = false;
+    let capacity = offset
+        .saturating_add(MAX_INBOX_SOURCE_ITEMS)
+        .saturating_add(1);
     for blueprint_entry in
         fs::read_dir(&runs_root).map_err(|error| CliError::generic(error.to_string()))?
     {
@@ -442,18 +375,16 @@ fn workflow_approval_items() -> Result<(Vec<Value>, bool), CliError> {
                     "node": node,
                 },
             });
-            let (retained, item_truncated) = retain_newest(
-                items.drain(..).chain(std::iter::once(item)),
-                MAX_INBOX_SOURCE_ITEMS,
-            );
+            let (retained, item_truncated) =
+                retain_newest(items.drain(..).chain(std::iter::once(item)), capacity);
             items = retained;
             truncated |= item_truncated;
         }
     }
-    Ok((items, truncated))
+    Ok(page_source_items(items, truncated, offset))
 }
 
-fn workflow_terminal_items() -> Result<(Vec<Value>, bool), CliError> {
+fn workflow_terminal_items(offset: usize) -> Result<(Vec<Value>, bool), CliError> {
     let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
         return Ok((Vec::new(), false));
     };
@@ -463,6 +394,9 @@ fn workflow_terminal_items() -> Result<(Vec<Value>, bool), CliError> {
 
     let mut items = Vec::new();
     let mut truncated = false;
+    let capacity = offset
+        .saturating_add(MAX_INBOX_SOURCE_ITEMS)
+        .saturating_add(1);
     for blueprint_entry in
         fs::read_dir(&runs_root).map_err(|error| CliError::generic(error.to_string()))?
     {
@@ -516,15 +450,13 @@ fn workflow_terminal_items() -> Result<(Vec<Value>, bool), CliError> {
                 "error": state.failure,
                 "summary": summary,
             });
-            let (retained, item_truncated) = retain_newest(
-                items.drain(..).chain(std::iter::once(item)),
-                MAX_INBOX_SOURCE_ITEMS,
-            );
+            let (retained, item_truncated) =
+                retain_newest(items.drain(..).chain(std::iter::once(item)), capacity);
             items = retained;
             truncated |= item_truncated;
         }
     }
-    Ok((items, truncated))
+    Ok(page_source_items(items, truncated, offset))
 }
 
 fn notification_items(
@@ -646,12 +578,12 @@ mod tests {
                 items,
                 truncated: false,
                 next_offset: None,
+                source_offset: 0,
             },
             &types,
             &sources,
             false,
             1,
-            0,
         )
         .unwrap();
         let output: Value = serde_json::from_str(&output).unwrap();
