@@ -13,9 +13,7 @@ These clusters guide both the architectural integrity and the user experience of
 Before requesting a commit or finalizing a task, ensure the following steps are completed:
 
 1. **Validation & Build**:
-   - [ ] **Frontend**: Run `npm run typecheck`, `npm run lint`, `npm run test`, and `npm run build`.
-   - [ ] **Backend**: Run `cargo clippy`, `cargo fmt --all -- --check`, `cargo test`, and `cargo check` (in `src-tauri`).
-   - [ ] **Gates**: Run `npm run check:test-reachability`, `npm run check:deadcode`, `npm run check:budgets`, and `npm run check:page-fixtures`. These fail on debt this repository has decided not to take on again; each failure message names the file and the fix.
+   - [ ] Run `npm run verify:ci`; use its `--only <frontend|backend|docs>` subset when narrowing a rerun. The command reads the authoritative local-verification steps from `.github/workflows/ci.yml`.
 2. **Documentation**:
    - [ ] Document strategic decisions in a new **Spec** in `docs/specs/`.
    - [ ] Update related guides in `docs/guide/` or `docs/developer/`.
