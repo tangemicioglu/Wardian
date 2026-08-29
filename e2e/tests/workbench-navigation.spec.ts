@@ -299,19 +299,32 @@ test("keeps Settings above a horizontally and vertically split Workbench", async
   const paneActions = workbenchGroup(page, "settings-group-left")
     .getByRole("button", { name: "Pane actions", exact: true });
   await expect(paneActions).toBeVisible();
-  const paneActionPoint = await paneActions.evaluate((element) => {
-    const bounds = element.getBoundingClientRect();
-    const topmost = document.elementFromPoint(
-      bounds.left + bounds.width / 2,
-      bounds.top + bounds.height / 2,
-    );
+  const workbenchBounds = await workbenchGroup(page, "settings-group-left").boundingBox();
+  const dialogBounds = await dialog.boundingBox();
+  const paneActionBounds = await paneActions.boundingBox();
+  expect(workbenchBounds).not.toBeNull();
+  expect(dialogBounds).not.toBeNull();
+  expect(paneActionBounds).not.toBeNull();
+  const paneActionPoint = {
+    x: paneActionBounds!.x + paneActionBounds!.width / 2,
+    y: paneActionBounds!.y + paneActionBounds!.height / 2,
+  };
+  expect(paneActionPoint.x).toBeGreaterThanOrEqual(workbenchBounds!.x);
+  expect(paneActionPoint.x).toBeLessThanOrEqual(workbenchBounds!.x + workbenchBounds!.width);
+  expect(paneActionPoint.y).toBeGreaterThanOrEqual(workbenchBounds!.y);
+  expect(paneActionPoint.y).toBeLessThanOrEqual(workbenchBounds!.y + workbenchBounds!.height);
+  const pointOutsideDialog = paneActionPoint.x < dialogBounds!.x
+    || paneActionPoint.x > dialogBounds!.x + dialogBounds!.width
+    || paneActionPoint.y < dialogBounds!.y
+    || paneActionPoint.y > dialogBounds!.y + dialogBounds!.height;
+  expect(pointOutsideDialog).toBe(true);
+  const paneActionHitTest = await page.evaluate(({ x, y }) => {
+    const topmost = document.elementFromPoint(x, y);
     return {
-      x: bounds.left + bounds.width / 2,
-      y: bounds.top + bounds.height / 2,
-      isPaneActionTopmost: topmost === element || element.contains(topmost),
+      topmostIsApplicationOverlay: topmost?.closest(".wardian-dialog-overlay--application") !== null,
     };
-  });
-  expect(paneActionPoint.isPaneActionTopmost).toBe(false);
+  }, paneActionPoint);
+  expect(paneActionHitTest.topmostIsApplicationOverlay).toBe(true);
   await page.mouse.click(paneActionPoint.x, paneActionPoint.y);
   await expect(page.getByRole("menu", { name: "Pane actions", exact: true })).toHaveCount(0);
 
