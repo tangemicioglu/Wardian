@@ -37,24 +37,6 @@ Before requesting a commit or finalizing a task, ensure the following steps are 
 - When commands differ by shell, show a POSIX `bash`/`sh` form first and a labeled PowerShell form second. Do not make PowerShell-only syntax the default unless the section is explicitly Windows-only.
 - Keep Windows-specific examples only when documenting Windows behavior, and label them as Windows-specific.
 
-## 🚫 What Not To Do
-
-Named after failures that actually happened here; the audit is in
-`docs/specs/2026-08-28-debt-gates.md`.
-
-A gate catches four of them and names the file and the fix when it fires: do not
-fork a function behind `#[cfg(test)]` to keep tests passing, do not call a test
-no job runs coverage, do not defend against a shape the producer cannot emit,
-and remove the path you replaced in the same PR.
-
-Two have no gate:
-
-1. **Do not widen a matcher a second time.** If a classifier needs another
-   literal and it has been widened before, the producer is emitting the wrong
-   data. Fix the producer.
-2. **Report what failed.** If a test is failing when you finish, say so. Whether
-   it is related is a reviewer's judgement, not yours to make on your own work.
-
 ## 🏛️ Architecture & Naming Standards
 
 ### 1. Naming Conventions (Cross-Cutting)
@@ -191,6 +173,7 @@ cargo run -p wardian-cli -- agent list --scope all
 ## 🛠️ Workflow Rules
 - **Surgical Code Changes**: Use the `replace` tool for precise, context-aware edits. Avoid overwriting entire files unless scaffolding new modules.
 - **Verification-First**: A task is only complete once the behavioral correctness has been verified via the pre-commit checklist.
+- **Report What Failed**: If a test is failing when you finish, say so. Whether it is related is a reviewer's judgement, not yours to make on your own work.
 - **TypeScript Sovereignty**: Strictly adhere to the types defined in `src/types/index.ts`. Never use `any` unless required by external library constraints.
 
 ## 🌿 Git & Pull Request Standards
@@ -200,4 +183,4 @@ All agents must follow these standards to ensure a clean, high-governance reposi
 - **Atomic Commits**: Group related changes into small, semantic commits. Use [Conventional Commits](https://www.conventionalcommits.org/) (e.g., `feat:`, `fix:`, `docs:`, `chore:`).
 - **Issue Linking**: Every PR must link to an existing GitHub issue. If no issue exists, create one before starting the implementation.
 - **PR Descriptions**: Always use the provided PR template. Explain the "Why" behind the change and include evidence of successful verification (logs or test results).
-- **CI Readiness**: Before opening a PR, run the full verification suite (`npm run typecheck/lint/test`, the three `check:` gates, and `cargo clippy/fmt/test`) to ensure green status on GitHub Actions.
+- **CI Readiness**: Before opening a PR, run the full verification suite (`npm run typecheck/lint/test`, the `check:` gates listed above, and `cargo clippy/fmt/test`) to ensure green status on GitHub Actions.
