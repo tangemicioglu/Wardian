@@ -10,6 +10,7 @@ mod memory;
 mod output;
 mod telemetry;
 mod watchlist;
+mod workflow_replay;
 
 use std::{
     collections::HashMap,
@@ -514,7 +515,7 @@ fn handle_workflow(args: WorkflowArgs) -> Result<String, CliError> {
         WorkflowCommand::Replay {
             blueprint_id,
             run_id,
-        } => render_workflow_replay(&blueprint_id, &run_id),
+        } => workflow_replay::render(&blueprint_id, &run_id),
         WorkflowCommand::Parse { path } => render_workflow_parse(&path),
         WorkflowCommand::Normalize { path, write } => render_workflow_normalize(&path, write),
         WorkflowCommand::GenSchema { out, check } => {
@@ -841,20 +842,6 @@ fn render_workflow_run_show(blueprint_id: &str, run_id: &str) -> Result<String, 
         "schema": 1,
         "state": state,
         "events": events,
-    }))
-}
-
-fn render_workflow_replay(blueprint_id: &str, run_id: &str) -> Result<String, CliError> {
-    let run_root = workflow_run_root(blueprint_id, run_id)?;
-    let blueprint = wardian_core::engine::store::read_blueprint_snapshot(&run_root)
-        .map_err(|e| CliError::generic(e.to_string()))?
-        .or(find_library_blueprint(blueprint_id)?)
-        .ok_or_else(|| CliError::generic(format!("blueprint {blueprint_id} not found")))?;
-    let state = wardian_core::engine::Engine::replay(&blueprint, &run_root)
-        .map_err(|e| CliError::generic(e.to_string()))?;
-    render_json(serde_json::json!({
-        "schema": 1,
-        "state": state,
     }))
 }
 

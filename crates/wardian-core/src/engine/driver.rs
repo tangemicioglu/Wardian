@@ -158,6 +158,48 @@ impl Engine {
         Ok(s)
     }
 
+    /// Replay a scheduler launch failure that was recorded before a blueprint
+    /// could be loaded. These artifacts intentionally contain only a terminal
+    /// `RunFailed` event, so they do not require a mutable library blueprint.
+    pub fn replay_launch_failure(
+        blueprint_id: &str,
+        run_root: &Path,
+    ) -> crate::engine::Result<RunState> {
+        let state = read_checkpoint(run_root)?
+            .ok_or_else(|| EngineError::InvalidState("workflow checkpoint is missing".into()))?;
+        if state.blueprint_id != blueprint_id {
+            return Err(EngineError::InvalidState(format!(
+                "workflow checkpoint belongs to blueprint `{}`, requested `{blueprint_id}`",
+                state.blueprint_id
+            )));
+        }
+        let events = read_events(run_root)?;
+        let Some(Event {
+            seq: 0,
+            kind: EventKind::RunFailed { error },
+            ..
+        }) = events.first()
+        else {
+            return Err(EngineError::InvalidState(
+                "workflow launch-failure artifact must start with run_failed at sequence 0".into(),
+            ));
+        };
+        if events.len() != 1 {
+            return Err(EngineError::InvalidState(
+                "workflow launch-failure artifact must contain exactly one event".into(),
+            ));
+        }
+        if state.status != RunStatus::Failed
+            || state.next_seq != 1
+            || state.failure.as_deref() != Some(error.as_str())
+        {
+            return Err(EngineError::InvalidState(
+                "workflow launch-failure artifact does not match its failed checkpoint".into(),
+            ));
+        }
+        Ok(state)
+    }
+
     /// Validate a run event sequence without requiring a blueprint graph.
     pub fn validate_event_sequence(events: &[Event]) -> crate::engine::Result<u64> {
         validate_event_sequence(events)
@@ -2084,6 +2126,33 @@ mod tests {
             edges: vec![],
             body: String::new(),
         }
+    }
+
+    #[test]
+    fn replay_launch_failure_accepts_a_terminal_artifact_without_a_blueprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let message = "could not resolve blueprint path";
+        let mut state = RunState::new("run-launch-failure", "missing-workflow");
+        state.status = RunStatus::Failed;
+        state.failure = Some(message.into());
+        state.next_seq = 1;
+        write_checkpoint(dir.path(), &state).unwrap();
+        append_event(
+            dir.path(),
+            &Event::new(
+                0,
+                EventKind::RunFailed {
+                    error: message.into(),
+                },
+            ),
+        )
+        .unwrap();
+
+        let replayed = Engine::replay_launch_failure("missing-workflow", dir.path()).unwrap();
+
+        assert_eq!(replayed.status, RunStatus::Failed);
+        assert_eq!(replayed.failure.as_deref(), Some(message));
+        assert_eq!(replayed.next_seq, 1);
     }
 
     #[tokio::test]

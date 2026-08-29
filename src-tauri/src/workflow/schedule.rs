@@ -720,6 +720,11 @@ edges:
             Some(EventKind::RunFailed { error })
                 if error == "parse failed: io error: The system cannot find the file specified."
         ));
+        let replayed =
+            wardian_core::engine::Engine::replay_launch_failure(&req.blueprint_id, &run_root)
+                .unwrap();
+        assert_eq!(replayed.status, RunStatus::Failed);
+        assert_eq!(replayed.run_id, state.run_id);
 
         let update = runs::workflow_inbox_update_with_name(&req.blueprint_id, &run_root).unwrap();
         assert_eq!(update.status, "failed");

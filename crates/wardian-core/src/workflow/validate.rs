@@ -312,6 +312,22 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
                 Some(node_id),
             ));
         }
+        for edge in blueprint
+            .edges
+            .iter()
+            .filter(|edge| body.contains(edge.to.as_str()))
+        {
+            if edge.from != loop_node.id && !body.contains(edge.from.as_str()) {
+                report.diagnostics.push(Diagnostic::error(
+                    "loop_body_external_input",
+                    format!(
+                        "loop body node `{}` cannot receive an inbound edge from outside loop `{}`",
+                        edge.to, loop_node.id
+                    ),
+                    Some(&edge.to),
+                ));
+            }
+        }
     }
 
     // The top-level graph must be a DAG (loops are containers, not back-edges).
@@ -905,6 +921,34 @@ mod tests {
         assert!(report.errors().iter().any(|diagnostic| {
             diagnostic.code == "nested_loop_unsupported"
                 && diagnostic.node.as_deref() == Some("inner")
+        }));
+    }
+
+    #[test]
+    fn loop_body_rejects_external_inbound_edges() {
+        let mut body = task("body");
+        body.parent = Some("lp".into());
+        let report = validate(&base(
+            vec![task("outside"), loop_node(serde_json::json!(2)), body],
+            vec![
+                Edge {
+                    from: "lp".into(),
+                    to: "body".into(),
+                    from_port: "body".into(),
+                    to_port: "in".into(),
+                },
+                Edge {
+                    from: "outside".into(),
+                    to: "body".into(),
+                    from_port: "out".into(),
+                    to_port: "in".into(),
+                },
+            ],
+        ));
+
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "loop_body_external_input"
+                && diagnostic.node.as_deref() == Some("body")
         }));
     }
 

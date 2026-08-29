@@ -61,7 +61,8 @@ Template fields resolve against this registry before each node executes.
 Blueprint validation is fail-closed: decision choices must be unique,
 non-empty, valid port identifiers with outgoing edges; edges must name ports
 declared by both endpoint node types; loop containers must have a reachable
-body; and nested loops are rejected until nested-loop replay semantics exist.
+body; inbound edges from outside a loop body are rejected; and nested loops are
+rejected until nested-loop replay semantics exist.
 
 ## Execution Flow
 
@@ -86,6 +87,8 @@ Resume, startup recovery, and human approval use the same durable run records:
 - detached launch and resume workers persist a `RunFailed` event and failed
   checkpoint if the global headless-execution guard cannot be acquired, so a
   worker-start failure cannot leave a run falsely active;
+- scheduler resolution or validation failures persist a one-event terminal
+  launch-failure artifact; CLI replay recognizes it without loading a blueprint;
 - `workflow_approve` grants or rejects an approval gate;
 - `workflow_cancel` writes a cancellation marker; the engine consumes it at the
   next dispatch boundary, or immediately records a durable `run_failed`

@@ -96,11 +96,16 @@ loop transition. Nested loops are also rejected until their replay semantics
 can reset the complete nested body and loop state on every outer iteration.
 Every parented body node must also be reachable from the loop's `body` port; a
 parent annotation alone is not an execution edge.
+Inbound edges from outside a loop body are rejected because iteration reset
+only replays the loop's body transition and internal body edges.
 
 Detached launch and resume tasks must persist a `RunFailed` event and failed
 checkpoint when the global headless-execution guard cannot be acquired. A
 successful launch response therefore cannot leave a run permanently marked
 `running` merely because its worker failed before provider execution began.
+Scheduler resolution or validation failures use a terminal launch-failure
+artifact containing one `RunFailed` event at sequence zero; CLI replay returns
+that failed checkpoint without requiring the missing or invalid blueprint.
 
 Observe's node inspector limits output and error evidence to the selected
 timeline position, so scrubbing cannot reveal events from the future.
