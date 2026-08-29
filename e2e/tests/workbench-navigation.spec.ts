@@ -296,6 +296,25 @@ test("keeps Settings above a horizontally and vertically split Workbench", async
     return element.contains(topmost);
   })).toBe(true);
 
+  const paneActions = workbenchGroup(page, "settings-group-left")
+    .getByRole("button", { name: "Pane actions", exact: true });
+  await expect(paneActions).toBeVisible();
+  const paneActionPoint = await paneActions.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const topmost = document.elementFromPoint(
+      bounds.left + bounds.width / 2,
+      bounds.top + bounds.height / 2,
+    );
+    return {
+      x: bounds.left + bounds.width / 2,
+      y: bounds.top + bounds.height / 2,
+      isPaneActionTopmost: topmost === element || element.contains(topmost),
+    };
+  });
+  expect(paneActionPoint.isPaneActionTopmost).toBe(false);
+  await page.mouse.click(paneActionPoint.x, paneActionPoint.y);
+  await expect(page.getByRole("menu", { name: "Pane actions", exact: true })).toHaveCount(0);
+
   const screenshotPath = path.resolve(
     "e2e/screenshots/settings-overlay-split-workbench/2026-08-29/settings-above-split-workbench.png",
   );
@@ -305,6 +324,11 @@ test("keeps Settings above a horizontally and vertically split Workbench", async
     path: screenshotPath,
     contentType: "image/png",
   });
+
+  await dialog.getByRole("button", { name: "Close settings", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await paneActions.click();
+  await expect(page.getByRole("menu", { name: "Pane actions", exact: true })).toBeVisible();
 });
 
 test("retargets an adjoining Agent Session when Graph opens an agent", async ({ page }) => {
