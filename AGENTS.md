@@ -173,7 +173,7 @@ cargo run -p wardian-cli -- agent list --scope all
 ## 🛠️ Workflow Rules
 - **Surgical Code Changes**: Use the `replace` tool for precise, context-aware edits. Avoid overwriting entire files unless scaffolding new modules.
 - **Verification-First**: A task is only complete once the behavioral correctness has been verified via the pre-commit checklist.
-- **Report What Failed**: If a test is failing when you finish, say so. Whether it is related is a reviewer's judgement, not yours to make on your own work.
+- **Resolve Failing Tests**: A failing test is a decision about which side is wrong, and it is yours to make. Fix the behavior when the test is right, or fix the test when your change intentionally supersedes what it encoded. Never edit a test merely to turn red green. If the failure predates your change, show it reproduces on the base commit before setting it aside. Report the outcome either way.
 - **TypeScript Sovereignty**: Strictly adhere to the types defined in `src/types/index.ts`. Never use `any` unless required by external library constraints.
 
 ## 🌿 Git & Pull Request Standards
