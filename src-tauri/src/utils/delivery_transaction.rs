@@ -388,6 +388,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_transaction_does_not_press_submit_when_provider_did_not_apply_payload() {
+        let profile = zero_delay_profile("codex");
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = RecordingSink {
+            events: Arc::clone(&events),
+        };
+        let before_submit_events = Arc::clone(&events);
+
+        let error = submit_terminal_transaction_with_hooks(
+            &sink,
+            &profile,
+            "hello",
+            || async { Ok(()) },
+            move || async move {
+                before_submit_events
+                    .lock()
+                    .expect("events lock")
+                    .push("payload_apply_unconfirmed");
+                Err(TerminalDeliveryError::terminal_state_unknown(
+                    "payload_apply_unconfirmed",
+                    "Codex did not apply payload; Return was not sent".to_string(),
+                ))
+            },
+        )
+        .await
+        .expect_err("missing provider evidence must stop before submit key");
+
+        assert_eq!(error.phase, "payload_apply_unconfirmed");
+        assert!(!error.retry_safe);
+        assert_eq!(
+            events.lock().expect("events lock").as_slice(),
+            ["payload", "payload_apply_unconfirmed"]
+        );
+    }
+
+    #[tokio::test]
     async fn submit_transaction_treats_empty_prompt_as_non_error() {
         let profile = zero_delay_profile("codex");
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);

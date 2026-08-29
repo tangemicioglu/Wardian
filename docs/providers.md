@@ -126,10 +126,14 @@ Wardian starts a fresh Codex session by writing a minimal rollout into the agent
 
 If Codex behaves unexpectedly, run `wardian agent doctor <agent-name-or-uuid>`
 first. It reports the agent's effective `CODEX_HOME`, installed/enabled plugins
-from that home, and launch flags. If the home changed after the thread began,
-start a fresh Codex session before judging the tool list. Then separate the
-checks: did it discover the skill, did it trust the real workspace, and did the
-sandbox allow the command to run?
+from that home, launch flags, and a detectable stalled composer. If doctor
+reports `provider_input_state: stalled_composer`, run
+`wardian agent restart <agent-name-or-uuid>` to clear the pending input while
+preserving the agent identity, habitat, and session history. Confirm the failed
+turn never started before sending a replacement. If the home changed after the
+thread began, start a fresh Codex session before judging the tool list. Then
+separate the checks: did it discover the skill, did it trust the real workspace,
+and did the sandbox allow the command to run?
 
 ## OpenCode (`opencode`)
 
