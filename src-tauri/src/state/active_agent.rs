@@ -5,6 +5,10 @@ use wardian_core::models::AgentConfig;
 use super::AgentWatchState;
 
 pub struct ActiveAgent {
+    // This lock protects short configuration mutations and snapshots only.
+    // Callers must clone the configuration and release this guard before any
+    // await or blocking I/O; it is deliberately never held across an async
+    // suspension. The surrounding agent map uses Tokio's async mutex.
     pub config: Arc<Mutex<AgentConfig>>,
     pub child_process: Option<Box<dyn portable_pty::Child + Send>>,
     pub background_processes: Vec<std::process::Child>,

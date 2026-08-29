@@ -5885,35 +5885,45 @@ impl From<std::io::Error> for ControlError {
 
 async fn live_agent_snapshots(app: &AppHandle) -> Vec<AgentIdentity> {
     let state = app.state::<AppState>();
-    let agents = state.agents.lock().await;
-    let order = state.agent_order.lock().await.clone();
+    // Lease loading performs synchronous filesystem I/O. Keep it completely
+    // outside the live-agent locks so a slow state file cannot stall delivery
+    // or other agent lifecycle operations.
     let active_leases = wardian_core::conversation_lease::load_leases();
     let lease_now = chrono::Utc::now().to_rfc3339();
-    let mut snapshots = Vec::new();
+    let order = state.agent_order.lock().await.clone();
+    let agents = state.agents.lock().await;
+    // Only copy the small, independently-owned snapshot inputs while the map
+    // lock is held. Per-agent mutexes and snapshot construction happen after
+    // releasing the global map lock.
+    let agent_sources = collect_agent_snapshot_sources(&agents);
+    drop(agents);
+
+    let mut snapshots = Vec::with_capacity(agent_sources.len());
     let mut seen = std::collections::HashSet::new();
 
     for session_id in order {
-        if let Some(agent) = agents.get(&session_id) {
-            snapshots.push(snapshot_agent_with_leases(
-                agent,
-                &active_leases,
-                &lease_now,
-            ));
+        if let Some(source) = agent_sources.get(&session_id) {
+            snapshots.push(snapshot_agent_source(source, &active_leases, &lease_now));
             seen.insert(session_id);
         }
     }
 
-    for (session_id, agent) in agents.iter() {
+    for (session_id, source) in &agent_sources {
         if !seen.contains(session_id) {
-            snapshots.push(snapshot_agent_with_leases(
-                agent,
-                &active_leases,
-                &lease_now,
-            ));
+            snapshots.push(snapshot_agent_source(source, &active_leases, &lease_now));
         }
     }
 
     snapshots
+}
+
+fn collect_agent_snapshot_sources(
+    agents: &std::collections::HashMap<String, crate::state::ActiveAgent>,
+) -> std::collections::HashMap<String, AgentSnapshotSource> {
+    agents
+        .iter()
+        .map(|(session_id, agent)| (session_id.clone(), AgentSnapshotSource::from(agent)))
+        .collect()
 }
 
 fn snapshot_agent(agent: &crate::state::ActiveAgent) -> AgentIdentity {
@@ -5922,17 +5932,46 @@ fn snapshot_agent(agent: &crate::state::ActiveAgent) -> AgentIdentity {
     snapshot_agent_with_leases(agent, &active_leases, &lease_now)
 }
 
+#[derive(Clone)]
+struct AgentSnapshotSource {
+    config: Arc<Mutex<wardian_core::models::AgentConfig>>,
+    current_status: Arc<Mutex<String>>,
+    init_timestamp: Arc<Mutex<Option<String>>>,
+    last_status_at: Arc<Mutex<Option<String>>>,
+    process_id: Option<u32>,
+}
+
+impl From<&crate::state::ActiveAgent> for AgentSnapshotSource {
+    fn from(agent: &crate::state::ActiveAgent) -> Self {
+        Self {
+            config: agent.config.clone(),
+            current_status: agent.current_status.clone(),
+            init_timestamp: agent.init_timestamp.clone(),
+            last_status_at: agent.last_status_at.clone(),
+            process_id: agent.process_id,
+        }
+    }
+}
+
 fn snapshot_agent_with_leases(
     agent: &crate::state::ActiveAgent,
     active_leases: &[wardian_core::conversation_lease::ConversationLease],
     lease_now: &str,
 ) -> AgentIdentity {
-    let config = agent
+    snapshot_agent_source(&AgentSnapshotSource::from(agent), active_leases, lease_now)
+}
+
+fn snapshot_agent_source(
+    source: &AgentSnapshotSource,
+    active_leases: &[wardian_core::conversation_lease::ConversationLease],
+    lease_now: &str,
+) -> AgentIdentity {
+    let config = source
         .config
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    let status = agent
+    let status = source
         .current_status
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -5955,12 +5994,12 @@ fn snapshot_agent_with_leases(
     } else {
         status
     };
-    let started_at = agent
+    let started_at = source
         .init_timestamp
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    let last_status_at = agent
+    let last_status_at = source
         .last_status_at
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -5973,7 +6012,7 @@ fn snapshot_agent_with_leases(
         class: config.agent_class,
         provider: config.provider,
         status: normalize_status(&effective_status),
-        pid: agent.process_id,
+        pid: source.process_id,
         started_at,
         workspace: (!config.folder.trim().is_empty()).then_some(config.folder),
         last_status_at,
@@ -6223,6 +6262,23 @@ mod tests {
             session_id.to_string(),
             test_agent(session_id, session_name, agent_class),
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_sources_release_global_agent_lock_before_per_agent_reads() {
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+
+        let sources = {
+            let agents = state.agents.lock().await;
+            collect_agent_snapshot_sources(&agents)
+        };
+        let source = sources.get("agent-1").expect("snapshot source");
+        let _config_guard = source.config.lock().expect("config lock");
+
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(100), state.agents.lock())
+            .await
+            .expect("per-agent snapshot reads must not retain the global agent lock");
     }
 
     async fn install_test_terminal_runtime(
