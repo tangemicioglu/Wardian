@@ -106,6 +106,8 @@ successful launch response therefore cannot leave a run permanently marked
 Scheduler resolution or validation failures use a terminal launch-failure
 artifact containing one `RunFailed` event at sequence zero; CLI replay returns
 that failed checkpoint without requiring the missing or invalid blueprint.
+This artifact is deliberately handled by `Engine::replay_launch_failure`, not
+the normal graph event-folding path, because no executable blueprint exists.
 
 Observe's node inspector limits output and error evidence to the selected
 timeline position, so scrubbing cannot reveal events from the future.
