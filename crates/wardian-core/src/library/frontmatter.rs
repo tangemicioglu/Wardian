@@ -5,8 +5,12 @@ pub fn parse_frontmatter(content: &str) -> (Option<serde_norway::Value>, &str) {
         Some(rest) => rest,
         None => return (None, content),
     };
-    let rest = rest.strip_prefix('\n').or_else(|| rest.strip_prefix("\r\n"));
-    let Some(rest) = rest else { return (None, content) };
+    let rest = rest
+        .strip_prefix('\n')
+        .or_else(|| rest.strip_prefix("\r\n"));
+    let Some(rest) = rest else {
+        return (None, content);
+    };
     if let Some(after_close) = rest.strip_prefix("---") {
         // Empty frontmatter block: the closing fence immediately follows the
         // opening fence's line break, e.g. "---\n---\nBody". `rest.find("\n---")`
@@ -16,7 +20,9 @@ pub fn parse_frontmatter(content: &str) -> (Option<serde_norway::Value>, &str) {
         let body = after_close.trim_start_matches(['\r', '\n']);
         return (None, body);
     }
-    let Some(end) = rest.find("\n---") else { return (None, content) };
+    let Some(end) = rest.find("\n---") else {
+        return (None, content);
+    };
     let yaml_text = &rest[..end];
     // A CRLF document's closing fence is found via "\n---", which leaves a
     // dangling '\r' on the last frontmatter line (the fence line's own CR).
@@ -64,8 +70,14 @@ mod tests {
 
     #[test]
     fn description_falls_back_to_first_body_line() {
-        assert_eq!(extract_description("# Planner skill\nBody"), "Planner skill");
-        assert_eq!(extract_description("---\nname: x\n---\n\n## Heading\n"), "Heading");
+        assert_eq!(
+            extract_description("# Planner skill\nBody"),
+            "Planner skill"
+        );
+        assert_eq!(
+            extract_description("---\nname: x\n---\n\n## Heading\n"),
+            "Heading"
+        );
     }
 
     #[test]
@@ -99,7 +111,10 @@ mod tests {
 
     #[test]
     fn empty_frontmatter_block_is_treated_as_absent() {
-        assert_eq!(extract_description("---\n---\n# Real heading\n"), "Real heading");
+        assert_eq!(
+            extract_description("---\n---\n# Real heading\n"),
+            "Real heading"
+        );
         let (fm, body) = parse_frontmatter("---\n---\nBody");
         assert!(fm.is_none());
         assert_eq!(body, "Body");

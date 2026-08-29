@@ -82,7 +82,10 @@ impl NetworkLedger {
 
     /// Every record, oldest first.
     pub fn entries(&self) -> Vec<NetworkEntry> {
-        self.records.iter().map(|record| record.entry.clone()).collect()
+        self.records
+            .iter()
+            .map(|record| record.entry.clone())
+            .collect()
     }
 
     /// The most recent record for an id, which is the one a redirect chain ends on.
@@ -225,7 +228,11 @@ fn failure_reason(params: &Value) -> String {
     {
         return text.to_string();
     }
-    if params.get("canceled").and_then(Value::as_bool).unwrap_or(false) {
+    if params
+        .get("canceled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return "canceled".to_string();
     }
     "the request failed".to_string()
@@ -251,7 +258,11 @@ fn headers_from(value: Option<&Value>) -> BTreeMap<String, String> {
             let (text, truncated) = truncate(&text, MAX_NETWORK_HEADER_CHARS);
             (
                 name.to_lowercase(),
-                if truncated { format!("{text}…") } else { text },
+                if truncated {
+                    format!("{text}…")
+                } else {
+                    text
+                },
             )
         })
         .collect()

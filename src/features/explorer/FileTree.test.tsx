@@ -1,3 +1,4 @@
+import { dirPage } from "../../test/pageFixtures";
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -24,7 +25,7 @@ describe('FileTree Component', () => {
       { name: 'fileB.txt', path: '/test/fileB.txt', is_dir: false, extension: 'txt' }
     ];
 
-    vi.mocked(invoke).mockResolvedValueOnce(mockNodes);
+    vi.mocked(invoke).mockResolvedValueOnce(dirPage(mockNodes));
 
     render(<FileTree path="/test" />);
 
@@ -34,9 +35,9 @@ describe('FileTree Component', () => {
     });
 
     // Mock the subsequent invoke for expanding the folder
-    vi.mocked(invoke).mockResolvedValueOnce([{
+    vi.mocked(invoke).mockResolvedValueOnce(dirPage([{
       name: 'subfile.js', path: '/test/folderA/subfile.js', is_dir: false, extension: 'js'
-    }]);
+    }]));
 
     const folderEl = screen.getByText('folderA');
     await userEvent.click(folderEl);
@@ -48,9 +49,9 @@ describe('FileTree Component', () => {
   });
 
   it('makes workspace files draggable with a Wardian path payload', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce([
+    vi.mocked(invoke).mockResolvedValueOnce(dirPage([
       { name: 'notes.md', path: '/test/notes.md', is_dir: false, extension: 'md' },
-    ]);
+    ]));
 
     render(<FileTree path="/test" />);
 
@@ -104,7 +105,7 @@ describe('FileTree Component', () => {
       { name: 'fileC.png', path: '/test/fileC.png', is_dir: false, extension: 'png' }
     ];
 
-    vi.mocked(invoke).mockResolvedValueOnce(mockNodes);
+    vi.mocked(invoke).mockResolvedValueOnce(dirPage(mockNodes));
 
     const contextMenuSpy = vi.fn();
     render(<FileTree path="/test" onContextMenu={contextMenuSpy} />);
@@ -124,9 +125,9 @@ describe('FileTree Component', () => {
   });
 
   it('delays file selection so a single click can become a transient preview', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce([
+    vi.mocked(invoke).mockResolvedValueOnce(dirPage([
       { name: 'notes.md', path: '/test/notes.md', is_dir: false, extension: 'md' },
-    ]);
+    ]));
     const onSelect = vi.fn();
     render(<FileTree path="/test" onSelect={onSelect} />);
 
@@ -145,9 +146,9 @@ describe('FileTree Component', () => {
   });
 
   it('opens a file in a new tab immediately on Ctrl/Cmd-click', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce([
+    vi.mocked(invoke).mockResolvedValueOnce(dirPage([
       { name: 'notes.md', path: '/test/notes.md', is_dir: false, extension: 'md' },
-    ]);
+    ]));
     const onSelect = vi.fn();
     render(<FileTree path="/test" onSelect={onSelect} />);
 
@@ -161,9 +162,9 @@ describe('FileTree Component', () => {
   });
 
   it('cancels delayed selection when the same file is double-clicked open', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce([
+    vi.mocked(invoke).mockResolvedValueOnce(dirPage([
       { name: 'notes.md', path: '/test/notes.md', is_dir: false, extension: 'md' },
-    ]);
+    ]));
     const onSelect = vi.fn();
     const onOpen = vi.fn();
     render(<FileTree path="/test" onSelect={onSelect} onOpen={onOpen} />);
@@ -186,9 +187,9 @@ describe('FileTree Component', () => {
   });
 
   it('opens a focused file with Enter and clears any pending single-click timer', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce([
+    vi.mocked(invoke).mockResolvedValueOnce(dirPage([
       { name: 'notes.md', path: '/test/notes.md', is_dir: false, extension: 'md' },
-    ]);
+    ]));
     const onSelect = vi.fn();
     const onOpen = vi.fn();
     const { unmount } = render(
@@ -216,18 +217,18 @@ describe('FileTree Component', () => {
     vi.mocked(invoke).mockImplementation(async (_command, args) => {
       const requestedPath = (args as { path: string }).path;
       if (requestedPath === '/test') {
-        return [
+        return dirPage([
           { name: 'left', path: '/test/left', is_dir: true, extension: null },
           { name: 'right', path: '/test/right', is_dir: true, extension: null },
-        ];
+        ]);
       }
       if (requestedPath === '/test/left') {
-        return [{ name: 'a.md', path: '/test/left/a.md', is_dir: false, extension: 'md' }];
+        return dirPage([{ name: 'a.md', path: '/test/left/a.md', is_dir: false, extension: 'md' }]);
       }
       if (requestedPath === '/test/right') {
-        return [{ name: 'b.md', path: '/test/right/b.md', is_dir: false, extension: 'md' }];
+        return dirPage([{ name: 'b.md', path: '/test/right/b.md', is_dir: false, extension: 'md' }]);
       }
-      return [];
+      return dirPage([]);
     });
     const onSelect = vi.fn();
     const onOpen = vi.fn();
@@ -253,8 +254,7 @@ describe('FileTree Component', () => {
     vi.mocked(invoke).mockImplementation(async (_command, args) => {
       const requestedPath = (args as { path: string }).path;
       return requestedPath === '/first'
-        ? [{ name: 'stale.md', path: '/first/stale.md', is_dir: false, extension: 'md' }]
-        : [{ name: 'fresh.md', path: '/second/fresh.md', is_dir: false, extension: 'md' }];
+        ? dirPage([{ name: 'stale.md', path: '/first/stale.md', is_dir: false, extension: 'md' }]) : dirPage([{ name: 'fresh.md', path: '/second/fresh.md', is_dir: false, extension: 'md' }]);
     });
     const onSelect = vi.fn();
     const { rerender } = render(<FileTree path="/first" onSelect={onSelect} />);
@@ -269,9 +269,9 @@ describe('FileTree Component', () => {
   });
 
   it('cancels pending selection when the explorer root identity changes', async () => {
-    vi.mocked(invoke).mockResolvedValue([
+    vi.mocked(invoke).mockResolvedValue(dirPage([
       { name: 'stale.md', path: '/test/stale.md', is_dir: false, extension: 'md' },
-    ]);
+    ]));
     const onSelect = vi.fn();
     const { rerender } = render(
       <FileTree path="/test" explorerRoot="/test" onSelect={onSelect} />,
@@ -287,9 +287,9 @@ describe('FileTree Component', () => {
   });
 
   it('cancels pending selection when the entire tree unmounts', async () => {
-    vi.mocked(invoke).mockResolvedValue([
+    vi.mocked(invoke).mockResolvedValue(dirPage([
       { name: 'stale.md', path: '/test/stale.md', is_dir: false, extension: 'md' },
-    ]);
+    ]));
     const onSelect = vi.fn();
     const { unmount } = render(<FileTree path="/test" onSelect={onSelect} />);
     const stale = await screen.findByRole('treeitem', { name: 'stale.md' });
@@ -306,14 +306,13 @@ describe('FileTree Component', () => {
     vi.mocked(invoke).mockImplementation(async (_command, args) => {
       const requestedPath = (args as { path: string }).path;
       if (requestedPath === '/test') {
-        return [
+        return dirPage([
           { name: 'left', path: '/test/left', is_dir: true, extension: null },
           { name: 'right', path: '/test/right', is_dir: true, extension: null },
-        ];
+        ]);
       }
       return requestedPath === '/test/left'
-        ? [{ name: 'a.md', path: '/test/left/a.md', is_dir: false, extension: 'md' }]
-        : [{ name: 'b.md', path: '/test/right/b.md', is_dir: false, extension: 'md' }];
+        ? dirPage([{ name: 'a.md', path: '/test/left/a.md', is_dir: false, extension: 'md' }]) : dirPage([{ name: 'b.md', path: '/test/right/b.md', is_dir: false, extension: 'md' }]);
     });
     const onSelect = vi.fn();
     render(<FileTree path="/test" onSelect={onSelect} />);
@@ -337,12 +336,12 @@ describe('FileTree Component', () => {
     vi.mocked(invoke).mockImplementation(async (_command, args) => {
       const requestedPath = (args as { path: string }).path;
       if (requestedPath === '/test') {
-        return [
+        return dirPage([
           { name: 'src', path: '/test/src', is_dir: true, extension: null },
           { name: 'root.md', path: '/test/root.md', is_dir: false, extension: 'md' },
-        ];
+        ]);
       }
-      return [{ name: 'child.md', path: '/test/src/child.md', is_dir: false, extension: 'md' }];
+      return dirPage([{ name: 'child.md', path: '/test/src/child.md', is_dir: false, extension: 'md' }]);
     });
     render(<FileTree path="/test" />);
 
@@ -382,7 +381,7 @@ describe('FileTree Component', () => {
       { name: 'b.md', path: '/test/b.md', is_dir: false, extension: 'md' },
     ];
     vi.mocked(invoke).mockImplementation(async (_command, args) => (
-      (args as { path: string }).path === '/test' ? rootNodes : []
+      (args as { path: string }).path === '/test' ? dirPage(rootNodes) : dirPage([])
     ));
     const onOpen = vi.fn();
     const { rerender } = render(
@@ -457,8 +456,7 @@ describe('FileTree Component', () => {
   it('keeps directories as accessible expand/collapse items without opening Files', async () => {
     vi.mocked(invoke).mockImplementation(async (_command, args) => {
       return (args as { path: string }).path === '/test'
-        ? [{ name: 'src', path: '/test/src', is_dir: true, extension: null }]
-        : [];
+        ? dirPage([{ name: 'src', path: '/test/src', is_dir: true, extension: null }]) : dirPage([]);
     });
     const onSelect = vi.fn();
     const onOpen = vi.fn();
@@ -480,7 +478,7 @@ describe('FileTree Component', () => {
       { name: 'notes.md', path: '/test/notes.md', is_dir: false, extension: 'md' },
     ];
 
-    vi.mocked(invoke).mockResolvedValueOnce(mockNodes);
+    vi.mocked(invoke).mockResolvedValueOnce(dirPage(mockNodes));
 
     render(<FileTree path="/test" />);
 
@@ -510,12 +508,12 @@ describe('FileTree Component', () => {
 
     vi.mocked(invoke).mockImplementation(async (_command, args) => {
       const path = (args as { path: string }).path;
-      if (path === '/test') return rootNodes;
+      if (path === '/test') return dirPage(rootNodes);
       if (path === '/test/src') {
         srcReads += 1;
-        return srcReads === 1 ? initialSrcNodes : refreshedSrcNodes;
+        return srcReads === 1 ? dirPage(initialSrcNodes) : dirPage(refreshedSrcNodes);
       }
-      return [];
+      return dirPage([]);
     });
 
     const { rerender } = render(
@@ -560,12 +558,12 @@ describe('FileTree Component', () => {
 
     vi.mocked(invoke).mockImplementation(async (_command, args) => {
       const path = (args as { path: string }).path;
-      if (path === rootPath) return rootNodes;
+      if (path === rootPath) return dirPage(rootNodes);
       if (path === srcPath) {
         srcReads += 1;
-        return srcReads === 1 ? initialSrcNodes : refreshedSrcNodes;
+        return srcReads === 1 ? dirPage(initialSrcNodes) : dirPage(refreshedSrcNodes);
       }
-      return [];
+      return dirPage([]);
     });
 
     const { rerender } = render(
@@ -603,9 +601,9 @@ describe('FileTree Component', () => {
 
     vi.mocked(invoke).mockImplementation(async (_command, args) => {
       const path = (args as { path: string }).path;
-      if (path === '/test') return rootNodes;
-      if (path === '/test/src') return srcNodes;
-      return [];
+      if (path === '/test') return dirPage(rootNodes);
+      if (path === '/test/src') return dirPage(srcNodes);
+      return dirPage([]);
     });
 
     const { rerender } = render(

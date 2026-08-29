@@ -438,9 +438,7 @@ pub fn delete_agent(session_id: &str) -> Result<(), Box<dyn std::error::Error>> 
     let mut guard = DB_CONN
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let conn = guard
-        .as_mut()
-        .ok_or("database not initialized")?;
+    let conn = guard.as_mut().ok_or("database not initialized")?;
     delete_agent_with_conn(conn, session_id)?;
     Ok(())
 }
@@ -692,7 +690,8 @@ pub fn list_recent_interaction_records_page(
              LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map([limit as i64, offset as i64], row_to_interaction_record)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     })
 }
 
@@ -1399,8 +1398,8 @@ mod tests {
     fn user_message_interaction_records_are_filtered_in_sql() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        let make_record = |id: &str, kind: InteractionKind, sender_session_id: Option<&str>| {
-            InteractionRecord {
+        let make_record =
+            |id: &str, kind: InteractionKind, sender_session_id: Option<&str>| InteractionRecord {
                 id: id.to_string(),
                 kind,
                 sender_session_id: sender_session_id.map(str::to_string),
@@ -1414,8 +1413,7 @@ mod tests {
                 created_at: format!("2026-05-25T00:00:0{id}.000Z"),
                 updated_at: format!("2026-05-25T00:00:0{id}.000Z"),
                 completed_at: None,
-            }
-        };
+            };
 
         for record in [
             make_record("1", InteractionKind::Task, None),
@@ -1792,11 +1790,9 @@ mod tests {
             "structured_replies",
         ] {
             let count: i64 = conn
-                .query_row(
-                    &format!("SELECT COUNT(*) FROM {table}"),
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
             assert_eq!(count, 0, "{table} should be removed with the agent");
         }

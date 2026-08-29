@@ -67,9 +67,7 @@ fn record_pending_memory_injection(
 }
 
 fn provider_title_has_startup_ready_prompt(provider: &str, title: &str, status: &str) -> bool {
-    if provider != "opencode"
-        || wardian_core::identity::normalize_status(status) != "idle"
-    {
+    if provider != "opencode" || wardian_core::identity::normalize_status(status) != "idle" {
         return false;
     }
     let title = title.trim();
@@ -92,8 +90,7 @@ impl OpenCodeStartupMemoryTransition {
         agent_id: &str,
     ) -> Option<&'static str> {
         let status = opencode_status_from_title(title)?;
-        if !self.ready_observed
-            && provider_title_has_startup_ready_prompt(provider, title, status)
+        if !self.ready_observed && provider_title_has_startup_ready_prompt(provider, title, status)
         {
             self.ready_observed = true;
             record_pending_memory_injection(pending, agent_id, provider);
@@ -173,7 +170,10 @@ fn refresh_pi_log_boundary(file: &mut std::fs::File, cursor: &mut PiLogCursor) -
     Some(())
 }
 
-fn pi_log_baseline(session_dir: &std::path::Path, provider_session_id: &str) -> Option<PiLogBaseline> {
+fn pi_log_baseline(
+    session_dir: &std::path::Path,
+    provider_session_id: &str,
+) -> Option<PiLogBaseline> {
     let path = PiProvider::session_file(session_dir, provider_session_id)?;
     let mut file = std::fs::File::open(&path).ok()?;
     let metadata = file.metadata().ok()?;
@@ -1069,7 +1069,9 @@ pub async fn spawn_agent(
     let terminal_title_clone = terminal_title.clone();
     let last_output_at = std::sync::Arc::new(std::sync::Mutex::new(None));
     let last_output_at_clone = last_output_at.clone();
-    let initial_log_path = pi_log_baseline.as_ref().map(|baseline| baseline.path.clone());
+    let initial_log_path = pi_log_baseline
+        .as_ref()
+        .map(|baseline| baseline.path.clone());
     let log_path = std::sync::Arc::new(std::sync::Mutex::new(initial_log_path));
     // The mock provider writes its event stream to a file it owns, so its log
     // path is known up front and needs no discovery watcher. Without this the
@@ -1091,9 +1093,8 @@ pub async fn spawn_agent(
     let terminal_sessions = app_state.terminal_sessions.clone();
     let reader_runtime_generation = runtime_generation;
     let pty_config = config_lock.clone();
-    let mut pending_memory_injection = memory_setup.map(|(store, brief)| {
-        (store, brief, expected_folder.clone(), memory_process_key)
-    });
+    let mut pending_memory_injection = memory_setup
+        .map(|(store, brief)| (store, brief, expected_folder.clone(), memory_process_key));
     std::thread::spawn(move || {
         let mut buf = [0; 4096];
         let mut current_line = String::new();
@@ -1101,8 +1102,7 @@ pub async fn spawn_agent(
         let mut opencode_chunks_logged = 0usize;
         let mut codex_terminal_theme_responder = CodexTerminalThemeProbeResponder::default();
         let mut antigravity_turn_completion_gate = AntigravityTurnCompletionGate::default();
-        let mut opencode_startup_memory_transition =
-            OpenCodeStartupMemoryTransition::default();
+        let mut opencode_startup_memory_transition = OpenCodeStartupMemoryTransition::default();
         let mut startup_prompt_pending = true;
         let mut pty_decoder = PtyUtf8Decoder::new();
         let output_ready_emit_gate =
@@ -1880,7 +1880,8 @@ pub async fn spawn_agent(
                                                     pty_status_event_policy_for_provider("claude"),
                                                 );
                                             }
-                                            AgentEvent::TurnCompleted | AgentEvent::TurnInterrupted => {
+                                            AgentEvent::TurnCompleted
+                                            | AgentEvent::TurnInterrupted => {
                                                 *waiting = false;
                                                 apply_agent_status_event_with_policy(
                                                     &watcher_app,
@@ -2399,8 +2400,7 @@ mod tests {
         drop(append);
 
         let mut cursor = baseline.cursor;
-        let mut file =
-            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("positioned log");
+        let mut file = open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("positioned log");
         let mut observed = String::new();
         file.read_to_string(&mut observed).expect("new Pi events");
 
@@ -2433,8 +2433,7 @@ mod tests {
         std::fs::rename(&replacement, &path).expect("replace Pi transcript at same path");
 
         let mut cursor = baseline.cursor;
-        let mut file =
-            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("replacement log");
+        let mut file = open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("replacement log");
         let mut observed = String::new();
         file.read_to_string(&mut observed)
             .expect("replacement Pi events");
@@ -2463,10 +2462,10 @@ mod tests {
         std::fs::write(&path, new_content).expect("in-place Pi transcript rewrite");
 
         let mut cursor = baseline.cursor;
-        let mut file =
-            open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("rewritten log");
+        let mut file = open_pi_log_at_cursor(&baseline.path, &mut cursor).expect("rewritten log");
         let mut observed = String::new();
-        file.read_to_string(&mut observed).expect("rewritten Pi events");
+        file.read_to_string(&mut observed)
+            .expect("rewritten Pi events");
         let assistant_messages = observed
             .lines()
             .filter_map(|line| extract_transcript_message("pi", line))
@@ -2718,12 +2717,7 @@ mod tests {
             .expect("OpenCode title");
         let mut transition = OpenCodeStartupMemoryTransition::default();
         assert_eq!(
-            transition.observe_title(
-                &mut pending,
-                "opencode",
-                &title,
-                agent_id,
-            ),
+            transition.observe_title(&mut pending, "opencode", &title, agent_id,),
             Some("Idle")
         );
         assert!(transition.ready_observed);

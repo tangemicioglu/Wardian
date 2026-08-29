@@ -7,5 +7,5 @@ export interface BlueprintRef {
 export interface BlueprintListResult {
   blueprints: BlueprintRef[];
   truncated: boolean;
-  next_offset?: number | null;
+  next_offset: number | null;
 }

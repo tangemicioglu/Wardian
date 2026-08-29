@@ -1020,7 +1020,9 @@ SET dp0=%~dp0
         let database = AntigravityProvider::conversation_database_path(home, conversation_id);
         let connection = Connection::open(&database).expect("open database");
         connection
-            .execute_batch("CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB);")
+            .execute_batch(
+                "CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB);",
+            )
             .expect("create steps");
         let user = protobuf_message_field(19, protobuf_string_field(2, "Fresh prompt."));
         connection

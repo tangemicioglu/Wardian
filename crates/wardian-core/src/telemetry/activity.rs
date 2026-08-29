@@ -46,7 +46,9 @@ pub fn cluster_events(
     for stamp in stamps.iter().skip(1) {
         let gap = (*stamp - end).num_milliseconds();
         if gap > ACTIVE_GAP_THRESHOLD_MS {
-            intervals.push(build_interval(session_id, provider, start, end, count, method));
+            intervals.push(build_interval(
+                session_id, provider, start, end, count, method,
+            ));
             start = *stamp;
             end = *stamp;
             count = 1;
@@ -55,7 +57,9 @@ pub fn cluster_events(
             count += 1;
         }
     }
-    intervals.push(build_interval(session_id, provider, start, end, count, method));
+    intervals.push(build_interval(
+        session_id, provider, start, end, count, method,
+    ));
     intervals
 }
 

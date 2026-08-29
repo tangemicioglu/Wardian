@@ -5,7 +5,6 @@ import type {
 } from "../../types";
 import type {
   DeepReadonly,
-  ReadonlyWorkbenchDocumentV1,
   WorkbenchStoreState,
 } from "./useWorkbenchStore";
 
@@ -71,16 +70,6 @@ export function selectWorkbenchSurfacesInTreeOrder(
   return surfaces;
 }
 
-export function selectWorkbenchGroup(groupId: string) {
-  return (state: WorkbenchDocumentState): ReadonlyWorkbenchGroupV1 | undefined =>
-    state.document.groups[groupId];
-}
-
-export function selectWorkbenchSurface(surfaceId: string) {
-  return (state: WorkbenchDocumentState): ReadonlyWorkbenchSurfaceV1 | undefined =>
-    state.document.surfaces[surfaceId];
-}
-
 export function selectWorkbenchGroupForSurface(surfaceId: string) {
   return (state: WorkbenchDocumentState): ReadonlyWorkbenchGroupV1 | undefined =>
     selectWorkbenchGroupsInTreeOrder(state).find(
@@ -117,40 +106,16 @@ export function selectWorkbenchTransactionVersion(
   return state.transaction_version;
 }
 
-export function selectWorkbenchDurableDocument(
-  state: Pick<WorkbenchStoreState, "durable_document">,
-): ReadonlyWorkbenchDocumentV1 {
-  return state.durable_document;
-}
-
 export function selectWorkbenchDurableRevision(
   state: Pick<WorkbenchStoreState, "durable_revision">,
 ): number {
   return state.durable_revision;
 }
 
-export function selectWorkbenchDurableToken(
-  state: Pick<WorkbenchStoreState, "durable_token">,
-): string | null {
-  return state.durable_token;
-}
-
 export function selectWorkbenchPendingRequestId(
   state: Pick<WorkbenchStoreState, "pending_request_id">,
 ): string | null {
   return state.pending_request_id;
-}
-
-export function selectWorkbenchPendingRevision(
-  state: Pick<WorkbenchStoreState, "pending_revision">,
-): number | null {
-  return state.pending_revision;
-}
-
-export function selectWorkbenchHasPendingSave(
-  state: Pick<WorkbenchStoreState, "save_pending">,
-): boolean {
-  return state.save_pending;
 }
 
 export function selectWorkbenchConflict(
@@ -175,10 +140,4 @@ export function selectWorkbenchDirty(
   state: Pick<WorkbenchStoreState, "is_dirty">,
 ): boolean {
   return state.is_dirty;
-}
-
-export function selectWorkbenchSaveError(
-  state: Pick<WorkbenchStoreState, "save_error">,
-): string | null {
-  return state.save_error;
 }

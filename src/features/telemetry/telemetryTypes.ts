@@ -39,6 +39,7 @@ export interface TokenCounts {
   reasoning_tokens: number | null;
 }
 
+/** @ipcContract `telemetry_dashboard` response DTO. No TypeScript client reads it today. */
 export interface TelemetrySummary {
   active: ActiveTime;
   turns: number;
@@ -49,25 +50,7 @@ export interface TelemetrySummary {
   agent_count: number;
 }
 
-export interface TelemetryBreakdownRow {
-  /** The store's own key, stable across calls. */
-  key: string;
-  /** What to print. Differs from `key` for agents, which key on a UUID. */
-  label: string;
-  active: ActiveTime;
-  turns: number;
-  tokens: TokenCounts;
-  /** New content processed: fresh input, cache writes, and output; excludes
-   * cache reads. `null` when unreported. */
-  processed_tokens: number | null;
-  files_touched: number;
-  lines_added: number;
-  lines_removed: number;
-  agent_count: number;
-  /** False when no contributing provider reported token accounting. */
-  tokens_reported: boolean;
-}
-
+/** @ipcContract Mirrors the Rust `LimitObservation` DTO. No TypeScript client reads it today. */
 export interface LimitObservation {
   provider: string;
   limit_id: string | null;
@@ -85,29 +68,9 @@ export interface HorizonWindow {
   from_floored: boolean;
 }
 
-export interface TelemetryOverview {
-  window: HorizonWindow;
-  summary: TelemetrySummary;
-  processed_tokens: number | null;
-  active_is_mixed: boolean;
-  by_provider: TelemetryBreakdownRow[];
-  by_agent: TelemetryBreakdownRow[];
-  by_model: TelemetryBreakdownRow[];
-  limits: LimitObservation[];
-}
-
 /** How an interval's duration was established. */
+/** @ipcContract Mirrors the Rust activity-method enum. No TypeScript client reads it today. */
 export type ActivityMethod = "measured" | "clustered" | "decoded";
-
-export interface ActivityInterval {
-  session_id: string;
-  provider: string;
-  started_at: string;
-  ended_at: string;
-  last_event_at: string;
-  event_count: number;
-  method: ActivityMethod;
-}
 
 export interface TelemetryRefreshReport {
   sources: number;
@@ -179,39 +142,6 @@ export interface TelemetryMatrix {
    * accumulated.
    */
   cells_are_not_additive: boolean;
-}
-
-/** One agent's figures for a horizon — the Dashboard's unit. */
-export interface TelemetryAgentRow {
-  /** Session id. What callbacks receive; never rendered. */
-  key: string;
-  /** The agent's name. */
-  label: string;
-  /** The agent's class. */
-  sublabel: string | null;
-  /** Measured and inferred durations summed. */
-  active_ms: number;
-  turns: number;
-  /** New content processed: fresh input, cache writes, and output. Cache reads
-   * are excluded. `null` when unreported. */
-  total_tokens: number | null;
-  cached_tokens: number | null;
-  files_touched: number;
-  lines_added: number;
-  lines_removed: number;
-  /** False when no contributing provider reported token accounting. */
-  tokens_reported: boolean;
-  /** True when this agent recorded nothing in the window; still listed. */
-  idle: boolean;
-  /**
-   * The selected measure bucketed across the window, aligned to
-   * `TelemetryDashboard.buckets`.
-   *
-   * A total cannot tell a steady week from one frantic afternoon, which is the
-   * whole reason the Dashboard carries a time axis of its own rather than
-   * sending the reader to Analytics to find out.
-   */
-  spark: number[];
 }
 
 /**
@@ -322,44 +252,4 @@ export interface TelemetryFleet {
    * provider cards against it would flatten every one onto the floor.
    */
   provider_maxima: TelemetryFleetMaxima;
-}
-
-/**
- * One provider's contribution to the habitat, plus its account headroom.
- *
- * Capacity is a field here rather than a component of its own. Only codex
- * publishes a limit, so a dedicated gauge made the Dashboard grow and lose a
- * whole block depending on which provider a habitat happened to run — layout
- * contingent on one vendor. As a field it is simply absent, the way every other
- * unreported measure is absent.
- */
-export interface TelemetryProviderRow {
-  provider: string;
-  /** Agents on this provider that recorded anything in the window. */
-  agent_count: number;
-  active_ms: number;
-  turns: number;
-  total_tokens: number | null;
-  files_touched: number;
-  lines_added: number;
-  lines_removed: number;
-  /** False when this provider publishes no token accounting at all. */
-  tokens_reported: boolean;
-  /** Account gauges. Never per-agent, and never summed. */
-  limits: LimitObservation[];
-}
-
-/** The Dashboard payload: every agent, plus account-level state. */
-export interface TelemetryDashboard {
-  window: HorizonWindow;
-  rows: TelemetryAgentRow[];
-  providers: TelemetryProviderRow[];
-  /** Bucket start instants for every row's `spark`, ascending. */
-  buckets: string[];
-  /** Which measure the sparklines carry. */
-  spark_measure: TelemetryMeasure;
-  /** Bucket width, so a surface can say what one spark column covers. */
-  grain: TelemetryGrain;
-  /** Largest bucket across every row, so all sparklines share one scale. */
-  spark_max: number;
 }

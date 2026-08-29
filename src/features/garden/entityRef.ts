@@ -265,10 +265,6 @@ export function workflowRef(blueprintId: string, entryPath?: string): EntityRef 
   };
 }
 
-export function workflowRunRef(blueprintId: string, runId: string): EntityRef {
-  return { kind: "workflow_run", id: `${blueprintId}/${runId}`, source: "logs" };
-}
-
 /**
  * Library entries. `LibraryEntry.entry_ref` is `<section>/<rel_path>`, which is
  * already a stable within-library identity, so it becomes the id directly for
@@ -340,18 +336,6 @@ export function buildWorkflowPathIndex(
     index.set(`workflows/${fileName}`, blueprint.id);
   }
   return index;
-}
-
-export function classRef(className: string): EntityRef {
-  return { kind: "class", id: className, source: "library", path: className };
-}
-
-export function teamRef(teamId: string): EntityRef {
-  return { kind: "team", id: teamId, source: "wardian_home" };
-}
-
-export function watchlistRef(watchlistId: string): EntityRef {
-  return { kind: "watchlist", id: watchlistId, source: "wardian_home" };
 }
 
 /**

@@ -84,16 +84,16 @@ async function installRunViewIpcMock(page: Page) {
         if (command === "plugin:event|unlisten") return null;
         if (command === "sync_provider_theme_settings") return null;
 
-        if (command === "workflow_list_blueprints") return [];
+        if (command === "workflow_list_blueprints") return { blueprints: [], truncated: false, next_offset: null };
         if (command === "workflow_list_runs") {
-          return [{
+          return { runs: [{
             run_id: "run-e2e-1",
             blueprint_id: "wf-run-e2e",
             status: "failed",
             node_count: 2,
             failure: "boom",
             path: "<absolute-workspace-path>/logs/workflows/wf-run-e2e/run-e2e-1",
-          }];
+          }], truncated: false, next_offset: null };
         }
         if (command === "workflow_read_run") {
           return {

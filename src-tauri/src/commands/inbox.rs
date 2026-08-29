@@ -5,6 +5,7 @@ use wardian_core::control::{
     InboxNotificationDecision, InboxNotificationKind, InboxNotificationPayload, InteractionBodyRef,
     InteractionStatus,
 };
+use wardian_core::limits::MAX_INBOX_NOTIFICATIONS;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InboxNotificationDto {
@@ -21,8 +22,6 @@ pub struct InboxNotificationDto {
     pub created_at: String,
     pub decision: Option<InboxNotificationDecision>,
 }
-
-pub const MAX_INBOX_NOTIFICATIONS: usize = 200;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InboxNotificationListResult {

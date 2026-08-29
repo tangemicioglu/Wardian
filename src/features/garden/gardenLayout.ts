@@ -72,13 +72,6 @@ import {
   type GardenScene,
 } from "./gardenScene";
 
-/**
- * Baseline world-space gap between district cells.
- *
- * Re-exported from `districts.ts`, where the adaptive rule that widens it lives.
- */
-export const DISTRICT_SPACING = DEFAULT_DISTRICT_SPACING;
-
 export interface LayoutEntity {
   ref: EntityRef;
   facets: GardenEntityFacets;

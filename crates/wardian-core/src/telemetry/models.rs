@@ -335,7 +335,11 @@ impl TokenCounts {
     /// both directions: cache reads are billed too, at 10%, and cache writes
     /// were billed and not counted. `None` when no component was reported.
     pub fn processed_total(&self) -> Option<i64> {
-        match (self.input_tokens, self.cache_write_tokens, self.output_tokens) {
+        match (
+            self.input_tokens,
+            self.cache_write_tokens,
+            self.output_tokens,
+        ) {
             (None, None, None) => None,
             (input, write, output) => {
                 Some(input.unwrap_or(0) + write.unwrap_or(0) + output.unwrap_or(0))
@@ -433,7 +437,11 @@ mod tests {
 
     #[test]
     fn cursor_kind_round_trips() {
-        for kind in [CursorKind::ByteOffset, CursorKind::EpochMs, CursorKind::EventSeq] {
+        for kind in [
+            CursorKind::ByteOffset,
+            CursorKind::EpochMs,
+            CursorKind::EventSeq,
+        ] {
             assert_eq!(CursorKind::parse(kind.as_str()), Some(kind));
         }
         assert_eq!(CursorKind::parse("nonsense"), None);

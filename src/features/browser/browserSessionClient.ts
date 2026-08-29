@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
-  BrowserEngineStatus,
   BrowserNavigateAction,
   BrowserScreencastAttachment,
   BrowserSessionEvent,
@@ -101,10 +100,6 @@ export function isTextKey(key: string): boolean {
   return key.length === 1 && !NON_TEXT_KEYS.has(key);
 }
 
-export function browserEngineStatus(): Promise<BrowserEngineStatus> {
-  return invoke<BrowserEngineStatus>("browser_engine_status");
-}
-
 export function openBrowserSession(options: {
   url?: string;
   width?: number;
@@ -157,10 +152,6 @@ export async function reopenBrowserSurfaceSession(
     console.error("[Wardian] could not reopen the browser session", error);
     throw error;
   }
-}
-
-export function listBrowserSessions(): Promise<BrowserSessionSummary[]> {
-  return invoke<BrowserSessionSummary[]>("list_browser_sessions");
 }
 
 /** Surface opens the backend is still waiting to see acknowledged. */

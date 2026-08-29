@@ -102,9 +102,11 @@ pub fn ingest_source(conn: &Connection, ctx: &SourceContext) -> Result<IngestOut
         // first line is momentarily unreadable would otherwise have its
         // fingerprint cleared while its cursor stayed put, and the next pass
         // would have nothing left to compare against.
-        fingerprint: source
-            .fingerprint(ctx)
-            .or_else(|| existing.as_ref().and_then(|state| state.fingerprint.clone())),
+        fingerprint: source.fingerprint(ctx).or_else(|| {
+            existing
+                .as_ref()
+                .and_then(|state| state.fingerprint.clone())
+        }),
         carry: facts.carry.clone(),
     };
 
@@ -122,10 +124,7 @@ pub fn ingest_source(conn: &Connection, ctx: &SourceContext) -> Result<IngestOut
     // advancing several agents at once will do.
     // `new_unchecked` because the connection is shared, not owned; the caller's
     // mutex is what guarantees no other transaction is open on it.
-    let tx = rusqlite::Transaction::new_unchecked(
-        conn,
-        rusqlite::TransactionBehavior::Immediate,
-    )?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
 
     // A re-read exists to repair facts, and `INSERT OR IGNORE` cannot repair
     // anything, so the rows being replaced have to go first.
@@ -300,7 +299,10 @@ mod tests {
     #[test]
     fn first_pass_ingests_and_advances() {
         let dir = tempfile::tempdir().unwrap();
-        let contents = format!("{TURN_CONTEXT}\n{}\n", token_count("2026-08-13T18:42:49.628Z", 100));
+        let contents = format!(
+            "{TURN_CONTEXT}\n{}\n",
+            token_count("2026-08-13T18:42:49.628Z", 100)
+        );
         let path = write_log(dir.path(), &contents);
         let conn = db();
 
@@ -313,7 +315,10 @@ mod tests {
     #[test]
     fn a_second_pass_with_no_new_bytes_is_a_no_op() {
         let dir = tempfile::tempdir().unwrap();
-        let contents = format!("{TURN_CONTEXT}\n{}\n", token_count("2026-08-13T18:42:49.628Z", 100));
+        let contents = format!(
+            "{TURN_CONTEXT}\n{}\n",
+            token_count("2026-08-13T18:42:49.628Z", 100)
+        );
         let path = write_log(dir.path(), &contents);
         let conn = db();
 
@@ -333,12 +338,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_log(
             dir.path(),
-            &format!("{TURN_CONTEXT}\n{}\n", token_count("2026-08-13T18:42:49.628Z", 100)),
+            &format!(
+                "{TURN_CONTEXT}\n{}\n",
+                token_count("2026-08-13T18:42:49.628Z", 100)
+            ),
         );
         let conn = db();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(file, "{}", token_count("2026-08-13T18:45:00.000Z", 200)).unwrap();
 
         let outcome = ingest_source(&conn, &codex_ctx(&path)).unwrap();
@@ -359,7 +370,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_log(
             dir.path(),
-            &format!("{TURN_CONTEXT}\n{}\n", token_count("2026-08-13T18:42:49.628Z", 100)),
+            &format!(
+                "{TURN_CONTEXT}\n{}\n",
+                token_count("2026-08-13T18:42:49.628Z", 100)
+            ),
         );
         let conn = db();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
@@ -381,7 +395,10 @@ mod tests {
         // larger resumes at the old offset, silently dropping everything before
         // it. Only the file's identity catches this.
         let dir = tempfile::tempdir().unwrap();
-        let original = format!("{TURN_CONTEXT}\n{}\n", token_count("2026-08-13T18:42:49.628Z", 100));
+        let original = format!(
+            "{TURN_CONTEXT}\n{}\n",
+            token_count("2026-08-13T18:42:49.628Z", 100)
+        );
         let path = write_log(dir.path(), &original);
         let conn = db();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
@@ -408,12 +425,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_log(
             dir.path(),
-            &format!("{TURN_CONTEXT}\n{}\n", token_count("2026-08-13T18:00:00.000Z", 10)),
+            &format!(
+                "{TURN_CONTEXT}\n{}\n",
+                token_count("2026-08-13T18:00:00.000Z", 10)
+            ),
         );
         let conn = db();
         let first = ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(file, "{}", token_count("2026-08-13T18:01:00.000Z", 20)).unwrap();
 
         let second = ingest_source(&conn, &codex_ctx(&path)).unwrap();
@@ -451,7 +474,9 @@ mod tests {
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
         let method: String = conn
-            .query_row("SELECT method FROM telemetry_activity", [], |row| row.get(0))
+            .query_row("SELECT method FROM telemetry_activity", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(method, "clustered");
 
@@ -475,7 +500,10 @@ mod tests {
         let conn = db();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(file, "{}", token_count("2026-08-13T18:04:00.000Z", 100)).unwrap();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
@@ -507,7 +535,10 @@ mod tests {
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
         for minute in ["18:03:00", "18:06:00", "18:09:00"] {
-            let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
             writeln!(
                 file,
                 "{}",
@@ -549,13 +580,18 @@ mod tests {
         let conn = db();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         // Well past the 12 minute threshold.
         writeln!(file, "{}", token_count("2026-08-13T18:40:00.000Z", 10)).unwrap();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
         let rows: i64 = conn
-            .query_row("SELECT count(*) FROM telemetry_activity", [], |row| row.get(0))
+            .query_row("SELECT count(*) FROM telemetry_activity", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(rows, 2);
     }
@@ -583,7 +619,10 @@ mod tests {
             )
             .unwrap();
 
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(file, "{}", token_count("2026-08-13T18:40:00.000Z", 10)).unwrap();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
@@ -626,8 +665,16 @@ mod tests {
         );
         let incremental = db();
         ingest_source(&incremental, &codex_ctx(&path)).unwrap();
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(file, "{}", token_count(&format!("2026-08-13T{gap}.000Z"), 10)).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(
+            file,
+            "{}",
+            token_count(&format!("2026-08-13T{gap}.000Z"), 10)
+        )
+        .unwrap();
         ingest_source(&incremental, &codex_ctx(&path)).unwrap();
 
         // Single pass over the identical bytes.
@@ -669,7 +716,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_log(
             dir.path(),
-            &format!("{TURN_CONTEXT}\n{}\n", token_count("2026-08-13T18:42:49.628Z", 100)),
+            &format!(
+                "{TURN_CONTEXT}\n{}\n",
+                token_count("2026-08-13T18:42:49.628Z", 100)
+            ),
         );
         let conn = db();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
@@ -692,7 +742,10 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(turns, 1, "the corrected fact must not sit beside the old one");
+        assert_eq!(
+            turns, 1,
+            "the corrected fact must not sit beside the old one"
+        );
         assert_eq!(input, 100, "the re-read value must win");
         assert_eq!(model.as_deref(), Some("gpt-5.6-terra"));
 
@@ -716,15 +769,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_log(
             dir.path(),
-            &format!("{TURN_CONTEXT}\n{}\n", token_count("2026-08-13T18:00:00.000Z", 10)),
+            &format!(
+                "{TURN_CONTEXT}\n{}\n",
+                token_count("2026-08-13T18:00:00.000Z", 10)
+            ),
         );
         let conn = db();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
         // Replacement whose first line has no terminator yet.
-        std::fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"new").unwrap();
+        std::fs::write(
+            &path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"new",
+        )
+        .unwrap();
         let interrupted = ingest_source(&conn, &codex_ctx(&path)).unwrap();
-        assert_eq!(interrupted.cursor_before, 0, "an unreadable identity is stale");
+        assert_eq!(
+            interrupted.cursor_before, 0,
+            "an unreadable identity is stale"
+        );
 
         // The writer finishes the replacement.
         let replacement = format!(
@@ -779,18 +842,19 @@ mod tests {
 
         // The token count arrives in a later delta, with its context already
         // consumed by the previous pass.
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(file, "{}", token_count("2026-08-13T18:42:49.628Z", 100)).unwrap();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
         // Carried context means the split record is attributed exactly as a
         // single-pass read would have attributed it.
         let (turn_id, model): (Option<String>, Option<String>) = conn
-            .query_row(
-                "SELECT turn_id, model FROM telemetry_turns",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            .query_row("SELECT turn_id, model FROM telemetry_turns", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
             .unwrap();
         assert_eq!(turn_id.as_deref(), Some("t-1"));
         assert_eq!(model.as_deref(), Some("gpt-5.6-terra"));
@@ -816,16 +880,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_log(
             dir.path(),
-            &format!("{TURN_CONTEXT}\n{}\n", token_count("2026-08-13T18:42:49.628Z", 100)),
+            &format!(
+                "{TURN_CONTEXT}\n{}\n",
+                token_count("2026-08-13T18:42:49.628Z", 100)
+            ),
         );
         let conn = db();
         ingest_source(&conn, &codex_ctx(&path)).unwrap();
 
-        conn.execute(
-            "UPDATE telemetry_sources SET parser_version = 0",
-            params![],
-        )
-        .unwrap();
+        conn.execute("UPDATE telemetry_sources SET parser_version = 0", params![])
+            .unwrap();
 
         let outcome = ingest_source(&conn, &codex_ctx(&path)).unwrap();
         assert_eq!(outcome.cursor_before, 0);

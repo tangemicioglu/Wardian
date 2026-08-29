@@ -319,7 +319,11 @@ mod tests {
     use super::*;
 
     fn ctx() -> SourceContext {
-        SourceContext::new("agent-1", "claude", std::path::Path::new("transcript.jsonl"))
+        SourceContext::new(
+            "agent-1",
+            "claude",
+            std::path::Path::new("transcript.jsonl"),
+        )
     }
 
     fn parse(delta: &str) -> ParsedFacts {

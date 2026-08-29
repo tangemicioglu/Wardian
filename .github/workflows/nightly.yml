@@ -1,0 +1,70 @@
+name: nightly
+
+# The native E2E suite is too slow to run in full on every pull request, so CI
+# runs the `ci` tier and this runs the rest. Without it, 33 of 46 native tests
+# would exist without any job that executes them, which is the state the
+# merged-PR audit found and this schedule closes.
+
+on:
+  schedule:
+    # 04:00 UTC, after the working day in the maintainer's timezone.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  native-nightly:
+    name: Native E2E (nightly tier)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: "npm"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+      - name: Install dependencies
+        run: npm ci
+      - name: Setup native E2E drivers
+        run: npm run setup:e2e:native
+      - name: Build native debug app
+        run: npm run tauri -- build --debug --no-bundle
+        env:
+          WARDIAN_HOME: ${{ github.workspace }}\.tmp\e2e-native\wardian-e2e-nightly
+          WARDIAN_E2E_NATIVE_HOME: ${{ github.workspace }}\.tmp\e2e-native\wardian-e2e-nightly
+          VITE_WARDIAN_TERMINAL_DEBUG: "1"
+      - name: Configure elevated WebView2 automation
+        shell: pwsh
+        run: |
+          # WebView2 150 ignores environment-supplied browser arguments for
+          # elevated hosts. GitHub's Windows runner is elevated, while
+          # tauri-driver needs this switch to attach to Wardian's WebView.
+          $policyPath = "HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments"
+          New-Item -Path $policyPath -Force | Out-Null
+          New-ItemProperty `
+            -Path $policyPath `
+            -Name "Wardian.exe" `
+            -Value "--remote-debugging-port=0" `
+            -PropertyType String `
+            -Force | Out-Null
+      - name: Run nightly-tier native suite
+        run: npm run test:e2e:native:nightly
+        env:
+          WARDIAN_HOME: ${{ github.workspace }}\.tmp\e2e-native\wardian-e2e-nightly
+          WARDIAN_E2E_NATIVE_HOME: ${{ github.workspace }}\.tmp\e2e-native\wardian-e2e-nightly
+          WARDIAN_NATIVE_SESSION_START_ATTEMPTS: "3"
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-nightly-results
+          if-no-files-found: warn
+          path: |
+            ${{ github.workspace }}\.tmp\e2e-native\wardian-e2e-nightly
+            e2e/screenshots/

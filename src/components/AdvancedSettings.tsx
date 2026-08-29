@@ -8,7 +8,7 @@ import { providerConfigFor } from '../features/agents/configUtils';
 
 interface AdvancedSettingsProps {
   config: Partial<AgentConfig>;
-  updateField: (field: keyof AgentConfig, value: any) => void;
+  updateField: (field: keyof AgentConfig, value: AgentConfig[keyof AgentConfig]) => void;
   showCopyFullCommand?: boolean;
 }
 

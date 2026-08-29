@@ -103,10 +103,7 @@ fn every_breakdown_dimension_agrees_with_the_summary_it_came_from() {
         assert!(!rows.is_empty(), "{dimension:?} produced no rows");
 
         let turns: i64 = rows.iter().map(|row| row.turns).sum();
-        let input: i64 = rows
-            .iter()
-            .filter_map(|row| row.tokens.input_tokens)
-            .sum();
+        let input: i64 = rows.iter().filter_map(|row| row.tokens.input_tokens).sum();
 
         assert_eq!(turns, totals.turns, "{dimension:?} turns disagree");
         assert_eq!(
@@ -138,9 +135,11 @@ fn distinct_counts_survive_an_hour_boundary() {
         )
         .unwrap();
     let distinct_files: i64 = conn
-        .query_row("SELECT COUNT(DISTINCT path) FROM telemetry_edits", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(DISTINCT path) FROM telemetry_edits",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
 
     assert_eq!(distinct_turns, 2, "the fixture holds two real turns");
@@ -204,9 +203,11 @@ fn a_horizon_that_excludes_the_fixture_reports_nothing_rather_than_failing() {
     // No turns is not a report of zero tokens.
     assert_eq!(totals.tokens.input_tokens, None);
     assert!(!totals.tokens.any_reported());
-    assert!(breakdown(&conn, Dimension::Provider, &window.from, &window.to, 24)
-        .unwrap()
-        .is_empty());
+    assert!(
+        breakdown(&conn, Dimension::Provider, &window.from, &window.to, 24)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

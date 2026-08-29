@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-pub use wardian_core::browser::EngineKind;
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, Instant};
+pub use wardian_core::browser::EngineKind;
 
 /// Environment override naming an explicit Chromium binary.
 pub const ENGINE_BINARY_ENV: &str = "WARDIAN_BROWSER_BINARY";
@@ -150,7 +150,12 @@ pub fn engine_candidates() -> Vec<EngineBinary> {
             (EngineKind::Edge, "microsoft-edge"),
             (EngineKind::Brave, "brave-browser"),
         ] {
-            for root in ["/usr/bin", "/usr/local/bin", "/snap/bin", "/opt/google/chrome"] {
+            for root in [
+                "/usr/bin",
+                "/usr/local/bin",
+                "/snap/bin",
+                "/opt/google/chrome",
+            ] {
                 candidates.push(EngineBinary {
                     kind,
                     path: Path::new(root).join(name),

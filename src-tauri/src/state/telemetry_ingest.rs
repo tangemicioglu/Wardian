@@ -13,9 +13,9 @@
 use crate::manager::opencode::opencode_database_path;
 use crate::state::AppState;
 use crate::utils::fs::get_wardian_home;
-use tauri::Manager;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use tauri::Manager;
 use wardian_core::telemetry::ingest::{ingest_source, IngestError};
 use wardian_core::telemetry::sources::opencode::sessions_in_directory;
 use wardian_core::telemetry::sources::{is_supported, uses_archive, SourceContext, SourceError};
@@ -425,7 +425,10 @@ pub fn discover_sources_with(
             // stays a single source with a single cursor, and the id list is
             // what narrows it to this agent.
             "opencode" => {
-                let ids = owned_opencode.get(&agent.session_id).cloned().unwrap_or_default();
+                let ids = owned_opencode
+                    .get(&agent.session_id)
+                    .cloned()
+                    .unwrap_or_default();
                 match catalog.opencode_database() {
                     Some(path) if !ids.is_empty() => vec![(path, ids)],
                     _ => Vec::new(),
@@ -880,7 +883,11 @@ mod tests {
         let catalog = StubCatalog::with("a1", &["ses-1", "ses-2", "ses-3"]);
         let sources = discover_sources_with(&[agent("a1", "codex", Some("ses-4"))], &catalog);
 
-        assert_eq!(sources.len(), 4, "three archived sessions plus the live one");
+        assert_eq!(
+            sources.len(),
+            4,
+            "three archived sessions plus the live one"
+        );
         let paths: HashSet<_> = sources.iter().map(|source| source.path.clone()).collect();
         assert!(paths.contains(&PathBuf::from("/logs/ses-1.jsonl")));
         assert!(paths.contains(&PathBuf::from("/logs/ses-4.jsonl")));

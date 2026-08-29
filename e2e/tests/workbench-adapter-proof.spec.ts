@@ -48,9 +48,10 @@ async function installProofIpcMock(page: Page) {
         if (command === "load_shell_settings") return null;
         if (command === "list_available_shells") return [];
         if (command === "get_topology") return { edges: [], ignored_pairs: [], fallback_groups: [] };
-        if (command === "get_pair_activity") return [];
-        if (command === "workflow_list_blueprints") return [];
-        if (command === "workflow_list_runs") return [];
+        if (command === "get_pair_activity") return { pairs: [], truncated: false, next_offset: null };
+        if (command === "workflow_list_blueprints") return { blueprints: [], truncated: false, next_offset: null };
+        if (command === "workflow_list_runs") return { runs: [], truncated: false, next_offset: null };
+        if (command === "schedule_list") return [];
         if (command === "plugin:event|listen") return callbackId++;
         if (command === "plugin:event|unlisten") return null;
         return null;

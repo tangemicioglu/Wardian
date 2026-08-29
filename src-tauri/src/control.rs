@@ -236,9 +236,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             .map_err(browser_control_error)?,
         ),
 
-        ControlRequest::BrowserList => {
-            ok_json(&crate::commands::browser::list_sessions(app).await)
-        }
+        ControlRequest::BrowserList => ok_json(&crate::commands::browser::list_sessions(app).await),
 
         ControlRequest::BrowserClose { target } => {
             let browser_id = crate::commands::browser::close_session(app, &target)
@@ -335,9 +333,11 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             height,
             reset,
         } => ok_json(
-            &crate::commands::browser::set_session_viewport(app, &target, width, height, reset, None)
-                .await
-                .map_err(browser_control_error)?,
+            &crate::commands::browser::set_session_viewport(
+                app, &target, width, height, reset, None,
+            )
+            .await
+            .map_err(browser_control_error)?,
         ),
 
         ControlRequest::BrowserEval { target, expression } => ok_json(
@@ -3025,9 +3025,7 @@ fn pi_output_has_startup_ready_prompt(output: &str) -> bool {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
     lines.windows(2).any(|pair| {
-        pair[0].contains(" • ")
-            && pair[1].contains("%/")
-            && pair[1].split_whitespace().count() >= 2
+        pair[0].contains(" • ") && pair[1].contains("%/") && pair[1].split_whitespace().count() >= 2
     })
 }
 
@@ -5498,18 +5496,14 @@ mod tests {
         let capability = store.issue_process_capability("agent-a").unwrap();
 
         assert_eq!(
-            authenticate_workflow_memory_principal(
-                Some("agent-a"),
-                Some(capability.token()),
-            )
-            .unwrap(),
+            authenticate_workflow_memory_principal(Some("agent-a"), Some(capability.token()),)
+                .unwrap(),
             Some("agent-a".to_string())
         );
-        assert!(authenticate_workflow_memory_principal(
-            Some("agent-b"),
-            Some(capability.token()),
-        )
-        .is_err());
+        assert!(
+            authenticate_workflow_memory_principal(Some("agent-b"), Some(capability.token()),)
+                .is_err()
+        );
         assert!(authenticate_workflow_memory_principal(Some("agent-a"), None).is_err());
     }
 

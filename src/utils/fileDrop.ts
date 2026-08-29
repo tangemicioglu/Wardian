@@ -91,7 +91,6 @@ export function fileNameFromPath(path: string): string {
   return segments[segments.length - 1] || path;
 }
 
-/** Formats paths for insertion without submitting the terminal prompt. */
 /** Resolves the configured shell, including the platform's automatic choice. */
 export function resolveTerminalShellId(
   shellId: string,
@@ -123,7 +122,7 @@ function escapeTerminalPath(path: string, shellId: string): string {
   }
   if (shellId === "cmd") {
     const escaped = path.replace(/["^&|<>()]/g, "^$&").replace(/%/g, "^%").replace(/!/g, "^!");
-    return /^[A-Za-z0-9_./\\:@+\-]+$/.test(path) ? path : `"${escaped.replace(/"/g, '\\"')}"`;
+    return /^[A-Za-z0-9_./\\:@+-]+$/.test(path) ? path : `"${escaped.replace(/"/g, '\\"')}"`;
   }
   if (/^[A-Za-z0-9_./@:-]+$/.test(path)) return path;
   return `'${path.replace(/'/g, "'\\''")}'`;

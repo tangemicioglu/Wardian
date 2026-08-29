@@ -365,8 +365,10 @@ export async function installWorkbenchIpcMock(
         list_workflows: [],
         list_scheduled_runs: [],
         load_workflow_library: { folders: [], rootWorkflowIds: [] },
-        workflow_list_blueprints: [],
-        workflow_list_runs: [],
+        // Both return a page, never a bare array; see src/test/pageFixtures.ts.
+        workflow_list_blueprints: { blueprints: [], truncated: false, next_offset: null },
+        workflow_list_runs: { runs: [], truncated: false, next_offset: null },
+        schedule_list: [],
         get_library_index: emptyLibraryIndex,
         get_library_tree: { type: "Folder", path: "", name: "Root", children: [] },
         list_deployed_skills: [],
@@ -375,7 +377,7 @@ export async function installWorkbenchIpcMock(
         list_available_shells: [],
         sync_provider_theme_settings: null,
         get_topology: { edges: [], ignored_pairs: [], fallback_groups: [] },
-        get_pair_activity: [],
+        get_pair_activity: { pairs: [], truncated: false, next_offset: null },
         library_watch: null,
         library_unwatch: null,
       };
@@ -450,7 +452,11 @@ export async function installWorkbenchIpcMock(
                 extension: isDirectory || !name.includes(".") ? null : name.split(".").pop() ?? null,
               });
             }
-            return [...children.values()].sort((left, right) => left.name.localeCompare(right.name));
+            return {
+              nodes: [...children.values()].sort((left, right) => left.name.localeCompare(right.name)),
+              truncated: false,
+              next_offset: null,
+            };
           }
           if (command === "git_status") return { files: [] };
           if (command === "explorer_watch" || command === "explorer_unwatch") return null;

@@ -9,8 +9,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 pub use wardian_core::browser::{
-    render_snapshot, PageSnapshot, SnapshotElement, MAX_SNAPSHOT_ELEMENTS,
-    MAX_SNAPSHOT_FIELD_CHARS,
+    render_snapshot, PageSnapshot, SnapshotElement, MAX_SNAPSHOT_ELEMENTS, MAX_SNAPSHOT_FIELD_CHARS,
 };
 
 /// Attribute the injected walker stamps on every referenced element.
@@ -185,7 +184,10 @@ pub fn clamp_field(value: &str) -> String {
     if normalized.chars().count() <= MAX_SNAPSHOT_FIELD_CHARS {
         return normalized;
     }
-    let mut clamped: String = normalized.chars().take(MAX_SNAPSHOT_FIELD_CHARS - 1).collect();
+    let mut clamped: String = normalized
+        .chars()
+        .take(MAX_SNAPSHOT_FIELD_CHARS - 1)
+        .collect();
     clamped.push('…');
     clamped
 }
@@ -482,15 +484,24 @@ mod tests {
     #[test]
     fn acting_before_any_snapshot_is_refused() {
         let ledger = SnapshotLedger::default();
-        assert_eq!(ledger.validate("e1").expect_err("no snapshot").code(), "snapshot_missing");
+        assert_eq!(
+            ledger.validate("e1").expect_err("no snapshot").code(),
+            "snapshot_missing"
+        );
     }
 
     #[test]
     fn a_ref_beyond_what_the_snapshot_minted_is_refused() {
         let mut ledger = SnapshotLedger::default();
         ledger.record_snapshot(&minted(2));
-        assert_eq!(ledger.validate("e3").expect_err("detached").code(), "ref_detached");
-        assert_eq!(ledger.validate("e0").expect_err("detached").code(), "ref_detached");
+        assert_eq!(
+            ledger.validate("e3").expect_err("detached").code(),
+            "ref_detached"
+        );
+        assert_eq!(
+            ledger.validate("e0").expect_err("detached").code(),
+            "ref_detached"
+        );
     }
 
     #[test]
@@ -498,7 +509,10 @@ mod tests {
         let ledger = SnapshotLedger::default();
         // No snapshot exists either, but shape is checked first so the agent
         // gets the actionable error rather than a misleading one.
-        assert_eq!(ledger.validate("button").expect_err("malformed").code(), "ref_malformed");
+        assert_eq!(
+            ledger.validate("button").expect_err("malformed").code(),
+            "ref_malformed"
+        );
     }
 
     #[test]
@@ -517,7 +531,10 @@ mod tests {
         ledger.record_snapshot(&minted(2));
         // e3 existed in the earlier snapshot; carrying it forward would let an
         // agent act on a ref the current page never offered.
-        assert_eq!(ledger.validate("e3").expect_err("gone").code(), "ref_detached");
+        assert_eq!(
+            ledger.validate("e3").expect_err("gone").code(),
+            "ref_detached"
+        );
     }
 
     #[test]
@@ -532,10 +549,22 @@ mod tests {
                 || script.contains("data-wardian-snapshot"),
             "the selector must pin the snapshot generation: {script}"
         );
-        assert!(script.contains("\"button\""), "the expected role must be embedded");
-        assert!(script.contains("\"Go\""), "the expected name must be embedded");
-        assert!(script.contains("matches.length > 1"), "an ambiguous ref must be refused");
-        assert!(script.contains("return 'changed'"), "a repurposed node must be refused");
+        assert!(
+            script.contains("\"button\""),
+            "the expected role must be embedded"
+        );
+        assert!(
+            script.contains("\"Go\""),
+            "the expected name must be embedded"
+        );
+        assert!(
+            script.contains("matches.length > 1"),
+            "an ambiguous ref must be refused"
+        );
+        assert!(
+            script.contains("return 'changed'"),
+            "a repurposed node must be refused"
+        );
         assert!(script.contains("node.click();"));
     }
 
@@ -627,12 +656,10 @@ mod tests {
         assert!(!snapshot.elements[1].enabled);
     }
 
-
     #[test]
     fn rejects_a_result_without_an_elements_array() {
         assert!(parse_snapshot(1, true, &json!({ "url": "x" })).is_err());
     }
-
 
     #[test]
     fn the_injected_walker_carries_the_generation_and_caps_it_was_built_with() {

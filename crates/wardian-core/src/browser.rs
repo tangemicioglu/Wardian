@@ -311,10 +311,14 @@ impl StatusFilter {
         let lowered = trimmed.to_ascii_lowercase();
         if let Some(leading) = lowered.strip_suffix("xx") {
             let class: u8 = leading.parse().ok()?;
-            return (1..=5).contains(&class).then_some(StatusFilter::Class(class));
+            return (1..=5)
+                .contains(&class)
+                .then_some(StatusFilter::Class(class));
         }
         let exact: u16 = trimmed.parse().ok()?;
-        (100..=599).contains(&exact).then_some(StatusFilter::Exact(exact))
+        (100..=599)
+            .contains(&exact)
+            .then_some(StatusFilter::Exact(exact))
     }
 
     pub fn matches(self, status: u16) -> bool {
@@ -854,7 +858,10 @@ mod tests {
         let encoded = serde_json::to_string(&summary).expect("serialize");
         let decoded: BrowserSessionSummary = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded, summary);
-        assert!(!encoded.contains("workspace"), "absent fields stay off the wire");
+        assert!(
+            !encoded.contains("workspace"),
+            "absent fields stay off the wire"
+        );
     }
 
     #[test]
@@ -958,7 +965,10 @@ mod tests {
         assert_eq!(StatusFilter::parse("404"), Some(StatusFilter::Exact(404)));
         assert_eq!(StatusFilter::parse("2xx"), Some(StatusFilter::Class(2)));
         assert_eq!(StatusFilter::parse("5XX"), Some(StatusFilter::Class(5)));
-        assert_eq!(StatusFilter::parse("  301 "), Some(StatusFilter::Exact(301)));
+        assert_eq!(
+            StatusFilter::parse("  301 "),
+            Some(StatusFilter::Exact(301))
+        );
     }
 
     #[test]

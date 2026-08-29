@@ -289,7 +289,9 @@ fn parse_token_count(
         // different things depending on which provider filled it.
         input_tokens: fresh_input_tokens(usage),
         cached_input_tokens: usage.get("cached_input_tokens").and_then(Value::as_i64),
-        cache_write_tokens: usage.get("cache_write_input_tokens").and_then(Value::as_i64),
+        cache_write_tokens: usage
+            .get("cache_write_input_tokens")
+            .and_then(Value::as_i64),
         output_tokens: usage.get("output_tokens").and_then(Value::as_i64),
         reasoning_tokens: usage.get("reasoning_output_tokens").and_then(Value::as_i64),
         context_window: info.get("model_context_window").and_then(Value::as_i64),
@@ -546,7 +548,9 @@ mod tests {
     #[test]
     fn failed_patch_is_not_counted() {
         let line = r#"{"timestamp":"2026-08-13T18:42:43.883Z","type":"event_msg","payload":{"type":"patch_apply_end","success":false,"changes":{"x.md":{"type":"add","content":"a"}}}}"#;
-        assert!(parse_delta(&ctx(), line, SourceCarry::default()).edits.is_empty());
+        assert!(parse_delta(&ctx(), line, SourceCarry::default())
+            .edits
+            .is_empty());
     }
 
     #[test]
@@ -597,7 +601,10 @@ mod tests {
         assert_eq!(first, "alpha\nbeta\n");
         assert_eq!(offset, 11);
 
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         file.write_all(b"gamma\n").unwrap();
         let (second, next) = read_delta(&path, offset).unwrap();
         assert_eq!(second, "gamma\n");

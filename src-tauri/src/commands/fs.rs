@@ -4,10 +4,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
+use wardian_core::limits::MAX_DIRECTORY_CHILDREN;
 use wardian_core::models::AgentConfig;
 use wardian_core::models::{DirectoryTreeResult, FileNode};
-
-const MAX_DIRECTORY_CHILDREN: usize = 500;
 
 const EXPLORER_WATCH_DEBOUNCE_MS: u64 = 150;
 

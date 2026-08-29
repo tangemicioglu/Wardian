@@ -620,10 +620,7 @@ pub fn workflow_run(request: WorkflowRunRequest) -> io::Result<WorkflowRunRespon
             bindings: Some(request.bindings),
             assignments: None,
             caller_agent_id: std::env::var("WARDIAN_SESSION_ID").ok(),
-            memory_capability: std::env::var(
-                wardian_core::memory::MEMORY_CAPABILITY_ENV,
-            )
-            .ok(),
+            memory_capability: std::env::var(wardian_core::memory::MEMORY_CAPABILITY_ENV).ok(),
         }),
     )?;
     serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))

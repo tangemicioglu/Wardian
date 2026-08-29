@@ -68,7 +68,11 @@ fn fresh_input_is_not_contaminated_by_cache_reads() {
     // genuinely needs, would clamp almost every turn to zero. Both mistakes
     // leave every individual figure looking plausible.
     let facts = parse_fixture();
-    let fresh: i64 = facts.turns.iter().filter_map(|turn| turn.input_tokens).sum();
+    let fresh: i64 = facts
+        .turns
+        .iter()
+        .filter_map(|turn| turn.input_tokens)
+        .sum();
     let cached: i64 = facts
         .turns
         .iter()

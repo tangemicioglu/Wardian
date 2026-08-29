@@ -25,8 +25,7 @@ const TELEMETRY_SLOW_PASS_THRESHOLD: std::time::Duration = std::time::Duration::
 /// but refreshing every process on every five-second status tick is expensive
 /// on Windows. Between inventory refreshes, only the last known agent trees
 /// are sampled.
-const PROCESS_INVENTORY_REFRESH_TTL: std::time::Duration =
-    std::time::Duration::from_secs(30);
+const PROCESS_INVENTORY_REFRESH_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Reading every process's command line and environment block (PEB reads on
 /// Windows) is far too expensive to do on every 5s tick, so marker-based
@@ -255,19 +254,18 @@ fn is_user_query_log_record(provider: &str, value: &serde_json::Value) -> bool {
     }
 }
 
-fn query_timestamp_from_log_record(
-    provider: &str,
-    value: &serde_json::Value,
-) -> Option<String> {
+fn query_timestamp_from_log_record(provider: &str, value: &serde_json::Value) -> Option<String> {
     let timestamp = match provider {
         "codex" => value.get("timestamp").or_else(|| {
             value
                 .get("payload")
                 .and_then(|payload| payload.get("timestamp"))
         }),
-        "pi" => value
-            .get("timestamp")
-            .or_else(|| value.get("message").and_then(|message| message.get("timestamp"))),
+        "pi" => value.get("timestamp").or_else(|| {
+            value
+                .get("message")
+                .and_then(|message| message.get("timestamp"))
+        }),
         "antigravity" => value.get("created_at"),
         _ => value.get("timestamp"),
     };
@@ -750,7 +748,9 @@ fn process_inventory_cache() -> &'static Mutex<Option<ProcessInventoryCache>> {
     PROCESS_INVENTORY_CACHE.get_or_init(|| Mutex::new(None))
 }
 
-fn process_inventory_agent_key(agent_roots: &[(String, Option<u32>)]) -> Vec<(String, Option<u32>)> {
+fn process_inventory_agent_key(
+    agent_roots: &[(String, Option<u32>)],
+) -> Vec<(String, Option<u32>)> {
     let mut key = agent_roots.to_vec();
     key.sort_unstable();
     key
@@ -1482,10 +1482,8 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                 &mut last_query_timestamp,
                 &snap.last_query_timestamp,
             );
-            let run_provider_log_work = should_run_provider_log_telemetry(
-                &status_before_log_work,
-                process_alive,
-            );
+            let run_provider_log_work =
+                should_run_provider_log_telemetry(&status_before_log_work, process_alive);
 
             if run_provider_log_work {
                 if let Some(_agent_work_guard) = try_begin_agent_telemetry_work(&snap.session_id) {
@@ -2123,8 +2121,8 @@ pub async fn get_app_metrics(state: &AppState) -> AppTelemetry {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::Connection;
     use super::{AgentSnapshot, TelemetryPassTimings, TelemetrySlowAgent};
+    use rusqlite::Connection;
     use std::collections::{BTreeSet, HashMap};
     use std::sync::{Arc, Mutex};
 
@@ -2156,8 +2154,7 @@ mod tests {
     #[test]
     fn cached_provider_query_timestamp_survives_an_unchanged_log_pass() {
         let snap = test_snapshot("Idle");
-        *snap.last_query_timestamp.lock().unwrap() =
-            Some("2026-05-14T12:00:03.000Z".to_string());
+        *snap.last_query_timestamp.lock().unwrap() = Some("2026-05-14T12:00:03.000Z".to_string());
         let mut latest = Some("2026-05-14T12:00:01.000Z".to_string());
 
         super::reconcile_cached_last_query_timestamp(&mut latest, &snap.last_query_timestamp);
@@ -2230,9 +2227,7 @@ mod tests {
         )
         .expect("write oversized provider log");
 
-        assert!(
-            std::fs::metadata(&log).expect("log metadata").len() > super::LOG_PARSE_TAIL_BYTES
-        );
+        assert!(std::fs::metadata(&log).expect("log metadata").len() > super::LOG_PARSE_TAIL_BYTES);
         assert_eq!(
             super::latest_query_timestamp_from_log_suffix(&log, "codex").as_deref(),
             Some("2026-08-26T12:00:00.000Z")
@@ -2274,18 +2269,10 @@ mod tests {
             .map(|session_id| (session_id, Some(std::process::id())))
             .collect::<Vec<_>>();
 
-        let full = super::refresh_system_process_snapshot(
-            &system,
-            &session_ids,
-            &agent_roots,
-        )
-        .expect("full inventory refresh should succeed");
-        let tracked = super::refresh_system_process_snapshot(
-            &system,
-            &session_ids,
-            &agent_roots,
-        )
-        .expect("tracked refresh should succeed");
+        let full = super::refresh_system_process_snapshot(&system, &session_ids, &agent_roots)
+            .expect("full inventory refresh should succeed");
+        let tracked = super::refresh_system_process_snapshot(&system, &session_ids, &agent_roots)
+            .expect("tracked refresh should succeed");
 
         assert!(std::sync::Arc::ptr_eq(
             &full.children_map,

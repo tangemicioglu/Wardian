@@ -174,11 +174,11 @@ async function loadInboxNotificationItems(
   offset?: number,
 ): Promise<{ items: QueueItem[]; truncated: boolean; nextOffset: number | null }> {
   try {
-    const result = await invoke<InboxNotificationListResult | InboxNotificationDto[]>(
+    const result = await invoke<InboxNotificationListResult>(
       "list_inbox_notifications",
       offset && offset > 0 ? { offset } : undefined,
     );
-    const notifications = Array.isArray(result) ? result : result.notifications;
+    const notifications = result.notifications;
     return {
       items: notifications.map((notification) => ({
         id: `notification:${notification.id}`,
@@ -198,8 +198,8 @@ async function loadInboxNotificationItems(
         approval_decision: notification.decision?.choice,
         expires_at: notification.expires_at,
       })),
-      truncated: !Array.isArray(result) && result.truncated,
-      nextOffset: Array.isArray(result) ? null : result.next_offset ?? null,
+      truncated: result.truncated,
+      nextOffset: result.next_offset ?? null,
     };
   } catch {
     return { items: [], truncated: false, nextOffset: null };

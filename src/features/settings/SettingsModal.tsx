@@ -1183,7 +1183,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
                 Copy Path
               </button>
               {advancedStatus !== "idle" && (
-                <span className={`text-xs ${advancedStatus === "error" ? "text-red-400" : "text-muted-neutral"}`}>
+                <span className={`text-xs ${advancedStatus === "error" ? "text-wardian-error" : "text-muted-neutral"}`}>
                   {advancedStatus === "copied" ? "Copied." : "Unable to access settings folder."}
                 </span>
               )}
@@ -1277,7 +1277,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
                     {group.category === "Terminal" && (
                       <div className="mt-4 flex items-center justify-end gap-3">
                         {terminalMessage && (
-                          <span className={`text-xs ${terminalStatus === "error" ? "text-red-400" : "text-muted-neutral"}`}>
+                          <span className={`text-xs ${terminalStatus === "error" ? "text-wardian-error" : "text-muted-neutral"}`}>
                             {terminalMessage}
                           </span>
                         )}
@@ -1294,7 +1294,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
                     {group.category === "Agent Runtime" && (
                       <div className="mt-4 flex items-center justify-end gap-3">
                         {runtimeMessage && (
-                          <span className={`text-xs ${runtimeStatus === "error" ? "text-red-400" : "text-muted-neutral"}`}>
+                          <span className={`text-xs ${runtimeStatus === "error" ? "text-wardian-error" : "text-muted-neutral"}`}>
                             {runtimeMessage}
                           </span>
                         )}

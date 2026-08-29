@@ -152,12 +152,7 @@ pub(super) fn derive_turn_records_with_context(
                 if let Some(pending_records) = pending_rooted_contexts.remove(&request_root_id) {
                     let turn = &mut turns[turn_index];
                     for pending_record in pending_records {
-                        append_record_to_turn(
-                            turn,
-                            pending_record,
-                            &events_by_id,
-                            &sources_by_id,
-                        );
+                        append_record_to_turn(turn, pending_record, &events_by_id, &sources_by_id);
                     }
                 }
             }
