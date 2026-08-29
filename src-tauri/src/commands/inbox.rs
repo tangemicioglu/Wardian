@@ -64,9 +64,13 @@ fn list_workflow_inbox_terminal_runs_blocking(
     offset: usize,
 ) -> Result<(Vec<runs::WorkflowInboxUpdate>, bool), String> {
     let mut updates = Vec::new();
-    let page = crate::commands::workflow::workflow_list_runs_blocking(Some(offset))?;
-    let truncated = page.truncated;
-    for run in page.runs {
+    let (runs, truncated) = workflow_inbox_run_page(offset, |run| {
+        matches!(
+            run.get("status").and_then(serde_json::Value::as_str),
+            Some("completed" | "failed")
+        )
+    })?;
+    for run in runs {
         let Some(run_root) = run.get("path").and_then(serde_json::Value::as_str) else {
             continue;
         };
@@ -211,13 +215,11 @@ pub async fn list_workflow_inbox_approvals_page(
 fn list_workflow_inbox_approvals_blocking(
     offset: usize,
 ) -> Result<(Vec<WorkflowInboxApprovalDto>, bool), String> {
-    let page = crate::commands::workflow::workflow_list_runs_blocking(Some(offset))?;
-    let truncated = page.truncated;
+    let (runs, truncated) = workflow_inbox_run_page(offset, |run| {
+        run.get("status").and_then(serde_json::Value::as_str) == Some("awaiting_approval")
+    })?;
     let mut approvals = Vec::new();
-    for run in page.runs {
-        if run.get("status").and_then(serde_json::Value::as_str) != Some("awaiting_approval") {
-            continue;
-        }
+    for run in runs {
         let Some(blueprint_id) = run.get("blueprint_id").and_then(serde_json::Value::as_str) else {
             continue;
         };
@@ -285,6 +287,69 @@ fn list_workflow_inbox_approvals_blocking(
         });
     }
     Ok((approvals, truncated))
+}
+
+/// Pages the eligible workflow Inbox projection rather than applying the
+/// caller's offset to all workflow runs before filtering. This keeps older
+/// approvals and terminal outcomes reachable when other workflow states are
+/// interleaved with them.
+fn workflow_inbox_run_page<F>(
+    offset: usize,
+    include: F,
+) -> Result<(Vec<serde_json::Value>, bool), String>
+where
+    F: FnMut(&serde_json::Value) -> bool,
+{
+    page_workflow_inbox_runs(
+        offset,
+        |raw_offset| crate::commands::workflow::workflow_list_runs_blocking(Some(raw_offset)),
+        include,
+    )
+}
+
+fn page_workflow_inbox_runs<L, F>(
+    offset: usize,
+    mut load_page: L,
+    mut include: F,
+) -> Result<(Vec<serde_json::Value>, bool), String>
+where
+    L: FnMut(usize) -> Result<crate::commands::workflow::WorkflowRunListResult, String>,
+    F: FnMut(&serde_json::Value) -> bool,
+{
+    let target = offset
+        .saturating_add(MAX_INBOX_NOTIFICATIONS)
+        .saturating_add(1);
+    let mut eligible = Vec::with_capacity(target.min(MAX_INBOX_NOTIFICATIONS + 1));
+    let mut raw_offset = 0;
+
+    loop {
+        let page = load_page(raw_offset)?;
+        for run in page.runs {
+            if include(&run) {
+                eligible.push(run);
+                if eligible.len() >= target {
+                    break;
+                }
+            }
+        }
+        if eligible.len() >= target || !page.truncated {
+            break;
+        }
+        raw_offset = page
+            .next_offset
+            .unwrap_or_else(|| raw_offset.saturating_add(MAX_INBOX_NOTIFICATIONS));
+    }
+
+    let page_end = offset.saturating_add(MAX_INBOX_NOTIFICATIONS);
+    let truncated = eligible.len() > page_end;
+    Ok((
+        eligible
+            .into_iter()
+            .skip(offset)
+            .take(MAX_INBOX_NOTIFICATIONS)
+            .collect(),
+        truncated,
+    ))
 }
 
 fn notification_payload(
@@ -386,5 +451,45 @@ mod tests {
             updates[0].error.as_deref(),
             Some("workflow blueprint was removed")
         );
+    }
+
+    #[test]
+    fn workflow_inbox_paging_filters_before_applying_offset() {
+        let (runs, truncated) = page_workflow_inbox_runs(
+            0,
+            |offset| {
+                if offset == 0 {
+                    Ok(crate::commands::workflow::WorkflowRunListResult {
+                        runs: (0..200)
+                            .map(|index| {
+                                serde_json::json!({
+                                    "run_id": format!("non-inbox-{index}"),
+                                    "status": "running",
+                                })
+                            })
+                            .collect(),
+                        truncated: true,
+                        next_offset: Some(200),
+                    })
+                } else {
+                    Ok(crate::commands::workflow::WorkflowRunListResult {
+                        runs: vec![serde_json::json!({
+                            "run_id": "inbox-run",
+                            "status": "awaiting_approval",
+                        })],
+                        truncated: false,
+                        next_offset: None,
+                    })
+                }
+            },
+            |run| {
+                run.get("status").and_then(serde_json::Value::as_str) == Some("awaiting_approval")
+            },
+        )
+        .unwrap();
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["run_id"], "inbox-run");
+        assert!(!truncated);
     }
 }
