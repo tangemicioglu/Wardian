@@ -60,7 +60,8 @@ Template fields resolve against this registry before each node executes.
 
 Blueprint validation is fail-closed: decision choices must be unique,
 non-empty, valid port identifiers with outgoing edges; edges must name ports
-declared by both endpoint node types; and loop containers must have a body.
+declared by both endpoint node types; loop containers must have a reachable
+body; and nested loops are rejected until nested-loop replay semantics exist.
 
 ## Execution Flow
 

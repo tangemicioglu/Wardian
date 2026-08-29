@@ -845,12 +845,11 @@ fn render_workflow_run_show(blueprint_id: &str, run_id: &str) -> Result<String, 
 }
 
 fn render_workflow_replay(blueprint_id: &str, run_id: &str) -> Result<String, CliError> {
-    let blueprint = find_library_blueprint(blueprint_id)?.ok_or_else(|| {
-        CliError::generic(format!(
-            "blueprint {blueprint_id} not found in library/workflows"
-        ))
-    })?;
     let run_root = workflow_run_root(blueprint_id, run_id)?;
+    let blueprint = wardian_core::engine::store::read_blueprint_snapshot(&run_root)
+        .map_err(|e| CliError::generic(e.to_string()))?
+        .or(find_library_blueprint(blueprint_id)?)
+        .ok_or_else(|| CliError::generic(format!("blueprint {blueprint_id} not found")))?;
     let state = wardian_core::engine::Engine::replay(&blueprint, &run_root)
         .map_err(|e| CliError::generic(e.to_string()))?;
     render_json(serde_json::json!({
@@ -2314,6 +2313,7 @@ fn identity_error(error: identity::IdentityError) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("tests/workflow_snapshot_tests.rs");
 
     struct TestWardianHome {
         _lock: std::sync::MutexGuard<'static, ()>,

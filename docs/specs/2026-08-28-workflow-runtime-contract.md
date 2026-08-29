@@ -90,11 +90,12 @@ Approval decisions must name the approval node recorded by the latest durable
 checkpoint and event log directly, so it remains terminal even when the
 mutable library blueprint is unavailable.
 
-Loop containers must contain at least one body node. The direct engine boundary
-also emits an immediate `loop_completed` transition for an empty loop so a
-legacy or bypassed blueprint cannot leave a run permanently active. Every
-parented body node must also be reachable from the loop's `body` port; a parent
-annotation alone is not an execution edge.
+Loop containers must contain at least one body node. Empty loops are rejected
+before startup, so the runtime never creates an active run with no executable
+loop transition. Nested loops are also rejected until their replay semantics
+can reset the complete nested body and loop state on every outer iteration.
+Every parented body node must also be reachable from the loop's `body` port; a
+parent annotation alone is not an execution edge.
 
 Observe's node inspector limits output and error evidence to the selected
 timeline position, so scrubbing cannot reveal events from the future.

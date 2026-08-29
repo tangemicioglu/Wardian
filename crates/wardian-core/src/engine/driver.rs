@@ -52,6 +52,7 @@ impl Engine {
         trigger: serde_json::Value,
         run_root: &Path,
     ) -> crate::engine::Result<RunState> {
+        ensure_valid_blueprint(bp)?;
         let g = Graph::new(bp);
         let mut s = RunState::new(run_id.into(), &bp.id);
         let blueprint_hash = blueprint_hash(bp);
@@ -79,6 +80,8 @@ impl Engine {
         run_root: &Path,
         exec: &dyn StepExecutor,
     ) -> crate::engine::Result<RunState> {
+        ensure_valid_blueprint(bp)?;
+        ensure_blueprint_matches(bp, &s)?;
         let g = Graph::new(bp);
         drive(&g, &mut s, run_root, exec).await?;
         Ok(s)
@@ -90,9 +93,9 @@ impl Engine {
         run_root: &Path,
         exec: &dyn StepExecutor,
     ) -> crate::engine::Result<RunState> {
+        ensure_valid_blueprint(bp)?;
         let g = Graph::new(bp);
         let mut s = load_state(&g, run_root)?;
-        ensure_valid_blueprint(bp)?;
         ensure_blueprint_matches(bp, &s)?;
         if s.status == RunStatus::AwaitingApproval {
             return Ok(s); // still needs a human; grant_approval drives it onward
@@ -338,6 +341,12 @@ fn ensure_valid_blueprint(bp: &Blueprint) -> crate::engine::Result<()> {
 }
 
 fn ensure_blueprint_matches(bp: &Blueprint, state: &RunState) -> crate::engine::Result<()> {
+    if state.blueprint_id != bp.id {
+        return Err(EngineError::InvalidState(format!(
+            "workflow blueprint identity mismatch: run belongs to `{}`, requested `{}`",
+            state.blueprint_id, bp.id
+        )));
+    }
     if let Some(expected) = state.blueprint_hash.as_deref() {
         let actual = blueprint_hash(bp);
         if expected != actual {
@@ -388,6 +397,7 @@ fn fold_event_log(g: &Graph<'_>, s: &mut RunState, events: &[Event]) -> crate::e
     }
     let checkpoint_next_seq = s.next_seq;
     let event_next_seq = validate_event_sequence(events)?;
+    validate_event_identity(g, s, events)?;
     let mut expected = 0u64;
     for ev in events {
         if ev.seq != expected {
@@ -413,6 +423,78 @@ fn fold_event_log(g: &Graph<'_>, s: &mut RunState, events: &[Event]) -> crate::e
             expected.saturating_sub(1),
             checkpoint_next_seq.saturating_sub(1)
         )));
+    }
+    Ok(())
+}
+
+/// Check identity-bearing startup metadata before a checkpoint can hide the
+/// beginning of the event log from replay. Checkpoint-less recovery uses the
+/// sentinel run id and adopts the durable id from `RunStarted`.
+fn validate_event_identity(
+    g: &Graph<'_>,
+    s: &RunState,
+    events: &[Event],
+) -> crate::engine::Result<()> {
+    let startup = match events.first() {
+        Some(Event {
+            seq: 0,
+            kind:
+                EventKind::RunStarted {
+                    run_id,
+                    blueprint_id,
+                    blueprint_hash,
+                    schema,
+                    ..
+                },
+            ..
+        }) => (run_id, blueprint_id, blueprint_hash, *schema),
+        Some(event) => {
+            return Err(EngineError::InvalidState(format!(
+                "workflow event log must start with run_started at sequence 0, found {:?}",
+                event.kind
+            )))
+        }
+        None => unreachable!("fold_event_log rejects empty event logs"),
+    };
+
+    let (run_id, blueprint_id, event_hash, schema) = startup;
+    if blueprint_id != &g.blueprint().id {
+        return Err(EngineError::InvalidState(format!(
+            "workflow event belongs to blueprint `{blueprint_id}`, requested `{}`",
+            g.blueprint().id
+        )));
+    }
+    if schema != g.blueprint().schema {
+        return Err(EngineError::InvalidState(format!(
+            "workflow event schema is {schema}, requested blueprint schema is {}",
+            g.blueprint().schema
+        )));
+    }
+    if s.blueprint_id != g.blueprint().id {
+        return Err(EngineError::InvalidState(format!(
+            "workflow checkpoint belongs to blueprint `{}`, requested `{}`",
+            s.blueprint_id,
+            g.blueprint().id
+        )));
+    }
+    if !matches!(s.run_id.as_str(), "replay" | "rebuilt") {
+        if let Some(event_run_id) = run_id {
+            if event_run_id != &s.run_id {
+                return Err(EngineError::InvalidState(format!(
+                    "workflow checkpoint belongs to run `{}`, event log belongs to `{event_run_id}`",
+                    s.run_id
+                )));
+            }
+        }
+    }
+    if let Some(event_hash) = event_hash {
+        if let Some(checkpoint_hash) = s.blueprint_hash.as_deref() {
+            if checkpoint_hash != event_hash {
+                return Err(EngineError::InvalidState(format!(
+                    "workflow checkpoint blueprint hash is `{checkpoint_hash}`, event log hash is `{event_hash}`"
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -1197,6 +1279,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_start_rejects_an_invalid_blueprint_before_persisting_or_executing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut blueprint = branch_blueprint();
+        blueprint
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "route")
+            .unwrap()
+            .fields
+            .insert(
+                "condition".into(),
+                serde_json::json!("nodes.a.output.ok == true"),
+            );
+        let exec = MockExecutor::new();
+
+        let error = Engine::start_with_id(
+            &blueprint,
+            "run-invalid-before-start",
+            serde_json::json!({}),
+            dir.path(),
+            &exec,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("workflow blueprint is invalid"));
+        assert!(exec.calls().is_empty());
+        assert!(!dir.path().join("events.jsonl").exists());
+        assert!(!dir.path().join("state.json").exists());
+        assert!(!dir.path().join("blueprint.json").exists());
+    }
+
+    #[tokio::test]
     async fn decision_routes_only_the_declared_choice_and_replays_routing() {
         let task = |id: &str| Node {
             id: id.into(),
@@ -1440,7 +1555,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn branch_rejects_an_expression_at_runtime_with_durable_failure() {
+    async fn fresh_start_rejects_an_invalid_branch_before_persisting_or_executing() {
         let mut blueprint = branch_blueprint();
         blueprint
             .nodes
@@ -1454,7 +1569,7 @@ mod tests {
             );
         let dir = tempfile::tempdir().unwrap();
 
-        let state = Engine::start_with_id(
+        let error = Engine::start_with_id(
             &blueprint,
             "run-invalid-condition",
             serde_json::json!({}),
@@ -1462,26 +1577,17 @@ mod tests {
             &MockExecutor::new(),
         )
         .await
-        .expect("invalid branch conditions should be durably recorded as a failure");
+        .unwrap_err();
 
-        assert_eq!(state.status, RunStatus::Failed);
-        assert!(state
-            .failure
-            .as_deref()
-            .is_some_and(|failure| failure.contains("branch condition is invalid")));
-        assert!(read_checkpoint(dir.path())
-            .unwrap()
-            .unwrap()
-            .failure
-            .is_some());
-        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
-            matches!(&event.kind, EventKind::NodeFailed { node, error }
-                if node == "route" && error.contains("operators and comparisons"))
-        }));
+        assert!(error.to_string().contains("workflow blueprint is invalid"));
+        assert!(error.to_string().contains("operators and comparisons"));
+        assert!(!dir.path().join("events.jsonl").exists());
+        assert!(!dir.path().join("state.json").exists());
+        assert!(!dir.path().join("blueprint.json").exists());
     }
 
     #[tokio::test]
-    async fn loop_rejects_an_expression_at_runtime_with_durable_failure() {
+    async fn fresh_start_rejects_an_invalid_loop_before_persisting_or_executing() {
         let loop_node = Node {
             id: "lp".into(),
             r#type: "loop".into(),
@@ -1543,7 +1649,7 @@ mod tests {
         };
         let dir = tempfile::tempdir().unwrap();
 
-        let state = Engine::start_with_id(
+        let error = Engine::start_with_id(
             &blueprint,
             "run-invalid-loop-condition",
             serde_json::json!({}),
@@ -1551,21 +1657,13 @@ mod tests {
             &MockExecutor::new(),
         )
         .await
-        .expect("invalid loop conditions should be durably recorded as a failure");
+        .unwrap_err();
 
-        assert_eq!(state.status, RunStatus::Failed);
-        assert!(state
-            .failure
-            .as_deref()
-            .is_some_and(|failure| failure.contains("loop `lp` until condition is invalid")));
-        assert_eq!(
-            read_checkpoint(dir.path()).unwrap().unwrap().status,
-            RunStatus::Failed
-        );
-        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
-            matches!(&event.kind, EventKind::RunFailed { error }
-                if error.contains("loop `lp` until condition is invalid"))
-        }));
+        assert!(error.to_string().contains("workflow blueprint is invalid"));
+        assert!(error.to_string().contains("operators and comparisons"));
+        assert!(!dir.path().join("events.jsonl").exists());
+        assert!(!dir.path().join("state.json").exists());
+        assert!(!dir.path().join("blueprint.json").exists());
     }
 
     #[tokio::test]
@@ -1805,7 +1903,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_loop_completes_instead_of_leaving_the_run_active() {
+    async fn empty_loop_is_rejected_before_start_instead_of_leaving_the_run_active() {
         let dir = tempfile::tempdir().unwrap();
         let blueprint = Blueprint {
             schema: 2,
@@ -1826,7 +1924,7 @@ mod tests {
             body: String::new(),
         };
 
-        let state = Engine::start_with_id(
+        let error = Engine::start_with_id(
             &blueprint,
             "run-empty-loop",
             serde_json::json!({}),
@@ -1834,13 +1932,12 @@ mod tests {
             &MockExecutor::new(),
         )
         .await
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(state.status, RunStatus::Completed);
-        assert_eq!(state.status_or_pending("repeat"), NodeStatus::Completed);
-        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
-            matches!(&event.kind, EventKind::LoopCompleted { node } if node == "repeat")
-        }));
+        assert!(error.to_string().contains("empty_loop_body"));
+        assert!(!dir.path().join("events.jsonl").exists());
+        assert!(!dir.path().join("state.json").exists());
+        assert!(!dir.path().join("blueprint.json").exists());
         assert!(!dir.path().join("cancel.marker").exists());
     }
 
@@ -1889,6 +1986,48 @@ mod tests {
 
         assert_eq!(state.registry["storage"]["recovered"], true);
         assert_eq!(state.status, RunStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_a_checkpoint_and_event_log_with_different_run_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = sequence_blueprint();
+        Engine::initialize_with_id(
+            &blueprint,
+            "run-checkpoint-id",
+            serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+
+        let mut events = read_events(dir.path()).unwrap();
+        match &mut events[0].kind {
+            EventKind::RunStarted { run_id, .. } => *run_id = Some("run-event-id".into()),
+            other => panic!("unexpected startup event: {other:?}"),
+        }
+        std::fs::write(
+            dir.path().join("events.jsonl"),
+            events
+                .iter()
+                .map(|event| serde_json::to_string(event).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        append_event(
+            dir.path(),
+            &Event::at(1, "tail".into(), EventKind::RunCompleted),
+        )
+        .unwrap();
+
+        let error = Engine::resume(&blueprint, dir.path(), &MockExecutor::new())
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("checkpoint belongs to run `run-checkpoint-id`"));
     }
 
     #[tokio::test]
@@ -2026,7 +2165,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_sub_workflow_fails_durably_when_validation_is_bypassed() {
+    async fn fresh_start_rejects_an_unsupported_sub_workflow_before_persisting() {
         let dir = tempfile::tempdir().unwrap();
         let blueprint = Blueprint {
             schema: 2,
@@ -2047,7 +2186,7 @@ mod tests {
             body: String::new(),
         };
 
-        let state = Engine::start_with_id(
+        let error = Engine::start_with_id(
             &blueprint,
             "run-sub-workflow",
             serde_json::json!({}),
@@ -2055,14 +2194,14 @@ mod tests {
             &MockExecutor::new(),
         )
         .await
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(state.status, RunStatus::Failed);
-        assert_eq!(state.status_or_pending("child"), NodeStatus::Failed);
-        assert!(state
-            .failure
-            .as_deref()
-            .is_some_and(|failure| failure.contains("not supported by the workflow runtime")));
+        assert!(error
+            .to_string()
+            .contains("node type `sub_workflow` is registered but not supported"));
+        assert!(!dir.path().join("events.jsonl").exists());
+        assert!(!dir.path().join("state.json").exists());
+        assert!(!dir.path().join("blueprint.json").exists());
     }
 
     #[tokio::test]

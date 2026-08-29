@@ -345,7 +345,13 @@ pub fn workflow_read_run(
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
     let state = read_checkpoint(&dir).map_err(|e| e.to_string())?;
     let events = read_events(&dir).map_err(|e| e.to_string())?;
-    let blueprint = resolve_blueprint(&blueprint_id);
+    let blueprint = if let Some(snapshot) =
+        wardian_core::engine::store::read_blueprint_snapshot(&dir).map_err(|e| e.to_string())?
+    {
+        Some(serde_json::to_value(snapshot).map_err(|e| e.to_string())?)
+    } else {
+        resolve_blueprint(&blueprint_id)
+    };
     let blueprint_path =
         resolve_blueprint_path(&blueprint_id).map(|path| path.to_string_lossy().to_string());
 
@@ -1184,6 +1190,29 @@ mod tests {
 
         assert_eq!(result["status"], "running");
         assert!(run_root.join("cancel.marker").exists());
+    }
+
+    #[test]
+    fn workflow_read_run_prefers_the_immutable_blueprint_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(temp.path());
+        seed_workflow_blueprint(temp.path());
+        let run_root = wardian_core::paths::workflow_run_dir("wf", "run-snapshot").unwrap();
+        let snapshot = Blueprint {
+            schema: 2,
+            id: "wf".into(),
+            name: "Immutable snapshot".into(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            body: String::new(),
+        };
+        wardian_core::engine::store::write_blueprint_snapshot(&run_root, &snapshot).unwrap();
+        write_checkpoint(&run_root, &RunState::new("run-snapshot", "wf")).unwrap();
+
+        let result = workflow_read_run("wf".into(), "run-snapshot".into()).unwrap();
+
+        assert_eq!(result["blueprint"]["name"], "Immutable snapshot");
+        assert!(result["blueprint_path"].as_str().is_some());
     }
 
     fn sample_schedule() -> WorkflowSchedule {

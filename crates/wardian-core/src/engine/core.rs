@@ -48,10 +48,33 @@ pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<(
         EventKind::RunStarted {
             run_id,
             blueprint_hash,
+            blueprint_id,
+            schema,
             trigger,
             ..
         } => {
+            if blueprint_id != &g.blueprint().id {
+                return Err(crate::engine::EngineError::InvalidState(format!(
+                    "workflow event belongs to blueprint `{blueprint_id}`, requested `{}`",
+                    g.blueprint().id
+                )));
+            }
+            if *schema != g.blueprint().schema {
+                return Err(crate::engine::EngineError::InvalidState(format!(
+                    "workflow event schema is {schema}, requested blueprint schema is {}",
+                    g.blueprint().schema
+                )));
+            }
             if let Some(run_id) = run_id {
+                if s.next_seq == 0
+                    && !matches!(s.run_id.as_str(), "replay" | "rebuilt")
+                    && s.run_id != *run_id
+                {
+                    return Err(crate::engine::EngineError::InvalidState(format!(
+                        "workflow run identity changed from `{}` to `{run_id}`",
+                        s.run_id
+                    )));
+                }
                 s.run_id = run_id.clone();
             }
             if let Some(blueprint_hash) = blueprint_hash {

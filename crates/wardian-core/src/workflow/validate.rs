@@ -174,6 +174,16 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
                     Some(&node.id),
                 ));
             }
+            if node.r#type == "loop" && parent_is_loop {
+                report.diagnostics.push(Diagnostic::error(
+                    "nested_loop_unsupported",
+                    format!(
+                        "loop node `{}` cannot be nested inside loop `{}` until nested-loop replay is supported",
+                        node.id, parent_id
+                    ),
+                    Some(&node.id),
+                ));
+            }
         }
     }
 
@@ -863,6 +873,39 @@ mod tests {
         let bp = base(vec![task("plan"), child], vec![]);
         let report = validate(&bp);
         assert!(report.errors().iter().any(|d| d.code == "invalid_parent"));
+    }
+
+    #[test]
+    fn nested_loops_are_rejected_until_their_replay_semantics_exist() {
+        let mut outer = loop_node(serde_json::json!(2));
+        outer.id = "outer".into();
+        let mut inner = loop_node(serde_json::json!(2));
+        inner.id = "inner".into();
+        inner.parent = Some("outer".into());
+        let mut body = task("body");
+        body.parent = Some("inner".into());
+        let report = validate(&base(
+            vec![outer, inner, body],
+            vec![
+                Edge {
+                    from: "outer".into(),
+                    to: "inner".into(),
+                    from_port: "body".into(),
+                    to_port: "in".into(),
+                },
+                Edge {
+                    from: "inner".into(),
+                    to: "body".into(),
+                    from_port: "body".into(),
+                    to_port: "in".into(),
+                },
+            ],
+        ));
+
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "nested_loop_unsupported"
+                && diagnostic.node.as_deref() == Some("inner")
+        }));
     }
 
     #[test]
