@@ -388,6 +388,13 @@ where
     let mut skipped = 0usize;
     let mut items = Vec::with_capacity(request.limit);
     loop {
+        for index in 0..pages.len() {
+            if pages[index].items.is_empty() && pages[index].truncated {
+                source_offsets[index] =
+                    source_offsets[index].saturating_add(MAX_INBOX_SOURCE_ITEMS);
+                pages[index] = refill(index, source_offsets[index])?;
+            }
+        }
         let Some(source_index) = pages
             .iter()
             .enumerate()
@@ -399,19 +406,6 @@ where
             .max_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(right.2)))
             .map(|candidate| candidate.0)
         else {
-            let mut refilled = false;
-            for (index, page) in pages.iter_mut().enumerate() {
-                if !page.truncated {
-                    continue;
-                }
-                source_offsets[index] =
-                    source_offsets[index].saturating_add(MAX_INBOX_SOURCE_ITEMS);
-                *page = refill(index, source_offsets[index])?;
-                refilled = true;
-            }
-            if refilled {
-                continue;
-            }
             break;
         };
 
@@ -845,6 +839,54 @@ mod tests {
         .unwrap();
 
         assert_eq!(items[0]["id"], "queue-new");
+        assert!(truncated);
+        assert_eq!(next_offset, Some(2));
+    }
+
+    #[test]
+    fn merged_pagination_refills_an_exhausted_source_before_selecting_next_head() {
+        let mut pages = vec![
+            InboxSourcePage {
+                items: vec![json!({"id": "first", "timestamp": 3})],
+                truncated: true,
+            },
+            InboxSourcePage {
+                items: vec![json!({"id": "other", "timestamp": 1})],
+                truncated: false,
+            },
+        ];
+        let types = HashSet::new();
+        let sources = HashSet::new();
+        let request = InboxPageRequest {
+            offset: 0,
+            limit: 2,
+            types: &types,
+            sources: &sources,
+            unread: false,
+        };
+        let mut source_offsets = [0; 2];
+        let (items, truncated, next_offset) = merge_persisted_pages(
+            &request,
+            &mut pages,
+            &mut |index, offset| {
+                assert_eq!(index, 0);
+                assert_eq!(offset, MAX_INBOX_SOURCE_ITEMS);
+                Ok(InboxSourcePage {
+                    items: vec![json!({"id": "refilled", "timestamp": 2})],
+                    truncated: false,
+                })
+            },
+            &mut source_offsets,
+        )
+        .unwrap();
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["first", "refilled"]
+        );
         assert!(truncated);
         assert_eq!(next_offset, Some(2));
     }

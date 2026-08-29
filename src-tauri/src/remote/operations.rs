@@ -173,6 +173,20 @@ pub async fn remote_inbox_list_page(
     let mut skipped = 0usize;
     let mut items = Vec::with_capacity(limit);
     loop {
+        for index in 0..pages.len() {
+            if pages[index].items.is_empty() && pages[index].truncated {
+                offsets[index] = offsets[index].saturating_add(MAX_INBOX_SOURCE_ITEMS);
+                pages[index] = remote_inbox_source_page(
+                    state,
+                    source_kinds[index],
+                    offsets[index],
+                    cutoff,
+                    &read_notification_ids,
+                    &persisted_workflow_runs,
+                )
+                .await;
+            }
+        }
         let Some(source_index) = pages
             .iter()
             .enumerate()
@@ -184,26 +198,6 @@ pub async fn remote_inbox_list_page(
             .max_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(right.2)))
             .map(|candidate| candidate.0)
         else {
-            let mut refilled = false;
-            for (index, page) in pages.iter_mut().enumerate() {
-                if !page.truncated {
-                    continue;
-                }
-                offsets[index] = offsets[index].saturating_add(MAX_INBOX_SOURCE_ITEMS);
-                *page = remote_inbox_source_page(
-                    state,
-                    source_kinds[index],
-                    offsets[index],
-                    cutoff,
-                    &read_notification_ids,
-                    &persisted_workflow_runs,
-                )
-                .await;
-                refilled = true;
-            }
-            if refilled {
-                continue;
-            }
             break;
         };
 
