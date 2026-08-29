@@ -65,14 +65,19 @@ uses.
   `src-tauri/src/control.rs` end up at this one seam for the CLI/agent path;
   the UI path stays implicitly full-authority, because it is only reachable by
   driving the app's own webview, exactly as before this change.
-- Every attempt — allowed, denied, or a no-op — is appended to
+- An append is attempted for every attempt — allowed, denied, or a no-op — to
   `<WARDIAN_HOME>/topology/audit.jsonl` (`src-tauri/src/topology_audit.rs`,
   the same append-plus-rotate shape as `remote/audit.rs`, kept as a separate
   file because the two domains have already diverged in field shape). A
   record carries `caller` (`"operator"` or `"agent:<uuid>"`), `operation`,
   `a`, `b`, `outcome` (`"applied"`/`"unchanged"`/`"denied"`), and
   `error_code` for a denial. This satisfies #731's audit-event requirement as
-  a side effect of centralizing the write, not as separate plumbing.
+  a side effect of centralizing the write, not as separate plumbing. This is
+  a best-effort diagnostic log, not a durable guarantee: an append failure is
+  logged (`crate::manager::log_debug`) rather than propagated, so it never
+  blocks a mutation the caller is otherwise authorized to make — but it also
+  means a write failure can leave a gap in the trail rather than surfacing to
+  the caller.
 
 ### What did not change in this stage
 
