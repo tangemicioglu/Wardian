@@ -410,6 +410,11 @@ after the exact migration save is acknowledged; resets or later saves cannot
 accidentally acknowledge the import. Teams, watchlists, agent state, and domain
 stores are not migrated into the workbench document.
 
+Upgrades also migrate persisted `workflows` surface types to `automations` in
+both open and recently-closed entries. Rust saves that conversion as a
+successor workbench revision before returning the document to the frontend, so
+the surface registry never has to resolve the removed type.
+
 Load order is primary, validated backup, then a usable default. A future schema
 is preserved byte-for-byte and opened read-only with an in-memory fallback.
 Corrupt or missing resources stay visible as placeholders with recovery

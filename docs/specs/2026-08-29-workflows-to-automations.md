@@ -25,13 +25,24 @@ automation state:
 - `library/schedules.json` keeps schedule and blueprint identities stable, so
   the 22 live schedule records in the reference installation remain the same
   records.
+- Desktop startup gates automation-dependent initialization when this migration
+  fails; the CLI reports the failure instead of reading a partial layout.
+- Persisted workbench open and recently-closed surfaces named `workflows` are
+  rewritten to `automations` and saved as a successor document revision before
+  the frontend resolves the surface registry.
+- Persisted Inbox records are normalized from the old completion, failure, and
+  approval field names to canonical automation fields while retaining ids,
+  timestamps, read state, approval payloads, and dismissal markers. The
+  normalized queue is written back for retry-safe desktop and remote reads.
 
 The migration is retryable. A missing destination is moved with a filesystem
 rename. If a destination already exists, entries are reconciled recursively;
 identical files are deduplicated, while conflicting entries fail without
 overwriting either copy. The legacy directory is removed only after all of its
 entries have been moved or proven identical. This makes an interrupted or
-partially completed migration safe to resume.
+partially completed migration safe to resume. Blueprint field rewriting
+recognizes UTF-8 BOM and LF or CRLF front matter and preserves the source
+newline style.
 
 ## Exclusions
 
@@ -44,6 +55,7 @@ vocabulary and are left intact.
 
 The migration must be tested with a populated copied home, including blueprint
 files, run directories, and schedules. Tests must cover a first migration, a
-retry after partial migration, identical duplicate entries, and conflicting
-entries. The generated TypeScript schema and node reference must be produced
+retry after partial migration, identical duplicate entries, conflicting
+entries, BOM/CRLF blueprints, renamed workbench surfaces, and normalized Inbox
+records. The generated TypeScript schema and node reference must be produced
 from the Rust registry and checked for drift.

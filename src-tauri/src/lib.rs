@@ -175,7 +175,10 @@ pub fn run() {
 
     crate::utils::migration::migrate_home_layout();
     if let Err(error) = wardian_core::automation_migration::migrate_current_home() {
-        eprintln!("Failed to migrate legacy automation storage: {error}");
+        eprintln!(
+            "Wardian cannot start until legacy automation storage migration succeeds: {error}"
+        );
+        return;
     }
 
     let db_init_result = crate::utils::fs::get_wardian_home()

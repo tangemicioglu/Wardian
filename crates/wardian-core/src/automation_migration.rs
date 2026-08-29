@@ -155,7 +155,14 @@ fn rewrite_blueprint_tree(path: &Path, rewritten: &mut usize) -> io::Result<()> 
 /// remain byte-for-byte unchanged.
 fn rewrite_blueprint_file(path: &Path) -> io::Result<bool> {
     let original = fs::read_to_string(path)?;
-    let Some(after_open) = original.strip_prefix("---\n") else {
+    let (bom, without_bom) = original
+        .strip_prefix('\u{feff}')
+        .map_or(("", original.as_str()), |rest| ("\u{feff}", rest));
+    let Some((opening_newline, after_open)) = without_bom
+        .strip_prefix("---\r\n")
+        .map(|rest| ("\r\n", rest))
+        .or_else(|| without_bom.strip_prefix("---\n").map(|rest| ("\n", rest)))
+    else {
         return Ok(false);
     };
     let Some(end) = after_open
@@ -206,7 +213,9 @@ fn rewrite_blueprint_file(path: &Path) -> io::Result<bool> {
 
     if changed {
         let mut output = String::with_capacity(original.len());
-        output.push_str("---\n");
+        output.push_str(bom);
+        output.push_str("---");
+        output.push_str(opening_newline);
         output.push_str(&rewritten_yaml);
         output.push_str(rest);
         fs::write(path, output)?;
@@ -298,6 +307,31 @@ mod tests {
         assert_eq!(
             fs::read_to_string(current.join("conflict.md")).unwrap(),
             "new"
+        );
+    }
+
+    #[test]
+    fn rewrites_bom_prefixed_crlf_blueprints_without_changing_line_endings() {
+        let home = home();
+        let blueprint = home.path().join("library/automations/windows.md");
+        fs::create_dir_all(blueprint.parent().unwrap()).unwrap();
+        fs::write(
+            &blueprint,
+            "\u{feff}---\r\nschema: 2\r\nid: windows\r\nnodes:\r\n  - id: child\r\n    type: sub_workflow\r\n    fields:\r\n      workflow: nested\r\n---\r\n\r\nWindows prose stays unchanged.\r\n",
+        )
+        .unwrap();
+
+        let report = migrate_home(home.path()).unwrap();
+
+        assert_eq!(report.blueprints_rewritten, 1);
+        let content = fs::read_to_string(blueprint).unwrap();
+        assert!(content.starts_with("\u{feff}---\r\n"));
+        assert!(content.contains("type: sub_automation\r\n"));
+        assert!(content.contains("      automation: nested\r\n"));
+        assert!(content.contains("Windows prose stays unchanged.\r\n"));
+        assert!(
+            !content.contains("\n")
+                || content.matches('\n').count() == content.matches("\r\n").count()
         );
     }
 }

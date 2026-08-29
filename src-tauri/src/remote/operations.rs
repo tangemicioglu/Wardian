@@ -100,10 +100,7 @@ pub fn remote_watchlist_state() -> Result<RemoteWatchlistResponse, String> {
 
 /// Builds the same Inbox projection as the desktop queue store.
 pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
-    let persisted_items = crate::utils::fs::get_wardian_home()
-        .and_then(|home| std::fs::read_to_string(home.join("queue").join("items.json")).ok())
-        .and_then(|data| serde_json::from_str::<Vec<serde_json::Value>>(&data).ok())
-        .unwrap_or_default();
+    let persisted_items = crate::utils::queue::load_items();
     let read_notification_ids = persisted_items
         .iter()
         .filter(|item| {

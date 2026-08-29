@@ -6,8 +6,8 @@ use wardian_core::{
     models::workbench::WorkbenchDocumentV1,
     workbench::{
         load_workbench_for_home, reset_workbench_for_home, save_workbench_for_home,
-        WorkbenchLoadResult, WorkbenchResetRequest, WorkbenchResetResult, WorkbenchSaveRequest,
-        WorkbenchSaveResult,
+        WorkbenchLoadResult, WorkbenchPersistenceOutcome, WorkbenchResetRequest,
+        WorkbenchResetResult, WorkbenchSaveRequest, WorkbenchSaveResult,
     },
 };
 
@@ -88,19 +88,69 @@ async fn load_workbench_state_for_home(
 ) -> Result<WorkbenchLoadResult, String> {
     let _io_guard = state.workbench_io_lock.lock().await;
     let mut loaded = load_workbench_for_home(home).map_err(|error| error.to_string())?;
+    let mut migrate_surface_types = false;
     if let Some(document) = loaded.document.as_mut() {
         for surface in document.surfaces.values_mut() {
-            if surface.surface_type == "queue" {
-                surface.surface_type = "inbox".to_string();
-            }
+            migrate_surface_type(surface, &mut migrate_surface_types);
         }
         for closed in &mut document.recently_closed {
-            if closed.surface.surface_type == "queue" {
-                closed.surface.surface_type = "inbox".to_string();
-            }
+            migrate_surface_type(&mut closed.surface, &mut migrate_surface_types);
         }
     }
+    if migrate_surface_types {
+        let expected_revision = loaded
+            .document
+            .as_ref()
+            .expect("surface migration requires a workbench document")
+            .revision;
+        let migrated_revision = expected_revision.checked_add(1).ok_or_else(|| {
+            "could not increment workbench revision for surface migration".to_string()
+        })?;
+        let expected_token = loaded
+            .durable_token
+            .clone()
+            .ok_or_else(|| "surface migration requires a durable workbench token".to_string())?;
+        let document = loaded
+            .document
+            .as_mut()
+            .expect("surface migration requires a workbench document");
+        document.revision = migrated_revision;
+        document.saved_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let saved = save_workbench_for_home(
+            home,
+            WorkbenchSaveRequest {
+                document: document.clone(),
+                expected_revision,
+                expected_token,
+                request_id: "migration:workbench-surface-types".to_string(),
+            },
+        )
+        .map_err(|error| format!("could not persist workbench surface migration: {error}"))?;
+        if saved.outcome != WorkbenchPersistenceOutcome::Saved {
+            return Err(format!(
+                "could not persist workbench surface migration: {:?}",
+                saved.outcome
+            ));
+        }
+        loaded.durable_revision = saved.durable_revision;
+        loaded.durable_token = saved.durable_token;
+    }
     Ok(loaded)
+}
+
+fn migrate_surface_type(
+    surface: &mut wardian_core::models::workbench::WorkbenchSurfaceV1,
+    changed: &mut bool,
+) {
+    let replacement = match surface.surface_type.as_str() {
+        "queue" => Some("inbox"),
+        "workflows" => Some("automations"),
+        _ => None,
+    };
+    if let Some(replacement) = replacement {
+        surface.surface_type = replacement.to_string();
+        *changed = true;
+    }
 }
 
 async fn save_workbench_state_for_home(
@@ -287,5 +337,88 @@ mod tests {
             .expect("migrated document");
         assert_eq!(migrated.surfaces["surface-queue"].surface_type, "inbox");
         assert_eq!(migrated.recently_closed[0].surface.surface_type, "inbox");
+    }
+
+    #[tokio::test]
+    async fn loading_legacy_workflow_surfaces_migrates_and_persists_open_and_closed_tabs() {
+        let home = tempfile::tempdir().expect("temp home");
+        let state = AppState::new();
+        let loaded = load_workbench_state_for_home(home.path(), &state)
+            .await
+            .expect("load default");
+        let mut document = loaded.document.expect("default document");
+        let legacy_surface = WorkbenchSurfaceV1 {
+            surface_id: "surface-workflows".to_string(),
+            surface_type: "workflows".to_string(),
+            resource_key: None,
+            presentation_provenance: None,
+            state_schema_version: 1,
+            state: serde_json::json!({}),
+        };
+        document
+            .groups
+            .get_mut("group-1")
+            .expect("default group")
+            .surface_ids
+            .push(legacy_surface.surface_id.clone());
+        document
+            .groups
+            .get_mut("group-1")
+            .expect("default group")
+            .active_surface_id = Some(legacy_surface.surface_id.clone());
+        document
+            .surfaces
+            .insert(legacy_surface.surface_id.clone(), legacy_surface.clone());
+        document.recently_closed.push(ClosedSurfaceV1 {
+            surface: WorkbenchSurfaceV1 {
+                surface_id: "closed-workflows".to_string(),
+                surface_type: "workflows".to_string(),
+                ..legacy_surface
+            },
+            previous_group_id: "group-1".to_string(),
+            previous_index: 0,
+        });
+        document.revision = 1;
+        let token = loaded.durable_token.expect("default token");
+        save_workbench_state_for_home(
+            home.path(),
+            WorkbenchSaveRequest {
+                document,
+                expected_revision: 0,
+                expected_token: token,
+                request_id: "save-legacy-workflows".to_string(),
+            },
+            &state,
+        )
+        .await
+        .expect("save legacy document");
+
+        let migrated = load_workbench_state_for_home(home.path(), &state)
+            .await
+            .expect("load migrated document")
+            .document
+            .expect("migrated document");
+        assert_eq!(
+            migrated.surfaces["surface-workflows"].surface_type,
+            "automations"
+        );
+        assert_eq!(
+            migrated.recently_closed[0].surface.surface_type,
+            "automations"
+        );
+        assert_eq!(migrated.revision, 2);
+
+        let persisted = wardian_core::workbench::load_workbench_for_home(home.path())
+            .expect("load persisted migration")
+            .document
+            .expect("persisted document");
+        assert_eq!(
+            persisted.surfaces["surface-workflows"].surface_type,
+            "automations"
+        );
+        assert_eq!(
+            persisted.recently_closed[0].surface.surface_type,
+            "automations"
+        );
     }
 }
