@@ -38,6 +38,8 @@ an operator may pass both endpoints, such as `wardian graph link <agent-a>
 durably dismiss it. The commands are idempotent: a repeated edit reports
 `"changed": false` and exits successfully.
 
-Edits are written to the inspectable topology state and a running app refreshes
-the Graph view live. Prefer these commands over hand-editing topology state so
-identity and self-service rules are enforced.
+Edits route through the running app, which is the topology state's sole
+writer and enforces identity and self-serve rules; the app must be running for
+`link`/`unlink`/`ignore`/`unignore` (an unreachable app reports
+`app_not_running`). Reads (`show`/`neighbors`/`activity`) work without it.
+Prefer these commands over hand-editing topology state.

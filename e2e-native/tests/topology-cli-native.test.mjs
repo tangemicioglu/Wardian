@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 import {
@@ -320,3 +320,173 @@ test("native CLI neighbors scoping reads app-written topology", { timeout: 18000
 
   await watchStep(harness, "Verified workspace-fallback applies after edge removal");
 });
+
+// Exercises `wardian graph link/unlink/ignore/unignore` as real CLI subprocess
+// calls against a running native app: the actual ControlRequest wire format,
+// the CLI's live socket transport, and the real control-plane dispatch arms
+// in src-tauri/src/control.rs, none of which the in-process unit tests can
+// reach (they call the shared dispatch function directly, bypassing the
+// wire). Also reproduces #1032's exact repro shape: unlink an in-team pair
+// via the CLI, add a third member to the same team (which reseeds the whole
+// team clique), and confirm the CLI-deleted pair does not resurrect.
+test(
+  "native CLI topology mutations route through the control plane and survive a team reseed",
+  { timeout: 180000 },
+  async (t) => {
+    const harness = await createNativeHarness();
+    assert.ok(harness.appPath);
+
+    try {
+      if (!skipNativeBuild) {
+        ensureNativeAppBuilt(harness);
+      }
+    } catch (error) {
+      t.skip(String(error));
+      return;
+    }
+
+    prepareIsolatedHome(harness);
+
+    const cliPath = buildCli(harness);
+    const workspacePath = path.join(harness.repoRoot, "e2e-native");
+
+    let session;
+    try {
+      session = await startNativeSession(harness);
+    } catch (error) {
+      t.skip(String(error));
+      return;
+    }
+
+    t.after(async () => {
+      await session.close();
+    });
+
+    await waitForAppShell(session.driver, 20000);
+    await watchStep(harness, "Wardian app shell is ready for topology mutation test");
+
+    const deltaAgent = await createMockAgent(session.driver, workspacePath, {
+      sessionId: `e2e-topology-delta-${RUN_ID}`,
+      sessionName: `E2E-TOPOLOGY-DELTA-${RUN_ID}`,
+      isOff: false,
+    });
+    const deltaId = deltaAgent.session_id;
+
+    const epsilonAgent = await createMockAgent(session.driver, workspacePath, {
+      sessionId: `e2e-topology-epsilon-${RUN_ID}`,
+      sessionName: `E2E-TOPOLOGY-EPSILON-${RUN_ID}`,
+      isOff: false,
+    });
+    const epsilonId = epsilonAgent.session_id;
+
+    const zetaAgent = await createMockAgent(session.driver, workspacePath, {
+      sessionId: `e2e-topology-zeta-${RUN_ID}`,
+      sessionName: `E2E-TOPOLOGY-ZETA-${RUN_ID}`,
+      isOff: false,
+    });
+    const zetaId = zetaAgent.session_id;
+
+    await watchStep(harness, "Created delta, epsilon, zeta for the topology mutation test");
+
+    // link, as delta, defaulting the second endpoint to epsilon: exercises
+    // TopologyLink over the real socket, authorized by the real self-serve
+    // check in dispatch_topology_mutation.
+    const linkResult = runCliOkAsAgent(cliPath, harness, deltaId, ["graph", "link", epsilonId]);
+    const linkBody = JSON.parse(linkResult.stdout);
+    assert.equal(linkBody.action, "link");
+    assert.equal(linkBody.changed, true);
+    await watchStep(harness, "Linked delta<->epsilon via the CLI against the live app");
+
+    // ignore/unignore round trip against a third pair, as a real-wire smoke
+    // test for those two verbs.
+    const ignoreResult = runCliOkAsAgent(cliPath, harness, deltaId, ["graph", "ignore", zetaId]);
+    assert.equal(JSON.parse(ignoreResult.stdout).changed, true);
+    const unignoreResult = runCliOkAsAgent(cliPath, harness, deltaId, ["graph", "unignore", zetaId]);
+    assert.equal(JSON.parse(unignoreResult.stdout).changed, true);
+    await watchStep(harness, "Ignore/unignore round trip completed via the CLI");
+
+    // Self-serve denial over the real wire: delta asks to link epsilon<->zeta,
+    // a pair that excludes delta. The control plane must deny it and the CLI
+    // must map that denial to self_serve_required / exit 1 (this is the one
+    // authorization-path error mapping no in-process test reaches, since it
+    // requires a real denial to travel back over the live socket).
+    const deniedResult = runCliWithEnv(
+      cliPath,
+      harness,
+      ["graph", "link", epsilonId, zetaId],
+      { WARDIAN_SESSION_ID: deltaId },
+    );
+    assert.equal(deniedResult.status, 1, `expected self-serve denial\nstdout:\n${deniedResult.stdout}\nstderr:\n${deniedResult.stderr}`);
+    assert.match(deniedResult.stderr, /self_serve_required/);
+    await watchStep(harness, "Verified a real self-serve denial maps to exit 1 over the live socket");
+
+    // Create a team containing delta and epsilon (CLI-local state; no app
+    // round trip), then unlink delta<->epsilon through the CLI/control plane.
+    const teamName = `E2E-Topology-Team-${RUN_ID}`;
+    const teamCreateResult = runCliWithEnv(
+      cliPath,
+      harness,
+      ["team", "create", teamName, "--agent", deltaId, "--agent", epsilonId],
+      {},
+    );
+    assert.equal(
+      teamCreateResult.status,
+      0,
+      `wardian team create failed\nstdout:\n${teamCreateResult.stdout}\nstderr:\n${teamCreateResult.stderr}`,
+    );
+    const unlinkResult = runCliOkAsAgent(cliPath, harness, deltaId, ["graph", "unlink", epsilonId]);
+    assert.equal(JSON.parse(unlinkResult.stdout).changed, true);
+    await watchStep(harness, "Created team and unlinked delta<->epsilon via the CLI");
+
+    // Add a third member to the same team: this reseeds the whole team
+    // clique. Before the #1032 fix, the CLI's unlink above did not record a
+    // seed-suppression tombstone, so this reseed would have resurrected
+    // delta<->epsilon even though it was never touched by this add.
+    const teamAddResult = runCliWithEnv(cliPath, harness, ["team", "add", teamName, zetaId], {});
+    assert.equal(
+      teamAddResult.status,
+      0,
+      `wardian team add failed\nstdout:\n${teamAddResult.stdout}\nstderr:\n${teamAddResult.stderr}`,
+    );
+    await watchStep(harness, "Added zeta to the team, triggering a full clique reseed");
+
+    const showResult = runCliWithEnv(cliPath, harness, ["graph", "show"], {});
+    assert.equal(
+      showResult.status,
+      0,
+      `wardian graph show failed\nstdout:\n${showResult.stdout}\nstderr:\n${showResult.stderr}`,
+    );
+    const showBody = JSON.parse(showResult.stdout);
+    const hasEdge = (a, b) =>
+      showBody.edges.some(
+        (edge) => (edge.a === a && edge.b === b) || (edge.a === b && edge.b === a),
+      );
+    assert.equal(
+      hasEdge(deltaId, epsilonId),
+      false,
+      "delta<->epsilon must stay unlinked after the team reseed (#1032 regression)",
+    );
+    assert.ok(hasEdge(deltaId, zetaId), "delta<->zeta should be seeded by the team add");
+    assert.ok(hasEdge(epsilonId, zetaId), "epsilon<->zeta should be seeded by the team add");
+    await watchStep(harness, "Verified the #1032 regression stays fixed through the real CLI/app path");
+
+    // The control plane is the sole writer, so every mutation above should
+    // have appended one record to the audit log.
+    const auditPath = path.join(harness.isolatedHome, "topology", "audit.jsonl");
+    assert.ok(existsSync(auditPath), "topology audit log should exist after CLI mutations");
+    const auditRecords = readFileSync(auditPath, "utf8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+    const linkRecord = auditRecords.find(
+      (record) => record.operation === "link" && record.outcome === "applied" && record.a === deltaId,
+    );
+    assert.ok(linkRecord, "audit log should contain the delta-initiated link");
+    assert.equal(linkRecord.caller, `agent:${deltaId}`);
+    const unlinkRecord = auditRecords.find(
+      (record) => record.operation === "unlink" && record.outcome === "applied",
+    );
+    assert.ok(unlinkRecord, "audit log should contain the unlink");
+    await watchStep(harness, "Verified the topology audit log recorded these mutations");
+  },
+);

@@ -1998,6 +1998,7 @@ pub(crate) fn control_error(e: std::io::Error) -> CliError {
             "gap_detected" => backend_error(ExitCode::Generic, "gap_detected"),
             "invalid_cursor" => backend_error(ExitCode::Generic, "invalid_cursor"),
             "invalid_origin" => backend_error(ExitCode::NotInSession, "invalid_origin"),
+            "self_serve_required" => backend_error(ExitCode::Generic, "self_serve_required"),
             "unauthorized_path" => backend_error(ExitCode::Generic, "unauthorized_path"),
             "unreadable_file" => backend_error(ExitCode::Generic, "unreadable_file"),
             "unstable_file_timeout" => backend_error(ExitCode::Generic, "unstable_file_timeout"),

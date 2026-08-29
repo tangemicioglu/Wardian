@@ -8,7 +8,7 @@ use crate::live;
 use wardian_core::identity::{self, AgentIdentity, ListFilters, Scope};
 use wardian_core::topology::{
     load_reconciled_topology, load_topology, pair_activity_from_records, resolve_neighbors,
-    save_topology, AgentRef, PairActivity, Topology,
+    AgentRef, PairActivity, Topology,
 };
 
 /// Full agent roster: live control endpoint when the app runs, DB fallback otherwise.
@@ -132,7 +132,10 @@ fn caller_context_from(
     }
 }
 
-/// Resolve a mutation's endpoints and enforce the self-serve rule.
+/// Resolve a mutation's endpoints and default the second one to the caller
+/// inside a session. This is name resolution and UX convenience only — the
+/// control plane is the sole authority on whether the caller may edit this
+/// pair, decided server-side from `ctx.self_uuid`.
 fn resolve_pair(
     agents: &[AgentIdentity],
     ctx: &CallerContext,
@@ -152,25 +155,30 @@ fn resolve_pair(
     if x == y {
         return Err(CliError::generic("Cannot connect an agent to itself"));
     }
-    if let Some(self_uuid) = ctx.self_uuid.as_deref() {
-        if x != self_uuid && y != self_uuid {
-            return Err(CliError::backend(
-                ExitCode::Generic,
-                "self_serve_required",
-                "Inside a session, graph edits must involve the calling agent",
-            ));
-        }
-    }
     Ok((x, y))
 }
 
 pub fn handle_graph(args: GraphArgs) -> Result<String, CliError> {
-    let home = wardian_home()?;
-    let _topology_lock = topology_process_lock(&home)?;
     match args.command {
-        GraphCommand::Show => render_graph_show(args.pretty),
-        GraphCommand::Neighbors { agent } => render_graph_neighbors(agent.as_deref(), args.pretty),
-        GraphCommand::Activity => render_graph_activity(args.pretty),
+        // Reads still touch topology.json directly (reconciliation can prune
+        // stale records), so they still take the local process lock.
+        GraphCommand::Show => {
+            let home = wardian_home()?;
+            let _topology_lock = topology_process_lock(&home)?;
+            render_graph_show(args.pretty)
+        }
+        GraphCommand::Neighbors { agent } => {
+            let home = wardian_home()?;
+            let _topology_lock = topology_process_lock(&home)?;
+            render_graph_neighbors(agent.as_deref(), args.pretty)
+        }
+        GraphCommand::Activity => {
+            let home = wardian_home()?;
+            let _topology_lock = topology_process_lock(&home)?;
+            render_graph_activity(args.pretty)
+        }
+        // Mutations route through the control plane, which owns topology.json
+        // as its sole writer and takes its own lock; no local lock here.
         GraphCommand::Link { a, b } => {
             handle_mutation(Mutation::Link, &a, b.as_deref(), args.pretty)
         }
@@ -193,19 +201,10 @@ enum Mutation {
     Unignore,
 }
 
-impl Mutation {
-    fn action(&self) -> &'static str {
-        match self {
-            Mutation::Link => "link",
-            Mutation::Unlink => "unlink",
-            Mutation::Ignore => "ignore",
-            Mutation::Unignore => "unignore",
-        }
-    }
-}
-
-/// Idempotent read-modify-write on topology.json. Saves only when something
-/// changed; the file write is atomic (temp + rename) inside save_topology.
+/// Resolves endpoints locally, then routes the actual mutation through the
+/// control plane, which is topology.json's sole writer and sole authority on
+/// whether the caller may edit this pair (`crate::main::control_error` maps a
+/// denial or an unreachable app to the CLI's existing exit codes).
 fn handle_mutation(
     kind: Mutation,
     a: &str,
@@ -216,37 +215,30 @@ fn handle_mutation(
     let ctx = caller_context(&agents)?;
     let (x, y) = resolve_pair(&agents, &ctx, a, b)?;
 
-    let home = wardian_home()?;
-    let mut topology = reconciled_topology(&home, &agents)?;
-    let created_at = chrono::Utc::now().to_rfc3339();
-    let changed = match kind {
-        Mutation::Link => topology.add_edge(&x, &y, &created_at),
-        Mutation::Unlink => topology.remove_edge(&x, &y),
-        Mutation::Ignore => topology.ignore_pair(&x, &y),
-        Mutation::Unignore => topology.unignore_pair(&x, &y),
-    };
-    if changed {
-        save_topology(&home, &topology).map_err(|error| CliError::generic(error.to_string()))?;
+    let response = match kind {
+        Mutation::Link => live::topology_link(&x, &y, ctx.self_uuid.as_deref()),
+        Mutation::Unlink => live::topology_unlink(&x, &y, ctx.self_uuid.as_deref()),
+        Mutation::Ignore => live::topology_ignore(&x, &y, ctx.self_uuid.as_deref()),
+        Mutation::Unignore => live::topology_unignore(&x, &y, ctx.self_uuid.as_deref()),
     }
+    .map_err(crate::control_error)?;
 
-    // Report the canonical (sorted) pair, matching what topology.json stores.
-    let (a_out, b_out) = wardian_core::topology::canonical_pair(&x, &y)
-        .expect("resolve_pair rejects self/empty pairs");
     if pretty {
         let names = name_index(&agents);
         return Ok(format!(
-            "{} {} <-> {}  (changed: {changed})\n",
-            kind.action(),
-            display_name(&names, &a_out),
-            display_name(&names, &b_out),
+            "{} {} <-> {}  (changed: {})\n",
+            response.action,
+            display_name(&names, &response.a),
+            display_name(&names, &response.b),
+            response.changed,
         ));
     }
     render_json(serde_json::json!({
-        "schema": 1,
-        "action": kind.action(),
-        "a": a_out,
-        "b": b_out,
-        "changed": changed,
+        "schema": response.schema,
+        "action": response.action,
+        "a": response.a,
+        "b": response.b,
+        "changed": response.changed,
     }))
 }
 
@@ -550,12 +542,17 @@ mod tests {
     }
 
     #[test]
-    fn resolve_pair_in_session_requires_self_endpoint() {
+    fn resolve_pair_in_session_resolves_explicit_pair_without_enforcing_self_serve() {
+        // resolve_pair only resolves names and defaults the second endpoint;
+        // the control plane is the sole authority on whether an in-session
+        // caller may edit a pair that excludes it (see
+        // wardian_core::topology::authorize_topology_mutation_v1 and its
+        // tests, plus dispatch_topology_mutation's tests in src-tauri).
         let agents = roster();
         let ctx = caller_context_from(Some("uuid-1"), &agents).unwrap();
-        let err = resolve_pair(&agents, &ctx, "uuid-2", Some("uuid-3")).unwrap_err();
-        assert_eq!(err.code, "self_serve_required");
-        // Explicit two-arg form including self is allowed.
+        let (a, b) = resolve_pair(&agents, &ctx, "uuid-2", Some("uuid-3")).unwrap();
+        assert_eq!((a.as_str(), b.as_str()), ("uuid-2", "uuid-3"));
+        // Explicit two-arg form including self still works.
         let (a, b) = resolve_pair(&agents, &ctx, "uuid-2", Some("uuid-1")).unwrap();
         assert_eq!((a.as_str(), b.as_str()), ("uuid-2", "uuid-1"));
     }
