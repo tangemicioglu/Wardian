@@ -115,7 +115,9 @@ pub async fn remote_queue_items_page(
     state: &AppState,
     offset: usize,
 ) -> (Vec<serde_json::Value>, bool, Option<usize>) {
-    remote_inbox_list_page(state, offset, &[], &[], false, MAX_INBOX_SOURCE_ITEMS).await
+    remote_inbox_list_page(state, offset, &[], &[], false, MAX_INBOX_SOURCE_ITEMS)
+        .await
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Copy)]
@@ -141,9 +143,9 @@ pub async fn remote_inbox_list_page(
     sources: &[String],
     unread: bool,
     limit: usize,
-) -> (Vec<serde_json::Value>, bool, Option<usize>) {
+) -> Result<(Vec<serde_json::Value>, bool, Option<usize>), String> {
     if limit == 0 {
-        return (Vec::new(), false, None);
+        return Ok((Vec::new(), false, None));
     }
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
     let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
@@ -166,7 +168,8 @@ pub async fn remote_inbox_list_page(
                 &read_notification_ids,
                 &persisted_workflow_runs,
             )
-            .await,
+            .await
+            .map_err(|error| error.to_string())?,
         );
     }
     let mut offsets = [0usize; 4];
@@ -184,7 +187,8 @@ pub async fn remote_inbox_list_page(
                     &read_notification_ids,
                     &persisted_workflow_runs,
                 )
-                .await;
+                .await
+                .map_err(|error| error.to_string())?;
             }
         }
         let Some(source_index) = pages
@@ -210,12 +214,12 @@ pub async fn remote_inbox_list_page(
             continue;
         }
         if items.len() >= limit {
-            return (items, true, Some(offset.saturating_add(limit)));
+            return Ok((items, true, Some(offset.saturating_add(limit))));
         }
         items.push(item);
     }
 
-    (items, false, None)
+    Ok((items, false, None))
 }
 
 pub(crate) async fn inbox_list_control(
@@ -247,7 +251,9 @@ pub(crate) async fn inbox_list_control(
     }
     let state = app.state::<AppState>();
     let (items, truncated, next_offset) =
-        remote_inbox_list_page(state.inner(), offset, &types, &sources, unread, limit).await;
+        remote_inbox_list_page(state.inner(), offset, &types, &sources, unread, limit)
+            .await
+            .map_err(crate::control::ControlError::request_failed)?;
     serde_json::to_string(&InboxListResponse::new(items, truncated, next_offset))
         .map_err(crate::control::ControlError::request_failed)
 }
@@ -259,7 +265,7 @@ async fn remote_inbox_source_page(
     cutoff: i64,
     read_notification_ids: &std::collections::HashSet<String>,
     persisted_workflow_runs: &std::collections::HashSet<(String, String)>,
-) -> InboxSourcePage {
+) -> Result<InboxSourcePage, String> {
     match source {
         InboxSource::Notifications => {
             let notification_page =
@@ -271,7 +277,7 @@ async fn remote_inbox_source_page(
                 Ok(result) => (result.notifications, result.truncated),
                 Err(_) => (Vec::new(), false),
             };
-            InboxSourcePage {
+            Ok(InboxSourcePage {
                 items: notifications
                     .into_iter()
                     .map(|notification| {
@@ -297,14 +303,12 @@ async fn remote_inbox_source_page(
                     })
                     .collect(),
                 truncated,
-            }
+            })
         }
         InboxSource::WorkflowApprovals => {
             let (approvals, truncated) =
-                crate::commands::inbox::list_workflow_inbox_approvals_page(offset)
-                    .await
-                    .unwrap_or_default();
-            InboxSourcePage {
+                crate::commands::inbox::list_workflow_inbox_approvals_page(offset).await?;
+            Ok(InboxSourcePage {
                 items: approvals
                     .into_iter()
                     .map(|approval| {
@@ -327,14 +331,12 @@ async fn remote_inbox_source_page(
                     })
                     .collect(),
                 truncated,
-            }
+            })
         }
         InboxSource::WorkflowTerminals => {
             let (terminals, truncated) =
-                crate::commands::inbox::list_workflow_inbox_terminal_runs_page(offset)
-                    .await
-                    .unwrap_or_default();
-            InboxSourcePage {
+                crate::commands::inbox::list_workflow_inbox_terminal_runs_page(offset).await?;
+            Ok(InboxSourcePage {
                 items: terminals
                     .into_iter()
                     .filter(|run| {
@@ -358,23 +360,24 @@ async fn remote_inbox_source_page(
                     })
                     .collect(),
                 truncated,
-            }
+            })
         }
         InboxSource::LegacyQueue => {
             let persisted =
                 wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, offset, cutoff);
-            InboxSourcePage {
+            Ok(InboxSourcePage {
                 items: persisted
                     .items
                     .into_iter()
                     .filter(|item| {
                         item.get("inbox_notification_id").is_none()
                             && item.get("workflow_approval").is_none()
-                            && item.get("dismissed").is_none()
+                            && item.get("dismissed").and_then(serde_json::Value::as_bool)
+                                != Some(true)
                     })
                     .collect(),
                 truncated: persisted.truncated,
-            }
+            })
         }
     }
 }
@@ -465,7 +468,7 @@ async fn remote_queue_items_page_internal(
     let legacy_items = persisted_items.into_iter().filter(|item| {
         item.get("inbox_notification_id").is_none()
             && item.get("workflow_approval").is_none()
-            && item.get("dismissed").is_none()
+            && item.get("dismissed").and_then(serde_json::Value::as_bool) != Some(true)
     });
     let notification_page =
         crate::commands::inbox::list_inbox_notifications_for_state_with_offset_read_only(
@@ -577,7 +580,7 @@ fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
 
 fn is_clearable_legacy_completion(item: &serde_json::Value) -> bool {
     is_legacy_queue_item(item)
-        && item.get("dismissed").is_none()
+        && item.get("dismissed").and_then(serde_json::Value::as_bool) != Some(true)
         && !provider_choice_acknowledgement_unresolved(item)
         && matches!(
             item.get("type").and_then(serde_json::Value::as_str),

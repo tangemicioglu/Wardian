@@ -344,7 +344,7 @@ fn load_persisted_source_page(
                     .filter(|item| {
                         item.get("inbox_notification_id").is_none()
                             && item.get("workflow_approval").is_none()
-                            && item.get("dismissed").is_none()
+                            && item.get("dismissed").and_then(Value::as_bool) != Some(true)
                     })
                     .collect(),
                 truncated: persisted.truncated,

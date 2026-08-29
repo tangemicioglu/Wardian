@@ -122,7 +122,7 @@ fn workflow_run_identity(item: &Value) -> Option<(String, String)> {
 }
 
 fn is_recent(item: &Value, cutoff: i64) -> bool {
-    item_timestamp(item).is_none_or(|timestamp| timestamp > cutoff)
+    item_timestamp(item).is_some_and(|timestamp| timestamp > cutoff)
 }
 
 fn item_timestamp(item: &Value) -> Option<i64> {
@@ -158,6 +158,8 @@ mod tests {
             serde_json::json!([
                 { "id": "old-visible", "type": "agent_completed", "timestamp": 1 },
                 { "id": "new-visible", "type": "action_needed", "timestamp": 3 },
+                { "id": "missing-timestamp", "type": "agent_completed" },
+                { "id": "string-timestamp", "type": "agent_completed", "timestamp": "3" },
                 { "id": "read-ack", "type": "agent_update", "read": true, "inbox_notification_id": "notification-1", "timestamp": 0 },
                 { "id": "dismissed", "type": "workflow_completed", "workflow_id": "deploy", "workflow_run_id": "run-1", "dismissed": true, "timestamp": 0 },
                 { "id": "expired-workflow", "type": "workflow_completed", "workflow_id": "deploy", "workflow_run_id": "run-2", "timestamp": -1 }
@@ -169,6 +171,14 @@ mod tests {
         let first = read_recent_items(file.path(), 1, 0, 0);
         assert_eq!(first.items[0]["id"], "new-visible");
         assert!(first.truncated);
+        let all = read_recent_items(file.path(), 10, 0, 0);
+        assert_eq!(
+            all.items
+                .iter()
+                .map(|item| item["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["new-visible", "old-visible"]
+        );
         assert!(first.read_notification_ids.contains("notification-1"));
         assert!(first
             .workflow_runs

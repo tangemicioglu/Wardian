@@ -62,6 +62,7 @@ fn seed_queue() -> TempDir {
             "timestamp": now - 2_000,
             "read": false,
             "evidence_source": "interaction_store",
+            "dismissed": false,
             "summary": "Review deployment"
         }
     ]);
