@@ -1,5 +1,6 @@
 use crate::manager;
 use crate::providers::claude::claude_output_has_bypass_permissions_consent_prompt;
+use crate::remote::operations::inbox_list_control as list_inbox_control;
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
 };
@@ -28,7 +29,6 @@ use wardian_core::control::{
 use wardian_core::conversations::ConversationLoggingSetting;
 use wardian_core::identity::{normalize_status, AgentIdentity, StatusSource};
 use wardian_core::models::{AgentChatEvent, AgentChatEventKind, AgentChatRole};
-
 const STRUCTURED_ASK_INLINE_MESSAGE_MAX_BYTES: usize = 4096;
 const STRUCTURED_ASK_REQUESTS_DIR: &str = "requests";
 const PROVIDER_TURN_START_TIMEOUT_MS: u64 = 10_000;
@@ -647,7 +647,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 .map_err(ControlError::request_failed)?;
             ok_json(&response)
         }
-
+        request @ ControlRequest::InboxList { .. } => list_inbox_control(app, request).await,
         ControlRequest::ArtifactPresent {
             path,
             title,
@@ -5801,7 +5801,7 @@ pub(crate) struct ControlError {
 }
 
 impl ControlError {
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             code: "bad_request",
             message: message.into(),
@@ -5825,7 +5825,7 @@ impl ControlError {
         }
     }
 
-    fn request_failed(message: impl ToString) -> Self {
+    pub(crate) fn request_failed(message: impl ToString) -> Self {
         Self {
             code: "request_failed",
             message: message.to_string(),

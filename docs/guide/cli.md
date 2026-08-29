@@ -26,6 +26,68 @@ building repeatable automation around Wardian.
 4. Run `wardian agent list` to confirm the CLI sees your neighbors, or `wardian agent list --scope all` to see all agents.
 5. Use live-control commands only while the desktop app is running for that same home.
 
+## Inbox Read and Write Paths
+
+Agents can read the same Inbox projection that the desktop and remote surfaces
+use:
+
+```bash
+wardian inbox list
+wardian inbox list --unread --type action_needed,approval_request \
+  --source provider_runtime,interaction_store
+wardian inbox list --limit 100 --offset 100
+```
+
+PowerShell:
+
+```powershell
+wardian inbox list
+wardian inbox list --unread --type action_needed,approval_request `
+  --source provider_runtime,interaction_store
+wardian inbox list --limit 100 --offset 100
+```
+
+`inbox list` returns schema-versioned JSON, newest first. `--type` accepts
+`action_needed`, `agent_update`, `agent_completed`, `workflow_completed`,
+`workflow_failed`, and `approval_request`; `--source` accepts values such as
+`provider_runtime`, `interaction_store`, and `live_runtime`. Filters are
+comma-separated and combine with `--unread`. A live app for the same
+`WARDIAN_HOME` supplies the assembled projection; when it is unavailable, the
+CLI reads persisted queue items, durable Inbox notifications, and workflow-run
+checkpoints for awaiting approvals and terminal outcomes. The command is
+read-only: it does not acknowledge, dismiss, or resolve an item. `--limit` is
+bounded to 200 items; `--offset` pages the bounded read projection. A partial
+source sets `truncated: true` and provides `next_offset`. Legacy queue items
+older than seven days are excluded, matching desktop Inbox hydration.
+
+Use the write path when an event changes the user's understanding or requires a
+decision:
+
+```bash
+wardian notify update "The migration passed; one compatibility risk remains" \
+  --title "Migration result"
+wardian notify approval "Deploy the release" \
+  --title "Deploy production" \
+  --action "Run the production deployment" \
+  --risk "This changes live traffic and may require rollback" \
+  --choice "Deploy" \
+  --choice "Do not deploy" \
+  --wait
+```
+
+PowerShell:
+
+```powershell
+wardian notify update "The migration passed; one compatibility risk remains" --title "Migration result"
+wardian notify approval "Deploy the release" --title "Deploy production" --action "Run the production deployment" --risk "This changes live traffic and may require rollback" --choice "Deploy" --choice "Do not deploy" --wait
+```
+
+Prefer `notify update` for a concise material result, limitation, or next-step
+change; prefer `notify approval` only for irreversible, external,
+security-sensitive, or materially costly actions. Keep routine progress in the
+agent transcript. Both writes require a managed agent session and the running
+app for the same `WARDIAN_HOME`.
+
 ## Installation
 
 The desktop app copies the bundled CLI on startup:
@@ -166,6 +228,7 @@ wardian watchlist remove-team <watchlist-name-or-id> <team-name-or-id>
 wardian watchlist add-agent <watchlist-name-or-id> <agent-name-or-uuid>
 wardian watchlist remove-agent <watchlist-name-or-id> <agent-name-or-uuid>
 wardian watchlist delete <watchlist-name-or-id>
+wardian inbox list [--type <type,...>] [--source <source,...>] [--unread] [--limit <n>] [--offset <n>]
 wardian workflow node-types
 wardian workflow list
 wardian workflow validate <path-to-workflow.md>
@@ -423,7 +486,7 @@ Use `conversation list` and `conversation show <conversation-id>` to inspect dur
 
 Mutating commands use Wardian's local control endpoint and require the desktop app to be running for the same `WARDIAN_HOME`. This includes agent lifecycle commands, agent worktree commands, live `workflow exec`, and `send`.
 
-`workflow list`, `workflow validate`, `workflow parse`, `workflow normalize`, `workflow node-types`, `workflow runs`, `workflow run-show`, `workflow replay`, `library`, `conversation list`, `conversation show`, `team`, and `watchlist` can run from disk without the desktop app.
+`workflow list`, `workflow validate`, `workflow parse`, `workflow normalize`, `workflow node-types`, `workflow runs`, `workflow run-show`, `workflow replay`, `library`, `conversation list`, `conversation show`, `inbox list`, `team`, and `watchlist` can run from disk without the desktop app.
 
 `agent spawn` requires both `--provider` and `--class` so the created agent's runtime and role are explicit.
 

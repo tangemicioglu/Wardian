@@ -51,9 +51,27 @@ pub async fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInb
         .map_err(|error| format!("workflow terminal inbox task failed: {error}"))?
 }
 
-fn list_workflow_inbox_terminal_runs_blocking() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
+/// Lists one bounded page of terminal workflow Inbox evidence and preserves
+/// the workflow-run continuation state for other projections.
+pub async fn list_workflow_inbox_terminal_runs_page(
+    offset: usize,
+) -> Result<(Vec<runs::WorkflowInboxUpdate>, bool), String> {
+    tokio::task::spawn_blocking(move || list_workflow_inbox_terminal_runs_page_blocking(offset))
+        .await
+        .map_err(|error| format!("workflow terminal inbox task failed: {error}"))?
+}
+
+fn list_workflow_inbox_terminal_runs_page_blocking(
+    offset: usize,
+) -> Result<(Vec<runs::WorkflowInboxUpdate>, bool), String> {
     let mut updates = Vec::new();
-    for run in crate::commands::workflow::workflow_list_runs_blocking(None)?.runs {
+    let (runs, truncated) = workflow_inbox_run_page(offset, |run| {
+        matches!(
+            run.get("status").and_then(serde_json::Value::as_str),
+            Some("completed" | "failed")
+        )
+    })?;
+    for run in runs {
         let Some(run_root) = run.get("path").and_then(serde_json::Value::as_str) else {
             continue;
         };
@@ -75,7 +93,13 @@ fn list_workflow_inbox_terminal_runs_blocking() -> Result<Vec<runs::WorkflowInbo
             updates.push(update);
         }
     }
-    Ok(updates)
+    Ok((updates, truncated))
+}
+
+fn list_workflow_inbox_terminal_runs_blocking() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
+    // Preserve the legacy command's bounded 200-run behavior. The unified
+    // Inbox read path uses the paged helper below when it needs older runs.
+    list_workflow_inbox_terminal_runs_page_blocking(0).map(|(updates, _)| updates)
 }
 
 #[tauri::command]
@@ -96,20 +120,49 @@ pub async fn list_inbox_notifications_for_state_with_offset(
     state: &AppState,
     offset: usize,
 ) -> Result<InboxNotificationListResult, String> {
+    list_inbox_notifications_for_state_with_offset_internal(state, offset, true).await
+}
+
+/// Reads notification projections without expiring or otherwise mutating
+/// durable records. This is used by read-only agent and remote Inbox paths.
+pub async fn list_inbox_notifications_for_state_with_offset_read_only(
+    state: &AppState,
+    offset: usize,
+) -> Result<InboxNotificationListResult, String> {
+    list_inbox_notifications_for_state_with_offset_internal(state, offset, false).await
+}
+
+async fn list_inbox_notifications_for_state_with_offset_internal(
+    state: &AppState,
+    offset: usize,
+    expire_records: bool,
+) -> Result<InboxNotificationListResult, String> {
     let (records, truncated) = state
         .interactions
         .inbox_notifications_page(offset, MAX_INBOX_NOTIFICATIONS)
         .await;
     let mut notifications = Vec::new();
     for record in records {
-        let record = state
-            .interactions
-            .expire_notification_if_needed(&record.id)
-            .await
-            .unwrap_or(record);
+        let mut record = if expire_records {
+            state
+                .interactions
+                .expire_notification_if_needed(&record.id)
+                .await
+                .unwrap_or(record)
+        } else {
+            record
+        };
         let Some(payload) = notification_payload(&record) else {
             continue;
         };
+        if !expire_records
+            && record.status == InteractionStatus::AwaitingReply
+            && notification_expired(&payload)
+        {
+            // Preserve the projection users would see after normal expiry,
+            // without persisting a mutation from a read-only command.
+            record.status = InteractionStatus::Expired;
+        }
         let Some(sender_session_id) = record.sender_session_id.clone() else {
             continue;
         };
@@ -159,13 +212,23 @@ pub async fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApproval
         .map_err(|error| format!("workflow approval inbox task failed: {error}"))?
 }
 
-fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
-    let runs = crate::commands::workflow::workflow_list_runs_blocking(None)?.runs;
+/// Lists one bounded page of awaiting workflow approval evidence.
+pub async fn list_workflow_inbox_approvals_page(
+    offset: usize,
+) -> Result<(Vec<WorkflowInboxApprovalDto>, bool), String> {
+    tokio::task::spawn_blocking(move || list_workflow_inbox_approvals_page_blocking(offset))
+        .await
+        .map_err(|error| format!("workflow approval inbox task failed: {error}"))?
+}
+
+fn list_workflow_inbox_approvals_page_blocking(
+    offset: usize,
+) -> Result<(Vec<WorkflowInboxApprovalDto>, bool), String> {
+    let (runs, truncated) = workflow_inbox_run_page(offset, |run| {
+        run.get("status").and_then(serde_json::Value::as_str) == Some("awaiting_approval")
+    })?;
     let mut approvals = Vec::new();
     for run in runs {
-        if run.get("status").and_then(serde_json::Value::as_str) != Some("awaiting_approval") {
-            continue;
-        }
         let Some(blueprint_id) = run.get("blueprint_id").and_then(serde_json::Value::as_str) else {
             continue;
         };
@@ -232,7 +295,76 @@ fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalD
                 .map(str::to_string),
         });
     }
-    Ok(approvals)
+    Ok((approvals, truncated))
+}
+
+fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
+    // Preserve the legacy command's bounded 200-run behavior. The unified
+    // Inbox read path uses the paged helper below when it needs older runs.
+    list_workflow_inbox_approvals_page_blocking(0).map(|(approvals, _)| approvals)
+}
+
+/// Pages the eligible workflow Inbox projection rather than applying the
+/// caller's offset to all workflow runs before filtering. This keeps older
+/// approvals and terminal outcomes reachable when other workflow states are
+/// interleaved with them.
+fn workflow_inbox_run_page<F>(
+    offset: usize,
+    include: F,
+) -> Result<(Vec<serde_json::Value>, bool), String>
+where
+    F: FnMut(&serde_json::Value) -> bool,
+{
+    page_workflow_inbox_runs(
+        offset,
+        |raw_offset| crate::commands::workflow::workflow_list_runs_blocking(Some(raw_offset)),
+        include,
+    )
+}
+
+fn page_workflow_inbox_runs<L, F>(
+    offset: usize,
+    mut load_page: L,
+    mut include: F,
+) -> Result<(Vec<serde_json::Value>, bool), String>
+where
+    L: FnMut(usize) -> Result<crate::commands::workflow::WorkflowRunListResult, String>,
+    F: FnMut(&serde_json::Value) -> bool,
+{
+    let target = offset
+        .saturating_add(MAX_INBOX_NOTIFICATIONS)
+        .saturating_add(1);
+    let mut eligible = Vec::with_capacity(target.min(MAX_INBOX_NOTIFICATIONS + 1));
+    let mut raw_offset = 0;
+
+    loop {
+        let page = load_page(raw_offset)?;
+        for run in page.runs {
+            if include(&run) {
+                eligible.push(run);
+                if eligible.len() >= target {
+                    break;
+                }
+            }
+        }
+        if eligible.len() >= target || !page.truncated {
+            break;
+        }
+        raw_offset = page
+            .next_offset
+            .unwrap_or_else(|| raw_offset.saturating_add(MAX_INBOX_NOTIFICATIONS));
+    }
+
+    let page_end = offset.saturating_add(MAX_INBOX_NOTIFICATIONS);
+    let truncated = eligible.len() > page_end;
+    Ok((
+        eligible
+            .into_iter()
+            .skip(offset)
+            .take(MAX_INBOX_NOTIFICATIONS)
+            .collect(),
+        truncated,
+    ))
 }
 
 fn notification_payload(
@@ -242,6 +374,16 @@ fn notification_payload(
         return None;
     };
     serde_json::from_str(body).ok()
+}
+
+fn notification_expired(payload: &InboxNotificationPayload) -> bool {
+    let Some(expires_at) = payload.expires_at.as_deref() else {
+        return false;
+    };
+    let Ok(expires_at) = chrono::DateTime::parse_from_rfc3339(expires_at) else {
+        return true;
+    };
+    expires_at <= chrono::Utc::now()
 }
 
 fn notification_error(error: &'static str) -> String {
@@ -324,5 +466,45 @@ mod tests {
             updates[0].error.as_deref(),
             Some("workflow blueprint was removed")
         );
+    }
+
+    #[test]
+    fn workflow_inbox_paging_filters_before_applying_offset() {
+        let (runs, truncated) = page_workflow_inbox_runs(
+            0,
+            |offset| {
+                if offset == 0 {
+                    Ok(crate::commands::workflow::WorkflowRunListResult {
+                        runs: (0..200)
+                            .map(|index| {
+                                serde_json::json!({
+                                    "run_id": format!("non-inbox-{index}"),
+                                    "status": "running",
+                                })
+                            })
+                            .collect(),
+                        truncated: true,
+                        next_offset: Some(200),
+                    })
+                } else {
+                    Ok(crate::commands::workflow::WorkflowRunListResult {
+                        runs: vec![serde_json::json!({
+                            "run_id": "inbox-run",
+                            "status": "awaiting_approval",
+                        })],
+                        truncated: false,
+                        next_offset: None,
+                    })
+                }
+            },
+            |run| {
+                run.get("status").and_then(serde_json::Value::as_str) == Some("awaiting_approval")
+            },
+        )
+        .unwrap();
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["run_id"], "inbox-run");
+        assert!(!truncated);
     }
 }
