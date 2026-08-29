@@ -12,7 +12,6 @@ mod output;
 mod telemetry;
 mod watchlist;
 mod workflow_replay;
-
 use args::{
     AgentArgs, AgentCommand, AgentWorktreeCommand, ApprovalArg, AskArgs, Cli, Command,
     ConversationArgs, ConversationCommand, DeliveryArgs, DeliveryCommand, NotifyArgs,

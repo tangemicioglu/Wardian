@@ -1,6 +1,6 @@
 use crate::manager;
 use crate::providers::claude::claude_output_has_bypass_permissions_consent_prompt;
-use crate::remote::operations::inbox_list_control;
+use crate::remote::operations::inbox_list_control as list_inbox_control;
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
 };
@@ -647,8 +647,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 .map_err(ControlError::request_failed)?;
             ok_json(&response)
         }
-
-        request @ ControlRequest::InboxList { .. } => inbox_list_control(app, request).await,
+        request @ ControlRequest::InboxList { .. } => list_inbox_control(app, request).await,
         ControlRequest::ArtifactPresent {
             path,
             title,
