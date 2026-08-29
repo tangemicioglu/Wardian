@@ -1,52 +1,78 @@
-#!/usr/bin/env node
 /**
- * Debt budgets: numbers that may fall but never rise.
+ * Compare debt metrics with the base revision instead of a committed budget.
  *
- * Some of what the merged-PR audit found cannot be fixed in one change. A
- * 10,000-line command module will not be split in a single pull request, and
- * should not be. What can be done immediately is stop it growing.
- *
- * Each metric below is frozen at its measured value. CI fails when a number
- * exceeds its budget. A change that improves one lowers it in the same commit,
- * which is the only way a budget ever moves. That makes the ratchet the one
- * mechanism here that gets stricter on its own.
+ * The base checkout is materialized as a temporary Git worktree, so the
+ * repository has no shared mutable budgets.json that concurrent branches can
+ * conflict over. A metric may improve or remain equal; any increase fails.
  *
  * Usage:
- *   node scripts/verify-budgets.mjs           check against budgets.json
- *   node scripts/verify-budgets.mjs --write   re-freeze at current values
+ *   node scripts/verify-budgets.mjs
+ *   node scripts/verify-budgets.mjs --base origin/main
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
-const BUDGETS_PATH = "budgets.json";
-const WRITE = process.argv.includes("--write");
+const REPO_ROOT = process.cwd();
+const ESLINT_BIN = path.join(REPO_ROOT, "node_modules", "eslint", "bin", "eslint.js");
+const TRACKED_FILE_LINES = [
+  "src-tauri/src/commands/agent.rs",
+  "src-tauri/src/control.rs",
+  "src-tauri/src/state/file_resources.rs",
+  "src-tauri/src/manager/telemetry.rs",
+  "src-tauri/src/commands/git.rs",
+  "crates/wardian-cli/src/main.rs",
+  "src/views/App.tsx",
+];
+
+function parseArgs(argv) {
+  let base;
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--base") base = argv[++index];
+    else if (argv[index]?.startsWith("--base=")) base = argv[index].slice("--base=".length);
+    else throw new Error(`unknown argument: ${argv[index]}`);
+  }
+  return { base };
+}
+
+function git(args) {
+  return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+}
+
+function resolveBaseRef(explicit) {
+  const candidate = explicit
+    ?? (process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : "origin/main");
+  try {
+    return git(["rev-parse", "--verify", `${candidate}^{commit}`]);
+  } catch {
+    if (explicit || candidate !== "origin/main") throw new Error(`base revision is not available: ${candidate}`);
+    return git(["rev-parse", "--verify", "HEAD^"]);
+  }
+}
 
 function walk(dir, predicate, found = []) {
   let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return found;
-  }
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return found; }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (["node_modules", "target", "dist", ".git"].includes(entry.name)) continue;
       walk(full, predicate, found);
-    } else if (predicate(full)) {
-      found.push(full);
-    }
+    } else if (predicate(full)) found.push(full);
   }
   return found;
 }
 
-const posix = (p) => p.split(path.sep).join("/");
+const posix = (value) => value.split(path.sep).join("/");
 
-/** Rust sources, excluding generated and vendored trees. */
-function rustFiles() {
-  return [...walk("src-tauri/src", (f) => f.endsWith(".rs")), ...walk("crates", (f) => f.endsWith(".rs"))];
+function rustFiles(root) {
+  return [
+    ...walk(path.join(root, "src-tauri", "src"), (file) => file.endsWith(".rs")),
+    ...walk(path.join(root, "crates"), (file) => file.endsWith(".rs")),
+  ];
 }
 
 function countMatches(files, pattern) {
@@ -58,105 +84,88 @@ function countMatches(files, pattern) {
   return total;
 }
 
-// ---- Metrics -------------------------------------------------------------
-
-/**
- * Per-file line counts for the modules that only ever grew.
- *
- * Per-file rather than a single total: one file shrinking must not buy room
- * for another to grow.
- */
-function fileLines(tracked) {
-  const measured = {};
-  for (const file of Object.keys(tracked)) {
-    try {
-      measured[file] = readFileSync(file, "utf8").split("\n").length;
-    } catch {
-      // A tracked file that no longer exists is an improvement, not a failure.
-      measured[file] = 0;
-    }
-  }
-  return measured;
+function fileLines(root) {
+  return Object.fromEntries(TRACKED_FILE_LINES.map((file) => {
+    try { return [file, readFileSync(path.join(root, file), "utf8").split("\n").length]; }
+    catch { return [file, 0]; }
+  }));
 }
 
-function measure(budgets) {
-  const rust = rustFiles();
-  const eslint = JSON.parse(
-    // Run ESLint's own entry point rather than `npx`, which is a shell shim on
-    // Windows and cannot be spawned without `shell: true`.
-    execFileSync(
-      process.execPath,
-      [path.join("node_modules", "eslint", "bin", "eslint.js"), ".", "-f", "json"],
-      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-    ),
-  );
-  const warnings = eslint.reduce((sum, file) => sum + file.warningCount, 0);
-
+function measure(root) {
+  const rust = rustFiles(root);
+  const eslint = JSON.parse(execFileSync(process.execPath, [
+    ESLINT_BIN, ".", "-f", "json", "--config", path.join(REPO_ROOT, "eslint.config.js"),
+  ], {
+    cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+  }));
   return {
-    file_lines: fileLines(budgets.file_lines ?? {}),
-    // Suppressing a lint is sometimes right and always worth counting.
+    file_lines: fileLines(root),
     clippy_allow_too_many_arguments: countMatches(rust, /#\[allow\(clippy::too_many_arguments\)\]/g),
     clippy_allow_await_holding_lock: countMatches(rust, /#\[allow\(clippy::await_holding_lock\)\]/g),
-    // A `#[cfg(test)]` free function is usually a test seam, occasionally a
-    // fork of shipping logic. The count stops new ones arriving unexamined.
     cfg_test_functions: countMatches(rust, /#\[cfg\(test\)\]\s*\n\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s/g),
-    // Rust tests that only run behind `--ignored`.
     ignored_rust_tests: countMatches(rust, /#\[ignore\b/g),
-    // Browser E2E cases disabled outright.
     skipped_e2e_tests: countMatches(
-      walk("e2e", (f) => f.endsWith(".spec.ts")),
+      walk(path.join(root, "e2e"), (file) => file.endsWith(".spec.ts")),
       /\btest\.skip\s*\(\s*(?:true\b|["'`])/g,
     ),
-    eslint_warnings: warnings,
+    eslint_warnings: eslint.reduce((sum, file) => sum + file.warningCount, 0),
   };
 }
 
-// ---- Compare -------------------------------------------------------------
-
-const budgets = JSON.parse(readFileSync(BUDGETS_PATH, "utf8"));
-const measured = measure(budgets);
-
-if (WRITE) {
-  writeFileSync(BUDGETS_PATH, `${JSON.stringify({ ...budgets, ...measured }, null, 2)}\n`);
-  console.log(`Re-froze ${BUDGETS_PATH} at current values.`);
-  process.exit(0);
+export function compareMetrics(current, base) {
+  const over = [];
+  const under = [];
+  for (const [key, value] of Object.entries(current)) {
+    if (key === "file_lines") {
+      for (const [file, lines] of Object.entries(value)) {
+        const baseline = base.file_lines[file] ?? 0;
+        if (lines > baseline) over.push([`${posix(file)} lines`, lines, baseline]);
+        else if (lines < baseline) under.push([`${posix(file)} lines`, lines, baseline]);
+      }
+    } else if (value > base[key]) over.push([key, value, base[key]]);
+    else if (value < base[key]) under.push([key, value, base[key]]);
+  }
+  return { over, under };
 }
 
-const over = [];
-const under = [];
-
-for (const [key, value] of Object.entries(measured)) {
-  if (key === "file_lines") {
-    for (const [file, lines] of Object.entries(value)) {
-      const budget = budgets.file_lines[posix(file)] ?? budgets.file_lines[file];
-      if (budget === undefined) continue;
-      if (lines > budget) over.push([`${posix(file)} lines`, lines, budget]);
-      else if (lines < budget) under.push([`${posix(file)} lines`, lines, budget]);
-    }
-    continue;
+function addBaseWorktree(base) {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "wardian-budget-base-"));
+  try {
+    execFileSync("git", ["worktree", "add", "--detach", "--quiet", tempRoot, base], { cwd: REPO_ROOT, stdio: "pipe" });
+  } catch (error) {
+    rmSync(tempRoot, { recursive: true, force: true });
+    throw error;
   }
-  const budget = budgets[key];
-  if (budget === undefined) continue;
-  if (value > budget) over.push([key, value, budget]);
-  else if (value < budget) under.push([key, value, budget]);
+  return tempRoot;
 }
 
-if (over.length > 0) {
-  console.error(`Debt budgets: ${over.length} metric(s) above budget.\n`);
-  for (const [name, value, budget] of over) {
-    console.error(`  ${name}: ${value} (budget ${budget}, +${value - budget})`);
-  }
-  console.error(
-    "\nThese numbers may fall but never rise. Either bring the change under "
-      + "budget, or make the case for the increase and raise it deliberately.",
-  );
-  process.exit(1);
+function removeBaseWorktree(tempRoot) {
+  try { execFileSync("git", ["worktree", "remove", "--force", tempRoot], { cwd: REPO_ROOT, stdio: "pipe" }); }
+  finally { rmSync(tempRoot, { recursive: true, force: true }); }
 }
 
-console.log(`Debt budgets: all ${Object.keys(measured).length} metric group(s) within budget.`);
-if (under.length > 0) {
-  console.log(`\n${under.length} metric(s) improved. Re-freeze with: npm run check:budgets -- --write\n`);
-  for (const [name, value, budget] of under) {
-    console.log(`  ${name}: ${value} (budget ${budget}, −${budget - value})`);
+export function main(argv = process.argv.slice(2)) {
+  const { base: explicitBase } = parseArgs(argv);
+  const base = resolveBaseRef(explicitBase);
+  const current = measure(REPO_ROOT);
+  const baseRoot = addBaseWorktree(base);
+  let baseline;
+  try { baseline = measure(baseRoot); }
+  finally { removeBaseWorktree(baseRoot); }
+
+  const { over, under } = compareMetrics(current, baseline);
+  if (over.length > 0) {
+    console.error(`Debt budgets: ${over.length} metric(s) increased against ${base}.\n`);
+    for (const [name, value, previous] of over) console.error(`  ${name}: ${value} (base ${previous}, +${value - previous})`);
+    process.exitCode = 1;
+    return 1;
   }
+  console.log(`Debt budgets: all ${Object.keys(current).length} metric group(s) did not increase against ${base}.`);
+  for (const [name, value, previous] of under) console.log(`  improved ${name}: ${previous} -> ${value}`);
+  return 0;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  try { process.exitCode = main(); }
+  catch (error) { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; }
 }
