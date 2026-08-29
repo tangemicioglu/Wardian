@@ -116,9 +116,7 @@ single writer the app's own Graph view uses — rather than written to
 `ignore`/`unignore` (reads still work without it). An open Graph view refreshes
 live because the app updates its own state directly; the filesystem watcher on
 `topology.json` remains as a fallback for a hand edit or any other writer. See
-the [Graph](./graph.md) guide for the visual surface, and
-[topology-authority](../specs/2026-08-28-topology-authority.md) for why this
-changed and what it means for self-serve authority.
+the [Graph](./graph.md) guide for the visual surface.
 
 ## Commands
 
