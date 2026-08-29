@@ -10,7 +10,15 @@
  *   node scripts/verify-budgets.mjs --base origin/main
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -18,6 +26,7 @@ import { pathToFileURL } from "node:url";
 
 const REPO_ROOT = process.cwd();
 const ESLINT_BIN = path.join(REPO_ROOT, "node_modules", "eslint", "bin", "eslint.js");
+const LINT_POLICY_FILES = ["eslint.config.js", "package.json", "package-lock.json"];
 const TRACKED_FILE_LINES = [
   "src-tauri/src/commands/agent.rs",
   "src-tauri/src/control.rs",
@@ -40,6 +49,20 @@ function parseArgs(argv) {
 
 function git(args) {
   return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+}
+
+export function changedLintPolicyFiles(changedFiles) {
+  const changed = new Set(changedFiles);
+  return LINT_POLICY_FILES.filter((file) => changed.has(file));
+}
+
+export function assertLintPolicyUnchanged(changedFiles) {
+  const changed = changedLintPolicyFiles(changedFiles);
+  if (changed.length > 0) {
+    throw new Error(
+      `Debt budget gate refuses to compare a revision that changes lint policy or dependencies: ${changed.join(", ")}`,
+    );
+  }
 }
 
 function resolveBaseRef(explicit) {
@@ -94,7 +117,7 @@ function fileLines(root) {
 function measure(root) {
   const rust = rustFiles(root);
   const eslint = JSON.parse(execFileSync(process.execPath, [
-    ESLINT_BIN, ".", "-f", "json", "--config", path.join(REPO_ROOT, "eslint.config.js"),
+    ESLINT_BIN, ".", "-f", "json", "--config", path.join(root, "eslint.config.js"),
   ], {
     cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
   }));
@@ -140,17 +163,47 @@ function addBaseWorktree(base) {
 }
 
 function removeBaseWorktree(tempRoot) {
+  const dependencyLink = path.join(tempRoot, "node_modules");
+  try {
+    if (lstatSync(dependencyLink).isSymbolicLink()) unlinkSync(dependencyLink);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   try { execFileSync("git", ["worktree", "remove", "--force", tempRoot], { cwd: REPO_ROOT, stdio: "pipe" }); }
   finally { rmSync(tempRoot, { recursive: true, force: true }); }
+}
+
+function linkDependencies(root) {
+  if (!readFileSync(path.join(REPO_ROOT, "node_modules", "eslint", "bin", "eslint.js"), "utf8")) {
+    throw new Error("current checkout does not have the installed ESLint dependency");
+  }
+  symlinkSync(
+    path.join(REPO_ROOT, "node_modules"),
+    path.join(root, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+}
+
+function assertDependencyParity(root) {
+  for (const file of LINT_POLICY_FILES.slice(1)) {
+    if (readFileSync(path.join(REPO_ROOT, file), "utf8") !== readFileSync(path.join(root, file), "utf8")) {
+      throw new Error(`Debt budget gate cannot resolve base dependencies for ${file}.`);
+    }
+  }
 }
 
 export function main(argv = process.argv.slice(2)) {
   const { base: explicitBase } = parseArgs(argv);
   const base = resolveBaseRef(explicitBase);
+  assertLintPolicyUnchanged(git(["diff", "--name-only", `${base}..HEAD`, "--", ...LINT_POLICY_FILES]).split("\n").filter(Boolean));
   const current = measure(REPO_ROOT);
   const baseRoot = addBaseWorktree(base);
   let baseline;
-  try { baseline = measure(baseRoot); }
+  try {
+    assertDependencyParity(baseRoot);
+    linkDependencies(baseRoot);
+    baseline = measure(baseRoot);
+  }
   finally { removeBaseWorktree(baseRoot); }
 
   const { over, under } = compareMetrics(current, baseline);
