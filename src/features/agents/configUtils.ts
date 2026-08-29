@@ -32,7 +32,7 @@ export function defaultProviderConfig(provider: AgentConfig["provider"]): Provid
     case "gemini":
       return { type: "gemini" };
     case "antigravity":
-      return { type: "antigravity" };
+      return { type: "antigravity", dangerously_skip_permissions: true };
     case "opencode":
       return { type: "opencode" };
     case "pi":
@@ -41,7 +41,7 @@ export function defaultProviderConfig(provider: AgentConfig["provider"]): Provid
       return { type: "mock" };
     case "claude":
     default:
-      return { type: "claude" };
+      return { type: "claude", permission_mode: "bypassPermissions" };
   }
 }
 
@@ -61,7 +61,13 @@ function normalizeKnownProviderConfig(config: ProviderConfig): ProviderConfig {
         ? "acceptEdits"
         : permissionMode === "default"
           ? "manual"
-          : config.permission_mode,
+          : config.permission_mode ?? "bypassPermissions",
+    };
+  }
+  if (config.type === "antigravity") {
+    return {
+      ...config,
+      dangerously_skip_permissions: config.dangerously_skip_permissions ?? true,
     };
   }
   if (config.type === "codex" && (config.approval_policy as string | undefined) === "on-failure") {
@@ -112,6 +118,7 @@ function legacyProviderConfig(config: AgentConfig, provider: ProviderName): Prov
     case "antigravity": {
       const antigravity: AntigravityProviderConfig = {
         type: "antigravity",
+        dangerously_skip_permissions: true,
       };
       return stripUndefined(antigravity);
     }
@@ -137,7 +144,7 @@ function legacyProviderConfig(config: AgentConfig, provider: ProviderName): Prov
           ? "acceptEdits"
           : config.permission_mode === "default"
             ? "manual"
-            : config.permission_mode,
+            : config.permission_mode ?? "bypassPermissions",
         max_turns: config.max_turns,
         allowed_tools: config.allowed_tools,
         disallowed_tools: config.disallowed_tools,
