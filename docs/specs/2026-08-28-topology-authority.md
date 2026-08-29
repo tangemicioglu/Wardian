@@ -139,7 +139,8 @@ intentional and documented, not hidden.
   function's own test (`crates/wardian-core/src/topology.rs:1048` in the
   pre-fix tree) already passed, because it tested
   `remove_edge_and_suppress_seed_if_team_pair` directly rather than the
-  caller that was failing to call it.
+  caller that was failing to call it. Also `mutate_ui_audits_every_operation_as_operator`,
+  covering the UI path's audit trail (see "Review findings" below).
 - `src-tauri/src/topology_audit.rs`: append, denial with an error code, and
   rotation.
 - `crates/wardian-cli/tests/graph_cli.rs`: unchanged local-validation cases
@@ -148,11 +149,41 @@ intentional and documented, not hidden.
   `*_without_running_app_reports_app_not_running` case per verb, mirroring
   `agent_cli.rs`'s existing `forced_delete_without_app_running_exits_six`.
   Full mutation and authorization behavior moved out of this file because a
-  CLI-subprocess test has no running app to connect to; end-to-end coverage
-  against a real app belongs in `e2e-native/tests/topology-cli-native.test.mjs`
-  and is not yet added there (follow-up, not required for this stage — the
-  in-process control-plane tests above already exercise the real dispatch
-  function, not a stand-in for it).
+  CLI-subprocess test has no running app to connect to.
+- `e2e-native/tests/topology-cli-native.test.mjs`: a real-app test exercising
+  `wardian graph link/unlink/ignore/unignore` as actual CLI subprocess calls
+  against a running native app — the real `ControlRequest` wire format, the
+  CLI's socket transport, the real dispatch arms in `src-tauri/src/control.rs`,
+  and the real audit log file — plus the #1032 repro shape at this same real
+  layer: unlink an in-team pair via the CLI, add a third member to the same
+  team (reseeding the whole clique), and confirm the unlinked pair does not
+  resurrect. This is the layer none of the tests above can reach, since they
+  all call the shared dispatch function directly rather than going over the
+  wire.
+
+## Review findings
+
+`Wardian-Reviewer` reviewed this stage before it merged and found two real
+gaps, both fixed in the same change:
+
+- **UI mutations were not audited.** `mutate_ui` (the Graph view's write path,
+  used by `add_topology_edge` and friends) called `apply_topology_operation`
+  directly and never touched the audit log, so the "every attempt is
+  audited" claim above was only true for the CLI/agent path. Fixed by routing
+  `mutate_ui` through the same `audit_topology_mutation` helper as
+  `dispatch_topology_mutation`, with `caller: "operator"` — regression test:
+  `mutate_ui_audits_every_operation_as_operator`.
+- **Audit append failures were silently swallowed** (`let _ = ...`). An
+  unwritable audit log could not block a mutation the caller was otherwise
+  authorized to make, but silently dropping the error contradicted the
+  audited-attempt claim just as much as never writing the record. Fixed by
+  logging the failure via `crate::manager::log_debug`, matching the existing
+  `remote/gateway.rs` precedent for the same audit-append-failure shape.
+
+The reviewer's third finding — that the in-process dispatcher tests do not
+exercise `ControlRequest` serialization, the CLI's live socket transport, or
+the real `control.rs` dispatch arms — is what the new
+`e2e-native/tests/topology-cli-native.test.mjs` case above addresses.
 
 ## Debt budget
 

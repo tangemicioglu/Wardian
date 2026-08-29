@@ -157,7 +157,14 @@ pub async fn get_pair_activity(offset: Option<usize>) -> Result<PairActivityResu
 /// The desktop UI is the human operator: an `invoke` call is only reachable
 /// by driving the app's own webview, so it carries unrestricted authority
 /// today, same as before this module converged on `apply_topology_operation`.
-fn mutate_ui(app: &AppHandle, op: TopologyOperation, a: &str, b: &str) -> Result<bool, String> {
+/// Audited the same as every other writer (`caller: "operator"`), so the
+/// audit log reflects every mutation regardless of which surface made it.
+fn mutate_ui<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    op: TopologyOperation,
+    a: &str,
+    b: &str,
+) -> Result<bool, String> {
     let home = home()?;
     let _topology_lock = topology_process_lock(&home)?;
     let teams = load_team_memberships(&home);
@@ -169,7 +176,52 @@ fn mutate_ui(app: &AppHandle, op: TopologyOperation, a: &str, b: &str) -> Result
         save_topology(&home, &topology).map_err(|e| e.to_string())?;
         let _ = app.emit("topology-changed", ());
     }
+    audit_topology_mutation(
+        &home,
+        "operator",
+        op,
+        &outcome.a,
+        &outcome.b,
+        &created_at,
+        if outcome.changed {
+            "applied"
+        } else {
+            "unchanged"
+        },
+        None,
+    );
     Ok(outcome.changed)
+}
+
+/// Appends one record to the topology audit log. Logs, rather than
+/// propagates, an append failure: an unwritable audit log must not block a
+/// topology mutation the caller is otherwise authorized to make, but a
+/// silent failure here would contradict the "every attempt is audited"
+/// contract just as much as never calling this function, so it is not
+/// swallowed either.
+fn audit_topology_mutation(
+    home: &Path,
+    caller: &str,
+    op: TopologyOperation,
+    a: &str,
+    b: &str,
+    at: &str,
+    outcome: &str,
+    error_code: Option<&str>,
+) {
+    let record = crate::topology_audit::TopologyAuditRecord {
+        schema_version: crate::topology_audit::TOPOLOGY_AUDIT_SCHEMA_VERSION,
+        at: at.to_string(),
+        caller: caller.to_string(),
+        operation: op.action().to_string(),
+        a: a.to_string(),
+        b: b.to_string(),
+        outcome: outcome.to_string(),
+        error_code: error_code.map(str::to_string),
+    };
+    if let Err(error) = crate::topology_audit::append_topology_audit_record(home, &record) {
+        crate::manager::log_debug(&format!("[WARDIAN] topology audit append failed: {error}"));
+    }
 }
 
 /// Errors from [`dispatch_topology_mutation`]. Mapped to the control plane's
@@ -216,18 +268,15 @@ pub async fn dispatch_topology_mutation<R: tauri::Runtime>(
             TopologyAuthDenied::UnknownCaller => "not_found",
             TopologyAuthDenied::SelfServeRequired => "self_serve_required",
         };
-        let _ = crate::topology_audit::append_topology_audit_record(
+        audit_topology_mutation(
             &home,
-            &crate::topology_audit::TopologyAuditRecord {
-                schema_version: crate::topology_audit::TOPOLOGY_AUDIT_SCHEMA_VERSION,
-                at: chrono::Utc::now().to_rfc3339(),
-                caller: caller_label,
-                operation: op.action().to_string(),
-                a,
-                b,
-                outcome: "denied".to_string(),
-                error_code: Some(error_code.to_string()),
-            },
+            &caller_label,
+            op,
+            &a,
+            &b,
+            &chrono::Utc::now().to_rfc3339(),
+            "denied",
+            Some(error_code),
         );
         return Err(match denied {
             TopologyAuthDenied::UnknownCaller => TopologyControlError::UnknownCaller,
@@ -246,23 +295,19 @@ pub async fn dispatch_topology_mutation<R: tauri::Runtime>(
         let _ = app.emit("topology-changed", ());
     }
 
-    let _ = crate::topology_audit::append_topology_audit_record(
+    audit_topology_mutation(
         &home,
-        &crate::topology_audit::TopologyAuditRecord {
-            schema_version: crate::topology_audit::TOPOLOGY_AUDIT_SCHEMA_VERSION,
-            at: created_at,
-            caller: caller_label,
-            operation: op.action().to_string(),
-            a: outcome.a.clone(),
-            b: outcome.b.clone(),
-            outcome: if outcome.changed {
-                "applied"
-            } else {
-                "unchanged"
-            }
-            .to_string(),
-            error_code: None,
+        &caller_label,
+        op,
+        &outcome.a,
+        &outcome.b,
+        &created_at,
+        if outcome.changed {
+            "applied"
+        } else {
+            "unchanged"
         },
+        None,
     );
 
     Ok(wardian_core::control::TopologyMutationResponse {
@@ -385,6 +430,34 @@ mod tests {
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).expect("audit line is valid JSON"))
             .collect()
+    }
+
+    /// Regression test for the Reviewer finding that `mutate_ui` (the desktop
+    /// Graph view's write path) never appended to the audit log, contradicting
+    /// the spec's "every attempt is audited" claim. Covers all four verbs
+    /// since they share `mutate_ui`.
+    #[test]
+    fn mutate_ui_audits_every_operation_as_operator() {
+        let home = TestWardianHome::new();
+        let app = tauri::test::mock_app();
+        app.manage(crate::state::AppState::new());
+        let handle = app.handle().clone();
+
+        assert!(mutate_ui(&handle, TopologyOperation::Link, "agent-1", "agent-2").unwrap());
+        assert!(mutate_ui(&handle, TopologyOperation::Ignore, "agent-1", "agent-3").unwrap());
+        assert!(!mutate_ui(&handle, TopologyOperation::Ignore, "agent-1", "agent-3").unwrap());
+        assert!(mutate_ui(&handle, TopologyOperation::Unignore, "agent-1", "agent-3").unwrap());
+        assert!(mutate_ui(&handle, TopologyOperation::Unlink, "agent-1", "agent-2").unwrap());
+
+        let audit = read_topology_audit_log(home.path());
+        assert_eq!(audit.len(), 5);
+        assert!(audit.iter().all(|record| record["caller"] == "operator"));
+        assert_eq!(audit[0]["operation"], "link");
+        assert_eq!(audit[0]["outcome"], "applied");
+        assert_eq!(audit[2]["operation"], "ignore");
+        assert_eq!(audit[2]["outcome"], "unchanged");
+        assert_eq!(audit[4]["operation"], "unlink");
+        assert_eq!(audit[4]["outcome"], "applied");
     }
 
     #[tokio::test]
