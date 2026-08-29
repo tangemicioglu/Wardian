@@ -297,6 +297,7 @@ summary,
 }
 
 :root {
+  --wardian-application-modal-z-index: 10001;
   background-color: var(--color-wardian-bg);
   color: var(--color-wardian-text);
   overflow: hidden;
@@ -305,6 +306,10 @@ summary,
 /* ── Shared interaction primitives ────────────────────── */
 .wardian-dialog-overlay {
   background: var(--color-wardian-overlay);
+}
+
+.wardian-dialog-overlay--application {
+  z-index: var(--wardian-application-modal-z-index);
 }
 
 .wardian-dialog-panel {

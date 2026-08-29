@@ -1202,7 +1202,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
   }
 
   return createPortal(
-    <div className="wardian-dialog-overlay fixed inset-0 z-[60] flex items-center justify-center p-4">
+    <div className="wardian-dialog-overlay wardian-dialog-overlay--application fixed inset-0 flex items-center justify-center p-4">
       <section
         ref={dialogRef}
         role="dialog"

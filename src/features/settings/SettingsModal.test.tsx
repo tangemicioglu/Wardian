@@ -115,10 +115,11 @@ describe("SettingsModal", () => {
     });
   });
 
-  it("places the backdrop above the custom titlebar chrome", () => {
+  it("places the backdrop on the application modal layer", () => {
     render(<SettingsModal isOpen onClose={vi.fn()} />);
 
-    expect(screen.getByRole("dialog", { name: "Settings" }).parentElement).toHaveClass("z-[60]");
+    expect(screen.getByRole("dialog", { name: "Settings" }).parentElement)
+      .toHaveClass("wardian-dialog-overlay--application");
   });
 
   it("uses the app-level updater state without starting a second automatic check", () => {
