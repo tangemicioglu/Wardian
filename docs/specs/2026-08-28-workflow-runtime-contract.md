@@ -97,6 +97,11 @@ can reset the complete nested body and loop state on every outer iteration.
 Every parented body node must also be reachable from the loop's `body` port; a
 parent annotation alone is not an execution edge.
 
+Detached launch and resume tasks must persist a `RunFailed` event and failed
+checkpoint when the global headless-execution guard cannot be acquired. A
+successful launch response therefore cannot leave a run permanently marked
+`running` merely because its worker failed before provider execution began.
+
 Observe's node inspector limits output and error evidence to the selected
 timeline position, so scrubbing cannot reveal events from the future.
 

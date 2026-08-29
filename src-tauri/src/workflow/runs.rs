@@ -14,7 +14,7 @@ use wardian_core::engine::event::{Event, EventKind};
 use wardian_core::engine::store::{
     append_event, read_blueprint_snapshot, read_checkpoint, read_events, write_checkpoint,
 };
-use wardian_core::engine::{Engine, RunStatus};
+use wardian_core::engine::{Engine, RunState, RunStatus};
 use wardian_core::models::{
     AgentConfig, InvocationKind, WorkflowAssignments, WorkflowRoleAssignment,
 };
@@ -110,6 +110,60 @@ pub fn emit_workflow_inbox_update_with_name(
     if let Some(update) = workflow_inbox_update_with_name(workflow_name, run_root) {
         let _ = app.emit(WORKFLOW_INBOX_UPDATED_EVENT, update);
     }
+}
+
+/// Persist a terminal failure when a detached execution task cannot start.
+///
+/// This path intentionally does not require a blueprint: the run has already
+/// recorded its startup event, and the failure must remain inspectable even if
+/// the execution lock is unavailable because a managed worktree is changing.
+pub fn mark_run_failed(run_root: &Path, message: impl Into<String>) -> Result<RunState, String> {
+    let message = message.into();
+    let mut state = read_checkpoint(run_root)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "workflow checkpoint is missing".to_string())?;
+    if state.status == RunStatus::Completed {
+        return Err("workflow run is already completed".to_string());
+    }
+    if state.status == RunStatus::Failed {
+        return Ok(state);
+    }
+    if state.status == RunStatus::AwaitingApproval {
+        return Ok(state);
+    }
+
+    let events = read_events(run_root).map_err(|error| error.to_string())?;
+    let event_next_seq =
+        Engine::validate_event_sequence(&events).map_err(|error| error.to_string())?;
+    if state.next_seq > event_next_seq {
+        return Err(format!(
+            "workflow checkpoint expects sequence {}, event log ends at {}",
+            state.next_seq,
+            event_next_seq.saturating_sub(1)
+        ));
+    }
+    if !events
+        .iter()
+        .any(|event| matches!(&event.kind, EventKind::RunFailed { error } if error == &message))
+    {
+        append_event(
+            run_root,
+            &Event::new(
+                event_next_seq,
+                EventKind::RunFailed {
+                    error: message.clone(),
+                },
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+        state.next_seq = event_next_seq + 1;
+    } else {
+        state.next_seq = event_next_seq;
+    }
+    state.status = RunStatus::Failed;
+    state.failure = Some(message);
+    write_checkpoint(run_root, &state).map_err(|error| error.to_string())?;
+    Ok(state)
 }
 
 /// Scan `<runs_dir>/<id>/<run>/state.json` for runs still marked Running.
@@ -724,7 +778,18 @@ pub async fn drive_started_run_with_catalog_assignments_and_memory_principal(
     memory_principal: Option<String>,
 ) -> Result<(), String> {
     let _headless_execution =
-        wardian_core::workflow_execution_lock::acquire_headless_execution_guard()?;
+        match wardian_core::workflow_execution_lock::acquire_headless_execution_guard() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let message = format!("workflow execution could not start: {error}");
+                if let Err(persist_error) = mark_run_failed(&run_root, &message) {
+                    return Err(format!(
+                        "{message}; failed to persist terminal failure: {persist_error}"
+                    ));
+                }
+                return Err(message);
+            }
+        };
     let owner_id = format!("{}/{}", blueprint.id, state.run_id);
     let exec = if let Some(app) = app {
         live_executor_with_catalog_assignments_and_app(
@@ -785,7 +850,18 @@ pub async fn drive_resume_with_catalog(
     agent_catalog: HashMap<String, AgentBinding>,
 ) -> Result<(), String> {
     let _headless_execution =
-        wardian_core::workflow_execution_lock::acquire_headless_execution_guard()?;
+        match wardian_core::workflow_execution_lock::acquire_headless_execution_guard() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let message = format!("workflow resume could not start: {error}");
+                if let Err(persist_error) = mark_run_failed(&run_root, &message) {
+                    return Err(format!(
+                        "{message}; failed to persist terminal failure: {persist_error}"
+                    ));
+                }
+                return Err(message);
+            }
+        };
     let assignments = wardian_core::workflow::assignment::normalize_assignments(
         None,
         &bindings,
@@ -989,6 +1065,28 @@ edges:
         let update = workflow_inbox_update(&blueprint, &run_root).unwrap();
         assert_eq!(update.status, "failed");
         assert_eq!(update.error.as_deref(), Some("approval rejected"));
+    }
+
+    #[test]
+    fn mark_run_failed_persists_detached_start_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_root = dir.path().join("wf").join("run-1");
+        let blueprint = wardian_core::workflow::parse::parse_str(INVOKER_BLUEPRINT).unwrap();
+        Engine::initialize_with_id(&blueprint, "run-1", serde_json::json!({}), &run_root).unwrap();
+
+        let state =
+            mark_run_failed(&run_root, "workflow execution could not start: lock busy").unwrap();
+
+        assert_eq!(state.status, RunStatus::Failed);
+        assert_eq!(state.next_seq, 2);
+        assert_eq!(
+            state.failure.as_deref(),
+            Some("workflow execution could not start: lock busy")
+        );
+        assert!(matches!(
+            read_events(&run_root).unwrap().last().map(|event| &event.kind),
+            Some(EventKind::RunFailed { error }) if error == "workflow execution could not start: lock busy"
+        ));
     }
 
     #[test]

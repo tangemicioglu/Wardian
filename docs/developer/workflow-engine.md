@@ -83,6 +83,9 @@ Resume, startup recovery, and human approval use the same durable run records:
 - app startup marks runs that were still `running` at process exit as `failed`
   with an interruption reason, because their worker tasks and provider
   processes are no longer owned by the new app process;
+- detached launch and resume workers persist a `RunFailed` event and failed
+  checkpoint if the global headless-execution guard cannot be acquired, so a
+  worker-start failure cannot leave a run falsely active;
 - `workflow_approve` grants or rejects an approval gate;
 - `workflow_cancel` writes a cancellation marker; the engine consumes it at the
   next dispatch boundary, or immediately records a durable `run_failed`

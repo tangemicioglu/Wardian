@@ -600,9 +600,20 @@ pub async fn workflow_resume(
             match wardian_core::workflow_execution_lock::acquire_headless_execution_guard() {
                 Ok(guard) => guard,
                 Err(error) => {
-                    crate::utils::logging::log_debug(&format!(
-                        "[workflow] resume could not lock execution: {error}"
-                    ));
+                    let message = format!("workflow resume could not start: {error}");
+                    match runs::mark_run_failed(&run_root, &message) {
+                        Ok(_) => crate::utils::logging::log_debug(&format!(
+                            "[workflow] resume failed: {message}"
+                        )),
+                        Err(persist_error) => crate::utils::logging::log_debug(&format!(
+                            "[workflow] resume failed: {message}; failed to persist terminal failure: {persist_error}"
+                        )),
+                    }
+                    runs::emit_workflow_inbox_update(
+                        &app_for_inbox,
+                        &blueprint_for_inbox,
+                        &run_root_for_inbox,
+                    );
                     return;
                 }
             };
