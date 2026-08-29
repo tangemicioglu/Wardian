@@ -61,6 +61,20 @@ function runCliOk(cliPath, harness, args) {
   return result;
 }
 
+async function readProviderTerminalTail(driver, sessionId) {
+  if (!sessionId) return "Antigravity session id was not captured.";
+  const result = await driver.executeAsyncScript((sid, done) => {
+    window.__TAURI_INTERNALS__.invoke("read_agent_pty", {
+      sessionId: sid,
+      options: { max_bytes: 32768, peek: true },
+    }).then(
+      (output) => done({ ok: true, output }),
+      (error) => done({ ok: false, error: String(error) }),
+    );
+  }, sessionId);
+  return result.ok ? (result.output || "<empty terminal output>") : `Unable to read terminal: ${result.error}`;
+}
+
 async function readDebugTail(harness) {
   try {
     const logPath = path.join(harness.isolatedHome, "wardian_debug.log");
@@ -147,6 +161,7 @@ test("native Antigravity CLI spawn, send, and watch round trip", { timeout: 2400
 
   await waitForAppShell(session.driver, 20000);
 
+  let spawned = null;
   try {
     const spawnResult = runCliOk(cliPath, harness, [
       "agent",
@@ -162,7 +177,7 @@ test("native Antigravity CLI spawn, send, and watch round trip", { timeout: 2400
       "--fields",
       "name,uuid,class,provider,status",
     ]);
-    const spawned = JSON.parse(spawnResult.stdout).agent;
+    spawned = JSON.parse(spawnResult.stdout).agent;
     assert.equal(spawned.name, agentName);
     assert.equal(spawned.provider, "antigravity");
 
@@ -193,8 +208,9 @@ test("native Antigravity CLI spawn, send, and watch round trip", { timeout: 2400
   } catch (error) {
     const debugTail = await readDebugTail(harness);
     const antigravityTail = await readAntigravityTranscriptTail();
+    const terminalTail = await readProviderTerminalTail(session.driver, spawned?.uuid);
     assert.fail(
-      `${error.message}\n\n--- Wardian debug tail ---\n${debugTail}\n\n--- Antigravity transcript tail ---\n${antigravityTail}`,
+      `${error.message}\n\n--- Provider terminal tail ---\n${terminalTail}\n\n--- Wardian debug tail ---\n${debugTail}\n\n--- Antigravity transcript tail ---\n${antigravityTail}`,
     );
   }
 });

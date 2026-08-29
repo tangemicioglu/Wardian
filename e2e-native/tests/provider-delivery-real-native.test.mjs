@@ -169,7 +169,7 @@ async function spawnRealProviderAgent(driver, provider, sessionName, folder) {
     window.__TAURI_INTERNALS__.invoke("spawn_agent", {
       req: {
         sessionName,
-        agentClass: "RealProviderE2E",
+        agentClass: "Reviewer",
         folder,
         isOff: false,
         configOverride,

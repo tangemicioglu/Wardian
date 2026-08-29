@@ -1368,7 +1368,7 @@ fn bootstrap_output_session_id(provider_name: &str, output: &str) -> Option<Stri
     })
 }
 
-fn apply_headless_identity_env(
+pub(crate) fn apply_headless_identity_env(
     cmd: &mut tokio::process::Command,
     process_session_id: &str,
     memory_agent_id: Option<&str>,

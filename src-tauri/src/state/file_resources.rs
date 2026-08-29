@@ -34,7 +34,6 @@ const MIN_TICKET_SNAPSHOT_RESERVATION_BYTES: u64 = 4 * 1024 * 1024;
 const RECOVERY_ORPHAN_GRACE_PERIOD: Duration = Duration::from_secs(24 * 60 * 60);
 const DEFAULT_MAX_RECOVERY_RECORDS: usize = 128;
 const DEFAULT_MAX_RECOVERY_BODY_BYTES: u64 = 512 * 1024 * 1024;
-
 include!("file_resources/wire.rs");
 include!("file_resources/recovery.rs");
 include!("file_resources/grants.rs");
