@@ -107,7 +107,7 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
     set({ scrubIndex });
   },
   currentNodeStatuses() {
-    return nodeStatusesAt(get().events, get().scrubIndex);
+    return nodeStatusesAt(get().events, get().scrubIndex, get().blueprint);
   },
   reset() {
     set(initialState);

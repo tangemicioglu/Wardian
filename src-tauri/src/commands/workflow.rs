@@ -345,7 +345,13 @@ pub fn workflow_read_run(
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
     let state = read_checkpoint(&dir).map_err(|e| e.to_string())?;
     let events = read_events(&dir).map_err(|e| e.to_string())?;
-    let blueprint = resolve_blueprint(&blueprint_id);
+    let blueprint = if let Some(snapshot) =
+        wardian_core::engine::store::read_blueprint_snapshot(&dir).map_err(|e| e.to_string())?
+    {
+        Some(serde_json::to_value(snapshot).map_err(|e| e.to_string())?)
+    } else {
+        resolve_blueprint(&blueprint_id)
+    };
     let blueprint_path =
         resolve_blueprint_path(&blueprint_id).map(|path| path.to_string_lossy().to_string());
 
@@ -550,6 +556,7 @@ pub async fn workflow_resume(
     assignments: Option<WorkflowAssignments>,
 ) -> Result<serde_json::Value, String> {
     let blueprint = parse_blueprint_for_run(&blueprint_id, &blueprint_path)?;
+    validate_blueprint_for_execution(&blueprint)?;
     let run_root =
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
     let invocation = runs::read_run_invocation(&run_root)?;
@@ -593,9 +600,20 @@ pub async fn workflow_resume(
             match wardian_core::workflow_execution_lock::acquire_headless_execution_guard() {
                 Ok(guard) => guard,
                 Err(error) => {
-                    crate::utils::logging::log_debug(&format!(
-                        "[workflow] resume could not lock execution: {error}"
-                    ));
+                    let message = format!("workflow resume could not start: {error}");
+                    match runs::mark_run_failed(&run_root, &message) {
+                        Ok(_) => crate::utils::logging::log_debug(&format!(
+                            "[workflow] resume failed: {message}"
+                        )),
+                        Err(persist_error) => crate::utils::logging::log_debug(&format!(
+                            "[workflow] resume failed: {message}; failed to persist terminal failure: {persist_error}"
+                        )),
+                    }
+                    runs::emit_workflow_inbox_update(
+                        &app_for_inbox,
+                        &blueprint_for_inbox,
+                        &run_root_for_inbox,
+                    );
                     return;
                 }
             };
@@ -681,6 +699,7 @@ pub async fn approve_workflow_for_surface(
     assignments: Option<WorkflowAssignments>,
 ) -> Result<serde_json::Value, String> {
     let blueprint = parse_blueprint_for_run(&blueprint_id, &blueprint_path)?;
+    validate_blueprint_for_execution(&blueprint)?;
     let run_root =
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
 
@@ -767,14 +786,37 @@ pub async fn approve_workflow_for_surface(
     }
 }
 
-/// Record a cancel request for a run. Cooperative cancellation of the live loop
-/// is deferred; the marker gives the UI a durable cancellation request.
+/// Record a durable cancel request. The engine consumes the marker at its next
+/// dispatch boundary, or immediately persists cancellation for an approval-
+/// parked run.
 #[tauri::command]
 pub fn workflow_cancel(blueprint_id: String, run_id: String) -> Result<serde_json::Value, String> {
     let run_root =
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
+    let checkpoint = read_checkpoint(&run_root).map_err(|error| error.to_string())?;
+    if let Some(state) = checkpoint.as_ref() {
+        if state.status == RunStatus::Running {
+            std::fs::write(run_root.join("cancel.marker"), "cancelled")
+                .map_err(|error| error.to_string())?;
+            return Ok(serde_json::json!({ "ok": true, "status": state.status }));
+        }
+        if matches!(state.status, RunStatus::Completed | RunStatus::Failed) {
+            let _ = std::fs::remove_file(run_root.join("cancel.marker"));
+            return Ok(serde_json::json!({ "ok": true, "status": state.status }));
+        }
+        if state.status == RunStatus::AwaitingApproval {
+            let state = wardian_core::engine::Engine::cancel_awaiting(&run_root)
+                .map_err(|error| error.to_string())?;
+            return Ok(serde_json::json!({ "ok": true, "status": state.status }));
+        }
+    }
+    let blueprint_path = resolve_blueprint_path(&blueprint_id)
+        .ok_or_else(|| format!("workflow blueprint not found: {blueprint_id}"))?;
+    let blueprint = workflow::parse_file(&blueprint_path).map_err(|error| error.to_string())?;
     std::fs::write(run_root.join("cancel.marker"), "cancelled").map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "ok": true }))
+    let state = wardian_core::engine::Engine::cancel(&blueprint, &run_root)
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({ "ok": true, "status": state.status }))
 }
 
 fn now_ms() -> u64 {
@@ -1049,6 +1091,16 @@ fn parse_blueprint_for_run(blueprint_id: &str, blueprint_path: &str) -> Result<B
     parse_blueprint_file_for_id(&resolved, blueprint_id)
 }
 
+fn validate_blueprint_for_execution(blueprint: &Blueprint) -> Result<(), String> {
+    let report = workflow::validate(blueprint);
+    if report.is_valid() {
+        return Ok(());
+    }
+    let diagnostics =
+        serde_json::to_string(&report.diagnostics).map_err(|error| error.to_string())?;
+    Err(format!("workflow blueprint is invalid: {diagnostics}"))
+}
+
 fn parse_blueprint_file_for_id(
     path: &std::path::Path,
     blueprint_id: &str,
@@ -1136,6 +1188,44 @@ mod tests {
         assert_eq!(page.next_offset, None);
     }
 
+    #[test]
+    fn workflow_cancel_marks_running_run_without_loading_blueprint() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(temp.path());
+        let blueprint_id = "missing-blueprint";
+        let run_id = "run-cancel";
+        let run_root = wardian_core::paths::workflow_run_dir(blueprint_id, run_id).unwrap();
+        write_checkpoint(&run_root, &RunState::new(run_id, blueprint_id)).unwrap();
+
+        let result = workflow_cancel(blueprint_id.into(), run_id.into()).unwrap();
+
+        assert_eq!(result["status"], "running");
+        assert!(run_root.join("cancel.marker").exists());
+    }
+
+    #[test]
+    fn workflow_read_run_prefers_the_immutable_blueprint_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(temp.path());
+        seed_workflow_blueprint(temp.path());
+        let run_root = wardian_core::paths::workflow_run_dir("wf", "run-snapshot").unwrap();
+        let snapshot = Blueprint {
+            schema: 2,
+            id: "wf".into(),
+            name: "Immutable snapshot".into(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            body: String::new(),
+        };
+        wardian_core::engine::store::write_blueprint_snapshot(&run_root, &snapshot).unwrap();
+        write_checkpoint(&run_root, &RunState::new("run-snapshot", "wf")).unwrap();
+
+        let result = workflow_read_run("wf".into(), "run-snapshot".into()).unwrap();
+
+        assert_eq!(result["blueprint"]["name"], "Immutable snapshot");
+        assert!(result["blueprint_path"].as_str().is_some());
+    }
+
     fn sample_schedule() -> WorkflowSchedule {
         WorkflowSchedule {
             id: "s1".into(),
@@ -1216,6 +1306,8 @@ edges:
                 0,
                 "2026-05-31T12:00:00Z".into(),
                 EventKind::RunStarted {
+                    run_id: None,
+                    blueprint_hash: None,
                     blueprint_id: "wf".into(),
                     schema: 2,
                     trigger: serde_json::json!({}),

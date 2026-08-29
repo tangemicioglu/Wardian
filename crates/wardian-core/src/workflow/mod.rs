@@ -6,6 +6,7 @@
 
 pub mod assignment;
 pub mod blueprint;
+pub mod condition;
 pub mod diff;
 pub mod error;
 pub mod field_type;
@@ -17,6 +18,7 @@ pub mod registry;
 pub mod validate;
 
 pub use blueprint::{Blueprint, Edge, Node, Position};
+pub use condition::{validate_path as validate_condition_path, CONDITION_HELP};
 pub use diff::{diff, BlueprintDiff};
 pub use error::{Result, WorkflowError};
 pub use field_type::{FieldDef, FieldType};

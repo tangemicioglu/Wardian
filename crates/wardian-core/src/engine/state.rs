@@ -26,10 +26,14 @@ pub enum NodeStatus {
 pub struct RunState {
     pub run_id: String,
     pub blueprint_id: String,
+    /// Hash of the parsed blueprint that created this run, when available.
+    /// Legacy checkpoints leave this unset and remain replay-compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blueprint_hash: Option<String>,
     pub status: RunStatus,
     /// Node id -> status. Absent = Pending (never reached yet).
     pub nodes: BTreeMap<String, NodeStatus>,
-    /// `{ "nodes": { id: { "output": .. , "prev": .. } }, "trigger": {"output": ..} }`.
+    /// `{ "nodes": { id: { "output": .. , "prev": .. } }, "trigger": {"output": ..}, "storage": {} }`.
     pub registry: serde_json::Value,
     /// Loop node id -> current 0-based iteration.
     pub loop_iter: BTreeMap<String, u32>,
@@ -46,14 +50,25 @@ impl RunState {
         Self {
             run_id: run_id.into(),
             blueprint_id: blueprint_id.into(),
+            blueprint_hash: None,
             status: RunStatus::Running,
             nodes: BTreeMap::new(),
-            registry: serde_json::json!({ "nodes": {}, "trigger": { "output": {} } }),
+            registry: serde_json::json!({ "nodes": {}, "trigger": { "output": {} }, "storage": {} }),
             loop_iter: BTreeMap::new(),
             delivered: BTreeMap::new(),
             skipped_edges: BTreeSet::new(),
             next_seq: 0,
             failure: None,
+        }
+    }
+
+    /// Add fields introduced after the first checkpoint format without
+    /// changing the meaning of an existing durable run.
+    pub fn normalize_legacy(&mut self) {
+        if let Some(registry) = self.registry.as_object_mut() {
+            registry
+                .entry("storage")
+                .or_insert_with(|| serde_json::json!({}));
         }
     }
 

@@ -81,6 +81,14 @@ export function RunControls({
           >
             {pendingAction === 'reject' ? 'Rejecting…' : 'Reject'}
           </button>
+          <button
+            type="button"
+            className="rounded border border-wardian-border px-2 py-1 text-xs text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={pendingAction !== null}
+            onClick={() => call('workflow_cancel', { blueprintId, runId })}
+          >
+            {pendingAction === 'cancel' ? 'Cancelling…' : 'Cancel'}
+          </button>
           </>
         )}
         {status === 'interrupted' && (

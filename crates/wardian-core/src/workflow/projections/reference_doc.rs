@@ -16,6 +16,9 @@ pub fn reference_doc() -> String {
         let _ = writeln!(out, "- **kind:** {}", kind_label(def.kind));
         let _ = writeln!(out, "- **category:** {}", def.category);
         let _ = writeln!(out, "- **version:** {}", def.version);
+        if !def.supported {
+            let _ = writeln!(out, "- **status:** unsupported");
+        }
         let _ = writeln!(out);
         let _ = writeln!(out, "{}", def.description);
         let _ = writeln!(out);
@@ -36,6 +39,9 @@ pub fn reference_doc() -> String {
                     req,
                     mult
                 );
+                if !field.help.is_empty() {
+                    let _ = writeln!(out, "  Help: {}", escape_template_delimiters(&field.help));
+                }
             }
             let _ = writeln!(out);
         }
@@ -59,6 +65,11 @@ fn kind_label(kind: NodeKind) -> &'static str {
         NodeKind::Engine => "engine",
         NodeKind::Trigger => "trigger",
     }
+}
+
+fn escape_template_delimiters(text: &str) -> String {
+    text.replace("{{", "&#123;&#123;")
+        .replace("}}", "&#125;&#125;")
 }
 
 fn type_label(ty: &FieldType) -> String {
@@ -92,6 +103,21 @@ mod tests {
         // `task.prompt` is required.
         assert!(md.contains("`prompt`"));
         assert!(md.contains("required"));
+    }
+
+    #[test]
+    fn doc_marks_reserved_node_types_as_unsupported() {
+        let md = reference_doc();
+        let start = md.find("## Sub-workflow").expect("sub-workflow section");
+        let section = &md[start..];
+        assert!(section.contains("**status:** unsupported"));
+    }
+
+    #[test]
+    fn doc_escapes_template_delimiters_for_vitepress() {
+        let md = reference_doc();
+        assert!(md.contains("&#123;&#123;trigger.output.agent_id&#125;&#125;"));
+        assert!(!md.contains("only {{trigger.output.agent_id}}"));
     }
 
     #[test]

@@ -49,6 +49,15 @@ pub fn resolve_fire(req: &FireRequest) -> Result<ResolvedFire, String> {
         .ok_or_else(|| format!("could not resolve blueprint path for {}", req.blueprint_id))?;
     let blueprint =
         wardian_core::workflow::parse_file(&path).map_err(|err| format!("parse failed: {err}"))?;
+    let report = wardian_core::workflow::validate(&blueprint);
+    if !report.is_valid() {
+        let diagnostics = serde_json::to_string(&report.diagnostics)
+            .map_err(|error| format!("could not serialize validation diagnostics: {error}"))?;
+        return Err(format!(
+            "blueprint {} is invalid: {diagnostics}",
+            req.blueprint_id
+        ));
+    }
     let run_id = wardian_core::engine::driver::new_run_id();
     let run_root = wardian_core::paths::workflow_run_dir(&blueprint.id, &run_id)
         .ok_or_else(|| "could not resolve run directory".to_string())?;
@@ -660,6 +669,28 @@ edges:
     }
 
     #[test]
+    fn resolve_fire_revalidates_a_blueprint_after_it_is_edited() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set(home.path(), &mock_script_path());
+        let path = seed_blueprint(home.path(), "sched-test", SCHEDULED_BLUEPRINT);
+        let invalid =
+            SCHEDULED_BLUEPRINT.replace("    to: analyze", "    to: analyze\n    from_port: typo");
+        std::fs::write(path, invalid).unwrap();
+
+        let result = resolve_fire(&fire_request_for("sched-test", Some("mock")));
+
+        assert!(
+            result.is_err(),
+            "edited invalid blueprint must not be scheduled"
+        );
+        let error = result.err().unwrap();
+        assert!(
+            error.contains("unknown output port"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn schedule_launch_failure_writes_a_failed_run_artifact() {
         let home = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set(home.path(), &mock_script_path());
@@ -689,6 +720,11 @@ edges:
             Some(EventKind::RunFailed { error })
                 if error == "parse failed: io error: The system cannot find the file specified."
         ));
+        let replayed =
+            wardian_core::engine::Engine::replay_launch_failure(&req.blueprint_id, &run_root)
+                .unwrap();
+        assert_eq!(replayed.status, RunStatus::Failed);
+        assert_eq!(replayed.run_id, state.run_id);
 
         let update = runs::workflow_inbox_update_with_name(&req.blueprint_id, &run_root).unwrap();
         assert_eq!(update.status, "failed");

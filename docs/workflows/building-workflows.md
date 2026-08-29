@@ -20,7 +20,8 @@ The builder also includes the **Variable Assistant**, which shows upstream value
 1. Create or open a workflow.
 2. Add nodes from the Block Library.
 3. Connect outputs to downstream inputs.
-4. Configure each node in the right-side settings drawer.
+4. Configure each node in the right-side settings drawer. Branch conditions
+   use a dot-separated registry path; comparison expressions are rejected.
 5. Save changes.
 6. Run the workflow or activate its trigger behavior.
 
@@ -30,9 +31,9 @@ When you click a node, Wardian opens the node settings drawer. That drawer shows
 
 Examples:
 
-- Scheduled Trigger shows different fields depending on whether you pick `Minutes`, `Hours`, `Daily`, `Weekly`, or `One-Time`.
-- Agent shows different targeting fields depending on whether the run mode is `ephemeral`, `inherit_fresh`, or `inherit_resume`.
-- Loop shows different fields for `count` versus `conditional` mode.
+- Manual Trigger can declare an input schema for the run modal.
+- Agent nodes resolve their configured role/class or invocation binding.
+- Loop's optional `until` field uses the same registry-path condition grammar as Branch.
 
 ## Connections and Flow
 
@@ -53,11 +54,11 @@ The builder has three important actions:
 - **Save Changes**: persist the current workflow graph.
 - **Run Workflow**: save first, then launch based on the workflow's trigger type.
 
-Builder launch behavior is intentionally type-aware:
+Builder launch behavior is intentionally invoker-aware:
 
 - workflows with a **Manual Trigger** run immediately
-- workflows with a **Scheduled Trigger** create a scheduled task instance
-- workflows with a **File Watcher** or webhook-style listener activate a live listener instead of doing a one-off run
+- schedules are created separately and invoke the saved blueprint later
+- event listeners, when available, invoke the same durable run contract
 
 ## When the Run Modal Appears
 
@@ -84,8 +85,12 @@ Use the **Workflow Builder** when you need to:
 Use the **Workflow Library** when you need to:
 
 - launch an existing workflow quickly
-- create another scheduled instance of a saved workflow
-- start or reactivate a listener without opening the graph
+- inspect the saved blueprint before creating an invoker
+
+`sub_workflow` is reserved and does not appear in the Block Library. Existing
+blueprints containing it fail validation with `unsupported_node_type`; this is
+intentional until durable child-run input, provenance, approval, cancellation,
+and restart semantics are implemented.
 
 ## Related References
 

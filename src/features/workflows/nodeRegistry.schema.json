@@ -8,6 +8,7 @@
       "label": "Task",
       "icon": "robot",
       "description": "Delegate work to an agent; returns structured output.",
+      "supported": true,
       "fields": [
         {
           "id": "agent",
@@ -53,6 +54,7 @@
       "label": "Decision",
       "icon": "git-branch",
       "description": "Agent chooses one of the declared outgoing branches.",
+      "supported": true,
       "fields": [
         {
           "id": "agent",
@@ -74,7 +76,7 @@
           "label": "Choices",
           "required": true,
           "multiple": true,
-          "help": "Named branches the agent may choose between."
+          "help": "Unique non-empty port ids the agent may choose between; each must connect to an outgoing edge."
         }
       ],
       "inputs": [
@@ -94,13 +96,15 @@
       "label": "Branch",
       "icon": "git-fork",
       "description": "Deterministic condition on run state.",
+      "supported": true,
       "fields": [
         {
           "id": "condition",
           "kind": "text",
           "label": "Condition",
           "required": true,
-          "multiple": false
+          "multiple": false,
+          "help": "A dot-separated registry path such as nodes.agent-1.output.ready. Operators and comparisons are not supported."
         }
       ],
       "inputs": [
@@ -128,6 +132,7 @@
       "label": "Loop",
       "icon": "repeat",
       "description": "Container: repeats its body subgraph until a bound is hit.",
+      "supported": true,
       "fields": [
         {
           "id": "max_iterations",
@@ -141,7 +146,8 @@
           "kind": "text",
           "label": "Until condition",
           "required": false,
-          "multiple": false
+          "multiple": false,
+          "help": "A dot-separated registry path such as nodes.agent-1.output.ready. Operators and comparisons are not supported."
         }
       ],
       "inputs": [
@@ -169,6 +175,7 @@
       "label": "Join",
       "icon": "merge",
       "description": "Synchronization barrier; waits for all inbound edges.",
+      "supported": true,
       "fields": [],
       "inputs": [
         {
@@ -191,6 +198,7 @@
       "label": "Approval",
       "icon": "shield-check",
       "description": "Human-in-the-loop gate; parks the run until a person approves.",
+      "supported": true,
       "fields": [
         {
           "id": "prompt",
@@ -222,6 +230,7 @@
       "label": "Shell",
       "icon": "terminal",
       "description": "Run a shell command.",
+      "supported": true,
       "fields": [
         {
           "id": "command",
@@ -259,6 +268,7 @@
       "label": "Script",
       "icon": "file-code",
       "description": "Run a local script through a selected runtime.",
+      "supported": true,
       "fields": [
         {
           "id": "runtime",
@@ -300,7 +310,8 @@
       "category": "State",
       "label": "State",
       "icon": "database",
-      "description": "Read or write run or shared storage.",
+      "description": "Read or write storage scoped to the current workflow run.",
+      "supported": true,
       "fields": [
         {
           "id": "op",
@@ -308,6 +319,7 @@
           "options": [
             "get",
             "set",
+            "merge",
             "delete"
           ],
           "label": "Operation",
@@ -343,6 +355,7 @@
       "label": "Memory commit",
       "icon": "database",
       "description": "Validate and atomically commit structured agent-memory changes.",
+      "supported": true,
       "fields": [
         {
           "id": "source_node",
@@ -382,6 +395,7 @@
       "label": "Notify",
       "icon": "bell",
       "description": "Send an operator-facing notification.",
+      "supported": true,
       "fields": [
         {
           "id": "message",
@@ -411,7 +425,8 @@
       "category": "Action",
       "label": "Sub-workflow",
       "icon": "workflow",
-      "description": "Call another workflow blueprint.",
+      "description": "Reserved for durable child workflow runs; not available for execution yet.",
+      "supported": false,
       "fields": [
         {
           "id": "workflow",
@@ -442,6 +457,7 @@
       "label": "Manual Trigger",
       "icon": "play",
       "description": "Entry point. Runs on demand or when an invoker fires it.",
+      "supported": true,
       "fields": [
         {
           "id": "input_schema",

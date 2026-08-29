@@ -55,6 +55,17 @@ describe('RunControls', () => {
     });
   });
 
+  it('cancels an approval-parked run', async () => {
+    invokeMock.mockResolvedValueOnce({ ok: true });
+
+    render(<RunControls {...base} status="awaiting_approval" awaitingNode="gate" onChanged={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('workflow_cancel', { blueprintId: 'wf', runId: 'run-1' });
+    });
+  });
+
   it('keeps the approval visible and reports a backend failure', async () => {
     invokeMock.mockRejectedValueOnce(new Error('run is no longer awaiting approval'));
     const onChanged = vi.fn();

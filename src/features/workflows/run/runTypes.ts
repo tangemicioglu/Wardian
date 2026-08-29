@@ -4,13 +4,17 @@ export type NodeStatusKind = 'pending' | 'running' | 'completed' | 'failed' | 's
 export type RunStatusKind = 'running' | 'awaiting_approval' | 'completed' | 'failed';
 
 export type RunEvent = { seq: number; ts: string } & (
-  | { kind: 'run_started'; blueprint_id: string; schema: number; trigger: unknown }
+  | { kind: 'run_started'; run_id?: string; blueprint_hash?: string; blueprint_id: string; schema: number; trigger: unknown }
   | { kind: 'node_started'; node: string }
   | { kind: 'node_completed'; node: string; output: unknown }
+  | { kind: 'decision_completed'; node: string; output: unknown; port: string }
+  | { kind: 'state_updated'; node: string; op: string; entries: unknown }
+  | { kind: 'notification'; node: string; message: string }
   | { kind: 'node_failed'; node: string; error: string }
   | { kind: 'branch_taken'; node: string; port: string }
   | { kind: 'decision_made'; node: string; port: string }
   | { kind: 'loop_iteration'; node: string; iteration: number }
+  | { kind: 'loop_completed'; node: string }
   | { kind: 'node_skipped'; node: string }
   | { kind: 'awaiting_approval'; node: string }
   | { kind: 'approval_granted'; node: string; actor: string; note?: string | null }
@@ -22,6 +26,7 @@ export type RunEvent = { seq: number; ts: string } & (
 export interface RunState {
   run_id: string;
   blueprint_id: string;
+  blueprint_hash?: string | null;
   status: RunStatusKind;
   nodes: Record<string, NodeStatusKind>;
   registry?: unknown;

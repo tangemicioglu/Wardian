@@ -10,6 +10,7 @@ mod memory;
 mod output;
 mod telemetry;
 mod watchlist;
+mod workflow_replay;
 
 use std::{
     collections::HashMap,
@@ -514,7 +515,7 @@ fn handle_workflow(args: WorkflowArgs) -> Result<String, CliError> {
         WorkflowCommand::Replay {
             blueprint_id,
             run_id,
-        } => render_workflow_replay(&blueprint_id, &run_id),
+        } => workflow_replay::render(&blueprint_id, &run_id),
         WorkflowCommand::Parse { path } => render_workflow_parse(&path),
         WorkflowCommand::Normalize { path, write } => render_workflow_normalize(&path, write),
         WorkflowCommand::GenSchema { out, check } => {
@@ -533,11 +534,13 @@ fn render_workflow_node_types(json: bool) -> Result<String, CliError> {
     // Human summary: one line per node type.
     let mut lines = String::from("NODE TYPES\n");
     for def in wardian_core::workflow::node_types() {
+        let status = if def.supported { "" } else { " [unsupported]" };
         lines.push_str(&format!(
-            "  {:<18} {:<8} {}\n",
+            "  {:<18} {:<8} {}{}\n",
             def.id,
             format!("{:?}", def.kind).to_lowercase(),
-            def.description
+            def.description,
+            status
         ));
     }
     Ok(lines)
@@ -839,21 +842,6 @@ fn render_workflow_run_show(blueprint_id: &str, run_id: &str) -> Result<String, 
         "schema": 1,
         "state": state,
         "events": events,
-    }))
-}
-
-fn render_workflow_replay(blueprint_id: &str, run_id: &str) -> Result<String, CliError> {
-    let blueprint = find_library_blueprint(blueprint_id)?.ok_or_else(|| {
-        CliError::generic(format!(
-            "blueprint {blueprint_id} not found in library/workflows"
-        ))
-    })?;
-    let run_root = workflow_run_root(blueprint_id, run_id)?;
-    let state = wardian_core::engine::Engine::replay(&blueprint, &run_root)
-        .map_err(|e| CliError::generic(e.to_string()))?;
-    render_json(serde_json::json!({
-        "schema": 1,
-        "state": state,
     }))
 }
 
@@ -2313,6 +2301,7 @@ fn identity_error(error: identity::IdentityError) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("tests/workflow_snapshot_tests.rs");
 
     struct TestWardianHome {
         _lock: std::sync::MutexGuard<'static, ()>,

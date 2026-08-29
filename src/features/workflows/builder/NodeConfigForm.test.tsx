@@ -58,4 +58,29 @@ describe('NodeConfigForm', () => {
 
     expect(onChange).toHaveBeenLastCalledWith('max_iterations', '{{trigger.output.review_cap}}');
   });
+  it('identifies a registered node whose runtime is unsupported', () => {
+    const node: BlueprintNode = { id: 'child', type: 'sub_workflow', fields: { workflow: 'nested' } };
+
+    render(<NodeConfigForm node={node} onChange={() => {}} />);
+
+    expect(screen.getByTestId('unsupported-node-type')).toHaveTextContent(
+      'not supported by the workflow runtime',
+    );
+  });
+  it('edits state entries as a JSON object while preserving object values', () => {
+    const onChange = vi.fn();
+    const stateNode: BlueprintNode = {
+      id: 'state-1',
+      type: 'state',
+      fields: { op: 'set', entries: { branch: 'main', retries: 2 } },
+    };
+
+    render(<NodeConfigForm node={stateNode} onChange={onChange} />);
+
+    const entries = screen.getByLabelText(/Entries/i) as HTMLTextAreaElement;
+    expect(entries.value).toContain('"branch": "main"');
+    fireEvent.change(entries, { target: { value: '{"branch":"release"}' } });
+
+    expect(onChange).toHaveBeenCalledWith('entries', { branch: 'release' });
+  });
 });

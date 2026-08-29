@@ -17,6 +17,13 @@ pub fn step(g: &Graph, s: &RunState) -> Vec<String> {
         }
         let inbound = g.inbound(&nd.id);
         if inbound.is_empty() {
+            // Loop members enter only through their container's `body` port.
+            // Treating a parented node with no inbound edge as a top-level
+            // entry would execute it outside the loop before the first
+            // iteration.
+            if nd.parent.is_some() {
+                continue;
+            }
             out.push(nd.id.clone()); // entry node
             continue;
         }
@@ -38,15 +45,66 @@ pub fn step(g: &Graph, s: &RunState) -> Vec<String> {
 /// `apply` reconstructs `RunState` exactly.
 pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<()> {
     match &ev.kind {
-        EventKind::RunStarted { trigger, .. } => {
+        EventKind::RunStarted {
+            run_id,
+            blueprint_hash,
+            blueprint_id,
+            schema,
+            trigger,
+            ..
+        } => {
+            if blueprint_id != &g.blueprint().id {
+                return Err(crate::engine::EngineError::InvalidState(format!(
+                    "workflow event belongs to blueprint `{blueprint_id}`, requested `{}`",
+                    g.blueprint().id
+                )));
+            }
+            if *schema != g.blueprint().schema {
+                return Err(crate::engine::EngineError::InvalidState(format!(
+                    "workflow event schema is {schema}, requested blueprint schema is {}",
+                    g.blueprint().schema
+                )));
+            }
+            if let Some(run_id) = run_id {
+                if s.next_seq == 0
+                    && !matches!(s.run_id.as_str(), "replay" | "rebuilt")
+                    && s.run_id != *run_id
+                {
+                    return Err(crate::engine::EngineError::InvalidState(format!(
+                        "workflow run identity changed from `{}` to `{run_id}`",
+                        s.run_id
+                    )));
+                }
+                s.run_id = run_id.clone();
+            }
+            if let Some(blueprint_hash) = blueprint_hash {
+                s.blueprint_hash = Some(blueprint_hash.clone());
+            }
             s.set_trigger(runtime_trigger_output(trigger, &ev.ts));
         }
         EventKind::NodeStarted { node } => s.set_node_status(node, NodeStatus::Running),
         EventKind::NodeCompleted { node, output } => {
             s.set_node_output(node, output.clone());
             s.set_node_status(node, NodeStatus::Completed);
-            deliver_from_port(g, s, node, "out");
+            // Decision nodes route through their durable completion event;
+            // they do not have a normal `out` port.
+            if g.blueprint()
+                .find_node(node)
+                .map(|definition| definition.r#type != "decision")
+                .unwrap_or(true)
+            {
+                deliver_from_port(g, s, node, "out");
+            }
         }
+        EventKind::DecisionCompleted { node, output, port } => {
+            s.set_node_output(node, output.clone());
+            s.set_node_status(node, NodeStatus::Completed);
+            deliver_chosen_port(g, s, node, port);
+        }
+        EventKind::StateUpdated { op, entries, .. } => {
+            apply_state_update(s, op, entries)?;
+        }
+        EventKind::Notification { .. } => {}
         EventKind::NodeFailed { node, error } => {
             s.set_node_status(node, NodeStatus::Failed);
             s.status = RunStatus::Failed;
@@ -69,7 +127,11 @@ pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<(
             s.failure = Some(error.clone());
         }
         EventKind::LoopIteration { node, iteration } => {
-            s.loop_iter.insert(node.clone(), *iteration);
+            apply_loop_iteration(g, s, node, *iteration)?;
+        }
+        EventKind::LoopCompleted { node } => {
+            s.set_node_status(node, NodeStatus::Completed);
+            deliver_from_port(g, s, node, "done");
         }
         EventKind::AwaitingApproval { node } => {
             s.set_node_status(node, NodeStatus::Running);
@@ -87,6 +149,46 @@ pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<(
         }
     }
     s.next_seq = ev.seq + 1;
+    Ok(())
+}
+
+fn apply_state_update(
+    s: &mut RunState,
+    op: &str,
+    entries: &serde_json::Value,
+) -> crate::engine::Result<()> {
+    let Some(entries) = entries.as_object() else {
+        return Err(crate::engine::EngineError::InvalidState(
+            "state entries must be an object".into(),
+        ));
+    };
+    let Some(storage) = s.registry.get_mut("storage") else {
+        return Err(crate::engine::EngineError::InvalidState(
+            "run registry is missing storage".into(),
+        ));
+    };
+    let Some(storage) = storage.as_object_mut() else {
+        return Err(crate::engine::EngineError::InvalidState(
+            "run registry storage must be an object".into(),
+        ));
+    };
+    match op {
+        "set" | "merge" => {
+            for (key, value) in entries {
+                storage.insert(key.clone(), value.clone());
+            }
+        }
+        "delete" => {
+            for key in entries.keys() {
+                storage.remove(key);
+            }
+        }
+        other => {
+            return Err(crate::engine::EngineError::InvalidState(format!(
+                "unknown state op: {other}"
+            )))
+        }
+    }
     Ok(())
 }
 
@@ -111,7 +213,14 @@ fn deliver_from_port(g: &Graph, s: &mut RunState, node: &str, port: &str) {
     for i in g.outbound(node) {
         let e = &g.blueprint().edges[i];
         if e.from_port == port {
+            s.skipped_edges.remove(&i);
             s.delivered.entry(e.to.clone()).or_default().insert(i);
+            // A loop may have pulsed another port earlier, causing a
+            // successor to be provisionally skipped. A later selected port
+            // makes that successor runnable again.
+            if s.status_or_pending(&e.to) == NodeStatus::Skipped {
+                s.set_node_status(&e.to, NodeStatus::Pending);
+            }
         } else {
             s.skipped_edges.insert(i);
         }
@@ -162,15 +271,6 @@ pub fn finalize_if_done(g: &Graph, s: &mut RunState) {
     }
 }
 
-/// Enter a loop node: mark Running, record iteration 0, pulse its `body` port.
-pub fn enter_loop(g: &Graph, s: &mut RunState, loop_id: &str) {
-    s.set_node_status(loop_id, NodeStatus::Running);
-    s.loop_iter.insert(loop_id.to_string(), 0);
-    deliver_from_port(g, s, loop_id, "body");
-}
-
-/// For each Running loop whose body is fully terminal, evaluate its bound and
-/// either start the next iteration or finish (pulse `done`).
 fn resolve_u32_field(
     fields: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -193,7 +293,14 @@ fn resolve_u32_field(
         .unwrap_or(default)
 }
 
-pub fn advance_loops(g: &Graph, s: &mut RunState) {
+/// For each Running loop whose body is fully terminal, evaluate its bound and
+/// either start the next iteration or finish (pulse `done`).
+///
+/// The condition is validated here as well as during blueprint validation so
+/// direct engine callers cannot turn an unsupported expression into a false
+/// condition.
+pub fn advance_loops(g: &Graph, s: &RunState) -> crate::engine::Result<Vec<EventKind>> {
+    let mut events = Vec::new();
     let loop_ids: Vec<String> = g
         .blueprint()
         .nodes
@@ -205,6 +312,7 @@ pub fn advance_loops(g: &Graph, s: &mut RunState) {
     for lp in loop_ids {
         let body = g.body_nodes(&lp);
         if body.is_empty() {
+            events.push(EventKind::LoopCompleted { node: lp });
             continue;
         }
         let body_terminal = body.iter().all(|b| {
@@ -223,64 +331,83 @@ pub fn advance_loops(g: &Graph, s: &mut RunState) {
             .map(|nd| resolve_u32_field(&nd.fields, "max_iterations", &s.registry, 1))
             .unwrap_or(1)
             .max(1);
-        let until_met = loop_node
-            .and_then(|nd| nd.fields.get("until"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|condition| !condition.is_empty())
-            .map(|condition| lookup_truthy(&s.registry, condition))
-            .unwrap_or(false);
+        let until_met = match loop_node.and_then(|nd| nd.fields.get("until")) {
+            None => false,
+            Some(value) => {
+                let condition = value.as_str().ok_or_else(|| {
+                    crate::engine::EngineError::InvalidState(format!(
+                        "loop `{lp}` until condition must be a registry path"
+                    ))
+                })?;
+                let condition =
+                    crate::workflow::condition::validate_path(condition).map_err(|message| {
+                        crate::engine::EngineError::InvalidState(format!(
+                            "loop `{lp}` until condition is invalid: {message}"
+                        ))
+                    })?;
+                crate::workflow::condition::lookup_truthy(&s.registry, &condition)
+            }
+        };
 
         if !until_met && iter + 1 < max {
-            // Snapshot this iteration's outputs as `prev`, then reset the body.
-            for b in &body {
-                if let Some(out) = s.node_output(b).cloned() {
-                    s.registry["nodes"][b]["prev"] = out;
-                }
-                s.set_node_status(b, NodeStatus::Pending);
-                s.delivered.remove(b);
-            }
-            // Clear skipped flags on edges internal to / entering the body.
-            let body_set: std::collections::BTreeSet<&str> =
-                body.iter().map(|x| x.as_str()).collect();
-            let internal: Vec<usize> = g
-                .blueprint()
-                .edges
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| {
-                    body_set.contains(e.to.as_str())
-                        && (body_set.contains(e.from.as_str()) || e.from == lp)
-                })
-                .map(|(i, _)| i)
-                .collect();
-            for i in internal {
-                s.skipped_edges.remove(&i);
-            }
-            s.loop_iter.insert(lp.clone(), iter + 1);
-            deliver_from_port(g, s, &lp, "body");
+            events.push(EventKind::LoopIteration {
+                node: lp,
+                iteration: iter + 1,
+            });
         } else {
-            s.set_node_status(&lp, NodeStatus::Completed);
-            deliver_from_port(g, s, &lp, "done");
+            events.push(EventKind::LoopCompleted { node: lp });
         }
     }
+    Ok(events)
 }
 
-pub(crate) fn lookup_truthy(registry: &serde_json::Value, path: &str) -> bool {
-    let mut cur = registry;
-    for seg in path.split('.') {
-        match cur.get(seg) {
-            Some(v) => cur = v,
-            None => return false,
+fn apply_loop_iteration(
+    g: &Graph,
+    s: &mut RunState,
+    loop_id: &str,
+    iteration: u32,
+) -> crate::engine::Result<()> {
+    let body = g.body_nodes(loop_id);
+    if iteration == 0 {
+        s.set_node_status(loop_id, NodeStatus::Running);
+        s.loop_iter.insert(loop_id.to_string(), 0);
+        deliver_from_port(g, s, loop_id, "body");
+        return Ok(());
+    }
+
+    let previous = s.loop_iter.get(loop_id).copied().ok_or_else(|| {
+        crate::engine::EngineError::InvalidState(format!(
+            "loop `{loop_id}` advanced before its initial iteration"
+        ))
+    })?;
+    if previous + 1 != iteration {
+        return Err(crate::engine::EngineError::InvalidState(format!(
+            "loop `{loop_id}` expected iteration {}, got {iteration}",
+            previous + 1
+        )));
+    }
+
+    // Snapshot this iteration's outputs as `prev`, then reset the body.
+    for node in &body {
+        if let Some(output) = s.node_output(node).cloned() {
+            s.registry["nodes"][node]["prev"] = output;
+        }
+        s.set_node_status(node, NodeStatus::Pending);
+        s.delivered.remove(node);
+    }
+    // Clear skipped flags on edges internal to / entering the body.
+    let body_set: std::collections::BTreeSet<&str> =
+        body.iter().map(|node| node.as_str()).collect();
+    for (index, edge) in g.blueprint().edges.iter().enumerate() {
+        if body_set.contains(edge.to.as_str())
+            && (body_set.contains(edge.from.as_str()) || edge.from == loop_id)
+        {
+            s.skipped_edges.remove(&index);
         }
     }
-    match cur {
-        serde_json::Value::Bool(b) => *b,
-        serde_json::Value::Null => false,
-        serde_json::Value::String(s) => !s.is_empty(),
-        serde_json::Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
-        _ => true,
-    }
+    s.loop_iter.insert(loop_id.to_string(), iteration);
+    deliver_from_port(g, s, loop_id, "body");
+    Ok(())
 }
 
 /// True if the node is an approval gate (driver parks instead of executing).
@@ -356,6 +483,30 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    fn enter_loop(g: &Graph, s: &mut RunState, node: &str) {
+        let seq = s.next_seq;
+        apply(
+            g,
+            s,
+            &crate::engine::event::Event::new(
+                seq,
+                EventKind::LoopIteration {
+                    node: node.into(),
+                    iteration: 0,
+                },
+            ),
+        )
+        .unwrap();
+    }
+
+    fn advance(g: &Graph, s: &mut RunState) {
+        let events = advance_loops(g, s).unwrap();
+        for kind in events {
+            let seq = s.next_seq;
+            apply(g, s, &crate::engine::event::Event::new(seq, kind)).unwrap();
+        }
     }
 
     #[test]
@@ -477,12 +628,12 @@ mod tests {
         assert!(step(&g, &s).contains(&"b".to_string())); // body entry runnable
                                                           // iteration 0 body completes
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
         assert_eq!(s.loop_iter["lp"], 1); // continued to iteration 1
         assert_eq!(s.status_or_pending("b"), NodeStatus::Pending); // body reset
                                                                    // iteration 1 body completes -> reaches max (2), so done
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
         assert!(step(&g, &s).contains(&"ship".to_string())); // done port delivered
     }
@@ -514,17 +665,17 @@ mod tests {
         enter_loop(&g, &mut s, "lp");
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
         assert_eq!(s.loop_iter["lp"], 1);
         assert_eq!(s.status_or_pending("b"), NodeStatus::Pending);
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
         assert_eq!(s.loop_iter["lp"], 2);
         assert_eq!(s.status_or_pending("b"), NodeStatus::Pending);
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
         assert!(step(&g, &s).contains(&"ship".to_string()));
     }
@@ -550,11 +701,11 @@ mod tests {
         enter_loop(&g, &mut s, "lp");
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
         assert_eq!(s.loop_iter["lp"], 1);
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
     }
 
@@ -584,7 +735,7 @@ mod tests {
         enter_loop(&g, &mut s, "lp");
 
         complete(&g, &mut s, "b", serde_json::json!({}));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
 
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
         assert!(step(&g, &s).contains(&"ship".to_string()));
@@ -614,7 +765,7 @@ mod tests {
         enter_loop(&g, &mut s, "lp");
 
         complete(&g, &mut s, "b", serde_json::json!({ "done": true }));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
 
         assert_eq!(s.loop_iter["lp"], 0);
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
@@ -645,13 +796,13 @@ mod tests {
         enter_loop(&g, &mut s, "lp");
 
         complete(&g, &mut s, "b", serde_json::json!({ "done": false }));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
 
         assert_eq!(s.loop_iter["lp"], 1);
         assert_eq!(s.status_or_pending("b"), NodeStatus::Pending);
 
         complete(&g, &mut s, "b", serde_json::json!({ "done": false }));
-        advance_loops(&g, &mut s);
+        advance(&g, &mut s);
 
         assert_eq!(s.status_or_pending("lp"), NodeStatus::Completed);
         assert!(step(&g, &s).contains(&"ship".to_string()));
@@ -741,5 +892,44 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.status, RunStatus::Failed);
+    }
+
+    #[test]
+    fn state_updates_are_folded_into_replayable_storage() {
+        let blueprint = bp(vec![node("state", "state")], vec![]);
+        let g = Graph::new(&blueprint);
+        let mut s = RunState::new("r", "wf");
+
+        apply(
+            &g,
+            &mut s,
+            &crate::engine::event::Event::new(
+                0,
+                EventKind::StateUpdated {
+                    node: "state".into(),
+                    op: "set".into(),
+                    entries: serde_json::json!({"branch": "main", "ready": true}),
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(s.registry["storage"]["branch"], "main");
+        assert_eq!(s.registry["storage"]["ready"], true);
+
+        let next_seq = s.next_seq;
+        apply(
+            &g,
+            &mut s,
+            &crate::engine::event::Event::new(
+                next_seq,
+                EventKind::StateUpdated {
+                    node: "state".into(),
+                    op: "delete".into(),
+                    entries: serde_json::json!({"ready": null}),
+                },
+            ),
+        )
+        .unwrap();
+        assert!(s.registry["storage"].get("ready").is_none());
     }
 }

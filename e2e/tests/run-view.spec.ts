@@ -171,7 +171,13 @@ test("run view observes, scrubs, and inspects a failed run", async ({ page }) =>
   }
 
   await nodeB.click();
-  await expect(page.getByTestId("workflows-observe-mode").locator("aside").last().getByText("boom")).toBeVisible();
+  const inspector = page.getByTestId("workflows-observe-mode").locator("aside").last();
+  await expect(inspector.getByText("No output recorded.")).toBeVisible();
+  await expect(inspector.getByText("boom")).toHaveCount(0);
+
+  await scrubTo(page, events.length - 1);
+  await expect(nodeB).toHaveAttribute("data-status", "failed");
+  await expect(inspector.getByText("boom")).toBeVisible();
 
   if (process.env.WARDIAN_RUN_VIEW_SCREENSHOT_DIR) {
     await page.getByTestId("workflows-observe-mode").screenshot({

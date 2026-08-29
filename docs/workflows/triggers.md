@@ -2,13 +2,14 @@
 
 Triggers decide how a workflow enters the runtime.
 
-In Wardian, not every workflow launch means the same thing. A launch can:
+In Wardian, every workflow run enters through an invoker. A launch can:
 
 - run immediately
 - create a scheduled task
 - activate a live listener
 
-The trigger nodes in the workflow decide which one happens.
+The blueprint's `manual_trigger` supplies the run input; the invoker decides
+whether that input comes from a user, a schedule, or a future event source.
 
 ## Manual Trigger
 
@@ -26,9 +27,10 @@ Behavior:
 - if the manual trigger defines an input schema, the run modal asks for those values first
 - if the workflow also contains agent roles, the same modal can collect agent assignments
 
-## Scheduled Trigger
+## Scheduled Invocations
 
-Use **Scheduled Trigger** when you want Wardian to create a scheduled task instance.
+Use a schedule when you want Wardian to create repeated or delayed invocations
+of a saved blueprint. Scheduling is an invoker, not a node in the blueprint.
 
 Best for:
 
@@ -39,12 +41,13 @@ Best for:
 
 Behavior:
 
-- launching from the **sidebar library** creates a new scheduled task instance
-- launching from the **main builder** also creates a scheduled task instance after saving first
+- schedules reference a saved blueprint and validate it before creation
+- a scheduled invocation supplies the same input/binding contract as a manual run
 - launching a scheduled workflow does **not** create a live listener
 - a workflow can have multiple scheduled task instances at the same time
 
-If the workflow contains agent nodes or a manual input schema, Wardian opens the run modal before creating the schedule so you can set runtime assignments.
+If the workflow contains agent nodes or a manual input schema, the invoker
+provides those values before creating the run.
 
 ### Schedule Types
 
@@ -62,36 +65,38 @@ User-visible timing rules:
 - `Daily` and `Weekly` wait for the next matching wall-clock time
 - `One-Time` runs once at the specified datetime and then disappears after completion
 
-## File Watcher and Listener-Style Triggers
+## Future Event Invocations
 
-Wardian currently treats file watching and webhook-style triggers as **live listeners**.
+File watching and webhook-style launches are future invoker integrations. They
+must supply the same `input`, `bindings`, provider, and workspace boundary as a
+manual or scheduled invocation; they are not additional trigger node types.
 
-Behavior:
+Planned behavior:
 
-- launching them activates the workflow instead of running it immediately
-- active listener workflows appear in the **Live Listeners** section of the sidebar
-- stopping them disables the active trigger instead of deleting the workflow
+- an event produces a normal durable workflow run with its event payload
+- listener lifecycle belongs to the invoker, not the blueprint graph
 
 Use listener triggers for:
 
 - file-change automation
 - event-driven workflows that should keep watching for input
 
-Do **not** use scheduled triggers when you really want an always-on listener. Scheduled workflows and live listeners are distinct runtime behaviors.
+Do not model an event source as a fake trigger node. Keep the event-source
+implementation at the invoker boundary.
 
 ## Launch Surface Differences
 
 The trigger type matters more than the button you clicked, but the surface still affects the flow:
 
-- **Builder**: saves current canvas state first, then launches
-- **Library**: launches the saved workflow directly
-- **Monitoring sidebar**: acts on existing runtime instances such as listeners and scheduled tasks
+- **Builder**: saves current canvas state first, then launches a manual run
+- **Library/CLI**: launches the saved workflow through the same run contract
+- **Monitoring sidebar**: acts on existing durable runs and invoker instances
 
 ## Practical Rule of Thumb
 
 - want one run right now: use **Manual Trigger**
-- want repeated or delayed runs: use **Scheduled Trigger**
-- want an always-on background watcher: use **File Watcher** or webhook-style listener
+- want repeated or delayed runs: create a **schedule** for the blueprint
+- want an event-driven run: use an event invoker when that integration is available
 
 ## Related References
 

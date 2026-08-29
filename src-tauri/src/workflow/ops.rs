@@ -1,7 +1,5 @@
 use std::path::Path;
-use wardian_core::engine::{
-    NotifyRequest, ScriptRequest, ShellRequest, StateRequest, StepError, StepOutput,
-};
+use wardian_core::engine::{NotifyRequest, ScriptRequest, ShellRequest, StepError, StepOutput};
 
 /// Run a shell command in the run workspace, or `req.cwd` when supplied.
 /// Captures exit code, stdout, and stderr.
@@ -79,27 +77,25 @@ fn process_output(
     )))
 }
 
-/// Surface a notify step. 5a logs it; desktop notification wiring is deferred.
-pub fn notify(req: &NotifyRequest) -> Result<(), StepError> {
+/// Surface a notify step through the desktop notification plugin and run log.
+pub fn notify(app: Option<&tauri::AppHandle>, req: &NotifyRequest) -> Result<(), StepError> {
     crate::utils::logging::log_debug(&format!("[workflow] notify {}: {}", req.node, req.message));
+    if let Some(app) = app {
+        use tauri_plugin_notification::NotificationExt;
+        app.notification()
+            .builder()
+            .title("Wardian workflow")
+            .body(&req.message)
+            .show()
+            .map_err(|error| StepError::new(format!("workflow notification failed: {error}")))?;
+    }
     Ok(())
-}
-
-/// State ops return the value that the engine stores as the node output.
-pub fn state_op(req: &StateRequest) -> Result<StepOutput, StepError> {
-    let value = match req.op.as_str() {
-        "set" | "merge" => req.entries.clone(),
-        "delete" => serde_json::json!({}),
-        other => return Err(StepError::new(format!("unknown state op: {other}"))),
-    };
-
-    Ok(StepOutput(value))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wardian_core::engine::{ShellRequest, StateRequest};
+    use wardian_core::engine::ShellRequest;
 
     #[tokio::test]
     async fn shell_runs_and_reports_exit_code() {
@@ -187,16 +183,5 @@ Write-Output $args[0]
 
         assert!(err.0.contains("exit code 6"));
         assert!(err.0.contains("bad"));
-    }
-
-    #[test]
-    fn state_set_returns_entries() {
-        let req = StateRequest {
-            node: "st".into(),
-            op: "set".into(),
-            entries: serde_json::json!({"k":"v"}),
-        };
-        let out = state_op(&req).unwrap();
-        assert_eq!(out.0["k"], "v");
     }
 }

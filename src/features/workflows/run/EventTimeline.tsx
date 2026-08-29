@@ -13,13 +13,16 @@ function eventNode(event: RunEvent): string | null {
 }
 
 function eventDetail(event: RunEvent): string | null {
-  if (event.kind === 'branch_taken' || event.kind === 'decision_made') return `port ${event.port}`;
+  if (event.kind === 'branch_taken' || event.kind === 'decision_made' || event.kind === 'decision_completed') return `port ${event.port}`;
   if (event.kind === 'loop_iteration') return `iteration ${event.iteration}`;
+  if (event.kind === 'notification') return event.message;
+  if (event.kind === 'loop_completed') return 'completed';
   if (event.kind === 'approval_granted' || event.kind === 'approval_rejected') return `by ${event.actor}`;
   if (event.kind === 'awaiting_approval') return 'approval needed';
   if (event.kind === 'node_failed' || event.kind === 'run_failed') return event.error;
   if (event.kind === 'node_skipped') return 'skipped';
   if (event.kind === 'node_completed') return 'output ready';
+  if (event.kind === 'state_updated') return `${event.op} storage`;
   return null;
 }
 

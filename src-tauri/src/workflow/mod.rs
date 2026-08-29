@@ -15,7 +15,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use wardian_core::engine::{
     AgentTaskRequest, ChosenPort, DecisionRequest, MemoryCommitRequest, NotifyRequest,
-    ScriptRequest, ShellRequest, StateRequest, StepError, StepExecutor, StepOutput,
+    ScriptRequest, ShellRequest, StepError, StepExecutor, StepOutput,
 };
 use wardian_core::models::{InvocationKind, WorkflowAssignments, WorkflowRoleAssignment};
 
@@ -31,6 +31,7 @@ pub struct LiveStepExecutor {
     agent_catalog: HashMap<String, AgentBinding>,
     owner_id: String,
     memory_principal: Option<String>,
+    notification_app: Option<tauri::AppHandle>,
 }
 
 impl LiveStepExecutor {
@@ -100,6 +101,7 @@ impl LiveStepExecutor {
             agent_catalog,
             owner_id: "workflow/manual".to_string(),
             memory_principal: None,
+            notification_app: None,
         }
     }
 
@@ -113,6 +115,11 @@ impl LiveStepExecutor {
     /// data.
     pub fn with_memory_principal(mut self, agent_id: String) -> Self {
         self.memory_principal = Some(agent_id);
+        self
+    }
+
+    pub fn with_notification_app(mut self, app: tauri::AppHandle) -> Self {
+        self.notification_app = Some(app);
         self
     }
 
@@ -632,18 +639,7 @@ impl StepExecutor for LiveStepExecutor {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        Box::pin(async move { ops::notify(&req) })
-    }
-
-    fn state_op<'life0, 'async_trait>(
-        &'life0 self,
-        req: StateRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<StepOutput, StepError>> + Send + 'async_trait>>
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move { ops::state_op(&req) })
+        Box::pin(async move { ops::notify(self.notification_app.as_ref(), &req) })
     }
 
     fn memory_commit<'life0, 'async_trait>(
