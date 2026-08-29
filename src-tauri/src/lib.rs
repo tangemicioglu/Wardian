@@ -8,6 +8,7 @@ pub mod manager;
 pub mod providers;
 pub mod remote;
 pub mod state;
+mod topology_audit;
 mod topology_watch;
 pub mod utils;
 pub mod workflow;

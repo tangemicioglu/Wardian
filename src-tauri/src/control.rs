@@ -725,6 +725,63 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             "artifact reviews are not available for this thread",
         )),
 
+        ControlRequest::TopologyLink {
+            a,
+            b,
+            caller_session_id,
+        } => {
+            topology_mutation(
+                app,
+                wardian_core::topology::TopologyOperation::Link,
+                a,
+                b,
+                caller_session_id,
+            )
+            .await
+        }
+        ControlRequest::TopologyUnlink {
+            a,
+            b,
+            caller_session_id,
+        } => {
+            topology_mutation(
+                app,
+                wardian_core::topology::TopologyOperation::Unlink,
+                a,
+                b,
+                caller_session_id,
+            )
+            .await
+        }
+        ControlRequest::TopologyIgnore {
+            a,
+            b,
+            caller_session_id,
+        } => {
+            topology_mutation(
+                app,
+                wardian_core::topology::TopologyOperation::Ignore,
+                a,
+                b,
+                caller_session_id,
+            )
+            .await
+        }
+        ControlRequest::TopologyUnignore {
+            a,
+            b,
+            caller_session_id,
+        } => {
+            topology_mutation(
+                app,
+                wardian_core::topology::TopologyOperation::Unignore,
+                a,
+                b,
+                caller_session_id,
+            )
+            .await
+        }
+
         ControlRequest::WatchlistsChanged => {
             let _ = app.emit("watchlists-updated", ());
             ok_json(&OkResponse::new())
@@ -5037,6 +5094,32 @@ fn notification_control_error(error: &'static str) -> ControlError {
 
 fn ok_json<T: serde::Serialize>(value: &T) -> Result<String, ControlError> {
     serde_json::to_string(value).map_err(ControlError::request_failed)
+}
+
+/// Shared body for the four `Topology*` requests; maps `commands::topology`'s
+/// domain error to this module's wire error codes.
+async fn topology_mutation(
+    app: &AppHandle,
+    op: wardian_core::topology::TopologyOperation,
+    a: String,
+    b: String,
+    caller_session_id: Option<String>,
+) -> Result<String, ControlError> {
+    use crate::commands::topology::TopologyControlError;
+    let response =
+        crate::commands::topology::dispatch_topology_mutation(app, op, a, b, caller_session_id)
+            .await
+            .map_err(|error| match error {
+                TopologyControlError::UnknownCaller => {
+                    ControlError::not_found("caller session is not a known agent")
+                }
+                TopologyControlError::SelfServeRequired => ControlError::coded(
+                    "self_serve_required",
+                    "Inside a session, graph edits must involve the calling agent",
+                ),
+                TopologyControlError::Io(message) => ControlError::request_failed(message),
+            })?;
+    ok_json(&response)
 }
 
 /// Carries a browser failure's own code onto the wire.

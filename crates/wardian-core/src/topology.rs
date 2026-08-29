@@ -504,6 +504,100 @@ pub fn load_team_memberships(home: &Path) -> Vec<TeamMembership> {
         .unwrap_or_default()
 }
 
+/// The four privileged topology mutations, shared by every writer (UI
+/// commands, the control-plane dispatcher, and their tests) so authorization
+/// and persistence logic live in exactly one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TopologyOperation {
+    Link,
+    Unlink,
+    Ignore,
+    Unignore,
+}
+
+impl TopologyOperation {
+    pub fn action(&self) -> &'static str {
+        match self {
+            Self::Link => "link",
+            Self::Unlink => "unlink",
+            Self::Ignore => "ignore",
+            Self::Unignore => "unignore",
+        }
+    }
+}
+
+/// Result of applying a [`TopologyOperation`] to a loaded [`Topology`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyMutationOutcome {
+    /// Canonical (sorted) pair, matching what `topology.json` stores.
+    pub a: String,
+    pub b: String,
+    pub changed: bool,
+}
+
+/// Apply `op` to `x`/`y` in place. Returns `None` for an invalid pair
+/// (self-pair or empty endpoint) without mutating `topology`. `Unlink`
+/// converges on [`Topology::remove_edge_and_suppress_seed_if_team_pair`] so a
+/// deletion is durable against team re-seeding regardless of which writer
+/// performed it.
+pub fn apply_topology_operation(
+    topology: &mut Topology,
+    op: TopologyOperation,
+    x: &str,
+    y: &str,
+    created_at: &str,
+    teams: &[TeamMembership],
+) -> Option<TopologyMutationOutcome> {
+    let (a, b) = canonical_pair(x, y)?;
+    let changed = match op {
+        TopologyOperation::Link => topology.add_edge(&a, &b, created_at),
+        TopologyOperation::Unlink => {
+            topology.remove_edge_and_suppress_seed_if_team_pair(&a, &b, teams)
+        }
+        TopologyOperation::Ignore => topology.ignore_pair(&a, &b),
+        TopologyOperation::Unignore => topology.unignore_pair(&a, &b),
+    };
+    Some(TopologyMutationOutcome { a, b, changed })
+}
+
+/// Why a topology mutation was refused. Mirrors the `not_found` /
+/// `self_serve_required` codes the CLI has always surfaced for these cases,
+/// now decided in one place instead of duplicated per writer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TopologyAuthDenied {
+    /// `caller_session_id` does not match any known agent. Fails closed: a
+    /// stale or forged session id must never fall back to broader authority.
+    UnknownCaller,
+    /// The caller is a known agent but neither endpoint of the edge, and no
+    /// team-coordinator grant (stage 2) applies either.
+    SelfServeRequired,
+}
+
+/// Stage-1 authorization rule: identical to the CLI's pre-existing
+/// `caller_context_from`/`resolve_pair` behavior, just decided in one place
+/// instead of duplicated per writer. `None` still means unrestricted
+/// "operator" access; closing that fail-open gap is deferred to a later
+/// change that replaces this rule with an explicit operator assertion and
+/// team-scoped authority.
+pub fn authorize_topology_mutation_v1(
+    known_agent_ids: &BTreeSet<String>,
+    caller_session_id: Option<&str>,
+    a: &str,
+    b: &str,
+) -> Result<(), TopologyAuthDenied> {
+    let Some(session_id) = caller_session_id else {
+        return Ok(());
+    };
+    if !known_agent_ids.contains(session_id) {
+        return Err(TopologyAuthDenied::UnknownCaller);
+    }
+    if a == session_id || b == session_id {
+        return Ok(());
+    }
+    Err(TopologyAuthDenied::SelfServeRequired)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PairActivity {
     pub a: String,
@@ -601,6 +695,125 @@ mod tests {
         assert_eq!(topology.neighbors("a"), vec!["b".to_string()]);
         assert_eq!(topology.neighbors("b"), vec!["a".to_string()]);
         assert!(topology.neighbors("c").is_empty());
+    }
+
+    #[test]
+    fn apply_topology_operation_link_unlink_ignore_unignore() {
+        let mut topology = Topology::default();
+        let now = "2026-08-28T00:00:00Z";
+
+        let outcome =
+            apply_topology_operation(&mut topology, TopologyOperation::Link, "b", "a", now, &[])
+                .unwrap();
+        assert!(outcome.changed);
+        assert_eq!((outcome.a.as_str(), outcome.b.as_str()), ("a", "b"));
+
+        let outcome =
+            apply_topology_operation(&mut topology, TopologyOperation::Ignore, "a", "c", now, &[])
+                .unwrap();
+        assert!(outcome.changed);
+        assert!(topology.is_ignored("a", "c"));
+
+        let outcome = apply_topology_operation(
+            &mut topology,
+            TopologyOperation::Unignore,
+            "a",
+            "c",
+            now,
+            &[],
+        )
+        .unwrap();
+        assert!(outcome.changed);
+        assert!(!topology.is_ignored("a", "c"));
+
+        let outcome =
+            apply_topology_operation(&mut topology, TopologyOperation::Unlink, "a", "b", now, &[])
+                .unwrap();
+        assert!(outcome.changed);
+        assert!(topology.edges.is_empty());
+    }
+
+    #[test]
+    fn apply_topology_operation_unlink_converges_on_team_suppression() {
+        let mut topology = Topology::default();
+        topology.add_edge("a", "b", "2026-08-28T00:00:00Z");
+        let teams = vec![TeamMembership {
+            id: "team-1".to_string(),
+            agent_ids: vec!["a".to_string(), "b".to_string()],
+        }];
+
+        let outcome = apply_topology_operation(
+            &mut topology,
+            TopologyOperation::Unlink,
+            "a",
+            "b",
+            "2026-08-28T00:00:01Z",
+            &teams,
+        )
+        .unwrap();
+
+        assert!(outcome.changed);
+        assert!(topology.is_seed_suppressed("a", "b"));
+        // A subsequent team-clique reseed must not resurrect the deletion.
+        assert_eq!(
+            seed_team_clique(&mut topology, &["a".to_string(), "b".to_string()], "later"),
+            0
+        );
+        assert!(topology.neighbors("a").is_empty());
+    }
+
+    #[test]
+    fn apply_topology_operation_rejects_self_pair() {
+        let mut topology = Topology::default();
+        assert!(apply_topology_operation(
+            &mut topology,
+            TopologyOperation::Link,
+            "a",
+            "a",
+            "t",
+            &[]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn authorize_topology_mutation_v1_operator_is_unrestricted() {
+        let known: BTreeSet<String> = BTreeSet::new();
+        assert_eq!(
+            authorize_topology_mutation_v1(&known, None, "a", "b"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn authorize_topology_mutation_v1_allows_self_serve_endpoint() {
+        let known: BTreeSet<String> = ["a".to_string()].into_iter().collect();
+        assert_eq!(
+            authorize_topology_mutation_v1(&known, Some("a"), "a", "b"),
+            Ok(())
+        );
+        assert_eq!(
+            authorize_topology_mutation_v1(&known, Some("a"), "b", "a"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn authorize_topology_mutation_v1_rejects_foreign_pair() {
+        let known: BTreeSet<String> = ["a".to_string()].into_iter().collect();
+        assert_eq!(
+            authorize_topology_mutation_v1(&known, Some("a"), "b", "c"),
+            Err(TopologyAuthDenied::SelfServeRequired)
+        );
+    }
+
+    #[test]
+    fn authorize_topology_mutation_v1_fails_closed_on_unknown_caller() {
+        let known: BTreeSet<String> = BTreeSet::new();
+        assert_eq!(
+            authorize_topology_mutation_v1(&known, Some("ghost"), "a", "b"),
+            Err(TopologyAuthDenied::UnknownCaller)
+        );
     }
 
     #[test]

@@ -75,6 +75,31 @@ pub enum ControlRequest {
     AgentWorktreeDisable {
         target: String,
     },
+    /// `a`/`b` are pre-resolved agent UUIDs (name resolution happens
+    /// client-side); `caller_session_id` is the caller's `WARDIAN_SESSION_ID`,
+    /// or `None` outside a managed session. The control plane is the sole
+    /// writer of `topology.json` and decides authorization from this field
+    /// rather than trusting a client-side check.
+    TopologyLink {
+        a: String,
+        b: String,
+        caller_session_id: Option<String>,
+    },
+    TopologyUnlink {
+        a: String,
+        b: String,
+        caller_session_id: Option<String>,
+    },
+    TopologyIgnore {
+        a: String,
+        b: String,
+        caller_session_id: Option<String>,
+    },
+    TopologyUnignore {
+        a: String,
+        b: String,
+        caller_session_id: Option<String>,
+    },
     ConversationList {
         agent: Option<String>,
         #[serde(default)]
@@ -486,6 +511,16 @@ impl ConversationShowResponse {
             conversation,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopologyMutationResponse {
+    pub schema: u8,
+    pub ok: bool,
+    pub action: String,
+    pub a: String,
+    pub b: String,
+    pub changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1076,6 +1111,43 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains(r#""command":"agent_rename""#));
         assert!(json.contains(r#""name":"release-coder""#));
+    }
+
+    #[test]
+    fn topology_link_request_serializes_optional_caller() {
+        let req = ControlRequest::TopologyLink {
+            a: "uuid-1".to_string(),
+            b: "uuid-2".to_string(),
+            caller_session_id: Some("uuid-1".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""command":"topology_link""#));
+        assert!(json.contains(r#""caller_session_id":"uuid-1""#));
+        assert_eq!(serde_json::from_str::<ControlRequest>(&json).unwrap(), req);
+
+        let operator_req = ControlRequest::TopologyUnlink {
+            a: "uuid-1".to_string(),
+            b: "uuid-2".to_string(),
+            caller_session_id: None,
+        };
+        let operator_json = serde_json::to_string(&operator_req).unwrap();
+        assert!(operator_json.contains(r#""command":"topology_unlink""#));
+        assert!(operator_json.contains(r#""caller_session_id":null"#));
+    }
+
+    #[test]
+    fn topology_mutation_response_serializes_current_schema() {
+        let response = TopologyMutationResponse {
+            schema: CONTROL_SCHEMA,
+            ok: true,
+            action: "ignore".to_string(),
+            a: "uuid-1".to_string(),
+            b: "uuid-2".to_string(),
+            changed: true,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains(r#""action":"ignore""#));
+        assert!(json.contains(r#""changed":true"#));
     }
 
     #[test]

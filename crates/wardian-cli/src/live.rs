@@ -100,6 +100,7 @@ enum ControlOperation {
     ArtifactShow,
     ArtifactReviewShow,
     WatchlistsChanged,
+    TopologyMutate,
     WorkflowRun,
     SendMessage {
         requested: Duration,
@@ -280,6 +281,68 @@ pub fn list_agents() -> io::Result<Vec<AgentIdentity>> {
     let response: AgentListResponse =
         serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))?;
     Ok(response.agents)
+}
+
+/// Topology is the control plane's single writer: every mutation is
+/// authorized and persisted by the app, never by the CLI directly.
+pub fn topology_link(
+    a: &str,
+    b: &str,
+    caller_session_id: Option<&str>,
+) -> io::Result<wardian_core::control::TopologyMutationResponse> {
+    topology_mutate(ControlRequest::TopologyLink {
+        a: a.to_string(),
+        b: b.to_string(),
+        caller_session_id: caller_session_id.map(str::to_string),
+    })
+}
+
+pub fn topology_unlink(
+    a: &str,
+    b: &str,
+    caller_session_id: Option<&str>,
+) -> io::Result<wardian_core::control::TopologyMutationResponse> {
+    topology_mutate(ControlRequest::TopologyUnlink {
+        a: a.to_string(),
+        b: b.to_string(),
+        caller_session_id: caller_session_id.map(str::to_string),
+    })
+}
+
+pub fn topology_ignore(
+    a: &str,
+    b: &str,
+    caller_session_id: Option<&str>,
+) -> io::Result<wardian_core::control::TopologyMutationResponse> {
+    topology_mutate(ControlRequest::TopologyIgnore {
+        a: a.to_string(),
+        b: b.to_string(),
+        caller_session_id: caller_session_id.map(str::to_string),
+    })
+}
+
+pub fn topology_unignore(
+    a: &str,
+    b: &str,
+    caller_session_id: Option<&str>,
+) -> io::Result<wardian_core::control::TopologyMutationResponse> {
+    topology_mutate(ControlRequest::TopologyUnignore {
+        a: a.to_string(),
+        b: b.to_string(),
+        caller_session_id: caller_session_id.map(str::to_string),
+    })
+}
+
+fn topology_mutate(
+    request: ControlRequest,
+) -> io::Result<wardian_core::control::TopologyMutationResponse> {
+    let runtime = build_runtime()?;
+    let value = timeout_block(
+        &runtime,
+        ControlOperation::TopologyMutate,
+        send_request(request),
+    )?;
+    serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))
 }
 
 pub fn agent_doctor(target: &str) -> io::Result<AgentDoctorResponse> {
@@ -1032,7 +1095,8 @@ fn operation_timeout(operation: &ControlOperation) -> Duration {
         | ControlOperation::WorkflowRun
         | ControlOperation::ArtifactPresent
         | ControlOperation::SubmitReply
-        | ControlOperation::NotifyCreate => CONTROL_MUTATION_TIMEOUT,
+        | ControlOperation::NotifyCreate
+        | ControlOperation::TopologyMutate => CONTROL_MUTATION_TIMEOUT,
         ControlOperation::SendMessage { requested } => watch_timeout_for(*requested),
         ControlOperation::AgentWorktreeList => CONTROL_GIT_DISCOVERY_TIMEOUT,
         ControlOperation::Ask { requested, .. } => watch_timeout_for(*requested),
