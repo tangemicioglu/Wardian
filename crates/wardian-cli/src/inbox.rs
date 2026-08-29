@@ -45,6 +45,17 @@ struct InboxPageRequest<'a> {
     unread: bool,
 }
 
+struct PersistedSourceContext<'a> {
+    cutoff: i64,
+    read_notification_ids: &'a HashSet<String>,
+    persisted_workflow_runs: &'a HashSet<(String, String)>,
+    conn: Option<&'a Connection>,
+    agent_names: &'a HashMap<String, String>,
+    types: &'a HashSet<String>,
+    sources: &'a HashSet<String>,
+    unread: bool,
+}
+
 /// Read-only Inbox commands. Live reads use the app-owned projection first so
 /// the CLI and remote Inbox see the same notification and workflow records.
 pub fn handle_inbox(args: InboxArgs) -> Result<String, CliError> {
@@ -150,12 +161,14 @@ fn type_matches(item: &Value, types: &HashSet<String>) -> bool {
 }
 
 fn source_matches(item: &Value, sources: &HashSet<String>) -> bool {
-    sources.is_empty()
-        || sources.contains(
-            item.get("evidence_source")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        )
+    if sources.is_empty() {
+        return true;
+    }
+    let item_source = item
+        .get("evidence_source")
+        .and_then(Value::as_str)
+        .unwrap_or("provider_runtime");
+    sources.contains(item_source)
 }
 
 fn item_timestamp(item: &Value) -> i64 {
@@ -240,23 +253,19 @@ fn load_persisted_items(
         InboxSource::LegacyQueue,
     ];
     let source_page_limit = offset.saturating_add(limit).saturating_add(1);
+    let context = PersistedSourceContext {
+        cutoff,
+        read_notification_ids: &read_notification_ids,
+        persisted_workflow_runs: &persisted_workflow_runs,
+        conn: conn.as_ref(),
+        agent_names: &agent_names,
+        types,
+        sources,
+        unread,
+    };
     let mut pages = source_kinds
         .into_iter()
-        .map(|source| {
-            load_persisted_source_page(
-                source,
-                0,
-                source_page_limit,
-                cutoff,
-                &read_notification_ids,
-                &persisted_workflow_runs,
-                conn.as_ref(),
-                &agent_names,
-                types,
-                sources,
-                unread,
-            )
-        })
+        .map(|source| load_persisted_source_page(source, 0, source_page_limit, &context))
         .collect::<Result<Vec<_>, _>>()?;
     let mut source_offsets = [0usize; 4];
     let request = InboxPageRequest {
@@ -274,14 +283,7 @@ fn load_persisted_items(
                 source_kinds[index],
                 source_offset,
                 source_page_limit,
-                cutoff,
-                &read_notification_ids,
-                &persisted_workflow_runs,
-                conn.as_ref(),
-                &agent_names,
-                types,
-                sources,
-                unread,
+                &context,
             )
         },
         &mut source_offsets,
@@ -298,24 +300,17 @@ fn load_persisted_source_page(
     source: InboxSource,
     offset: usize,
     page_limit: usize,
-    cutoff: i64,
-    read_notification_ids: &HashSet<String>,
-    persisted_workflow_runs: &HashSet<(String, String)>,
-    conn: Option<&Connection>,
-    agent_names: &HashMap<String, String>,
-    types: &HashSet<String>,
-    sources: &HashSet<String>,
-    unread: bool,
+    context: &PersistedSourceContext<'_>,
 ) -> Result<InboxSourcePage, CliError> {
     match source {
         InboxSource::Notifications => {
-            let Some(conn) = conn else {
+            let Some(conn) = context.conn else {
                 return Ok(InboxSourcePage {
                     items: Vec::new(),
                     truncated: false,
                 });
             };
-            let capacity = offset.saturating_add(page_limit).saturating_add(1);
+            let page_end = offset.saturating_add(page_limit);
             let mut raw_offset = 0usize;
             let mut matching = Vec::new();
             let mut truncated = false;
@@ -341,14 +336,16 @@ fn load_persisted_source_page(
                 matching.extend(
                     sort_items(notification_items(
                         &records,
-                        read_notification_ids,
-                        agent_names,
+                        context.read_notification_ids,
+                        context.agent_names,
                         &decisions,
                     ))
                     .into_iter()
-                    .filter(|item| inbox_item_matches(item, types, sources, unread)),
+                    .filter(|item| {
+                        inbox_item_matches(item, context.types, context.sources, context.unread)
+                    }),
                 );
-                if matching.len() > capacity {
+                if matching.len() > page_end {
                     truncated = true;
                     break;
                 }
@@ -363,19 +360,30 @@ fn load_persisted_source_page(
             })
         }
         InboxSource::WorkflowApprovals => {
-            let (items, truncated) =
-                workflow_approval_items(offset, page_limit, types, sources, unread)?;
+            let (items, truncated) = workflow_approval_items(
+                offset,
+                page_limit,
+                context.types,
+                context.sources,
+                context.unread,
+            )?;
             Ok(InboxSourcePage { items, truncated })
         }
         InboxSource::WorkflowTerminals => {
-            let (items, truncated) =
-                workflow_terminal_items(offset, page_limit, types, sources, unread)?;
+            let (items, truncated) = workflow_terminal_items(
+                offset,
+                page_limit,
+                context.types,
+                context.sources,
+                context.unread,
+            )?;
             Ok(InboxSourcePage {
                 items: items
                     .into_iter()
                     .filter(|item| {
-                        workflow_identity(item)
-                            .is_none_or(|key| !persisted_workflow_runs.contains(&key))
+                        context.sources.contains("live_runtime")
+                            || workflow_identity(item)
+                                .is_none_or(|key| !context.persisted_workflow_runs.contains(&key))
                     })
                     .collect(),
                 truncated,
@@ -385,12 +393,12 @@ fn load_persisted_source_page(
             let persisted = wardian_core::queue::load_recent_items_matching(
                 page_limit,
                 offset,
-                cutoff,
+                context.cutoff,
                 |item| {
                     item.get("inbox_notification_id").is_none()
                         && item.get("workflow_approval").is_none()
                         && item.get("dismissed").and_then(Value::as_bool) != Some(true)
-                        && inbox_item_matches(item, types, sources, unread)
+                        && inbox_item_matches(item, context.types, context.sources, context.unread)
                 },
             );
             Ok(InboxSourcePage {
@@ -466,15 +474,24 @@ where
             continue;
         }
         if items.len() >= request.limit {
-            return Ok((
-                items,
-                true,
-                Some(request.offset.saturating_add(request.limit)),
-            ));
+            return Ok(page_after_lookahead(items, request.offset, request.limit));
         }
         items.push(item);
     }
     Ok((items, false, None))
+}
+
+fn next_inbox_offset(offset: usize, limit: usize) -> Option<usize> {
+    let next_offset = offset.saturating_add(limit);
+    (next_offset < wardian_core::control::MAX_INBOX_OFFSET).then_some(next_offset)
+}
+
+fn page_after_lookahead(
+    items: Vec<Value>,
+    offset: usize,
+    limit: usize,
+) -> (Vec<Value>, bool, Option<usize>) {
+    (items, true, next_inbox_offset(offset, limit))
 }
 
 fn inbox_item_matches(
@@ -518,9 +535,7 @@ fn workflow_approval_items(
 
     let mut items = Vec::new();
     let mut truncated = false;
-    let capacity = offset
-        .saturating_add(MAX_INBOX_SOURCE_ITEMS)
-        .saturating_add(1);
+    let capacity = offset.saturating_add(page_limit).saturating_add(1);
     for blueprint_entry in
         fs::read_dir(&runs_root).map_err(|error| CliError::generic(error.to_string()))?
     {
@@ -624,9 +639,7 @@ fn workflow_terminal_items(
 
     let mut items = Vec::new();
     let mut truncated = false;
-    let capacity = offset
-        .saturating_add(MAX_INBOX_SOURCE_ITEMS)
-        .saturating_add(1);
+    let capacity = offset.saturating_add(page_limit).saturating_add(1);
     for blueprint_entry in
         fs::read_dir(&runs_root).map_err(|error| CliError::generic(error.to_string()))?
     {

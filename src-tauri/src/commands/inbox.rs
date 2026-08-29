@@ -46,7 +46,9 @@ pub struct WorkflowInboxApprovalDto {
 /// low-latency path for a currently open window.
 #[tauri::command]
 pub async fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
-    Ok(list_workflow_inbox_terminal_runs_page(0).await?.0)
+    tokio::task::spawn_blocking(list_workflow_inbox_terminal_runs_blocking)
+        .await
+        .map_err(|error| format!("workflow terminal inbox task failed: {error}"))?
 }
 
 /// Lists one bounded page of terminal workflow Inbox evidence and preserves
@@ -54,12 +56,12 @@ pub async fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInb
 pub async fn list_workflow_inbox_terminal_runs_page(
     offset: usize,
 ) -> Result<(Vec<runs::WorkflowInboxUpdate>, bool), String> {
-    tokio::task::spawn_blocking(move || list_workflow_inbox_terminal_runs_blocking(offset))
+    tokio::task::spawn_blocking(move || list_workflow_inbox_terminal_runs_page_blocking(offset))
         .await
         .map_err(|error| format!("workflow terminal inbox task failed: {error}"))?
 }
 
-fn list_workflow_inbox_terminal_runs_blocking(
+fn list_workflow_inbox_terminal_runs_page_blocking(
     offset: usize,
 ) -> Result<(Vec<runs::WorkflowInboxUpdate>, bool), String> {
     let mut updates = Vec::new();
@@ -92,6 +94,12 @@ fn list_workflow_inbox_terminal_runs_blocking(
         }
     }
     Ok((updates, truncated))
+}
+
+fn list_workflow_inbox_terminal_runs_blocking() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
+    // Preserve the legacy command's bounded 200-run behavior. The unified
+    // Inbox read path uses the paged helper below when it needs older runs.
+    list_workflow_inbox_terminal_runs_page_blocking(0).map(|(updates, _)| updates)
 }
 
 #[tauri::command]
@@ -199,19 +207,21 @@ pub async fn resolve_inbox_notification(
 
 #[tauri::command]
 pub async fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
-    Ok(list_workflow_inbox_approvals_page(0).await?.0)
+    tokio::task::spawn_blocking(list_workflow_inbox_approvals_blocking)
+        .await
+        .map_err(|error| format!("workflow approval inbox task failed: {error}"))?
 }
 
 /// Lists one bounded page of awaiting workflow approval evidence.
 pub async fn list_workflow_inbox_approvals_page(
     offset: usize,
 ) -> Result<(Vec<WorkflowInboxApprovalDto>, bool), String> {
-    tokio::task::spawn_blocking(move || list_workflow_inbox_approvals_blocking(offset))
+    tokio::task::spawn_blocking(move || list_workflow_inbox_approvals_page_blocking(offset))
         .await
         .map_err(|error| format!("workflow approval inbox task failed: {error}"))?
 }
 
-fn list_workflow_inbox_approvals_blocking(
+fn list_workflow_inbox_approvals_page_blocking(
     offset: usize,
 ) -> Result<(Vec<WorkflowInboxApprovalDto>, bool), String> {
     let (runs, truncated) = workflow_inbox_run_page(offset, |run| {
@@ -286,6 +296,12 @@ fn list_workflow_inbox_approvals_blocking(
         });
     }
     Ok((approvals, truncated))
+}
+
+fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
+    // Preserve the legacy command's bounded 200-run behavior. The unified
+    // Inbox read path uses the paged helper below when it needs older runs.
+    list_workflow_inbox_approvals_page_blocking(0).map(|(approvals, _)| approvals)
 }
 
 /// Pages the eligible workflow Inbox projection rather than applying the

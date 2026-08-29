@@ -102,10 +102,49 @@ pub fn remote_watchlist_state() -> Result<RemoteWatchlistResponse, String> {
 
 /// Builds the same Inbox projection as the desktop queue store.
 pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
-    remote_inbox_list_page(state, 0, &[], &[], false, MAX_INBOX_SOURCE_ITEMS)
-        .await
-        .unwrap_or_default()
-        .0
+    let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
+    let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
+    let read_notification_ids = queue_metadata.read_notification_ids;
+    let persisted_workflow_runs = queue_metadata.workflow_runs;
+    let source_kinds = [
+        InboxSource::Notifications,
+        InboxSource::WorkflowApprovals,
+        InboxSource::WorkflowTerminals,
+        InboxSource::LegacyQueue,
+    ];
+    let context = InboxProjectionContext {
+        cutoff,
+        read_notification_ids: &read_notification_ids,
+        persisted_workflow_runs: &persisted_workflow_runs,
+        types: &[],
+        sources: &[],
+        unread: false,
+    };
+    let mut items = Vec::new();
+    for source in source_kinds.into_iter().take(3) {
+        let Ok(page) =
+            remote_inbox_source_page(state, source, 0, MAX_INBOX_SOURCE_ITEMS, &context).await
+        else {
+            // The compatibility endpoint has no cursor or error field.
+            // Preserve readable sources when a workflow directory changes
+            // during a refresh instead of returning an empty Inbox. Callers
+            // that need older records use the bounded Inbox control path.
+            continue;
+        };
+        items.extend(page.items);
+    }
+    items.extend(persisted_queue_items().into_iter().filter(|item| {
+        item_timestamp(item) > cutoff
+            && is_legacy_queue_item(item)
+            && item.get("dismissed").and_then(serde_json::Value::as_bool) != Some(true)
+    }));
+    items.sort_by(|left, right| {
+        item_timestamp(left)
+            .cmp(&item_timestamp(right))
+            .then_with(|| item_id(left).cmp(item_id(right)))
+            .reverse()
+    });
+    items
 }
 
 /// Builds one bounded page of the Inbox projection while preserving the
@@ -233,12 +272,25 @@ pub async fn remote_inbox_list_page(
             continue;
         }
         if items.len() >= limit {
-            return Ok((items, true, Some(offset.saturating_add(limit))));
+            return Ok(page_after_lookahead(items, offset, limit));
         }
         items.push(item);
     }
 
     Ok((items, false, None))
+}
+
+fn next_inbox_offset(offset: usize, limit: usize) -> Option<usize> {
+    let next_offset = offset.saturating_add(limit);
+    (next_offset < wardian_core::control::MAX_INBOX_OFFSET).then_some(next_offset)
+}
+
+fn page_after_lookahead(
+    items: Vec<serde_json::Value>,
+    offset: usize,
+    limit: usize,
+) -> (Vec<serde_json::Value>, bool, Option<usize>) {
+    (items, true, next_inbox_offset(offset, limit))
 }
 
 pub(crate) async fn inbox_list_control(
@@ -344,7 +396,7 @@ async fn remote_inbox_source_page(
         });
     }
 
-    let capacity = offset.saturating_add(page_limit).saturating_add(1);
+    let page_end = offset.saturating_add(page_limit);
     let mut raw_offset = 0usize;
     let mut matching = Vec::new();
     let mut truncated = false;
@@ -355,18 +407,21 @@ async fn remote_inbox_source_page(
             raw_offset,
             context.cutoff,
             context.read_notification_ids,
-            context.persisted_workflow_runs,
         )
         .await?;
-        let raw_count = page.items.len();
         matching.extend(page.items.into_iter().filter(|item| {
-            inbox_item_matches(item, context.types, context.sources, context.unread)
+            let persisted_workflow_duplicate = matches!(source, InboxSource::WorkflowTerminals)
+                && !context.sources.iter().any(|value| value == "live_runtime")
+                && workflow_identity(item)
+                    .is_some_and(|key| context.persisted_workflow_runs.contains(&key));
+            !persisted_workflow_duplicate
+                && inbox_item_matches(item, context.types, context.sources, context.unread)
         }));
-        if matching.len() > capacity {
+        if matching.len() > page_end {
             truncated = true;
             break;
         }
-        if !page.truncated || raw_count == 0 {
+        if !page.truncated {
             break;
         }
         raw_offset = raw_offset.saturating_add(MAX_INBOX_SOURCE_ITEMS);
@@ -389,7 +444,6 @@ async fn remote_inbox_source_page_raw(
     offset: usize,
     cutoff: i64,
     read_notification_ids: &std::collections::HashSet<String>,
-    persisted_workflow_runs: &std::collections::HashSet<(String, String)>,
 ) -> Result<InboxSourcePage, String> {
     match source {
         InboxSource::Notifications => {
@@ -464,10 +518,6 @@ async fn remote_inbox_source_page_raw(
             Ok(InboxSourcePage {
                 items: terminals
                     .into_iter()
-                    .filter(|run| {
-                        !persisted_workflow_runs
-                            .contains(&(run.workflow_id.clone(), run.run_instance_id.clone()))
-                    })
                     .map(|run| {
                         serde_json::json!({
                             "id": format!("workflow-completion:{}:{}", run.workflow_id, run.run_instance_id),
@@ -521,12 +571,11 @@ fn inbox_item_matches(
                         == Some("workflow_completed")
                     && item.get("status").and_then(serde_json::Value::as_str) == Some("failed"))
         });
-    let source_matches = sources.is_empty()
-        || sources.iter().any(|source| {
-            item.get("evidence_source")
-                .and_then(serde_json::Value::as_str)
-                == Some(source.as_str())
-        });
+    let item_source = item
+        .get("evidence_source")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("provider_runtime");
+    let source_matches = sources.is_empty() || sources.iter().any(|source| source == item_source);
     type_matches
         && source_matches
         && (!unread || item.get("read").and_then(serde_json::Value::as_bool) != Some(true))
@@ -1308,6 +1357,40 @@ mod tests {
         unsafe { std::env::remove_var("WARDIAN_HOME") };
 
         assert_eq!(items[0]["id"], "desktop-inbox-1");
+    }
+
+    #[tokio::test]
+    async fn remote_queue_items_keeps_persisted_workflow_completions() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        crate::utils::queue::save_items(&[serde_json::json!({
+            "id": "workflow-completion:release:run-1",
+            "type": "workflow_completed",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+            "workflow_id": "release",
+            "workflow_run_id": "run-1",
+            "status": "completed",
+        })])
+        .expect("workflow completion");
+
+        let items = remote_queue_items(&AppState::new()).await;
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+
+        assert_eq!(items[0]["id"], "workflow-completion:release:run-1");
+    }
+
+    #[test]
+    fn inbox_page_reports_more_items_at_the_cursor_cap() {
+        let (items, truncated, next_offset) = page_after_lookahead(
+            vec![serde_json::json!({ "id": "lookahead" })],
+            wardian_core::control::MAX_INBOX_OFFSET - 200,
+            200,
+        );
+
+        assert_eq!(items[0]["id"], "lookahead");
+        assert!(truncated);
+        assert!(next_offset.is_none());
     }
 
     #[tokio::test]
