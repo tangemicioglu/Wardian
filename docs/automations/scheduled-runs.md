@@ -1,6 +1,8 @@
 # Scheduled Runs
 
-A scheduled run is a runtime instance created from an automation template that contains a **Scheduled Trigger**. It is separate from the automation definition itself.
+A scheduled run is a runtime instance created by a schedule (an invoker) for a
+saved automation blueprint. Scheduling is separate from the automation
+definition and is not represented by a blueprint node.
 
 This distinction matters because Wardian supports multiple scheduled instances of the same automation at the same time.
 

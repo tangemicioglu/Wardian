@@ -51,7 +51,7 @@ provides those values before creating the run.
 
 ### Schedule Types
 
-The current scheduled trigger supports:
+The scheduler currently supports:
 
 - **Minutes**
 - **Hours**

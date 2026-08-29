@@ -28,7 +28,7 @@ In practice, you usually move through automations in this order:
 
 - **[Building Automations](./building-automations.md)**: Use the canvas, block library, node settings, and variable assistant.
 - **[Automation Samples](./samples.md)**: Start from editable, privacy-safe templates for common automation patterns.
-- **[Triggers](./triggers.md)**: Understand manual runs, scheduled triggers, and live listeners.
+- **[Triggers](./triggers.md)**: Understand manual runs, scheduled invocations, and live listeners.
 - **[Scheduled Runs](./scheduled-runs.md)**: Manage scheduled task instances, pause/resume, run now, and deletion.
 - **[Node Reference](./node-reference.md)**: Reference every current automation node type and its user-visible behavior.
 - **[Agent Assignment](./agent-assignment.md)**: Learn how roles, direct agent selection, and the run modal work.

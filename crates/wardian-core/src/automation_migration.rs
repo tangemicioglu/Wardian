@@ -70,6 +70,7 @@ fn reconcile_directory(source: &Path, destination: &Path) -> io::Result<bool> {
             ),
         ));
     }
+    validate_reconciliation(source, destination)?;
 
     if !destination.exists() {
         if let Some(parent) = destination.parent() {
@@ -101,6 +102,66 @@ fn reconcile_directory(source: &Path, destination: &Path) -> io::Result<bool> {
         fs::remove_dir(source)?;
     }
     Ok(changed)
+}
+
+fn validate_reconciliation(source: &Path, destination: &Path) -> io::Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    if !source.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "legacy automation path is not a directory: {}",
+                source.display()
+            ),
+        ));
+    }
+    if !destination.exists() {
+        return Ok(());
+    }
+    if !destination.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "automation migration destination is not a directory: {}",
+                destination.display()
+            ),
+        ));
+    }
+
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_entry = entry.path();
+        let destination_entry = destination.join(entry.file_name());
+        if !destination_entry.exists() {
+            continue;
+        }
+        if source_entry.is_dir() && destination_entry.is_dir() {
+            validate_reconciliation(&source_entry, &destination_entry)?;
+        } else if source_entry.is_file() && destination_entry.is_file() {
+            if fs::read(&source_entry)? != fs::read(&destination_entry)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!(
+                        "conflicting automation migration entries: {} and {}",
+                        source_entry.display(),
+                        destination_entry.display()
+                    ),
+                ));
+            }
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "conflicting automation migration entry types: {} and {}",
+                    source_entry.display(),
+                    destination_entry.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn reconcile_entry(source: &Path, destination: &Path) -> io::Result<()> {
@@ -157,6 +218,14 @@ fn rewrite_blueprint_tree(path: &Path, rewritten: &mut usize) -> io::Result<()> 
 /// Rewrite only structured front-matter keys. Markdown prose and user values
 /// remain byte-for-byte unchanged.
 fn rewrite_blueprint_file(path: &Path) -> io::Result<bool> {
+    let mut hook = crate::atomic_file::NoAtomicFault;
+    rewrite_blueprint_file_with_hook(path, &mut hook)
+}
+
+fn rewrite_blueprint_file_with_hook(
+    path: &Path,
+    hook: &mut impl crate::atomic_file::AtomicFaultHook,
+) -> io::Result<bool> {
     let original = fs::read_to_string(path)?;
     let (bom, without_bom) = original
         .strip_prefix('\u{feff}')
@@ -221,7 +290,12 @@ fn rewrite_blueprint_file(path: &Path) -> io::Result<bool> {
         output.push_str(opening_newline);
         output.push_str(&rewritten_yaml);
         output.push_str(rest);
-        fs::write(path, output)?;
+        crate::atomic_file::write_bytes_atomic_durable_with_hook(
+            path,
+            output.as_bytes(),
+            crate::atomic_file::AtomicWriteRole::Other,
+            hook,
+        )?;
     }
     Ok(changed)
 }
@@ -342,6 +416,64 @@ mod tests {
             fs::read_to_string(current.join("conflict.md")).unwrap(),
             "new"
         );
+    }
+
+    #[test]
+    fn conflicting_directory_entries_do_not_partially_migrate() {
+        let home = home();
+        let legacy = home.path().join("logs/workflows");
+        let current = home.path().join("logs/automations");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::create_dir_all(&current).unwrap();
+        fs::write(legacy.join("a-movable.jsonl"), "old movable").unwrap();
+        fs::write(legacy.join("z-conflict.jsonl"), "old conflict").unwrap();
+        fs::write(current.join("z-conflict.jsonl"), "new conflict").unwrap();
+
+        let error = migrate_home(home.path()).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(legacy.join("a-movable.jsonl").exists());
+        assert!(!current.join("a-movable.jsonl").exists());
+        assert_eq!(
+            fs::read_to_string(legacy.join("z-conflict.jsonl")).unwrap(),
+            "old conflict"
+        );
+        assert_eq!(
+            fs::read_to_string(current.join("z-conflict.jsonl")).unwrap(),
+            "new conflict"
+        );
+    }
+
+    struct FailBeforeBlueprintReplace;
+
+    impl crate::atomic_file::AtomicFaultHook for FailBeforeBlueprintReplace {
+        fn check(&mut self, point: crate::atomic_file::AtomicFaultPoint) -> io::Result<()> {
+            if point
+                == crate::atomic_file::AtomicFaultPoint::BeforeReplace(
+                    crate::atomic_file::AtomicWriteRole::Other,
+                )
+            {
+                Err(io::Error::other("injected blueprint replacement failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn failed_blueprint_replacement_preserves_original_bytes() {
+        let home = home();
+        let blueprint = home.path().join("library/automations/review.md");
+        fs::create_dir_all(blueprint.parent().unwrap()).unwrap();
+        let original = "---\nschema: 2\nid: review\ntype: sub_workflow\n---\n";
+        fs::write(&blueprint, original).unwrap();
+
+        let error = rewrite_blueprint_file_with_hook(&blueprint, &mut FailBeforeBlueprintReplace)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(fs::read_to_string(&blueprint).unwrap(), original);
+        crate::atomic_file::cleanup_atomic_temps(&blueprint).unwrap();
     }
 
     #[test]
