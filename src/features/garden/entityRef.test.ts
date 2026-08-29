@@ -3,7 +3,7 @@ import { normalizeGraphPath } from "../graph/graphProjection";
 import {
   agentRef,
   artifactRef,
-  buildWorkflowPathIndex,
+  buildAutomationPathIndex,
   dedupeRefs,
   entityKey,
   folderRef,
@@ -15,9 +15,9 @@ import {
   libraryEntryRef,
   normalizeEntityPath,
   parseEntityKey,
-  resolveWorkflowRef,
+  resolveAutomationRef,
   sameEntity,
-  workflowRef,
+  automationRef,
   worktreeRef,
 } from "./entityRef";
 
@@ -47,7 +47,7 @@ describe("entityKey / parseEntityKey", () => {
   it("keeps the legacy unitKey shape so persisted agent positions still resolve", () => {
     expect(entityKey(agentRef("a1"))).toBe("agent:a1");
     expect(fromGardenUnitKey("agent:a1")).toEqual(agentRef("a1"));
-    expect(fromGardenUnitKey("workflow:w1")).toEqual(workflowRef("w1"));
+    expect(fromGardenUnitKey("automation:w1")).toEqual(automationRef("w1"));
     expect(fromGardenUnitKey("skill:skills/x")).toBeNull();
   });
 });
@@ -101,10 +101,10 @@ describe("libraryEntryRef", () => {
     });
   });
 
-  it("refuses workflows so they cannot enter the map under a second identity", () => {
+  it("refuses automations so they cannot enter the map under a second identity", () => {
     // The whole point of the dual-identity fix: a caller holding only an
     // entry_ref must resolve to Blueprint.id rather than minting a duplicate.
-    expect(libraryEntryRef("workflows/build.md")).toBeNull();
+    expect(libraryEntryRef("automations/build.md")).toBeNull();
   });
 
   it("ignores the stubbed mcps section and unknown sections", () => {
@@ -118,33 +118,33 @@ describe("libraryEntryRef", () => {
   });
 });
 
-describe("workflow dual identity", () => {
+describe("automation dual identity", () => {
   const blueprints = [
-    { id: "bp-build", path: "D:\\Development\\Wardian\\.wardian\\library\\workflows\\build.md" },
-    { id: "bp-ship", path: "/home/u/.wardian/library/workflows/ship.md" },
+    { id: "bp-build", path: "D:\\Development\\Wardian\\.wardian\\library\\automations\\build.md" },
+    { id: "bp-ship", path: "/home/u/.wardian/library/automations/ship.md" },
   ];
 
   it("collapses entry_ref and Blueprint.id onto one unit", () => {
-    const index = buildWorkflowPathIndex(blueprints);
-    const fromEntry = resolveWorkflowRef("workflows/build.md", index);
-    const fromBlueprint = workflowRef("bp-build");
+    const index = buildAutomationPathIndex(blueprints);
+    const fromEntry = resolveAutomationRef("automations/build.md", index);
+    const fromBlueprint = automationRef("bp-build");
     expect(fromEntry).not.toBeNull();
     expect(sameEntity(fromEntry!, fromBlueprint)).toBe(true);
-    expect(entityKey(fromEntry!)).toBe("workflow:bp-build");
+    expect(entityKey(fromEntry!)).toBe("automation:bp-build");
   });
 
   it("retains the library path so the unit is matchable from either direction", () => {
-    const index = buildWorkflowPathIndex(blueprints);
-    expect(resolveWorkflowRef("workflows/ship.md", index)?.path).toBe("workflows/ship.md");
+    const index = buildAutomationPathIndex(blueprints);
+    expect(resolveAutomationRef("automations/ship.md", index)?.path).toBe("automations/ship.md");
   });
 
   it("returns null for a blueprint that failed to parse rather than inventing a unit", () => {
-    expect(resolveWorkflowRef("workflows/missing.md", buildWorkflowPathIndex(blueprints))).toBeNull();
+    expect(resolveAutomationRef("automations/missing.md", buildAutomationPathIndex(blueprints))).toBeNull();
   });
 
   it("dedupes the two identities to a single entity", () => {
-    const index = buildWorkflowPathIndex(blueprints);
-    const refs = [resolveWorkflowRef("workflows/build.md", index)!, workflowRef("bp-build")];
+    const index = buildAutomationPathIndex(blueprints);
+    const refs = [resolveAutomationRef("automations/build.md", index)!, automationRef("bp-build")];
     expect(dedupeRefs(refs)).toHaveLength(1);
   });
 });

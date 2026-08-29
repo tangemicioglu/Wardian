@@ -16,14 +16,14 @@ Give every Wardian agent a provider-neutral, local-first memory that reliably ap
 - Stable memories persist until superseded or removed. Current-state memories remain available, carry verification timestamps, and can be labeled stale; Wardian never silently expires them.
 - Fresh provider processes receive bounded `Stable memory` and `Current state` sections. Resumed processes receive the relevant delta from their last injected fingerprint.
 - Successful writes and startup loads are visible as compact, expandable memory events. The exact injected context is inspectable.
-- Automated consolidation is off by default. If enabled, it is an ordinary bundled Wardian workflow using the provider, model, and effort selected by the user. It consumes that provider's quota and has no hidden fallback.
-- Only an explicit, validated `memory_commit` workflow node may mutate memory. A generic session-close invoker can run any workflow; it is not a memory-specific trigger or control surface.
+- Automated consolidation is off by default. If enabled, it is an ordinary bundled Wardian automation using the provider, model, and effort selected by the user. It consumes that provider's quota and has no hidden fallback.
+- Only an explicit, validated `memory_commit` automation node may mutate memory. A generic session-close invoker can run any automation; it is not a memory-specific trigger or control surface.
 
 ## Delivery
 
 1. SQLite authority, lifecycle API, CLI, scopes, provenance, revisions, audit events, and direct-retention instructions.
 2. Provider-neutral startup compilation, full/delta fingerprints, deterministic budgets, and observable chat events.
-3. Bundled consolidation workflow, generic session-close invoker, strict structured output, archive cursors, and idempotent commit.
+3. Bundled consolidation automation, generic session-close invoker, strict structured output, archive cursors, and idempotent commit.
 
 ## Acceptance
 
@@ -37,4 +37,4 @@ Give every Wardian agent a provider-neutral, local-first memory that reliably ap
 
 ## Deferred
 
-Semantic embeddings and reranking, shared or cross-agent scopes, provider-native history as memory, cascading deletion, and memory-specific workflow reset/fork/compare controls.
+Semantic embeddings and reranking, shared or cross-agent scopes, provider-native history as memory, cascading deletion, and memory-specific automation reset/fork/compare controls.

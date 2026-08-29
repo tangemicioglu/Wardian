@@ -1,7 +1,7 @@
 # Agent memory
 
 Use `wardian memory` for durable, agent-owned continuity. Direct retention and
-startup recall work without enabling the optional curator workflow.
+startup recall work without enabling the optional curator automation.
 
 Save only clear preferences, decisions, corrections, lessons, current project
 state, and explicit requests to remember. Default to workspace scope. Use

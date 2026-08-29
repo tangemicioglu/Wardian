@@ -2,7 +2,7 @@
 
 Wardian Remote lets a paired phone control the Wardian desktop app over a
 trusted private-network HTTPS origin. The desktop remains the host for agents,
-workflows, filesystem access, provider CLIs, PTYs, and telemetry.
+automations, filesystem access, provider CLIs, PTYs, and telemetry.
 
 ## Requirements
 
@@ -244,8 +244,8 @@ gateway binding, reused pairing offers, reused WebSocket tickets, missing CSRF
 nonces, and revoked devices.
 
 The default remote roster does not include transcript or output text. Remote
-workflow runs also reject arbitrary phone-provided payloads until Wardian has
-workflow-specific input schemas.
+automation runs also reject arbitrary phone-provided payloads until Wardian has
+automation-specific input schemas.
 
 Revoke a lost or untrusted phone immediately from Settings. Revocation ends the
 device's active remote sessions and prevents future gateway calls from that
@@ -275,7 +275,7 @@ access setup.
 
 The mobile watchlist does not expose broadcast. Use agent detail for
 single-agent prompts from the phone, and use the desktop app for multi-agent
-broadcast workflows.
+broadcast automations.
 
 When you tap an agent, Wardian opens its terminal and claims the interactive
 terminal presentation automatically. You can type immediately; Wardian does
@@ -305,7 +305,7 @@ remaining sized for a phone screen.
 ![Mobile PWA Inbox showing a recent agent completion summary](../assets/screenshots/remote-control/mobile-pwa-queue-summary.png)
 
 The service worker caches only the remote app shell and static assets. It does
-not queue agent, workflow, PTY, or revocation actions while offline. If the
+not queue agent, automation, PTY, or revocation actions while offline. If the
 desktop is unreachable, reconnect before sending commands.
 
 ## Boundaries

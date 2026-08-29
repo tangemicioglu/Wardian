@@ -16,4 +16,4 @@ Research documents are not product evaluations, affiliation claims, endorsements
 - [Multi-Agent Orchestrator References](./multi-agent-orchestrator-references.md)
 - [Shared Agent Memory References](./shared-agent-memory-references.md)
 - [Skill Manager References](./skill-manager-references.md)
-- [Workflow Design References](./workflow-design-references.md)
+- [Automation Design References](./automation-design-references.md)

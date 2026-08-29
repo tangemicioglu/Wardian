@@ -4,7 +4,7 @@ import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlis
 import { buildAgentGraph, type GraphRelationshipReason } from "../features/graph/graphProjection";
 import {
   buildAgentUnits,
-  buildWorkflowUnits,
+  buildAutomationUnits,
   computeGardenLayout,
   gardenLayoutSignature,
 } from "../features/garden/gardenProjection";
@@ -19,10 +19,10 @@ import {
   gardenChangeBaselineLabel,
   gardenGroundLabel,
   gardenSkillReachLabel,
-  gardenWorkflowStatusLabel,
+  gardenAutomationStatusLabel,
 } from "../features/garden/gardenStatus";
 import { agentsCarrying } from "../features/garden/skillGlyphs";
-import { useGardenWorkflows } from "../features/garden/useGardenWorkflows";
+import { useGardenAutomations } from "../features/garden/useGardenAutomations";
 import { useGardenSkills } from "../features/garden/useGardenSkills";
 import { useGardenReach } from "../features/garden/useGardenReach";
 import { useGardenTerrain } from "../features/garden/useGardenTerrain";
@@ -114,19 +114,19 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const adoptScene = useGardenStore((s) => s.adoptScene);
   const resetLayout = useGardenStore((s) => s.reset);
   const {
-    workflows: workflowInputs,
-    truncated: workflowsTruncated,
-    nextOffset: workflowsNextOffset,
-    loadMore: loadMoreWorkflows,
-  } = useGardenWorkflows(visibility === "visible");
+    automations: automationInputs,
+    truncated: automationsTruncated,
+    nextOffset: automationsNextOffset,
+    loadMore: loadMoreAutomations,
+  } = useGardenAutomations(visibility === "visible");
   const skillInputs = useGardenSkills(visibility === "visible");
   // Deep-links into the Library the same way the agent config panel's "Manage
   // skills" affordance does, so the Garden does not invent a second navigation
   // path to the same surface.
   const openLibraryAt = useLibraryStore((s) => s.openLibraryAt);
 
-  // Canvas highlight is keyed by unitKey so agent and workflow ids can't collide,
-  // and it stays local so selecting a workflow never leaks into the app's
+  // Canvas highlight is keyed by unitKey so agent and automation ids can't collide,
+  // and it stays local so selecting an automation never leaks into the app's
   // agent-only selection set. Agent clicks still propagate up (for Grid routing).
   const [selectedKey, setSelectedKey] = useState<string | null>(
     initialSurfaceState?.selected_unit_key ?? null,
@@ -192,8 +192,8 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const reachRef = useRef(reach);
   reachRef.current = reach;
   const signature = useMemo(
-    () => gardenLayoutSignature(projection, teams, workflowInputs, skillInputs, reach),
-    [projection, teams, workflowInputs, skillInputs, reach],
+    () => gardenLayoutSignature(projection, teams, automationInputs, skillInputs, reach),
+    [projection, teams, automationInputs, skillInputs, reach],
   );
 
   // A reset discards the scene rather than advancing it, and the carried copy
@@ -211,14 +211,14 @@ export const GardenView: React.FC<GardenViewProps> = ({
     const result = computeGardenLayout({
       projection: projectionRef.current,
       teams,
-      workflows: workflowInputs,
+      automations: automationInputs,
       skills: skillInputs,
       reach: reachRef.current,
       scene: { ...carriedSceneRef.current, pins, exclusions },
     });
     carriedSceneRef.current = result.scene;
     return result;
-    // `signature` stands in for projection/teams/workflows: it captures exactly
+    // `signature` stands in for projection/teams/automations: it captures exactly
     // the geometry-relevant content and omits status, colour, and selection.
     //
     // `scene` is read only on a generation change, and is deliberately not a
@@ -241,9 +241,9 @@ export const GardenView: React.FC<GardenViewProps> = ({
     () => buildAgentUnits(projection, layout.positions, layout.crowns),
     [projection, layout.positions, layout.crowns],
   );
-  const workflowUnits = useMemo(
-    () => buildWorkflowUnits(workflowInputs, layout.positions),
-    [workflowInputs, layout.positions],
+  const automationUnits = useMemo(
+    () => buildAutomationUnits(automationInputs, layout.positions),
+    [automationInputs, layout.positions],
   );
 
   // Persist district cells and settled positions so a later session can
@@ -323,7 +323,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
     [],
   );
 
-  const selectedUnit = [...agentUnits, ...workflowUnits].find(
+  const selectedUnit = [...agentUnits, ...automationUnits].find(
     (unit) => unitKey(unit.ref) === activeSelectionKey,
   );
   const selectedPaint = selectedPath ? changes.paint.get(selectedPath) : undefined;
@@ -336,7 +336,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
       : selectedUnit
         ? "status" in selectedUnit
           ? gardenAgentStatusLabel(selectedUnit.status)
-          : gardenWorkflowStatusLabel(selectedUnit.runStatus)
+          : gardenAutomationStatusLabel(selectedUnit.runStatus)
         : null;
 
   return (
@@ -416,11 +416,11 @@ export const GardenView: React.FC<GardenViewProps> = ({
           </button>
         </div>
       )}
-      {workflowsTruncated && (
+      {automationsTruncated && (
         <div className="absolute bottom-14 right-3 z-10 rounded-md border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)] shadow-sm" role="status">
-          <span>Some workflows are omitted because the catalog is limited to the first 500; pages are capped at 500.</span>{' '}
-          {workflowsNextOffset !== null && (
-            <button type="button" className="font-semibold underline" onClick={() => void loadMoreWorkflows()}>
+          <span>Some automations are omitted because the catalog is limited to the first 500; pages are capped at 500.</span>{' '}
+          {automationsNextOffset !== null && (
+            <button type="button" className="font-semibold underline" onClick={() => void loadMoreAutomations()}>
               Load next page
             </button>
           )}
@@ -428,7 +428,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
       )}
       {rendererActive ? <GardenCanvas
         agentUnits={agentUnits}
-        workflowUnits={workflowUnits}
+        automationUnits={automationUnits}
         selectedKey={activeSelectionKey}
         highlightedAgentIds={highlightedAgentIds}
         terrainCells={terrain.cells}

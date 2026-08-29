@@ -60,9 +60,9 @@ pub struct HeadlessRunOptions<'a> {
     pub prompt: &'a str,
     pub wardian_session_id: &'a str,
     /// Registered agent that owns recall and in-process `wardian memory`
-    /// commands. Fresh workflow workers may keep a synthetic provider session
+    /// commands. Fresh automation workers may keep a synthetic provider session
     /// while using this durable memory identity. `None` disables durable
-    /// memory for ephemeral workflow providers.
+    /// memory for ephemeral automation providers.
     pub memory_agent_id: Option<&'a str>,
     pub resume_session: Option<&'a str>,
     pub output_format: &'a str,
@@ -183,7 +183,7 @@ fn effective_headless_provider_config(
         .cloned()
         .or_else(|| persisted_config.cloned())
         .or_else(|| {
-            // Provider-bound workflow workers do not have an agent profile,
+            // Provider-bound automation workers do not have an agent profile,
             // but Codex still needs the persisted runtime policy flags.
             matches!(provider_name, "codex" | "pi").then(|| AgentConfig {
                 provider: provider_name.to_string(),
@@ -200,7 +200,7 @@ fn effective_headless_provider_config(
 
     if provider_name == "pi" && resume_session.is_none_or(|session_id| session_id.trim().is_empty())
     {
-        // A registered background-fresh workflow carries the agent's profile
+        // A registered background-fresh automation carries the agent's profile
         // as an override, but its synthetic Wardian session must own a distinct
         // Pi transcript and provider identity.
         let owns_different_session = config.session_id != wardian_session_id;
@@ -1647,7 +1647,7 @@ mod tests {
         let test_home = TestWardianHome::new();
         let workspace = tempfile::tempdir().expect("temp workspace");
         let agent_id = "registered-memory-agent";
-        let worker_id = "workflow-bg-run-node";
+        let worker_id = "automation-bg-run-node";
         let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
         store
             .save(
@@ -1720,7 +1720,7 @@ mod tests {
         }
         let test_home = TestWardianHome::new();
         let workspace = tempfile::tempdir().expect("temp workspace");
-        let worker_id = "workflow-bg-temporary-node";
+        let worker_id = "automation-bg-temporary-node";
         let previous_scenario = std::env::var_os("WARDIAN_MOCK_SCENARIO");
         std::env::set_var("WARDIAN_MOCK_SCENARIO", "headless");
         let config = AgentConfig {
@@ -2414,14 +2414,14 @@ mod tests {
     }
 
     #[test]
-    fn claude_headless_output_exposes_result_text_for_workflows() {
+    fn claude_headless_output_exposes_result_text_for_automations() {
         let output =
-            r#"{"type":"result","session_id":"claude-session-1","result":"workflow complete"}"#;
+            r#"{"type":"result","session_id":"claude-session-1","result":"automation complete"}"#;
 
         let normalized = normalize_claude_headless_output(output, "json").unwrap();
 
         assert_eq!(normalized["session_id"], "claude-session-1");
-        assert_eq!(normalized["response"], "workflow complete");
+        assert_eq!(normalized["response"], "automation complete");
         assert_eq!(normalized["raw"], output);
     }
 
@@ -2685,7 +2685,7 @@ mod tests {
 
         let _memory_capability = apply_headless_identity_env(
             &mut cmd,
-            "workflow-bg-run-node",
+            "automation-bg-run-node",
             Some("wardian-session-123"),
         );
 
@@ -2713,14 +2713,15 @@ mod tests {
         let test_home = TestWardianHome::new();
         let mut cmd = crate::utils::process::new_headless_command("node");
 
-        let capability = apply_headless_identity_env(&mut cmd, "workflow-bg-temporary-node", None);
+        let capability =
+            apply_headless_identity_env(&mut cmd, "automation-bg-temporary-node", None);
 
         assert!(capability.is_none());
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
         assert!(envs.iter().any(|(key, value)| {
             key.to_string_lossy() == "WARDIAN_SESSION_ID"
                 && value.map(|value| value.to_string_lossy())
-                    == Some("workflow-bg-temporary-node".into())
+                    == Some("automation-bg-temporary-node".into())
         }));
         assert!(!envs.iter().any(|(key, _)| {
             key.to_string_lossy() == wardian_core::memory::MEMORY_CAPABILITY_ENV
@@ -2747,7 +2748,7 @@ mod tests {
 
         apply_headless_identity_env(
             &mut cmd,
-            "workflow-bg-run-node",
+            "automation-bg-run-node",
             Some("wardian-session-123"),
         );
 
@@ -2825,12 +2826,12 @@ mod tests {
         let config = effective_headless_provider_config(
             "pi",
             Path::new("/workspace"),
-            "workflow-fresh-run",
+            "automation-fresh-run",
             None,
             Some(&registered_config),
             None,
         )
-        .expect("fresh Pi workflow config");
+        .expect("fresh Pi automation config");
         let provider_session_id = config
             .fresh_provider_session_id
             .as_deref()
@@ -2845,7 +2846,7 @@ mod tests {
             Some(&config),
         );
 
-        assert_eq!(config.session_id, "workflow-fresh-run");
+        assert_eq!(config.session_id, "automation-fresh-run");
         assert!(uuid::Uuid::parse_str(provider_session_id).is_ok());
         assert!(args
             .windows(2)
@@ -2854,7 +2855,7 @@ mod tests {
             ._home
             .path()
             .join("agents")
-            .join("workflow-fresh-run")
+            .join("automation-fresh-run")
             .join("pi")
             .join("sessions")
             .to_string_lossy()
@@ -2881,12 +2882,12 @@ mod tests {
         let config = effective_headless_provider_config(
             "pi",
             Path::new("/workspace"),
-            "workflow-fresh-run",
+            "automation-fresh-run",
             Some("   "),
             Some(&registered_config),
             None,
         )
-        .expect("fresh Pi workflow config");
+        .expect("fresh Pi automation config");
         let provider_session_id = config
             .fresh_provider_session_id
             .as_deref()

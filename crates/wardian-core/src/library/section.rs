@@ -6,7 +6,7 @@ pub const DEPLOYED_SKILL_SOURCE_FILE: &str = ".wardian-skill-source";
 pub enum LibrarySectionId {
     Skills,
     Prompts,
-    Workflows,
+    Automations,
     Classes,
     Mcps,
 }
@@ -15,7 +15,7 @@ impl LibrarySectionId {
     pub const ALL: [LibrarySectionId; 5] = [
         LibrarySectionId::Skills,
         LibrarySectionId::Prompts,
-        LibrarySectionId::Workflows,
+        LibrarySectionId::Automations,
         LibrarySectionId::Classes,
         LibrarySectionId::Mcps,
     ];
@@ -24,7 +24,7 @@ impl LibrarySectionId {
         match value {
             "skills" => Some(Self::Skills),
             "prompts" => Some(Self::Prompts),
-            "workflows" => Some(Self::Workflows),
+            "automations" => Some(Self::Automations),
             "classes" => Some(Self::Classes),
             "mcps" => Some(Self::Mcps),
             _ => None,
@@ -35,7 +35,7 @@ impl LibrarySectionId {
         match self {
             Self::Skills => "skills",
             Self::Prompts => "prompts",
-            Self::Workflows => "workflows",
+            Self::Automations => "automations",
             Self::Classes => "classes",
             Self::Mcps => "mcps",
         }
@@ -45,7 +45,7 @@ impl LibrarySectionId {
         match self {
             Self::Skills => home.join("library").join("skills"),
             Self::Prompts => home.join("library").join("prompts"),
-            Self::Workflows => home.join("library").join("workflows"),
+            Self::Automations => home.join("library").join("automations"),
             Self::Classes => home.join("classes"),
             // Stubbed: no directory is created until the MCP feature lands.
             Self::Mcps => home.join("library").join("mcps"),
@@ -132,8 +132,8 @@ mod tests {
             home.join("library").join("prompts")
         );
         assert_eq!(
-            LibrarySectionId::Workflows.root_for_home(home),
-            home.join("library").join("workflows")
+            LibrarySectionId::Automations.root_for_home(home),
+            home.join("library").join("automations")
         );
         assert_eq!(
             LibrarySectionId::Classes.root_for_home(home),
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn parse_round_trips() {
-        for id in ["skills", "prompts", "workflows", "classes", "mcps"] {
+        for id in ["skills", "prompts", "automations", "classes", "mcps"] {
             assert_eq!(LibrarySectionId::parse(id).unwrap().as_str(), id);
         }
         assert!(LibrarySectionId::parse("plugins").is_none());

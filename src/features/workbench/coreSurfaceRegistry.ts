@@ -36,7 +36,7 @@ import {
 } from "./surfaces/coreSurfaceMetadata";
 import {
   createLibrarySurfaceCloseAdapter,
-  createWorkflowsSurfaceCloseAdapter,
+  createAutomationsSurfaceCloseAdapter,
   type DirtySurfacePrompt,
 } from "./surfaces/dirtySurfaceGuards";
 
@@ -76,7 +76,7 @@ export const CORE_SURFACE_CONTRIBUTIONS: readonly CoreSurfaceContribution[] = Ob
   { surface_type: "graph", title: "Graph", description: "Explore agent relationships.", group: "Core views" },
   { surface_type: "garden", title: "Garden", description: "Explore the living habitat.", group: "Core views" },
   { surface_type: "library", title: "Library", description: "Browse reusable assets.", group: "Core views" },
-  { surface_type: "workflows", title: "Workflows", description: "Build and monitor workflows.", group: "Core views" },
+  { surface_type: "automations", title: "Automations", description: "Build and monitor automations.", group: "Core views" },
   { surface_type: "agent-session", title: "Agent Session", description: "Open a specific agent session.", group: "Sessions", requires_resource: true },
   { surface_type: "browser", title: "Browser", description: "Open a page an agent can drive.", group: "Sessions", provisions_resource: true },
   { surface_type: "files", title: "Files", description: "Inspect files and agent artifacts.", group: "Reserved", reserved: true, requires_resource: true },
@@ -136,7 +136,7 @@ function surfaceDefinition(options: DefinitionOptions): SurfaceDefinition {
   };
 }
 
-function dirtySurfaceCommand(type: "library" | "workflows", title: string) {
+function dirtySurfaceCommand(type: "library" | "automations", title: string) {
   return {
     command_id: `workbench.open.${type}`,
     title: `Open ${title}`,
@@ -333,18 +333,18 @@ function coreSurfaceDefinitions(): readonly SurfaceDefinition[] {
       restore_state: (value, version) => restoreEmptySurfaceState("library", value, version),
     }),
     surfaceDefinition({
-      type: "workflows",
-      title: "Workflows",
+      type: "automations",
+      title: "Automations",
       render_policy: "keep_alive",
       open_policy: "singleton",
       close_policy: "confirm_if_dirty",
       max_state_bytes: CORE_VIEW_SURFACE_MAX_STATE_BYTES,
-      commands: [dirtySurfaceCommand("workflows", "Workflows")],
+      commands: [dirtySurfaceCommand("automations", "Automations")],
       badges: () => useBuilderStore.getState().dirty
         ? [{ badge_id: "dirty", label: "Unsaved changes" }]
         : [],
       serialize_state: () => ({}),
-      restore_state: (value, version) => restoreEmptySurfaceState("workflows", value, version),
+      restore_state: (value, version) => restoreEmptySurfaceState("automations", value, version),
     }),
     surfaceDefinition({
       type: "agent-session",
@@ -436,7 +436,7 @@ export function createCoreWorkbenchSurfaceRegistry(
   const prompt = options.dirty_surface_prompt ?? failClosedDirtyPrompt;
   const registry = createSurfaceRegistry(coreSurfaceDefinitions());
   registry.register_close_adapter("library", createLibrarySurfaceCloseAdapter(prompt));
-  registry.register_close_adapter("workflows", createWorkflowsSurfaceCloseAdapter(prompt));
+  registry.register_close_adapter("automations", createAutomationsSurfaceCloseAdapter(prompt));
   registry.register_close_adapter(
     "files",
     options.files_close_adapter ?? inertFilesCloseAdapter,

@@ -117,10 +117,10 @@ function fixtureErrors(fixture) {
   const presentations = fixture?.terminal_presentations ?? [];
   const required = [
     "new-tab", "agents-overview", "dashboard", "inbox", "graph", "garden",
-    "library", "workflows", "agent-session", "browser", "files",
+    "library", "automations", "agent-session", "browser", "files",
   ];
   const singletonTypes = new Set([
-    "agents-overview", "dashboard", "inbox", "graph", "garden", "library", "workflows",
+    "agents-overview", "dashboard", "inbox", "graph", "garden", "library", "automations",
   ]);
   if (fixture?.schema_version !== 1) errors.push("fixture schema_version must be 1");
   if (Object.keys(document?.groups ?? {}).length !== 4) errors.push("fixture must contain four groups");
@@ -626,12 +626,12 @@ function browserFixture(fixture) {
     list_agent_classes: [], list_provider_readiness: [], load_watchlists: [], load_watchlist_prefs: null,
     load_agent_interactions: {}, load_queue_items: queueItems, load_queue_preferences: {},
     load_onboarding_hints: { dismissed_hint_ids: ["spawn-agent-first-run:v1"] },
-    list_workflows: [], list_scheduled_runs: [], load_workflow_library: { folders: [], rootWorkflowIds: [] },
-    workflow_list_blueprints: [], workflow_list_runs: [],
-    list_inbox_notifications: [], list_workflow_inbox_approvals: [],
+    list_automations: [], list_scheduled_runs: [], load_automation_library: { folders: [], rootAutomationIds: [] },
+    automation_list_blueprints: [], automation_list_runs: [],
+    list_inbox_notifications: [], list_automation_inbox_approvals: [],
     get_topology: { edges: topologyEdges, ignored_pairs: [], fallback_groups: [] },
-    workflow_validate: { ok: true, diagnostics: [] },
-    workflow_write: { written: true, diagnostics: [] },
+    automation_validate: { ok: true, diagnostics: [] },
+    automation_write: { written: true, diagnostics: [] },
     get_pair_activity: [], load_app_settings: null,
     load_shell_settings: {
       shell_id: "auto",
@@ -655,7 +655,7 @@ function browserFixture(fixture) {
       sections: {
         skills: benchmarkLibrarySkills,
         prompts: emptyLibrarySection(),
-        workflows: emptyLibrarySection(),
+        automations: emptyLibrarySection(),
         classes: emptyLibrarySection(),
         mcps: emptyLibrarySection(true),
       },
@@ -958,7 +958,7 @@ async function measureSurfaceInteractions(page) {
   const sidebarPanelCommits = [];
   for (const testId of [
     "sidebar-tab-explorer", "sidebar-tab-git", "sidebar-tab-changes",
-    "sidebar-tab-agent-config", "sidebar-tab-command", "sidebar-tab-workflows",
+    "sidebar-tab-agent-config", "sidebar-tab-command", "sidebar-tab-automations",
   ]) {
     sidebarPanelSamples.push(await measureUserAction(
       page,
@@ -1064,9 +1064,9 @@ async function measureSurfaceInteractions(page) {
     () => librarySearch.fill(""),
   );
   await record(
-    "workflows node library",
-    "perf-workflows",
-    () => page.getByTestId("workflows-view").getByRole("button", { name: "Add node" }).click(),
+    "automations node library",
+    "perf-automations",
+    () => page.getByTestId("automations-view").getByRole("button", { name: "Add node" }).click(),
     () => page.getByTestId("node-library").waitFor(),
     () => page.getByTestId("node-library").getByRole("button", { name: "Close" }).click(),
   );

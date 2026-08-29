@@ -31,7 +31,7 @@ export interface GardenSkillInput {
  *   a second thing to look at.
  * - **prompts** attach to nothing. The library records no relationship for them
  *   at all, so there is no tie to draw and no defensible place to put one.
- * - **workflows** enter through `useGardenWorkflows` keyed by `Blueprint.id`.
+ * - **automations** enter through `useGardenAutomations` keyed by `Blueprint.id`.
  *   Admitting them here as well would reintroduce the dual-identity bug
  *   `entityRef.ts` exists to prevent.
  * - **mcps** is stubbed in the backend and never has entries.

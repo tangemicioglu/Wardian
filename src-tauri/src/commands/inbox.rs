@@ -1,4 +1,4 @@
-use crate::{state::AppState, workflow::runs};
+use crate::{automation::runs, state::AppState};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use wardian_core::control::{
@@ -31,7 +31,7 @@ pub struct InboxNotificationListResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct WorkflowInboxApprovalDto {
+pub struct AutomationInboxApprovalDto {
     pub blueprint_id: String,
     pub blueprint_path: String,
     pub run_id: String,
@@ -41,31 +41,32 @@ pub struct WorkflowInboxApprovalDto {
     pub created_at: Option<String>,
 }
 
-/// Terminal workflow runs are durable Inbox evidence. The frontend uses this
-/// reconciliation query at startup, while `workflow-inbox-updated` remains the
+/// Terminal automation runs are durable Inbox evidence. The frontend uses this
+/// reconciliation query at startup, while `automation-inbox-updated` remains the
 /// low-latency path for a currently open window.
 #[tauri::command]
-pub async fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
-    tokio::task::spawn_blocking(list_workflow_inbox_terminal_runs_blocking)
+pub async fn list_automation_inbox_terminal_runs(
+) -> Result<Vec<runs::AutomationInboxUpdate>, String> {
+    tokio::task::spawn_blocking(list_automation_inbox_terminal_runs_blocking)
         .await
-        .map_err(|error| format!("workflow terminal inbox task failed: {error}"))?
+        .map_err(|error| format!("automation terminal inbox task failed: {error}"))?
 }
 
-/// Lists one bounded page of terminal workflow Inbox evidence and preserves
-/// the workflow-run continuation state for other projections.
-pub async fn list_workflow_inbox_terminal_runs_page(
+/// Lists one bounded page of terminal automation Inbox evidence and preserves
+/// the automation-run continuation state for other projections.
+pub async fn list_automation_inbox_terminal_runs_page(
     offset: usize,
-) -> Result<(Vec<runs::WorkflowInboxUpdate>, bool), String> {
-    tokio::task::spawn_blocking(move || list_workflow_inbox_terminal_runs_page_blocking(offset))
+) -> Result<(Vec<runs::AutomationInboxUpdate>, bool), String> {
+    tokio::task::spawn_blocking(move || list_automation_inbox_terminal_runs_page_blocking(offset))
         .await
-        .map_err(|error| format!("workflow terminal inbox task failed: {error}"))?
+        .map_err(|error| format!("automation terminal inbox task failed: {error}"))?
 }
 
-fn list_workflow_inbox_terminal_runs_page_blocking(
+fn list_automation_inbox_terminal_runs_page_blocking(
     offset: usize,
-) -> Result<(Vec<runs::WorkflowInboxUpdate>, bool), String> {
+) -> Result<(Vec<runs::AutomationInboxUpdate>, bool), String> {
     let mut updates = Vec::new();
-    let (runs, truncated) = workflow_inbox_run_page(offset, |run| {
+    let (runs, truncated) = automation_inbox_run_page(offset, |run| {
         matches!(
             run.get("status").and_then(serde_json::Value::as_str),
             Some("completed" | "failed")
@@ -75,18 +76,20 @@ fn list_workflow_inbox_terminal_runs_page_blocking(
         let Some(run_root) = run.get("path").and_then(serde_json::Value::as_str) else {
             continue;
         };
-        let Some(workflow_id) = run.get("blueprint_id").and_then(serde_json::Value::as_str) else {
+        let Some(automation_id) = run.get("blueprint_id").and_then(serde_json::Value::as_str)
+        else {
             continue;
         };
-        let workflow_name = run
+        let automation_name = run
             .get("blueprint_path")
             .and_then(serde_json::Value::as_str)
-            .and_then(|path| wardian_core::workflow::parse_file(std::path::Path::new(path)).ok())
+            .and_then(|path| wardian_core::automation::parse_file(std::path::Path::new(path)).ok())
             .map(|blueprint| blueprint.name)
-            .unwrap_or_else(|| workflow_id.to_string());
-        let Some(update) =
-            runs::workflow_inbox_update_with_name(&workflow_name, std::path::Path::new(run_root))
-        else {
+            .unwrap_or_else(|| automation_id.to_string());
+        let Some(update) = runs::automation_inbox_update_with_name(
+            &automation_name,
+            std::path::Path::new(run_root),
+        ) else {
             continue;
         };
         if matches!(update.status.as_str(), "completed" | "failed") {
@@ -96,10 +99,11 @@ fn list_workflow_inbox_terminal_runs_page_blocking(
     Ok((updates, truncated))
 }
 
-fn list_workflow_inbox_terminal_runs_blocking() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
-    // Preserve the legacy command's bounded 200-run behavior. The unified
-    // Inbox read path uses the paged helper below when it needs older runs.
-    list_workflow_inbox_terminal_runs_page_blocking(0).map(|(updates, _)| updates)
+fn list_automation_inbox_terminal_runs_blocking() -> Result<Vec<runs::AutomationInboxUpdate>, String>
+{
+    // Preserve the command's bounded 200-run behavior. The unified Inbox read
+    // path uses the paged helper below when it needs older runs.
+    list_automation_inbox_terminal_runs_page_blocking(0).map(|(updates, _)| updates)
 }
 
 #[tauri::command]
@@ -206,25 +210,25 @@ pub async fn resolve_inbox_notification(
 }
 
 #[tauri::command]
-pub async fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
-    tokio::task::spawn_blocking(list_workflow_inbox_approvals_blocking)
+pub async fn list_automation_inbox_approvals() -> Result<Vec<AutomationInboxApprovalDto>, String> {
+    tokio::task::spawn_blocking(list_automation_inbox_approvals_blocking)
         .await
-        .map_err(|error| format!("workflow approval inbox task failed: {error}"))?
+        .map_err(|error| format!("automation approval inbox task failed: {error}"))?
 }
 
-/// Lists one bounded page of awaiting workflow approval evidence.
-pub async fn list_workflow_inbox_approvals_page(
+/// Lists one bounded page of awaiting automation approval evidence.
+pub async fn list_automation_inbox_approvals_page(
     offset: usize,
-) -> Result<(Vec<WorkflowInboxApprovalDto>, bool), String> {
-    tokio::task::spawn_blocking(move || list_workflow_inbox_approvals_page_blocking(offset))
+) -> Result<(Vec<AutomationInboxApprovalDto>, bool), String> {
+    tokio::task::spawn_blocking(move || list_automation_inbox_approvals_page_blocking(offset))
         .await
-        .map_err(|error| format!("workflow approval inbox task failed: {error}"))?
+        .map_err(|error| format!("automation approval inbox task failed: {error}"))?
 }
 
-fn list_workflow_inbox_approvals_page_blocking(
+fn list_automation_inbox_approvals_page_blocking(
     offset: usize,
-) -> Result<(Vec<WorkflowInboxApprovalDto>, bool), String> {
-    let (runs, truncated) = workflow_inbox_run_page(offset, |run| {
+) -> Result<(Vec<AutomationInboxApprovalDto>, bool), String> {
+    let (runs, truncated) = automation_inbox_run_page(offset, |run| {
         run.get("status").and_then(serde_json::Value::as_str) == Some("awaiting_approval")
     })?;
     let mut approvals = Vec::new();
@@ -241,7 +245,7 @@ fn list_workflow_inbox_approvals_page_blocking(
         else {
             continue;
         };
-        let detail = crate::commands::workflow::workflow_read_run(
+        let detail = crate::commands::automation::automation_read_run(
             blueprint_id.to_string(),
             run_id.to_string(),
         )?;
@@ -259,13 +263,13 @@ fn list_workflow_inbox_approvals_page_blocking(
         else {
             continue;
         };
-        let blueprint: wardian_core::workflow::Blueprint = serde_json::from_value(
+        let blueprint: wardian_core::automation::Blueprint = serde_json::from_value(
             detail
                 .get("blueprint")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )
-        .map_err(|_| "could not read workflow approval blueprint".to_string())?;
+        .map_err(|_| "could not read automation approval blueprint".to_string())?;
         let Some(approval_node) = blueprint
             .nodes
             .iter()
@@ -277,9 +281,9 @@ fn list_workflow_inbox_approvals_page_blocking(
             .fields
             .get("prompt")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("Approve this workflow step?")
+            .unwrap_or("Approve this automation step?")
             .to_string();
-        approvals.push(WorkflowInboxApprovalDto {
+        approvals.push(AutomationInboxApprovalDto {
             blueprint_id: blueprint_id.to_string(),
             blueprint_path: blueprint_path.to_string(),
             run_id: run_id.to_string(),
@@ -298,37 +302,37 @@ fn list_workflow_inbox_approvals_page_blocking(
     Ok((approvals, truncated))
 }
 
-fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
-    // Preserve the legacy command's bounded 200-run behavior. The unified
-    // Inbox read path uses the paged helper below when it needs older runs.
-    list_workflow_inbox_approvals_page_blocking(0).map(|(approvals, _)| approvals)
+fn list_automation_inbox_approvals_blocking() -> Result<Vec<AutomationInboxApprovalDto>, String> {
+    // Preserve the command's bounded 200-run behavior. The unified Inbox read
+    // path uses the paged helper below when it needs older runs.
+    list_automation_inbox_approvals_page_blocking(0).map(|(approvals, _)| approvals)
 }
 
-/// Pages the eligible workflow Inbox projection rather than applying the
-/// caller's offset to all workflow runs before filtering. This keeps older
-/// approvals and terminal outcomes reachable when other workflow states are
+/// Pages the eligible automation Inbox projection rather than applying the
+/// caller's offset to all automation runs before filtering. This keeps older
+/// approvals and terminal outcomes reachable when other automation states are
 /// interleaved with them.
-fn workflow_inbox_run_page<F>(
+fn automation_inbox_run_page<F>(
     offset: usize,
     include: F,
 ) -> Result<(Vec<serde_json::Value>, bool), String>
 where
     F: FnMut(&serde_json::Value) -> bool,
 {
-    page_workflow_inbox_runs(
+    page_automation_inbox_runs(
         offset,
-        |raw_offset| crate::commands::workflow::workflow_list_runs_blocking(Some(raw_offset)),
+        |raw_offset| crate::commands::automation::automation_list_runs_blocking(Some(raw_offset)),
         include,
     )
 }
 
-fn page_workflow_inbox_runs<L, F>(
+fn page_automation_inbox_runs<L, F>(
     offset: usize,
     mut load_page: L,
     mut include: F,
 ) -> Result<(Vec<serde_json::Value>, bool), String>
 where
-    L: FnMut(usize) -> Result<crate::commands::workflow::WorkflowRunListResult, String>,
+    L: FnMut(usize) -> Result<crate::commands::automation::AutomationRunListResult, String>,
     F: FnMut(&serde_json::Value) -> bool,
 {
     let target = offset
@@ -438,43 +442,43 @@ mod tests {
         let run_root = home
             .path()
             .join("logs")
-            .join("workflows")
-            .join("missing-scheduled-workflow")
+            .join("automations")
+            .join("missing-scheduled-automation")
             .join("run-1");
-        let mut state = RunState::new("run-1", "missing-scheduled-workflow");
+        let mut state = RunState::new("run-1", "missing-scheduled-automation");
         state.status = RunStatus::Failed;
-        state.failure = Some("workflow blueprint was removed".to_string());
+        state.failure = Some("automation blueprint was removed".to_string());
         write_checkpoint(&run_root, &state).unwrap();
         append_event(
             &run_root,
             &Event::new(
                 0,
                 EventKind::RunFailed {
-                    error: "workflow blueprint was removed".to_string(),
+                    error: "automation blueprint was removed".to_string(),
                 },
             ),
         )
         .unwrap();
 
-        let updates = list_workflow_inbox_terminal_runs().await.unwrap();
+        let updates = list_automation_inbox_terminal_runs().await.unwrap();
 
         assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].workflow_id, "missing-scheduled-workflow");
-        assert_eq!(updates[0].workflow_name, "missing-scheduled-workflow");
+        assert_eq!(updates[0].automation_id, "missing-scheduled-automation");
+        assert_eq!(updates[0].automation_name, "missing-scheduled-automation");
         assert_eq!(updates[0].status, "failed");
         assert_eq!(
             updates[0].error.as_deref(),
-            Some("workflow blueprint was removed")
+            Some("automation blueprint was removed")
         );
     }
 
     #[test]
-    fn workflow_inbox_paging_filters_before_applying_offset() {
-        let (runs, truncated) = page_workflow_inbox_runs(
+    fn automation_inbox_paging_filters_before_applying_offset() {
+        let (runs, truncated) = page_automation_inbox_runs(
             0,
             |offset| {
                 if offset == 0 {
-                    Ok(crate::commands::workflow::WorkflowRunListResult {
+                    Ok(crate::commands::automation::AutomationRunListResult {
                         runs: (0..200)
                             .map(|index| {
                                 serde_json::json!({
@@ -487,7 +491,7 @@ mod tests {
                         next_offset: Some(200),
                     })
                 } else {
-                    Ok(crate::commands::workflow::WorkflowRunListResult {
+                    Ok(crate::commands::automation::AutomationRunListResult {
                         runs: vec![serde_json::json!({
                             "run_id": "inbox-run",
                             "status": "awaiting_approval",

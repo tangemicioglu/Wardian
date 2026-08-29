@@ -2,7 +2,7 @@
 
 Wardian's central workspace is a restorable workbench of pane-local surface
 tabs. The workbench document describes layout and presentation state; existing
-domain stores and the Rust backend remain authoritative for agents, workflows,
+domain stores and the Rust backend remain authoritative for agents, automations,
 Inbox entries, library assets, and live runtimes.
 
 ## Ownership Boundaries
@@ -189,7 +189,7 @@ save performs no layout commit and no discard.
 Library resources remain presentation-keyed because their editor bridges are
 presentation-owned. The Library store publishes a monotonic generation for
 every draft, baseline, and entry-identity change, even when the dirty boolean
-does not change. Workflows uses one shared builder resource across every
+does not change. Automations uses one shared builder resource across every
 presentation and advances a monotonic resource revision on load, initialize,
 edit, save, discard, and reset. Prepared Save and Discard effects recheck their
 observed identity and generation immediately before invoking the resource
@@ -409,6 +409,11 @@ legacy Grid selection maps to Agents. The old record is removed only
 after the exact migration save is acknowledged; resets or later saves cannot
 accidentally acknowledge the import. Teams, watchlists, agent state, and domain
 stores are not migrated into the workbench document.
+
+Upgrades also migrate persisted `workflows` surface types to `automations` in
+both open and recently-closed entries. Rust saves that conversion as a
+successor workbench revision before returning the document to the frontend, so
+the surface registry never has to resolve the removed type.
 
 Load order is primary, validated backup, then a usable default. A future schema
 is preserved byte-for-byte and opened read-only with an in-memory fallback.

@@ -3,12 +3,12 @@ import { Bot, Library, ListChecks, Sprout } from "lucide-react";
 import { useRemoteStore } from "./useRemoteStore";
 
 type RemoteNavTab = {
-  id: "watchlist" | "workflows" | "queue" | "garden" | "library";
+  id: "watchlist" | "automations" | "queue" | "garden" | "library";
   label: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
 };
 
-const WorkflowNavIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+const AutomationNavIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
   <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" {...props}>
     <path
       strokeLinecap="round"
@@ -21,7 +21,7 @@ const WorkflowNavIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
 
 const tabs: readonly RemoteNavTab[] = [
   { id: "watchlist", label: "Agents", icon: Bot },
-  { id: "workflows", label: "Workflows", icon: WorkflowNavIcon },
+  { id: "automations", label: "Automations", icon: AutomationNavIcon },
   { id: "queue", label: "Inbox", icon: ListChecks },
   { id: "garden", label: "Garden", icon: Sprout },
   { id: "library", label: "Library", icon: Library },

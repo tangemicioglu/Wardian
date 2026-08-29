@@ -105,17 +105,17 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
     let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
     let read_notification_ids = queue_metadata.read_notification_ids;
-    let persisted_workflow_runs = queue_metadata.workflow_runs;
+    let persisted_automation_runs = queue_metadata.automation_runs;
     let source_kinds = [
         InboxSource::Notifications,
-        InboxSource::WorkflowApprovals,
-        InboxSource::WorkflowTerminals,
+        InboxSource::AutomationApprovals,
+        InboxSource::AutomationTerminals,
         InboxSource::LegacyQueue,
     ];
     let context = InboxProjectionContext {
         cutoff,
         read_notification_ids: &read_notification_ids,
-        persisted_workflow_runs: &persisted_workflow_runs,
+        persisted_automation_runs: &persisted_automation_runs,
         types: &[],
         sources: &[],
         unread: false,
@@ -126,7 +126,7 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
             remote_inbox_source_page(state, source, 0, MAX_INBOX_SOURCE_ITEMS, &context).await
         else {
             // The compatibility endpoint has no cursor or error field.
-            // Preserve readable sources when a workflow directory changes
+            // Preserve readable sources when an automation directory changes
             // during a refresh instead of returning an empty Inbox. Callers
             // that need older records use the bounded Inbox control path.
             continue;
@@ -165,8 +165,8 @@ pub async fn remote_queue_items_page(
 #[derive(Clone, Copy)]
 enum InboxSource {
     Notifications,
-    WorkflowApprovals,
-    WorkflowTerminals,
+    AutomationApprovals,
+    AutomationTerminals,
     LegacyQueue,
 }
 
@@ -178,7 +178,7 @@ struct InboxSourcePage {
 struct InboxProjectionContext<'a> {
     cutoff: i64,
     read_notification_ids: &'a std::collections::HashSet<String>,
-    persisted_workflow_runs: &'a std::collections::HashSet<(String, String)>,
+    persisted_automation_runs: &'a std::collections::HashSet<(String, String)>,
     types: &'a [String],
     sources: &'a [String],
     unread: bool,
@@ -207,17 +207,17 @@ pub async fn remote_inbox_list_page(
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
     let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
     let read_notification_ids = queue_metadata.read_notification_ids;
-    let persisted_workflow_runs = queue_metadata.workflow_runs;
+    let persisted_automation_runs = queue_metadata.automation_runs;
     let source_kinds = [
         InboxSource::Notifications,
-        InboxSource::WorkflowApprovals,
-        InboxSource::WorkflowTerminals,
+        InboxSource::AutomationApprovals,
+        InboxSource::AutomationTerminals,
         InboxSource::LegacyQueue,
     ];
     let context = InboxProjectionContext {
         cutoff,
         read_notification_ids: &read_notification_ids,
-        persisted_workflow_runs: &persisted_workflow_runs,
+        persisted_automation_runs: &persisted_automation_runs,
         types,
         sources,
         unread,
@@ -338,7 +338,7 @@ pub(crate) async fn inbox_list_control(
 fn inbox_source_name(source: InboxSource) -> &'static str {
     match source {
         InboxSource::Notifications => "interaction_store",
-        InboxSource::WorkflowApprovals | InboxSource::WorkflowTerminals => "live_runtime",
+        InboxSource::AutomationApprovals | InboxSource::AutomationTerminals => "live_runtime",
         InboxSource::LegacyQueue => "provider_runtime",
     }
 }
@@ -354,11 +354,17 @@ fn source_may_match(source: InboxSource, types: &[String], sources: &[String]) -
                 InboxSource::Notifications => types
                     .iter()
                     .any(|value| matches!(value.as_str(), "agent_update" | "approval_request")),
-                InboxSource::WorkflowApprovals => {
+                InboxSource::AutomationApprovals => {
                     types.iter().any(|value| value == "approval_request")
                 }
-                InboxSource::WorkflowTerminals => types.iter().any(|value| {
-                    matches!(value.as_str(), "workflow_completed" | "workflow_failed")
+                InboxSource::AutomationTerminals => types.iter().any(|value| {
+                    matches!(
+                        value.as_str(),
+                        "automation_completed"
+                            | "automation_failed"
+                            | "workflow_completed"
+                            | "workflow_failed"
+                    )
                 }),
                 InboxSource::LegacyQueue => true,
             })
@@ -386,6 +392,7 @@ async fn remote_inbox_source_page(
             |item| {
                 item.get("inbox_notification_id").is_none()
                     && item.get("workflow_approval").is_none()
+                    && item.get("automation_approval").is_none()
                     && item.get("dismissed").and_then(serde_json::Value::as_bool) != Some(true)
                     && inbox_item_matches(item, context.types, context.sources, context.unread)
             },
@@ -410,11 +417,11 @@ async fn remote_inbox_source_page(
         )
         .await?;
         matching.extend(page.items.into_iter().filter(|item| {
-            let persisted_workflow_duplicate = matches!(source, InboxSource::WorkflowTerminals)
+            let persisted_automation_duplicate = matches!(source, InboxSource::AutomationTerminals)
                 && !context.sources.iter().any(|value| value == "live_runtime")
-                && workflow_identity(item)
-                    .is_some_and(|key| context.persisted_workflow_runs.contains(&key));
-            !persisted_workflow_duplicate
+                && automation_identity(item)
+                    .is_some_and(|key| context.persisted_automation_runs.contains(&key));
+            !persisted_automation_duplicate
                 && inbox_item_matches(item, context.types, context.sources, context.unread)
         }));
         if matching.len() > page_end {
@@ -484,50 +491,50 @@ async fn remote_inbox_source_page_raw(
                 truncated,
             })
         }
-        InboxSource::WorkflowApprovals => {
+        InboxSource::AutomationApprovals => {
             let (approvals, truncated) =
-                crate::commands::inbox::list_workflow_inbox_approvals_page(offset).await?;
+                crate::commands::inbox::list_automation_inbox_approvals_page(offset).await?;
             Ok(InboxSourcePage {
                 items: approvals
                     .into_iter()
                     .map(|approval| {
                         serde_json::json!({
-                            "id": format!("workflow-approval:{}:{}:{}", approval.blueprint_id, approval.run_id, approval.node),
+                            "id": format!("automation-approval:{}:{}:{}", approval.blueprint_id, approval.run_id, approval.node),
                             "type": "approval_request",
                             "timestamp": approval.created_at.as_deref().map(queue_timestamp).unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
                             "read": false,
                             "evidence_source": "live_runtime",
-                            "workflow_id": approval.blueprint_id,
-                            "workflow_run_id": approval.run_id,
-                            "workflow_name": approval.title,
+                            "automation_id": approval.blueprint_id,
+                            "automation_run_id": approval.run_id,
+                            "automation_name": approval.title,
                             "notification_title": approval.title,
                             "summary": approval.prompt,
-                            "proposed_action": "Continue this workflow beyond its approval gate",
-                            "risk": "The workflow will execute the next authored steps after approval.",
+                            "proposed_action": "Continue this automation beyond its approval gate",
+                            "risk": "The automation will execute the next authored steps after approval.",
                             "approval_choices": ["Approve", "Reject"],
-                            "workflow_approval": { "blueprint_id": approval.blueprint_id, "blueprint_path": approval.blueprint_path, "run_id": approval.run_id, "node": approval.node },
+                            "automation_approval": { "blueprint_id": approval.blueprint_id, "blueprint_path": approval.blueprint_path, "run_id": approval.run_id, "node": approval.node },
                         })
                     })
                     .collect(),
                 truncated,
             })
         }
-        InboxSource::WorkflowTerminals => {
+        InboxSource::AutomationTerminals => {
             let (terminals, truncated) =
-                crate::commands::inbox::list_workflow_inbox_terminal_runs_page(offset).await?;
+                crate::commands::inbox::list_automation_inbox_terminal_runs_page(offset).await?;
             Ok(InboxSourcePage {
                 items: terminals
                     .into_iter()
                     .map(|run| {
                         serde_json::json!({
-                            "id": format!("workflow-completion:{}:{}", run.workflow_id, run.run_instance_id),
-                            "type": "workflow_completed",
+                            "id": format!("automation-completion:{}:{}", run.automation_id, run.run_instance_id),
+                            "type": "automation_completed",
                             "timestamp": run.updated_at.as_deref().map(queue_timestamp).unwrap_or_default(),
                             "read": false,
                             "evidence_source": "live_runtime",
-                            "workflow_id": run.workflow_id,
-                            "workflow_run_id": run.run_instance_id,
-                            "workflow_name": run.workflow_name,
+                            "automation_id": run.automation_id,
+                            "automation_run_id": run.run_instance_id,
+                            "automation_name": run.automation_name,
                             "status": run.status,
                             "error": run.error,
                             "summary": run.summary,
@@ -547,6 +554,7 @@ async fn remote_inbox_source_page_raw(
                     .filter(|item| {
                         item.get("inbox_notification_id").is_none()
                             && item.get("workflow_approval").is_none()
+                            && item.get("automation_approval").is_none()
                             && item.get("dismissed").and_then(serde_json::Value::as_bool)
                                 != Some(true)
                     })
@@ -566,9 +574,13 @@ fn inbox_item_matches(
     let type_matches = types.is_empty()
         || types.iter().any(|kind| {
             item.get("type").and_then(serde_json::Value::as_str) == Some(kind.as_str())
-                || (kind == "workflow_failed"
-                    && item.get("type").and_then(serde_json::Value::as_str)
-                        == Some("workflow_completed")
+                || ((kind == "automation_failed" || kind == "workflow_failed")
+                    && item
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|item_type| {
+                            item_type == "automation_completed" || item_type == "workflow_completed"
+                        })
                     && item.get("status").and_then(serde_json::Value::as_str) == Some("failed"))
         });
     let item_source = item
@@ -607,7 +619,7 @@ fn save_persisted_queue_items(items: &[serde_json::Value]) -> Result<(), String>
 }
 
 fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
-    item.get("inbox_notification_id").is_none() && item.get("workflow_approval").is_none()
+    item.get("inbox_notification_id").is_none() && item.get("automation_approval").is_none()
 }
 
 fn is_clearable_legacy_completion(item: &serde_json::Value) -> bool {
@@ -616,12 +628,12 @@ fn is_clearable_legacy_completion(item: &serde_json::Value) -> bool {
         && !provider_choice_acknowledgement_unresolved(item)
         && matches!(
             item.get("type").and_then(serde_json::Value::as_str),
-            Some("agent_completed" | "workflow_completed")
+            Some("agent_completed" | "automation_completed")
         )
 }
 
 fn is_pending_approval(item: &serde_json::Value) -> bool {
-    item.get("workflow_approval").is_some()
+    item.get("automation_approval").is_some()
         || (item.get("type").and_then(serde_json::Value::as_str) == Some("approval_request")
             && item
                 .get("notification_status")
@@ -655,31 +667,49 @@ fn current_queue_item<'a>(
         .ok_or_else(|| "inbox_item_not_found".to_string())
 }
 
-fn workflow_identity(item: &serde_json::Value) -> Option<(String, String)> {
-    if item.get("type").and_then(serde_json::Value::as_str) != Some("workflow_completed") {
+fn automation_identity(item: &serde_json::Value) -> Option<(String, String)> {
+    if !matches!(
+        item.get("type").and_then(serde_json::Value::as_str),
+        Some("automation_completed" | "workflow_completed")
+    ) {
         return None;
     }
     Some((
-        item.get("workflow_id")
+        item.get("automation_id")
+            .or_else(|| item.get("workflow_id"))
             .and_then(serde_json::Value::as_str)?
             .to_string(),
-        item.get("workflow_run_id")
+        item.get("automation_run_id")
+            .or_else(|| item.get("workflow_run_id"))
             .and_then(serde_json::Value::as_str)?
             .to_string(),
     ))
 }
 
-fn workflow_dismissal_marker(item: &serde_json::Value) -> Option<serde_json::Value> {
-    let (workflow_id, run_id) = workflow_identity(item)?;
-    Some(serde_json::json!({
-        "id": format!("workflow-dismissed:{workflow_id}:{run_id}"),
-        "type": "workflow_completed",
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-        "read": true,
-        "dismissed": true,
-        "workflow_id": workflow_id,
-        "workflow_run_id": run_id,
-    }))
+fn automation_dismissal_marker(item: &serde_json::Value) -> Option<serde_json::Value> {
+    let (automation_id, run_id) = automation_identity(item)?;
+    let legacy = item.get("automation_id").is_none();
+    Some(if legacy {
+        serde_json::json!({
+            "id": format!("workflow-dismissed:{automation_id}:{run_id}"),
+            "type": "workflow_completed",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+            "read": true,
+            "dismissed": true,
+            "workflow_id": automation_id,
+            "workflow_run_id": run_id,
+        })
+    } else {
+        serde_json::json!({
+            "id": format!("automation-dismissed:{automation_id}:{run_id}"),
+            "type": "automation_completed",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+            "read": true,
+            "dismissed": true,
+            "automation_id": automation_id,
+            "automation_run_id": run_id,
+        })
+    })
 }
 
 fn validate_remote_mark_read(item: &serde_json::Value) -> Result<(), String> {
@@ -727,7 +757,7 @@ pub async fn apply_remote_inbox_action(
                 candidate.get("id").and_then(serde_json::Value::as_str) == Some(item_id)
             }) {
                 candidate["read"] = serde_json::Value::Bool(true);
-            } else if workflow_identity(item).is_some() {
+            } else if automation_identity(item).is_some() {
                 let mut persisted_item = item.clone();
                 persisted_item["read"] = serde_json::Value::Bool(true);
                 persisted.push(persisted_item);
@@ -764,17 +794,20 @@ pub async fn apply_remote_inbox_action(
                     }
                 }
             }
-            let known_workflow_runs = persisted
+            let known_automation_runs = persisted
                 .iter()
-                .filter_map(workflow_identity)
+                .filter_map(automation_identity)
                 .collect::<std::collections::HashSet<_>>();
             for item in projected_items.iter().filter(|item| {
-                item.get("type").and_then(serde_json::Value::as_str) == Some("workflow_completed")
+                matches!(
+                    item.get("type").and_then(serde_json::Value::as_str),
+                    Some("automation_completed" | "workflow_completed")
+                )
             }) {
-                let Some(identity) = workflow_identity(item) else {
+                let Some(identity) = automation_identity(item) else {
                     continue;
                 };
-                if known_workflow_runs.contains(&identity) {
+                if known_automation_runs.contains(&identity) {
                     continue;
                 }
                 let mut persisted_item = item.clone();
@@ -785,15 +818,15 @@ pub async fn apply_remote_inbox_action(
         }
         "clear_read" => {
             let persisted = persisted_queue_items();
-            let mut workflow_dismissals = Vec::new();
+            let mut automation_dismissals = Vec::new();
             let next = persisted
                 .into_iter()
                 .filter_map(|item| {
                     let clear = is_clearable_legacy_completion(&item)
                         && item.get("read").and_then(serde_json::Value::as_bool) == Some(true);
                     if clear {
-                        if let Some(marker) = workflow_dismissal_marker(&item) {
-                            workflow_dismissals.push(marker);
+                        if let Some(marker) = automation_dismissal_marker(&item) {
+                            automation_dismissals.push(marker);
                         }
                         None
                     } else {
@@ -802,7 +835,7 @@ pub async fn apply_remote_inbox_action(
                 })
                 .collect::<Vec<_>>();
             let mut next = next;
-            next.extend(workflow_dismissals);
+            next.extend(automation_dismissals);
             save_persisted_queue_items(&next)?;
         }
         "dismiss" => {
@@ -811,7 +844,7 @@ pub async fn apply_remote_inbox_action(
                 .as_deref()
                 .ok_or_else(|| "item_id_required".to_string())?;
             let item = current_queue_item(&projected_items, item_id)?;
-            if item.get("workflow_approval").is_some()
+            if item.get("automation_approval").is_some()
                 || item.get("inbox_notification_id").is_some()
                 || provider_choice_acknowledgement_unresolved(item)
             {
@@ -823,7 +856,7 @@ pub async fn apply_remote_inbox_action(
                 .filter(|candidate| {
                     candidate.get("id").and_then(serde_json::Value::as_str) != Some(item_id)
                 })
-                .chain(workflow_dismissal_marker(item))
+                .chain(automation_dismissal_marker(item))
                 .collect::<Vec<_>>();
             save_persisted_queue_items(&next)?;
         }
@@ -859,29 +892,29 @@ pub async fn apply_remote_inbox_action(
                     .resolve_notification(notification_id, choice)
                     .await
                     .map_err(|error| error.to_string())?;
-            } else if let Some(workflow_approval) = item.get("workflow_approval") {
-                crate::commands::workflow::approve_workflow_for_surface(
+            } else if let Some(automation_approval) = item.get("automation_approval") {
+                crate::commands::automation::approve_automation_for_surface(
                     state,
                     app.clone(),
-                    workflow_approval
+                    automation_approval
                         .get("blueprint_id")
                         .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| "workflow_blueprint_id_missing".to_string())?
+                        .ok_or_else(|| "automation_blueprint_id_missing".to_string())?
                         .to_string(),
-                    workflow_approval
+                    automation_approval
                         .get("run_id")
                         .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| "workflow_run_id_missing".to_string())?
+                        .ok_or_else(|| "automation_run_id_missing".to_string())?
                         .to_string(),
-                    workflow_approval
+                    automation_approval
                         .get("blueprint_path")
                         .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| "workflow_blueprint_path_missing".to_string())?
+                        .ok_or_else(|| "automation_blueprint_path_missing".to_string())?
                         .to_string(),
-                    workflow_approval
+                    automation_approval
                         .get("node")
                         .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| "workflow_node_missing".to_string())?
+                        .ok_or_else(|| "automation_node_missing".to_string())?
                         .to_string(),
                     choice == "Approve",
                     "user".to_string(),
@@ -1551,9 +1584,9 @@ mod tests {
     }
 
     #[test]
-    fn pending_approval_guard_covers_workflow_and_manual_approvals() {
+    fn pending_approval_guard_covers_automation_and_manual_approvals() {
         assert!(is_pending_approval(&serde_json::json!({
-            "workflow_approval": { "run_id": "run-1" }
+            "automation_approval": { "run_id": "run-1" }
         })));
         assert!(is_pending_approval(&serde_json::json!({
             "type": "approval_request",
@@ -1592,7 +1625,7 @@ mod tests {
             "type": "agent_completed"
         })));
         assert!(is_clearable_legacy_completion(&serde_json::json!({
-            "type": "workflow_completed"
+            "type": "automation_completed"
         })));
         assert!(!is_clearable_legacy_completion(&serde_json::json!({
             "type": "action_needed"
@@ -1605,12 +1638,12 @@ mod tests {
             "inbox_notification_id": "notice-1"
         })));
         assert!(!is_clearable_legacy_completion(&serde_json::json!({
-            "type": "workflow_completed",
+            "type": "automation_completed",
             "read": true,
             "provider_choice_pending": "1"
         })));
         assert!(!is_clearable_legacy_completion(&serde_json::json!({
-            "type": "workflow_completed",
+            "type": "automation_completed",
             "read": true,
             "dismissed": true
         })));
@@ -1622,8 +1655,8 @@ mod tests {
     }
 
     #[test]
-    fn workflow_dismissal_marker_preserves_run_identity() {
-        let marker = workflow_dismissal_marker(&serde_json::json!({
+    fn automation_dismissal_marker_preserves_run_identity() {
+        let marker = automation_dismissal_marker(&serde_json::json!({
             "type": "workflow_completed",
             "workflow_id": "release",
             "workflow_run_id": "run-1",
@@ -1633,7 +1666,7 @@ mod tests {
         assert_eq!(marker["id"], "workflow-dismissed:release:run-1");
         assert_eq!(marker["dismissed"], true);
         assert_eq!(
-            workflow_identity(&marker),
+            automation_identity(&marker),
             Some(("release".to_string(), "run-1".to_string(),))
         );
     }

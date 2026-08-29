@@ -5,7 +5,7 @@
  *
  * A grid has no centre. Every cell is equivalent, so nothing on the map can say
  * "this is the place everything else is organized around" — and the Garden does
- * have such a place: the commons, where shared workflows and unaffiliated
+ * have such a place: the commons, where shared automations and unaffiliated
  * entities live. On a grid the commons was wherever the curve happened to put
  * it, usually a corner, which reads as *peripheral* — the precise opposite of
  * what it is.

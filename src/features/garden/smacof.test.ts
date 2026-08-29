@@ -353,7 +353,7 @@ describe("seeding a metrically degenerate parcel", () => {
     // Entities that share no distinguishing facet have no neighbours to be
     // pulled toward, so they stay near their seeds and the seed pattern *is*
     // the layout. A radius growing linearly in the node index therefore made a
-    // degenerate group's extent scale with n: thirty workflows carrying nothing
+    // degenerate group's extent scale with n: thirty automations carrying nothing
     // but their own ids smeared across ~1800 world units, which then set the
     // grid pitch for every district on the map.
     const small = seededExtent(4);
@@ -364,7 +364,7 @@ describe("seeding a metrically degenerate parcel", () => {
   });
 
   it("keeps a realistic degenerate group compact", () => {
-    // Thirty unplaceable workflows is the case that broke the map.
+    // Thirty unplaceable automations is the case that broke the map.
     expect(seededExtent(30)).toBeLessThan(2 * DEFAULT_LAYOUT_SCALE);
   });
 

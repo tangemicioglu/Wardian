@@ -10,7 +10,7 @@ import { filterStarred, flattenAllEntries, flattenTree, folderKey, searchEntries
 const ENTRY_REF_MIME = 'text/wardian-entry-ref';
 
 /** Sections whose content files live at `<name>.md` rather than `<name>/`. */
-const MD_FILE_SECTIONS: LibrarySectionId[] = ['prompts', 'workflows'];
+const MD_FILE_SECTIONS: LibrarySectionId[] = ['prompts', 'automations'];
 
 function newItemTemplate(name: string, kindLabel: string): string {
     return `# ${name}\n\nDescribe this ${kindLabel} here.\n`;

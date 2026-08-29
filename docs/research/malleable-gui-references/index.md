@@ -44,7 +44,7 @@ workspace
 ```
 
 This points Wardian toward a Habitat surface model where agent terminals,
-browsers, files, transcripts, diffs, task plans, workflow graphs, and status
+browsers, files, transcripts, diffs, task plans, automation graphs, and status
 inspectors share one layout vocabulary while still preserving each surface's
 native behavior.
 
@@ -68,7 +68,7 @@ native behavior.
 - Should Wardian's first durable primitive be a `SurfaceArea`, a `Panel`, or a
   `WorkspaceLeaf`-style slot?
 - Which surfaces need native fidelity rather than generic web rendering:
-  terminal, browser, file preview, diff, workflow graph, or telemetry?
+  terminal, browser, file preview, diff, automation graph, or telemetry?
 - How much layout mobility should the right roster and left navigation rail
   have before they harm repeat-use muscle memory?
 - Should surface layouts be saved as markdown-adjacent JSON, TOML, or a Rust

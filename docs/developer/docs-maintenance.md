@@ -9,21 +9,21 @@ Update user-facing docs when a change affects any of these surfaces:
 - first-run setup, provider installation, app launch, or troubleshooting
 - visible UI behavior, labels, navigation, status indicators, settings, or empty states
 - CLI commands, arguments, output fields, exit behavior, or live-control requirements
-- workflow authoring, node behavior, scheduling, Inbox behavior, or agent assignment
+- automation authoring, node behavior, scheduling, Inbox behavior, or agent assignment
 - provider runtime behavior, shell behavior, permissions, sandboxing, session persistence, or filesystem expectations
 - release, installation, platform support, or upgrade behavior
 - error messages or recovery paths that users are expected to act on
 
-Internal-only changes do not need user docs when they leave the public workflow unchanged. In that case, state that docs are not applicable in the PR checklist or test plan.
+Internal-only changes do not need user docs when they leave the public automation unchanged. In that case, state that docs are not applicable in the PR checklist or test plan.
 
 ## Where to Update
 
 Choose the smallest docs surface that matches the change:
 
-- `docs/guide/` for user workflows and task-oriented feature guides
-- `docs/workflows/` for workflow concepts, node behavior, and execution semantics
+- `docs/guide/` for user automations and task-oriented feature guides
+- `docs/automations/` for automation concepts, node behavior, and execution semantics
 - `docs/providers.md` and `docs/developer/provider-runtimes.md` for provider runtime behavior
-- `docs/developer/` for implementation, testing, publishing, and contributor workflows
+- `docs/developer/` for implementation, testing, publishing, and contributor automations
 - `docs/specs/` for strategic decisions or behavior that needs design history; specs are repository-internal and excluded from the public docs site
 - `README.md` only when the public overview, installation path, or top-level links change
 - `docs/public/llms.txt` for the agent-readable public docs index served from the docs site root
@@ -38,10 +38,10 @@ make the malleability model clear enough for future contributors:
 - name the canonical owner of the state;
 - say whether the surface is a source of truth or a lens over another record;
 - describe which scope owns the behavior: global, class, agent, team/project,
-  workspace/folder, workflow, workflow run, or user preference;
+  workspace/folder, automation, automation run, or user preference;
 - mention where user-shapable artifacts live when they are inspectable on disk;
 - describe any promotion path from one-off output to reusable prompt, skill,
-  workflow, memory, or team/project context;
+  automation, memory, or team/project context;
 - keep AI-generated or agent-generated durable changes reviewable and
   provenance-backed.
 
@@ -57,7 +57,7 @@ Use the existing screenshot rules:
 - Use native E2E evidence for screenshots that require real Tauri IPC, PTY behavior, provider spawning, or filesystem effects.
 - Do not commit `e2e/screenshots/`; that path is for temporary PR evidence and local audit captures.
 
-Frontend PRs that change behavior or visuals must also embed representative screenshot evidence in the PR body using an HTTPS image URL. A local path alone is not enough. Use the CLI-first [`gh attach` upload workflow](./screenshot-documentation.md#pr-evidence-upload-cli), not browser automation, for temporary PR evidence.
+Frontend PRs that change behavior or visuals must also embed representative screenshot evidence in the PR body using an HTTPS image URL. A local path alone is not enough. Use the CLI-first [`gh attach` upload automation](./screenshot-documentation.md#pr-evidence-upload-cli), not browser automation, for temporary PR evidence.
 
 ## Release Notes and Public Docs Checklist
 
@@ -68,7 +68,7 @@ Before merging user-facing work, check:
 - The PR body links the issue and lists verification evidence.
 - Release-impacting changes use a Conventional Commit type and scope that Release Please can place in `CHANGELOG.md`.
 - Public overview links in `README.md` and `docs/index.md` still point to the right guide pages and do not point into `docs/specs/` or `docs/research/`.
-- `docs/public/llms.txt` still includes any new or renamed top-level guide, workflow, provider, CLI, or developer docs links.
+- `docs/public/llms.txt` still includes any new or renamed top-level guide, automation, provider, CLI, or developer docs links.
 - `npm run docs:check-llms` passes after updating `llms.txt`.
 - `npm run docs:build` passes after docs changes.
 

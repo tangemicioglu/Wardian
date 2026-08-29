@@ -261,7 +261,7 @@ const directoryTree = {
   [`${repoRoot}/docs/guide`]: [
     { name: "ui-overview.md", path: `${repoRoot}/docs/guide/ui-overview.md`, is_dir: false, extension: "md" },
     { name: "source-control.md", path: `${repoRoot}/docs/guide/source-control.md`, is_dir: false, extension: "md" },
-    { name: "workflows.md", path: `${repoRoot}/docs/guide/workflows.md`, is_dir: false, extension: "md" },
+    { name: "automations.md", path: `${repoRoot}/docs/guide/automations.md`, is_dir: false, extension: "md" },
   ],
   [`${repoRoot}/docs/developer`]: [
     { name: "screenshot-documentation.md", path: `${repoRoot}/docs/developer/screenshot-documentation.md`, is_dir: false, extension: "md" },
@@ -322,12 +322,12 @@ const libraryTree = {
     },
     {
       type: "Prompt",
-      path: "workflow/plan.md",
-      name: "Workflow Plan",
+      path: "automation/plan.md",
+      name: "Automation Plan",
       content: "Break this task into bounded agent steps.",
       metadata: {
-        id: "prompt-workflow-plan",
-        tags: ["workflow"],
+        id: "prompt-automation-plan",
+        tags: ["automation"],
         is_starred: false,
       },
     },
@@ -358,7 +358,7 @@ const libraryIndex = {
         ],
       },
     },
-    workflows: { stubbed: false, tree: emptyLibraryTree },
+    automations: { stubbed: false, tree: emptyLibraryTree },
     classes: { stubbed: false, tree: emptyLibraryTree },
     mcps: { stubbed: true, tree: emptyLibraryTree },
   },
@@ -366,9 +366,9 @@ const libraryIndex = {
   orphans: [],
 };
 
-const workflows = [
+const automations = [
   {
-    id: "docs-workflow",
+    id: "docs-automation",
     name: "Docs Screenshot Refresh",
     settings: { max_iterations: 3, on_limit_reached: "pause" },
     nodes: [
@@ -406,13 +406,13 @@ const queueItems = [
       "Completed the first read-only workspace pass. The agent identified the guide, docs, and source folders and suggested reviewing Queue before assigning follow-up edits.\n\nNext steps:\n- Open the source-control panel and inspect the pending documentation changes.\n- Compare the regenerated screenshots against the guides that reference them.\n- Ask a reviewer agent for a focused pass before committing the branch.",
   },
   {
-    id: "docs-workflow-completion",
-    type: "workflow_completed",
+    id: "docs-automation-completion",
+    type: "automation_completed",
     timestamp: 1778585100000,
     read: true,
-    workflow_id: "docs-workflow",
-    workflow_run_id: "docs-run-1",
-    workflow_name: "Docs Screenshot Refresh",
+    automation_id: "docs-automation",
+    automation_run_id: "docs-run-1",
+    automation_name: "Docs Screenshot Refresh",
     status: "completed",
     summary: "Captured feature screenshots for the guide refresh.",
   },
@@ -511,7 +511,7 @@ const EXPECTED_CAPTURES = [
   "queue/queue-view.png",
   "queue/completed-result.png",
   "library/library-view.png",
-  "workflows/builder-canvas.png",
+  "automations/builder-canvas.png",
   "dashboard/system-summary.png",
   "analytics/activity-matrix.png",
 ];
@@ -609,7 +609,7 @@ async function assertShellHasNoHorizontalOverlap(page, relativePath) {
 
 async function installTauriDocsMock(page, options = {}) {
   const effectiveTerminalOutput = options.terminalOutput ?? terminalOutput;
-  await page.addInitScript(({ agents, agentClasses, telemetry, telemetryFleet, telemetryMatrix, terminalOutput, libraryTree, libraryIndex, workflows, queueItems, repoRoot, directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds, workbenchDocument }) => {
+  await page.addInitScript(({ agents, agentClasses, telemetry, telemetryFleet, telemetryMatrix, terminalOutput, libraryTree, libraryIndex, automations, queueItems, repoRoot, directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds, workbenchDocument }) => {
     const fixedNow = 1778590800000;
     const RealDate = Date;
 
@@ -777,44 +777,44 @@ async function installTauriDocsMock(page, options = {}) {
             dismissed_hint_ids: Array.from(new Set([...dismissedOnboardingHintIds, args.hintId])).sort(),
           };
         }
-        if (command === "list_workflows") return workflows;
-        if (command === "workflow_list_runs") return [];
+        if (command === "list_automations") return automations;
+        if (command === "automation_list_runs") return [];
         if (command === "schedule_list") return [];
-        if (command === "workflow_list_blueprints") {
-          return workflows.map((workflow) => ({
-            id: workflow.id,
-            name: workflow.name,
-            path: `${repoRoot}/library/workflows/${workflow.id}.md`,
+        if (command === "automation_list_blueprints") {
+          return automations.map((automation) => ({
+            id: automation.id,
+            name: automation.name,
+            path: `${repoRoot}/library/automations/${automation.id}.md`,
           }));
         }
-        if (command === "workflow_parse") {
-          const workflow = workflows[0];
+        if (command === "automation_parse") {
+          const automation = automations[0];
           return {
             blueprint: {
               schema: 2,
-              id: workflow.id,
-              name: workflow.name,
-              nodes: workflow.nodes,
+              id: automation.id,
+              name: automation.name,
+              nodes: automation.nodes,
               edges: [],
             },
             diagnostics: [],
           };
         }
-        if (command === "workflow_validate") return { ok: true, diagnostics: [] };
-        if (command === "load_workflow_library") {
+        if (command === "automation_validate") return { ok: true, diagnostics: [] };
+        if (command === "load_automation_library") {
           return {
             folders: [
               {
                 id: "folder-docs",
                 name: "Documentation",
-                workflowIds: ["docs-workflow"],
+                automationIds: ["docs-automation"],
                 isCollapsed: false,
               },
             ],
-            rootWorkflowIds: [],
+            rootAutomationIds: [],
           };
         }
-        if (command === "save_workflow_library") return null;
+        if (command === "save_automation_library") return null;
         if (command === "list_scheduled_runs") return [];
         if (command === "get_library_tree") return libraryTree;
         if (command === "get_library_index") return libraryIndex;
@@ -859,7 +859,7 @@ async function installTauriDocsMock(page, options = {}) {
         data: { type: "progress", content: "Capturing screenshots" },
       });
     }, 600);
-  }, { agents, agentClasses, telemetry, telemetryFleet, telemetryMatrix, terminalOutput: effectiveTerminalOutput, libraryTree, libraryIndex, workflows, queueItems, repoRoot, directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds, workbenchDocument });
+  }, { agents, agentClasses, telemetry, telemetryFleet, telemetryMatrix, terminalOutput: effectiveTerminalOutput, libraryTree, libraryIndex, automations, queueItems, repoRoot, directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds, workbenchDocument });
 }
 
 function collectPageDiagnostics(page, browserErrors) {
@@ -981,7 +981,7 @@ async function main() {
     // so every capture below it silently stopped running. The image paths keep
     // the `queue/` prefix because the guides link to them by that name.
     await openWorkbenchSurface(page, "inbox");
-    await page.getByText("Workflow completed").waitFor({ timeout: 10_000 });
+    await page.getByText("Automation completed").waitFor({ timeout: 10_000 });
     await page.waitForTimeout(700);
     await capture(page, "queue/queue-view.png", page.locator("main"));
     await page.getByTestId("queue-item-summary-docs-first-run-result").waitFor({ timeout: 10_000 });
@@ -996,10 +996,10 @@ async function main() {
     await page.waitForTimeout(700);
     await capture(page, "library/library-view.png");
 
-    await openWorkbenchSurface(page, "workflows");
-    await page.getByTestId("workflows-view").waitFor({ timeout: 10_000 });
+    await openWorkbenchSurface(page, "automations");
+    await page.getByTestId("automations-view").waitFor({ timeout: 10_000 });
     await page.waitForTimeout(700);
-    await capture(page, "workflows/builder-canvas.png");
+    await capture(page, "automations/builder-canvas.png");
 
     await openWorkbenchSurface(page, "dashboard");
     // The fleet table, not a per-agent card: the Dashboard is one row per

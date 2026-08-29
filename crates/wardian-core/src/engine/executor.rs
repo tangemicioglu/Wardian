@@ -52,7 +52,7 @@ pub struct MemoryCommitRequest {
     /// Engine-rendered mutation principal. Model output cannot choose it.
     pub agent_id: String,
     /// Trusted trigger values used to bind model-produced cursor metadata to
-    /// the workflow invocation boundary.
+    /// the automation invocation boundary.
     pub workspace: Option<String>,
     pub conversation_id: Option<String>,
     pub source_sequence: Option<u64>,

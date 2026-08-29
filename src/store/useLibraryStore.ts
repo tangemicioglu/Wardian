@@ -12,7 +12,7 @@ import {
 import { mergeEntriesIntoTree } from '../features/library/libraryListUtils';
 
 // The backend only exposes a single logical watch type, `"library"`, which
-// covers everything under `library/` (skills, prompts, workflows) plus
+// covers everything under `library/` (skills, prompts, automations) plus
 // `classes/` (see src-tauri/src/commands/library.rs). The `library_type`
 // param is kept on the wire for interface stability, but only `"library"` is
 // ever sent or expected here.

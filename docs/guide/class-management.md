@@ -13,7 +13,7 @@ together, see [Key Concepts](./key-concepts.md#agents-and-their-setup).
 > **Class management has moved.** Creating, editing, and deleting classes no
 > longer happens in a left-rail **Classes** tab — that panel has been
 > retired. Class management now lives in the **Classes** section of the
-> [Library](./library.md#3-classes). See that guide for the full workflow
+> [Library](./library.md#3-classes). See that guide for the full automation
 > (the class workbench, editing `AGENTS.md`, managing deployed skills, and
 > resetting or deleting a class). This page keeps only the conceptual
 > material — what a class is and how to spawn an agent from one.
@@ -68,9 +68,9 @@ The agent will inherit the selected class instructions and class-level skill ass
 
 - Editing a class changes future spawns; it does not rewrite instructions inside already-running provider sessions.
 - Class skills are adapted to each provider's discovery model. Check [Provider Runtimes](../providers.md) when a provider does not expose a skill as expected.
-- Keep class instructions durable and general. Put task-specific instructions in prompts, broadcasts, workflows, or direct terminal messages.
+- Keep class instructions durable and general. Put task-specific instructions in prompts, broadcasts, automations, or direct terminal messages.
 - Treat class edits as shared capability changes. When an instruction is only
-  useful for one project, agent, or workflow run, keep it in that narrower scope
+  useful for one project, agent, or automation run, keep it in that narrower scope
   until it proves reusable.
 
 ## Related Links

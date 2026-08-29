@@ -13,7 +13,7 @@ const loadRunsMock = vi.hoisted(() => vi.fn());
 const openRunMock = vi.hoisted(() => vi.fn());
 const observeRunMock = vi.hoisted(() => vi.fn());
 const setModeMock = vi.hoisted(() => vi.fn());
-const workflowMonitorGlanceMock = vi.hoisted(() => vi.fn());
+const automationMonitorGlanceMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../features/agents/ConfigureAgentPanel", () => ({
   ConfigureAgentPanel: () => <div data-testid="configure-agent-panel-mock" />,
@@ -27,8 +27,8 @@ vi.mock("../features/commands/CommandPanel", () => ({
   CommandPanel: () => <div />,
 }));
 
-vi.mock("../features/workflows/monitor/WorkflowMonitorGlance", () => ({
-  WorkflowMonitorGlance: ({
+vi.mock("../features/automations/monitor/AutomationMonitorGlance", () => ({
+  AutomationMonitorGlance: ({
     onOpenRun,
     agents,
     onOpenMonitor,
@@ -43,9 +43,9 @@ vi.mock("../features/workflows/monitor/WorkflowMonitorGlance", () => ({
     onResumeSchedule: (id: string) => void;
     onRunScheduleNow: (id: string) => void;
   }) => {
-    workflowMonitorGlanceMock({ agents });
+    automationMonitorGlanceMock({ agents });
     return <div>
-      <button type="button" onClick={() => onOpenRun("workflow-1", "run-1")}>
+      <button type="button" onClick={() => onOpenRun("automation-1", "run-1")}>
         Open Run
       </button>
       <button type="button" onClick={onOpenMonitor}>
@@ -70,14 +70,14 @@ vi.mock("../store/useSchedulesStore", () => ({
   ),
 }));
 
-vi.mock("../features/workflows/run/useRunStore", () => ({
+vi.mock("../features/automations/run/useRunStore", () => ({
   useRunStore: <T,>(selector: (state: { runs: unknown[]; openRun: () => Promise<void>; loadRuns: () => void }) => T) => (
     selector({ runs: [], openRun: openRunMock, loadRuns: loadRunsMock })
   ),
 }));
 
-vi.mock("../store/useWorkflowsView", () => ({
-  useWorkflowsView: <T,>(selector: (state: { observeRun: () => void; setMode: (mode: string) => void }) => T) => (
+vi.mock("../store/useAutomationsView", () => ({
+  useAutomationsView: <T,>(selector: (state: { observeRun: () => void; setMode: (mode: string) => void }) => T) => (
     selector({ observeRun: observeRunMock, setMode: setModeMock })
   ),
 }));
@@ -103,7 +103,7 @@ const agentClasses: AgentClassDefinition[] = [
 const agents: AgentConfig[] = [
   {
     session_id: "agent-1",
-    session_name: "Workflow Owner",
+    session_name: "Automation Owner",
     agent_class: "Generalist",
     folder: "/workspace",
     is_off: false,
@@ -161,7 +161,7 @@ describe("SidebarContentPane", () => {
     openRunMock.mockResolvedValue(undefined);
     observeRunMock.mockReset();
     setModeMock.mockReset();
-    workflowMonitorGlanceMock.mockReset();
+    automationMonitorGlanceMock.mockReset();
   });
 
   it("uses the shared heading-to-subheading spacing for agent creation", () => {
@@ -215,42 +215,42 @@ describe("SidebarContentPane", () => {
     expect(screen.getByTestId("changes-panel-mock")).toHaveTextContent("7");
   });
 
-  it("opens the Workflows surface before switching the glance to monitor", () => {
+  it("opens the Automations surface before switching the glance to monitor", () => {
     const onOpenSurface = vi.fn();
-    renderPane({ activeTab: "workflows", onOpenSurface });
+    renderPane({ activeTab: "automations", onOpenSurface });
 
     fireEvent.click(screen.getByRole("button", { name: /open monitor/i }));
 
-    expect(onOpenSurface).toHaveBeenCalledWith({ surface_type: "workflows" });
+    expect(onOpenSurface).toHaveBeenCalledWith({ surface_type: "automations" });
     expect(setModeMock).toHaveBeenCalledWith("monitor");
     expect(onOpenSurface.mock.invocationCallOrder[0]).toBeLessThan(setModeMock.mock.invocationCallOrder[0]);
   });
 
-  it("does not navigate when the Workflows auxiliary pane is selected", () => {
+  it("does not navigate when the Automations auxiliary pane is selected", () => {
     const onOpenSurface = vi.fn();
 
-    renderPane({ activeTab: "workflows", onOpenSurface });
+    renderPane({ activeTab: "automations", onOpenSurface });
 
     expect(onOpenSurface).not.toHaveBeenCalled();
   });
 
-  it("routes a workflow run object action through the surface boundary", async () => {
+  it("routes an automation run object action through the surface boundary", async () => {
     const onOpenSurface = vi.fn();
-    renderPane({ activeTab: "workflows", onOpenSurface });
+    renderPane({ activeTab: "automations", onOpenSurface });
 
     fireEvent.click(screen.getByRole("button", { name: /open run/i }));
 
-    expect(onOpenSurface).toHaveBeenCalledWith({ surface_type: "workflows" });
-    expect(openRunMock).toHaveBeenCalledWith("workflow-1", "run-1");
-    await waitFor(() => expect(observeRunMock).toHaveBeenCalledWith("workflow-1", "run-1"));
+    expect(onOpenSurface).toHaveBeenCalledWith({ surface_type: "automations" });
+    expect(openRunMock).toHaveBeenCalledWith("automation-1", "run-1");
+    await waitFor(() => expect(observeRunMock).toHaveBeenCalledWith("automation-1", "run-1"));
   });
 
-  it("loads workflow state and wires schedule controls into the glance pane", () => {
-    renderPane({ activeTab: "workflows" });
+  it("loads automation state and wires schedule controls into the glance pane", () => {
+    renderPane({ activeTab: "automations" });
 
     expect(loadSchedulesMock).toHaveBeenCalled();
     expect(loadRunsMock).toHaveBeenCalled();
-    expect(workflowMonitorGlanceMock).toHaveBeenCalledWith({ agents });
+    expect(automationMonitorGlanceMock).toHaveBeenCalledWith({ agents });
 
     fireEvent.click(screen.getByRole("button", { name: /pause schedule/i }));
     fireEvent.click(screen.getByRole("button", { name: /resume schedule/i }));
@@ -261,11 +261,11 @@ describe("SidebarContentPane", () => {
     expect(runScheduleNowMock).toHaveBeenCalledWith("schedule-1");
   });
 
-  it("refreshes active workflow runs while the workflow glance is mounted", () => {
+  it("refreshes active automation runs while the automation glance is mounted", () => {
     vi.useFakeTimers();
 
     try {
-      renderPane({ activeTab: "workflows" });
+      renderPane({ activeTab: "automations" });
 
       loadRunsMock.mockClear();
       vi.advanceTimersByTime(5000);

@@ -51,7 +51,7 @@ the machine-readable baseline records, not a second input. The fixture contains
 mirrors of the same runtime. Its 33 idle, 20 off, and one processing agents
 mirror the read-only live-habitat count captured for the 2026-08-12 audit.
 Every registered surface type is present: New Tab, Agents, Dashboard, Inbox,
-Graph, Garden, Library, Workflows, Agent Session, Browser, and Files.
+Graph, Garden, Library, Automations, Agent Session, Browser, and Files.
 
 The profiler builds and serves Wardian's canonical production output rather
 than the Phase 0 proof route. It measures five fresh restores; first activation

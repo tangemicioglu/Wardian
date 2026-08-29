@@ -1,6 +1,6 @@
 # Graph Visualization References
 
-This document maps public graph-visualization libraries, workflow graph UIs, topology maps, and trace-oriented visualizations to design patterns relevant to Wardian's workflow builder, workflow run graph, and future agent communication graph.
+This document maps public graph-visualization libraries, automation graph UIs, topology maps, and trace-oriented visualizations to design patterns relevant to Wardian's automation builder, automation run graph, and future agent communication graph.
 
 This is not an endorsement, affiliation claim, product evaluation, or competitive teardown. The notes below describe public architecture and design pressure only.
 
@@ -22,14 +22,14 @@ Source basis: entries were selected through public research and checked against 
 
 | System | Primary Pattern | Wardian Takeaway |
 |---|---|---|
-| [React Flow](https://reactflow.dev/) | Node-based editor and interactive diagram library. | Relevant to Wardian's workflow construction surface. |
+| [React Flow](https://reactflow.dev/) | Node-based editor and interactive diagram library. | Relevant to Wardian's automation construction surface. |
 | [Cytoscape.js](https://github.com/cytoscape/cytoscape.js/) | Graph theory and interactive network visualization library. | Relevant to agent interaction, communication, dependency, and ownership networks. |
 | [sigma.js](https://v4.sigmajs.org/) | WebGL-powered large-graph rendering. | Useful if Wardian needs dense agent/message/trace graphs at large scale. |
 | [Graphviz](https://graphviz.org/) and [Mermaid](https://mermaid.js.org/) | Text-defined graph rendering. | Reinforces "code/text as construction, graph as projection." |
 | [Kiali](https://kiali.io/) | Service-mesh topology visualization. | Relevant to overlaying health, traffic, traces, and ownership onto communication graphs. |
-| [Airflow](https://github.com/apache/airflow) | Workflow UI with DAG graph and run status. | Reference for dependency graph plus per-run status projection. |
+| [Airflow](https://github.com/apache/airflow) | Automation UI with DAG graph and run status. | Reference for dependency graph plus per-run status projection. |
 | [Dagster](https://github.com/dagster-io/dagster) | Asset graph and orchestration observability. | Useful for scaling dependency visualization and artifact/run status. |
-| [Temporal UI](https://docs.temporal.io/web-ui/) | Durable workflow execution inspection. | Reference for workflow history, retries, and long-running execution evidence. |
+| [Temporal UI](https://docs.temporal.io/web-ui/) | Durable automation execution inspection. | Reference for automation history, retries, and long-running execution evidence. |
 | [Prefect](https://github.com/PrefectHQ/prefect) | Flow-run graph and task/subflow observability. | Reference for API-backed run graphs with update limits and artifacts. |
 | [Jaeger UI](https://github.com/jaegertracing/jaeger-ui) | Distributed trace detail UI. | Relevant to Wardian run traces, causality, and sequence/flame views. |
 
@@ -39,16 +39,16 @@ Source basis: entries were selected through public research and checked against 
 
 **Source basis:** Public project site checked.
 
-**What it includes:** React Flow is an open-source React library for building node-based editors and interactive diagrams. It provides nodes, edges, selection, keyboard operations, panning, zooming, and a component model for custom workflow-style surfaces.
+**What it includes:** React Flow is an open-source React library for building node-based editors and interactive diagrams. It provides nodes, edges, selection, keyboard operations, panning, zooming, and a component model for custom automation-style surfaces.
 
 **Distinctive components:**
 
 - Custom node and edge rendering.
 - Interactive editing with keyboard and pointer support.
-- Library posture for builders, workflows, and node-based tools.
+- Library posture for builders, automations, and node-based tools.
 - Broad ecosystem adoption and examples.
 
-**Wardian relevance:** React Flow is a construction-surface reference. Wardian should use similar interaction concepts for workflow editing, but the graph should remain a projection of Wardian's normalized workflow model rather than becoming a separate source of truth.
+**Wardian relevance:** React Flow is a construction-surface reference. Wardian should use similar interaction concepts for automation editing, but the graph should remain a projection of Wardian's normalized automation model rather than becoming a separate source of truth.
 
 ### Cytoscape.js
 
@@ -64,7 +64,7 @@ Source basis: entries were selected through public research and checked against 
 - Layout and interaction ecosystem.
 - Usable headlessly for analysis or in-browser for UI.
 
-**Wardian relevance:** Cytoscape.js is relevant to non-construction graphs: agent communication, dependency maps, memory/reference networks, skill usage, workflow run causality, and ownership. These graphs should support analysis and filtering, not only manual node placement.
+**Wardian relevance:** Cytoscape.js is relevant to non-construction graphs: agent communication, dependency maps, memory/reference networks, skill usage, automation run causality, and ownership. These graphs should support analysis and filtering, not only manual node placement.
 
 ### sigma.js
 
@@ -80,7 +80,7 @@ Source basis: entries were selected through public research and checked against 
 - Graphology algorithms for layouts, metrics, and community detection.
 - Large-graph examples such as thousands of research-paper nodes.
 
-**Wardian relevance:** sigma.js is relevant if Wardian eventually visualizes thousands of events, messages, memories, or interactions. The lesson is to separate "large graph exploration" from "workflow editing"; they have different performance and interaction needs.
+**Wardian relevance:** sigma.js is relevant if Wardian eventually visualizes thousands of events, messages, memories, or interactions. The lesson is to separate "large graph exploration" from "automation editing"; they have different performance and interaction needs.
 
 ### Graphviz and Mermaid
 
@@ -95,7 +95,7 @@ Source basis: entries were selected through public research and checked against 
 - Good fit for documentation and generated diagrams.
 - Different balance between layout power and authoring convenience.
 
-**Wardian relevance:** These tools reinforce Wardian's documentation posture. Workflow graphs, class relationships, and reference maps should be exportable to text-defined diagrams for specs, reviews, and agent-authored documentation.
+**Wardian relevance:** These tools reinforce Wardian's documentation posture. Automation graphs, class relationships, and reference maps should be exportable to text-defined diagrams for specs, reviews, and agent-authored documentation.
 
 ### Kiali
 
@@ -111,22 +111,22 @@ Source basis: entries were selected through public research and checked against 
 - Ownership/custom information patterns.
 - Links out to deeper dashboards.
 
-**Wardian relevance:** Kiali is a useful analogy for agent communication graphs. Wardian can show which agents, workflows, skills, and tools are interacting, then overlay stuckness, cost, error rate, approvals, and ownership.
+**Wardian relevance:** Kiali is a useful analogy for agent communication graphs. Wardian can show which agents, automations, skills, and tools are interacting, then overlay stuckness, cost, error rate, approvals, and ownership.
 
 ### Airflow
 
 **Source basis:** Public repo checked.
 
-**What it includes:** Airflow is a platform to programmatically author, schedule, and monitor workflows. Its UI includes DAG overview, asset dependencies, grid timelines, graph views with per-run status, environment summaries, backfill views, and source-code viewing.
+**What it includes:** Airflow is a platform to programmatically author, schedule, and monitor automations. Its UI includes DAG overview, asset dependencies, grid timelines, graph views with per-run status, environment summaries, backfill views, and source-code viewing.
 
 **Distinctive components:**
 
 - DAG dependency graph.
 - Per-run status projection.
-- Code view for workflow definitions.
+- Code view for automation definitions.
 - Time-oriented run grid next to graph-oriented dependency views.
 
-**Wardian relevance:** Airflow is relevant for combining source-defined workflows with graph and run-state projections. Wardian should similarly show definitions, graph structure, current run status, historical run evidence, and logs without splitting them into unrelated screens.
+**Wardian relevance:** Airflow is relevant for combining source-defined automations with graph and run-state projections. Wardian should similarly show definitions, graph structure, current run status, historical run evidence, and logs without splitting them into unrelated screens.
 
 ### Dagster
 
@@ -142,22 +142,22 @@ Source basis: entries were selected through public research and checked against 
 - Large graph scaling work.
 - Code-defined assets and UI observation.
 
-**Wardian relevance:** Dagster's asset graph is relevant because Wardian workflows should not only show tasks; they should show produced artifacts, files, PRs, reports, memories, and skill outputs. Asset-centered graphs may be more useful than task-only graphs for long agent work.
+**Wardian relevance:** Dagster's asset graph is relevant because Wardian automations should not only show tasks; they should show produced artifacts, files, PRs, reports, memories, and skill outputs. Asset-centered graphs may be more useful than task-only graphs for long agent work.
 
 ### Temporal UI
 
 **Source basis:** Public docs and repo checked.
 
-**What it includes:** Temporal UI is used to inspect durable workflow executions: running workflows, workflow history, retries, failures, and execution details for long-running business logic.
+**What it includes:** Temporal UI is used to inspect durable automation executions: running automations, automation history, retries, failures, and execution details for long-running business logic.
 
 **Distinctive components:**
 
-- Durable workflow execution inspection.
+- Durable automation execution inspection.
 - Event history and replay-oriented debugging.
 - Long-running execution visibility.
 - Retry/failure state inspection.
 
-**Wardian relevance:** Temporal is relevant where Wardian workflows become long-lived and retryable. A node graph is not enough; Wardian needs durable execution history and a way to inspect what the engine believed at each step.
+**Wardian relevance:** Temporal is relevant where Wardian automations become long-lived and retryable. A node graph is not enough; Wardian needs durable execution history and a way to inspect what the engine believed at each step.
 
 ### Prefect
 
@@ -173,7 +173,7 @@ Source basis: entries were selected through public research and checked against 
 - Limits for large run graphs.
 - Flow visualization through Graphviz in SDK contexts.
 
-**Wardian relevance:** Prefect is useful for implementation discipline. Wardian should treat graph visualization as a bounded API problem: max nodes, changed-since queries, artifacts, and progressive loading matter once agent workflows get large.
+**Wardian relevance:** Prefect is useful for implementation discipline. Wardian should treat graph visualization as a bounded API problem: max nodes, changed-since queries, artifacts, and progressive loading matter once agent automations get large.
 
 ### Jaeger UI
 
@@ -188,23 +188,23 @@ Source basis: entries were selected through public research and checked against 
 - Distributed causality inspection.
 - Integration with tracing backends and OpenTelemetry pipelines.
 
-**Wardian relevance:** Wardian workflow and agent runs are effectively distributed traces across humans, agents, tools, terminals, and files. Jaeger-style views are relevant for "why did this run take so long?", "which agent blocked the flow?", and "which node caused this failure?"
+**Wardian relevance:** Wardian automation and agent runs are effectively distributed traces across humans, agents, tools, terminals, and files. Jaeger-style views are relevant for "why did this run take so long?", "which agent blocked the flow?", and "which node caused this failure?"
 
 ## Wardian Positioning
 
 Wardian should treat graph surfaces as projections over specific relationship models:
 
 ```text
-workflow definition graph -> workflow run graph -> agent communication graph -> trace/detail graph
+automation definition graph -> automation run graph -> agent communication graph -> trace/detail graph
 ```
 
-These views can share event data and entity IDs, but they should not share one universal interaction model. A workflow editor, agent communication map, dependency graph, and trace view each answer different questions.
+These views can share event data and entity IDs, but they should not share one universal interaction model. An automation editor, agent communication map, dependency graph, and trace view each answer different questions.
 
 Near-term implications:
 
-- Keep the workflow builder graph separate from large-scale communication/trace graphs.
+- Keep the automation builder graph separate from large-scale communication/trace graphs.
 - Add graph exports for docs and specs.
 - Design graph node drill-downs to PTY output, logs, artifacts, approvals, skills, files, and run history.
 - Use status overlays consistently: processing, idle, action required, failed, stale, unknown.
 - Add API limits and progressive loading before graph data grows large.
-- Preserve dense list and keyboard workflows alongside visual graphs.
+- Preserve dense list and keyboard automations alongside visual graphs.

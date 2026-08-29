@@ -7,7 +7,7 @@ import { isClearableLegacyCompletion, providerChoiceAcknowledgementUnresolved } 
 import { useLazyQueueItems } from "../queue/useLazyQueueItems";
 import { useRemoteStore } from "./useRemoteStore";
 
-type RemoteInboxFilter = "all" | QueueItem["type"] | "workflow_failed";
+type RemoteInboxFilter = "all" | QueueItem["type"] | "automation_failed";
 const REMOTE_INBOX_FILTER_KEY = "wardian.remote.inboxFilter";
 
 const filterOptions: readonly { value: RemoteInboxFilter; label: string }[] = [
@@ -16,8 +16,8 @@ const filterOptions: readonly { value: RemoteInboxFilter; label: string }[] = [
   { value: "agent_completed", label: "Agent completions" },
   { value: "agent_update", label: "Agent updates" },
   { value: "approval_request", label: "Approvals" },
-  { value: "workflow_completed", label: "Workflow completions" },
-  { value: "workflow_failed", label: "Workflow failures" },
+  { value: "automation_completed", label: "Automation completions" },
+  { value: "automation_failed", label: "Automation failures" },
 ];
 
 function storedFilter(): RemoteInboxFilter {
@@ -42,7 +42,7 @@ function relativeTime(ts: number): string {
 
 function matchesFilter(item: QueueItem, filter: RemoteInboxFilter) {
   if (filter === "all") return true;
-  if (filter === "workflow_failed") return item.type === "workflow_completed" && item.status === "failed";
+  if (filter === "automation_failed") return item.type === "automation_completed" && item.status === "failed";
   return item.type === filter;
 }
 
@@ -62,14 +62,14 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRef
   const [deliveryUncertain, setDeliveryUncertain] = useState(false);
   const providerChoiceRecoveryByItem = useRemoteStore((state) => state.providerChoiceRecoveryByItem[item.id]);
   const recordProviderChoiceRecovery = useRemoteStore((state) => state.recordProviderChoiceRecovery);
-  const title = item.notification_title ?? item.agent_name ?? item.workflow_name ?? "Unknown";
+  const title = item.notification_title ?? item.agent_name ?? item.automation_name ?? "Unknown";
   const bodyText = item.status === "failed" && item.error ? item.error : item.summary;
   const Icon = queueItemIsAgentEvent(item) ? Bot : GitBranch;
   const classes = QUEUE_TONE_CLASSES[queueItemTone(item)];
   const isExpandable = Boolean(bodyText && (bodyText.length > 220 || bodyText.split("\n").length > 4));
   const summaryId = `remote-queue-item-summary-${item.id}`;
   const isApprovalRequest = item.type === "approval_request";
-  const isPendingApproval = Boolean(item.workflow_approval || item.notification_status === "awaiting_reply");
+  const isPendingApproval = Boolean(item.automation_approval || item.notification_status === "awaiting_reply");
   const canOpenAgent = Boolean(item.agent_session_id);
   const actionChoices = item.type === "action_needed" ? parseQueueActionChoices(bodyText) : [];
   const approvalChoices = isApprovalRequest && isPendingApproval ? item.approval_choices ?? [] : [];
@@ -78,7 +78,7 @@ function RemoteInboxCard({ item, onAction, onOpenAgent, onSendAgentPrompt, onRef
   const providerChoiceUncertain = providerChoicePending !== null || deliveryUncertain;
   const providerChoiceNeedsAcknowledgement = !providerChoiceUncertain && providerChoiceSent !== null && !item.read;
   const canDismiss = !item.inbox_notification_id
-    && !item.workflow_approval
+    && !item.automation_approval
     && !providerChoiceUncertain
     && !(providerChoiceSent !== null && !item.read);
 

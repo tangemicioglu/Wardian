@@ -16,20 +16,20 @@ Source basis: entries were selected through public research and checked against 
 - **Information density**: whether the UI supports repeated monitoring at scale without forcing decorative or low-density cards.
 - **Layout persistence**: whether dashboards and views can be saved, provisioned, versioned, or reproduced across machines.
 - **Action locality**: whether pause, restart, inspect, filter, port-forward, logs, or other actions sit near the monitored object.
-- **Dashboard scope**: whether the surface is cluster-wide, team-wide, workflow-wide, resource-specific, or time-window-specific.
+- **Dashboard scope**: whether the surface is cluster-wide, team-wide, automation-wide, resource-specific, or time-window-specific.
 
 ## Summary Map
 
 | System | Primary Pattern | Wardian Takeaway |
 |---|---|---|
-| [Headlamp](https://github.com/kubernetes-sigs/headlamp) | Extensible Kubernetes web UI. | Reference for resource trees, plugin-driven panes, and operator workflows. |
+| [Headlamp](https://github.com/kubernetes-sigs/headlamp) | Extensible Kubernetes web UI. | Reference for resource trees, plugin-driven panes, and operator automations. |
 | [Octant](https://octant.dev/) | Developer-centric Kubernetes dashboard. | Useful for related-object views, live logs, filtered resources, and extensibility. |
 | [K9s](https://github.com/derailed/k9s) | Keyboard-first Kubernetes TUI. | Reference for dense, fast, repeated monitoring without losing command access. |
 | [Grafana](https://grafana.com/) | Provisionable monitoring dashboards. | Reference for dashboard-as-code, panel composition, variables, alerts, and time-series drill-down. |
 | [Jaeger UI](https://github.com/jaegertracing/jaeger-ui) | Distributed trace search and trace detail UI. | Relevant to Wardian run traces, causality, and time-window investigation. |
 | [Kiali](https://kiali.io/) | Service-mesh observability dashboard. | Reference for combining topology, health, metrics, traces, and external dashboard links. |
-| [Airflow](https://github.com/apache/airflow) | Workflow monitoring dashboard with DAG and run status. | Reference for joining run grids, environment summaries, code view, and per-run details. |
-| [Temporal UI](https://docs.temporal.io/web-ui/) | Durable workflow execution inspection. | Reference for long-running execution history, retries, and failure evidence. |
+| [Airflow](https://github.com/apache/airflow) | Automation monitoring dashboard with DAG and run status. | Reference for joining run grids, environment summaries, code view, and per-run details. |
+| [Temporal UI](https://docs.temporal.io/web-ui/) | Durable automation execution inspection. | Reference for long-running execution history, retries, and failure evidence. |
 | [Prefect](https://github.com/PrefectHQ/prefect) | Flow-run dashboard and task/artifact observability. | Reference for API-backed run visibility with graph, artifact, and size limits. |
 
 ## Reference Profiles
@@ -47,7 +47,7 @@ Source basis: entries were selected through public research and checked against 
 - Cluster/operator dashboard posture.
 - Debugging and monitoring orientation.
 
-**Wardian relevance:** Headlamp is an operator-UI reference. Wardian has a similar problem shape: many live objects, nested resource kinds, status badges, logs, actions, plugins, and operator workflows. The dashboard should make the object graph navigable without hiding raw state.
+**Wardian relevance:** Headlamp is an operator-UI reference. Wardian has a similar problem shape: many live objects, nested resource kinds, status badges, logs, actions, plugins, and operator automations. The dashboard should make the object graph navigable without hiding raw state.
 
 ### Octant
 
@@ -63,7 +63,7 @@ Source basis: entries were selected through public research and checked against 
 - Label filtering and log streaming.
 - Developer debugging actions such as port forwarding.
 
-**Wardian relevance:** Octant's related-object model maps well to Wardian's dashboard: from an agent, a user should be able to reach workspace, PTY, workflow run, skills, files changed, logs, messages, approvals, and errors. Dashboard cards and tables should be navigation into concrete evidence.
+**Wardian relevance:** Octant's related-object model maps well to Wardian's dashboard: from an agent, a user should be able to reach workspace, PTY, automation run, skills, files changed, logs, messages, approvals, and errors. Dashboard cards and tables should be navigation into concrete evidence.
 
 ### K9s
 
@@ -92,7 +92,7 @@ Source basis: entries were selected through public research and checked against 
 - Panel-based dashboards.
 - Data-source abstraction.
 - JSON/YAML dashboard definitions.
-- File-based provisioning and GitOps workflows.
+- File-based provisioning and GitOps automations.
 - Time range, variables, drill-downs, and alerts.
 
 **Wardian relevance:** Grafana is a reference for dashboard-as-code. Wardian dashboard layouts, watchlists, and observability panels should be saveable as files, reviewed in specs, and recreated across machines where practical.
@@ -132,27 +132,27 @@ Source basis: entries were selected through public research and checked against 
 
 **Source basis:** Public repo checked.
 
-**What it includes:** Airflow is a platform to programmatically author, schedule, and monitor workflows. Its UI includes DAG overview, asset dependencies, grid timelines, graph views with per-run status, environment summaries, backfill views, and source-code viewing.
+**What it includes:** Airflow is a platform to programmatically author, schedule, and monitor automations. Its UI includes DAG overview, asset dependencies, grid timelines, graph views with per-run status, environment summaries, backfill views, and source-code viewing.
 
 **Distinctive components:**
 
 - Grid view across time/runs.
 - Per-run status projection.
 - Environment and scheduling summaries.
-- Code view for workflow definitions.
+- Code view for automation definitions.
 - Backfill and scheduling surfaces.
 
-**Wardian relevance:** Airflow is relevant where Wardian's dashboard needs to summarize workflow health across many runs. The useful pattern is not only the DAG graph; it is the combination of current status, historical run grid, schedules, code, and logs.
+**Wardian relevance:** Airflow is relevant where Wardian's dashboard needs to summarize automation health across many runs. The useful pattern is not only the DAG graph; it is the combination of current status, historical run grid, schedules, code, and logs.
 
 ### Temporal UI
 
 **Source basis:** Public docs and repo checked.
 
-**What it includes:** Temporal UI is used to inspect durable workflow executions: running workflows, workflow history, retries, failures, and execution details for long-running business logic.
+**What it includes:** Temporal UI is used to inspect durable automation executions: running automations, automation history, retries, failures, and execution details for long-running business logic.
 
 **Distinctive components:**
 
-- Durable workflow execution inspection.
+- Durable automation execution inspection.
 - Event history and replay-oriented debugging.
 - Long-running execution visibility.
 - Retry/failure state inspection.
@@ -173,7 +173,7 @@ Source basis: entries were selected through public research and checked against 
 - Limits for large run graphs and artifacts.
 - API-backed run details.
 
-**Wardian relevance:** Prefect is useful for dashboard implementation discipline. Wardian should treat dashboard data as bounded API output: changed-since queries, max rows, artifacts, and progressive loading matter once agent workflows and run histories get large.
+**Wardian relevance:** Prefect is useful for dashboard implementation discipline. Wardian should treat dashboard data as bounded API output: changed-since queries, max rows, artifacts, and progressive loading matter once agent automations and run histories get large.
 
 ## Wardian Positioning
 
@@ -183,11 +183,11 @@ Wardian's dashboard should be a monitoring surface, not a universal graph surfac
 system dashboard -> roster/watchlists -> focused detail panes -> logs/traces/artifacts/actions
 ```
 
-The dashboard should summarize active agents, stuck work, resource pressure, recent failures, approvals, workflow runs, schedules, and provider health. Graph surfaces can be linked from the dashboard, but the dashboard itself should prioritize fast scanning, filtering, and drill-down.
+The dashboard should summarize active agents, stuck work, resource pressure, recent failures, approvals, automation runs, schedules, and provider health. Graph surfaces can be linked from the dashboard, but the dashboard itself should prioritize fast scanning, filtering, and drill-down.
 
 Near-term implications:
 
-- Keep dashboard view separate from workflow graph editing and communication graph exploration.
+- Keep dashboard view separate from automation graph editing and communication graph exploration.
 - Use dense rows, tables, and compact panels where they beat large cards.
 - Put common actions near the monitored object: pause, resume, inspect, jump to terminal, open logs, open run details.
 - Treat dashboard layouts and watchlists as versionable artifacts where practical.

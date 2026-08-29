@@ -332,7 +332,7 @@ describe("core workbench surface registry", () => {
     });
     expect(registry.default_state("new-tab")).toEqual({});
 
-    expect(["dashboard", "inbox", "graph", "garden", "library", "workflows"].map((type) => {
+    expect(["dashboard", "inbox", "graph", "garden", "library", "automations"].map((type) => {
       const definition = registry.get(type);
       return {
         type,
@@ -347,15 +347,15 @@ describe("core workbench surface registry", () => {
       { type: "graph", open_policy: "singleton", render_policy: "suspend_when_hidden", close_policy: "close_view", command_id: "workbench.open.graph" },
       { type: "garden", open_policy: "singleton", render_policy: "suspend_when_hidden", close_policy: "close_view", command_id: "workbench.open.garden" },
       { type: "library", open_policy: "singleton", render_policy: "keep_alive", close_policy: "confirm_if_dirty", command_id: "workbench.open.library" },
-      { type: "workflows", open_policy: "singleton", render_policy: "keep_alive", close_policy: "confirm_if_dirty", command_id: "workbench.open.workflows" },
+      { type: "automations", open_policy: "singleton", render_policy: "keep_alive", close_policy: "confirm_if_dirty", command_id: "workbench.open.automations" },
     ]);
     expect(registry.get("library")?.restore_state({ unexpected: true }, 1)).toEqual({
       ok: false,
       error: "library state must be an empty object",
     });
-    expect(registry.get("workflows")?.restore_state({}, 2)).toEqual({
+    expect(registry.get("automations")?.restore_state({}, 2)).toEqual({
       ok: false,
-      error: "unsupported workflows state version 2",
+      error: "unsupported automations state version 2",
     });
     expect(registry.resolve_surface(makeSurface("broken-overview", {
       surface_type: "agents-overview",
@@ -370,7 +370,7 @@ describe("core workbench surface registry", () => {
     const prompt = vi.fn<DirtySurfacePrompt>(() => "cancel");
     const registry = createCoreWorkbenchSurfaceRegistry({ dirty_surface_prompt: prompt });
     const library = makeSurface("library-1", { surface_type: "library", state: {} });
-    const workflows = makeSurface("workflows-1", { surface_type: "workflows", state: {} });
+    const automations = makeSurface("automations-1", { surface_type: "automations", state: {} });
 
     expect(registry.presentation(library).badges).toEqual([]);
     useLibraryStore.setState({
@@ -407,7 +407,7 @@ describe("core workbench surface registry", () => {
     const baseline = { schema: 2 as const, id: "wf", name: "Saved", nodes: [], edges: [] };
     useBuilderStore.setState({ blueprint: baseline, baseline, dirty: false });
     useBuilderStore.getState().setBlueprint({ ...baseline, name: "Draft" });
-    expect(registry.presentation(workflows).badges).toEqual([
+    expect(registry.presentation(automations).badges).toEqual([
       { badge_id: "dirty", label: "Unsaved changes" },
     ]);
   });

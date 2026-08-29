@@ -52,7 +52,7 @@ const index: LibraryIndex = {
       },
     },
     prompts: { stubbed: false, tree: emptyTree },
-    workflows: { stubbed: false, tree: emptyTree },
+    automations: { stubbed: false, tree: emptyTree },
     classes: { stubbed: false, tree: emptyTree },
     mcps: { stubbed: true, tree: emptyTree },
   },
@@ -411,9 +411,9 @@ describe('LibraryList', () => {
   });
 
   it('shows empty states for empty sections and empty search results', () => {
-    useLibraryStore.setState({ activeSection: 'workflows' });
+    useLibraryStore.setState({ activeSection: 'automations' });
     render(<LibraryList />);
-    expect(screen.getByTestId('library-list-empty')).toHaveTextContent('No workflows yet');
+    expect(screen.getByTestId('library-list-empty')).toHaveTextContent('No automations yet');
 
     fireEvent.change(screen.getByTestId('library-search'), { target: { value: 'nothing' } });
     expect(screen.getByTestId('library-list-empty')).toHaveTextContent('No matches');

@@ -291,7 +291,7 @@ mod tests {
                 None,
                 vec!["agent-1".to_string()],
                 InteractionBodyRef::Inline {
-                    body: "workflow task".to_string(),
+                    body: "automation task".to_string(),
                 },
             )
             .await

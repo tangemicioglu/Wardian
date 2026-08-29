@@ -5,7 +5,7 @@ import type {
   RemoteAgentInputMode,
   RemoteAgentSummary,
   RemoteTerminalSnapshot,
-  RemoteWorkflowSummary,
+  RemoteAutomationSummary,
 } from "../../types";
 import {
   DEFAULT_WATCHLIST_PREFS,
@@ -36,7 +36,7 @@ type RemoteStatus =
   | "gateway_identity_changed"
   | "device_revoked";
 
-type ActiveRemoteTab = "watchlist" | "workflows" | "queue" | "garden" | "library";
+type ActiveRemoteTab = "watchlist" | "automations" | "queue" | "garden" | "library";
 type RemoteAgentViewMode = "terminal" | "chat";
 
 export const MIN_REMOTE_TERMINAL_FONT_SIZE = 10;
@@ -45,7 +45,7 @@ export const DEFAULT_REMOTE_TERMINAL_FONT_SIZE = 11;
 
 interface RemoteState {
   agents: RemoteAgentSummary[];
-  workflows: RemoteWorkflowSummary[];
+  automations: RemoteAutomationSummary[];
   remoteQueueItems: QueueItem[];
   providerChoiceRecoveryByItem: Record<string, string>;
   remoteQueueError: string;
@@ -92,7 +92,7 @@ interface RemoteState {
   sendPromptToActiveAgent: (prompt: string, inputMode?: RemoteAgentInputMode) => Promise<void>;
   sendPromptToAgent: (sessionId: string, prompt: string, inboxItemId?: string) => Promise<void>;
   runAgentAction: (action: string, target: string) => Promise<void>;
-  runWorkflow: (workflowId: string) => Promise<void>;
+  runAutomation: (automationId: string) => Promise<void>;
 }
 
 type RemoteSet = (
@@ -610,9 +610,9 @@ const ensureAuthenticatedSession = async (set: RemoteSet) => {
 
 const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
   const queueRequestSerial = ++queueRefreshRequestSerial;
-  const [agents, workflows, remoteWatchlists, remoteQueueItems] = await Promise.all([
+  const [agents, automations, remoteWatchlists, remoteQueueItems] = await Promise.all([
     remoteClient.listAgents(),
-    remoteClient.listWorkflows().catch((error: unknown) => {
+    remoteClient.listAutomations().catch((error: unknown) => {
       if (error instanceof RemoteRequestError && error.status === 404) return [];
       throw error;
     }),
@@ -647,7 +647,7 @@ const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
     const activeAgentId = state.activeAgentId && liveAgentIds.has(state.activeAgentId) ? state.activeAgentId : null;
     return {
       agents,
-      workflows,
+      automations,
       ...(queueRequestSerial === queueRefreshRequestSerial ? { remoteQueueItems } : {}),
       remoteQueueError: "",
       activeAgentViewModesById: pruneActiveAgentViewModes(state.activeAgentViewModesById, liveAgentIds),
@@ -680,7 +680,7 @@ const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
 
 export const useRemoteStore = create<RemoteState>((set, get) => ({
   agents: [],
-  workflows: [],
+  automations: [],
   remoteQueueItems: [],
   providerChoiceRecoveryByItem: {},
   remoteQueueError: "",
@@ -1012,9 +1012,9 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
       throw error;
     }
   },
-  async runWorkflow(workflowId) {
+  async runAutomation(automationId) {
     try {
-      await remoteClient.runWorkflow(workflowId);
+      await remoteClient.runAutomation(automationId);
     } catch (error) {
       set({ status: statusFromError(error) });
       throw error;

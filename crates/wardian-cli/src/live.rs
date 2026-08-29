@@ -11,12 +11,11 @@ use wardian_core::browser::{
 use wardian_core::control::{
     AgentDoctorResponse, AgentListResponse, AgentResponse, AgentUpdateResponse, AgentWatchResponse,
     AgentWorktreeListResponse, AgentWorktreeMutationResponse, AgentWorktreeSummary, ApprovalAction,
-    AskManyResponse, AskResponse, ControlRequest, ConversationListResponse,
+    AskManyResponse, AskResponse, AutomationRunResponse, ControlRequest, ConversationListResponse,
     ConversationShowResponse, DeliveryDetail, InboxListResponse, InboxNotificationPayload,
     InboxNotificationResponse, MessageInputMode, MessageOrigin, NativeDeliveryCapabilitiesResponse,
     NativeDeliveryInspectResponse, OrchestrationDeliveryOptions, QueuePolicy, ReplyResponse,
     ReplyStatus, SendMessageResponse, StructuredReply, WatchEvent, WatchEvidenceError,
-    WorkflowRunResponse,
 };
 use wardian_core::identity::AgentIdentity;
 use wardian_core::native_transport::NativeDeliveryPhase;
@@ -109,7 +108,7 @@ enum ControlOperation {
     ArtifactReviewShow,
     WatchlistsChanged,
     TopologyMutate,
-    WorkflowRun,
+    AutomationRun,
     SendMessage {
         requested: Duration,
     },
@@ -267,7 +266,7 @@ pub struct AskAgentResponse {
     pub watch: AgentWatchResponse,
 }
 
-pub struct WorkflowRunRequest {
+pub struct AutomationRunRequest {
     pub path: String,
     pub provider: Option<String>,
     pub workspace: Option<String>,
@@ -676,12 +675,12 @@ pub fn notify_watchlists_changed() -> io::Result<()> {
     .map(|_| ())
 }
 
-pub fn workflow_run(request: WorkflowRunRequest) -> io::Result<WorkflowRunResponse> {
+pub fn automation_run(request: AutomationRunRequest) -> io::Result<AutomationRunResponse> {
     let runtime = build_runtime()?;
     let value = timeout_block(
         &runtime,
-        ControlOperation::WorkflowRun,
-        send_request(ControlRequest::WorkflowRun {
+        ControlOperation::AutomationRun,
+        send_request(ControlRequest::AutomationRun {
             path: request.path,
             provider: request.provider,
             workspace: request.workspace,
@@ -1270,7 +1269,7 @@ fn operation_timeout(operation: &ControlOperation) -> Duration {
         | ControlOperation::AgentWorktreeEnable
         | ControlOperation::AgentWorktreeJoin
         | ControlOperation::AgentWorktreeDisable
-        | ControlOperation::WorkflowRun
+        | ControlOperation::AutomationRun
         | ControlOperation::ArtifactPresent
         | ControlOperation::SubmitReply
         | ControlOperation::NotifyCreate

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowAgentMode {
+pub enum AutomationAgentMode {
     Ephemeral,
     InheritFresh,
     InheritResume,
@@ -27,7 +27,7 @@ pub enum AgentSessionPersistenceOverride {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentExecutionPolicy {
-    pub mode: WorkflowAgentMode,
+    pub mode: AutomationAgentMode,
 }
 
 impl AgentExecutionPolicy {
@@ -35,25 +35,25 @@ impl AgentExecutionPolicy {
         legacy_session_type: Option<&str>,
         explicit_mode: Option<&str>,
     ) -> Self {
-        if let Some(mode) = explicit_mode.and_then(parse_workflow_agent_mode) {
+        if let Some(mode) = explicit_mode.and_then(parse_automation_agent_mode) {
             return Self { mode };
         }
 
         let mode = match legacy_session_type {
-            Some("temporary") => WorkflowAgentMode::Ephemeral,
-            Some("persistent") => WorkflowAgentMode::InheritFresh,
-            _ => WorkflowAgentMode::Ephemeral,
+            Some("temporary") => AutomationAgentMode::Ephemeral,
+            Some("persistent") => AutomationAgentMode::InheritFresh,
+            _ => AutomationAgentMode::Ephemeral,
         };
 
         Self { mode }
     }
 }
 
-pub fn parse_workflow_agent_mode(value: &str) -> Option<WorkflowAgentMode> {
+pub fn parse_automation_agent_mode(value: &str) -> Option<AutomationAgentMode> {
     match value {
-        "ephemeral" => Some(WorkflowAgentMode::Ephemeral),
-        "inherit_fresh" => Some(WorkflowAgentMode::InheritFresh),
-        "inherit_resume" => Some(WorkflowAgentMode::InheritResume),
+        "ephemeral" => Some(AutomationAgentMode::Ephemeral),
+        "inherit_fresh" => Some(AutomationAgentMode::InheritFresh),
+        "inherit_resume" => Some(AutomationAgentMode::InheritResume),
         _ => None,
     }
 }
@@ -66,14 +66,14 @@ mod tests {
     fn legacy_temporary_maps_to_ephemeral() {
         let resolved = AgentExecutionPolicy::from_legacy_session_type(Some("temporary"), None);
 
-        assert_eq!(resolved.mode, WorkflowAgentMode::Ephemeral);
+        assert_eq!(resolved.mode, AutomationAgentMode::Ephemeral);
     }
 
     #[test]
     fn legacy_persistent_maps_to_inherit_fresh() {
         let resolved = AgentExecutionPolicy::from_legacy_session_type(Some("persistent"), None);
 
-        assert_eq!(resolved.mode, WorkflowAgentMode::InheritFresh);
+        assert_eq!(resolved.mode, AutomationAgentMode::InheritFresh);
     }
 
     #[test]
@@ -83,6 +83,6 @@ mod tests {
             Some("inherit_resume"),
         );
 
-        assert_eq!(resolved.mode, WorkflowAgentMode::InheritResume);
+        assert_eq!(resolved.mode, AutomationAgentMode::InheritResume);
     }
 }

@@ -27,8 +27,8 @@ struct InboxProjection {
 #[derive(Clone, Copy)]
 enum InboxSource {
     Notifications,
-    WorkflowApprovals,
-    WorkflowTerminals,
+    AutomationApprovals,
+    AutomationTerminals,
     LegacyQueue,
 }
 
@@ -48,7 +48,7 @@ struct InboxPageRequest<'a> {
 struct PersistedSourceContext<'a> {
     cutoff: i64,
     read_notification_ids: &'a HashSet<String>,
-    persisted_workflow_runs: &'a HashSet<(String, String)>,
+    persisted_automation_runs: &'a HashSet<(String, String)>,
     conn: Option<&'a Connection>,
     agent_names: &'a HashMap<String, String>,
     types: &'a HashSet<String>,
@@ -57,7 +57,7 @@ struct PersistedSourceContext<'a> {
 }
 
 /// Read-only Inbox commands. Live reads use the app-owned projection first so
-/// the CLI and remote Inbox see the same notification and workflow records.
+/// the CLI and remote Inbox see the same notification and automation records.
 pub fn handle_inbox(args: InboxArgs) -> Result<String, CliError> {
     match args.command {
         InboxCommand::List {
@@ -155,9 +155,9 @@ fn type_matches(item: &Value, types: &HashSet<String>) -> bool {
     }
     let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
     types.contains(item_type)
-        || (item_type == "workflow_completed"
+        || (matches!(item_type, "automation_completed" | "workflow_completed")
             && item.get("status").and_then(Value::as_str) == Some("failed")
-            && types.contains("workflow_failed"))
+            && (types.contains("automation_failed") || types.contains("workflow_failed")))
 }
 
 fn source_matches(item: &Value, sources: &HashSet<String>) -> bool {
@@ -186,13 +186,20 @@ fn item_id(item: &Value) -> &str {
     item.get("id").and_then(Value::as_str).unwrap_or_default()
 }
 
-fn workflow_identity(item: &Value) -> Option<(String, String)> {
-    if item.get("type").and_then(Value::as_str) != Some("workflow_completed") {
+fn automation_identity(item: &Value) -> Option<(String, String)> {
+    if !matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("automation_completed" | "workflow_completed")
+    ) {
         return None;
     }
     Some((
-        item.get("workflow_id").and_then(Value::as_str)?.to_string(),
-        item.get("workflow_run_id")
+        item.get("automation_id")
+            .or_else(|| item.get("workflow_id"))
+            .and_then(Value::as_str)?
+            .to_string(),
+        item.get("automation_run_id")
+            .or_else(|| item.get("workflow_run_id"))
             .and_then(Value::as_str)?
             .to_string(),
     ))
@@ -227,11 +234,11 @@ fn load_persisted_items(
     limit: usize,
 ) -> Result<InboxProjection, CliError> {
     // The legacy queue is optional. A damaged queue must not hide the durable
-    // SQLite notifications or workflow run projections below it.
+    // SQLite notifications or automation run projections below it.
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
     let metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
     let read_notification_ids = metadata.read_notification_ids;
-    let persisted_workflow_runs = metadata.workflow_runs;
+    let persisted_automation_runs = metadata.automation_runs;
     let conn = match wardian_core::paths::state_db_path() {
         Some(path) if path.exists() => {
             Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
@@ -248,15 +255,15 @@ fn load_persisted_items(
         .collect::<HashMap<_, _>>();
     let source_kinds = [
         InboxSource::Notifications,
-        InboxSource::WorkflowApprovals,
-        InboxSource::WorkflowTerminals,
+        InboxSource::AutomationApprovals,
+        InboxSource::AutomationTerminals,
         InboxSource::LegacyQueue,
     ];
     let source_page_limit = offset.saturating_add(limit).saturating_add(1);
     let context = PersistedSourceContext {
         cutoff,
         read_notification_ids: &read_notification_ids,
-        persisted_workflow_runs: &persisted_workflow_runs,
+        persisted_automation_runs: &persisted_automation_runs,
         conn: conn.as_ref(),
         agent_names: &agent_names,
         types,
@@ -359,8 +366,8 @@ fn load_persisted_source_page(
                 truncated,
             })
         }
-        InboxSource::WorkflowApprovals => {
-            let (items, truncated) = workflow_approval_items(
+        InboxSource::AutomationApprovals => {
+            let (items, truncated) = automation_approval_items(
                 offset,
                 page_limit,
                 context.types,
@@ -369,8 +376,8 @@ fn load_persisted_source_page(
             )?;
             Ok(InboxSourcePage { items, truncated })
         }
-        InboxSource::WorkflowTerminals => {
-            let (items, truncated) = workflow_terminal_items(
+        InboxSource::AutomationTerminals => {
+            let (items, truncated) = automation_terminal_items(
                 offset,
                 page_limit,
                 context.types,
@@ -382,8 +389,8 @@ fn load_persisted_source_page(
                     .into_iter()
                     .filter(|item| {
                         context.sources.contains("live_runtime")
-                            || workflow_identity(item)
-                                .is_none_or(|key| !context.persisted_workflow_runs.contains(&key))
+                            || automation_identity(item)
+                                .is_none_or(|key| !context.persisted_automation_runs.contains(&key))
                     })
                     .collect(),
                 truncated,
@@ -397,6 +404,7 @@ fn load_persisted_source_page(
                 |item| {
                     item.get("inbox_notification_id").is_none()
                         && item.get("workflow_approval").is_none()
+                        && item.get("automation_approval").is_none()
                         && item.get("dismissed").and_then(Value::as_bool) != Some(true)
                         && inbox_item_matches(item, context.types, context.sources, context.unread)
                 },
@@ -519,14 +527,14 @@ fn page_source_items(
     )
 }
 
-fn workflow_approval_items(
+fn automation_approval_items(
     offset: usize,
     page_limit: usize,
     types: &HashSet<String>,
     sources: &HashSet<String>,
     unread: bool,
 ) -> Result<(Vec<Value>, bool), CliError> {
-    let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
+    let Some(runs_root) = wardian_core::paths::automation_runs_dir() else {
         return Ok((Vec::new(), false));
     };
     if !runs_root.exists() {
@@ -570,9 +578,9 @@ fn workflow_approval_items(
                 continue;
             };
 
-            let blueprint = wardian_core::workflow::resolve_blueprint_path(&state.blueprint_id)
-                .and_then(|path| wardian_core::workflow::parse_file(&path).ok());
-            let workflow_name = blueprint
+            let blueprint = wardian_core::automation::resolve_blueprint_path(&state.blueprint_id)
+                .and_then(|path| wardian_core::automation::parse_file(&path).ok());
+            let automation_name = blueprint
                 .as_ref()
                 .map(|blueprint| blueprint.name.clone())
                 .unwrap_or_else(|| state.blueprint_id.clone());
@@ -581,30 +589,30 @@ fn workflow_approval_items(
                 .and_then(|blueprint| blueprint.find_node(&node));
             let title = approval_node
                 .and_then(|node| node.name.clone())
-                .unwrap_or_else(|| format!("{workflow_name} approval"));
+                .unwrap_or_else(|| format!("{automation_name} approval"));
             let prompt = approval_node
                 .and_then(|node| node.fields.get("prompt"))
                 .and_then(Value::as_str)
-                .unwrap_or("Approve this workflow step?");
+                .unwrap_or("Approve this automation step?");
             let blueprint_path =
-                wardian_core::workflow::resolve_blueprint_path(&state.blueprint_id)
+                wardian_core::automation::resolve_blueprint_path(&state.blueprint_id)
                     .map(|path| path.to_string_lossy().into_owned());
 
             let item = json!({
-                "id": format!("workflow-approval:{}:{}:{}", state.blueprint_id, state.run_id, node),
+                "id": format!("automation-approval:{}:{}:{}", state.blueprint_id, state.run_id, node),
                 "type": "approval_request",
                 "timestamp": timestamp_millis(&timestamp),
                 "read": false,
                 "evidence_source": "live_runtime",
-                "workflow_id": state.blueprint_id,
-                "workflow_run_id": state.run_id,
-                "workflow_name": title,
+                "automation_id": state.blueprint_id,
+                "automation_run_id": state.run_id,
+                "automation_name": title,
                 "notification_title": title,
                 "summary": prompt,
-                "proposed_action": "Continue this workflow beyond its approval gate",
-                "risk": "The workflow will execute the next authored steps after approval.",
+                "proposed_action": "Continue this automation beyond its approval gate",
+                "risk": "The automation will execute the next authored steps after approval.",
                 "approval_choices": ["Approve", "Reject"],
-                "workflow_approval": {
+                "automation_approval": {
                     "blueprint_id": state.blueprint_id,
                     "blueprint_path": blueprint_path.unwrap_or_default(),
                     "run_id": state.run_id,
@@ -623,14 +631,14 @@ fn workflow_approval_items(
     Ok(page_source_items(items, truncated, offset, page_limit))
 }
 
-fn workflow_terminal_items(
+fn automation_terminal_items(
     offset: usize,
     page_limit: usize,
     types: &HashSet<String>,
     sources: &HashSet<String>,
     unread: bool,
 ) -> Result<(Vec<Value>, bool), CliError> {
-    let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
+    let Some(runs_root) = wardian_core::paths::automation_runs_dir() else {
         return Ok((Vec::new(), false));
     };
     if !runs_root.exists() {
@@ -675,20 +683,21 @@ fn workflow_terminal_items(
                 _ => None,
             });
             let updated_at = events.last().map(|event| event.ts.as_str());
-            let workflow_name = wardian_core::workflow::resolve_blueprint_path(&state.blueprint_id)
-                .and_then(|path| wardian_core::workflow::parse_file(&path).ok())
-                .map(|blueprint| blueprint.name)
-                .unwrap_or_else(|| state.blueprint_id.clone());
+            let automation_name =
+                wardian_core::automation::resolve_blueprint_path(&state.blueprint_id)
+                    .and_then(|path| wardian_core::automation::parse_file(&path).ok())
+                    .map(|blueprint| blueprint.name)
+                    .unwrap_or_else(|| state.blueprint_id.clone());
 
             let item = json!({
-                "id": format!("workflow-completion:{}:{}", state.blueprint_id, state.run_id),
-                "type": "workflow_completed",
+                "id": format!("automation-completion:{}:{}", state.blueprint_id, state.run_id),
+                "type": "automation_completed",
                 "timestamp": updated_at.map(timestamp_millis).unwrap_or_default(),
                 "read": false,
                 "evidence_source": "live_runtime",
-                "workflow_id": state.blueprint_id,
-                "workflow_run_id": state.run_id,
-                "workflow_name": workflow_name,
+                "automation_id": state.blueprint_id,
+                "automation_run_id": state.run_id,
+                "automation_name": automation_name,
                 "status": status,
                 "error": state.failure,
                 "summary": summary,

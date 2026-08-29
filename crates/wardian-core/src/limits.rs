@@ -41,11 +41,11 @@ pub const MAX_ACTIVITY_RECORDS: usize = 5_000;
 /// Distinct agent pairs reported by the topology activity view.
 pub const MAX_ACTIVITY_PAIRS: usize = 1_000;
 
-/// Workflow blueprint files listed per page.
-pub const MAX_WORKFLOW_BLUEPRINTS: usize = 500;
+/// Automation blueprint files listed per page.
+pub const MAX_AUTOMATION_BLUEPRINTS: usize = 500;
 
-/// Workflow runs listed per page, newest first.
-pub const MAX_WORKFLOW_RUNS: usize = 200;
+/// Automation runs listed per page, newest first.
+pub const MAX_AUTOMATION_RUNS: usize = 200;
 
 /// Skill source directories considered when resolving library deployments.
 pub const MAX_LIBRARY_SKILL_SOURCES: usize = 1_000;
@@ -77,8 +77,8 @@ mod tests {
             ("MAX_INBOX_NOTIFICATIONS", MAX_INBOX_NOTIFICATIONS),
             ("MAX_ACTIVITY_RECORDS", MAX_ACTIVITY_RECORDS),
             ("MAX_ACTIVITY_PAIRS", MAX_ACTIVITY_PAIRS),
-            ("MAX_WORKFLOW_BLUEPRINTS", MAX_WORKFLOW_BLUEPRINTS),
-            ("MAX_WORKFLOW_RUNS", MAX_WORKFLOW_RUNS),
+            ("MAX_AUTOMATION_BLUEPRINTS", MAX_AUTOMATION_BLUEPRINTS),
+            ("MAX_AUTOMATION_RUNS", MAX_AUTOMATION_RUNS),
             ("MAX_LIBRARY_SKILL_SOURCES", MAX_LIBRARY_SKILL_SOURCES),
             ("MAX_LIBRARY_DEPLOYMENTS", MAX_LIBRARY_DEPLOYMENTS),
             (

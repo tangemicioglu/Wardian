@@ -15,7 +15,7 @@ Use this guide when the first setup path breaks before you can complete a simple
 Operating systems may warn before opening a new or unsigned Wardian build.
 
 - **Windows SmartScreen or reputation warnings**: continue only if the installer came from the official Wardian release you intended to install.
-- **macOS official release**: install the app by dragging it from the DMG to **Applications**, eject the DMG, and launch the installed copy. Official packages built by the signed release workflow are Developer ID signed and Apple-notarized.
+- **macOS official release**: install the app by dragging it from the DMG to **Applications**, eject the DMG, and launch the installed copy. Official packages built by the signed release automation are Developer ID signed and Apple-notarized.
 - **macOS source-built or older unsigned app**: verify the source before approving its normal Gatekeeper warning. Do not use a Gatekeeper bypass as a substitute for verifying an unknown download.
 - **Linux executable or package warnings**: verify the package source and file permissions before launching it.
 
@@ -33,7 +33,7 @@ OS error 30 when it cannot replace the app.
 
 If the message only affects a source-built app, it does not establish that the
 official packaged release is damaged. Source builds do not carry the release
-workflow's Developer ID signature and notarization. Report the exact macOS
+automation's Developer ID signature and notarization. Report the exact macOS
 warning, Wardian version, install location, and whether the package came from
 the official release or a local build.
 
@@ -97,7 +97,7 @@ Inbox is a review surface for completed work, important updates, and decisions. 
 Inbox items appear when:
 
 - a configured agent completes a provider turn with a final response
-- a workflow run finishes or fails
+- an automation run finishes or fails
 
 If Inbox is empty after spawning an agent, that can be expected. Send the agent a small task, wait for it to settle back to Idle, then open **Inbox** again. Provider approval prompts still appear through the agent status and terminal rather than as Inbox items until the provider reports actionable evidence.
 
@@ -117,7 +117,7 @@ PowerShell:
 wardian agent list --scope all --fields name,status
 ```
 
-If the command works but shows stale data, confirm the Wardian desktop app is running. Live-control commands such as `send`, `spawn`, `pause`, `resume`, and `workflow run` require the app to be running.
+If the command works but shows stale data, confirm the Wardian desktop app is running. Live-control commands such as `send`, `spawn`, `pause`, `resume`, and `automation run` require the app to be running.
 
 ## Advanced: Inspect Raw Terminal Output
 

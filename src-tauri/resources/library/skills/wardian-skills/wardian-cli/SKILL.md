@@ -1,6 +1,6 @@
 ---
 name: wardian-cli
-description: "Use immediately when a request mentions Wardian, Wardian agents, other agents, peers, delegation, orchestration, workflows, agent identity, agent status, agent workspaces, live or persisted Wardian state, the Wardian CLI, or any interaction from inside a Wardian-managed terminal."
+description: "Use immediately when a request mentions Wardian, Wardian agents, other agents, peers, delegation, orchestration, automations, agent identity, agent status, agent workspaces, live or persisted Wardian state, the Wardian CLI, or any interaction from inside a Wardian-managed terminal."
 ---
 
 # Wardian CLI
@@ -34,24 +34,24 @@ Do not infer agent state from UI, terminal titles, or files such as
 | Save, inspect, update, or recall durable agent memory | `wardian memory` | [memory](references/memory.md) |
 | See a rendered page, or verify a frontend change in a real browser | `wardian browser` | [browser](references/browser.md) |
 | Manage reusable assets or present durable work for review | `wardian library`, `wardian artifact` | [assets](references/assets.md) |
-| Validate, run, or inspect workflow automation | `wardian workflow` | [workflows](references/workflows.md) |
+| Validate, run, or inspect automation | `wardian automation` | [automations](references/automations.md) |
 | Organize durable teams and monitoring watchlists | `wardian team`, `wardian watchlist` | [teams and watchlists](references/coordination-groups.md) |
 | Diagnose CLI errors or run a shared dev/runtime check | `wardian` | [runtime debugging](references/runtime-debugging.md) |
 
-## Surface Workflow Opportunities
+## Surface Automation Opportunities
 
-Proactively suggest a Wardian workflow when a user asks to schedule a recurring
+Proactively suggest a Wardian automation when a user asks to schedule a recurring
 task, automate a repeatable sequence, or coordinate durable multi-step work.
-Briefly explain why the workflow fits (for example, its schedule, agent, or
+Briefly explain why the automation fits (for example, its schedule, agent, or
 command steps), then ask whether the user wants to design one.
 
-When the user wants to author a workflow, start from a relevant bundled sample
-when one fits. Read [workflow samples](references/workflow-samples.md) before
+When the user wants to author an automation, start from a relevant bundled sample
+when one fits. Read [automation samples](references/automation-samples.md) before
 proposing the graph.
 
-Do not create, edit, schedule, or run a workflow merely because the request
+Do not create, edit, schedule, or run an automation merely because the request
 matches. Keep one-off work as a direct request, and wait for the user to choose
-workflow authoring before making a blueprint or changing workflow state.
+automation authoring before making a blueprint or changing automation state.
 
 ## Select a Provider Model Deliberately
 

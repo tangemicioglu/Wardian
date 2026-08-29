@@ -1,6 +1,6 @@
 # Skill Manager References
 
-This document maps public skill-management systems to design patterns relevant to Wardian's skill library, agent habitats, and future workflow-builder integration.
+This document maps public skill-management systems to design patterns relevant to Wardian's skill library, agent habitats, and future automation-builder integration.
 
 This is not an endorsement, affiliation claim, product evaluation, or competitive teardown. The notes below describe public architecture and design pressure only.
 
@@ -50,7 +50,7 @@ Source basis: AGHub and Chops were specifically requested and were checked again
 - Simple contribution model: add a folder containing `SKILL.md`.
 - Roadmap items around versioning, dependency graphs, and marketplace integrations.
 
-**Wardian relevance:** AGHub is useful as a catalog-scale reference, especially for import and search. It is less useful as a complete governance model because it does not appear to own a rich local inventory, trust workflow, or human-observable activation view. Wardian should be able to ingest from a catalog like this while preserving local source-of-truth records, source URL, install target, activation state, and review notes.
+**Wardian relevance:** AGHub is useful as a catalog-scale reference, especially for import and search. It is less useful as a complete governance model because it does not appear to own a rich local inventory, trust automation, or human-observable activation view. Wardian should be able to ingest from a catalog like this while preserving local source-of-truth records, source URL, install target, activation state, and review notes.
 
 ### Chops
 
@@ -101,7 +101,7 @@ Source basis: AGHub and Chops were specifically requested and were checked again
 - Per-tool activation status.
 - Symlink/junction preferred, copy fallback for restricted platforms or incompatible tools.
 - Onboarding migration that scans existing tool skills and imports them into the central repo.
-- Import workflows for local folders and multi-skill Git repositories.
+- Import automations for local folders and multi-skill Git repositories.
 - Scope controls and project-directory management.
 - Broad tool matrix, including Claude Code, Cursor, Codex, OpenCode, Antigravity, Amp, Kimi, Augment, OpenClaw, Cline, Continue, Kiro, OpenHands, Pi, Qwen, Goose, Gemini, Copilot, Droid, Windsurf, Hermes, and others.
 
@@ -148,7 +148,7 @@ Source basis: AGHub and Chops were specifically requested and were checked again
 
 **Source basis:** Public repo checked.
 
-**What it includes:** Trail of Bits Skills is a curated Claude Code plugin marketplace for security analysis, testing, reverse engineering, mobile security, smart contracts, verification, infrastructure, and development workflows. It also includes a Codex-oriented sidecar under `.codex/skills/`.
+**What it includes:** Trail of Bits Skills is a curated Claude Code plugin marketplace for security analysis, testing, reverse engineering, mobile security, smart contracts, verification, infrastructure, and development automations. It also includes a Codex-oriented sidecar under `.codex/skills/`.
 
 **Distinctive components:**
 
@@ -172,7 +172,7 @@ Source basis: AGHub and Chops were specifically requested and were checked again
 - MCP and SDK access to registry operations.
 - Keyword, vector, and capability search.
 - Agent details, trust scores, and similar-agent queries.
-- Publish workflow that validates package files and records repo/commit metadata.
+- Publish automation that validates package files and records repo/commit metadata.
 
 **Wardian relevance:** This is adjacent rather than a simple skill manager because it manages agent registry concerns too. Wardian should track it for interoperability: skills, agents, trust, and capability discovery are converging, and Wardian's local library should not assume skills are the only reusable object type.
 

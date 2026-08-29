@@ -24,7 +24,7 @@ Wardian does not guess when an exact provider identity is missing. It does not s
 
 If Wardian reports that a session identifier matches a credential environment value, stop the affected agent, rotate the exposed credential if it may have been persisted by an older Wardian version, and launch the agent again. Wardian does not print the matching value in the error.
 
-## Basic Workflow
+## Basic Automation
 
 1. Install one provider CLI.
 2. Confirm the command is on `PATH`.
@@ -36,17 +36,17 @@ You can choose a preferred launch provider in [Settings](./settings.md). `Auto` 
 
 ## Opt-In Provider Execution Validation
 
-Maintainers can run real-provider workflow and delivery matrices after all provider CLIs are installed, authenticated, and trusted for the target workspace. This validation is opt-in because it sends prompts to live provider accounts. Provider-runtime claims must use this real-provider layer or another real-provider native E2E test; mock-provider tests are only valid for Wardian-owned routing, state, queueing, UI, and deterministic terminal plumbing.
+Maintainers can run real-provider automation and delivery matrices after all provider CLIs are installed, authenticated, and trusted for the target workspace. This validation is opt-in because it sends prompts to live provider accounts. Provider-runtime claims must use this real-provider layer or another real-provider native E2E test; mock-provider tests are only valid for Wardian-owned routing, state, queueing, UI, and deterministic terminal plumbing.
 
 The maintained matrix includes Codex, Claude, OpenCode, Antigravity, and Pi. Deprecated Gemini is intentionally excluded.
 
-Run the temporary-provider workflow matrix to prove that each provider can launch headlessly, execute a workflow task, and return readable node output. The Codex leg deliberately uses an isolated non-Git workspace so the `codex exec --skip-git-repo-check` path is exercised:
+Run the temporary-provider automation matrix to prove that each provider can launch headlessly, execute an automation task, and return readable node output. The Codex leg deliberately uses an isolated non-Git workspace so the `codex exec --skip-git-repo-check` path is exercised:
 
 ```bash
 WARDIAN_E2E_REAL_HEADLESS_PROVIDERS=1 \
 WARDIAN_E2E_HEADLESS_PROVIDERS=codex,claude,opencode,antigravity,pi \
 WARDIAN_E2E_REAL_WORKSPACE="<absolute-workspace-path>" \
-npm run test:e2e:native:fast -- e2e-native/tests/provider-headless-workflow-real-native.test.mjs
+npm run test:e2e:native:fast -- e2e-native/tests/provider-headless-automation-real-native.test.mjs
 ```
 
 PowerShell:
@@ -55,7 +55,7 @@ PowerShell:
 $env:WARDIAN_E2E_REAL_HEADLESS_PROVIDERS = "1"
 $env:WARDIAN_E2E_HEADLESS_PROVIDERS = "codex,claude,opencode,antigravity,pi"
 $env:WARDIAN_E2E_REAL_WORKSPACE = "<absolute-workspace-path>"
-npm run test:e2e:native:fast -- e2e-native/tests/provider-headless-workflow-real-native.test.mjs
+npm run test:e2e:native:fast -- e2e-native/tests/provider-headless-automation-real-native.test.mjs
 Remove-Item Env:\WARDIAN_E2E_REAL_HEADLESS_PROVIDERS
 Remove-Item Env:\WARDIAN_E2E_HEADLESS_PROVIDERS
 Remove-Item Env:\WARDIAN_E2E_REAL_WORKSPACE
@@ -155,7 +155,7 @@ If a command appears only after a shell startup script modifies `PATH`, make tha
 
 ## Gemini CLI (Deprecated)
 
-Gemini is a legacy provider and is not included in Wardian's maintained real-provider execution matrix. Use Codex, Claude, OpenCode, Antigravity, or Pi for new workflows and provider-runtime verification. Antigravity remains a separate provider and uses the `agy` command.
+Gemini is a legacy provider and is not included in Wardian's maintained real-provider execution matrix. Use Codex, Claude, OpenCode, Antigravity, or Pi for new automations and provider-runtime verification. Antigravity remains a separate provider and uses the `agy` command.
 
 ## Antigravity
 
@@ -277,7 +277,7 @@ PowerShell:
 Get-Command <provider-command>
 ```
 
-If the command exists in a terminal but Wardian still cannot find it, update the user or system `PATH` that the desktop app inherits, then fully restart Wardian. Changing the agent **Default Shell** can help shell-hosted workflow commands, but it does not by itself make an interactive provider executable visible to the Wardian app process.
+If the command exists in a terminal but Wardian still cannot find it, update the user or system `PATH` that the desktop app inherits, then fully restart Wardian. Changing the agent **Default Shell** can help shell-hosted automation commands, but it does not by itself make an interactive provider executable visible to the Wardian app process.
 
 If the provider is disabled in Wardian but appears in a terminal, the desktop app and that terminal are seeing different environments. Fix the app-level `PATH`, restart Wardian, and check the provider list again.
 
@@ -298,7 +298,7 @@ Prefer one of these fixes:
 
 ### Shell Mismatch
 
-Provider shims can behave differently in bash, zsh, PowerShell, cmd, Git Bash, WSL, and package-manager shells. Wardian resolves the interactive provider executable from the app process, then may wrap some Windows shims for compatibility. Use the agent **Default Shell** in [Settings](./settings.md) for shell-hosted commands and workflow command nodes, but fix provider-not-found errors by making the provider command visible to the app process `PATH`.
+Provider shims can behave differently in bash, zsh, PowerShell, cmd, Git Bash, WSL, and package-manager shells. Wardian resolves the interactive provider executable from the app process, then may wrap some Windows shims for compatibility. Use the agent **Default Shell** in [Settings](./settings.md) for shell-hosted commands and automation command nodes, but fix provider-not-found errors by making the provider command visible to the app process `PATH`.
 
 ### Provider-Specific Startup Failure
 

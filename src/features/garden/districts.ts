@@ -530,7 +530,7 @@ const DISTRICT_LINK_PREFIXES = ["deployed:agent:", "origin:agent:"] as const;
  * Built from agents only, which is what makes it usable as evidence: a token
  * appearing here is one that some agent actually has, so an entity sharing it
  * has a real tie to a populated place rather than to its own kind. It is also
- * why `section:workflows` and friends cannot vote — no agent carries them.
+ * why `section:automations` and friends cannot vote — no agent carries them.
  */
 export interface DistrictAffinity {
   /** token -> districtId -> number of agents there carrying it. */
@@ -583,9 +583,9 @@ export function buildDistrictAffinity(
  *
  * Scored as an IDF-weighted vote, using the same smoothed statistic as the
  * metric, so rarity does the discriminating without a hand-tuned rule. A
- * workflow whose shell node runs in `D:/Trading/trident` shares that path facet
+ * automation whose shell node runs in `D:/Trading/trident` shares that path facet
  * with the two agents living there: `ln(54/3) ≈ 2.9`, decisive. The same
- * workflow also shares `path:d:/` with everyone, where `df == N` makes the IDF
+ * automation also shares `path:d:/` with everyone, where `df == N` makes the IDF
  * exactly 0 and the token free. Nothing needs to know that a drive root is
  * uninteresting and a project directory is not.
  *

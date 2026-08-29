@@ -15,8 +15,8 @@ function item(overrides: Partial<QueueItem>): QueueItem {
 describe("queue presentation", () => {
   it("uses event outcomes rather than Headless styling", () => {
     expect(queueItemTone(item({ type: "agent_completed" }))).toBe("success");
-    expect(queueItemTone(item({ type: "workflow_completed", status: "completed" }))).toBe("success");
-    expect(queueItemTone(item({ type: "workflow_completed", status: "failed" }))).toBe("error");
+    expect(queueItemTone(item({ type: "automation_completed", status: "completed" }))).toBe("success");
+    expect(queueItemTone(item({ type: "automation_completed", status: "failed" }))).toBe("error");
     expect(queueItemTone(item({ type: "action_needed" }))).toBe("warning");
     expect(QUEUE_TONE_CLASSES.success.accent).toBe("bg-wardian-success");
   });
@@ -24,6 +24,6 @@ describe("queue presentation", () => {
   it("keeps Inbox event labels distinct from lifecycle labels", () => {
     expect(queueItemLabel(item({ type: "action_needed" }))).toBe("Action required");
     expect(queueItemLabel(item({ type: "approval_request" }))).toBe("Approval requested");
-    expect(queueItemLabel(item({ type: "workflow_completed", status: "completed" }))).toBe("Workflow completed");
+    expect(queueItemLabel(item({ type: "automation_completed", status: "completed" }))).toBe("Automation completed");
   });
 });

@@ -50,7 +50,7 @@ The live control protocol exposes CLI wrappers for the same worktree operations:
 `submit_prompt_to_agent` is the structured prompt submission command for live
 agents. It returns a `DeliveryDetail` and routes through the same backend
 live-surface delivery service used by CLI sends, command panel sends, remote
-prompt sends, workflow live routing, and mailbox drain. It must not be replaced
+prompt sends, automation live routing, and mailbox drain. It must not be replaced
 with raw `send_input_to_agent` calls for prompt injection. Fixed sleeps before
 injection are not a correctness mechanism; delivery should wait for readiness
 evidence or queue the interaction.
@@ -88,9 +88,9 @@ Legacy Queue commands persist the frontend completion projection and preferences
 
 - `list_inbox_notifications`
 - `resolve_inbox_notification`
-- `list_workflow_inbox_approvals`
+- `list_automation_inbox_approvals`
 
-Agent-created updates and approvals are durable `InteractionKind::Notification` records in SQLite. Approval resolution writes a child reply record; it never impersonates a user as an agent or injects free text into a provider terminal. `list_workflow_inbox_approvals` is a read projection of native workflow Approval nodes; `workflow_approve` remains the workflow engine's authoritative transition.
+Agent-created updates and approvals are durable `InteractionKind::Notification` records in SQLite. Approval resolution writes a child reply record; it never impersonates a user as an agent or injects free text into a provider terminal. `list_automation_inbox_approvals` is a read projection of native automation Approval nodes; `automation_approve` remains the automation engine's authoritative transition.
 
 `load_agent_interactions` and `save_agent_interactions` preserve the existing lightweight graph interaction projection. They are separate from the backend interaction control plane records used by structured `ask` and `reply`.
 
@@ -564,20 +564,20 @@ same exact grant function as the native picker; the latter exposes aggregate
 ownership counts only. Both are compiled out of release builds and are not
 frontend application APIs.
 
-## Workflows (`commands/workflow.rs`)
+## Automations (`commands/automation.rs`)
 
-Current workflow commands:
+Current automation commands:
 
-- `workflow_parse`
-- `workflow_validate`
-- `workflow_write`
-- `workflow_list_blueprints`
-- `workflow_list_runs`
-- `workflow_read_run`
-- `workflow_run`
-- `workflow_resume`
-- `workflow_approve`
-- `workflow_cancel`
+- `automation_parse`
+- `automation_validate`
+- `automation_write`
+- `automation_list_blueprints`
+- `automation_list_runs`
+- `automation_read_run`
+- `automation_run`
+- `automation_resume`
+- `automation_approve`
+- `automation_cancel`
 - `schedule_create`
 - `schedule_update`
 - `schedule_list`
@@ -586,9 +586,9 @@ Current workflow commands:
 - `schedule_remove`
 - `schedule_run_now`
 
-Old workflow system command names such as `run_workflow`, `list_workflows`,
+Old automation system command names such as `run_automation`, `list_automations`,
 `list_scheduled_runs`, and `create_scheduled_run` belong to the retired JSON
-workflow system. Do not add new frontend behavior against those names.
+automation system. Do not add new frontend behavior against those names.
 
 ## Library (`commands/library.rs`)
 
@@ -703,15 +703,15 @@ Common app-level events:
 - `agent-pty-output-ready`
 - `agent-terminal-cleared`
 - `agents-updated`
-- `workflow-telemetry`
-- `workflow-progress`
-- `workflow-status-updated`
+- `automation-telemetry`
+- `automation-progress`
+- `automation-status-updated`
 - `scheduled-runs-updated`
 - `git-changed`
 - `library-changed` with payload `{ "library_type": "skills" }`
 - `file-resource://revision` with the next stable Files descriptor
 
-For payload semantics, see [IPC and Event Governance](./ipc-events.md) and the workflow engine docs.
+For payload semantics, see [IPC and Event Governance](./ipc-events.md) and the automation engine docs.
 
 ## Live Control Protocol
 

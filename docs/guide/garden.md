@@ -1,19 +1,19 @@
 # Garden
 
 The Garden is a map of everything Wardian knows about, laid out so that
-position means something. Agents, workflows, skills, and library assets all
+position means something. Agents, automations, skills, and library assets all
 appear as units, and two units sit near each other because they share facts —
 the same workspace, the same team, the same worktree, the same deployment.
 
 Use the Garden when you want to see the shape of your setup: which agents
-cluster around a repository, which workflows belong to which agent, and what is
+cluster around a repository, which automations belong to which agent, and what is
 sitting on its own with nothing tying it to the rest.
 
 ## How Position Is Decided
 
 Each unit is described by **facets** taken from records Wardian already keeps —
 a workspace path and every directory above it, team membership, agent class,
-provider, worktree, the agents a skill is deployed to, the agents a workflow is
+provider, worktree, the agents a skill is deployed to, the agents an automation is
 bound to. Two units are close when they share facets, and a shared facet counts
 in proportion to how rare it is. Sharing a provider with twenty other agents
 says almost nothing about you; sharing a worktree with one other agent says a
@@ -39,11 +39,11 @@ in rings around it, sized to hold what is actually in them. Districts that are
 semantically close end up as neighbours rather than being spread out by
 alphabetical or creation order.
 
-A workflow lands in the district of the agent it runs on. That agent can come
+An automation lands in the district of the agent it runs on. That agent can come
 from the blueprint itself, when a node names a specific agent, or from the
-schedule that deploys the workflow. A blueprint that only says `role:evolver` or
+schedule that deploys the automation. A blueprint that only says `role:evolver` or
 `class:Coder` has stated a *requirement* rather than a binding — it says what
-kind of agent it needs, not which one — so a workflow like that stays in the
+kind of agent it needs, not which one — so an automation like that stays in the
 commons until a schedule deploys it somewhere.
 
 ## Navigating the Map
@@ -78,7 +78,7 @@ layout.
 
 The Garden's derived layout is not a source of truth for anything. Districts,
 distances, and clustering are all computed from records that already exist:
-the agent roster, `topology.json`, team membership, the workflow library, and
+the agent roster, `topology.json`, team membership, the automation library, and
 schedule records. Change any of those and the map follows.
 
 The only Garden-owned state is what you place by hand, along with the current

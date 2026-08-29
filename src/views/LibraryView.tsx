@@ -9,10 +9,10 @@ import { LibrarySectionId } from '../types';
 export interface LibraryViewProps {
     surfaceId?: string;
     selectedAgentIds: Set<string>;
-    /** Threaded through to the workflow detail panel's "Open in Workflows
+    /** Threaded through to the automation detail panel's "Open in Automations
      * view" link. Optional and no-op when absent — App.tsx wiring lands in
      * a later task. */
-    onOpenWorkflowsView?: () => void;
+    onOpenAutomationsView?: () => void;
 }
 
 /**
@@ -23,7 +23,7 @@ export interface LibraryViewProps {
 export const LibraryView: React.FC<LibraryViewProps> = ({
     surfaceId = 'legacy-library',
     selectedAgentIds,
-    onOpenWorkflowsView,
+    onOpenAutomationsView,
 }) => {
     const index = useLibraryStore((s) => s.index);
     const isLoading = useLibraryStore((s) => s.isLoading);
@@ -150,7 +150,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     <DetailPane
                         surfaceId={surfaceId}
                         selectedAgentIds={selectedAgentIds}
-                        onOpenWorkflowsView={onOpenWorkflowsView}
+                        onOpenAutomationsView={onOpenAutomationsView}
                     />
                 </div>
             </div>

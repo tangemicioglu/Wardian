@@ -39,7 +39,7 @@ Spawning an agent follows a deterministic sequence in `manager::spawn_agent`:
 7. **Registration**: The `ActiveAgent` handle is added to the `AppState`.
 
 ### Shell-hosted Launch Notes
-- Workflow shell-command nodes and headless provider runs use the same shell resolver as interactive PTY sessions.
+- Automation shell-command nodes and headless provider runs use the same shell resolver as interactive PTY sessions.
 - On Windows, provider shims are host-aware: PowerShell hosts invoke `.cmd` and `.bat` shims directly through PowerShell, while POSIX-like hosts such as Git Bash or WSL may route Windows shims through `cmd.exe` for compatibility.
 - On Linux and macOS, Wardian resolves shells from the standard shell list and executes the provider command through that shell's command-string mode.
 

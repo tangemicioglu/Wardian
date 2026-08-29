@@ -25,13 +25,13 @@ test.describe("Critical browser flows", () => {
     await expect(page.locator('[data-testid="broadcast-submit"]')).toBeDisabled();
   });
 
-  test("workflow builder can add a manual trigger block from the library", async () => {
-    await openSurface(page, "workflows");
-    const workflows = surfacePanel(page, "workflows");
-    await expect(workflows.getByTestId("workflows-view")).toBeVisible();
-    await expect(workflows.getByTestId("workflows-edit-mode")).toBeVisible();
+  test("automation builder can add a manual trigger block from the library", async () => {
+    await openSurface(page, "automations");
+    const automations = surfacePanel(page, "automations");
+    await expect(automations.getByTestId("automations-view")).toBeVisible();
+    await expect(automations.getByTestId("automations-edit-mode")).toBeVisible();
 
-    await workflows.getByTestId("workflows-view").getByRole("button", { name: "Add node" }).click();
+    await automations.getByTestId("automations-view").getByRole("button", { name: "Add node" }).click();
     await expect(page.getByTestId("node-library")).toBeVisible();
 
     await page.getByRole("button", { name: /Manual Trigger/ }).click();
@@ -41,6 +41,6 @@ test.describe("Critical browser flows", () => {
       .filter({ hasText: "Manual Trigger" });
     await expect(manualTriggerNode).toHaveCount(1);
     await expect(manualTriggerNode).toBeVisible();
-    await expect(workflows.getByTestId("workflows-view").getByRole("button", { name: /^Run$/ })).toBeDisabled();
+    await expect(automations.getByTestId("automations-view").getByRole("button", { name: /^Run$/ })).toBeDisabled();
   });
 });

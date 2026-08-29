@@ -187,9 +187,9 @@ test(
       ([sessionId, renderer]) => [sessionId, renderer.fitCount],
     ));
 
-    await openWorkbenchSurface(driver, "workflows");
+    await openWorkbenchSurface(driver, "automations");
     for (let cycle = 0; cycle < 5; cycle += 1) {
-      await focusSurfaceTab(driver, "workflows");
+      await focusSurfaceTab(driver, "automations");
       await focusSurfaceTab(driver, "agents-overview");
       const returned = await waitForStableRenderers(driver, presentations, initialRenderer);
       for (const [sessionId, snapshot] of Object.entries(returned.snapshots)) {

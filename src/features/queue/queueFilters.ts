@@ -3,15 +3,15 @@ import type { QueueEventType, QueueItem, QueuePreferences } from "../../types";
 export const QUEUE_EVENT_LABELS: Record<QueueEventType, string> = {
   action_needed: "Action required",
   agent_completed: "Agent completions",
-  workflow_completed: "Workflow completions",
-  workflow_failed: "Workflow failures",
+  automation_completed: "Automation completions",
+  automation_failed: "Automation failures",
 };
 
 export const QUEUE_EVENT_TYPES: QueueEventType[] = [
   "action_needed",
   "agent_completed",
-  "workflow_completed",
-  "workflow_failed",
+  "automation_completed",
+  "automation_failed",
 ];
 
 export const DEFAULT_QUEUE_SOUND_VOLUME = 0.5;
@@ -20,20 +20,20 @@ export const DEFAULT_QUEUE_PREFERENCES: QueuePreferences = {
   visible_event_types: {
     action_needed: true,
     agent_completed: true,
-    workflow_completed: true,
-    workflow_failed: true,
+    automation_completed: true,
+    automation_failed: true,
   },
   desktop_notifications: {
     action_needed: true,
     agent_completed: false,
-    workflow_completed: false,
-    workflow_failed: false,
+    automation_completed: false,
+    automation_failed: false,
   },
   sound_notifications: {
     action_needed: true,
     agent_completed: false,
-    workflow_completed: false,
-    workflow_failed: false,
+    automation_completed: false,
+    automation_failed: false,
   },
   sound_volume: DEFAULT_QUEUE_SOUND_VOLUME,
 };
@@ -73,7 +73,7 @@ export function normalizeQueuePreferences(value: unknown): QueuePreferences {
 export function queueEventTypeForItem(item: QueueItem): QueueEventType {
   if (item.type === "agent_update") return "agent_completed";
   if (item.type === "approval_request") return "action_needed";
-  if (item.type === "workflow_completed" && item.status === "failed") return "workflow_failed";
+  if (item.type === "automation_completed" && item.status === "failed") return "automation_failed";
   return item.type;
 }
 

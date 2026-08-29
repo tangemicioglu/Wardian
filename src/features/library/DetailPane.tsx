@@ -12,12 +12,12 @@ import {
 } from '../../types';
 import { SkillDetail } from './detail/SkillDetail';
 import { PromptDetail } from './detail/PromptDetail';
-import { WorkflowDetail } from './detail/WorkflowDetail';
+import { AutomationDetail } from './detail/AutomationDetail';
 import { ClassDetail } from './detail/ClassDetail';
 import { McpStubDetail } from './detail/McpStubDetail';
 
 /** Sections whose content files live at `<name>.md` rather than `<name>/`. */
-const MD_FILE_SECTIONS: LibrarySectionId[] = ['prompts', 'workflows'];
+const MD_FILE_SECTIONS: LibrarySectionId[] = ['prompts', 'automations'];
 
 /** Props every per-kind detail panel shares: the entry, editor draft/dirty/
  * stale plumbing, and the pre-built shared header element. */
@@ -211,7 +211,7 @@ interface DetailPaneProps {
     selectedAgentIds: Set<string>;
     /** Threaded through from LibraryView; App.tsx wiring lands separately —
      * no-op gracefully if not provided. */
-    onOpenWorkflowsView?: () => void;
+    onOpenAutomationsView?: () => void;
 }
 
 /**
@@ -224,7 +224,7 @@ interface DetailPaneProps {
 export const DetailPane: React.FC<DetailPaneProps> = ({
     surfaceId = 'legacy-library',
     selectedAgentIds,
-    onOpenWorkflowsView,
+    onOpenAutomationsView,
 }) => {
     const index = useLibraryStore((s) => s.index);
     const activeSection = useLibraryStore((s) => s.activeSection);
@@ -464,8 +464,8 @@ export const DetailPane: React.FC<DetailPaneProps> = ({
                 );
             case 'prompt':
                 return <PromptDetail {...common} selectedAgentIds={selectedAgentIds} />;
-            case 'workflow':
-                return <WorkflowDetail {...common} onOpenWorkflowsView={onOpenWorkflowsView} />;
+            case 'automation':
+                return <AutomationDetail {...common} onOpenAutomationsView={onOpenAutomationsView} />;
             case 'class':
                 return (
                     <ClassDetail

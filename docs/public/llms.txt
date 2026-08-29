@@ -3,14 +3,14 @@
 Wardian is where local agent work becomes visible, durable, and malleable. Run
 the CLI agents you already use in real project folders, inspect their sessions
 and results, then save useful work as reusable prompts, skills, agent setups,
-workflows, or project context.
+automations, or project context.
 
 This file is an agent-readable index for the public Wardian documentation. Use the linked pages as the canonical docs source.
 
 ## Getting Started
 
 - https://docs.wardian.org/guide/getting-started - Install Wardian, complete first-run setup, verify a provider, spawn the first agent, and inspect the first Inbox result.
-- https://docs.wardian.org/guide/key-concepts - Learn the app layout, agent setup, reusable work, workflow runs, and tailorability slope.
+- https://docs.wardian.org/guide/key-concepts - Learn the app layout, agent setup, reusable work, automation runs, and tailorability slope.
 - https://docs.wardian.org/guide/ui-overview - Learn the title bar, navigation rail, agent roster, workspace areas, and common app surfaces.
 - https://docs.wardian.org/guide/workbench - Open surfaces as tabs, split and merge panes, move and reopen tabs, zoom, restore, reset, and understand terminal presentation ownership.
 - https://docs.wardian.org/guide/first-run-troubleshooting - Recover from launch, provider detection, terminal startup, Inbox, and CLI setup problems.
@@ -21,7 +21,7 @@ This file is an agent-readable index for the public Wardian documentation. Use t
 - https://docs.wardian.org/guide/grid - Map the former Grid page to the current Agents Grid mode.
 - https://docs.wardian.org/guide/dashboard - Watch the whole fleet over a trailing window, read fleet-scaled bars and live state, and spot an agent behaving oddly.
 - https://docs.wardian.org/guide/analytics - Look up how much agents, models, or providers did over a chosen period from a rows-by-time matrix.
-- https://docs.wardian.org/guide/garden - Read the map of agents, workflows, and skills where distance reflects shared workspaces, teams, worktrees, and deployments.
+- https://docs.wardian.org/guide/garden - Read the map of agents, automations, and skills where distance reflects shared workspaces, teams, worktrees, and deployments.
 - https://docs.wardian.org/guide/watchlists - Group, select, sort, and monitor agents in the roster.
 - https://docs.wardian.org/guide/inbox - Review completed work, important updates, approval requests, and action-needed items.
 - https://docs.wardian.org/guide/source-control - Stage, diff, commit, sync, and manage agent worktrees.
@@ -32,23 +32,23 @@ This file is an agent-readable index for the public Wardian documentation. Use t
 ## Reuse and Agent Direction
 
 - https://docs.wardian.org/guide/library - Manage reusable prompts, skills, and library item assignment.
-- https://docs.wardian.org/guide/agent-memory - Save evidence-backed agent memory, inspect recall, and configure optional workflow consolidation.
+- https://docs.wardian.org/guide/agent-memory - Save evidence-backed agent memory, inspect recall, and configure optional automation consolidation.
 - https://docs.wardian.org/guide/command-panel - Send one-off broadcasts or starred prompts to selected agents.
 - https://docs.wardian.org/guide/class-management - Define reusable agent setups used by spawn and clone flows.
 
-## Workflow Automation
+## Automations
 
-- https://docs.wardian.org/guide/workflows - Build and run visual automations from the Wardian app.
-- https://docs.wardian.org/workflows/ - Start with the workflow mental model, launch behavior, runtime state, and engine loop.
-- https://docs.wardian.org/workflows/building-workflows - Use the workflow canvas, block library, node settings, and variable assistant.
-- https://docs.wardian.org/workflows/node-reference - Reference workflow node types and user-visible behavior.
-- https://docs.wardian.org/workflows/triggers - Understand manual runs, scheduled triggers, and live listeners.
-- https://docs.wardian.org/workflows/agent-assignment - Map workflow roles to direct agents, fresh clones, or reusable assignment modes.
-- https://docs.wardian.org/workflows/troubleshooting - Diagnose common workflow authoring and runtime failures.
+- https://docs.wardian.org/guide/automations - Build and run visual automations from the Wardian app.
+- https://docs.wardian.org/automations/ - Start with the automation mental model, launch behavior, runtime state, and engine loop.
+- https://docs.wardian.org/automations/building-automations - Use the automation canvas, block library, node settings, and variable assistant.
+- https://docs.wardian.org/automations/node-reference - Reference automation node types and user-visible behavior.
+- https://docs.wardian.org/automations/triggers - Understand manual runs, scheduled triggers, and live listeners.
+- https://docs.wardian.org/automations/agent-assignment - Map automation roles to direct agents, fresh clones, or reusable assignment modes.
+- https://docs.wardian.org/automations/troubleshooting - Diagnose common automation authoring and runtime failures.
 
 ## CLI and Agent Communication
 
-- https://docs.wardian.org/guide/cli - Use the Wardian CLI for agent inspection, live control, inter-agent messages, worktree assignment, and workflow commands.
+- https://docs.wardian.org/guide/cli - Use the Wardian CLI for agent inspection, live control, inter-agent messages, worktree assignment, and automation commands.
 - https://docs.wardian.org/developer/ipc-events - Understand frontend/backend event contracts and runtime telemetry surfaces.
 - https://docs.wardian.org/developer/tauri-command-reference - Reference Tauri command boundaries used by the UI and native runtime.
 
@@ -64,8 +64,8 @@ This file is an agent-readable index for the public Wardian documentation. Use t
 - https://docs.wardian.org/developer/architecture - Read the high-level architecture for frontend, backend, state, and runtime boundaries.
 - https://docs.wardian.org/developer/setup - Set up a development checkout and local verification environment.
 - https://docs.wardian.org/developer/state-management - Understand persisted state, runtime state, and frontend state ownership.
-- https://docs.wardian.org/developer/agent-memory - Understand the SQLite authority, startup injection, workflow commit boundary, and provider-neutral recall architecture.
-- https://docs.wardian.org/developer/workflow-engine - Debug or extend deterministic workflow execution.
+- https://docs.wardian.org/developer/agent-memory - Understand the SQLite authority, startup injection, automation commit boundary, and provider-neutral recall architecture.
+- https://docs.wardian.org/developer/automation-engine - Debug or extend deterministic automation execution.
 - https://docs.wardian.org/developer/native-e2e - Pick the native E2E layer for PTY, invoke, provider, and filesystem behavior.
 - https://docs.wardian.org/developer/release-updates - Configure, validate, and recover signed desktop release updates, including macOS notarization.
 - https://docs.wardian.org/developer/package-manager-distribution - Publish and validate winget, Homebrew Cask, and Linux package-manager metadata from stable release artifacts.

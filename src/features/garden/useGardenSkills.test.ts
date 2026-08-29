@@ -41,8 +41,8 @@ describe("gardenSkillInputs", () => {
 
   it("reads no section but skills", () => {
     // Prompts attach to nothing, a class is an attribute an agent already
-    // carries, and workflows arrive through useGardenWorkflows keyed by
-    // Blueprint.id — admitting them here would give one workflow two units.
+    // carries, and automations arrive through useGardenAutomations keyed by
+    // Blueprint.id — admitting them here would give one automation two units.
     const index = indexOf({
       prompts: {
         stubbed: false,
@@ -52,9 +52,9 @@ describe("gardenSkillInputs", () => {
         stubbed: false,
         tree: folder("", [entry({ entry_ref: "classes/Architect", kind: "class" })]),
       },
-      workflows: {
+      automations: {
         stubbed: false,
-        tree: folder("", [entry({ entry_ref: "workflows/build.md", kind: "workflow" })]),
+        tree: folder("", [entry({ entry_ref: "automations/build.md", kind: "automation" })]),
       },
     });
     expect(gardenSkillInputs(index)).toEqual([]);

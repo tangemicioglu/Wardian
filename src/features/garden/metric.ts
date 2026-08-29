@@ -93,9 +93,9 @@ const COUPLED_KIND_PAIRS: ReadonlySet<string> = new Set([
   pairTag("agent", "skill"),
   pairTag("agent", "class"),
   pairTag("agent", "worktree"),
-  pairTag("agent", "workflow"),
+  pairTag("agent", "automation"),
   pairTag("class", "skill"),
-  pairTag("workflow", "workflow_run"),
+  pairTag("automation", "automation_run"),
   pairTag("folder", "worktree"),
   pairTag("agent", "folder"),
 ]);

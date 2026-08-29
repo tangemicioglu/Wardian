@@ -5,11 +5,11 @@ import type { AgentGraphProjection } from "../graph/graphProjection";
 import {
   agentWorkspaceRoots,
   buildAgentUnits,
-  buildWorkflowUnits,
+  buildAutomationUnits,
   computeGardenLayout,
   districtReachTiers,
   gardenLayoutSignature,
-  type GardenWorkflowInput,
+  type GardenAutomationInput,
 } from "./gardenProjection";
 import { createScene, pinEntity } from "./gardenScene";
 import { COMMONS_DISTRICT_ID, reachTier } from "./districts";
@@ -66,7 +66,7 @@ const nodes = [
   node("b1", "Gamma", "D:\\Dev\\Web"),
 ];
 
-const workflows: GardenWorkflowInput[] = [
+const automations: GardenAutomationInput[] = [
   { id: "w1", label: "Build", runStatus: "running", nodeCount: 3 },
 ];
 
@@ -75,18 +75,18 @@ function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
 }
 
 describe("computeGardenLayout", () => {
-  it("emits a position for every agent and workflow", () => {
+  it("emits a position for every agent and automation", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows,
+      automations,
       scene: createScene(),
     });
     expect([...result.positions.keys()].sort()).toEqual([
       "agent:a1",
       "agent:a2",
       "agent:b1",
-      "workflow:w1",
+      "automation:w1",
     ]);
   });
 
@@ -96,7 +96,7 @@ describe("computeGardenLayout", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows: [],
+      automations: [],
       scene: createScene(),
     });
     expect(
@@ -110,20 +110,20 @@ describe("computeGardenLayout", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows,
+      automations,
       scene: createScene(),
     });
     expect(result.placement.get("agent:a1")?.districtId).toBe("team:hw");
     expect(result.placement.get("agent:b1")?.districtId).toBe("team:web");
     // A blueprint has no durable binding until a run assigns roles.
-    expect(result.placement.get("workflow:w1")?.districtId).toBe(COMMONS_DISTRICT_ID);
+    expect(result.placement.get("automation:w1")?.districtId).toBe(COMMONS_DISTRICT_ID);
   });
 
   it("honours a pin exactly", () => {
     const first = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows,
+      automations,
       scene: createScene(),
     });
     const firstOrigin = first.placement.get("agent:a1")!.districtOrigin;
@@ -132,7 +132,7 @@ describe("computeGardenLayout", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows,
+      automations,
       scene: pinned,
     });
     // A pin is an offset from its district, not a world coordinate, and it is
@@ -149,7 +149,7 @@ describe("computeGardenLayout", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows,
+      automations,
       scene: createScene(),
     });
     expect(Object.keys(result.scene.districts.cells).sort()).toEqual([
@@ -164,7 +164,7 @@ describe("computeGardenLayout", () => {
     const result = computeGardenLayout({
       projection: projectionOf([]),
       teams: [],
-      workflows: [],
+      automations: [],
       scene: createScene(),
     });
     expect(result.positions.size).toBe(0);
@@ -174,7 +174,7 @@ describe("computeGardenLayout", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows,
+      automations,
       scene: createScene(),
     });
 
@@ -195,7 +195,7 @@ describe("computeGardenLayout", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams: spanning,
-      workflows: [],
+      automations: [],
       scene: createScene(),
     });
 
@@ -221,7 +221,7 @@ describe("computeGardenLayout", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows,
+      automations,
       scene: createScene(),
     });
 
@@ -244,7 +244,7 @@ describe("computeGardenLayout", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams: spanning,
-      workflows: [],
+      automations: [],
       scene: createScene(),
     });
     expect(result.districts.get("team:hw")?.roots).toEqual(["d:/dev/hardware", "d:/dev/web"]);
@@ -254,7 +254,7 @@ describe("computeGardenLayout", () => {
     const result = computeGardenLayout({
       projection: projectionOf([node("z1", "Zed", "")]),
       teams: [],
-      workflows: [],
+      automations: [],
       scene: createScene(),
     });
     expect(result.districts.size).toBe(0);
@@ -265,7 +265,7 @@ describe("gardenLayoutSignature", () => {
   it("ignores status, colour, and selection", () => {
     // These are display channels. If they entered the signature, every telemetry
     // tick would rerun the pipeline and nudge the whole map.
-    const base = gardenLayoutSignature(projectionOf(nodes), teams, workflows);
+    const base = gardenLayoutSignature(projectionOf(nodes), teams, automations);
     const repainted = gardenLayoutSignature(
       projectionOf(
         nodes.map((entry) => ({
@@ -276,7 +276,7 @@ describe("gardenLayoutSignature", () => {
         })),
       ),
       teams,
-      workflows,
+      automations,
     );
     expect(repainted).toBe(base);
   });
@@ -290,35 +290,35 @@ describe("gardenLayoutSignature", () => {
           { id: "a1--a2", source: "a1", target: "a2", origin: "manual", state, recency },
         ] as unknown as AgentGraphProjection["commEdges"]),
         teams,
-        workflows,
+        automations,
       );
     expect(withEdge(0.9, "recent")).toBe(withEdge(0.4, "recent"));
     expect(withEdge(0.9, "recent")).not.toBe(withEdge(0.9, "ongoing"));
   });
 
   it("reacts to roster, folder, and team membership changes", () => {
-    const base = gardenLayoutSignature(projectionOf(nodes), teams, workflows);
+    const base = gardenLayoutSignature(projectionOf(nodes), teams, automations);
     expect(
-      gardenLayoutSignature(projectionOf(nodes.slice(0, 2)), teams, workflows),
+      gardenLayoutSignature(projectionOf(nodes.slice(0, 2)), teams, automations),
     ).not.toBe(base);
     expect(
       gardenLayoutSignature(
         projectionOf([node("a1", "Alpha", "D:\Dev\Moved"), nodes[1], nodes[2]]),
         teams,
-        workflows,
+        automations,
       ),
     ).not.toBe(base);
     expect(
       gardenLayoutSignature(projectionOf(nodes), [
         { id: "hw", name: "Hardware", agentIds: ["a1"] },
         { id: "web", name: "Web", agentIds: ["b1"] },
-      ] as AgentTeam[], workflows),
+      ] as AgentTeam[], automations),
     ).not.toBe(base);
   });
 
   it("is stable under input reordering", () => {
-    expect(gardenLayoutSignature(projectionOf([...nodes].reverse()), [...teams].reverse(), workflows)).toBe(
-      gardenLayoutSignature(projectionOf(nodes), teams, workflows),
+    expect(gardenLayoutSignature(projectionOf([...nodes].reverse()), [...teams].reverse(), automations)).toBe(
+      gardenLayoutSignature(projectionOf(nodes), teams, automations),
     );
   });
 });
@@ -391,7 +391,7 @@ describe("reach becomes district centrality", () => {
     const withoutReach = computeGardenLayout({
       projection: projectionOf(roster),
       teams: [],
-      workflows: [],
+      automations: [],
       scene: createScene(),
     });
     expect(seatOf(withoutReach, coordinator)).toBeGreaterThan(seatOf(withoutReach, coordinated));
@@ -399,7 +399,7 @@ describe("reach becomes district centrality", () => {
     const withReach = computeGardenLayout({
       projection: projectionOf(roster),
       teams: [],
-      workflows: [],
+      automations: [],
       reach: [{ agent_id: "m1", roots: ["d:/alpha"] }],
       scene: createScene(),
     });
@@ -414,13 +414,13 @@ describe("reach becomes district centrality", () => {
     const plain = computeGardenLayout({
       projection: projectionOf(roster),
       teams: [],
-      workflows: [],
+      automations: [],
       scene: createScene(),
     });
     const reached = computeGardenLayout({
       projection: projectionOf(roster),
       teams: [],
-      workflows: [],
+      automations: [],
       // A root nobody else holds, so the tier stays 0 and nothing may move.
       reach: [{ agent_id: "a1", roots: ["d:/elsewhere"] }],
       scene: createScene(),
@@ -429,20 +429,20 @@ describe("reach becomes district centrality", () => {
   });
 
   it("enters the layout signature, so arriving reach provokes a relayout", () => {
-    const base = gardenLayoutSignature(projectionOf(nodes), teams, workflows, []);
+    const base = gardenLayoutSignature(projectionOf(nodes), teams, automations, []);
     expect(
-      gardenLayoutSignature(projectionOf(nodes), teams, workflows, [], [
+      gardenLayoutSignature(projectionOf(nodes), teams, automations, [], [
         { agent_id: "a1", roots: ["d:/dev/web"] },
       ]),
     ).not.toBe(base);
   });
 
   it("digests reach independently of ordering", () => {
-    const one = gardenLayoutSignature(projectionOf(nodes), teams, workflows, [], [
+    const one = gardenLayoutSignature(projectionOf(nodes), teams, automations, [], [
       { agent_id: "a1", roots: ["d:/b", "d:/a"] },
       { agent_id: "a2", roots: ["d:/c"] },
     ]);
-    const other = gardenLayoutSignature(projectionOf(nodes), teams, workflows, [], [
+    const other = gardenLayoutSignature(projectionOf(nodes), teams, automations, [], [
       { agent_id: "a2", roots: ["d:/c"] },
       { agent_id: "a1", roots: ["d:/a", "d:/b"] },
     ]);
@@ -455,7 +455,7 @@ describe("display attachment", () => {
     const layout = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows,
+      automations,
       scene: createScene(),
     });
     const units = buildAgentUnits(
@@ -470,16 +470,16 @@ describe("display attachment", () => {
     expect(alpha.crown).toEqual([]);
   });
 
-  it("attaches workflow run status without touching position", () => {
+  it("attaches automation run status without touching position", () => {
     const layout = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows,
+      automations,
       scene: createScene(),
     });
-    const units = buildWorkflowUnits(workflows, layout.positions);
+    const units = buildAutomationUnits(automations, layout.positions);
     expect(units[0]).toMatchObject({ label: "Build", runStatus: "running", nodeCount: 3 });
-    expect(units[0].position).toEqual(layout.positions.get("workflow:w1"));
+    expect(units[0].position).toEqual(layout.positions.get("automation:w1"));
   });
 });
 
@@ -498,7 +498,7 @@ describe("skills as agent attributes", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows: [],
+      automations: [],
       skills: [kicad],
       scene: createScene(),
     });
@@ -509,7 +509,7 @@ describe("skills as agent attributes", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows: [],
+      automations: [],
       skills: [kicad],
       scene: createScene(),
     });
@@ -528,7 +528,7 @@ describe("skills as agent attributes", () => {
     const result = computeGardenLayout({
       projection: projectionOf(mixed),
       teams,
-      workflows: [],
+      automations: [],
       skills: [
         { ...kicad, deployments: [{ targetType: "class", targetId: "Architect", linked: true }] },
       ],
@@ -554,7 +554,7 @@ describe("skills as agent attributes", () => {
     const result = computeGardenLayout({
       projection: projectionOf(peers),
       teams: oneTeam,
-      workflows: [],
+      automations: [],
       skills: [
         {
           ...kicad,
@@ -578,7 +578,7 @@ describe("skills as agent attributes", () => {
     const result = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows: [],
+      automations: [],
       skills: [
         { ...kicad, entryRef: "skills/everywhere", label: "Everywhere",
           deployments: [{ targetType: "user", targetId: "global", linked: true }] },
@@ -600,7 +600,7 @@ describe("skills as agent attributes", () => {
     const layout = computeGardenLayout({
       projection: projectionOf(nodes),
       teams,
-      workflows: [],
+      automations: [],
       skills: [kicad],
       scene: createScene(),
     });
@@ -612,26 +612,26 @@ describe("skills as agent attributes", () => {
   it("relayouts on a redeployment but not on a rename or a copy fallback", () => {
     // A copy and a junction are the same tie for distance purposes and differ
     // only in how the glyph is stroked.
-    const base = gardenLayoutSignature(projectionOf(nodes), teams, workflows, [kicad]);
+    const base = gardenLayoutSignature(projectionOf(nodes), teams, automations, [kicad]);
     expect(
-      gardenLayoutSignature(projectionOf(nodes), teams, workflows, [
+      gardenLayoutSignature(projectionOf(nodes), teams, automations, [
         { ...kicad, label: "Renamed", tags: ["other"] },
       ]),
     ).toBe(base);
     expect(
-      gardenLayoutSignature(projectionOf(nodes), teams, workflows, [
+      gardenLayoutSignature(projectionOf(nodes), teams, automations, [
         { ...kicad, deployments: [{ targetType: "agent", targetId: "a1", linked: false }] },
       ]),
     ).toBe(base);
     expect(
-      gardenLayoutSignature(projectionOf(nodes), teams, workflows, [
+      gardenLayoutSignature(projectionOf(nodes), teams, automations, [
         { ...kicad, deployments: [{ targetType: "agent", targetId: "b1", linked: true }] },
       ]),
     ).not.toBe(base);
   });
 });
 
-describe("workflows resolve into districts", () => {
+describe("automations resolve into districts", () => {
   // Mirrors the real roster: a couple of agents in the Trident workspace, the
   // rest elsewhere.
   const mixed = [
@@ -642,27 +642,27 @@ describe("workflows resolve into districts", () => {
   ];
   const noTeams: AgentTeam[] = [];
 
-  const base: GardenWorkflowInput = {
+  const base: GardenAutomationInput = {
     id: "trident-alerts",
     label: "Trident Alerts",
     runStatus: "none",
     nodeCount: 4,
   };
 
-  function districtOf(workflow: GardenWorkflowInput) {
+  function districtOf(automation: GardenAutomationInput) {
     const result = computeGardenLayout({
       projection: projectionOf(mixed),
       teams: noTeams,
-      workflows: [workflow],
+      automations: [automation],
       scene: createScene(),
     });
-    return result.placement.get(`workflow:${workflow.id}`)?.districtId;
+    return result.placement.get(`automation:${automation.id}`)?.districtId;
   }
 
-  it("places a workflow beside the agents whose workspace it runs in", () => {
+  it("places an automation beside the agents whose workspace it runs in", () => {
     // The signal the user pointed at: a Trident blueprint's shell node carries
     // `cwd: D:\Trading\trident`, and two agents live there. Nothing about the
-    // workflow's *name* is consulted.
+    // automation's *name* is consulted.
     expect(districtOf({ ...base, workspacePaths: ["D:\\Trading\\trident"] })).toBe(
       "workspace:d:/trading/trident",
     );
@@ -708,10 +708,10 @@ describe("workflows resolve into districts", () => {
     const result = computeGardenLayout({
       projection: projectionOf(mixed),
       teams: noTeams,
-      workflows: [...family, ...loners],
+      automations: [...family, ...loners],
       scene: createScene(),
     });
-    const at = (id: string) => result.positions.get(`workflow:${id}`)!;
+    const at = (id: string) => result.positions.get(`automation:${id}`)!;
     let widestInFamily = 0;
     for (const left of family) {
       for (const right of family) {
@@ -766,9 +766,9 @@ describe("a full roster stays visible", () => {
 
   // Thirty blueprints with no agent, no path, and no folder: the worst case,
   // and the one that broke the map.
-  const unplaceable: GardenWorkflowInput[] = Array.from({ length: 30 }, (_, i) => ({
+  const unplaceable: GardenAutomationInput[] = Array.from({ length: 30 }, (_, i) => ({
     id: `wf${i}`,
-    label: `Workflow ${i}`,
+    label: `Automation ${i}`,
     runStatus: "none" as const,
     nodeCount: 3,
   }));
@@ -777,7 +777,7 @@ describe("a full roster stays visible", () => {
     return computeGardenLayout({
       projection: projectionOf(fullRoster()),
       teams: [],
-      workflows: unplaceable,
+      automations: unplaceable,
       scene: createScene(),
     });
   }
@@ -785,7 +785,7 @@ describe("a full roster stays visible", () => {
   it("fits a real-sized map into a real-sized viewport", () => {
     // The failure this exists to catch: entities that share no distinguishing
     // facet were seeded on a spiral whose radius grew linearly, so thirty
-    // unplaceable workflows smeared across ~1800 units. That set the grid pitch
+    // unplaceable automations smeared across ~1800 units. That set the grid pitch
     // for all thirty-seven districts, the map reached 11,000 units across, and
     // the viewport — clamped at the user zoom floor — showed the empty gap
     // between two districts. It looked like an empty Garden.
@@ -808,10 +808,10 @@ describe("a full roster stays visible", () => {
 
   it("keeps a district of indistinguishable units compact", () => {
     const result = layoutFullRoster();
-    const origin = result.placement.get("workflow:wf0")!.districtOrigin;
+    const origin = result.placement.get("automation:wf0")!.districtOrigin;
     let span = 0;
     for (let i = 0; i < unplaceable.length; i += 1) {
-      const position = result.positions.get(`workflow:wf${i}`)!;
+      const position = result.positions.get(`automation:wf${i}`)!;
       span = Math.max(
         span,
         Math.abs(position.x - origin.x) * 2,

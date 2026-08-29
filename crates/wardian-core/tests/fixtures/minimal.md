@@ -17,4 +17,4 @@ edges:
 
 # Minimal
 
-A tiny workflow used in tests.
+A tiny automation used in tests.

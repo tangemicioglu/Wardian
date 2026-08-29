@@ -1,8 +1,8 @@
 # Workbench
 
-The Workbench is Wardian's main workspace. Every app surface opens as a tab, and panes let you keep several surfaces visible at the same time. Opening Inbox, Dashboard, Library, Workflows, Graph, Garden, Agents, or an agent session no longer replaces a global page.
+The Workbench is Wardian's main workspace. Every app surface opens as a tab, and panes let you keep several surfaces visible at the same time. Opening Inbox, Dashboard, Library, Automations, Graph, Garden, Agents, or an agent session no longer replaces a global page.
 
-Use the Workbench when you want to keep context in place: an agent terminal beside Inbox, Agents beside Source Control, or a workflow beside the agents running it.
+Use the Workbench when you want to keep context in place: an agent terminal beside Inbox, Agents beside Source Control, or an automation beside the agents running it.
 
 ![Wardian Workbench with pane-local tabs, Agents, Inbox, auxiliary rail, and agent roster](../assets/screenshots/workbench-navigation/tabs-and-splits.png)
 
@@ -197,7 +197,7 @@ and **Open to Side** actions keep their usual behavior.
 
 ## Left Rail and Right Roster
 
-The left icon rail controls auxiliary tools: Explorer, Source Control, Agent Configuration, Command, Workflows, the user terminal, and Settings. It never switches the active Workbench surface. A rail item can open or focus its collapsible side pane, and a tool in that pane may explicitly request a Workbench surface.
+The left icon rail controls auxiliary tools: Explorer, Source Control, Agent Configuration, Command, Automations, the user terminal, and Settings. It never switches the active Workbench surface. A rail item can open or focus its collapsible side pane, and a tool in that pane may explicitly request a Workbench surface.
 
 The right roster has two separate jobs:
 
@@ -228,7 +228,7 @@ Selecting an agent does not silently replace the active Workbench tab.
 | Focus Workbench | `Ctrl+0` |
 | Open Agents / Dashboard / Inbox | `Ctrl+Alt+A` / `Ctrl+Alt+D` / `Ctrl+Alt+I` |
 | Open Analytics | `Ctrl+Alt+Y` |
-| Open Graph / Garden / Library / Workflows | `Ctrl+Alt+G` / `Ctrl+Alt+H` / `Ctrl+Alt+B` / `Ctrl+Alt+W` |
+| Open Graph / Garden / Library / Automations | `Ctrl+Alt+G` / `Ctrl+Alt+H` / `Ctrl+Alt+B` / `Ctrl+Alt+W` |
 
 The recent tab switcher is pane-local: hold `Ctrl`, press `Tab` to preview recent tabs, then release `Ctrl` to open the selected tab. Workbench shortcuts do not intercept normal typing inside text fields or terminal-owned key combinations. `F6` pane traversal remains available for keyboard navigation.
 

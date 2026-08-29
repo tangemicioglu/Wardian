@@ -10,14 +10,14 @@
  * | `entry_ref`       | `skills/dev/planner`        | `LibraryEntry` (path-derived)|
  * | `folderKey`       | `<section>/<path>`          | `libraryListUtils.ts`        |
  * | `fileResourceKey` | `file:<id>` / `artifact:<id>`| `files/fileResourceKey.ts`  |
- * | `Blueprint.id`    | opaque id                   | `workflow/blueprint.rs`      |
+ * | `Blueprint.id`    | opaque id                   | `automation/blueprint.rs`      |
  *
  * A list view tolerates that fragmentation. A map does not: the same object
  * arriving under two keys renders as two units, at two positions, with two
  * facet vectors — which corrupts distance rather than merely duplicating a row.
- * The worst offender is workflows, which genuinely carry two identities at
- * once (`Blueprint.id` and library `entry_ref = workflows/<file>.md`,
- * reconciled today by ad-hoc path matching in `detail/WorkflowDetail.tsx`).
+ * The worst offender is automations, which genuinely carry two identities at
+ * once (`Blueprint.id` and library `entry_ref = automations/<file>.md`,
+ * reconciled today by ad-hoc path matching in `detail/AutomationDetail.tsx`).
  *
  * This module is the single place that collapses those schemes. Every producer
  * feeding the Garden converts to an `EntityRef` first; nothing downstream sees
@@ -41,8 +41,8 @@
  */
 export type EntityKind =
   | "agent"
-  | "workflow"
-  | "workflow_run"
+  | "automation"
+  | "automation_run"
   | "skill"
   | "prompt"
   | "class"
@@ -57,7 +57,7 @@ export type EntitySource =
   | "backend"      // live control endpoint / state.db
   | "wardian_home" // files under the active Wardian home
   | "library"      // <home>/library and <home>/classes
-  | "logs"         // <home>/logs/workflows
+  | "logs"         // <home>/logs/automations
   | "workspace";   // user filesystem outside the Wardian home
 
 export interface EntityRef {
@@ -81,7 +81,7 @@ export interface EntityRef {
  *
  * Deliberately identical in shape to the existing `unitKey` (`agent:<id>`) so
  * persisted Garden positions keyed by the old scheme still resolve for agents
- * and workflows without a migration.
+ * and automations without a migration.
  */
 export function entityKey(ref: EntityRef): string {
   return `${ref.kind}:${ref.id}`;
@@ -100,8 +100,8 @@ export function parseEntityKey(key: string): { kind: EntityKind; id: string } | 
 
 const ENTITY_KINDS: ReadonlySet<EntityKind> = new Set<EntityKind>([
   "agent",
-  "workflow",
-  "workflow_run",
+  "automation",
+  "automation_run",
   "skill",
   "prompt",
   "class",
@@ -247,18 +247,18 @@ export function agentRef(sessionId: string): EntityRef {
 }
 
 /**
- * Workflows: the dual-identity case.
+ * Automations: the dual-identity case.
  *
  * `Blueprint.id` is the canonical id because it survives a file rename and is
- * what run evidence is keyed by (`logs/workflows/<blueprint_id>/<run_id>/`).
+ * what run evidence is keyed by (`logs/automations/<blueprint_id>/<run_id>/`).
  * The library `entry_ref` is retained as `path` so the same unit can be
  * matched from either direction. Callers holding only an `entry_ref` must go
- * through `resolveWorkflowRef`, which is why that function takes an index
+ * through `resolveAutomationRef`, which is why that function takes an index
  * rather than guessing.
  */
-export function workflowRef(blueprintId: string, entryPath?: string): EntityRef {
+export function automationRef(blueprintId: string, entryPath?: string): EntityRef {
   return {
-    kind: "workflow",
+    kind: "automation",
     id: blueprintId,
     source: "library",
     path: entryPath ? normalizeLibraryPath(entryPath) : undefined,
@@ -270,8 +270,8 @@ export function workflowRef(blueprintId: string, entryPath?: string): EntityRef 
  * already a stable within-library identity, so it becomes the id directly for
  * sections whose entries have no separate opaque id.
  *
- * Workflows are the exception and are rejected here: they must be constructed
- * via `workflowRef` so they collapse onto `Blueprint.id`. Returning null forces
+ * Automations are the exception and are rejected here: they must be constructed
+ * via `automationRef` so they collapse onto `Blueprint.id`. Returning null forces
  * the caller to resolve rather than silently minting a duplicate unit.
  */
 export function libraryEntryRef(entryRef: string): EntityRef | null {
@@ -289,8 +289,8 @@ export function libraryEntryRef(entryRef: string): EntityRef | null {
       return { kind: "prompt", id: normalized, source: "library", path: rest };
     case "classes":
       return { kind: "class", id: rest, source: "library", path: rest };
-    case "workflows":
-      // Caller must resolve to Blueprint.id — see resolveWorkflowRef.
+    case "automations":
+      // Caller must resolve to Blueprint.id — see resolveAutomationRef.
       return null;
     default:
       // `mcps` is stubbed in the backend and never has entries; unknown
@@ -300,31 +300,31 @@ export function libraryEntryRef(entryRef: string): EntityRef | null {
 }
 
 /**
- * Collapse a library workflow `entry_ref` onto its `Blueprint.id`.
+ * Collapse a library automation `entry_ref` onto its `Blueprint.id`.
  *
  * `index` maps normalized library entry path -> blueprint id, built from
- * `workflow_list_blueprints` (which returns `{ id, name, path }`). Unresolvable
- * refs return null: a workflow whose blueprint failed to parse must not enter
+ * `automation_list_blueprints` (which returns `{ id, name, path }`). Unresolvable
+ * refs return null: an automation whose blueprint failed to parse must not enter
  * the map under a second identity.
  */
-export function resolveWorkflowRef(
+export function resolveAutomationRef(
   entryRef: string,
   index: ReadonlyMap<string, string>,
 ): EntityRef | null {
   const normalized = normalizeLibraryPath(entryRef);
   const blueprintId = index.get(normalized);
   if (!blueprintId) return null;
-  return workflowRef(blueprintId, normalized);
+  return automationRef(blueprintId, normalized);
 }
 
 /**
- * Build the index `resolveWorkflowRef` needs from `workflow_list_blueprints`
+ * Build the index `resolveAutomationRef` needs from `automation_list_blueprints`
  * output. Blueprint `path` is an absolute file path while library `entry_ref`
- * is `workflows/<file>.md`, so match on the trailing segment — the same
- * reconciliation `detail/WorkflowDetail.tsx` performs, done once here instead
+ * is `automations/<file>.md`, so match on the trailing segment — the same
+ * reconciliation `detail/AutomationDetail.tsx` performs, done once here instead
  * of ad hoc at each call site.
  */
-export function buildWorkflowPathIndex(
+export function buildAutomationPathIndex(
   blueprints: ReadonlyArray<{ id: string; path: string }>,
 ): Map<string, string> {
   const index = new Map<string, string>();
@@ -333,7 +333,7 @@ export function buildWorkflowPathIndex(
     if (!normalized) continue;
     const fileName = normalized.slice(normalized.lastIndexOf("/") + 1);
     if (!fileName) continue;
-    index.set(`workflows/${fileName}`, blueprint.id);
+    index.set(`automations/${fileName}`, blueprint.id);
   }
   return index;
 }
@@ -396,7 +396,7 @@ export function fromGardenUnitKey(key: string): EntityRef | null {
   const parsed = parseEntityKey(key);
   if (!parsed) return null;
   if (parsed.kind === "agent") return agentRef(parsed.id);
-  if (parsed.kind === "workflow") return workflowRef(parsed.id);
+  if (parsed.kind === "automation") return automationRef(parsed.id);
   return null;
 }
 

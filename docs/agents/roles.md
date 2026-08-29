@@ -25,11 +25,11 @@ The system is built on a **Modular Multi-Agent Architecture** where each agent i
 - **Common Tasks**: System mapping, dependency analysis, and implementation planning.
 
 ### 6. Orchestrator (The Manager)
-- **Core Mission**: To delegate tasks and manage multi-agent workflows.
+- **Core Mission**: To delegate tasks and manage multi-agent automations.
 - **Common Tasks**: Task decomposition, progress monitoring, and output synthesis.
 
 ### 7. Evolver (The Optimizer)
-- **Core Mission**: To iteratively optimize systems, workflows, and agent instructions.
+- **Core Mission**: To iteratively optimize systems, automations, and agent instructions.
 - **Common Tasks**: Performance tuning, recursive instruction optimization, and bottleneck analysis.
 
 ### 8. Researcher (The Investigator)

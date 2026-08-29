@@ -75,7 +75,7 @@ describe("workbench performance script", () => {
     expect([...new Set(surfaces.map((surface) => surface.surface_type))]).toEqual(
       expect.arrayContaining([
         "new-tab", "agents-overview", "dashboard", "inbox", "graph", "garden",
-        "library", "workflows", "agent-session", "browser", "files",
+        "library", "automations", "agent-session", "browser", "files",
       ]),
     );
     expect(fixture.terminal_presentations.filter((entry) => entry.mode === "owner")).toHaveLength(1);
@@ -83,7 +83,7 @@ describe("workbench performance script", () => {
     expect(new Set(fixture.terminal_presentations.map((entry) => entry.session_id)).size).toBe(1);
 
     const singletonTypes = [
-      "agents-overview", "dashboard", "inbox", "graph", "garden", "library", "workflows",
+      "agents-overview", "dashboard", "inbox", "graph", "garden", "library", "automations",
     ];
     for (const type of singletonTypes) {
       expect(surfaces.filter((surface) => surface.surface_type === type)).toHaveLength(1);

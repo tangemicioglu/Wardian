@@ -212,9 +212,9 @@ export const RemoteMobileApp: React.FC = () => {
   );
 };
 
-function RemotePlaceholderPanel({ tab }: { tab: "workflows" | "queue" | "garden" | "library" }) {
+function RemotePlaceholderPanel({ tab }: { tab: "automations" | "queue" | "garden" | "library" }) {
   const label =
-    tab === "workflows" ? "Workflows" : tab === "queue" ? "Inbox" : tab === "garden" ? "Garden" : "Library";
+    tab === "automations" ? "Automations" : tab === "queue" ? "Inbox" : tab === "garden" ? "Garden" : "Library";
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">

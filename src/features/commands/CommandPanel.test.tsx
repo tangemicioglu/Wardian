@@ -26,7 +26,7 @@ function indexWithPrompts(promptsTree: LibraryIndex["sections"]["prompts"]["tree
     sections: {
       skills: emptySection(),
       prompts: { tree: promptsTree, stubbed: false },
-      workflows: emptySection(),
+      automations: emptySection(),
       classes: emptySection(),
       mcps: { ...emptySection(), stubbed: true },
     },

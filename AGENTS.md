@@ -22,7 +22,7 @@ Before requesting a commit or finalizing a task, ensure the following steps are 
 3. **Safety & Integrity**:
    - [ ] **Secrets Check**: Verify no API keys, credentials, or `.env` files are being committed.
    - [ ] **Git Status**: Run `git status` to ensure only intended files are staged.
-   - [ ] **Commit Message**: Use a clear, semantic commit message (e.g., `feat(workflows): implement parallel execution`).
+   - [ ] **Commit Message**: Use a clear, semantic commit message (e.g., `feat(automations): implement parallel execution`).
 
 ### PowerShell Home Safety
 - PowerShell variable names are case-insensitive: `$home` is the built-in `$HOME` variable and points to the OS user profile. Never assign to or reuse `$home` as a scratch, test, temporary, or Wardian-home variable. Use a descriptive name such as `$testHome`, `$wardianHome`, or `$tempRoot`.
@@ -39,7 +39,7 @@ Before requesting a commit or finalizing a task, ensure the following steps are 
 
 ### 1. Naming Conventions (Cross-Cutting)
 - **Folders**: `kebab-case` for Frontend/Docs, `snake_case` for Backend modules (required for Rust module identifiers).
-- **Documents**: `kebab-case.md` (e.g., `workflow-engine.md`).
+- **Documents**: `kebab-case.md` (e.g., `automation-engine.md`).
 - **IPC/Data Models**: `snake_case` for properties in both Rust and TypeScript to ensure seamless DTO serialization.
 
 ### 2. Backend Architecture (Rust/Tauri)
@@ -48,7 +48,7 @@ Before requesting a commit or finalizing a task, ensure the following steps are 
     - `models/`: Plain data structures (DTOs) and serialization logic.
     - `state/`: Application-level state management (e.g., `AppState`, `ActiveAgent`).
     - `utils/`: Global helpers for filesystem, logging, and OS interop.
-    - `workflow_engine/`: Deterministic execution logic for multi-agent workflows.
+    - `automation_engine/`: Deterministic execution logic for multi-agent automations.
 - **Single Source of Truth**: The Rust backend is the definitive authority for agent session lifecycles, PTY states, and telemetry.
 - **PTY Integrity**: All terminal logic must respect the `portable-pty` lifecycle, ensuring consistent behavior between ConPTY (Windows) and Unix PTY systems.
 - **Thread Safety**: Use async-aware primitives (e.g., `tokio::sync::Mutex`) for state shared across Tauri commands.
@@ -60,8 +60,8 @@ Before requesting a commit or finalizing a task, ensure the following steps are 
     - `features/`: Domain-driven functional modules (e.g., `agents`, `terminal`, `commands`).
     - `components/`: Shared, atomic UI parts.
 - **Naming Standards**:
-    - **React Components**: `PascalCase.tsx` (e.g., `WorkflowBuilderView.tsx`).
-    - **Hooks**: `useCamelCase.ts` (e.g., `useWorkflowStore.ts`).
+    - **React Components**: `PascalCase.tsx` (e.g., `AutomationBuilderView.tsx`).
+    - **Hooks**: `useCamelCase.ts` (e.g., `useAutomationStore.ts`).
     - **Utilities/Types**: `camelCase.ts` (e.g., `statusUtils.ts`).
 - **State Management**: The root `App.tsx` acts as the primary orchestrator for global state, delegating specific logic to feature-based stores (e.g., Zustand).
 

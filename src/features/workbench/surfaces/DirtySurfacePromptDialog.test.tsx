@@ -46,7 +46,7 @@ describe("useDirtySurfacePrompt", () => {
 
     await act(async () => {
       Promise.resolve(prompt(request)).then(first);
-      Promise.resolve(prompt({ ...request, surface_type: "workflows", title: "Workflows" })).then(second);
+      Promise.resolve(prompt({ ...request, surface_type: "automations", title: "Automations" })).then(second);
     });
     expect(screen.getByRole("heading", { name: /library/i })).toBeInTheDocument();
 
@@ -54,14 +54,14 @@ describe("useDirtySurfacePrompt", () => {
     await act(async () => Promise.resolve());
     expect(first).toHaveBeenCalledWith("discard");
     expect(second).not.toHaveBeenCalled();
-    expect(screen.getByRole("heading", { name: /workflows/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /automations/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await act(async () => Promise.resolve());
     expect(second).toHaveBeenCalledWith("cancel");
   });
 
-  it("labels Files discard as Don't Save without changing Library or Workflows", async () => {
+  it("labels Files discard as Don't Save without changing Library or Automations", async () => {
     let prompt: DirtySurfacePrompt = () => "cancel";
     render(<Harness expose={(next) => { prompt = next; }} />);
 

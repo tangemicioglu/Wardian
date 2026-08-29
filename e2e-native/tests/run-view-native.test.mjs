@@ -29,7 +29,7 @@ async function invokeTauri(driver, command, args = {}) {
   return result.value;
 }
 
-async function invokeWorkflowApprovalPair(driver, first, second) {
+async function invokeAutomationApprovalPair(driver, first, second) {
   return driver.executeAsyncScript((commandName, firstArgs, secondArgs, done) => {
     Promise.allSettled([
       window.__TAURI_INTERNALS__.invoke(commandName, firstArgs),
@@ -39,10 +39,10 @@ async function invokeWorkflowApprovalPair(driver, first, second) {
         ? { status: result.status, value: result.value }
         : { status: result.status, reason: String(result.reason) }
     ))));
-  }, "workflow_approve", first, second);
+  }, "automation_approve", first, second);
 }
 
-async function waitForWorkflowStatus(runDir, expectedStatus, timeoutMs = 15000) {
+async function waitForAutomationStatus(runDir, expectedStatus, timeoutMs = 15000) {
   const statePath = path.join(runDir, "state.json");
   const startedAt = Date.now();
   let lastState = null;
@@ -59,20 +59,20 @@ async function waitForWorkflowStatus(runDir, expectedStatus, timeoutMs = 15000) 
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
-  assert.fail(`Timed out waiting for workflow status ${expectedStatus}: ${JSON.stringify(lastState)}`);
+  assert.fail(`Timed out waiting for automation status ${expectedStatus}: ${JSON.stringify(lastState)}`);
 }
 
 function seedRun(home) {
   const blueprintId = "native-run-view";
   const runId = "run-native-1";
-  const workflowsDir = path.join(home, "library", "workflows");
-  const runDir = path.join(home, "logs", "workflows", blueprintId, runId);
+  const automationsDir = path.join(home, "library", "automations");
+  const runDir = path.join(home, "logs", "automations", blueprintId, runId);
 
-  mkdirSync(workflowsDir, { recursive: true });
+  mkdirSync(automationsDir, { recursive: true });
   mkdirSync(runDir, { recursive: true });
 
   writeFileSync(
-    path.join(workflowsDir, `${blueprintId}.md`),
+    path.join(automationsDir, `${blueprintId}.md`),
     `---
 schema: 2
 id: native-run-view
@@ -129,7 +129,7 @@ Native run view fixture.
   return { blueprintId, runId };
 }
 
-test("native run commands list and read seeded workflow run state", { timeout: 180000 }, async (t) => {
+test("native run commands list and read seeded automation run state", { timeout: 180000 }, async (t) => {
   const harness = await createNativeHarness();
   assert.ok(harness.appPath);
 
@@ -159,14 +159,14 @@ test("native run commands list and read seeded workflow run state", { timeout: 1
 
   await waitForAppShell(session.driver, 20000);
 
-  const runs = await invokeTauri(session.driver, "workflow_list_runs");
+  const runs = await invokeTauri(session.driver, "automation_list_runs");
   assert.equal(runs.length, 1);
   assert.equal(runs[0].run_id, seeded.runId);
   assert.equal(runs[0].blueprint_id, seeded.blueprintId);
   assert.equal(runs[0].status, "completed");
   assert.equal(runs[0].node_count, 1);
 
-  const run = await invokeTauri(session.driver, "workflow_read_run", {
+  const run = await invokeTauri(session.driver, "automation_read_run", {
     blueprintId: seeded.blueprintId,
     runId: seeded.runId,
   });
@@ -177,7 +177,7 @@ test("native run commands list and read seeded workflow run state", { timeout: 1
   assert.equal(run.blueprint.id, seeded.blueprintId);
 });
 
-test("native workflow approval persists before continuation and serializes concurrent decisions", { timeout: 180000 }, async (t) => {
+test("native automation approval persists before continuation and serializes concurrent decisions", { timeout: 180000 }, async (t) => {
   const harness = await createNativeHarness();
   assert.ok(harness.appPath);
 
@@ -192,14 +192,14 @@ test("native workflow approval persists before continuation and serializes concu
 
   prepareIsolatedHome(harness);
   const blueprintId = "native-approval-run";
-  const workflowsDir = path.join(harness.isolatedHome, "library", "workflows");
-  const workflowPath = path.join(workflowsDir, `${blueprintId}.md`);
+  const automationsDir = path.join(harness.isolatedHome, "library", "automations");
+  const automationPath = path.join(automationsDir, `${blueprintId}.md`);
   const delayedCommand = process.platform === "win32"
     ? "powershell -NoProfile -Command Start-Sleep -Milliseconds 1500"
     : "sleep 1.5";
-  mkdirSync(workflowsDir, { recursive: true });
+  mkdirSync(automationsDir, { recursive: true });
   writeFileSync(
-    workflowPath,
+    automationPath,
     `---
 schema: 2
 id: ${blueprintId}
@@ -240,7 +240,7 @@ edges:
   }
 
   await waitForAppShell(session.driver, 20000);
-  const inboxEvents = await startTauriEventCapture(session.driver, "workflow-inbox-updated");
+  const inboxEvents = await startTauriEventCapture(session.driver, "automation-inbox-updated");
   t.after(async () => {
     try {
       await stopTauriEventCapture(session.driver, inboxEvents);
@@ -248,34 +248,34 @@ edges:
       await session.close();
     }
   });
-  const run = await invokeTauri(session.driver, "workflow_run", {
-    path: workflowPath,
+  const run = await invokeTauri(session.driver, "automation_run", {
+    path: automationPath,
     provider: "mock",
     workspace: harness.repoRoot,
     input: {},
     bindings: {},
   });
 
-  await waitForWorkflowStatus(run.run_dir, "awaiting_approval");
+  await waitForAutomationStatus(run.run_dir, "awaiting_approval");
   const awaitingApproval = await waitForTauriEvent(
     session.driver,
     inboxEvents,
-    (payload) => payload?.workflow_id === blueprintId
+    (payload) => payload?.automation_id === blueprintId
       && payload?.run_instance_id === run.run_id
       && payload?.status === "awaiting_approval",
   );
-  assert.equal(awaitingApproval.workflow_name, "Native Approval Run");
+  assert.equal(awaitingApproval.automation_name, "Native Approval Run");
   const approvalStartedAt = Date.now();
   const approvalArgs = {
     blueprintId,
     runId: run.run_id,
-    blueprintPath: workflowPath,
+    blueprintPath: automationPath,
     node: "approval",
     granted: true,
     actor: "user",
     note: null,
   };
-  const approvalResults = await invokeWorkflowApprovalPair(
+  const approvalResults = await invokeAutomationApprovalPair(
     session.driver,
     approvalArgs,
     { ...approvalArgs },
@@ -289,21 +289,21 @@ edges:
   );
   assert.ok(
     Date.now() - approvalStartedAt < 1000,
-    "workflow_approve must return before the delayed continuation completes",
+    "automation_approve must return before the delayed continuation completes",
   );
-  const acceptedState = await waitForWorkflowStatus(run.run_dir, "running");
+  const acceptedState = await waitForAutomationStatus(run.run_dir, "running");
   assert.equal(acceptedState.status, "running");
 
-  const completedState = await waitForWorkflowStatus(run.run_dir, "completed");
+  const completedState = await waitForAutomationStatus(run.run_dir, "completed");
   assert.equal(completedState.nodes["delayed-step"], "completed");
   const completedInboxEvent = await waitForTauriEvent(
     session.driver,
     inboxEvents,
-    (payload) => payload?.workflow_id === blueprintId
+    (payload) => payload?.automation_id === blueprintId
       && payload?.run_instance_id === run.run_id
       && payload?.status === "completed",
   );
-  assert.equal(completedInboxEvent.workflow_name, "Native Approval Run");
+  assert.equal(completedInboxEvent.automation_name, "Native Approval Run");
   const events = readFileSync(path.join(run.run_dir, "events.jsonl"), "utf8")
     .trim()
     .split("\n")
@@ -312,19 +312,19 @@ edges:
   assert.equal(events.filter((event) => event.kind === "node_started" && event.node === "delayed-step").length, 1);
   assert.deepEqual(events.map((event) => event.seq), events.map((_, index) => index));
 
-  const conflictingRun = await invokeTauri(session.driver, "workflow_run", {
-    path: workflowPath,
+  const conflictingRun = await invokeTauri(session.driver, "automation_run", {
+    path: automationPath,
     provider: "mock",
     workspace: harness.repoRoot,
     input: {},
     bindings: {},
   });
-  await waitForWorkflowStatus(conflictingRun.run_dir, "awaiting_approval");
+  await waitForAutomationStatus(conflictingRun.run_dir, "awaiting_approval");
   const conflictingArgs = {
     ...approvalArgs,
     runId: conflictingRun.run_id,
   };
-  const conflictingResults = await invokeWorkflowApprovalPair(
+  const conflictingResults = await invokeAutomationApprovalPair(
     session.driver,
     conflictingArgs,
     { ...conflictingArgs, granted: false },
@@ -345,7 +345,7 @@ edges:
   assert.deepEqual(conflictingEvents.map((event) => event.seq), conflictingEvents.map((_, index) => index));
 
   if (grantedEvents.length === 1) {
-    const conflictCompleted = await waitForWorkflowStatus(conflictingRun.run_dir, "completed");
+    const conflictCompleted = await waitForAutomationStatus(conflictingRun.run_dir, "completed");
     assert.equal(conflictCompleted.nodes["delayed-step"], "completed");
     conflictingEvents = readFileSync(path.join(conflictingRun.run_dir, "events.jsonl"), "utf8")
       .trim()
@@ -356,7 +356,7 @@ edges:
       1,
     );
   } else {
-    const conflictRejected = await waitForWorkflowStatus(conflictingRun.run_dir, "failed");
+    const conflictRejected = await waitForAutomationStatus(conflictingRun.run_dir, "failed");
     assert.match(conflictRejected.failure, /approval rejected/);
     assert.equal(
       conflictingEvents.filter((event) => event.kind === "node_started" && event.node === "delayed-step").length,

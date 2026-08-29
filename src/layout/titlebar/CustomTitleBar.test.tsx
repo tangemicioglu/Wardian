@@ -88,7 +88,7 @@ describe("CustomTitleBar navigation", () => {
     expect(screen.queryByRole("button", { name: "Graph" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Garden" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Library" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Workflows" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Automations" })).not.toBeInTheDocument();
   });
 
   it("preserves telemetry, sidebar toggles, and window controls", () => {

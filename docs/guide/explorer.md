@@ -14,7 +14,7 @@ Use it when you need to inspect generated files, logs, prompt assets, or the sel
 - Open a file or folder in your configured local app or editor.
 - Reveal a file in the system file manager when you need native OS actions.
 
-## Basic Workflow
+## Basic Automation
 
 1. Select an agent in the right roster, or clear selection for global Wardian home browsing.
 2. Open the **Explorer** tab in the left sidebar.
@@ -34,7 +34,7 @@ quoted path at the prompt. You can also drop files from the operating system
 onto either surface. Chat shows attachment chips; Terminal inserts paths but
 does not run the command, so review the line and press Enter when ready.
 
-Folders are not draggable in this workflow. Local paths are inserted as local
+Folders are not draggable in this automation. Local paths are inserted as local
 paths; Wardian does not upload them to a remote workspace automatically.
 
 ## Root Behavior

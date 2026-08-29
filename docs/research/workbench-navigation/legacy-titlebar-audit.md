@@ -9,20 +9,20 @@ suite with several fixed-titlebar clicks remains one migration entry.
 The exact extended regular expression is:
 
 ```text
-\.titlebar-(center|tab)|getByRole\("button", \{ name: "(Grid|Dashboard|Queue|Library|Workflows|Graph|Garden)"|normalize-space\(\.\)='(Grid|Dashboard|Queue|Library|Workflows|Graph|Garden)'
+\.titlebar-(center|tab)|getByRole\("button", \{ name: "(Grid|Dashboard|Queue|Library|Automations|Graph|Garden)"|normalize-space\(\.\)='(Grid|Dashboard|Queue|Library|Automations|Graph|Garden)'
 ```
 
 Run it from the repository root against the frozen baseline:
 
 ```bash
-pattern='\.titlebar-(center|tab)|getByRole\("button", \{ name: "(Grid|Dashboard|Queue|Library|Workflows|Graph|Garden)"|normalize-space\(\.\)='"'"'(Grid|Dashboard|Queue|Library|Workflows|Graph|Garden)'"'"''
+pattern='\.titlebar-(center|tab)|getByRole\("button", \{ name: "(Grid|Dashboard|Queue|Library|Automations|Graph|Garden)"|normalize-space\(\.\)='"'"'(Grid|Dashboard|Queue|Library|Automations|Graph|Garden)'"'"''
 git grep -l -E "$pattern" d53842dc -- e2e e2e-native scripts src .github
 ```
 
 PowerShell:
 
 ```powershell
-$pattern = '\.titlebar-(center|tab)|getByRole\("button", \{ name: "(Grid|Dashboard|Queue|Library|Workflows|Graph|Garden)"|normalize-space\(\.\)=''(Grid|Dashboard|Queue|Library|Workflows|Graph|Garden)'''
+$pattern = '\.titlebar-(center|tab)|getByRole\("button", \{ name: "(Grid|Dashboard|Queue|Library|Automations|Graph|Garden)"|normalize-space\(\.\)=''(Grid|Dashboard|Queue|Library|Automations|Graph|Garden)'''
 $paths = git grep -l -E $pattern d53842dc -- e2e e2e-native scripts src .github
 $paths
 $paths.Count
@@ -51,9 +51,9 @@ flag-off development server cannot satisfy the run accidentally.
 | `e2e/tests/run-params.spec.ts` | Migrated in Task 15 to the semantic workbench helper. |
 | `e2e/tests/run-view.spec.ts` | Migrated in Task 15 to the semantic workbench helper. |
 | `e2e/tests/schedule-monitor.spec.ts` | Migrated in Task 15 to the semantic workbench helper. |
-| `e2e/tests/workflow-builder.spec.ts` | Migrated in Task 15 to the semantic workbench helper. |
-| `e2e/tests/workflow.spec.ts` | Migrated in Task 15 to the semantic workbench helper. |
-| `e2e/tests/workflows.spec.ts` | Migrated in Task 15 to the semantic workbench helper. |
+| `e2e/tests/automation-builder.spec.ts` | Migrated in Task 15 to the semantic workbench helper. |
+| `e2e/tests/automation.spec.ts` | Migrated in Task 15 to the semantic workbench helper. |
+| `e2e/tests/automations.spec.ts` | Migrated in Task 15 to the semantic workbench helper. |
 | `e2e-native/tests/real-provider-rendering-native.test.mjs` | Scheduled for the Task 17 native semantic helper migration. |
 | `e2e-native/tests/terminal-geometry-sweep-native.test.mjs` | Scheduled for the Task 17 native semantic helper migration. |
 | `e2e-native/tests/terminal-rendering-native.test.mjs` | Scheduled for the Task 17 native semantic helper migration. |

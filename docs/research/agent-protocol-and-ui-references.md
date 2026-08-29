@@ -1,6 +1,6 @@
 # Agent Protocol and UI References
 
-This document maps public agent interoperability and agent-generated UI systems to design patterns relevant to Wardian's workflow builder, local agent Habitat, agent-facing APIs, and human-observable control surfaces.
+This document maps public agent interoperability and agent-generated UI systems to design patterns relevant to Wardian's automation builder, local agent Habitat, agent-facing APIs, and human-observable control surfaces.
 
 This is not an endorsement, affiliation claim, product evaluation, or competitive teardown. The notes below describe public architecture and design pressure only.
 
@@ -15,18 +15,18 @@ Source basis: entries were selected through public research and checked against 
 - **Agent-to-UI protocol**: how agents communicate progress, ask for input, update shared state, or generate safe UI surfaces.
 - **Declarative construction**: whether agent systems can be described as portable text or structured specs.
 - **Trust boundary**: whether the protocol treats remote agents, generated UI, and tool outputs as untrusted data.
-- **Human observability**: whether protocol events can be projected into visible UI state, logs, approvals, and workflow nodes.
+- **Human observability**: whether protocol events can be projected into visible UI state, logs, approvals, and automation nodes.
 
 ## Summary Map
 
 | System | Primary Pattern | Wardian Takeaway |
 |---|---|---|
-| [Model Context Protocol](https://modelcontextprotocol.io/) | Tool/resource protocol for model applications. | Wardian should expose skills, workflows, memory, and app actions through structured protocols where practical. |
+| [Model Context Protocol](https://modelcontextprotocol.io/) | Tool/resource protocol for model applications. | Wardian should expose skills, automations, memory, and app actions through structured protocols where practical. |
 | [Agent2Agent / A2A](https://github.com/google-a2a/A2A) | Agent-to-agent discovery and task communication. | Useful reference for cross-agent delegation that does not depend on shared internals. |
 | [OpenClaw ACPX](https://github.com/openclaw/acpx) | Headless client for stateful Agent Client Protocol sessions. | Relevant as a structured alternative to PTY scraping for coding agents. |
 | [AG-UI](https://github.com/ag-ui-protocol/ag-ui) | Agent-user interaction protocol for frontend applications. | Strong reference for turning backend agent events into user-facing shared state and controls. |
 | [A2UI](https://github.com/google/A2UI) | Declarative, safe agent-generated UI format. | Directly relevant to "agents construct, humans observe" without letting agents emit executable UI code. |
-| [Open Agent Spec](https://github.com/oracle/agent-spec) | Declarative language for agents, workflows, and multi-agent systems. | Useful reference for portable agent/workflow definitions. |
+| [Open Agent Spec](https://github.com/oracle/agent-spec) | Declarative language for agents, automations, and multi-agent systems. | Useful reference for portable agent/automation definitions. |
 | [agent.json](https://agent-json.com/) | Web discovery document for agent-facing services. | Useful later if Wardian exposes local or shared capabilities to external agents. |
 | [LSP](https://microsoft.github.io/language-server-protocol/) and [DAP](https://microsoft.github.io/debug-adapter-protocol/) | Mature editor/tool protocols. | Good governance references for stable schemas, capabilities, versioning, and client/server separation. |
 
@@ -45,7 +45,7 @@ Source basis: entries were selected through public research and checked against 
 - Stdio and remote transport patterns.
 - Growing ecosystem of MCP servers and clients.
 
-**Wardian relevance:** Wardian should treat MCP as a first-class interoperability boundary. Skills, workspace files, workflow operations, agent roster state, and Habitat actions should be exposed through stable structured interfaces where useful, not only through UI clicks or terminal text.
+**Wardian relevance:** Wardian should treat MCP as a first-class interoperability boundary. Skills, workspace files, automation operations, agent roster state, and Habitat actions should be exposed through stable structured interfaces where useful, not only through UI clicks or terminal text.
 
 ### Agent2Agent / A2A
 
@@ -91,7 +91,7 @@ Source basis: entries were selected through public research and checked against 
 - Examples for focused protocol building blocks.
 - Terminal-and-agent client support.
 
-**Wardian relevance:** AG-UI is relevant because Wardian is a visible local agent Habitat, not just an agent launcher. Workflow nodes, action-needed prompts, approvals, agent messages, tool calls, and generated controls could all be represented as structured UI events instead of bespoke ad hoc IPC messages.
+**Wardian relevance:** AG-UI is relevant because Wardian is a visible local agent Habitat, not just an agent launcher. Automation nodes, action-needed prompts, approvals, agent messages, tool calls, and generated controls could all be represented as structured UI events instead of bespoke ad hoc IPC messages.
 
 ### A2UI
 
@@ -108,22 +108,22 @@ Source basis: entries were selected through public research and checked against 
 - Compatible with transports such as A2A and AG-UI.
 - Renderers for web and Flutter-oriented clients.
 
-**Wardian relevance:** A2UI is highly relevant to Wardian's workflow builder. Agents could propose workflow nodes, forms, inspectors, or approval panels as data, while Wardian decides how to render them using safe local components. This keeps construction agent-friendly without letting agents own the UI runtime.
+**Wardian relevance:** A2UI is highly relevant to Wardian's automation builder. Agents could propose automation nodes, forms, inspectors, or approval panels as data, while Wardian decides how to render them using safe local components. This keeps construction agent-friendly without letting agents own the UI runtime.
 
 ### Open Agent Spec
 
 **Source basis:** Public repo checked.
 
-**What it includes:** Open Agent Spec is a framework-agnostic declarative language for defining standalone agents, structured agentic workflows, and multi-agent compositions.
+**What it includes:** Open Agent Spec is a framework-agnostic declarative language for defining standalone agents, structured agentic automations, and multi-agent compositions.
 
 **Distinctive components:**
 
 - YAML/spec-oriented agent definitions.
-- Reusable building blocks for agents and workflows.
+- Reusable building blocks for agents and automations.
 - Multi-agent composition concepts.
 - Framework-neutral positioning.
 
-**Wardian relevance:** Wardian should track this class of declarative agent specs. Even if Wardian has its own workflow format, import/export adapters will matter if agent definitions become portable across tools.
+**Wardian relevance:** Wardian should track this class of declarative agent specs. Even if Wardian has its own automation format, import/export adapters will matter if agent definitions become portable across tools.
 
 ### agent.json
 
@@ -170,6 +170,6 @@ Near-term implications:
 
 - Add protocol-adapter boundaries instead of hardcoding provider behavior into UI components.
 - Treat generated UI as declarative data mapped through trusted Wardian components.
-- Keep workflow and agent definitions import/export-friendly.
+- Keep automation and agent definitions import/export-friendly.
 - Version internal event schemas like public protocols.
 - Use PTY text as evidence, but not the only source of truth when structured events exist.

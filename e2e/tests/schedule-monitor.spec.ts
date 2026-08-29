@@ -3,7 +3,7 @@ import { openSurface } from "../fixtures/workbench";
 import { mkdir } from "node:fs/promises";
 
 const adaptiveCardScreenshotDirectory =
-  "e2e/screenshots/workflow-monitor-adaptive-cards/2026-07-16T06-18-35Z";
+  "e2e/screenshots/automation-monitor-adaptive-cards/2026-07-16T06-18-35Z";
 const fixedBrowserTime = "2026-07-16T16:00:00.000Z";
 
 test.use({ locale: "en-US", timezoneId: "America/New_York" });
@@ -101,9 +101,9 @@ async function installScheduleMonitorIpcMock(page: Page) {
         if (command === "load_queue_preferences") return {};
         if (command === "load_onboarding_hints") return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         if (command === "dismiss_onboarding_hint") return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
-        if (command === "list_workflows") return [];
+        if (command === "list_automations") return [];
         if (command === "list_scheduled_runs") return [];
-        if (command === "load_workflow_library") return { folders: [], rootWorkflowIds: [] };
+        if (command === "load_automation_library") return { folders: [], rootAutomationIds: [] };
         if (command === "get_library_tree") return { type: "Folder", path: "", name: "Root", children: [] };
         if (command === "list_deployed_skills") return [];
         if (command === "load_app_settings") return null;
@@ -121,13 +121,13 @@ async function installScheduleMonitorIpcMock(page: Page) {
         if (command === "plugin:event|unlisten") return null;
         if (command === "sync_provider_theme_settings") return null;
 
-        if (command === "workflow_list_blueprints") {
+        if (command === "automation_list_blueprints") {
           return { blueprints: [{ id: "wf", name: "Scheduled WF", path: "/x/wf.md" }], truncated: false, next_offset: null };
         }
-        if (command === "workflow_parse") return { blueprint: blueprintFixture, diagnostics: [] };
-        if (command === "workflow_validate") return { ok: true, diagnostics: [] };
-        if (command === "workflow_list_runs") return { runs: [completedRunFixture], truncated: false, next_offset: null };
-        if (command === "workflow_read_run") return { state: null, events: [], blueprint: null };
+        if (command === "automation_parse") return { blueprint: blueprintFixture, diagnostics: [] };
+        if (command === "automation_validate") return { ok: true, diagnostics: [] };
+        if (command === "automation_list_runs") return { runs: [completedRunFixture], truncated: false, next_offset: null };
+        if (command === "automation_read_run") return { state: null, events: [], blueprint: null };
 
         if (command === "schedule_list") return schedules;
         if (command === "schedule_create") {
@@ -236,14 +236,14 @@ test("schedule a blueprint and prove adaptive Monitor cards", async ({ page }) =
     timeZone: "America/New_York",
   });
 
-  await openSurface(page, "workflows");
+  await openSurface(page, "automations");
   await page.evaluate(async () => {
     const { useSettingsStore } = await import("/src/store/useSettingsStore.ts");
     useSettingsStore.setState({ default_provider: "codex" });
   });
 
   await page.getByTestId("blueprint-selector").getByRole("combobox").selectOption("/x/wf.md");
-  await page.getByTestId("workflows-view").getByRole("button", { name: /^Run$/ }).click();
+  await page.getByTestId("automations-view").getByRole("button", { name: /^Run$/ }).click();
 
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
@@ -252,18 +252,18 @@ test("schedule a blueprint and prove adaptive Monitor cards", async ({ page }) =
   await dialog.getByLabel(/^workspace$/i).fill("/workspace");
   await dialog.getByRole("button", { name: /save schedule/i }).click();
 
-  await page.getByTestId("workflows-view").getByRole("button", { name: /^monitor$/i }).click();
-  const monitor = page.getByTestId("workflow-monitor");
+  await page.getByTestId("automations-view").getByRole("button", { name: /^monitor$/i }).click();
+  const monitor = page.getByTestId("automation-monitor");
   await expect(monitor).toBeVisible();
 
-  const stats = monitor.getByTestId("workflow-monitor-stats");
+  const stats = monitor.getByTestId("automation-monitor-stats");
   const statRowCount = await stats.locator(":scope > div").evaluateAll((nodes) => (
     new Set(nodes.map((node) => Math.round(node.getBoundingClientRect().top))).size
   ));
   expect(statRowCount).toBe(1);
   await stats.screenshot({ path: `${adaptiveCardScreenshotDirectory}/monitor-stats-row.png` });
 
-  const scheduledCard = monitor.getByTestId("workflow-activity-row-wf");
+  const scheduledCard = monitor.getByTestId("automation-activity-row-wf");
   await expect(scheduledCard).toHaveAttribute("data-mode", "scheduled");
   await expect(scheduledCard).toContainText("Next run");
   await expect(scheduledCard).toContainText("Schedule");
@@ -276,13 +276,13 @@ test("schedule a blueprint and prove adaptive Monitor cards", async ({ page }) =
   await expect(scheduledCard.getByRole("button", { name: "Show 1 more agents for E2E Nightly" })).toHaveText("+1 agents");
   await scheduledCard.screenshot({ path: `${adaptiveCardScreenshotDirectory}/monitor-adaptive-cards.png` });
 
-  const scriptOnlyCard = monitor.getByTestId("workflow-activity-row-script-only");
+  const scriptOnlyCard = monitor.getByTestId("automation-activity-row-script-only");
   await expect(scriptOnlyCard).toContainText("Trident LEAPS Scan");
   await expect(scriptOnlyCard).not.toContainText("Default assignment");
   await scriptOnlyCard.screenshot({ path: `${adaptiveCardScreenshotDirectory}/script-only-card.png` });
 
   await monitor.getByRole("button", { name: "History" }).click();
-  const historyCard = monitor.getByTestId("workflow-history-run-run-completed");
+  const historyCard = monitor.getByTestId("automation-history-run-run-completed");
   await expect(historyCard).toContainText("Ran");
   await expect(historyCard).toContainText("Outcome");
   await expect(historyCard).toContainText("Wed, Jul 15 · 12:32 PM");
@@ -290,8 +290,8 @@ test("schedule a blueprint and prove adaptive Monitor cards", async ({ page }) =
   await expect(historyCard).not.toContainText("Blueprint wf");
   await expect(historyCard).not.toContainText("run-completed");
 
-  await page.getByTestId("sidebar-tab-workflows").click();
-  const sidebarCard = page.getByTestId("workflow-glance-row-schedule-1");
+  await page.getByTestId("sidebar-tab-automations").click();
+  const sidebarCard = page.getByTestId("automation-glance-row-schedule-1");
   await expect(sidebarCard).toContainText("Analyst Ada");
   await expect(sidebarCard).toContainText("Reviewer Rui");
   await expect(sidebarCard.getByRole("button", { name: "Show 1 more agents for E2E Nightly" })).toHaveText("+1 agents");

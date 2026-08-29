@@ -12,8 +12,8 @@ export interface SeedOptions {
   withMockAgent?: boolean;
   /** Include a test class definition */
   withTestClass?: boolean;
-  /** Include a test workflow */
-  withTestWorkflow?: boolean;
+  /** Include a test automation */
+  withTestAutomation?: boolean;
   /** Pre-dismiss contextual onboarding hints for non-onboarding tests */
   dismissOnboardingHints?: boolean;
 }
@@ -21,7 +21,7 @@ export interface SeedOptions {
 const DEFAULT_OPTIONS: SeedOptions = {
   withMockAgent: true,
   withTestClass: true,
-  withTestWorkflow: false,
+  withTestAutomation: false,
   dismissOnboardingHints: true,
 };
 
@@ -38,7 +38,7 @@ export function seedTestHome(
     "agents",
     "classes",
     "common",
-    "workflows",
+    "automations",
     "library",
     "debug",
     "settings",
@@ -125,13 +125,13 @@ export function seedTestHome(
     );
   }
 
-  if (options.withTestWorkflow) {
-    const workflowsDir = path.join(targetDir, "workflows");
-    fs.mkdirSync(workflowsDir, { recursive: true });
+  if (options.withTestAutomation) {
+    const automationsDir = path.join(targetDir, "automations");
+    fs.mkdirSync(automationsDir, { recursive: true });
 
-    const workflow = {
-      id: "e2e-test-workflow",
-      name: "E2E Test Workflow",
+    const automation = {
+      id: "e2e-test-automation",
+      name: "E2E Test Automation",
       nodes: [
         {
           id: "trigger-1",
@@ -156,19 +156,19 @@ export function seedTestHome(
       edges: [{ source: "trigger-1", target: "agent-1" }],
     };
     fs.writeFileSync(
-      path.join(workflowsDir, "e2e-test-workflow.json"),
-      JSON.stringify(workflow, null, 2)
+      path.join(automationsDir, "e2e-test-automation.json"),
+      JSON.stringify(automation, null, 2)
     );
 
-    // workflows.json index
+    // automations.json index
     fs.writeFileSync(
-      path.join(targetDir, "workflows.json"),
+      path.join(targetDir, "automations.json"),
       JSON.stringify(
         [
           {
-            id: "e2e-test-workflow",
-            name: "E2E Test Workflow",
-            path: "workflows/e2e-test-workflow.json",
+            id: "e2e-test-automation",
+            name: "E2E Test Automation",
+            path: "automations/e2e-test-automation.json",
           },
         ],
         null,

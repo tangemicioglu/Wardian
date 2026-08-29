@@ -32,7 +32,7 @@ export const QUEUE_TONE_CLASSES: Record<QueueItemTone, QueueToneClasses> = {
   },
 };
 
-/** Event wording belongs to Inbox, not to the underlying agent/workflow status. */
+/** Event wording belongs to Inbox, not to the underlying agent/automation status. */
 export function queueItemLabel(item: QueueItem): string {
   if (item.type === "action_needed") return "Action required";
   if (item.type === "agent_completed") return "Agent task completed";
@@ -40,13 +40,13 @@ export function queueItemLabel(item: QueueItem): string {
   if (item.type === "approval_request") {
     return item.notification_status === "expired" ? "Approval expired" : "Approval requested";
   }
-  return item.status === "failed" ? "Workflow failed" : "Workflow completed";
+  return item.status === "failed" ? "Automation failed" : "Automation completed";
 }
 
 /** Maps Inbox presentation to event outcome; violet is reserved for actual Headless agents. */
 export function queueItemTone(item: QueueItem): QueueItemTone {
   if (item.type === "action_needed" || item.type === "approval_request") return "warning";
-  if (item.type === "workflow_completed" && item.status === "failed") return "error";
+  if (item.type === "automation_completed" && item.status === "failed") return "error";
   if (item.type === "agent_update") return "processing";
   return "success";
 }

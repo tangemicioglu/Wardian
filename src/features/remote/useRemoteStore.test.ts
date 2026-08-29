@@ -12,7 +12,7 @@ vi.mock("./remoteClient", async (importOriginal) => {
         ...actual.remoteClient,
         loadSession: vi.fn(),
         listAgents: vi.fn(),
-        listWorkflows: vi.fn(),
+        listAutomations: vi.fn(),
         loadWatchlists: vi.fn(),
         loadQueueItems: vi.fn(),
         loadAgentChatPage: vi.fn(),
@@ -63,7 +63,7 @@ describe("useRemoteStore watchlists", () => {
   beforeEach(() => {
     vi.mocked(remoteClient.loadSession).mockResolvedValue(session);
     vi.mocked(remoteClient.listAgents).mockResolvedValue([]);
-    vi.mocked(remoteClient.listWorkflows).mockResolvedValue([]);
+    vi.mocked(remoteClient.listAutomations).mockResolvedValue([]);
     vi.mocked(remoteClient.loadWatchlists).mockResolvedValue({ watchlists: [], teams: [], prefs: null });
     vi.mocked(remoteClient.loadQueueItems).mockResolvedValue([]);
     vi.mocked(remoteClient.loadAgentChatPage).mockReset();
@@ -73,7 +73,7 @@ describe("useRemoteStore watchlists", () => {
     useRemoteStore.getState().disconnectStatusStream();
     useRemoteStore.setState({
       agents: [],
-      workflows: [],
+      automations: [],
       watchlists: [],
       teams: [],
       watchlistPrefs: DEFAULT_WATCHLIST_PREFS,

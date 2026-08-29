@@ -48,14 +48,14 @@ pub struct AppState {
     pub delivery_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub status_observation_sequences: std::sync::Mutex<HashMap<String, u64>>,
     pub mailbox: Mutex<MailboxState>,
-    // Map of workflow_id to a list of background trigger handles
-    pub workflow_triggers: Mutex<HashMap<String, Vec<tokio::task::JoinHandle<()>>>>,
-    // Map of workflow_id to running execution handles
-    pub workflow_runs: Mutex<HashMap<String, Vec<tauri::async_runtime::JoinHandle<()>>>>,
+    // Map of automation_id to a list of background trigger handles
+    pub automation_triggers: Mutex<HashMap<String, Vec<tokio::task::JoinHandle<()>>>>,
+    // Map of automation_id to running execution handles
+    pub automation_runs: Mutex<HashMap<String, Vec<tauri::async_runtime::JoinHandle<()>>>>,
     pub triggers_paused: std::sync::atomic::AtomicBool,
     pub scheduler_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    pub workflow_scheduler_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    pub workflow_schedules_paused: std::sync::atomic::AtomicBool,
+    pub automation_scheduler_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub automation_schedules_paused: std::sync::atomic::AtomicBool,
     // Active git repo watchers keyed by workspace path
     pub git_watchers: Mutex<HashMap<String, notify::RecommendedWatcher>>,
     // Active library watchers keyed by library type, shared by mounted UI consumers
@@ -351,12 +351,12 @@ impl Default for AppState {
             delivery_locks: Mutex::new(HashMap::new()),
             status_observation_sequences: std::sync::Mutex::new(HashMap::new()),
             mailbox: Mutex::new(MailboxState::default()),
-            workflow_triggers: Mutex::new(HashMap::new()),
-            workflow_runs: Mutex::new(HashMap::new()),
+            automation_triggers: Mutex::new(HashMap::new()),
+            automation_runs: Mutex::new(HashMap::new()),
             triggers_paused: std::sync::atomic::AtomicBool::new(false),
             scheduler_handle: Mutex::new(None),
-            workflow_scheduler_handle: Mutex::new(None),
-            workflow_schedules_paused: std::sync::atomic::AtomicBool::new(false),
+            automation_scheduler_handle: Mutex::new(None),
+            automation_schedules_paused: std::sync::atomic::AtomicBool::new(false),
             git_watchers: Mutex::new(HashMap::new()),
             library_watchers: Mutex::new(HashMap::new()),
             explorer_watchers: Mutex::new(HashMap::new()),
@@ -404,7 +404,7 @@ mod tests {
             .is_err());
         assert_eq!(state.terminal_theme(), "dark");
         assert!(!state
-            .workflow_schedules_paused
+            .automation_schedules_paused
             .load(std::sync::atomic::Ordering::SeqCst));
         drop(state);
     }

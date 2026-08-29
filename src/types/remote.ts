@@ -261,7 +261,7 @@ export interface RemoteAgentActionRequest {
   inbox_item_id?: string;
 }
 
-export interface RemoteWorkflowSummary {
+export interface RemoteAutomationSummary {
   id: string;
   name: string;
   node_count: number;
@@ -273,12 +273,12 @@ export interface RemoteWatchlistResponse {
   prefs: WatchlistPrefs | null;
 }
 
-export interface RemoteWorkflowRunRequest {
-  workflow_id: string;
+export interface RemoteAutomationRunRequest {
+  automation_id: string;
   payload?: unknown;
 }
 
-export interface RemoteWorkflowStopRequest {
+export interface RemoteAutomationStopRequest {
   run_instance_id: string;
 }
 

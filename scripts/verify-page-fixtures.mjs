@@ -2,7 +2,7 @@
 /**
  * Fails when a test fixture mocks a bounded list command with a bare array.
  *
- * `get_directory_tree`, `workflow_list_blueprints`, `workflow_list_runs`,
+ * `get_directory_tree`, `automation_list_blueprints`, `automation_list_runs`,
  * `list_inbox_notifications` and `get_pair_activity` each return one struct
  * carrying its collection plus `truncated` and `next_offset`.
  *
@@ -22,8 +22,8 @@ import process from "node:process";
 /** Command name to the key its page carries. */
 const PAGED_COMMANDS = Object.freeze({
   get_directory_tree: "nodes",
-  workflow_list_blueprints: "blueprints",
-  workflow_list_runs: "runs",
+  automation_list_blueprints: "blueprints",
+  automation_list_runs: "runs",
   list_inbox_notifications: "notifications",
   get_pair_activity: "pairs",
 });
@@ -79,7 +79,7 @@ for (const file of testFiles) {
     for (const [command, key] of Object.entries(PAGED_COMMANDS)) {
       if (!line.includes(command)) continue;
 
-      // A response map keyed by command: `workflow_list_runs: [],`. This is the
+      // A response map keyed by command: `automation_list_runs: [],`. This is the
       // form `e2e/fixtures/workbenchIpcMock.ts` uses, and the one the first
       // version of this check missed.
       const asMapEntry = new RegExp(String.raw`\b${command}\s*:\s*\[`).test(line);

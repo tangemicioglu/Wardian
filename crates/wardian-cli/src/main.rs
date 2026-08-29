@@ -1,5 +1,6 @@
 mod args;
 mod artifact;
+mod automation_replay;
 mod browser;
 mod disk;
 mod errors;
@@ -11,12 +12,11 @@ mod memory;
 mod output;
 mod telemetry;
 mod watchlist;
-mod workflow_replay;
 use args::{
-    AgentArgs, AgentCommand, AgentWorktreeCommand, ApprovalArg, AskArgs, Cli, Command,
+    AgentArgs, AgentCommand, AgentWorktreeCommand, ApprovalArg, AskArgs, AutomationArgs,
+    AutomationCommand, AutomationScheduleCommand, AutomationSessionCloseCommand, Cli, Command,
     ConversationArgs, ConversationCommand, DeliveryArgs, DeliveryCommand, NotifyArgs,
     NotifyCommand, QueuePolicyArg, ReplyArgs, ReplyStatusArg, ScheduleDefinitionArgs, SendArgs,
-    WorkflowArgs, WorkflowCommand, WorkflowScheduleCommand, WorkflowSessionCloseCommand,
 };
 use clap::Parser;
 use errors::{CliError, ExitCode};
@@ -29,12 +29,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use wardian_core::control::{
-    ApprovalAction, InboxNotificationKind, InboxNotificationPayload, MessageInputMode,
-    OrchestrationDeliveryOptions, QueuePolicy, WorkflowRunResponse,
+    ApprovalAction, AutomationRunResponse, InboxNotificationKind, InboxNotificationPayload,
+    MessageInputMode, OrchestrationDeliveryOptions, QueuePolicy,
 };
 use wardian_core::identity::{self, ListFilters, Scope};
 use wardian_core::models::{
-    LibraryEntry, LibraryIndexNode, ScheduleDefinition, WorkflowAssignments,
+    AutomationAssignments, LibraryEntry, LibraryIndexNode, ScheduleDefinition,
 };
 use wardian_core::native_transport::NativeMessageOperation;
 
@@ -57,6 +57,13 @@ fn run() -> i32 {
         Ok(cli) => cli,
         Err(error) => return handle_parse_error(error),
     };
+    if let Err(error) = wardian_core::automation_migration::migrate_current_home() {
+        let error = CliError::generic(format!(
+            "could not migrate legacy automation storage: {error}"
+        ));
+        error.emit();
+        return error.code_i32();
+    }
     let result = match cli.command {
         Command::Agent(args) => handle_agent(args),
         Command::Artifact(args) => artifact::handle_artifact(args),
@@ -65,7 +72,7 @@ fn run() -> i32 {
         Command::Inbox(args) => inbox::handle_inbox(args),
         Command::Memory(args) => memory::handle_memory(args),
         Command::Library(args) => library::handle_library(args),
-        Command::Workflow(args) => handle_workflow(args),
+        Command::Automation(args) => handle_automation(args),
         Command::Team(args) => watchlist::handle_team(args),
         Command::Watchlist(args) => watchlist::handle_watchlist(args),
         Command::Telemetry(args) => telemetry::handle_telemetry(args),
@@ -486,22 +493,22 @@ struct AgentWatchCliOptions<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// wardian workflow
+// wardian automation
 // ---------------------------------------------------------------------------
 
-fn handle_workflow(args: WorkflowArgs) -> Result<String, CliError> {
+fn handle_automation(args: AutomationArgs) -> Result<String, CliError> {
     match args.command {
-        WorkflowCommand::NodeTypes { json } => render_workflow_node_types(json),
-        WorkflowCommand::List => render_workflow_list(args.pretty),
-        WorkflowCommand::Validate { path } => render_workflow_validate(&path),
-        WorkflowCommand::Exec {
+        AutomationCommand::NodeTypes { json } => render_automation_node_types(json),
+        AutomationCommand::List => render_automation_list(args.pretty),
+        AutomationCommand::Validate { path } => render_automation_validate(&path),
+        AutomationCommand::Exec {
             path,
             executor,
             input,
             provider,
             workspace,
             bind,
-        } => render_workflow_exec(
+        } => render_automation_exec(
             &path,
             &executor,
             input.as_deref(),
@@ -509,33 +516,35 @@ fn handle_workflow(args: WorkflowArgs) -> Result<String, CliError> {
             workspace.as_deref(),
             &bind,
         ),
-        WorkflowCommand::Runs => render_workflow_runs(),
-        WorkflowCommand::RunShow {
+        AutomationCommand::Runs => render_automation_runs(),
+        AutomationCommand::RunShow {
             blueprint_id,
             run_id,
-        } => render_workflow_run_show(&blueprint_id, &run_id),
-        WorkflowCommand::Replay {
+        } => render_automation_run_show(&blueprint_id, &run_id),
+        AutomationCommand::Replay {
             blueprint_id,
             run_id,
-        } => workflow_replay::render(&blueprint_id, &run_id),
-        WorkflowCommand::Parse { path } => render_workflow_parse(&path),
-        WorkflowCommand::Normalize { path, write } => render_workflow_normalize(&path, write),
-        WorkflowCommand::GenSchema { out, check } => {
-            render_workflow_gen(&out, GenKind::Schema, check)
+        } => automation_replay::render(&blueprint_id, &run_id),
+        AutomationCommand::Parse { path } => render_automation_parse(&path),
+        AutomationCommand::Normalize { path, write } => render_automation_normalize(&path, write),
+        AutomationCommand::GenSchema { out, check } => {
+            render_automation_gen(&out, GenKind::Schema, check)
         }
-        WorkflowCommand::GenDocs { out, check } => render_workflow_gen(&out, GenKind::Docs, check),
-        WorkflowCommand::Schedule(command) => render_workflow_schedule(*command),
-        WorkflowCommand::SessionClose(command) => render_workflow_session_close(*command),
+        AutomationCommand::GenDocs { out, check } => {
+            render_automation_gen(&out, GenKind::Docs, check)
+        }
+        AutomationCommand::Schedule(command) => render_automation_schedule(*command),
+        AutomationCommand::SessionClose(command) => render_automation_session_close(*command),
     }
 }
 
-fn render_workflow_node_types(json: bool) -> Result<String, CliError> {
+fn render_automation_node_types(json: bool) -> Result<String, CliError> {
     if json {
-        return Ok(format!("{}\n", wardian_core::workflow::ts_schema_json()));
+        return Ok(format!("{}\n", wardian_core::automation::ts_schema_json()));
     }
     // Human summary: one line per node type.
     let mut lines = String::from("NODE TYPES\n");
-    for def in wardian_core::workflow::node_types() {
+    for def in wardian_core::automation::node_types() {
         let status = if def.supported { "" } else { " [unsupported]" };
         lines.push_str(&format!(
             "  {:<18} {:<8} {}{}\n",
@@ -548,29 +557,30 @@ fn render_workflow_node_types(json: bool) -> Result<String, CliError> {
     Ok(lines)
 }
 
-fn render_workflow_list(pretty: bool) -> Result<String, CliError> {
+fn render_automation_list(pretty: bool) -> Result<String, CliError> {
     let home = wardian_core::paths::wardian_home()
         .ok_or_else(|| CliError::generic("could not resolve Wardian home"))?;
     let index = wardian_core::library::build_library_index(&home)
         .map_err(|error| CliError::generic(error.to_string()))?;
     let mut entries = Vec::new();
-    if let Some(section) = index.sections.get("workflows") {
+    if let Some(section) = index.sections.get("automations") {
         flatten_library_entries(&section.tree.children, &mut entries);
     }
 
-    let workflows_root = wardian_core::library::LibrarySectionId::Workflows.root_for_home(&home);
-    let mut workflows = Vec::with_capacity(entries.len());
+    let automations_root =
+        wardian_core::library::LibrarySectionId::Automations.root_for_home(&home);
+    let mut automations = Vec::with_capacity(entries.len());
     for entry in entries {
-        let workflow_path = absolute_path(&workflows_root.join(&entry.path))?;
+        let automation_path = absolute_path(&automations_root.join(&entry.path))?;
         let mut row = serde_json::json!({
             "blueprint_id": serde_json::Value::Null,
             "name": entry.name,
             "entry_ref": entry.entry_ref,
-            "workflow_path": workflow_path.to_string_lossy(),
+            "automation_path": automation_path.to_string_lossy(),
             "error": serde_json::Value::Null,
         });
 
-        match wardian_core::workflow::parse_file(&workflow_path) {
+        match wardian_core::automation::parse_file(&automation_path) {
             Ok(blueprint) => {
                 row["blueprint_id"] = serde_json::json!(blueprint.id);
                 row["name"] = serde_json::json!(blueprint.name);
@@ -579,16 +589,16 @@ fn render_workflow_list(pretty: bool) -> Result<String, CliError> {
                 row["error"] = serde_json::json!(error.to_string());
             }
         }
-        workflows.push(row);
+        automations.push(row);
     }
 
     if pretty {
-        return Ok(render_workflow_list_pretty(&workflows));
+        return Ok(render_automation_list_pretty(&automations));
     }
 
     render_json(serde_json::json!({
         "schema": 1,
-        "workflows": workflows,
+        "automations": automations,
     }))
 }
 
@@ -612,29 +622,31 @@ fn absolute_path(path: &Path) -> Result<PathBuf, CliError> {
         .map_err(|error| CliError::generic(error.to_string()))
 }
 
-fn render_workflow_list_pretty(workflows: &[serde_json::Value]) -> String {
-    if workflows.is_empty() {
-        return "(no workflows)\n".to_string();
+fn render_automation_list_pretty(automations: &[serde_json::Value]) -> String {
+    if automations.is_empty() {
+        return "(no automations)\n".to_string();
     }
 
     let mut output = String::new();
-    for workflow in workflows {
-        let blueprint_id = workflow["blueprint_id"].as_str().unwrap_or("<unparseable>");
-        let name = workflow["name"].as_str().unwrap_or_default();
-        let entry_ref = workflow["entry_ref"].as_str().unwrap_or_default();
-        let path = workflow["workflow_path"].as_str().unwrap_or_default();
+    for automation in automations {
+        let blueprint_id = automation["blueprint_id"]
+            .as_str()
+            .unwrap_or("<unparseable>");
+        let name = automation["name"].as_str().unwrap_or_default();
+        let entry_ref = automation["entry_ref"].as_str().unwrap_or_default();
+        let path = automation["automation_path"].as_str().unwrap_or_default();
         output.push_str(&format!("{blueprint_id}  {name}  {entry_ref}  {path}\n"));
-        if let Some(error) = workflow["error"].as_str() {
+        if let Some(error) = automation["error"].as_str() {
             output.push_str(&format!("  error: {error}\n"));
         }
     }
     output
 }
 
-fn render_workflow_validate(path: &str) -> Result<String, CliError> {
-    let blueprint = wardian_core::workflow::parse_file(Path::new(path))
+fn render_automation_validate(path: &str) -> Result<String, CliError> {
+    let blueprint = wardian_core::automation::parse_file(Path::new(path))
         .map_err(|e| CliError::generic(e.to_string()))?;
-    let report = wardian_core::workflow::validate(&blueprint);
+    let report = wardian_core::automation::validate(&blueprint);
     let body = serde_json::json!({
         "schema": 1,
         "ok": report.is_valid(),
@@ -645,7 +657,7 @@ fn render_workflow_validate(path: &str) -> Result<String, CliError> {
         .map_err(|e| CliError::generic(e.to_string()))
 }
 
-fn render_workflow_exec(
+fn render_automation_exec(
     path: &str,
     executor: &str,
     input: Option<&str>,
@@ -653,24 +665,24 @@ fn render_workflow_exec(
     workspace: Option<&str>,
     bind: &[String],
 ) -> Result<String, CliError> {
-    render_workflow_exec_with_live_launcher(
+    render_automation_exec_with_live_launcher(
         path,
         executor,
         input,
         provider,
         workspace,
         bind,
-        live::workflow_run,
+        live::automation_run,
     )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkflowExecMode {
+enum AutomationExecMode {
     Live,
     Mock,
 }
 
-impl WorkflowExecMode {
+impl AutomationExecMode {
     fn parse(value: &str) -> Result<Self, CliError> {
         match value.trim().to_ascii_lowercase().as_str() {
             "live" | "real" | "full" => Ok(Self::Live),
@@ -679,27 +691,27 @@ impl WorkflowExecMode {
                 ExitCode::Generic,
                 "unsupported_executor",
                 format!(
-                    "unsupported workflow executor `{other}`; expected live, real, full, or mock"
+                    "unsupported automation executor `{other}`; expected live, real, full, or mock"
                 ),
             )),
         }
     }
 }
 
-fn render_workflow_exec_with_live_launcher(
+fn render_automation_exec_with_live_launcher(
     path: &str,
     executor: &str,
     input: Option<&str>,
     provider: Option<&str>,
     workspace: Option<&str>,
     bind: &[String],
-    live_launcher: impl FnOnce(live::WorkflowRunRequest) -> std::io::Result<WorkflowRunResponse>,
+    live_launcher: impl FnOnce(live::AutomationRunRequest) -> std::io::Result<AutomationRunResponse>,
 ) -> Result<String, CliError> {
-    let input = parse_workflow_exec_input(input)?;
-    let bindings = parse_workflow_bindings(bind)?;
-    match WorkflowExecMode::parse(executor)? {
-        WorkflowExecMode::Live => {
-            let response = live_launcher(live::WorkflowRunRequest {
+    let input = parse_automation_exec_input(input)?;
+    let bindings = parse_automation_bindings(bind)?;
+    match AutomationExecMode::parse(executor)? {
+        AutomationExecMode::Live => {
+            let response = live_launcher(live::AutomationRunRequest {
                 path: path.to_string(),
                 provider: provider.map(str::to_string),
                 workspace: workspace.map(str::to_string),
@@ -707,22 +719,24 @@ fn render_workflow_exec_with_live_launcher(
                 bindings,
             })
             .map_err(control_error)?;
-            render_live_workflow_exec_response(response)
+            render_live_automation_exec_response(response)
         }
-        WorkflowExecMode::Mock => render_workflow_exec_mock(path, input),
+        AutomationExecMode::Mock => render_automation_exec_mock(path, input),
     }
 }
 
-fn render_live_workflow_exec_response(response: WorkflowRunResponse) -> Result<String, CliError> {
+fn render_live_automation_exec_response(
+    response: AutomationRunResponse,
+) -> Result<String, CliError> {
     serde_json::to_string_pretty(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
 }
 
-fn render_workflow_exec_mock(path: &str, input: serde_json::Value) -> Result<String, CliError> {
-    let blueprint = wardian_core::workflow::parse_file(Path::new(path))
+fn render_automation_exec_mock(path: &str, input: serde_json::Value) -> Result<String, CliError> {
+    let blueprint = wardian_core::automation::parse_file(Path::new(path))
         .map_err(|e| CliError::generic(e.to_string()))?;
-    let report = wardian_core::workflow::validate(&blueprint);
+    let report = wardian_core::automation::validate(&blueprint);
     if !report.is_valid() {
         let body = serde_json::json!({
             "schema": 1,
@@ -735,9 +749,9 @@ fn render_workflow_exec_mock(path: &str, input: serde_json::Value) -> Result<Str
     }
 
     let run_id = wardian_core::engine::driver::new_run_id();
-    let run_root = wardian_core::paths::workflow_run_dir(&blueprint.id, &run_id)
-        .ok_or_else(|| CliError::generic("could not resolve workflow run directory"))?;
-    let runtime = build_workflow_runtime()?;
+    let run_root = wardian_core::paths::automation_run_dir(&blueprint.id, &run_id)
+        .ok_or_else(|| CliError::generic("could not resolve automation run directory"))?;
+    let runtime = build_automation_runtime()?;
     let mock = wardian_core::engine::MockExecutor::new();
     let state = runtime
         .block_on(wardian_core::engine::Engine::start_with_id(
@@ -759,7 +773,7 @@ fn render_workflow_exec_mock(path: &str, input: serde_json::Value) -> Result<Str
         .map_err(|e| CliError::generic(e.to_string()))
 }
 
-fn parse_workflow_exec_input(input: Option<&str>) -> Result<serde_json::Value, CliError> {
+fn parse_automation_exec_input(input: Option<&str>) -> Result<serde_json::Value, CliError> {
     let Some(raw) = input else {
         return Ok(serde_json::json!({}));
     };
@@ -771,7 +785,7 @@ fn parse_workflow_exec_input(input: Option<&str>) -> Result<serde_json::Value, C
     Ok(value)
 }
 
-fn parse_workflow_bindings(bind: &[String]) -> Result<HashMap<String, String>, CliError> {
+fn parse_automation_bindings(bind: &[String]) -> Result<HashMap<String, String>, CliError> {
     let mut bindings = HashMap::new();
     for entry in bind {
         let Some((name, provider)) = entry.split_once('=') else {
@@ -791,9 +805,9 @@ fn parse_workflow_bindings(bind: &[String]) -> Result<HashMap<String, String>, C
     Ok(bindings)
 }
 
-fn render_workflow_runs() -> Result<String, CliError> {
+fn render_automation_runs() -> Result<String, CliError> {
     let mut runs = Vec::new();
-    let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
+    let Some(runs_root) = wardian_core::paths::automation_runs_dir() else {
         return render_json(serde_json::json!({ "schema": 1, "runs": runs }));
     };
     if !runs_root.exists() {
@@ -833,8 +847,8 @@ fn render_workflow_runs() -> Result<String, CliError> {
     }))
 }
 
-fn render_workflow_run_show(blueprint_id: &str, run_id: &str) -> Result<String, CliError> {
-    let run_root = workflow_run_root(blueprint_id, run_id)?;
+fn render_automation_run_show(blueprint_id: &str, run_id: &str) -> Result<String, CliError> {
+    let run_root = automation_run_root(blueprint_id, run_id)?;
     let state = wardian_core::engine::store::read_checkpoint(&run_root)
         .map_err(|e| CliError::generic(e.to_string()))?
         .ok_or_else(|| CliError::generic(format!("state.json not found for run {run_id}")))?;
@@ -847,8 +861,8 @@ fn render_workflow_run_show(blueprint_id: &str, run_id: &str) -> Result<String, 
     }))
 }
 
-fn render_workflow_parse(path: &str) -> Result<String, CliError> {
-    let blueprint = wardian_core::workflow::parse_file(Path::new(path))
+fn render_automation_parse(path: &str) -> Result<String, CliError> {
+    let blueprint = wardian_core::automation::parse_file(Path::new(path))
         .map_err(|e| CliError::generic(e.to_string()))?;
     render_json(serde_json::json!({
         "schema": 1,
@@ -856,11 +870,11 @@ fn render_workflow_parse(path: &str) -> Result<String, CliError> {
     }))
 }
 
-fn render_workflow_normalize(path: &str, write: bool) -> Result<String, CliError> {
-    let mut blueprint = wardian_core::workflow::parse_file(Path::new(path))
+fn render_automation_normalize(path: &str, write: bool) -> Result<String, CliError> {
+    let mut blueprint = wardian_core::automation::parse_file(Path::new(path))
         .map_err(|e| CliError::generic(e.to_string()))?;
-    wardian_core::workflow::normalize(&mut blueprint);
-    let normalized = wardian_core::workflow::to_string(&blueprint)
+    wardian_core::automation::normalize(&mut blueprint);
+    let normalized = wardian_core::automation::to_string(&blueprint)
         .map_err(|e| CliError::generic(e.to_string()))?;
     if write {
         fs::write(path, &normalized).map_err(|e| CliError::generic(e.to_string()))?;
@@ -873,10 +887,10 @@ fn render_workflow_normalize(path: &str, write: bool) -> Result<String, CliError
     Ok(normalized)
 }
 
-fn render_workflow_schedule(command: WorkflowScheduleCommand) -> Result<String, CliError> {
-    use wardian_core::models::WorkflowSchedule;
+fn render_automation_schedule(command: AutomationScheduleCommand) -> Result<String, CliError> {
+    use wardian_core::models::AutomationSchedule;
     use wardian_core::schedule::{compute_next_run, load_schedules, save_schedules};
-    use WorkflowScheduleCommand as C;
+    use AutomationScheduleCommand as C;
 
     match command {
         C::List => render_json(serde_json::json!({
@@ -901,11 +915,11 @@ fn render_workflow_schedule(command: WorkflowScheduleCommand) -> Result<String, 
             let _blueprint = validate_schedule_blueprint(&blueprint)?;
             let schedule = build_schedule_definition(&cadence, None)?;
             let workspace = resolve_schedule_workspace(&workspace)?;
-            let input = parse_workflow_exec_input(input.as_deref())?;
+            let input = parse_automation_exec_input(input.as_deref())?;
             let (bindings, assignments) =
                 parse_schedule_assignments(&bind, assignments.as_deref(), None)?;
             let now = current_epoch_ms();
-            let record = WorkflowSchedule {
+            let record = AutomationSchedule {
                 id: wardian_core::engine::driver::new_run_id(),
                 blueprint_id: blueprint,
                 name,
@@ -1000,7 +1014,7 @@ fn render_workflow_schedule(command: WorkflowScheduleCommand) -> Result<String, 
             )?;
             let next_input = input
                 .as_deref()
-                .map(|value| parse_workflow_exec_input(Some(value)))
+                .map(|value| parse_automation_exec_input(Some(value)))
                 .transpose()?;
             let now = current_epoch_ms();
             let was_paused = schedule.is_paused;
@@ -1089,11 +1103,13 @@ fn render_workflow_schedule(command: WorkflowScheduleCommand) -> Result<String, 
     }
 }
 
-fn render_workflow_session_close(command: WorkflowSessionCloseCommand) -> Result<String, CliError> {
+fn render_automation_session_close(
+    command: AutomationSessionCloseCommand,
+) -> Result<String, CliError> {
     use wardian_core::session_close::{
-        load_invokers, mutate_invokers, WorkflowSessionCloseInvoker,
+        load_invokers, mutate_invokers, AutomationSessionCloseInvoker,
     };
-    use WorkflowSessionCloseCommand as C;
+    use AutomationSessionCloseCommand as C;
 
     match command {
         C::List => render_json(serde_json::json!({
@@ -1114,16 +1130,16 @@ fn render_workflow_session_close(command: WorkflowSessionCloseCommand) -> Result
         } => {
             validate_schedule_blueprint(&blueprint)?;
             validate_schedule_provider(provider.as_deref())?;
-            let input = parse_workflow_exec_input(input.as_deref())?;
-            let assignments: WorkflowAssignments = assignments
+            let input = parse_automation_exec_input(input.as_deref())?;
+            let assignments: AutomationAssignments = assignments
                 .as_deref()
                 .map(serde_json::from_str)
                 .transpose()
                 .map_err(|error| CliError::generic(format!("invalid assignments JSON: {error}")))?
                 .unwrap_or_default();
-            wardian_core::workflow::assignment::validate_assignments(&assignments)
+            wardian_core::automation::assignment::validate_assignments(&assignments)
                 .map_err(CliError::generic)?;
-            let record = WorkflowSessionCloseInvoker {
+            let record = AutomationSessionCloseInvoker {
                 id: wardian_core::engine::driver::new_run_id(),
                 blueprint_id: blueprint,
                 name,
@@ -1134,7 +1150,7 @@ fn render_workflow_session_close(command: WorkflowSessionCloseCommand) -> Result
                 provider,
                 workspace,
                 input,
-                bindings: wardian_core::workflow::assignment::legacy_bindings(&assignments),
+                bindings: wardian_core::automation::assignment::legacy_bindings(&assignments),
                 assignments,
             };
             mutate_invokers(|invokers| {
@@ -1166,7 +1182,7 @@ fn render_workflow_session_close(command: WorkflowSessionCloseCommand) -> Result
 
 fn mutate_session_close_invoker(
     id: &str,
-    mutate: impl FnOnce(&mut wardian_core::session_close::WorkflowSessionCloseInvoker),
+    mutate: impl FnOnce(&mut wardian_core::session_close::AutomationSessionCloseInvoker),
 ) -> Result<String, CliError> {
     let result = wardian_core::session_close::mutate_invokers(|invokers| {
         let invoker = invokers
@@ -1187,7 +1203,7 @@ fn mutate_session_close_invoker(
 
 fn mutate_schedule(
     id: &str,
-    mutate: impl FnOnce(&mut wardian_core::models::WorkflowSchedule),
+    mutate: impl FnOnce(&mut wardian_core::models::AutomationSchedule),
 ) -> Result<String, CliError> {
     use wardian_core::schedule::{load_schedules, save_schedules};
     let mut all = load_schedules();
@@ -1371,7 +1387,7 @@ fn resolve_schedule_workspace(value: &str) -> Result<String, CliError> {
 
 fn validate_schedule_provider(provider: Option<&str>) -> Result<(), CliError> {
     if let Some(provider) = provider {
-        if !wardian_core::workflow::assignment::is_known_provider(provider) {
+        if !wardian_core::automation::assignment::is_known_provider(provider) {
             return Err(CliError::generic(format!(
                 "unsupported provider `{provider}`"
             )));
@@ -1382,16 +1398,16 @@ fn validate_schedule_provider(provider: Option<&str>) -> Result<(), CliError> {
 
 fn validate_schedule_blueprint(
     blueprint_id: &str,
-) -> Result<wardian_core::workflow::Blueprint, CliError> {
-    let path = wardian_core::workflow::resolve_blueprint_path(blueprint_id).ok_or_else(|| {
+) -> Result<wardian_core::automation::Blueprint, CliError> {
+    let path = wardian_core::automation::resolve_blueprint_path(blueprint_id).ok_or_else(|| {
         CliError::generic(format!(
-            "blueprint not found in library/workflows: {blueprint_id}"
+            "blueprint not found in library/automations: {blueprint_id}"
         ))
     })?;
-    let blueprint = wardian_core::workflow::parse_file(&path).map_err(|error| {
+    let blueprint = wardian_core::automation::parse_file(&path).map_err(|error| {
         CliError::generic(format!("could not parse blueprint {blueprint_id}: {error}"))
     })?;
-    let report = wardian_core::workflow::validate(&blueprint);
+    let report = wardian_core::automation::validate(&blueprint);
     if !report.is_valid() {
         let diagnostics = serde_json::to_string(&report.diagnostics)
             .map_err(|error| CliError::generic(error.to_string()))?;
@@ -1405,47 +1421,47 @@ fn validate_schedule_blueprint(
 fn parse_schedule_assignments(
     bind: &[String],
     typed_json: Option<&str>,
-    existing: Option<(HashMap<String, String>, WorkflowAssignments)>,
-) -> Result<(HashMap<String, String>, WorkflowAssignments), CliError> {
+    existing: Option<(HashMap<String, String>, AutomationAssignments)>,
+) -> Result<(HashMap<String, String>, AutomationAssignments), CliError> {
     if bind.is_empty() && typed_json.is_none() {
         let Some((bindings, assignments)) = existing else {
-            return Ok((HashMap::new(), WorkflowAssignments::new()));
+            return Ok((HashMap::new(), AutomationAssignments::new()));
         };
         let assignments = canonicalize_schedule_assignments(assignments)?;
         return Ok((bindings, assignments));
     }
 
-    let explicit_bindings = parse_workflow_bindings(bind)?;
+    let explicit_bindings = parse_automation_bindings(bind)?;
     let typed = typed_json
         .map(|raw| {
-            serde_json::from_str::<WorkflowAssignments>(raw)
+            serde_json::from_str::<AutomationAssignments>(raw)
                 .map_err(|error| CliError::generic(format!("invalid --assignments JSON: {error}")))
         })
         .transpose()?;
     let assignments = if let Some(typed) = typed {
-        wardian_core::workflow::assignment::normalize_assignments(
+        wardian_core::automation::assignment::normalize_assignments(
             Some(typed),
             &explicit_bindings,
             wardian_core::models::InvocationKind::Scheduled,
         )
     } else {
-        wardian_core::workflow::assignment::normalize_assignments(
+        wardian_core::automation::assignment::normalize_assignments(
             None,
             &explicit_bindings,
             wardian_core::models::InvocationKind::Scheduled,
         )
     };
     let assignments = canonicalize_schedule_assignments(assignments)?;
-    let mut bindings = wardian_core::workflow::assignment::legacy_bindings(&assignments);
+    let mut bindings = wardian_core::automation::assignment::legacy_bindings(&assignments);
     bindings.extend(explicit_bindings);
     Ok((bindings, assignments))
 }
 
 fn canonicalize_schedule_assignments(
-    mut assignments: WorkflowAssignments,
-) -> Result<WorkflowAssignments, CliError> {
+    mut assignments: AutomationAssignments,
+) -> Result<AutomationAssignments, CliError> {
     for assignment in assignments.values_mut() {
-        if let wardian_core::models::WorkflowRoleAssignment::TemporaryProvider {
+        if let wardian_core::models::AutomationRoleAssignment::TemporaryProvider {
             workspace: Some(workspace),
             ..
         } = assignment
@@ -1453,7 +1469,7 @@ fn canonicalize_schedule_assignments(
             *workspace = resolve_schedule_workspace(workspace)?;
         }
     }
-    wardian_core::workflow::assignment::validate_assignments(&assignments)
+    wardian_core::automation::assignment::validate_assignments(&assignments)
         .map_err(CliError::generic)?;
     Ok(assignments)
 }
@@ -1471,18 +1487,18 @@ fn render_json(body: serde_json::Value) -> Result<String, CliError> {
         .map_err(|e| CliError::generic(e.to_string()))
 }
 
-fn workflow_run_root(blueprint_id: &str, run_id: &str) -> Result<PathBuf, CliError> {
-    wardian_core::paths::workflow_run_dir(blueprint_id, run_id)
-        .ok_or_else(|| CliError::generic("could not resolve workflow run directory"))
+fn automation_run_root(blueprint_id: &str, run_id: &str) -> Result<PathBuf, CliError> {
+    wardian_core::paths::automation_run_dir(blueprint_id, run_id)
+        .ok_or_else(|| CliError::generic("could not resolve automation run directory"))
 }
 
 fn find_library_blueprint(
     blueprint_id: &str,
-) -> Result<Option<wardian_core::workflow::Blueprint>, CliError> {
+) -> Result<Option<wardian_core::automation::Blueprint>, CliError> {
     let Some(home) = wardian_core::paths::wardian_home() else {
         return Ok(None);
     };
-    let root = home.join("library").join("workflows");
+    let root = home.join("library").join("automations");
     if !root.exists() {
         return Ok(None);
     }
@@ -1492,7 +1508,7 @@ fn find_library_blueprint(
 fn find_library_blueprint_in_dir(
     dir: &Path,
     blueprint_id: &str,
-) -> Result<Option<wardian_core::workflow::Blueprint>, CliError> {
+) -> Result<Option<wardian_core::automation::Blueprint>, CliError> {
     for entry in fs::read_dir(dir).map_err(|e| CliError::generic(e.to_string()))? {
         let entry = entry.map_err(|e| CliError::generic(e.to_string()))?;
         let path = entry.path();
@@ -1505,7 +1521,7 @@ fn find_library_blueprint_in_dir(
         if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
             continue;
         }
-        let blueprint = wardian_core::workflow::parse_file(&path)
+        let blueprint = wardian_core::automation::parse_file(&path)
             .map_err(|e| CliError::generic(e.to_string()))?;
         if blueprint.id == blueprint_id {
             return Ok(Some(blueprint));
@@ -1514,7 +1530,7 @@ fn find_library_blueprint_in_dir(
     Ok(None)
 }
 
-fn build_workflow_runtime() -> Result<tokio::runtime::Runtime, CliError> {
+fn build_automation_runtime() -> Result<tokio::runtime::Runtime, CliError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1527,10 +1543,10 @@ enum GenKind {
     Docs,
 }
 
-fn render_workflow_gen(out: &str, kind: GenKind, check: bool) -> Result<String, CliError> {
+fn render_automation_gen(out: &str, kind: GenKind, check: bool) -> Result<String, CliError> {
     let generated = match kind {
-        GenKind::Schema => format!("{}\n", wardian_core::workflow::ts_schema_json()),
-        GenKind::Docs => wardian_core::workflow::reference_doc(),
+        GenKind::Schema => format!("{}\n", wardian_core::automation::ts_schema_json()),
+        GenKind::Docs => wardian_core::automation::reference_doc(),
     };
     let path = std::path::Path::new(out);
     if check {
@@ -2405,7 +2421,7 @@ fn identity_error(error: identity::IdentityError) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    include!("tests/workflow_snapshot_tests.rs");
+    include!("tests/automation_snapshot_tests.rs");
 
     struct TestWardianHome {
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -2499,8 +2515,8 @@ mod tests {
     }
 
     #[test]
-    fn workflow_node_types_json_lists_task_type() {
-        let out = render_workflow_node_types(true).unwrap();
+    fn automation_node_types_json_lists_task_type() {
+        let out = render_automation_node_types(true).unwrap();
         let json: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(json["schema"], 2);
         assert!(json["node_types"]
@@ -2511,7 +2527,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_validate_reports_unknown_node_type() {
+    fn automation_validate_reports_unknown_node_type() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.md");
         std::fs::write(
@@ -2519,7 +2535,7 @@ mod tests {
             "---\nschema: 2\nid: bad\nname: Bad\nnodes:\n  - id: x\n    type: frobnicate\nedges: []\n---\n",
         )
         .unwrap();
-        let out = render_workflow_validate(path.to_str().unwrap()).unwrap();
+        let out = render_automation_validate(path.to_str().unwrap()).unwrap();
         let json: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(json["ok"], false);
         assert!(json["diagnostics"]
@@ -2530,8 +2546,8 @@ mod tests {
     }
 
     #[test]
-    fn workflow_exec_real_dispatches_to_live_launcher() {
-        let out = render_workflow_exec_with_live_launcher(
+    fn automation_exec_real_dispatches_to_live_launcher() {
+        let out = render_automation_exec_with_live_launcher(
             "wf.md",
             "real",
             Some(r#"{"target":"HEAD"}"#),
@@ -2550,11 +2566,11 @@ mod tests {
                     request.bindings,
                     HashMap::from([("reviewer".to_string(), "codex".to_string())])
                 );
-                Ok(WorkflowRunResponse::started(
+                Ok(AutomationRunResponse::started(
                     "live",
                     "run-1",
                     "autoreview",
-                    "<absolute-workspace-path>/logs/workflows/autoreview/run-1",
+                    "<absolute-workspace-path>/logs/automations/autoreview/run-1",
                 ))
             },
         )
@@ -2567,18 +2583,18 @@ mod tests {
     }
 
     #[test]
-    fn workflow_exec_mock_stays_local_and_does_not_call_live_launcher() {
+    fn automation_exec_mock_stays_local_and_does_not_call_live_launcher() {
         let dir = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let _env = TestWardianHome::new(home.path());
         let path = dir.path().join("wf.md");
         std::fs::write(
             &path,
-            "---\nschema: 2\nid: wf\nname: Workflow\nnodes:\n  - id: trigger\n    type: manual_trigger\n    fields: {}\nedges: []\n---\n",
+            "---\nschema: 2\nid: wf\nname: Automation\nnodes:\n  - id: trigger\n    type: manual_trigger\n    fields: {}\nedges: []\n---\n",
         )
         .unwrap();
 
-        let out = render_workflow_exec_with_live_launcher(
+        let out = render_automation_exec_with_live_launcher(
             path.to_str().unwrap(),
             "mock",
             None,
@@ -2600,7 +2616,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("schema.json");
         std::fs::write(&path, "{}").unwrap();
-        let err = render_workflow_gen(&path.to_string_lossy(), GenKind::Schema, true).unwrap_err();
+        let err =
+            render_automation_gen(&path.to_string_lossy(), GenKind::Schema, true).unwrap_err();
         assert_eq!(err.code, "drift");
     }
 
@@ -2608,7 +2625,7 @@ mod tests {
     fn gen_schema_writes_file_when_not_checking() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("schema.json");
-        let out = render_workflow_gen(&path.to_string_lossy(), GenKind::Schema, false).unwrap();
+        let out = render_automation_gen(&path.to_string_lossy(), GenKind::Schema, false).unwrap();
         assert!(out.contains("wrote"));
         assert!(path.exists());
     }

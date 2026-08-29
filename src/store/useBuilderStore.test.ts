@@ -8,10 +8,10 @@ import { useBuilderStore } from './useBuilderStore';
 describe('useBuilderStore', () => {
   beforeEach(() => { invokeMock.mockReset(); useBuilderStore.getState().reset(); });
 
-  it('loads a blueprint via workflow_parse', async () => {
+  it('loads a blueprint vian automation_parse', async () => {
     invokeMock.mockResolvedValueOnce({ blueprint: { schema: 2, id: 'wf', name: 'WF', nodes: [], edges: [] }, diagnostics: [] });
     await useBuilderStore.getState().load('/x/wf.md');
-    expect(invokeMock).toHaveBeenCalledWith('workflow_parse', { path: '/x/wf.md' });
+    expect(invokeMock).toHaveBeenCalledWith('automation_parse', { path: '/x/wf.md' });
     expect(useBuilderStore.getState().blueprint?.id).toBe('wf');
   });
 
@@ -67,7 +67,7 @@ describe('useBuilderStore', () => {
     expect(useBuilderStore.getState().dirty).toBe(true);
   });
 
-  it('ignores a stale save response after another workflow resource loads', async () => {
+  it('ignores a stale save response after another automation resource loads', async () => {
     const first = { schema: 2 as const, id: 'one', name: 'One', nodes: [], edges: [] };
     const second = { schema: 2 as const, id: 'two', name: 'Two', nodes: [], edges: [] };
     let finishSave: ((result: { written: boolean; diagnostics: [] }) => void) | undefined;

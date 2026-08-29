@@ -1,6 +1,6 @@
 # Provider Runtime Notes
 
-This document captures the practical runtime differences between Wardian's supported CLI providers: Antigravity, Claude, Codex, OpenCode, Pi, and Gemini (unmaintained). It is intended for maintainers working on spawn, resume, workflow execution, skill projection, and status/approval handling.
+This document captures the practical runtime differences between Wardian's supported CLI providers: Antigravity, Claude, Codex, OpenCode, Pi, and Gemini (unmaintained). It is intended for maintainers working on spawn, resume, automation execution, skill projection, and status/approval handling.
 
 ## Shared Wardian Invariants
 
@@ -8,9 +8,9 @@ This document captures the practical runtime differences between Wardian's suppo
 - Every provider receives Wardian's `system_include_directories`, which are resolved from `common`, `classes/<class>`, and `agents/<session_id>`.
 - Headless execution and interactive execution use the same provider-specific assumptions where possible. Differences should stay explicit in `manager.rs` instead of being hidden in frontend state.
 - Provider-native instruction discovery matters more than Wardian's abstract model. The backend adapts Wardian's files and directories to each CLI instead of expecting the CLI to understand Wardian directly.
-- Workflow Agent nodes expose one run mode: `ephemeral`, `inherit_fresh`, or `inherit_resume`. Provider resume flags are emitted only for `inherit_resume`.
-- `inherit_fresh` clones the selected agent's runtime configuration and scoped read context, but writes workflow artifacts under a workflow-run session ID and clears provider resume state.
-- Workflow-spawned fresh runs skip interactive startup prompts. The workflow node prompt is the first provider input.
+- Automation Agent nodes expose one run mode: `ephemeral`, `inherit_fresh`, or `inherit_resume`. Provider resume flags are emitted only for `inherit_resume`.
+- `inherit_fresh` clones the selected agent's runtime configuration and scoped read context, but writes automation artifacts under an automation-run session ID and clears provider resume state.
+- Automation-spawned fresh runs skip interactive startup prompts. The automation node prompt is the first provider input.
 - Regular visible agents use the global `Regular agent sessions` setting unless the agent config sets `session_persistence` to `fresh` or `resume`. The agent-level `default` value inherits the global setting.
 - The regular-agent context menu **New Session** action forces a fresh provider launch for that one action and clears both the backend PTY output buffer and frontend terminal scrollback cache. It retains the Wardian agent, habitat, and saved history.
 - Provider delivery profiles are responsible for translating Wardian input into the provider's native submit behavior, including short prompts, pasted multiline prompts, long prompts, slash-command-shaped text, and inputs that already end with a newline.
@@ -294,8 +294,8 @@ packages, extensions, settings, and themes rather than isolate only sessions.
 
 The interactive `regular` TUI stays attached to the PTY. Wardian tails the
 version 3 session JSONL for user messages, assistant stop reasons, tool calls,
-tool results, and definitive completion. Headless workflows use `--mode json`;
-`agent_end`, not a transient assistant message, is the final workflow boundary.
+tool results, and definitive completion. Headless automations use `--mode json`;
+`agent_end`, not a transient assistant message, is the final automation boundary.
 
 Pi's `--approve` and `--no-approve` flags control project-local configuration,
 extensions, and skills. They do not sandbox the shell tool or extensions.

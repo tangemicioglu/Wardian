@@ -16,7 +16,7 @@ Think of it as a process viewer for the fleet rather than a usage report. It is 
 
 For "exactly how much did this agent do between Tuesday and Friday", use [Analytics](./analytics.md) instead. Dashboard answers *is anything wrong right now*; Analytics answers *what happened*.
 
-## Basic Workflow
+## Basic Automation
 
 1. Spawn one or more agents from the [Getting Started](./getting-started.md) flow.
 2. Press `Ctrl+P` / `Cmd+P`, select a pane's **+** button, or use an empty-pane Home state, then choose **Dashboard**. `Ctrl+Alt+D` opens it directly.

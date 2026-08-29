@@ -1,7 +1,7 @@
+use wardian_core::automation::parse_str;
 use wardian_core::engine::driver::Engine;
 use wardian_core::engine::executor::MockExecutor;
 use wardian_core::engine::state::RunStatus;
-use wardian_core::workflow::parse_str;
 
 const LINEAR: &str = r#"---
 schema: 2
@@ -21,7 +21,7 @@ nodes:
 "#;
 
 #[tokio::test]
-async fn runs_a_linear_workflow_to_completion() {
+async fn runs_a_linear_automation_to_completion() {
     let dir = tempfile::tempdir().unwrap();
     let bp = parse_str(LINEAR).unwrap();
     let exec = MockExecutor::new().with_task_output("plan", serde_json::json!({"ok": true}));

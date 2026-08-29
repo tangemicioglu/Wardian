@@ -21,7 +21,7 @@ at least one agent before Wardian enables prompt injection or broadcasting.
 - Ask a whole role group to report status after selecting that group in [Watchlists](./watchlists.md).
 - Broadcast after [Getting Started](./getting-started.md) when you have more than one active agent.
 
-## Basic Workflow
+## Basic Automation
 
 1. Select the target agents in the right roster.
 2. Open the **Command** tab in the left sidebar.

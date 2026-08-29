@@ -83,11 +83,11 @@ test.describe("Wardian Core Feature Tests", () => {
     }
   });
 
-  test("4. Sidebar navigation - Workflows tab", async () => {
-    await page.locator('[data-testid="sidebar-tab-workflows"]').click();
+  test("4. Sidebar navigation - Automations tab", async () => {
+    await page.locator('[data-testid="sidebar-tab-automations"]').click();
     await page.waitForTimeout(500);
     const sidebar = page.locator("aside").nth(1);
-    await expect(sidebar.getByRole("heading", { name: "Workflows" })).toBeVisible();
+    await expect(sidebar.getByRole("heading", { name: "Automations" })).toBeVisible();
     await expect(sidebar.getByRole("button", { name: "Monitor" })).toBeVisible();
   });
 

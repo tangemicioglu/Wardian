@@ -790,8 +790,8 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             ok_json(&OkResponse::new())
         }
 
-        request @ ControlRequest::WorkflowRun { .. } => {
-            handle_workflow_run_control(app, workflow_run_control_launch(request)?).await
+        request @ ControlRequest::AutomationRun { .. } => {
+            handle_automation_run_control(app, automation_run_control_launch(request)?).await
         }
 
         ControlRequest::SendMessage {
@@ -1404,21 +1404,21 @@ async fn handle_agent_worktree_disable(
 }
 
 #[derive(Debug)]
-struct WorkflowRunControlLaunch {
+struct AutomationRunControlLaunch {
     path: String,
     provider: Option<String>,
     workspace: Option<String>,
     input: Option<serde_json::Value>,
     bindings: Option<std::collections::HashMap<String, String>>,
-    assignments: Option<wardian_core::models::WorkflowAssignments>,
+    assignments: Option<wardian_core::models::AutomationAssignments>,
     memory_principal: Option<String>,
 }
 
-fn workflow_run_control_launch(
+fn automation_run_control_launch(
     request: ControlRequest,
-) -> Result<WorkflowRunControlLaunch, ControlError> {
+) -> Result<AutomationRunControlLaunch, ControlError> {
     match request {
-        ControlRequest::WorkflowRun {
+        ControlRequest::AutomationRun {
             path,
             provider,
             workspace,
@@ -1427,25 +1427,25 @@ fn workflow_run_control_launch(
             assignments,
             caller_agent_id,
             memory_capability,
-        } => Ok(WorkflowRunControlLaunch {
+        } => Ok(AutomationRunControlLaunch {
             path,
             provider,
             workspace,
             input,
             bindings,
             assignments,
-            memory_principal: authenticate_workflow_memory_principal(
+            memory_principal: authenticate_automation_memory_principal(
                 caller_agent_id.as_deref(),
                 memory_capability.as_deref(),
             )?,
         }),
         _ => Err(ControlError::bad_request(
-            "expected workflow_run control request",
+            "expected automation_run control request",
         )),
     }
 }
 
-fn authenticate_workflow_memory_principal(
+fn authenticate_automation_memory_principal(
     caller_agent_id: Option<&str>,
     memory_capability: Option<&str>,
 ) -> Result<Option<String>, ControlError> {
@@ -1456,32 +1456,34 @@ fn authenticate_workflow_memory_principal(
             let capability = capability.trim();
             if agent_id.is_empty() || capability.is_empty() {
                 return Err(ControlError::bad_request(
-                    "workflow memory authority is incomplete",
+                    "automation memory authority is incomplete",
                 ));
             }
             let valid = wardian_core::memory::MemoryStore::from_default_home()
                 .and_then(|store| store.validate_capability(agent_id, capability))
                 .map_err(|_| {
-                    ControlError::request_failed("workflow memory authority could not be validated")
+                    ControlError::request_failed(
+                        "automation memory authority could not be validated",
+                    )
                 })?;
             if !valid {
                 return Err(ControlError::bad_request(
-                    "workflow memory authority is invalid",
+                    "automation memory authority is invalid",
                 ));
             }
             Ok(Some(agent_id.to_string()))
         }
         _ => Err(ControlError::bad_request(
-            "workflow memory authority is incomplete",
+            "automation memory authority is incomplete",
         )),
     }
 }
 
-async fn handle_workflow_run_control(
+async fn handle_automation_run_control(
     app: &AppHandle,
-    launch: WorkflowRunControlLaunch,
+    launch: AutomationRunControlLaunch,
 ) -> Result<String, ControlError> {
-    let result = crate::commands::workflow::workflow_run_from_control(
+    let result = crate::commands::automation::automation_run_from_control(
         app.state::<AppState>(),
         app.clone(),
         launch.path,
@@ -2647,11 +2649,11 @@ async fn deliver_headless_message(
         lifecycle_guard,
     } = request;
     // Direct offline delivery runs a provider against the target agent's
-    // workspace. Hold the same home-wide shared guard as workflow drives
+    // workspace. Hold the same home-wide shared guard as automation drives
     // before taking a conversation lease, so a managed-worktree deletion
     // cannot remove that workspace before or during provider execution.
     let _headless_execution =
-        match wardian_core::workflow_execution_lock::acquire_headless_execution_guard() {
+        match wardian_core::automation_execution_lock::acquire_headless_execution_guard() {
             Ok(guard) => guard,
             Err(error) => {
                 let detail = headless_message_failure_detail(
@@ -2675,7 +2677,7 @@ async fn deliver_headless_message(
             }
         };
     // Every headless path claims the persisted lease before the in-process
-    // lifecycle gate. Workflows and lifecycle mutations use the same order, so
+    // lifecycle gate. Automations and lifecycle mutations use the same order, so
     // a local waiter never holds the gate while another Wardian process holds
     // the lease it needs to finish.
     let lease = match acquire_headless_message_lease(info, interaction_id) {
@@ -5998,7 +6000,7 @@ mod tests {
     use std::ffi::OsString;
     use std::sync::{Arc, Mutex};
     use wardian_core::models::{
-        AgentConfig, AgentConversationMode, BusyPolicy, WorkflowRoleAssignment,
+        AgentConfig, AgentConversationMode, AutomationRoleAssignment, BusyPolicy,
     };
 
     struct TestWardianHome {
@@ -6124,11 +6126,11 @@ mod tests {
     }
 
     #[test]
-    fn workflow_run_control_launch_forwards_launch_options() {
-        let mut assignments = wardian_core::models::WorkflowAssignments::new();
+    fn automation_run_control_launch_forwards_launch_options() {
+        let mut assignments = wardian_core::models::AutomationAssignments::new();
         assignments.insert(
             "reviewer".to_string(),
-            WorkflowRoleAssignment::Agent {
+            AutomationRoleAssignment::Agent {
                 agent_id: "agent-1".to_string(),
                 conversation: AgentConversationMode::Current,
                 busy_policy: BusyPolicy::Fail,
@@ -6136,8 +6138,8 @@ mod tests {
         );
         let bindings = HashMap::from([("legacy".to_string(), "mock".to_string())]);
         let input = serde_json::json!({"target":"HEAD"});
-        let request = ControlRequest::WorkflowRun {
-            path: "/workflow/controlwf.md".to_string(),
+        let request = ControlRequest::AutomationRun {
+            path: "/automation/controlwf.md".to_string(),
             provider: Some("mock".to_string()),
             workspace: Some("/workspace".to_string()),
             input: Some(input.clone()),
@@ -6147,9 +6149,9 @@ mod tests {
             memory_capability: None,
         };
 
-        let launch = workflow_run_control_launch(request).unwrap();
+        let launch = automation_run_control_launch(request).unwrap();
 
-        assert_eq!(launch.path, "/workflow/controlwf.md");
+        assert_eq!(launch.path, "/automation/controlwf.md");
         assert_eq!(launch.provider.as_deref(), Some("mock"));
         assert_eq!(launch.workspace.as_deref(), Some("/workspace"));
         assert_eq!(launch.input, Some(input));
@@ -6159,21 +6161,22 @@ mod tests {
     }
 
     #[test]
-    fn workflow_memory_principal_requires_agent_bound_capability() {
+    fn automation_memory_principal_requires_agent_bound_capability() {
         let _home = TestWardianHome::new();
         let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
         let capability = store.issue_process_capability("agent-a").unwrap();
 
         assert_eq!(
-            authenticate_workflow_memory_principal(Some("agent-a"), Some(capability.token()),)
+            authenticate_automation_memory_principal(Some("agent-a"), Some(capability.token()),)
                 .unwrap(),
             Some("agent-a".to_string())
         );
-        assert!(
-            authenticate_workflow_memory_principal(Some("agent-b"), Some(capability.token()),)
-                .is_err()
-        );
-        assert!(authenticate_workflow_memory_principal(Some("agent-a"), None).is_err());
+        assert!(authenticate_automation_memory_principal(
+            Some("agent-b"),
+            Some(capability.token()),
+        )
+        .is_err());
+        assert!(authenticate_automation_memory_principal(Some("agent-a"), None).is_err());
     }
 
     fn test_agent(session_id: &str, session_name: &str, agent_class: &str) -> ActiveAgent {
@@ -6791,7 +6794,7 @@ mod tests {
                 agent_id: "agent-1".to_string(),
                 provider: "mock".to_string(),
                 resume_session: "resume-1".to_string(),
-                owner_kind: "workflow_run".to_string(),
+                owner_kind: "automation_run".to_string(),
                 owner_id: "wf/run-1/node-1".to_string(),
                 acquisition_id: "test-acquisition-1".to_string(),
                 owner_node_id: Some("node-1".to_string()),
@@ -6866,7 +6869,7 @@ mod tests {
             *agent.current_status.lock().expect("status") = "Off".to_string();
         }
         let _mutation =
-            wardian_core::workflow_execution_lock::try_acquire_worktree_mutation_guard()
+            wardian_core::automation_execution_lock::try_acquire_worktree_mutation_guard()
                 .expect("worktree mutation lock")
                 .expect("exclusive worktree mutation lock");
 
@@ -8761,7 +8764,7 @@ mod tests {
                 agent_id: "agent-1".to_string(),
                 provider: "mock".to_string(),
                 resume_session: "resume-1".to_string(),
-                owner_kind: "workflow_run".to_string(),
+                owner_kind: "automation_run".to_string(),
                 owner_id: "wf/run-1/node-1".to_string(),
                 acquisition_id: "test-acquisition-2".to_string(),
                 owner_node_id: Some("node-1".to_string()),
@@ -9993,8 +9996,8 @@ mod tests {
                 agent_id: "agent-1".to_string(),
                 provider: "mock".to_string(),
                 resume_session: String::new(),
-                owner_kind: "workflow_run".to_string(),
-                owner_id: "workflow/fresh".to_string(),
+                owner_kind: "automation_run".to_string(),
+                owner_id: "automation/fresh".to_string(),
                 acquisition_id: "test-acquisition-4".to_string(),
                 owner_node_id: Some("plan".to_string()),
                 mode: "background_fresh".to_string(),

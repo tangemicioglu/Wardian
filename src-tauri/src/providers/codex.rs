@@ -130,7 +130,7 @@ impl CodexProvider {
     ///
     /// Codex rejects these when they appear at the top command level. The
     /// repository bypass defaults on for headless execution so temporary
-    /// workflow providers can run in a workspace that is not a Git checkout.
+    /// automation providers can run in a workspace that is not a Git checkout.
     pub(crate) fn append_headless_exec_args(
         &self,
         args: &mut Vec<String>,

@@ -78,9 +78,9 @@ async function configureCodexNativeTestPolicy(harness) {
   );
 }
 
-function runMemoryProbe(cliPath, harness, workflowPath, agentId, expected, forbidden) {
+function runMemoryProbe(cliPath, harness, automationPath, agentId, expected, forbidden) {
   const execution = JSON.parse(runCliOk(cliPath, harness, [
-    "workflow", "exec", workflowPath,
+    "automation", "exec", automationPath,
     "--executor", "live",
     "--bind", `verifier=${agentId}`,
   ]).stdout);
@@ -90,7 +90,7 @@ function runMemoryProbe(cliPath, harness, workflowPath, agentId, expected, forbi
   let shown = null;
   while (Date.now() - startedAt < 360_000) {
     const result = runCli(cliPath, harness, [
-      "workflow", "run-show", "memory-native-probe", execution.run_id,
+      "automation", "run-show", "memory-native-probe", execution.run_id,
     ]);
     if (result.status === 0) {
       shown = JSON.parse(result.stdout);
@@ -104,9 +104,9 @@ function runMemoryProbe(cliPath, harness, workflowPath, agentId, expected, forbi
   assert.doesNotMatch(evidence, new RegExp(forbidden));
 }
 
-function runOrdinaryTask(cliPath, harness, workflowPath, agentId, task) {
+function runOrdinaryTask(cliPath, harness, automationPath, agentId, task) {
   const execution = JSON.parse(runCliOk(cliPath, harness, [
-    "workflow", "exec", workflowPath,
+    "automation", "exec", automationPath,
     "--executor", "live",
     "--bind", `worker=${agentId}`,
     "--input", JSON.stringify({ task }),
@@ -116,7 +116,7 @@ function runOrdinaryTask(cliPath, harness, workflowPath, agentId, task) {
   let shown = null;
   while (Date.now() - startedAt < 360_000) {
     const result = runCli(cliPath, harness, [
-      "workflow", "run-show", "memory-native-ordinary-task", execution.run_id,
+      "automation", "run-show", "memory-native-ordinary-task", execution.run_id,
     ]);
     if (result.status === 0) {
       shown = JSON.parse(result.stdout);
@@ -253,13 +253,13 @@ test("temporary GPT-5.6-Luna agents receive, save, revise, and recall durable me
 
   runCliOk(cliPath, harness, ["agent", "pause", agentAName]);
   runCliOk(cliPath, harness, ["agent", "pause", agentBName]);
-  const workflowPath = path.join(
+  const automationPath = path.join(
     harness.isolatedHome,
     "library",
-    "workflows",
+    "automations",
     "memory-native-probe.md",
   );
-  fs.writeFileSync(workflowPath, `---
+  fs.writeFileSync(automationPath, `---
 schema: 2
 id: memory-native-probe
 name: Memory Native Probe
@@ -276,8 +276,8 @@ edges:
     to: verify
 ---
 `);
-  runMemoryProbe(cliPath, harness, workflowPath, agentAId, tokenA2, tokenB);
-  runMemoryProbe(cliPath, harness, workflowPath, agentBId, tokenB, tokenA2);
+  runMemoryProbe(cliPath, harness, automationPath, agentAId, tokenA2, tokenB);
+  runMemoryProbe(cliPath, harness, automationPath, agentBId, tokenB, tokenA2);
 
   const implicitAName = `Memory-Luna-Implicit-A-${RUN_ID}`;
   const implicitBName = `Memory-Luna-Implicit-B-${RUN_ID}`;
@@ -288,13 +288,13 @@ edges:
   runCliOk(cliPath, harness, ["agent", "pause", implicitAName]);
   runCliOk(cliPath, harness, ["agent", "pause", implicitBName]);
 
-  const ordinaryWorkflowPath = path.join(
+  const ordinaryAutomationPath = path.join(
     harness.isolatedHome,
     "library",
-    "workflows",
+    "automations",
     "memory-native-ordinary-task.md",
   );
-  fs.writeFileSync(ordinaryWorkflowPath, `---
+  fs.writeFileSync(ordinaryAutomationPath, `---
 schema: 2
 id: memory-native-ordinary-task
 name: Memory Native Ordinary Task
@@ -321,7 +321,7 @@ edges:
   runOrdinaryTask(
     cliPath,
     harness,
-    ordinaryWorkflowPath,
+    ordinaryAutomationPath,
     implicitAId,
     `We are standardizing this project. Every release status summary begins with ${firstConvention} and ends with the owner's initials. Draft a two-line example for today's release.`,
   );
@@ -337,7 +337,7 @@ edges:
   runOrdinaryTask(
     cliPath,
     harness,
-    ordinaryWorkflowPath,
+    ordinaryAutomationPath,
     implicitAId,
     `Correction to that project convention: release status summaries now begin with ${revisedConvention}; ${firstConvention} is retired. Draft the corrected two-line example.`,
   );
@@ -367,7 +367,7 @@ edges:
   runOrdinaryTask(
     cliPath,
     harness,
-    ordinaryWorkflowPath,
+    ordinaryAutomationPath,
     implicitBId,
     `Across every project I work on, handoff dates use ISO 8601 and include the marker ${crossProjectPreference}. Rewrite this handoff date accordingly: August 23, 2026.`,
   );
@@ -387,7 +387,7 @@ edges:
   runOrdinaryTask(
     cliPath,
     harness,
-    ordinaryWorkflowPath,
+    ordinaryAutomationPath,
     implicitBId,
     `For this response only, prefix the answer with ${transientToken}. What is 17 plus 25?`,
   );
@@ -400,7 +400,7 @@ edges:
   runMemoryProbe(
     cliPath,
     harness,
-    workflowPath,
+    automationPath,
     implicitAId,
     revisedConvention,
     firstConvention,
@@ -408,7 +408,7 @@ edges:
   runMemoryProbe(
     cliPath,
     harness,
-    workflowPath,
+    automationPath,
     implicitBId,
     crossProjectPreference,
     transientToken,

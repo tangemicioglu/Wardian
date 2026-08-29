@@ -36,7 +36,7 @@ export function pulseScale(seconds: number): number {
  *
  * Scale rather than a per-shape dimension, because the tagged shapes are not all
  * circles: an agent's halo is a circle centred on the unit origin and a
- * workflow's is a rounded rectangle, and both read correctly under a uniform
+ * automation's is a rounded rectangle, and both read correctly under a uniform
  * scale about that origin.
  *
  * The animation is not started at all when nothing is active, which preserves

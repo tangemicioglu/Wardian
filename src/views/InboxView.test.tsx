@@ -14,7 +14,7 @@ function resetStore() {
     inboxNotificationsNextOffset: null,
     loadingMoreInboxNotifications: false,
     _agentBuffers: {},
-    _workflowLastOutput: {},
+    _automationLastOutput: {},
     _readNotificationIds: [],
     preferences: normalizeQueuePreferences({}),
   });
@@ -316,7 +316,7 @@ describe("InboxView", () => {
     render(<InboxView />);
 
     expect(screen.getByRole("button", { name: /filter inbox events/i })).toHaveTextContent("Filter: All events");
-    expect(screen.queryByLabelText("Desktop alert for workflow failures")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Desktop alert for automation failures")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Sound alert for action required")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /filter inbox events/i }));
@@ -345,41 +345,41 @@ describe("InboxView", () => {
     expect(screen.getByTestId("queue-unread-dot")).toHaveClass("left-2", "top-2");
   });
 
-  it("renders a failed workflow item with error text", () => {
+  it("renders a failed automation item with error text", () => {
     useQueueStore.setState({
       items: [{
         id: "item-2",
-        type: "workflow_completed",
+        type: "automation_completed",
         timestamp: Date.now(),
         read: false,
-        workflow_name: "CI Pipeline",
+        automation_name: "CI Pipeline",
         status: "failed",
         error: "Timeout after 30s",
       }],
     });
     render(<InboxView />);
-    expect(document.body.textContent).toContain("CI PipelineWorkflow failed");
+    expect(document.body.textContent).toContain("CI PipelineAutomation failed");
     expect(screen.getByText("CI Pipeline")).toBeInTheDocument();
-    expect(screen.getByText("Workflow failed")).toBeInTheDocument();
+    expect(screen.getByText("Automation failed")).toBeInTheDocument();
     expect(screen.queryByText("Failed")).not.toBeInTheDocument();
     expect(screen.getByText("Timeout after 30s")).toBeInTheDocument();
   });
 
-  it("renders a completed workflow item with summary when present", () => {
+  it("renders a completed automation item with summary when present", () => {
     useQueueStore.setState({
       items: [{
         id: "item-3",
-        type: "workflow_completed",
+        type: "automation_completed",
         timestamp: Date.now(),
         read: false,
-        workflow_name: "Data Pipeline",
+        automation_name: "Data Pipeline",
         status: "completed",
         summary: "Processed 42 records.",
       }],
     });
     render(<InboxView />);
-    expect(document.body.textContent).toContain("Data PipelineWorkflow completed");
-    expect(screen.getByText("Workflow completed")).toBeInTheDocument();
+    expect(document.body.textContent).toContain("Data PipelineAutomation completed");
+    expect(screen.getByText("Automation completed")).toBeInTheDocument();
     expect(screen.getByText("Processed 42 records.")).toBeInTheDocument();
   });
 
@@ -432,19 +432,19 @@ describe("InboxView", () => {
     expect(screen.getByText("No completions yet.")).toBeInTheDocument();
   });
 
-  it("does not offer local acknowledgement controls for workflow approval projections", () => {
+  it("does not offer local acknowledgement controls for automation approval projections", () => {
     useQueueStore.setState({
       items: [{
-        id: "workflow-approval:wf:run:gate",
+        id: "automation-approval:wf:run:gate",
         type: "approval_request",
         timestamp: Date.now(),
         read: false,
         notification_title: "Release gate",
         summary: "Approve the deployment?",
         approval_choices: ["Approve", "Reject"],
-        workflow_approval: {
+        automation_approval: {
           blueprint_id: "wf",
-          blueprint_path: "workflow.json",
+          blueprint_path: "automation.json",
           run_id: "run",
           node: "gate",
         },
@@ -458,19 +458,19 @@ describe("InboxView", () => {
     expect(useQueueStore.getState().items[0].read).toBe(false);
   });
 
-  it("resolves workflow approval projections from the Inbox", async () => {
+  it("resolves automation approval projections from the Inbox", async () => {
     useQueueStore.setState({
       items: [{
-        id: "workflow-approval:wf:run:gate",
+        id: "automation-approval:wf:run:gate",
         type: "approval_request",
         timestamp: Date.now(),
         read: false,
         notification_title: "Release gate",
         summary: "Approve the deployment?",
         approval_choices: ["Approve", "Reject"],
-        workflow_approval: {
+        automation_approval: {
           blueprint_id: "wf",
-          blueprint_path: "workflow.json",
+          blueprint_path: "automation.json",
           run_id: "run",
           node: "gate",
         },
@@ -481,10 +481,10 @@ describe("InboxView", () => {
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
 
     await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("workflow_approve", {
+      expect(invoke).toHaveBeenCalledWith("automation_approve", {
         blueprintId: "wf",
         runId: "run",
-        blueprintPath: "workflow.json",
+        blueprintPath: "automation.json",
         node: "gate",
         granted: true,
         actor: "user",
@@ -493,20 +493,20 @@ describe("InboxView", () => {
     });
   });
 
-  it("keeps a workflow approval actionable and reports a resolution failure", async () => {
+  it("keeps an automation approval actionable and reports a resolution failure", async () => {
     vi.mocked(invoke).mockRejectedValueOnce(new Error("run is no longer awaiting approval"));
     useQueueStore.setState({
       items: [{
-        id: "workflow-approval:wf:run:gate",
+        id: "automation-approval:wf:run:gate",
         type: "approval_request",
         timestamp: Date.now(),
         read: false,
         notification_title: "Release gate",
         summary: "Approve the deployment?",
         approval_choices: ["Approve", "Reject"],
-        workflow_approval: {
+        automation_approval: {
           blueprint_id: "wf",
-          blueprint_path: "workflow.json",
+          blueprint_path: "automation.json",
           run_id: "run",
           node: "gate",
         },
@@ -579,10 +579,10 @@ describe("InboxView", () => {
         },
         {
           id: "unread-item",
-          type: "workflow_completed",
+          type: "automation_completed",
           timestamp: Date.now(),
           read: false,
-          workflow_name: "Unread Workflow",
+          automation_name: "Unread Automation",
           status: "completed",
           summary: "Fresh result.",
         },
@@ -593,7 +593,7 @@ describe("InboxView", () => {
     fireEvent.click(screen.getByRole("button", { name: /clear read/i }));
 
     expect(screen.queryByText("Read Agent")).not.toBeInTheDocument();
-    expect(screen.getByText("Unread Workflow")).toBeInTheDocument();
+    expect(screen.getByText("Unread Automation")).toBeInTheDocument();
   });
 
   it("keeps read action-needed prompts when clearing read completions", () => {

@@ -21,8 +21,8 @@ Windows is the primary development and testing platform for Wardian.
 Wardian is fully supported on macOS, with a focus on Apple Silicon (M-series) performance.
 
 - **Implementation**: Standard Unix PTY via `portable-pty`.
-- **Status**: Stable. All core features (Library management, Workflows, Telemetry) are verified on macOS.
-- **Install**: Use `brew install --cask wardian-app/tap/wardian`, or download the Apple Silicon or Intel `.dmg` from the Releases page. Official releases built by the signed workflow are Developer ID signed and Apple-notarized; copy the app to **Applications** and eject the DMG before launch so updates have a writable install location.
+- **Status**: Stable. All core features (Library management, Automations, Telemetry) are verified on macOS.
+- **Install**: Use `brew install --cask wardian-app/tap/wardian`, or download the Apple Silicon or Intel `.dmg` from the Releases page. Official releases built by the signed automation are Developer ID signed and Apple-notarized; copy the app to **Applications** and eject the DMG before launch so updates have a writable install location.
 - **Visuals**: Native traffic lights share Wardian's overlay titlebar; the green control zooms the app window instead of opening a separate full-screen Space, so the controls stay available in the app chrome.
 
 ---

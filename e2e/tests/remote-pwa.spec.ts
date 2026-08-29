@@ -86,8 +86,8 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
       }),
     });
   });
-  await page.route("**/remote/api/workflows", async (route) => {
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ workflows: [] }) });
+  await page.route("**/remote/api/automations", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ automations: [] }) });
   });
   await page.route("**/remote/api/queue", async (route) => {
     await route.fulfill({

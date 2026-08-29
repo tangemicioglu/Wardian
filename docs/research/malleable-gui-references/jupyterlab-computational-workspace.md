@@ -352,7 +352,7 @@ Practical design implications:
 - Keep persistent navigation/roster areas stable, but let selected tools move
   into main or down areas when useful.
 - Make surface creation command-driven so the same operation can be invoked by
-  UI, CLI, workflow, or restoration.
+  UI, CLI, automation, or restoration.
 - Treat each provider surface as responsible for restoring its own content
   state; the shell restores placement.
 - Serialize layouts as explicit workspace data rather than relying on browser
@@ -360,7 +360,7 @@ Practical design implications:
 - Give terminal surfaces special runtime guarantees even if they sit inside
   the same layout model as non-terminal surfaces.
 - Use a widget/surface tracker equivalent for "current agent surface",
-  "current terminal", "current browser", and "current workflow graph".
+  "current terminal", "current browser", and "current automation graph".
 
 ## Design Principle
 

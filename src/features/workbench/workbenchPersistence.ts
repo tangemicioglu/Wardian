@@ -757,7 +757,7 @@ export type LegacyWorkbenchViewMode =
   | "dashboard"
   | "queue"
   | "library"
-  | "workflows"
+  | "automations"
   | "graph"
   | "garden";
 
@@ -777,7 +777,7 @@ const INITIAL_SURFACE_TYPE_BY_VIEW: Record<LegacyWorkbenchViewMode, string> = {
   dashboard: "dashboard",
   queue: "inbox",
   library: "library",
-  workflows: "workflows",
+  automations: "automations",
   graph: "graph",
   garden: "garden",
 };

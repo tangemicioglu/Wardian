@@ -159,7 +159,7 @@ describe("AgentTerminal scrollback", () => {
       externalEditorCustomExecutable: "",
       fileOpenActions: { text: "wardian", image: "wardian", pdf: "wardian" },
     });
-    useQueueStore.setState({ items: [], _agentBuffers: {}, _workflowLastOutput: {} });
+    useQueueStore.setState({ items: [], _agentBuffers: {}, _automationLastOutput: {} });
     openConnectedStates = [];
     rectSpy = vi
       .spyOn(HTMLElement.prototype, "getBoundingClientRect")

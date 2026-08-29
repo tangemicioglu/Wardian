@@ -9,12 +9,12 @@ use std::{collections::HashSet, fs::File, io::BufReader, path::Path};
 pub struct QueueProjection {
     pub items: Vec<Value>,
     pub read_notification_ids: HashSet<String>,
-    pub workflow_runs: HashSet<(String, String)>,
+    pub automation_runs: HashSet<(String, String)>,
     pub truncated: bool,
 }
 
 /// Streams a persisted queue array and returns one bounded page of visible
-/// items. Read acknowledgements and workflow dismissal markers are retained as
+/// items. Read acknowledgements and automation dismissal markers are retained as
 /// separate metadata so they cannot evict visible events or expire with the
 /// seven-day legacy queue retention window.
 pub fn read_recent_items(path: &Path, limit: usize, offset: usize, cutoff: i64) -> QueueProjection {
@@ -23,7 +23,7 @@ pub fn read_recent_items(path: &Path, limit: usize, offset: usize, cutoff: i64) 
 
 /// Streams a persisted queue page while retaining only visible items that
 /// satisfy `matches`. Queue metadata is still collected for every item so a
-/// filtered read cannot lose durable acknowledgements or workflow identities.
+/// filtered read cannot lose durable acknowledgements or automation identities.
 pub fn read_recent_items_matching<F>(
     path: &Path,
     limit: usize,
@@ -99,17 +99,18 @@ where
                 projection.read_notification_ids.insert(notification_id);
                 continue;
             }
+            let item = normalize_legacy_item(item);
             let dismissed = item.get("dismissed").and_then(Value::as_bool) == Some(true);
-            if let Some(workflow_run) = workflow_run_identity(&item) {
+            if let Some(automation_run) = automation_run_identity(&item) {
                 // A dismissal marker is durable triage metadata. Ordinary
-                // workflow completions follow the legacy queue retention
+                // automation completions follow the legacy queue retention
                 // window, so an expired completion must not suppress a fresh
                 // checkpoint projection.
                 if dismissed || is_recent(&item, self.cutoff) {
-                    projection.workflow_runs.insert(workflow_run);
+                    projection.automation_runs.insert(automation_run);
                 }
             }
-            if dismissed || item.get("workflow_approval").is_some() {
+            if dismissed || item.get("automation_approval").is_some() {
                 continue;
             }
             if !is_recent(&item, self.cutoff) {
@@ -145,17 +146,59 @@ fn read_acknowledgement_id(item: &Value) -> Option<String> {
     .map(ToString::to_string)
 }
 
-fn workflow_run_identity(item: &Value) -> Option<(String, String)> {
-    (item.get("type").and_then(Value::as_str) == Some("workflow_completed"))
-        .then(|| {
-            Some((
-                item.get("workflow_id").and_then(Value::as_str)?.to_string(),
-                item.get("workflow_run_id")
-                    .and_then(Value::as_str)?
-                    .to_string(),
-            ))
-        })
-        .flatten()
+fn automation_run_identity(item: &Value) -> Option<(String, String)> {
+    matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("automation_completed" | "workflow_completed")
+    )
+    .then(|| {
+        Some((
+            item.get("automation_id")
+                .or_else(|| item.get("workflow_id"))
+                .and_then(Value::as_str)?
+                .to_string(),
+            item.get("automation_run_id")
+                .or_else(|| item.get("workflow_run_id"))
+                .and_then(Value::as_str)?
+                .to_string(),
+        ))
+    })
+    .flatten()
+}
+
+fn normalize_legacy_item(mut item: Value) -> Value {
+    let Some(object) = item.as_object_mut() else {
+        return item;
+    };
+    match object.get("type").and_then(Value::as_str) {
+        Some("workflow_completed") => {
+            object.insert(
+                "type".to_string(),
+                Value::String("automation_completed".to_string()),
+            );
+        }
+        Some("workflow_failed") => {
+            object.insert(
+                "type".to_string(),
+                Value::String("automation_completed".to_string()),
+            );
+            object
+                .entry("status".to_string())
+                .or_insert_with(|| Value::String("failed".to_string()));
+        }
+        _ => {}
+    }
+    for (legacy_key, canonical_key) in [
+        ("workflow_id", "automation_id"),
+        ("workflow_run_id", "automation_run_id"),
+        ("workflow_name", "automation_name"),
+        ("workflow_approval", "automation_approval"),
+    ] {
+        if let Some(value) = object.remove(legacy_key) {
+            object.entry(canonical_key.to_string()).or_insert(value);
+        }
+    }
+    item
 }
 
 fn is_recent(item: &Value, cutoff: i64) -> bool {
@@ -218,10 +261,10 @@ mod tests {
         );
         assert!(first.read_notification_ids.contains("notification-1"));
         assert!(first
-            .workflow_runs
+            .automation_runs
             .contains(&("deploy".to_string(), "run-1".to_string())));
         assert!(!first
-            .workflow_runs
+            .automation_runs
             .contains(&("deploy".to_string(), "run-2".to_string())));
 
         let second = read_recent_items(file.path(), 1, 1, 0);

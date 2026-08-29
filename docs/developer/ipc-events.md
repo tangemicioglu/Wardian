@@ -17,15 +17,15 @@ The UI invokes these functions via `invoke("command_name", { args })`.
 - **`send_input_to_agent`**: Routes raw keystrokes to an agent's `stdin`.
 - **`send_binary_input_to_agent`**: Routes raw byte sequences from xterm to an agent's `stdin` without UTF-8 re-encoding.
 
-### Workflow Governance
+### Automation Governance
 
-- **`workflow_run`**: Initiates a workflow blueprint run.
-- **`workflow_resume`**: Resumes an interrupted durable run.
-- **`workflow_approve`**: Grants or rejects a paused approval node.
-- **`workflow_cancel`**: Requests cancellation for a live run.
-- **`schedule_*`**: Manages persisted schedule invokers for workflow blueprints.
+- **`automation_run`**: Initiates an automation blueprint run.
+- **`automation_resume`**: Resumes an interrupted durable run.
+- **`automation_approve`**: Grants or rejects a paused approval node.
+- **`automation_cancel`**: Requests cancellation for a live run.
+- **`schedule_*`**: Manages persisted schedule invokers for automation blueprints.
 
-Old workflow system commands such as `run_workflow`, `stop_all_triggers`,
+Old automation system commands such as `run_automation`, `stop_all_triggers`,
 `pause_all_triggers`, and `resume_all_triggers` are compatibility history only.
 
 ### Inbox and Readiness
@@ -33,7 +33,7 @@ Old workflow system commands such as `run_workflow`, `stop_all_triggers`,
 - **`load_queue_items` / `save_queue_items`**: Load or persist the legacy completion projection for the active Wardian home. Inbox item identity should be derived from canonical evidence IDs rather than frontend timestamps.
 - **`load_queue_preferences` / `save_queue_preferences`**: Load or persist per-event-type Inbox visibility, desktop alert, and sound alert preferences.
 - **`list_inbox_notifications` / `resolve_inbox_notification`**: Read and resolve durable agent-created updates and manual approval requests from the interaction store.
-- **`list_workflow_inbox_approvals`**: Project native workflow Approval nodes for Inbox while leaving workflow state authoritative.
+- **`list_automation_inbox_approvals`**: Project native automation Approval nodes for Inbox while leaving automation state authoritative.
 - **`list_provider_readiness`**: Returns install/auth readiness for provider commands before spawn. This is separate from live provider input readiness, which is tracked per agent runtime generation.
 
 ### Files Resources
@@ -260,13 +260,13 @@ Inbox items project canonical live evidence instead of replayed terminal text. A
 
 `evidence_source` is one of `provider_runtime`, `interaction_store`, or `live_runtime`. Hydration may restore existing completion items, but it must not emit new evidence. Replay of provider logs or terminal buffers must not create duplicate Inbox cards. Agent-originated updates and approvals use durable notification interactions rather than this frontend projection.
 
-### `workflow-telemetry`
+### `automation-telemetry`
 
-Pushed in real-time as the Workflow Engine executes nodes.
+Pushed in real-time as the Automation Engine executes nodes.
 
 ```json
 {
-  "workflow_id": "uuid-a",
+  "automation_id": "uuid-a",
   "node_id": "node-1",
   "status": "processing | success | error",
   "output": { "text": "..." },

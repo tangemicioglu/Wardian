@@ -64,9 +64,9 @@ async function installRunViewIpcMock(page: Page) {
         if (command === "load_queue_preferences") return {};
         if (command === "load_onboarding_hints") return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         if (command === "dismiss_onboarding_hint") return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
-        if (command === "list_workflows") return [];
+        if (command === "list_automations") return [];
         if (command === "list_scheduled_runs") return [];
-        if (command === "load_workflow_library") return { folders: [], rootWorkflowIds: [] };
+        if (command === "load_automation_library") return { folders: [], rootAutomationIds: [] };
         if (command === "get_library_tree") return { type: "Folder", path: "", name: "Root", children: [] };
         if (command === "list_deployed_skills") return [];
         if (command === "load_app_settings") return null;
@@ -84,18 +84,18 @@ async function installRunViewIpcMock(page: Page) {
         if (command === "plugin:event|unlisten") return null;
         if (command === "sync_provider_theme_settings") return null;
 
-        if (command === "workflow_list_blueprints") return { blueprints: [], truncated: false, next_offset: null };
-        if (command === "workflow_list_runs") {
+        if (command === "automation_list_blueprints") return { blueprints: [], truncated: false, next_offset: null };
+        if (command === "automation_list_runs") {
           return { runs: [{
             run_id: "run-e2e-1",
             blueprint_id: "wf-run-e2e",
             status: "failed",
             node_count: 2,
             failure: "boom",
-            path: "<absolute-workspace-path>/logs/workflows/wf-run-e2e/run-e2e-1",
+            path: "<absolute-workspace-path>/logs/automations/wf-run-e2e/run-e2e-1",
           }], truncated: false, next_offset: null };
         }
-        if (command === "workflow_read_run") {
+        if (command === "automation_read_run") {
           return {
             state: {
               run_id: "run-e2e-1",
@@ -124,14 +124,14 @@ async function openRunView(page: Page) {
   await page.setViewportSize({ width: 1700, height: 980 });
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
-  await openSurface(page, "workflows");
+  await openSurface(page, "automations");
   await page.evaluate(async () => {
-    const { useWorkflowsView } = await import("/src/store/useWorkflowsView.ts");
-    const { useRunStore } = await import("/src/features/workflows/run/useRunStore.ts");
-    useWorkflowsView.getState().observeRun("wf-run-e2e", "run-e2e-1");
+    const { useAutomationsView } = await import("/src/store/useAutomationsView.ts");
+    const { useRunStore } = await import("/src/features/automations/run/useRunStore.ts");
+    useAutomationsView.getState().observeRun("wf-run-e2e", "run-e2e-1");
     await useRunStore.getState().openRun("wf-run-e2e", "run-e2e-1");
   });
-  await expect(page.getByTestId("workflows-observe-mode")).toBeVisible();
+  await expect(page.getByTestId("automations-observe-mode")).toBeVisible();
   await expect(nodeById(page, "a")).toBeVisible();
   await expect(nodeById(page, "b")).toBeVisible();
 }
@@ -165,13 +165,13 @@ test("run view observes, scrubs, and inspects a failed run", async ({ page }) =>
   await expect(nodeB).toHaveAttribute("data-status", "pending");
 
   if (process.env.WARDIAN_RUN_VIEW_SCREENSHOT_DIR) {
-    await page.getByTestId("workflows-observe-mode").screenshot({
+    await page.getByTestId("automations-observe-mode").screenshot({
       path: `${process.env.WARDIAN_RUN_VIEW_SCREENSHOT_DIR}/run-view-mid-scrub.png`,
     });
   }
 
   await nodeB.click();
-  const inspector = page.getByTestId("workflows-observe-mode").locator("aside").last();
+  const inspector = page.getByTestId("automations-observe-mode").locator("aside").last();
   await expect(inspector.getByText("No output recorded.")).toBeVisible();
   await expect(inspector.getByText("boom")).toHaveCount(0);
 
@@ -180,7 +180,7 @@ test("run view observes, scrubs, and inspects a failed run", async ({ page }) =>
   await expect(inspector.getByText("boom")).toBeVisible();
 
   if (process.env.WARDIAN_RUN_VIEW_SCREENSHOT_DIR) {
-    await page.getByTestId("workflows-observe-mode").screenshot({
+    await page.getByTestId("automations-observe-mode").screenshot({
       path: `${process.env.WARDIAN_RUN_VIEW_SCREENSHOT_DIR}/run-view-failed-inspector.png`,
     });
   }

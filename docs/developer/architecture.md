@@ -8,22 +8,22 @@ Wardian is a malleable agent environment. New architecture should preserve these
 invariants:
 
 - **Canonical state has an owner.** The backend owns live agent runtime truth;
-  workflow files own workflow templates; workflow run logs own run evidence;
-  library files own reusable prompts, skills, classes, and workflow blueprints;
+  automation files own automation templates; automation run logs own run evidence;
+  library files own reusable prompts, skills, classes, and automation blueprints;
   watchlist/team records own roster organization until a broader project-scope
   model exists.
 - **Surfaces are lenses, not state silos.** Agents, Dashboard, Analytics, Graph,
-  Garden, Library, Workflows, Inbox, and future workbench contributions resolve
+  Garden, Library, Automations, Inbox, and future workbench contributions resolve
   and mutate canonical Wardian records through shared commands or file
   contracts. A surface owns bounded presentation state, not a private copy of
   domain or runtime truth.
 - **Artifacts stay inspectable where practical.** User-shapable prompts,
-  classes, skills, workflows, evidence, and memory-ready context should remain
+  classes, skills, automations, evidence, and memory-ready context should remain
   discoverable on disk or through stable CLI/backend queries.
 - **Scope is explicit.** Features should name whether they operate globally, by
-  class, by agent, by team/project, by workspace/folder, or by workflow run.
+  class, by agent, by team/project, by workspace/folder, or by automation run.
 - **AI changes remain reviewable.** Agent-generated edits to prompts, skills,
-  workflows, memory, or project context should preserve provenance and expose a
+  automations, memory, or project context should preserve provenance and expose a
   diff or proposal path before mutating durable shared state.
 
 ## 🏛️ System Layers
@@ -48,17 +48,17 @@ invariants:
   workspace explicitly. Pi does not create this projected habitat; it runs in
   the real workspace and receives Wardian instruction and skill roots through
   provider-native launch flags.
-- **State Management**: `AppState` holds `Mutex`-protected maps of active agents, metrics, workflow runs, and background tasks.
+- **State Management**: `AppState` holds `Mutex`-protected maps of active agents, metrics, automation runs, and background tasks.
 - **Worker Threads**:
-  - **Workflow Scheduler**: Fires persisted workflow schedule invokers.
+  - **Automation Scheduler**: Fires persisted automation schedule invokers.
   - **Metrics Push**: Pushes system/agent resource usage to the UI via Tauri events.
-- **Inbox Persistence**: Completion triage state is stored under the active Wardian home so agent and workflow outcomes survive app restarts; durable agent notifications use the interaction store.
+- **Inbox Persistence**: Completion triage state is stored under the active Wardian home so agent and automation outcomes survive app restarts; durable agent notifications use the interaction store.
 
-### 2. The Logical Layer (Workflow Engine)
+### 2. The Logical Layer (Automation Engine)
 
-- **Deterministic Execution**: Detailed in [Workflow Engine Architecture](./workflow-engine.md).
+- **Deterministic Execution**: Detailed in [Automation Engine Architecture](./automation-engine.md).
 - **Shared Registry**: A global Handlebars-based registry where agent outputs are stored for cross-agent referencing.
-- **Workflow Candidate Queue**: Deterministic execution of workflow nodes (loops, triggers, waits, branches, memory, commands, and agent calls) through the engine's internal candidate-node FIFO.
+- **Automation Candidate Queue**: Deterministic execution of automation nodes (loops, triggers, waits, branches, memory, commands, and agent calls) through the engine's internal candidate-node FIFO.
 - **Injection Logic**: Solves CLI input limits by writing prompts to temp files (`~\.gemini\tmp\wardian-1`) and using `<` redirection.
 
 ### 2.5 Memory and Knowledge
@@ -76,17 +76,17 @@ invariants:
   `NavigationService` is the mutation boundary. Dockview is a replaceable
   rendering adapter and never owns durable state. See
   [Workbench Surfaces](./workbench-surfaces.md).
-- **Visual Builder**: A specialized canvas for designing complex multi-agent workflows, featuring the [Integrated Variable Assistant](./visual-builder.md).
+- **Visual Builder**: A specialized canvas for designing complex multi-agent automations, featuring the [Integrated Variable Assistant](./visual-builder.md).
 - **Agents**: A responsive workbench surface for monitoring multiple
   terminal presentations in Auto, Grid, or Single mode.
-- **Inbox Surface**: A triage surface for unread agent completions, important updates, approvals, and workflow outcomes.
+- **Inbox Surface**: A triage surface for unread agent completions, important updates, approvals, and automation outcomes.
 
 ## 📡 Communication (IPC)
 
 Wardian uses a bidirectional event system, detailed in [IPC and Event Governance](./ipc-events.md).
 
 - **Events (Push)**: Rust pushes telemetry (`agent-metrics`), structured logs (`agent-json-event`), and PTY readiness notifications (`agent-pty-output-ready`) to the UI.
-- **Commands (Pull)**: The UI invokes Rust functions for high-level actions (`spawn_agent`, `workflow_run`).
+- **Commands (Pull)**: The UI invokes Rust functions for high-level actions (`spawn_agent`, `automation_run`).
 - **Terminal Input**: Presentation-aware commands carry session, presentation,
   runtime generation, and lease epoch. Only the broker's active owner may send
   terminal keystrokes, binary input, or geometry. Structured prompt delivery
@@ -99,4 +99,4 @@ Wardian uses a bidirectional event system, detailed in [IPC and Event Governance
 
 ## Wardian CLI
 
-The `crates/wardian-cli` binary shares DTOs, paths, migrations, identity filters, and the live control protocol through `wardian-core`. Wardian remains GUI/app-first; the CLI exists so agents and automation can inspect and control Wardian through a stable textual surface. For read commands it first tries the running desktop app's local control endpoint for the same `WARDIAN_HOME` and falls back to `$WARDIAN_HOME/state.db` when the app is not running. Live-control commands cover agent lifecycle, message delivery, watch/wait coordination, worktree assignment, and workflow run control. The desktop app stages the binary as a Tauri resource and installs it into the user Wardian bin directory on startup.
+The `crates/wardian-cli` binary shares DTOs, paths, migrations, identity filters, and the live control protocol through `wardian-core`. Wardian remains GUI/app-first; the CLI exists so agents and automation can inspect and control Wardian through a stable textual surface. For read commands it first tries the running desktop app's local control endpoint for the same `WARDIAN_HOME` and falls back to `$WARDIAN_HOME/state.db` when the app is not running. Live-control commands cover agent lifecycle, message delivery, watch/wait coordination, worktree assignment, and automation run control. The desktop app stages the binary as a Tauri resource and installs it into the user Wardian bin directory on startup.

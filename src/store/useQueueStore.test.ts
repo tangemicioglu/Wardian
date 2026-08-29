@@ -11,9 +11,9 @@ function resetStore() {
   useQueueStore.setState({
     items: [],
     _agentBuffers: {},
-    _workflowLastOutput: {},
+    _automationLastOutput: {},
     _readNotificationIds: [],
-    _dismissedWorkflowRuns: [],
+    _dismissedAutomationRuns: [],
     preferences: normalizeQueuePreferences({}),
   });
 }
@@ -30,20 +30,20 @@ describe("useQueueStore - preferences", () => {
     expect(preferences.visible_event_types).toEqual({
       action_needed: true,
       agent_completed: true,
-      workflow_completed: true,
-      workflow_failed: true,
+      automation_completed: true,
+      automation_failed: true,
     });
     expect(preferences.desktop_notifications).toEqual({
       action_needed: true,
       agent_completed: false,
-      workflow_completed: false,
-      workflow_failed: false,
+      automation_completed: false,
+      automation_failed: false,
     });
     expect(preferences.sound_notifications).toEqual({
       action_needed: true,
       agent_completed: false,
-      workflow_completed: false,
-      workflow_failed: false,
+      automation_completed: false,
+      automation_failed: false,
     });
     expect(preferences.sound_volume).toBe(0.5);
   });
@@ -53,7 +53,7 @@ describe("useQueueStore - preferences", () => {
       if (cmd === "load_queue_preferences") {
         return Promise.resolve({
           visible_event_types: { agent_completed: false },
-          desktop_notifications: { workflow_failed: true },
+          desktop_notifications: { automation_failed: true },
           sound_notifications: { action_needed: false },
           sound_volume: 0.75,
         });
@@ -66,23 +66,23 @@ describe("useQueueStore - preferences", () => {
     expect(useQueueStore.getState().preferences.visible_event_types).toEqual({
       action_needed: true,
       agent_completed: false,
-      workflow_completed: true,
-      workflow_failed: true,
+      automation_completed: true,
+      automation_failed: true,
     });
-    expect(useQueueStore.getState().preferences.desktop_notifications.workflow_failed).toBe(true);
+    expect(useQueueStore.getState().preferences.desktop_notifications.automation_failed).toBe(true);
     expect(useQueueStore.getState().preferences.sound_notifications.action_needed).toBe(false);
     expect(useQueueStore.getState().preferences.sound_volume).toBe(0.75);
   });
 
   it("persists filter and alert preference changes", () => {
-    useQueueStore.getState().setEventVisible("workflow_completed", false);
-    useQueueStore.getState().setDesktopNotification("workflow_failed", true);
+    useQueueStore.getState().setEventVisible("automation_completed", false);
+    useQueueStore.getState().setDesktopNotification("automation_failed", true);
     useQueueStore.getState().setSoundNotification("action_needed", false);
     useQueueStore.getState().setSoundVolume(0.75);
 
     const { preferences } = useQueueStore.getState();
-    expect(preferences.visible_event_types.workflow_completed).toBe(false);
-    expect(preferences.desktop_notifications.workflow_failed).toBe(true);
+    expect(preferences.visible_event_types.automation_completed).toBe(false);
+    expect(preferences.desktop_notifications.automation_failed).toBe(true);
     expect(preferences.sound_notifications.action_needed).toBe(false);
     expect(preferences.sound_volume).toBe(0.75);
     expect(mockInvoke).toHaveBeenCalledWith("save_queue_preferences", { preferences });
@@ -320,7 +320,7 @@ describe("useQueueStore - action needed", () => {
       .addActionNeeded("agent-1", "CoderOne", "Provider approval", "approval-1", "provider_runtime");
     useQueueStore
       .getState()
-      .addActionNeeded("agent-1", "CoderOne", "Workflow review", "approval-1", "interaction_store");
+      .addActionNeeded("agent-1", "CoderOne", "Automation review", "approval-1", "interaction_store");
 
     expect(useQueueStore.getState().items).toHaveLength(2);
   });
@@ -333,52 +333,52 @@ describe("useQueueStore - action needed", () => {
   });
 });
 
-describe("useQueueStore - workflow completion", () => {
+describe("useQueueStore - automation completion", () => {
   beforeEach(() => {
     resetStore();
     mockInvoke.mockResolvedValue([]);
   });
 
-  it("addWorkflowCompletion creates a completed item", () => {
-    useQueueStore.getState().addWorkflowCompletion(
-      { workflow_id: "wf-1", run_instance_id: "run-1", status: "completed" },
-      "My Workflow",
+  it("addAutomationCompletion creates a completed item", () => {
+    useQueueStore.getState().addAutomationCompletion(
+      { automation_id: "wf-1", run_instance_id: "run-1", status: "completed" },
+      "My Automation",
     );
     const { items } = useQueueStore.getState();
     expect(items).toHaveLength(1);
-    expect(items[0].type).toBe("workflow_completed");
-    expect(items[0].workflow_name).toBe("My Workflow");
+    expect(items[0].type).toBe("automation_completed");
+    expect(items[0].automation_name).toBe("My Automation");
     expect(items[0].status).toBe("completed");
     expect(items[0].read).toBe(false);
   });
 
-  it("addWorkflowCompletion falls back to workflow_id when name is undefined", () => {
-    useQueueStore.getState().addWorkflowCompletion(
-      { workflow_id: "wf-unknown", run_instance_id: "run-1", status: "completed" },
+  it("addAutomationCompletion falls back to automation_id when name is undefined", () => {
+    useQueueStore.getState().addAutomationCompletion(
+      { automation_id: "wf-unknown", run_instance_id: "run-1", status: "completed" },
     );
-    expect(useQueueStore.getState().items[0].workflow_name).toBe("wf-unknown");
+    expect(useQueueStore.getState().items[0].automation_name).toBe("wf-unknown");
   });
 
-  it("addWorkflowCompletion includes error for failed workflows", () => {
-    useQueueStore.getState().addWorkflowCompletion(
-      { workflow_id: "wf-2", run_instance_id: "run-2", status: "failed", error: "Timeout" },
-      "Failing Workflow",
+  it("addAutomationCompletion includes error for failed automations", () => {
+    useQueueStore.getState().addAutomationCompletion(
+      { automation_id: "wf-2", run_instance_id: "run-2", status: "failed", error: "Timeout" },
+      "Failing Automation",
     );
     const { items } = useQueueStore.getState();
     expect(items[0].status).toBe("failed");
     expect(items[0].error).toBe("Timeout");
   });
 
-  it("projects a durable workflow summary once per run and removes its approval card", () => {
+  it("projects a durable automation summary once per run and removes its approval card", () => {
     useQueueStore.setState({
       items: [{
-        id: "workflow-approval:wf-1:run-1:approve",
+        id: "automation-approval:wf-1:run-1:approve",
         type: "approval_request",
         timestamp: Date.now(),
         read: false,
-        workflow_approval: {
+        automation_approval: {
           blueprint_id: "wf-1",
-          blueprint_path: "/workflows/wf-1.md",
+          blueprint_path: "/automations/wf-1.md",
           run_id: "run-1",
           node: "approve",
         },
@@ -386,48 +386,48 @@ describe("useQueueStore - workflow completion", () => {
     });
 
     const completion = {
-      workflow_id: "wf-1",
+      automation_id: "wf-1",
       run_instance_id: "run-1",
       status: "completed" as const,
-      summary: "Durable workflow result",
+      summary: "Durable automation result",
     };
-    useQueueStore.getState().addWorkflowCompletion(completion, "My Workflow");
-    useQueueStore.getState().addWorkflowCompletion(completion, "My Workflow");
+    useQueueStore.getState().addAutomationCompletion(completion, "My Automation");
+    useQueueStore.getState().addAutomationCompletion(completion, "My Automation");
 
     const { items } = useQueueStore.getState();
     expect(items).toHaveLength(1);
-    expect(items[0].summary).toBe("Durable workflow result");
-    expect(items[0].workflow_approval).toBeUndefined();
+    expect(items[0].summary).toBe("Durable automation result");
+    expect(items[0].automation_approval).toBeUndefined();
   });
 
-  it("trackWorkflowNodeOutput stores last completed-node output", () => {
-    useQueueStore.getState().trackWorkflowNodeOutput({
-      workflow_id: "wf-1",
+  it("trackAutomationNodeOutput stores last completed-node output", () => {
+    useQueueStore.getState().trackAutomationNodeOutput({
+      automation_id: "wf-1",
       node_id: "node-a",
       status: "completed",
       output: { text: "Node result" },
     });
-    expect(useQueueStore.getState()._workflowLastOutput["wf-1"]).toBe("Node result");
+    expect(useQueueStore.getState()._automationLastOutput["wf-1"]).toBe("Node result");
   });
 
-  it("addWorkflowCompletion attaches tracked node output as summary", () => {
-    useQueueStore.getState().trackWorkflowNodeOutput({
-      workflow_id: "wf-1",
+  it("addAutomationCompletion attaches tracked node output as summary", () => {
+    useQueueStore.getState().trackAutomationNodeOutput({
+      automation_id: "wf-1",
       node_id: "node-a",
       status: "completed",
-      output: { text: "Workflow output" },
+      output: { text: "Automation output" },
     });
-    useQueueStore.getState().addWorkflowCompletion(
-      { workflow_id: "wf-1", run_instance_id: "run-1", status: "completed" },
-      "My Workflow",
+    useQueueStore.getState().addAutomationCompletion(
+      { automation_id: "wf-1", run_instance_id: "run-1", status: "completed" },
+      "My Automation",
     );
-    expect(useQueueStore.getState().items[0].summary).toBe("Workflow output");
+    expect(useQueueStore.getState().items[0].summary).toBe("Automation output");
   });
 
-  it("addWorkflowCompletion omits summary when no node output was tracked", () => {
-    useQueueStore.getState().addWorkflowCompletion(
-      { workflow_id: "wf-empty", run_instance_id: "run-1", status: "completed" },
-      "Logic-only Workflow",
+  it("addAutomationCompletion omits summary when no node output was tracked", () => {
+    useQueueStore.getState().addAutomationCompletion(
+      { automation_id: "wf-empty", run_instance_id: "run-1", status: "completed" },
+      "Logic-only Automation",
     );
     expect(useQueueStore.getState().items[0].summary).toBeUndefined();
   });
@@ -488,21 +488,21 @@ describe("useQueueStore - persistence", () => {
     await Promise.all([first, second]);
   });
 
-  it("reconciles completed and failed workflow runs that predate the Inbox listener", async () => {
+  it("reconciles completed and failed automation runs that predate the Inbox listener", async () => {
     mockInvoke.mockImplementation((command) => {
       if (command === "load_queue_items") return Promise.resolve([]);
-      if (command === "list_workflow_inbox_terminal_runs") {
+      if (command === "list_automation_inbox_terminal_runs") {
         return Promise.resolve([{
-          workflow_id: "scheduled-release",
+          automation_id: "scheduled-release",
           run_instance_id: "run-completed-before-startup",
-          workflow_name: "Scheduled Release",
+          automation_name: "Scheduled Release",
           status: "completed",
           summary: "Release completed before Inbox opened.",
           updated_at: new Date().toISOString(),
         }, {
-          workflow_id: "scheduled-release",
+          automation_id: "scheduled-release",
           run_instance_id: "run-failed-before-startup",
-          workflow_name: "Scheduled Release",
+          automation_name: "Scheduled Release",
           status: "failed",
           error: "blueprint could not be resolved",
           updated_at: new Date().toISOString(),
@@ -515,16 +515,16 @@ describe("useQueueStore - persistence", () => {
 
     expect(useQueueStore.getState().items).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        type: "workflow_completed",
-        workflow_id: "scheduled-release",
-        workflow_run_id: "run-completed-before-startup",
+        type: "automation_completed",
+        automation_id: "scheduled-release",
+        automation_run_id: "run-completed-before-startup",
         status: "completed",
         summary: "Release completed before Inbox opened.",
       }),
       expect.objectContaining({
-        type: "workflow_completed",
-        workflow_id: "scheduled-release",
-        workflow_run_id: "run-failed-before-startup",
+        type: "automation_completed",
+        automation_id: "scheduled-release",
+        automation_run_id: "run-failed-before-startup",
         status: "failed",
         error: "blueprint could not be resolved",
       }),
@@ -532,27 +532,27 @@ describe("useQueueStore - persistence", () => {
     await vi.waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("save_queue_items", expect.objectContaining({
         items: expect.arrayContaining([
-          expect.objectContaining({ workflow_run_id: "run-completed-before-startup" }),
-          expect.objectContaining({ workflow_run_id: "run-failed-before-startup" }),
+          expect.objectContaining({ automation_run_id: "run-completed-before-startup" }),
+          expect.objectContaining({ automation_run_id: "run-failed-before-startup" }),
         ]),
       }));
     });
   });
 
-  it("keeps a persisted workflow completion instead of duplicating its durable run", async () => {
+  it("keeps a persisted automation completion instead of duplicating its durable run", async () => {
     const persisted = {
-      id: "existing-workflow-item",
-      type: "workflow_completed",
+      id: "existing-automation-item",
+      type: "automation_completed",
       timestamp: Date.now(),
       read: true,
-      workflow_id: "release",
-      workflow_run_id: "run-1",
-      workflow_name: "Release",
+      automation_id: "release",
+      automation_run_id: "run-1",
+      automation_name: "Release",
       status: "completed",
     };
     mockInvoke.mockImplementation((command) => {
       if (command === "load_queue_items") return Promise.resolve([persisted]);
-      if (command === "list_workflow_inbox_terminal_runs") {
+      if (command === "list_automation_inbox_terminal_runs") {
         return Promise.resolve([{ ...persisted, run_instance_id: "run-1", updated_at: new Date().toISOString() }]);
       }
       return Promise.resolve([]);
@@ -563,11 +563,11 @@ describe("useQueueStore - persistence", () => {
     expect(useQueueStore.getState().items).toEqual([persisted]);
   });
 
-  it("keeps a cleared workflow completion hidden when durable runs are reloaded", async () => {
+  it("keeps a cleared automation completion hidden when durable runs are reloaded", async () => {
     const terminalRun = {
-      workflow_id: "release",
+      automation_id: "release",
       run_instance_id: "run-cleared",
-      workflow_name: "Release",
+      automation_name: "Release",
       status: "completed" as const,
       summary: "Release finished.",
       updated_at: new Date().toISOString(),
@@ -575,7 +575,7 @@ describe("useQueueStore - persistence", () => {
     let persisted: QueueItem[] = [];
     mockInvoke.mockImplementation((command, args) => {
       if (command === "load_queue_items") return Promise.resolve(persisted);
-      if (command === "list_workflow_inbox_terminal_runs") return Promise.resolve([terminalRun]);
+      if (command === "list_automation_inbox_terminal_runs") return Promise.resolve([terminalRun]);
       if (command === "save_queue_items") {
         persisted = ((args as { items?: QueueItem[] } | undefined)?.items ?? []);
       }
@@ -586,14 +586,14 @@ describe("useQueueStore - persistence", () => {
     const itemId = useQueueStore.getState().items[0].id;
     useQueueStore.getState().markRead(itemId);
     await vi.waitFor(() => expect(persisted).toEqual([
-      expect.objectContaining({ workflow_run_id: "run-cleared", read: true }),
+      expect.objectContaining({ automation_run_id: "run-cleared", read: true }),
     ]));
 
     useQueueStore.getState().clearRead();
     await vi.waitFor(() => expect(persisted).toEqual([
       expect.objectContaining({
-        workflow_id: "release",
-        workflow_run_id: "run-cleared",
+        automation_id: "release",
+        automation_run_id: "run-cleared",
         dismissed: true,
       }),
     ]));
@@ -604,15 +604,15 @@ describe("useQueueStore - persistence", () => {
     expect(useQueueStore.getState().items).toEqual([]);
   });
 
-  it("does not let a stale workflow reload overwrite a local read mutation", async () => {
-    const workflowItem: QueueItem = {
-      id: "workflow-completion:release:run-stale",
-      type: "workflow_completed",
+  it("does not let a stale automation reload overwrite a local read mutation", async () => {
+    const automationItem: QueueItem = {
+      id: "automation-completion:release:run-stale",
+      type: "automation_completed",
       timestamp: Date.now(),
       read: false,
-      workflow_id: "release",
-      workflow_run_id: "run-stale",
-      workflow_name: "Release",
+      automation_id: "release",
+      automation_run_id: "run-stale",
+      automation_name: "Release",
       status: "completed",
     };
     let resolveLoad!: (items: QueueItem[]) => void;
@@ -623,11 +623,11 @@ describe("useQueueStore - persistence", () => {
       if (command === "load_queue_items") return pendingLoad;
       return Promise.resolve([]);
     });
-    useQueueStore.setState({ items: [workflowItem] });
+    useQueueStore.setState({ items: [automationItem] });
 
     const reload = useQueueStore.getState().loadItems();
-    useQueueStore.getState().markRead(workflowItem.id);
-    resolveLoad([workflowItem]);
+    useQueueStore.getState().markRead(automationItem.id);
+    resolveLoad([automationItem]);
     await reload;
 
     expect(useQueueStore.getState().items[0]).toEqual(expect.objectContaining({ read: true }));
@@ -677,21 +677,21 @@ describe("useQueueStore - persistence", () => {
     ]));
   });
 
-  it("does not reload persisted workflow approval projections as legacy cards", async () => {
+  it("does not reload persisted automation approval projections as legacy cards", async () => {
     mockInvoke.mockImplementation((command) => {
       if (command === "load_queue_items") {
         return Promise.resolve([{
-          id: "workflow-approval:wf:run:gate",
+          id: "automation-approval:wf:run:gate",
           type: "approval_request",
           timestamp: Date.now(),
           read: false,
-          workflow_approval: { blueprint_id: "wf", blueprint_path: "workflow.json", run_id: "run", node: "gate" },
+          automation_approval: { blueprint_id: "wf", blueprint_path: "automation.json", run_id: "run", node: "gate" },
         }]);
       }
-      if (command === "list_workflow_inbox_approvals") {
+      if (command === "list_automation_inbox_approvals") {
         return Promise.resolve([{
           blueprint_id: "wf",
-          blueprint_path: "workflow.json",
+          blueprint_path: "automation.json",
           run_id: "run",
           node: "gate",
           title: "Release gate",
@@ -704,7 +704,7 @@ describe("useQueueStore - persistence", () => {
     await useQueueStore.getState().loadItems();
 
     expect(useQueueStore.getState().items).toHaveLength(1);
-    expect(useQueueStore.getState().items[0].workflow_approval).toBeDefined();
+    expect(useQueueStore.getState().items[0].automation_approval).toBeDefined();
   });
 });
 
@@ -712,8 +712,8 @@ describe("useQueueStore - item management", () => {
   beforeEach(() => {
     resetStore();
     mockInvoke.mockResolvedValue([]);
-    useQueueStore.getState().addWorkflowCompletion(
-      { workflow_id: "wf-1", run_instance_id: "run-1", status: "completed" },
+    useQueueStore.getState().addAutomationCompletion(
+      { automation_id: "wf-1", run_instance_id: "run-1", status: "completed" },
       "Test",
     );
   });
@@ -725,24 +725,24 @@ describe("useQueueStore - item management", () => {
   });
 
   it("markAllRead marks all items read", () => {
-    useQueueStore.getState().addWorkflowCompletion(
-      { workflow_id: "wf-2", run_instance_id: "run-2", status: "completed" },
+    useQueueStore.getState().addAutomationCompletion(
+      { automation_id: "wf-2", run_instance_id: "run-2", status: "completed" },
       "Test2",
     );
     useQueueStore.getState().markAllRead();
     expect(useQueueStore.getState().items.every((i) => i.read)).toBe(true);
   });
 
-  it("does not locally acknowledge workflow approval projections", () => {
+  it("does not locally acknowledge automation approval projections", () => {
     useQueueStore.setState({
       items: [{
-        id: "workflow-approval:wf:run:gate",
+        id: "automation-approval:wf:run:gate",
         type: "approval_request",
         timestamp: Date.now(),
         read: false,
-        workflow_approval: {
+        automation_approval: {
           blueprint_id: "wf",
-          blueprint_path: "workflow.json",
+          blueprint_path: "automation.json",
           run_id: "run",
           node: "gate",
         },
@@ -779,8 +779,8 @@ describe("useQueueStore - item management", () => {
   it("does not clear a read pending provider choice", () => {
     useQueueStore.setState({
       items: [{
-        id: "workflow-completed:pending-choice",
-        type: "workflow_completed",
+        id: "automation-completed:pending-choice",
+        type: "automation_completed",
         timestamp: Date.now(),
         read: true,
         provider_choice_pending: "1",
@@ -816,8 +816,8 @@ describe("useQueueStore - item management", () => {
       return promise;
     });
 
-    useQueueStore.getState().addWorkflowCompletion(
-      { workflow_id: "wf-1", run_instance_id: "run-1", status: "completed" },
+    useQueueStore.getState().addAutomationCompletion(
+      { automation_id: "wf-1", run_instance_id: "run-1", status: "completed" },
       "Test",
     );
     await vi.waitFor(() => expect(saves).toHaveLength(1));
@@ -844,8 +844,8 @@ describe("useQueueStore - item management", () => {
 
   it("clearRead removes only read items and persists", () => {
     useQueueStore.getState().markAllRead();
-    useQueueStore.getState().addWorkflowCompletion(
-      { workflow_id: "wf-unread", run_instance_id: "run-unread", status: "completed" },
+    useQueueStore.getState().addAutomationCompletion(
+      { automation_id: "wf-unread", run_instance_id: "run-unread", status: "completed" },
       "Unread",
     );
 
@@ -853,7 +853,7 @@ describe("useQueueStore - item management", () => {
 
     const { items } = useQueueStore.getState();
     expect(items).toHaveLength(1);
-    expect(items[0].workflow_name).toBe("Unread");
+    expect(items[0].automation_name).toBe("Unread");
     expect(items[0].read).toBe(false);
     expect(mockInvoke).toHaveBeenCalledWith("save_queue_items", expect.anything());
   });

@@ -67,7 +67,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const isAgent = queueItemIsAgentEvent(item);
   const isActionNeeded = item.type === "action_needed";
   const isApprovalRequest = item.type === "approval_request";
-  const title = item.notification_title ?? (isAgent ? item.agent_name : item.workflow_name);
+  const title = item.notification_title ?? (isAgent ? item.agent_name : item.automation_name);
   const bodyText = item.status === "failed" && item.error ? item.error : item.summary;
   const isExpandable = Boolean(bodyText && (bodyText.length > 220 || bodyText.split("\n").length > 4));
   const summaryId = `queue-item-summary-${item.id}`;
@@ -77,10 +77,10 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   const providerChoiceUncertain = Boolean(item.provider_choice_pending);
   const providerChoiceNeedsAcknowledgement = Boolean(item.provider_choice_sent && !item.read);
   const providerChoiceAlreadyRecorded = providerChoiceRecorded(item);
-  const approvalChoices = isApprovalRequest && (item.workflow_approval || item.notification_status === "awaiting_reply")
+  const approvalChoices = isApprovalRequest && (item.automation_approval || item.notification_status === "awaiting_reply")
     ? item.approval_choices ?? []
     : [];
-  const canAcknowledge = !item.workflow_approval && !providerChoiceUncertain;
+  const canAcknowledge = !item.automation_approval && !providerChoiceUncertain;
 
   const handleActionChoice = async (choice: QueueActionChoice) => {
     if (!item.agent_session_id || !onSendAgentPrompt) return;
@@ -100,7 +100,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
   };
 
   const handleApprovalChoice = async (choice: string) => {
-    if (!item.inbox_notification_id && !item.workflow_approval) return;
+    if (!item.inbox_notification_id && !item.automation_approval) return;
     setActionError(null);
     setIsSending(true);
     try {
@@ -244,7 +244,7 @@ function QueueCard({ item, onOpenAgent, onSendAgentPrompt }: QueueCardProps) {
           </p>}
         </div>
 
-        {!item.inbox_notification_id && !item.workflow_approval && !providerChoiceUncertain && !providerChoiceNeedsAcknowledgement && <button
+        {!item.inbox_notification_id && !item.automation_approval && !providerChoiceUncertain && !providerChoiceNeedsAcknowledgement && <button
           type="button"
           aria-label="Clear item"
           title="Clear item"

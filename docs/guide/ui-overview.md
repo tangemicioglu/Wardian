@@ -2,7 +2,7 @@
 
 Wardian is a desktop workspace for watching, directing, and organizing the
 agents you run locally. Its persistent app layout surrounds a tab-based
-[Workbench](./workbench.md), keeping live terminals, reusable items, workflow
+[Workbench](./workbench.md), keeping live terminals, reusable items, automation
 state, Inbox items, tools, and the agent roster close to the work. The center
 can hold one tab or several split panes without changing whether an agent keeps
 running.
@@ -43,7 +43,7 @@ The left icon rail opens collapsible auxiliary panes:
 - **Source Control** stages, diffs, commits, syncs, and manages worktrees for the selected agent.
 - **Agent Configuration** spawns and configures agents.
 - **Command** sends broadcasts and starred prompts to selected agents.
-- **Workflows** provides workflow-related auxiliary controls and can explicitly open the Workflows surface.
+- **Automations** provides automation-related auxiliary controls and can explicitly open the Automations surface.
 - **Terminal** opens the standalone user terminal.
 - **Settings** opens application preferences.
 
@@ -86,7 +86,7 @@ If several presentations show the same terminal, the active one is labeled **Own
 - `Ctrl+[` / `Ctrl+]`: previous or next tab.
 - `F6` / `Shift+F6`: next or previous pane.
 - `Ctrl+Alt+A` / `Ctrl+Alt+D` / `Ctrl+Alt+I`: open Agents, Dashboard, or Inbox.
-- `Ctrl+Alt+G` / `Ctrl+Alt+H` / `Ctrl+Alt+B` / `Ctrl+Alt+W`: open Graph, Garden, Library, or Workflows.
+- `Ctrl+Alt+G` / `Ctrl+Alt+H` / `Ctrl+Alt+B` / `Ctrl+Alt+W`: open Graph, Garden, Library, or Automations.
 - `Ctrl+0`: focus the Workbench.
 - `Ctrl+B`: toggle the left sidebar.
 

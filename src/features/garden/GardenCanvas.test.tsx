@@ -50,18 +50,18 @@ vi.mock("./AgentUnit", () => ({
   AGENT_UNIT_NAME: "agent-unit",
   AgentUnit: ({ unit }: any) => <div data-testid="agent-unit">{unit.label}</div>,
 }));
-vi.mock("./WorkflowUnit", () => ({ WorkflowUnit: ({ unit }: any) => <div data-testid="workflow-unit">{unit.label}</div> }));
+vi.mock("./AutomationUnit", () => ({ AutomationUnit: ({ unit }: any) => <div data-testid="automation-unit">{unit.label}</div> }));
 
 import { GardenCanvas } from "./GardenCanvasImpl";
 
 describe("GardenCanvas", () => {
   beforeEach(() => konvaMocks.reset());
 
-  it("renders one node per agent and workflow unit", () => {
+  it("renders one node per agent and automation unit", () => {
     render(
       <GardenCanvas
         agentUnits={[{ ref: { kind: "agent", id: "a1" }, label: "Alpha", status: "Idle", color: "#fff", position: { x: 0, y: 0 }, crown: [] }]}
-        workflowUnits={[{ ref: { kind: "workflow", id: "w1" }, label: "Build", runStatus: "none", nodeCount: 1, position: { x: 0, y: 0 } }]}
+        automationUnits={[{ ref: { kind: "automation", id: "w1" }, label: "Build", runStatus: "none", nodeCount: 1, position: { x: 0, y: 0 } }]}
         selectedKey={null}
         onSelect={vi.fn()}
         onOpenAgent={vi.fn()}
@@ -70,7 +70,7 @@ describe("GardenCanvas", () => {
       />,
     );
     expect(screen.getByTestId("agent-unit")).toHaveTextContent("Alpha");
-    expect(screen.getByTestId("workflow-unit")).toHaveTextContent("Build");
+    expect(screen.getByTestId("automation-unit")).toHaveTextContent("Build");
   });
 
   describe("navigation affordances", () => {
@@ -78,7 +78,7 @@ describe("GardenCanvas", () => {
       render(
         <GardenCanvas
           agentUnits={[{ ref: { kind: "agent", id: "a1" }, label: "Alpha", status: "Idle", color: "#fff", position: { x: 0, y: 0 }, crown: [] }]}
-          workflowUnits={[]}
+          automationUnits={[]}
           selectedKey={null}
           onSelect={vi.fn()}
           onOpenAgent={vi.fn()}
@@ -123,7 +123,7 @@ describe("GardenCanvas", () => {
     render(
       <GardenCanvas
         agentUnits={[{ ref: { kind: "agent", id: "a1" }, label: "Alpha", status: "Idle", color: "#fff", position: { x: 0, y: 0 }, crown: [] }]}
-        workflowUnits={[]}
+        automationUnits={[]}
         selectedKey={null}
         onSelect={vi.fn()}
         onOpenAgent={vi.fn()}

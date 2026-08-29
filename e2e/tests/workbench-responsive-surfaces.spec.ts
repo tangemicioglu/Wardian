@@ -35,7 +35,7 @@ const surfaceTypes = [
   "graph",
   "garden",
   "library",
-  "workflows",
+  "automations",
 ] as const;
 
 type ResponsiveSurfaceType = typeof surfaceTypes[number];
@@ -47,7 +47,7 @@ const rootSelector: Record<ResponsiveSurfaceType, string> = {
   graph: "[data-testid=graph-view]",
   garden: ".garden-view",
   library: "[data-testid=library-view]",
-  workflows: "[data-testid=workflows-view]",
+  automations: "[data-testid=automations-view]",
 };
 
 function responsiveDocument(): WorkbenchDocumentV1 {
@@ -183,31 +183,31 @@ test("keeps every core surface usable in a half-width Workbench pane", async ({ 
   expect(gardenBounds?.width).toBeGreaterThan(0);
   expect(gardenBounds?.height).toBeGreaterThan(0);
 
-  await surfaceTab(page, "workflows").click();
-  const workflowsPanel = surfacePanel(page, "workflows");
-  const toolbar = workflowsPanel.locator(".workflows-toolbar");
-  const primaryBounds = await toolbar.locator(".workflows-toolbar__primary").boundingBox();
-  const actionBounds = await toolbar.locator(".workflows-toolbar__actions").boundingBox();
+  await surfaceTab(page, "automations").click();
+  const automationsPanel = surfacePanel(page, "automations");
+  const toolbar = automationsPanel.locator(".automations-toolbar");
+  const primaryBounds = await toolbar.locator(".automations-toolbar__primary").boundingBox();
+  const actionBounds = await toolbar.locator(".automations-toolbar__actions").boundingBox();
   expect(primaryBounds).not.toBeNull();
   expect(actionBounds).not.toBeNull();
   expect(actionBounds!.y).toBeGreaterThanOrEqual(primaryBounds!.y + primaryBounds!.height - 1);
 
-  await workflowsPanel.getByRole("button", { name: "Show Runs" }).click();
-  await expect(workflowsPanel.locator(".workflows-run-drawer")).toBeVisible();
+  await automationsPanel.getByRole("button", { name: "Show Runs" }).click();
+  await expect(automationsPanel.locator(".automations-run-drawer")).toBeVisible();
 
   const screenshotDir = process.env.WARDIAN_RESPONSIVE_SCREENSHOT_DIR;
   if (screenshotDir) {
-    const workflowsPath = `${screenshotDir}/workflows-compact.png`;
+    const automationsPath = `${screenshotDir}/automations-compact.png`;
     const agentsPath = `${screenshotDir}/agents-auto-preferred.png`;
-    await workflowsPanel.screenshot({ path: workflowsPath, animations: "disabled" });
+    await automationsPanel.screenshot({ path: automationsPath, animations: "disabled" });
     const overviewPanel = page.getByTestId("surface-panel").and(page.locator(
       '[data-surface-type="agents-overview"]',
     ));
     await overviewPanel.screenshot({ path: agentsPath, animations: "disabled" });
-    await testInfo.attach("workflows-compact", { path: workflowsPath, contentType: "image/png" });
+    await testInfo.attach("automations-compact", { path: automationsPath, contentType: "image/png" });
     await testInfo.attach("agents-auto-preferred", { path: agentsPath, contentType: "image/png" });
   }
 
-  await workflowsPanel.getByRole("button", { name: "Hide Runs" }).click();
-  await expect(workflowsPanel.locator(".workflows-run-drawer")).toHaveCount(0);
+  await automationsPanel.getByRole("button", { name: "Hide Runs" }).click();
+  await expect(automationsPanel.locator(".automations-run-drawer")).toHaveCount(0);
 });

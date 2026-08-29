@@ -1,0 +1,241 @@
+//! Locate a blueprint's file on disk by its declared `id`.
+//!
+//! The library redesign made nested automation folders first-class, so a
+//! blueprint's file name (and its containing subfolder) no longer has to
+//! match its `id`. Both the manual run path (`commands::automation`) and the
+//! schedule invoker (`automation::schedule`) need to find a blueprint by `id`
+//! alone, so the recursive walk-and-match lives here once and both surfaces
+//! call it — neither should re-implement the recursion.
+
+use std::path::{Path, PathBuf};
+
+/// Recursively collect every `.md` file under `dir`, depth-first.
+pub fn list_blueprint_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(list_blueprint_files(&path));
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+/// Recursively collect at most `limit` blueprint files under `dir`.
+///
+/// The boolean reports that another matching file was encountered after the
+/// returned prefix. This is used by public catalog commands so a large
+/// automation library is bounded before it is parsed or serialized.
+pub fn list_blueprint_files_bounded(dir: &Path, limit: usize) -> (Vec<PathBuf>, bool) {
+    fn visit(dir: &Path, limit: usize, files: &mut Vec<PathBuf>) -> bool {
+        if files.len() >= limit {
+            return false;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if visit(&path, limit, files) {
+                    return true;
+                }
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                if files.len() >= limit {
+                    return true;
+                }
+                files.push(path);
+            }
+        }
+        false
+    }
+
+    let mut files = Vec::new();
+    let truncated = visit(dir, limit, &mut files);
+    files.sort();
+    (files, truncated)
+}
+
+/// Collect one bounded continuation page of blueprint files without retaining
+/// the skipped prefix or the full catalog in memory.
+pub fn list_blueprint_files_page(dir: &Path, offset: usize, limit: usize) -> (Vec<PathBuf>, bool) {
+    fn visit(dir: &Path, skip: &mut usize, limit: usize, files: &mut Vec<PathBuf>) -> bool {
+        let Ok(read_dir) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        let mut entries = read_dir.flatten().collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                if visit(&path, skip, limit, files) {
+                    return true;
+                }
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                if *skip > 0 {
+                    *skip -= 1;
+                } else if files.len() < limit {
+                    files.push(path);
+                } else {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    let mut files = Vec::with_capacity(limit);
+    let mut skip = offset;
+    let truncated = visit(dir, &mut skip, limit, &mut files);
+    (files, truncated)
+}
+
+/// Find the blueprint whose frontmatter `id` matches `id`, searching
+/// `<wardian-home>/library/automations` recursively so blueprints nested in
+/// subfolders resolve the same way flat ones always have.
+///
+/// Blueprint ids are expected to be unique across the library. If more than
+/// one file declares the same id, the first match found during the walk
+/// wins — this matches the manual run path's prior behavior, which has no
+/// ambiguity error today.
+pub fn resolve_blueprint_path(id: &str) -> Option<PathBuf> {
+    let dir = crate::paths::library_automations_dir()?;
+    resolve_blueprint_path_in(&dir, id)
+}
+
+/// Same as [`resolve_blueprint_path`] but rooted at an explicit directory —
+/// used by tests and any caller that already knows the automations root.
+pub fn resolve_blueprint_path_in(dir: &Path, id: &str) -> Option<PathBuf> {
+    list_blueprint_files(dir)
+        .into_iter()
+        .find(|path| crate::automation::parse_file(path).is_ok_and(|bp| bp.id == id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BLUEPRINT_TEMPLATE: &str = r#"---
+schema: 2
+id: {id}
+name: {name}
+nodes:
+  - id: trigger
+    type: manual_trigger
+    fields: {}
+edges: []
+---
+
+# {name}
+"#;
+
+    fn write_blueprint(path: &Path, id: &str, name: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text = BLUEPRINT_TEMPLATE
+            .replace("{id}", id)
+            .replace("{name}", name);
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn resolves_a_flat_blueprint_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        write_blueprint(&dir.path().join("flat.md"), "flat-id", "Flat");
+
+        let resolved = resolve_blueprint_path_in(dir.path(), "flat-id").unwrap();
+        assert_eq!(resolved, dir.path().join("flat.md"));
+    }
+
+    #[test]
+    fn resolves_a_blueprint_nested_in_a_subfolder() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("folder").join("nested.md");
+        write_blueprint(&nested, "nested-id", "Nested");
+
+        let resolved = resolve_blueprint_path_in(dir.path(), "nested-id").unwrap();
+        assert_eq!(resolved, nested);
+    }
+
+    #[test]
+    fn returns_none_when_no_blueprint_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        write_blueprint(&dir.path().join("flat.md"), "flat-id", "Flat");
+
+        assert!(resolve_blueprint_path_in(dir.path(), "does-not-exist").is_none());
+    }
+
+    #[test]
+    fn returns_none_for_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+
+        assert!(resolve_blueprint_path_in(&missing, "anything").is_none());
+    }
+
+    #[test]
+    fn matches_by_declared_id_not_by_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("folder")
+            .join("filename-does-not-match-id.md");
+        write_blueprint(&path, "declared-id", "Declared");
+
+        let resolved = resolve_blueprint_path_in(dir.path(), "declared-id").unwrap();
+        assert_eq!(resolved, path);
+    }
+
+    #[test]
+    fn duplicate_ids_resolve_to_one_match_without_erroring() {
+        // There is no ambiguity error today (matching the manual run path's
+        // prior behavior): the walk returns whichever match it finds first.
+        // This pins "resolves to a match, does not panic or error" without
+        // depending on directory read order.
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("a.md");
+        let second = dir.path().join("b.md");
+        write_blueprint(&first, "dup-id", "First");
+        write_blueprint(&second, "dup-id", "Second");
+
+        let resolved = resolve_blueprint_path_in(dir.path(), "dup-id").unwrap();
+        assert!(resolved == first || resolved == second);
+    }
+
+    #[test]
+    fn bounded_listing_reports_files_beyond_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..=3 {
+            write_blueprint(
+                &dir.path().join(format!("automation-{index}.md")),
+                &format!("automation-{index}"),
+                &format!("Automation {index}"),
+            );
+        }
+
+        let (files, truncated) = list_blueprint_files_bounded(dir.path(), 3);
+
+        assert_eq!(files.len(), 3);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn paged_listing_skips_only_the_requested_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..=3 {
+            write_blueprint(
+                &dir.path().join(format!("automation-{index}.md")),
+                &format!("automation-{index}"),
+                &format!("Automation {index}"),
+            );
+        }
+
+        let (files, truncated) = list_blueprint_files_page(dir.path(), 2, 2);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].file_name().unwrap(), "automation-2.md");
+        assert!(!truncated);
+    }
+}

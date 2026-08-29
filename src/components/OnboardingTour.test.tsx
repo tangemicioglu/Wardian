@@ -19,7 +19,7 @@ function tourProps(agents: AgentConfig[] = []) {
     onPrepareAgentCreation: vi.fn(),
     onPrepareEvolver: vi.fn(),
     onPrepareGraph: vi.fn(),
-    onPrepareWorkflow: vi.fn(),
+    onPrepareAutomation: vi.fn(),
   };
 }
 
@@ -81,7 +81,7 @@ describe("OnboardingTour", () => {
     }
 
     expect(screen.getByText("Open Conversation Pattern Review")).toBeInTheDocument();
-    expect(props.onPrepareWorkflow).toHaveBeenCalledTimes(1);
+    expect(props.onPrepareAutomation).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole("button", { name: "Next area" }));
     expect(screen.getByText("Open its launch settings")).toBeInTheDocument();
   });

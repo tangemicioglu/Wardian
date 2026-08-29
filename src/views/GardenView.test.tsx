@@ -1,31 +1,31 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 
-const gardenWorkflowSpy = vi.hoisted(() => vi.fn(() => (
+const gardenAutomationSpy = vi.hoisted(() => vi.fn(() => (
   {
-    workflows: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
+    automations: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
     truncated: false,
     nextOffset: null as number | null,
     loadMore: vi.fn(),
   }
 )));
 
-vi.mock("../features/garden/useGardenWorkflows", () => ({
-  useGardenWorkflows: gardenWorkflowSpy,
+vi.mock("../features/garden/useGardenAutomations", () => ({
+  useGardenAutomations: gardenAutomationSpy,
 }));
 const canvasRenders = vi.hoisted(() => ({ count: 0 }));
 
 vi.mock("../features/garden/GardenCanvas", () => ({
   GardenCanvas: ({
     agentUnits,
-    workflowUnits,
+    automationUnits,
     selectedKey,
     onOpenAgent,
     onResetLayout,
     onMoveUnit,
   }: {
     agentUnits: ReadonlyArray<{ ref: { id: string }; position: { x: number; y: number } }>;
-    workflowUnits: readonly unknown[];
+    automationUnits: readonly unknown[];
     selectedKey: string | null;
     onOpenAgent: (agentId: string) => void;
     onResetLayout: () => void;
@@ -39,7 +39,7 @@ vi.mock("../features/garden/GardenCanvas", () => ({
       data-selected-key={selectedKey ?? "none"}
       data-first-position={first ? `${Math.round(first.position.x)},${Math.round(first.position.y)}` : "none"}
     >
-      {agentUnits.length}:{workflowUnits.length}
+      {agentUnits.length}:{automationUnits.length}
       <button type="button" onClick={() => onOpenAgent("a1")}>Open Agent</button>
       <button type="button" onClick={onResetLayout}>Reset Layout</button>
       <button type="button" onClick={() => onMoveUnit("agent:a1", 50_000, 50_000)}>Drag Far</button>
@@ -57,9 +57,9 @@ import { COMMONS_DISTRICT_ID, MAX_DISTRICT_RADIUS } from "../features/garden/dis
 beforeEach(() => {
   useGardenStore.getState().reset();
   canvasRenders.count = 0;
-  gardenWorkflowSpy.mockReset();
-  gardenWorkflowSpy.mockReturnValue({
-    workflows: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
+  gardenAutomationSpy.mockReset();
+  gardenAutomationSpy.mockReturnValue({
+    automations: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
     truncated: false,
     nextOffset: null,
     loadMore: vi.fn(),
@@ -67,7 +67,7 @@ beforeEach(() => {
 });
 
 describe("GardenView", () => {
-  it("passes one agent unit and one workflow unit to the canvas", () => {
+  it("passes one agent unit and one automation unit to the canvas", () => {
     const agents = [{ session_id: "a1", session_name: "Alpha" } as AgentConfig];
     render(
       <GardenView
@@ -87,9 +87,9 @@ describe("GardenView", () => {
     expect(screen.getByTestId("garden-selection-summary")).toHaveTextContent("Select a unit to view its status.");
   });
 
-  it("shows when the workflow catalog is partial", () => {
-    gardenWorkflowSpy.mockReturnValue({
-      workflows: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
+  it("shows when the automation catalog is partial", () => {
+    gardenAutomationSpy.mockReturnValue({
+      automations: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
       truncated: true,
       nextOffset: 500,
       loadMore: vi.fn(),
@@ -225,8 +225,8 @@ describe("GardenView", () => {
     expect(onOpenAgent).toHaveBeenCalledWith("a1");
   });
 
-  it("pauses workflow loading and releases the canvas renderer while hidden", () => {
-    gardenWorkflowSpy.mockClear();
+  it("pauses automation loading and releases the canvas renderer while hidden", () => {
+    gardenAutomationSpy.mockClear();
     const agents = [{ session_id: "a1", session_name: "Alpha" } as AgentConfig];
     render(
       <GardenView
@@ -244,7 +244,7 @@ describe("GardenView", () => {
       />,
     );
 
-    expect(gardenWorkflowSpy).toHaveBeenCalledWith(false);
+    expect(gardenAutomationSpy).toHaveBeenCalledWith(false);
     expect(screen.queryByTestId("garden-canvas")).not.toBeInTheDocument();
     expect(screen.getByText(/renderer paused while hidden/i)).toBeInTheDocument();
   });

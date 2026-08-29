@@ -12,7 +12,7 @@ Source basis: public repositories, first-party docs, first-party model pages, pa
 
 Wardian's shared memory goal is broader than a vector database and narrower than replaying full provider sessions. The useful target is a local-first memory system that captures two different memory classes:
 
-- **Procedural memory**: evidence-backed traces of what actually happened, especially surprising or corrective events such as user corrections, failed assumptions, recovered errors, workflow outcomes, tool outputs, agent-to-agent handoffs, and decisions made under uncertainty.
+- **Procedural memory**: evidence-backed traces of what actually happened, especially surprising or corrective events such as user corrections, failed assumptions, recovered errors, automation outcomes, tool outputs, agent-to-agent handoffs, and decisions made under uncertainty.
 - **Semantic memory**: distilled information worth reusing, such as facts, project conventions, durable preferences, known fixes, architectural decisions, class-specific practices, and cross-agent lessons.
 
 Those classes should share provenance and scope rules, but they should not share the same ingestion policy. Procedural memory needs faithful traces and event boundaries. Semantic memory needs extraction, contradiction handling, confidence, review, and promotion.
@@ -21,7 +21,7 @@ Wardian should optimize for:
 
 - local-first persistence and inspectability
 - efficient recall that avoids loading whole transcripts
-- explicit scopes such as global, class, agent, workspace, and workflow run
+- explicit scopes such as global, class, agent, workspace, and automation run
 - backend-mediated writes with audit events
 - optional human-readable Markdown projections
 - scalable retrieval over many agents and long-running sessions
@@ -92,7 +92,7 @@ Potential Wardian translation:
 
 Graphify turns folders of code, docs, PDFs, images, videos, and transcripts into a queryable graph. Its docs describe local tree-sitter extraction for code, local faster-whisper transcription for media, LLM extraction for documents/images/transcripts, NetworkX graph output, confidence labels, community detection, and SHA256 caching. It also distinguishes extracted, inferred, and ambiguous edges.
 
-This maps strongly to Wardian procedural memory. Wardian already has many evidence-rich sources: terminal output, agent transcripts, workflow telemetry, code diffs, PRs, docs, screenshots, and user corrections. A graph layer can make those artifacts navigable without injecting the raw artifacts into every prompt.
+This maps strongly to Wardian procedural memory. Wardian already has many evidence-rich sources: terminal output, agent transcripts, automation telemetry, code diffs, PRs, docs, screenshots, and user corrections. A graph layer can make those artifacts navigable without injecting the raw artifacts into every prompt.
 
 Useful Wardian patterns:
 
@@ -108,7 +108,7 @@ Wardian should avoid relying only on an inferred graph. For memory, graph edges 
 
 qmd is a local Markdown search engine with BM25 full-text search, vector semantic search, LLM reranking, MCP integration, local SQLite storage, and local models through node-llama-cpp. Its search pipeline includes a BM25 probe, query expansion, typed lexical/vector/HYDE searches, RRF fusion, chunk selection, reranking on chunks rather than whole bodies, and deduplication.
 
-This is a useful reference for Wardian recall. Agent memory retrieval should not be a single vector lookup. Some memories are found by exact identifiers, class names, file paths, error strings, request IDs, workflow IDs, dates, or agent names. Others need semantic retrieval. A reliable recall path combines structured filters, lexical search, vector search, and reranking over small chunks.
+This is a useful reference for Wardian recall. Agent memory retrieval should not be a single vector lookup. Some memories are found by exact identifiers, class names, file paths, error strings, request IDs, automation IDs, dates, or agent names. Others need semantic retrieval. A reliable recall path combines structured filters, lexical search, vector search, and reranking over small chunks.
 
 Useful Wardian patterns:
 
@@ -117,7 +117,7 @@ Useful Wardian patterns:
 - optional local vector index for semantic recall
 - query expansion only when cheap lexical evidence is weak
 - rerank chunks, not whole transcripts
-- MCP/CLI output formats designed for agent workflows
+- MCP/CLI output formats designed for agent automations
 
 ### rtk
 
@@ -146,7 +146,7 @@ Useful Wardian patterns:
 - profile-style summaries for stable context
 - graph views over documents and memory entries
 
-Wardian should be more conservative about automatic saving than a general memory API. Agent output should become semantic memory only through backend policy: explicit user request, workflow rule, surprise detector, or promotion review.
+Wardian should be more conservative about automatic saving than a general memory API. Agent output should become semantic memory only through backend policy: explicit user request, automation rule, surprise detector, or promotion review.
 
 ### Chroma Context-1
 
@@ -217,7 +217,7 @@ Letta and MemGPT remain useful references for memory hierarchy. Their architectu
 Wardian should adapt this hierarchy:
 
 - **Core context**: small, high-confidence, always-visible preferences or project facts.
-- **Recall memory**: searchable procedural traces and conversation/workflow history.
+- **Recall memory**: searchable procedural traces and conversation/automation history.
 - **Archival memory**: lower-priority semantic records and external references.
 - **Skill/procedure memory**: instructions for how agents should act.
 - **Shared blocks**: curated class/global/workspace context with explicit ownership.
@@ -297,8 +297,8 @@ Recommended source-of-truth shape:
 
 - `memory_records`: stable semantic records, procedural records, decisions, lessons, handoffs, and questions
 - `memory_events`: append-only create, read, update, supersede, promote, reject, and access events
-- `memory_scopes`: global, class, agent, workspace, workflow, and run bindings
-- `memory_evidence`: transcript span, terminal output, workflow artifact, file diff, screenshot, or external URL references
+- `memory_scopes`: global, class, agent, workspace, automation, and run bindings
+- `memory_evidence`: transcript span, terminal output, automation artifact, file diff, screenshot, or external URL references
 - `memory_relations`: supersedes, contradicts, supports, derived-from, related-to, same-incident-as
 - `memory_indexes`: FTS/vector/graph index state and freshness metadata
 - `memory_lifecycle`: candidate, active, superseded, rejected, expired, redacted, and deleted states
@@ -314,7 +314,7 @@ Procedural memory should start from events Wardian already controls:
 - agent prompts and replies
 - `wardian ask` and `wardian reply`
 - terminal output and provider-adapted transcripts
-- workflow node inputs, outputs, errors, and telemetry
+- automation node inputs, outputs, errors, and telemetry
 - test/build/lint command summaries
 - user corrections and explicit "remember this" requests
 - reviewer findings and blocked states
@@ -326,7 +326,7 @@ Wardian should not retain every turn equally. A surprise detector should mark ca
 - test failure with a non-obvious resolution
 - reviewer rejection or contradiction
 - repeated error across agents
-- workflow branch that changed because of runtime evidence
+- automation branch that changed because of runtime evidence
 - agent handoff that alters next-step procedure
 - explicit user promotion
 
@@ -347,7 +347,7 @@ Semantic memory should be promoted from procedural evidence, not written as free
 - status: candidate, active, superseded, rejected, expired
 - related records and contradictions
 
-Automatic extraction can create candidate memories. Active cross-agent memory should require policy: user approval, trusted workflow, high-trust agent, or scoped class/global rules.
+Automatic extraction can create candidate memories. Active cross-agent memory should require policy: user approval, trusted automation, high-trust agent, or scoped class/global rules.
 
 The write path should be three-stage:
 
@@ -355,7 +355,7 @@ The write path should be three-stage:
 2. **Candidate extraction** proposes semantic facts, procedural lessons, contradictions, or handoff records.
 3. **Reviewed activation** promotes selected candidates into active scoped memory.
 
-Background consolidation can run between sessions or workflow runs, but it should propose rather than silently activate cross-agent or global memories.
+Background consolidation can run between sessions or automation runs, but it should propose rather than silently activate cross-agent or global memories.
 
 ### Scoping Model
 
@@ -365,8 +365,8 @@ Wardian should make scope explicit at both write and recall time:
 - **Class**: applies to agent roles such as Coder, Reviewer, Architect, or Researcher.
 - **Agent**: applies to one durable agent identity.
 - **Workspace**: applies to a repo or project path.
-- **Workflow**: applies to a workflow definition or recurring run.
-- **Run**: applies only to one workflow run or task instance.
+- **Automation**: applies to an automation definition or recurring run.
+- **Run**: applies only to one automation run or task instance.
 
 Default writes should be narrow. Cross-scope reads should be logged. Cross-scope writes should be trust-gated or reviewed.
 
@@ -376,7 +376,7 @@ Workspace scope needs a durable identity model. Repo paths can move, worktrees c
 
 The local-first baseline should combine:
 
-- structured filters over scope, record type, timestamp, agent, workspace, workflow, and status
+- structured filters over scope, record type, timestamp, agent, workspace, automation, and status
 - temporal filters and point-in-time recall
 - SQLite FTS for exact and lexical recall
 - optional local embeddings for semantic recall
@@ -387,7 +387,7 @@ The local-first baseline should combine:
 - low-confidence rejection when no reliable memory is found
 - prompt budgets and recovery links to raw evidence
 
-Agentic retrieval can sit above this stack as an optional advanced path for hard multi-hop queries. It should be bounded by scope, budget, and citation requirements. Retrieval should be evaluated by query class: exact identifier, temporal question, contradiction check, multi-hop reasoning, workflow outcome, user preference, and procedure lookup.
+Agentic retrieval can sit above this stack as an optional advanced path for hard multi-hop queries. It should be bounded by scope, budget, and citation requirements. Retrieval should be evaluated by query class: exact identifier, temporal question, contradiction check, multi-hop reasoning, automation outcome, user preference, and procedure lookup.
 
 ### UI And CLI Surface
 
@@ -396,7 +396,7 @@ Wardian should expose memory through surfaces that match the work:
 - CLI verbs for agents: retain, recall, promote, handoff, ask, answer, annotate, list, show.
 - UI review queue for candidate semantic memories and cross-scope promotions.
 - Agent roster indicators for pending handoffs, questions, and stale memory candidates.
-- Workflow nodes for scoped recall and explicit promotion.
+- Automation nodes for scoped recall and explicit promotion.
 - Evidence viewer for raw trace spans and filtered summaries.
 - Markdown export for review and external sync.
 - Evaluation views for stale memories, contradictions, low-confidence misses, and cross-scope reads.
@@ -409,7 +409,7 @@ Public benchmarks such as LOCOMO and LongMemEval are useful for vocabulary and s
 - terminal failure summarized compactly while preserving raw log evidence
 - repeated failed assumption across agents detected as a procedural candidate
 - `wardian ask` handoff recalled by the receiving agent with source links
-- workflow artifact remembered for the workflow/run scope, not global scope
+- automation artifact remembered for the automation/run scope, not global scope
 - worktree-specific fact excluded from a different branch or workspace
 - superseded project convention not injected after a later correction
 - sensitive transcript span redacted before cross-scope recall
@@ -429,7 +429,7 @@ Public benchmarks such as LOCOMO and LongMemEval are useful for vocabulary and s
 
 ## Candidate Wardian Vocabulary
 
-- **Evidence**: raw or minimally transformed artifact from a conversation, terminal, workflow, file, or external source.
+- **Evidence**: raw or minimally transformed artifact from a conversation, terminal, automation, file, or external source.
 - **Trace**: bounded procedural sequence with actors, timestamps, inputs, outputs, and surprise reason.
 - **Memory**: promoted reusable semantic or procedural record with scope and provenance.
 - **Candidate**: extracted or proposed memory awaiting policy or user approval.

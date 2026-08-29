@@ -30,7 +30,7 @@ pub struct ConversationLease {
     pub owner_id: String,
     /// Unique for each successful acquisition attempt. A stale process must
     /// never be able to renew or release a later lease that reused the same
-    /// human-readable owner id (for example after a workflow run resumes).
+    /// human-readable owner id (for example after an automation run resumes).
     #[serde(default)]
     pub acquisition_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -367,7 +367,7 @@ mod tests {
             agent_id: agent_id.to_string(),
             provider: "gemini".to_string(),
             resume_session: resume_session.to_string(),
-            owner_kind: "workflow_run".to_string(),
+            owner_kind: "automation_run".to_string(),
             owner_id: "wf/run-1".to_string(),
             acquisition_id: "test-acquisition".to_string(),
             owner_node_id: Some("agent-1".to_string()),
@@ -440,11 +440,11 @@ mod tests {
     }
 
     #[test]
-    fn release_owner_removes_only_matching_workflow_owner() {
+    fn release_owner_removes_only_matching_automation_owner() {
         let mut leases = vec![lease("agent-1", "resume-1"), lease("agent-2", "resume-2")];
         leases[1].owner_id = "other/run-2".to_string();
 
-        release_owner(&mut leases, "workflow_run", "wf/run-1");
+        release_owner(&mut leases, "automation_run", "wf/run-1");
 
         assert_eq!(leases.len(), 1);
         assert_eq!(leases[0].agent_id, "agent-2");

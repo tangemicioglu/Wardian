@@ -18,11 +18,11 @@ Select one agent, open **Agent Configuration** from the left rail, and add an
 optional **Description**. Use it as a short memo about that specific agent's
 responsibility, such as `Owns frontend release follow-up`.
 
-Wardian shows the memo beside the agent's class in the roster and in workflow
+Wardian shows the memo beside the agent's class in the roster and in automation
 assignment choices. Roster and assignment searches include it. Descriptions do
 not change the agent's instructions, skills, permissions, or provider session,
 and saving one does not restart the agent. New agents start without a
-description, so the spawn workflow has no additional required step.
+description, so the spawn automation has no additional required step.
 
 ![Agent Configuration showing an optional purpose description while the same agent remains visible in the roster](../assets/screenshots/agent-lifecycle/purpose-description.png)
 
@@ -92,7 +92,7 @@ provider. Switching providers replaces the provider-specific configuration so
 Claude, Gemini, Codex, Antigravity, OpenCode, and Pi flags do not leak into one
 another.
 
-Options marked **Headless** apply to background deliveries and workflow runs
+Options marked **Headless** apply to background deliveries and automation runs
 that use the agent profile. They do not alter the provider's interactive
 terminal. Wardian owns structured output flags for those runs so provider JSON
 or stream formats cannot break delivery parsing.

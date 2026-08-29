@@ -1,12 +1,12 @@
-//! Pure scheduling math + persistence for workflow schedule invokers. No Tauri, no app state.
+//! Pure scheduling math + persistence for automation schedule invokers. No Tauri, no app state.
 
-use crate::models::{ScheduleDefinition, WorkflowAssignments};
+use crate::models::{AutomationAssignments, ScheduleDefinition};
 use chrono::{Datelike, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::models::WorkflowSchedule;
+use crate::models::AutomationSchedule;
 
 /// Largest supported weekly recurrence interval.
 ///
@@ -395,7 +395,7 @@ struct ScheduleFile {
     #[serde(default = "default_schema")]
     schema: u8,
     #[serde(default)]
-    schedules: Vec<WorkflowSchedule>,
+    schedules: Vec<AutomationSchedule>,
 }
 
 fn default_schema() -> u8 {
@@ -403,7 +403,7 @@ fn default_schema() -> u8 {
 }
 
 /// Read all schedules. Missing or malformed file -> empty (logged to stderr), never panics.
-pub fn load_schedules() -> Vec<WorkflowSchedule> {
+pub fn load_schedules() -> Vec<AutomationSchedule> {
     let Some(path) = crate::paths::schedules_path() else {
         return Vec::new();
     };
@@ -420,7 +420,7 @@ pub fn load_schedules() -> Vec<WorkflowSchedule> {
 }
 
 /// Write all schedules atomically (temp file + rename) so a crash mid-write cannot truncate.
-pub fn save_schedules(schedules: &[WorkflowSchedule]) -> std::io::Result<()> {
+pub fn save_schedules(schedules: &[AutomationSchedule]) -> std::io::Result<()> {
     let path = crate::paths::schedules_path()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no wardian home"))?;
     if let Some(parent) = path.parent() {
@@ -448,10 +448,10 @@ pub struct FireRequest {
     pub workspace: Option<String>,
     pub input: serde_json::Value,
     pub bindings: HashMap<String, String>,
-    pub assignments: WorkflowAssignments,
+    pub assignments: AutomationAssignments,
 }
 
-fn is_expired(schedule: &WorkflowSchedule, now_ms: u64) -> bool {
+fn is_expired(schedule: &AutomationSchedule, now_ms: u64) -> bool {
     match schedule.schedule.end_condition.as_str() {
         "after_occurrences" => schedule
             .schedule
@@ -470,7 +470,7 @@ fn is_expired(schedule: &WorkflowSchedule, now_ms: u64) -> bool {
     }
 }
 
-fn fire_request(schedule: &WorkflowSchedule) -> FireRequest {
+fn fire_request(schedule: &AutomationSchedule) -> FireRequest {
     FireRequest {
         schedule_id: schedule.id.clone(),
         blueprint_id: schedule.blueprint_id.clone(),
@@ -483,7 +483,7 @@ fn fire_request(schedule: &WorkflowSchedule) -> FireRequest {
     }
 }
 
-fn advance_after_fire(schedule: &mut WorkflowSchedule, now_ms: u64) -> bool {
+fn advance_after_fire(schedule: &mut AutomationSchedule, now_ms: u64) -> bool {
     schedule.schedule.occurrence_count = schedule.schedule.occurrence_count.saturating_add(1);
     schedule.last_run_status = Some("running".to_string());
     schedule.last_run_error = None;
@@ -498,7 +498,7 @@ fn advance_after_fire(schedule: &mut WorkflowSchedule, now_ms: u64) -> bool {
 }
 
 /// Advance one tick. Mutates `schedules` and returns due fire requests.
-pub fn plan_tick(schedules: &mut Vec<WorkflowSchedule>, now_ms: u64) -> Vec<FireRequest> {
+pub fn plan_tick(schedules: &mut Vec<AutomationSchedule>, now_ms: u64) -> Vec<FireRequest> {
     let mut fire_requests = Vec::new();
     let mut remove_ids = Vec::new();
 
@@ -539,8 +539,8 @@ mod tests {
     use super::*;
     use crate::models::ScheduleDefinition;
 
-    fn sample_schedule(id: &str) -> crate::models::WorkflowSchedule {
-        crate::models::WorkflowSchedule {
+    fn sample_schedule(id: &str) -> crate::models::AutomationSchedule {
+        crate::models::AutomationSchedule {
             id: id.into(),
             blueprint_id: "heartbeat".into(),
             name: "Heartbeat".into(),
@@ -564,7 +564,7 @@ mod tests {
         }
     }
 
-    fn s_vec(s: &crate::models::WorkflowSchedule) -> Vec<crate::models::WorkflowSchedule> {
+    fn s_vec(s: &crate::models::AutomationSchedule) -> Vec<crate::models::AutomationSchedule> {
         vec![s.clone()]
     }
 

@@ -26,8 +26,8 @@ pub enum EngineError {
     Io(#[from] std::io::Error),
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
-    #[error("workflow error: {0}")]
-    Workflow(#[from] crate::workflow::WorkflowError),
+    #[error("automation error: {0}")]
+    Automation(#[from] crate::automation::AutomationError),
     #[error("run is not awaiting approval at node `{0}`")]
     NotAwaitingApproval(String),
     #[error("approval decision is already being resolved for this run")]

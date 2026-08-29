@@ -13,7 +13,7 @@ Where [Dashboard](./dashboard.md) answers *is anything wrong right now*, Analyti
 - Compare agents on one measure without reading each one's terminal.
 - Check whether activity is spread out or concentrated in a few bursts.
 
-## Basic Workflow
+## Basic Automation
 
 1. Open Analytics from `Ctrl+P` / `Cmd+P`, a pane's **+** button, or the empty-pane Home state. `Ctrl+Alt+Y` opens it directly.
 2. Choose what the **rows** are: agent, model, or provider.

@@ -379,9 +379,9 @@ fn list_includes_persisted_workflow_approvals_when_the_app_is_offline() {
     assert_eq!(response["items"].as_array().unwrap().len(), 1);
     assert_eq!(
         response["items"][0]["id"],
-        "workflow-approval:deploy:run-1:approve"
+        "automation-approval:deploy:run-1:approve"
     );
-    assert_eq!(response["items"][0]["workflow_name"], "Deploy production");
+    assert_eq!(response["items"][0]["automation_name"], "Deploy production");
     assert_eq!(
         response["items"][0]["summary"],
         "Approve the production deployment?"
@@ -396,7 +396,7 @@ fn list_includes_durable_terminal_workflow_runs_and_failed_filter_alias() {
             "inbox",
             "list",
             "--type",
-            "workflow_failed",
+            "automation_failed",
             "--source",
             "live_runtime",
         ])
@@ -413,7 +413,7 @@ fn list_includes_durable_terminal_workflow_runs_and_failed_filter_alias() {
     assert_eq!(response["items"].as_array().unwrap().len(), 1);
     assert_eq!(
         response["items"][0]["id"],
-        "workflow-completion:failed-workflow:run-failed"
+        "automation-completion:failed-workflow:run-failed"
     );
     assert_eq!(response["items"][0]["status"], "failed");
     assert_eq!(response["items"][0]["error"], "provider exited");
