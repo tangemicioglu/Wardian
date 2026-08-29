@@ -10,7 +10,15 @@
  *   node scripts/verify-budgets.mjs --base origin/main
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -155,6 +163,12 @@ function addBaseWorktree(base) {
 }
 
 function removeBaseWorktree(tempRoot) {
+  const dependencyLink = path.join(tempRoot, "node_modules");
+  try {
+    if (lstatSync(dependencyLink).isSymbolicLink()) unlinkSync(dependencyLink);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   try { execFileSync("git", ["worktree", "remove", "--force", tempRoot], { cwd: REPO_ROOT, stdio: "pipe" }); }
   finally { rmSync(tempRoot, { recursive: true, force: true }); }
 }
