@@ -299,6 +299,20 @@ fn list_rejects_unbounded_offsets() {
 }
 
 #[test]
+fn list_rejects_offsets_that_cannot_return_a_usable_cursor() {
+    let home = seed_queue();
+    let output = Command::new(bin())
+        .args(["inbox", "list", "--offset", "100000", "--limit", "2"])
+        .env("WARDIAN_HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let response: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(response["error"]["code"], "invalid_offset");
+}
+
+#[test]
 fn list_ignores_legacy_items_older_than_seven_days() {
     let home = seed_queue();
     let output = Command::new(bin())

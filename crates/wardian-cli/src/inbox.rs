@@ -80,6 +80,16 @@ pub fn handle_inbox(args: InboxArgs) -> Result<String, CliError> {
                     ),
                 ));
             }
+            if offset.saturating_add(limit) > wardian_core::control::MAX_INBOX_OFFSET {
+                return Err(CliError::backend(
+                    ExitCode::Generic,
+                    "invalid_offset",
+                    format!(
+                        "--offset plus --limit must not exceed {}",
+                        wardian_core::control::MAX_INBOX_OFFSET
+                    ),
+                ));
+            }
             let types = normalize_filter(types, "--type")?;
             let sources = normalize_filter(sources, "--source")?;
             let projection = live::inbox_list_page(
@@ -229,17 +239,22 @@ fn load_persisted_items(
         InboxSource::WorkflowTerminals,
         InboxSource::LegacyQueue,
     ];
+    let source_page_limit = offset.saturating_add(limit).saturating_add(1);
     let mut pages = source_kinds
         .into_iter()
         .map(|source| {
             load_persisted_source_page(
                 source,
                 0,
+                source_page_limit,
                 cutoff,
                 &read_notification_ids,
                 &persisted_workflow_runs,
                 conn.as_ref(),
                 &agent_names,
+                types,
+                sources,
+                unread,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -258,14 +273,19 @@ fn load_persisted_items(
             load_persisted_source_page(
                 source_kinds[index],
                 source_offset,
+                source_page_limit,
                 cutoff,
                 &read_notification_ids,
                 &persisted_workflow_runs,
                 conn.as_ref(),
                 &agent_names,
+                types,
+                sources,
+                unread,
             )
         },
         &mut source_offsets,
+        source_page_limit,
     )?;
     Ok(InboxProjection {
         items,
@@ -277,11 +297,15 @@ fn load_persisted_items(
 fn load_persisted_source_page(
     source: InboxSource,
     offset: usize,
+    page_limit: usize,
     cutoff: i64,
     read_notification_ids: &HashSet<String>,
     persisted_workflow_runs: &HashSet<(String, String)>,
     conn: Option<&Connection>,
     agent_names: &HashMap<String, String>,
+    types: &HashSet<String>,
+    sources: &HashSet<String>,
+    unread: bool,
 ) -> Result<InboxSourcePage, CliError> {
     match source {
         InboxSource::Notifications => {
@@ -291,38 +315,61 @@ fn load_persisted_source_page(
                     truncated: false,
                 });
             };
-            let Ok(mut records) =
-                wardian_core::db::list_recent_interaction_records_by_kind_with_conn(
-                    conn,
-                    "notification",
-                    MAX_INBOX_SOURCE_ITEMS + 1,
-                    offset,
-                )
-            else {
-                return Ok(InboxSourcePage {
-                    items: Vec::new(),
-                    truncated: false,
-                });
-            };
-            let truncated = records.len() > MAX_INBOX_SOURCE_ITEMS;
-            records.truncate(MAX_INBOX_SOURCE_ITEMS);
-            let decisions = notification_decisions(conn, &records);
+            let capacity = offset.saturating_add(page_limit).saturating_add(1);
+            let mut raw_offset = 0usize;
+            let mut matching = Vec::new();
+            let mut truncated = false;
+            loop {
+                let Ok(records) =
+                    wardian_core::db::list_recent_interaction_records_by_kind_with_conn(
+                        conn,
+                        "notification",
+                        MAX_INBOX_SOURCE_ITEMS,
+                        raw_offset,
+                    )
+                else {
+                    return Ok(InboxSourcePage {
+                        items: Vec::new(),
+                        truncated: false,
+                    });
+                };
+                if records.is_empty() {
+                    break;
+                }
+                let raw_count = records.len();
+                let decisions = notification_decisions(conn, &records);
+                matching.extend(
+                    sort_items(notification_items(
+                        &records,
+                        read_notification_ids,
+                        agent_names,
+                        &decisions,
+                    ))
+                    .into_iter()
+                    .filter(|item| inbox_item_matches(item, types, sources, unread)),
+                );
+                if matching.len() > capacity {
+                    truncated = true;
+                    break;
+                }
+                if raw_count < MAX_INBOX_SOURCE_ITEMS {
+                    break;
+                }
+                raw_offset = raw_offset.saturating_add(MAX_INBOX_SOURCE_ITEMS);
+            }
             Ok(InboxSourcePage {
-                items: sort_items(notification_items(
-                    &records,
-                    read_notification_ids,
-                    agent_names,
-                    &decisions,
-                )),
+                items: matching.into_iter().skip(offset).take(page_limit).collect(),
                 truncated,
             })
         }
         InboxSource::WorkflowApprovals => {
-            let (items, truncated) = workflow_approval_items(offset)?;
+            let (items, truncated) =
+                workflow_approval_items(offset, page_limit, types, sources, unread)?;
             Ok(InboxSourcePage { items, truncated })
         }
         InboxSource::WorkflowTerminals => {
-            let (items, truncated) = workflow_terminal_items(offset)?;
+            let (items, truncated) =
+                workflow_terminal_items(offset, page_limit, types, sources, unread)?;
             Ok(InboxSourcePage {
                 items: items
                     .into_iter()
@@ -335,18 +382,19 @@ fn load_persisted_source_page(
             })
         }
         InboxSource::LegacyQueue => {
-            let persisted =
-                wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, offset, cutoff);
+            let persisted = wardian_core::queue::load_recent_items_matching(
+                page_limit,
+                offset,
+                cutoff,
+                |item| {
+                    item.get("inbox_notification_id").is_none()
+                        && item.get("workflow_approval").is_none()
+                        && item.get("dismissed").and_then(Value::as_bool) != Some(true)
+                        && inbox_item_matches(item, types, sources, unread)
+                },
+            );
             Ok(InboxSourcePage {
-                items: persisted
-                    .items
-                    .into_iter()
-                    .filter(|item| {
-                        item.get("inbox_notification_id").is_none()
-                            && item.get("workflow_approval").is_none()
-                            && item.get("dismissed").and_then(Value::as_bool) != Some(true)
-                    })
-                    .collect(),
+                items: persisted.items,
                 truncated: persisted.truncated,
             })
         }
@@ -381,6 +429,7 @@ fn merge_persisted_pages<F>(
     pages: &mut [InboxSourcePage],
     refill: &mut F,
     source_offsets: &mut [usize],
+    source_page_limit: usize,
 ) -> Result<(Vec<Value>, bool, Option<usize>), CliError>
 where
     F: FnMut(usize, usize) -> Result<InboxSourcePage, CliError>,
@@ -390,8 +439,7 @@ where
     loop {
         for index in 0..pages.len() {
             if pages[index].items.is_empty() && pages[index].truncated {
-                source_offsets[index] =
-                    source_offsets[index].saturating_add(MAX_INBOX_SOURCE_ITEMS);
+                source_offsets[index] = source_offsets[index].saturating_add(source_page_limit);
                 pages[index] = refill(index, source_offsets[index])?;
             }
         }
@@ -440,20 +488,27 @@ fn inbox_item_matches(
         && (!unread || item.get("read").and_then(Value::as_bool) != Some(true))
 }
 
-fn page_source_items(items: Vec<Value>, truncated: bool, offset: usize) -> (Vec<Value>, bool) {
-    let page_end = offset.saturating_add(MAX_INBOX_SOURCE_ITEMS);
+fn page_source_items(
+    items: Vec<Value>,
+    truncated: bool,
+    offset: usize,
+    page_limit: usize,
+) -> (Vec<Value>, bool) {
+    let page_end = offset.saturating_add(page_limit);
     let truncated = truncated || items.len() > page_end;
     (
-        items
-            .into_iter()
-            .skip(offset)
-            .take(MAX_INBOX_SOURCE_ITEMS)
-            .collect(),
+        items.into_iter().skip(offset).take(page_limit).collect(),
         truncated,
     )
 }
 
-fn workflow_approval_items(offset: usize) -> Result<(Vec<Value>, bool), CliError> {
+fn workflow_approval_items(
+    offset: usize,
+    page_limit: usize,
+    types: &HashSet<String>,
+    sources: &HashSet<String>,
+    unread: bool,
+) -> Result<(Vec<Value>, bool), CliError> {
     let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
         return Ok((Vec::new(), false));
     };
@@ -541,16 +596,25 @@ fn workflow_approval_items(offset: usize) -> Result<(Vec<Value>, bool), CliError
                     "node": node,
                 },
             });
+            if !inbox_item_matches(&item, types, sources, unread) {
+                continue;
+            }
             let (retained, item_truncated) =
                 retain_newest(items.drain(..).chain(std::iter::once(item)), capacity);
             items = retained;
             truncated |= item_truncated;
         }
     }
-    Ok(page_source_items(items, truncated, offset))
+    Ok(page_source_items(items, truncated, offset, page_limit))
 }
 
-fn workflow_terminal_items(offset: usize) -> Result<(Vec<Value>, bool), CliError> {
+fn workflow_terminal_items(
+    offset: usize,
+    page_limit: usize,
+    types: &HashSet<String>,
+    sources: &HashSet<String>,
+    unread: bool,
+) -> Result<(Vec<Value>, bool), CliError> {
     let Some(runs_root) = wardian_core::paths::workflow_runs_dir() else {
         return Ok((Vec::new(), false));
     };
@@ -616,13 +680,16 @@ fn workflow_terminal_items(offset: usize) -> Result<(Vec<Value>, bool), CliError
                 "error": state.failure,
                 "summary": summary,
             });
+            if !inbox_item_matches(&item, types, sources, unread) {
+                continue;
+            }
             let (retained, item_truncated) =
                 retain_newest(items.drain(..).chain(std::iter::once(item)), capacity);
             items = retained;
             truncated |= item_truncated;
         }
     }
-    Ok(page_source_items(items, truncated, offset))
+    Ok(page_source_items(items, truncated, offset, page_limit))
 }
 
 fn notification_items(
@@ -797,6 +864,7 @@ mod tests {
             &mut pages,
             &mut |_index, _offset| unreachable!("fixture has no continuation"),
             &mut source_offsets,
+            MAX_INBOX_SOURCE_ITEMS,
         )
         .unwrap();
 
@@ -835,6 +903,7 @@ mod tests {
             &mut pages,
             &mut |_index, _offset| unreachable!("fixture has no continuation"),
             &mut source_offsets,
+            MAX_INBOX_SOURCE_ITEMS,
         )
         .unwrap();
 
@@ -877,6 +946,7 @@ mod tests {
                 })
             },
             &mut source_offsets,
+            MAX_INBOX_SOURCE_ITEMS,
         )
         .unwrap();
 

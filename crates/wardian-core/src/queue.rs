@@ -18,6 +18,22 @@ pub struct QueueProjection {
 /// separate metadata so they cannot evict visible events or expire with the
 /// seven-day legacy queue retention window.
 pub fn read_recent_items(path: &Path, limit: usize, offset: usize, cutoff: i64) -> QueueProjection {
+    read_recent_items_matching(path, limit, offset, cutoff, |_| true)
+}
+
+/// Streams a persisted queue page while retaining only visible items that
+/// satisfy `matches`. Queue metadata is still collected for every item so a
+/// filtered read cannot lose durable acknowledgements or workflow identities.
+pub fn read_recent_items_matching<F>(
+    path: &Path,
+    limit: usize,
+    offset: usize,
+    cutoff: i64,
+    matches: F,
+) -> QueueProjection
+where
+    F: Fn(&Value) -> bool,
+{
     let Ok(file) = File::open(path) else {
         return QueueProjection::default();
     };
@@ -27,25 +43,43 @@ pub fn read_recent_items(path: &Path, limit: usize, offset: usize, cutoff: i64) 
             limit,
             offset,
             cutoff,
+            matches,
         })
         .unwrap_or_default()
 }
 
 /// Streams the persisted queue for the current Wardian home.
 pub fn load_recent_items(limit: usize, offset: usize, cutoff: i64) -> QueueProjection {
-    let Some(path) = crate::paths::wardian_home().map(|home| home.join("queue/items.json")) else {
-        return QueueProjection::default();
-    };
-    read_recent_items(&path, limit, offset, cutoff)
+    load_recent_items_matching(limit, offset, cutoff, |_| true)
 }
 
-struct QueueVisitor {
+/// Streams the current Wardian queue with a visible-item predicate.
+pub fn load_recent_items_matching<F>(
     limit: usize,
     offset: usize,
     cutoff: i64,
+    matches: F,
+) -> QueueProjection
+where
+    F: Fn(&Value) -> bool,
+{
+    let Some(path) = crate::paths::wardian_home().map(|home| home.join("queue/items.json")) else {
+        return QueueProjection::default();
+    };
+    read_recent_items_matching(&path, limit, offset, cutoff, matches)
 }
 
-impl<'de> Visitor<'de> for QueueVisitor {
+struct QueueVisitor<F> {
+    limit: usize,
+    offset: usize,
+    cutoff: i64,
+    matches: F,
+}
+
+impl<'de, F> Visitor<'de> for QueueVisitor<F>
+where
+    F: Fn(&Value) -> bool,
+{
     type Value = QueueProjection;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -79,6 +113,9 @@ impl<'de> Visitor<'de> for QueueVisitor {
                 continue;
             }
             if !is_recent(&item, self.cutoff) {
+                continue;
+            }
+            if !(self.matches)(&item) {
                 continue;
             }
 
