@@ -1,6 +1,8 @@
 use wardian_core::models::provider::{AgentEvent, AgentProvider};
 use wardian_core::models::AgentConfig;
 
+use crate::utils::strip_ansi_controls;
+
 /// The concrete `AgentProvider` implementation for Claude Code CLI.
 pub struct ClaudeProvider;
 
@@ -342,14 +344,9 @@ impl AgentProvider for ClaudeProvider {
         }
 
         // Claude-specific parameters
-        if let Some(mode) = claude
-            .permission_mode
-            .as_deref()
-            .and_then(normalize_claude_permission_mode)
-        {
-            args.push("--permission-mode".into());
-            args.push(mode.to_string());
-        }
+        let permission_mode = effective_claude_permission_mode(claude.permission_mode.as_deref());
+        args.push("--permission-mode".into());
+        args.push(permission_mode.to_string());
         if let Some(ref tools) = claude.tools {
             if !tools.is_empty() {
                 args.push("--tools".into());
@@ -477,6 +474,24 @@ fn normalize_claude_permission_mode(mode: &str) -> Option<&str> {
         "auto-accept" => Some("acceptEdits"),
         _ => None,
     }
+}
+
+pub(crate) fn effective_claude_permission_mode(mode: Option<&str>) -> &str {
+    mode.and_then(normalize_claude_permission_mode)
+        .unwrap_or("bypassPermissions")
+}
+
+pub(crate) fn claude_output_has_bypass_permissions_consent_prompt(output: &str) -> bool {
+    // Ink's full-screen selector positions each word with cursor controls, so
+    // match the exact modal phrases after removing terminal layout separators.
+    let compact = strip_ansi_controls(output)
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    compact.contains("claudecoderunninginbypasspermissionsmode")
+        && compact.contains("byproceedingyouacceptallresponsibility")
+        && compact.contains("yesiaccept")
 }
 
 #[cfg(test)]
@@ -706,6 +721,24 @@ SET dp0=%~dp0
         let args = p.get_spawn_args(&config, false);
         assert!(args.contains(&"--permission-mode".to_string()));
         assert!(args.contains(&"acceptEdits".to_string()));
+    }
+
+    #[test]
+    fn spawn_args_bypass_permissions_by_default() {
+        let args = make_provider().get_spawn_args(&make_claude_config(Default::default()), false);
+
+        assert!(args
+            .windows(2)
+            .any(|pair| { pair[0] == "--permission-mode" && pair[1] == "bypassPermissions" }));
+    }
+
+    #[test]
+    fn bypass_permissions_consent_classifier_handles_ink_cursor_layout() {
+        let consent = "WARNING:\x1b[12GClaude\x1b[19GCode\x1b[24Grunning\x1b[32Gin\x1b[35GBypass\x1b[42GPermissions\x1b[54Gmode\r\nBy\x1b[6Gproceeding,\x1b[18Gyou\x1b[22Gaccept\x1b[29Gall\x1b[33Gresponsibility\r\n❯ No, exit\r\n  Yes, I accept";
+        assert!(claude_output_has_bypass_permissions_consent_prompt(consent));
+        assert!(!claude_output_has_bypass_permissions_consent_prompt(
+            "Allow Bash command? Yes / No",
+        ));
     }
 
     #[test]

@@ -47,13 +47,6 @@ pub struct NotifyRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct StateRequest {
-    pub node: String,
-    pub op: String,
-    pub entries: serde_json::Value,
-}
-
-#[derive(Debug, Clone)]
 pub struct MemoryCommitRequest {
     pub node: String,
     /// Engine-rendered mutation principal. Model output cannot choose it.
@@ -77,7 +70,6 @@ pub trait StepExecutor: Send + Sync {
     async fn run_shell(&self, req: ShellRequest) -> Result<StepOutput, StepError>;
     async fn run_script(&self, req: ScriptRequest) -> Result<StepOutput, StepError>;
     async fn notify(&self, req: NotifyRequest) -> Result<(), StepError>;
-    async fn state_op(&self, req: StateRequest) -> Result<StepOutput, StepError>;
     async fn memory_commit(&self, req: MemoryCommitRequest) -> Result<StepOutput, StepError>;
 }
 
@@ -176,12 +168,6 @@ impl StepExecutor for MockExecutor {
     async fn notify(&self, req: NotifyRequest) -> Result<(), StepError> {
         self.record(format!("notify:{}", req.node));
         self.check_fail(&req.node)
-    }
-
-    async fn state_op(&self, req: StateRequest) -> Result<StepOutput, StepError> {
-        self.record(format!("state:{}", req.node));
-        self.check_fail(&req.node)?;
-        Ok(StepOutput(serde_json::json!({})))
     }
 
     async fn memory_commit(&self, req: MemoryCommitRequest) -> Result<StepOutput, StepError> {

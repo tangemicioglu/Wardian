@@ -1,4 +1,5 @@
 use crate::workflow::blueprint::Blueprint;
+use crate::workflow::condition::validate_path;
 use crate::workflow::field_type::FieldType;
 use crate::workflow::registry::find_node_type;
 use serde::Serialize;
@@ -69,8 +70,6 @@ impl ValidationReport {
 /// false.
 pub fn validate(blueprint: &Blueprint) -> ValidationReport {
     let mut report = ValidationReport::default();
-    let node_ids: HashSet<&str> = blueprint.nodes.iter().map(|n| n.id.as_str()).collect();
-
     // Duplicate ids.
     let mut seen: HashSet<&str> = HashSet::new();
     for node in &blueprint.nodes {
@@ -97,6 +96,18 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
             continue;
         };
 
+        if !def.supported {
+            report.diagnostics.push(Diagnostic::error(
+                "unsupported_node_type",
+                format!(
+                    "node type `{}` is registered but not supported by the workflow runtime",
+                    node.r#type
+                ),
+                Some(&node.id),
+            ));
+            continue;
+        }
+
         for field in &def.fields {
             let present = node.fields.get(&field.id);
             if field.required && present.is_none() {
@@ -120,6 +131,19 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
                     }
                     continue;
                 }
+                if (node.r#type == "branch" && field.id == "condition")
+                    || (node.r#type == "loop" && field.id == "until")
+                {
+                    if let Some(condition) = value.as_str() {
+                        if let Err(message) = validate_path(condition) {
+                            report.diagnostics.push(Diagnostic::error(
+                                "invalid_condition",
+                                format!("node `{}` field `{}`: {}", node.id, field.id, message),
+                                Some(&node.id),
+                            ));
+                        }
+                    }
+                }
                 if let Some(msg) = check_value_kind(&field.field_type, value) {
                     report.diagnostics.push(Diagnostic::error(
                         "invalid_field_value",
@@ -128,6 +152,10 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
                     ));
                 }
             }
+        }
+
+        if node.r#type == "decision" {
+            validate_decision_choices(&mut report, blueprint, node);
         }
 
         // Container parents must point at a loop node.
@@ -146,12 +174,41 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
                     Some(&node.id),
                 ));
             }
+            if node.r#type == "loop" && parent_is_loop {
+                report.diagnostics.push(Diagnostic::error(
+                    "nested_loop_unsupported",
+                    format!(
+                        "loop node `{}` cannot be nested inside loop `{}` until nested-loop replay is supported",
+                        node.id, parent_id
+                    ),
+                    Some(&node.id),
+                ));
+            }
+        }
+    }
+
+    // A loop without a body has no executable transition and would otherwise
+    // leave the run active forever after its entry event.
+    for node in blueprint.nodes.iter().filter(|node| node.r#type == "loop") {
+        if !blueprint
+            .nodes
+            .iter()
+            .any(|child| child.parent.as_deref() == Some(node.id.as_str()))
+        {
+            report.diagnostics.push(Diagnostic::error(
+                "empty_loop_body",
+                format!(
+                    "loop node `{}` must contain at least one body node",
+                    node.id
+                ),
+                Some(&node.id),
+            ));
         }
     }
 
     // Edges reference existing nodes.
     for edge in &blueprint.edges {
-        if !node_ids.contains(edge.from.as_str()) || !node_ids.contains(edge.to.as_str()) {
+        let Some(from_node) = blueprint.find_node(&edge.from) else {
             report.diagnostics.push(Diagnostic::error(
                 "dangling_edge",
                 format!(
@@ -160,6 +217,116 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
                 ),
                 None,
             ));
+            continue;
+        };
+        let Some(to_node) = blueprint.find_node(&edge.to) else {
+            report.diagnostics.push(Diagnostic::error(
+                "dangling_edge",
+                format!(
+                    "edge `{}` -> `{}` references a missing node",
+                    edge.from, edge.to
+                ),
+                None,
+            ));
+            continue;
+        };
+
+        if let Some(def) = find_node_type(&from_node.r#type) {
+            if def.supported && !declares_output_port(def, from_node, &edge.from_port) {
+                report.diagnostics.push(Diagnostic::error(
+                    "unknown_output_port",
+                    format!(
+                        "edge `{}` -> `{}` uses unknown output port `{}` on node `{}`",
+                        edge.from, edge.to, edge.from_port, edge.from
+                    ),
+                    Some(&edge.from),
+                ));
+            }
+        }
+        if let Some(def) = find_node_type(&to_node.r#type) {
+            if def.supported && !def.inputs.iter().any(|port| port.id == edge.to_port) {
+                report.diagnostics.push(Diagnostic::error(
+                    "unknown_input_port",
+                    format!(
+                        "edge `{}` -> `{}` uses unknown input port `{}` on node `{}`",
+                        edge.from, edge.to, edge.to_port, edge.to
+                    ),
+                    Some(&edge.to),
+                ));
+            }
+        }
+    }
+
+    // Every loop body must be reachable from the container's body port. A
+    // parent annotation alone does not provide an execution transition.
+    for loop_node in blueprint.nodes.iter().filter(|node| node.r#type == "loop") {
+        let body: HashSet<&str> = blueprint
+            .nodes
+            .iter()
+            .filter(|node| node.parent.as_deref() == Some(loop_node.id.as_str()))
+            .map(|node| node.id.as_str())
+            .collect();
+        if body.is_empty() {
+            continue;
+        }
+        let mut reachable = HashSet::new();
+        let mut frontier: Vec<&str> = blueprint
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.from == loop_node.id
+                    && edge.from_port == "body"
+                    && body.contains(edge.to.as_str())
+            })
+            .map(|edge| edge.to.as_str())
+            .collect();
+        while let Some(node_id) = frontier.pop() {
+            if !reachable.insert(node_id) {
+                continue;
+            }
+            frontier.extend(
+                blueprint
+                    .edges
+                    .iter()
+                    .filter(|edge| edge.from == node_id && body.contains(edge.to.as_str()))
+                    .map(|edge| edge.to.as_str()),
+            );
+        }
+        if reachable.is_empty() {
+            report.diagnostics.push(Diagnostic::error(
+                "missing_loop_body_entry",
+                format!(
+                    "loop node `{}` must connect its `body` port to a body node",
+                    loop_node.id
+                ),
+                Some(&loop_node.id),
+            ));
+        }
+        for node_id in body.difference(&reachable) {
+            report.diagnostics.push(Diagnostic::error(
+                "unreachable_loop_body",
+                format!(
+                    "loop body node `{node_id}` is not reachable from loop `{}` body port",
+                    loop_node.id
+                ),
+                Some(node_id),
+            ));
+        }
+        for edge in blueprint
+            .edges
+            .iter()
+            .filter(|edge| body.contains(edge.to.as_str()))
+        {
+            if edge.from != loop_node.id && !body.contains(edge.from.as_str()) {
+                report.diagnostics.push(Diagnostic::error(
+                    "loop_body_external_input",
+                    format!(
+                        "loop body node `{}` cannot receive an inbound edge from outside loop `{}`",
+                        edge.to, loop_node.id
+                    ),
+                    Some(&edge.to),
+                ));
+            }
         }
     }
 
@@ -173,6 +340,99 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
     }
 
     report
+}
+
+fn declares_output_port(
+    def: &crate::workflow::registry::NodeTypeDef,
+    node: &crate::workflow::blueprint::Node,
+    port: &str,
+) -> bool {
+    if let Some(field) = &def.outputs_from_field {
+        return node
+            .fields
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(port)));
+    }
+    def.outputs.iter().any(|output| output.id == port)
+}
+
+fn is_valid_port_id(port: &str) -> bool {
+    let mut chars = port.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        })
+}
+
+fn validate_decision_choices(
+    report: &mut ValidationReport,
+    blueprint: &Blueprint,
+    node: &crate::workflow::blueprint::Node,
+) {
+    let Some(choices) = node
+        .fields
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    if choices.is_empty() {
+        report.diagnostics.push(Diagnostic::error(
+            "empty_decision_choices",
+            format!(
+                "decision node `{}` must declare at least one choice",
+                node.id
+            ),
+            Some(&node.id),
+        ));
+        return;
+    }
+
+    let mut seen = HashSet::new();
+    for choice in choices {
+        let Some(choice) = choice.as_str() else {
+            continue;
+        };
+        if !is_valid_port_id(choice) {
+            report.diagnostics.push(Diagnostic::error(
+                "invalid_decision_choice",
+                format!(
+                    "decision node `{}` choice `{choice}` is not a valid output port id",
+                    node.id
+                ),
+                Some(&node.id),
+            ));
+        }
+        if !seen.insert(choice) {
+            report.diagnostics.push(Diagnostic::error(
+                "duplicate_decision_choice",
+                format!(
+                    "decision node `{}` declares choice `{choice}` more than once",
+                    node.id
+                ),
+                Some(&node.id),
+            ));
+        }
+        if is_valid_port_id(choice)
+            && !blueprint
+                .edges
+                .iter()
+                .any(|edge| edge.from == node.id && edge.from_port == choice)
+        {
+            report.diagnostics.push(Diagnostic::error(
+                "unconnected_decision_choice",
+                format!(
+                    "decision node `{}` choice `{choice}` has no outgoing edge",
+                    node.id
+                ),
+                Some(&node.id),
+            ));
+        }
+    }
 }
 
 fn check_loop_max_iterations(value: &serde_json::Value) -> Option<String> {
@@ -214,6 +474,11 @@ fn check_value_kind(field_type: &FieldType, value: &serde_json::Value) -> Option
             .is_object()
             .then_some(())
             .map_or(Some("expected an object".into()), |_| None),
+        FieldType::BranchPort => value
+            .as_array()
+            .is_some_and(|values| values.iter().all(serde_json::Value::is_string))
+            .then_some(())
+            .map_or(Some("expected an array of strings".into()), |_| None),
         FieldType::Enum { options } => match value.as_str() {
             Some(s) if options.iter().any(|o| o == s) => None,
             Some(s) => Some(format!("`{s}` is not one of {options:?}")),
@@ -350,6 +615,109 @@ mod tests {
     }
 
     #[test]
+    fn registered_but_unsupported_node_type_is_an_error() {
+        let bp = base(
+            vec![Node {
+                id: "child".into(),
+                r#type: "sub_workflow".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::json!({"workflow": "nested"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                position: None,
+            }],
+            vec![],
+        );
+        let report = validate(&bp);
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "unsupported_node_type"
+                && diagnostic.node.as_deref() == Some("child")
+        }));
+    }
+
+    #[test]
+    fn branch_rejects_expression_conditions() {
+        let bp = base(
+            vec![Node {
+                id: "route".into(),
+                r#type: "branch".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::json!({
+                    "condition": "nodes.agent-1.output.decision === 'HEARTBEAT_ACTION'"
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+                position: None,
+            }],
+            vec![],
+        );
+        let report = validate(&bp);
+        let diagnostic = report
+            .errors()
+            .into_iter()
+            .find(|diagnostic| diagnostic.code == "invalid_condition")
+            .expect("expression should have a stable condition diagnostic");
+        assert_eq!(diagnostic.node.as_deref(), Some("route"));
+        assert!(diagnostic
+            .message
+            .contains("operators and comparisons are not supported"));
+    }
+
+    #[test]
+    fn branch_accepts_a_registry_path_condition() {
+        let bp = base(
+            vec![Node {
+                id: "route".into(),
+                r#type: "branch".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::json!({"condition": "nodes.agent-1.output.ready"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                position: None,
+            }],
+            vec![],
+        );
+        assert!(validate(&bp).is_valid());
+    }
+
+    #[test]
+    fn loop_rejects_expression_until_conditions() {
+        let mut loop_node = loop_node(serde_json::json!(2));
+        loop_node.fields.insert(
+            "until".into(),
+            serde_json::json!("nodes.worker.output.count > 2"),
+        );
+        let mut body = task("body");
+        body.parent = Some("lp".into());
+        let report = validate(&base(
+            vec![loop_node, body],
+            vec![Edge {
+                from: "lp".into(),
+                to: "body".into(),
+                from_port: "body".into(),
+                to_port: "in".into(),
+            }],
+        ));
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "invalid_condition" && diagnostic.node.as_deref() == Some("lp")
+        }));
+    }
+
+    #[test]
+    fn empty_loop_body_is_an_error() {
+        let report = validate(&base(vec![loop_node(serde_json::json!(2))], vec![]));
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "empty_loop_body" && diagnostic.node.as_deref() == Some("lp")
+        }));
+    }
+
+    #[test]
     fn missing_required_field_is_an_error() {
         let mut plan = task("plan");
         plan.fields.remove("prompt");
@@ -374,6 +742,121 @@ mod tests {
         );
         let report = validate(&bp);
         assert!(report.errors().iter().any(|d| d.code == "dangling_edge"));
+    }
+
+    #[test]
+    fn edge_ports_must_be_declared_by_both_nodes() {
+        let bp = base(
+            vec![task("plan"), task("next")],
+            vec![Edge {
+                from: "plan".into(),
+                to: "next".into(),
+                from_port: "typo".into(),
+                to_port: "also-typo".into(),
+            }],
+        );
+        let report = validate(&bp);
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unknown_output_port"));
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unknown_input_port"));
+    }
+
+    #[test]
+    fn decision_choices_declare_dynamic_output_ports() {
+        let decision = Node {
+            id: "choose".into(),
+            r#type: "decision".into(),
+            name: None,
+            parent: None,
+            fields: serde_json::json!({
+                "agent": "role:coder",
+                "prompt": "choose",
+                "choices": ["yes"]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            position: None,
+        };
+        let bp = base(
+            vec![decision, task("next")],
+            vec![Edge {
+                from: "choose".into(),
+                to: "next".into(),
+                from_port: "yes".into(),
+                to_port: "in".into(),
+            }],
+        );
+        assert!(validate(&bp).is_valid());
+    }
+
+    #[test]
+    fn decision_choices_reject_empty_duplicate_malformed_and_unconnected_ports() {
+        let decision = Node {
+            id: "choose".into(),
+            r#type: "decision".into(),
+            name: None,
+            parent: None,
+            fields: serde_json::json!({
+                "agent": "role:coder",
+                "prompt": "choose",
+                "choices": ["yes", "yes", "bad choice"]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            position: None,
+        };
+        let report = validate(&base(vec![decision], vec![]));
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "duplicate_decision_choice"));
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "invalid_decision_choice"));
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unconnected_decision_choice"));
+
+        let mut empty = base(
+            vec![Node {
+                id: "choose".into(),
+                r#type: "decision".into(),
+                name: None,
+                parent: None,
+                fields: serde_json::json!({
+                    "agent": "role:coder",
+                    "prompt": "choose",
+                    "choices": []
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+                position: None,
+            }],
+            vec![],
+        );
+        let report = validate(&empty);
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "empty_decision_choices"));
+        empty.nodes[0]
+            .fields
+            .insert("choices".into(), serde_json::json!("yes"));
+        let report = validate(&empty);
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "invalid_field_value"));
     }
 
     #[test]
@@ -409,12 +892,81 @@ mod tests {
     }
 
     #[test]
+    fn nested_loops_are_rejected_until_their_replay_semantics_exist() {
+        let mut outer = loop_node(serde_json::json!(2));
+        outer.id = "outer".into();
+        let mut inner = loop_node(serde_json::json!(2));
+        inner.id = "inner".into();
+        inner.parent = Some("outer".into());
+        let mut body = task("body");
+        body.parent = Some("inner".into());
+        let report = validate(&base(
+            vec![outer, inner, body],
+            vec![
+                Edge {
+                    from: "outer".into(),
+                    to: "inner".into(),
+                    from_port: "body".into(),
+                    to_port: "in".into(),
+                },
+                Edge {
+                    from: "inner".into(),
+                    to: "body".into(),
+                    from_port: "body".into(),
+                    to_port: "in".into(),
+                },
+            ],
+        ));
+
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "nested_loop_unsupported"
+                && diagnostic.node.as_deref() == Some("inner")
+        }));
+    }
+
+    #[test]
+    fn loop_body_rejects_external_inbound_edges() {
+        let mut body = task("body");
+        body.parent = Some("lp".into());
+        let report = validate(&base(
+            vec![task("outside"), loop_node(serde_json::json!(2)), body],
+            vec![
+                Edge {
+                    from: "lp".into(),
+                    to: "body".into(),
+                    from_port: "body".into(),
+                    to_port: "in".into(),
+                },
+                Edge {
+                    from: "outside".into(),
+                    to: "body".into(),
+                    from_port: "out".into(),
+                    to_port: "in".into(),
+                },
+            ],
+        ));
+
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "loop_body_external_input"
+                && diagnostic.node.as_deref() == Some("body")
+        }));
+    }
+
+    #[test]
     fn loop_max_iterations_accepts_template_string() {
+        let mut child = task("body");
+        child.parent = Some("lp".into());
         let bp = base(
-            vec![loop_node(serde_json::json!(
-                "{{trigger.output.max_cycles}}"
-            ))],
-            vec![],
+            vec![
+                loop_node(serde_json::json!("{{trigger.output.max_cycles}}")),
+                child,
+            ],
+            vec![Edge {
+                from: "lp".into(),
+                to: "body".into(),
+                from_port: "body".into(),
+                to_port: "in".into(),
+            }],
         );
 
         let report = validate(&bp);
@@ -432,9 +984,19 @@ mod tests {
 
     #[test]
     fn loop_max_iterations_warns_for_malformed_template_string() {
+        let mut child = task("body");
+        child.parent = Some("lp".into());
         let bp = base(
-            vec![loop_node(serde_json::json!("{{trigger.output.max_cycles"))],
-            vec![],
+            vec![
+                loop_node(serde_json::json!("{{trigger.output.max_cycles")),
+                child,
+            ],
+            vec![Edge {
+                from: "lp".into(),
+                to: "body".into(),
+                from_port: "body".into(),
+                to_port: "in".into(),
+            }],
         );
 
         let report = validate(&bp);
@@ -449,7 +1011,17 @@ mod tests {
 
     #[test]
     fn loop_max_iterations_warns_for_non_positive_literal() {
-        let bp = base(vec![loop_node(serde_json::json!(0))], vec![]);
+        let mut child = task("body");
+        child.parent = Some("lp".into());
+        let bp = base(
+            vec![loop_node(serde_json::json!(0)), child],
+            vec![Edge {
+                from: "lp".into(),
+                to: "body".into(),
+                from_port: "body".into(),
+                to_port: "in".into(),
+            }],
+        );
 
         let report = validate(&bp);
 
@@ -459,5 +1031,19 @@ mod tests {
                 && d.node.as_deref() == Some("lp")
         }));
         assert!(report.is_valid());
+    }
+
+    #[test]
+    fn loop_body_must_be_reachable_from_body_port() {
+        let mut body = task("body");
+        body.parent = Some("lp".into());
+        let report = validate(&base(vec![loop_node(serde_json::json!(2)), body], vec![]));
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "missing_loop_body_entry"));
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "unreachable_loop_body" && diagnostic.node.as_deref() == Some("body")
+        }));
     }
 }

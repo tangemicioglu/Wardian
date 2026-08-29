@@ -8,6 +8,7 @@ pub mod manager;
 pub mod providers;
 pub mod remote;
 pub mod state;
+mod topology_audit;
 mod topology_watch;
 pub mod utils;
 pub mod workflow;
@@ -567,6 +568,7 @@ pub fn run() {
                         }
                     }
                 }
+                crate::control::spawn_native_delivery_recovery(&app_handle);
                 for recovered in recovered_replacements {
                     if let Some(intent) = recovered.session_close_intent {
                         if let Err(error) = crate::workflow::session_close::invoke_matching(

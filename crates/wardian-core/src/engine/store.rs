@@ -1,11 +1,13 @@
 use crate::engine::event::Event;
 use crate::engine::state::RunState;
+use crate::workflow::Blueprint;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 const EVENTS: &str = "events.jsonl";
 const CHECKPOINT: &str = "state.json";
+const BLUEPRINT: &str = "blueprint.json";
 
 /// Append one event as a JSON line to `<root>/events.jsonl`.
 pub fn append_event(root: &Path, ev: &Event) -> crate::engine::Result<()> {
@@ -38,13 +40,43 @@ pub fn read_events(root: &Path) -> crate::engine::Result<Vec<Event>> {
 /// Write the checkpoint snapshot to `<root>/state.json`.
 pub fn write_checkpoint(root: &Path, state: &RunState) -> crate::engine::Result<()> {
     std::fs::create_dir_all(root)?;
-    std::fs::write(root.join(CHECKPOINT), serde_json::to_string_pretty(state)?)?;
+    crate::atomic_file::write_json_atomic(&root.join(CHECKPOINT), state)?;
     Ok(())
 }
 
 /// Read the checkpoint, or `None` if absent.
 pub fn read_checkpoint(root: &Path) -> crate::engine::Result<Option<RunState>> {
     let path = root.join(CHECKPOINT);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut state: RunState = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    state.normalize_legacy();
+    Ok(Some(state))
+}
+
+/// Persist the parsed blueprint used to start a run. The snapshot is immutable
+/// so restart recovery can use the same graph even if the library copy moves
+/// or changes later.
+pub fn write_blueprint_snapshot(root: &Path, blueprint: &Blueprint) -> crate::engine::Result<()> {
+    std::fs::create_dir_all(root)?;
+    let path = root.join(BLUEPRINT);
+    if path.exists() {
+        let existing: Blueprint = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+        if serde_json::to_value(existing)? != serde_json::to_value(blueprint)? {
+            return Err(crate::engine::EngineError::InvalidState(
+                "workflow blueprint snapshot already exists and differs".into(),
+            ));
+        }
+        return Ok(());
+    }
+    crate::atomic_file::write_json_atomic(&path, blueprint)?;
+    Ok(())
+}
+
+/// Read the immutable parsed blueprint snapshot for a run, when present.
+pub fn read_blueprint_snapshot(root: &Path) -> crate::engine::Result<Option<Blueprint>> {
+    let path = root.join(BLUEPRINT);
     if !path.exists() {
         return Ok(None);
     }
@@ -66,6 +98,8 @@ mod tests {
                 0,
                 "t0".into(),
                 EventKind::RunStarted {
+                    run_id: Some("run-1".into()),
+                    blueprint_hash: None,
                     blueprint_id: "wf".into(),
                     schema: 2,
                     trigger: serde_json::json!({}),
@@ -91,5 +125,31 @@ mod tests {
         write_checkpoint(dir.path(), &s).unwrap();
         let back = read_checkpoint(dir.path()).unwrap().unwrap();
         assert_eq!(back.next_seq, 9);
+    }
+
+    #[test]
+    fn legacy_checkpoint_gets_run_storage_during_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(CHECKPOINT),
+            serde_json::json!({
+                "run_id": "legacy",
+                "blueprint_id": "wf",
+                "status": "running",
+                "nodes": {},
+                "registry": {"nodes": {}, "trigger": {"output": {}}},
+                "loop_iter": {},
+                "delivered": {},
+                "skipped_edges": [],
+                "next_seq": 2,
+                "failure": null
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let state = read_checkpoint(dir.path()).unwrap().unwrap();
+
+        assert_eq!(state.registry["storage"], serde_json::json!({}));
     }
 }

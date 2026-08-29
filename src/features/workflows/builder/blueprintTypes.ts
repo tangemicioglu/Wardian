@@ -27,6 +27,7 @@ export interface NodeTypeDef {
   label: string;
   icon: string;
   description: string;
+  supported?: boolean;
   fields: FieldDef[];
   inputs: PortDef[];
   outputs: PortDef[];

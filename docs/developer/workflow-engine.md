@@ -53,9 +53,16 @@ During execution the engine keeps a registry of run data:
 
 - `nodes.<id>.output`: the output from completed nodes;
 - `trigger.output`: the invocation input payload;
-- `storage`: persistent workflow storage made available to interpolation.
+- `storage`: persistent storage scoped to this workflow run and made available
+  to interpolation. It is not shared across runs or agents.
 
 Template fields resolve against this registry before each node executes.
+
+Blueprint validation is fail-closed: decision choices must be unique,
+non-empty, valid port identifiers with outgoing edges; edges must name ports
+declared by both endpoint node types; loop containers must have a reachable
+body; inbound edges from outside a loop body are rejected; and nested loops are
+rejected until nested-loop replay semantics exist.
 
 ## Execution Flow
 
@@ -64,8 +71,8 @@ Template fields resolve against this registry before each node executes.
    The CLI's default `wardian workflow exec <path>` path sends the same request
    through the Wardian live control endpoint.
 2. The backend parses and validates the blueprint.
-3. `LiveStepExecutor` resolves agents, shell/script actions, notify operations,
-   and state operations.
+3. `LiveStepExecutor` resolves agents, shell/script actions, and app
+   notifications. Deterministic state operations run in the core engine.
 4. `wardian_core::engine` drives runnable nodes, records events, and checkpoints
    state.
 5. Observe and Monitor refresh durable run state through `workflow_read_run`.
@@ -77,8 +84,35 @@ Resume, startup recovery, and human approval use the same durable run records:
 - app startup marks runs that were still `running` at process exit as `failed`
   with an interruption reason, because their worker tasks and provider
   processes are no longer owned by the new app process;
+- detached launch and resume workers persist a `RunFailed` event and failed
+  checkpoint if the global headless-execution guard cannot be acquired, so a
+  worker-start failure cannot leave a run falsely active;
+- scheduler resolution or validation failures persist a one-event terminal
+  launch-failure artifact; CLI replay recognizes it without loading a blueprint;
 - `workflow_approve` grants or rejects an approval gate;
-- `workflow_cancel` writes a cancellation marker for a live run.
+- `workflow_cancel` writes a cancellation marker; the engine consumes it at the
+  next dispatch boundary, or immediately records a durable `run_failed`
+  cancellation event when the run is parked for approval.
+
+The append-only event sequence is validated identically by replay and resume.
+New `run_started` events carry the durable run id, allowing recovery to retain
+identity when a checkpoint is missing. Observe mode folds branch, decision,
+loop, and approval transitions from the same event stream.
+
+New runs persist the parsed blueprint beside the checkpoint and record its
+content hash in `run_started`. Resume, replay, and approval continuation reject
+invalid or changed graphs, preventing a mutable library edit from changing an
+existing run's routing. Approval decisions are bound to the node named by the
+durable `awaiting_approval` event. Cancellation of an approval-parked run can
+be committed from the checkpoint and event log without loading the library
+blueprint.
+
+Startup recovery replays the immutable snapshot before appending its
+interruption failure. This folds any valid event-log tail, preserves the
+correct next sequence, and refuses to rewrite malformed or unrecoverable runs.
+Loop body nodes enter only through the container's `body` port; validation
+rejects body nodes that are not reachable from that port. Observe's node
+inspector receives the selected event index and does not display future output.
 
 ## Agent Execution
 

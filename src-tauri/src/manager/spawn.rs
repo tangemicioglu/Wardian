@@ -1,5 +1,10 @@
-use crate::providers::antigravity::{changed_workspace_conversation, AntigravityProvider};
-use crate::providers::claude::{classify_claude_user_event, ClaudeUserEventKind};
+use crate::providers::antigravity::{
+    changed_workspace_conversation, AntigravityConversationMessage, AntigravityProvider,
+};
+use crate::providers::claude::{
+    classify_claude_user_event, claude_output_has_bypass_permissions_consent_prompt,
+    effective_claude_permission_mode, ClaudeUserEventKind,
+};
 use crate::providers::codex::CodexProvider;
 use crate::providers::pi::PiProvider;
 use crate::providers::transcript::extract_transcript_message;
@@ -7,12 +12,13 @@ use crate::providers::ProviderFactory;
 use crate::state::{ActiveAgent, AgentWatchState, AppState};
 use crate::utils::fs::*;
 use crate::utils::logging::{log_debug, log_terminal_trace_bytes, log_terminal_trace_note};
-use crate::utils::PtyUtf8Decoder;
+use crate::utils::{strip_ansi_controls, PtyUtf8Decoder};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use std::collections::HashMap;
 use std::io::{BufRead, Read, Seek, Write};
 use tauri::{AppHandle, Emitter, Manager};
-use wardian_core::control::ProviderInputReadiness;
-use wardian_core::models::{AgentConfig, AgentEvent, ProviderConfig};
+use wardian_core::control::{ProviderInputReadiness, WatchTranscriptMessage};
+use wardian_core::models::{AgentChatRole, AgentConfig, AgentEvent, ProviderConfig};
 
 use super::claude::{
     claude_log_paths, claude_permission_hook_matches_session, claude_project_dir_name,
@@ -355,6 +361,109 @@ struct AntigravityUserTurnReceiptTracker {
     last_step_index: Option<u64>,
 }
 
+#[derive(Default)]
+struct AntigravityTranscriptTracker {
+    initialized: bool,
+    observed_text: HashMap<(u64, &'static str), String>,
+}
+
+#[derive(Default)]
+struct ClaudeStartupReadiness {
+    compose_prompt_seen: bool,
+    remote_connection_pending: bool,
+}
+
+impl ClaudeStartupReadiness {
+    fn observe(&mut self, output: &str) -> bool {
+        let compact = strip_ansi_controls(output)
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>();
+        if crate::control::provider_output_has_startup_ready_prompt("claude", output) {
+            self.compose_prompt_seen = true;
+            self.remote_connection_pending = compact.contains("rcconnecting");
+            if !self.remote_connection_pending {
+                return true;
+            }
+        }
+
+        if self.remote_connection_pending
+            && compact.contains("httpsclaudeaicodesession")
+            && self.compose_prompt_seen
+        {
+            self.remote_connection_pending = false;
+            return true;
+        }
+
+        false
+    }
+}
+
+impl AntigravityTranscriptTracker {
+    /// Projects provider-authored SQLite messages once. Restored agents first
+    /// position at existing history, while fresh agents expose messages already
+    /// present when Wardian discovers the provider-owned conversation.
+    fn observe(
+        &mut self,
+        messages: &[AntigravityConversationMessage],
+        skip_existing: bool,
+    ) -> Vec<WatchTranscriptMessage> {
+        let positioning_restored_history = !self.initialized && skip_existing;
+        let mut projected = Vec::new();
+
+        for message in messages {
+            let role = match message.role {
+                AgentChatRole::User => "user",
+                AgentChatRole::Assistant => "assistant",
+                AgentChatRole::System => "system",
+                AgentChatRole::Tool => "tool",
+            };
+            let key = (message.step_index, role);
+            let changed = self.observed_text.get(&key) != Some(&message.text);
+            self.observed_text.insert(key, message.text.clone());
+            if changed && !positioning_restored_history {
+                projected.push(WatchTranscriptMessage {
+                    role: role.to_string(),
+                    text: message.text.clone(),
+                    provider: "antigravity".to_string(),
+                    turn_id: None,
+                    source: Some("antigravity_sqlite".to_string()),
+                });
+            }
+        }
+
+        self.initialized = true;
+        projected
+    }
+}
+
+fn should_auto_confirm_antigravity_workspace_trust(
+    provider_name: &str,
+    enabled: bool,
+    already_confirmed: bool,
+    output: &str,
+) -> bool {
+    let output = output.to_ascii_lowercase();
+    provider_name == "antigravity"
+        && enabled
+        && !already_confirmed
+        && output.contains("do you trust the contents of this project?")
+        && output.contains("requires permission to read, edit, and execute files here")
+}
+
+fn should_auto_confirm_claude_bypass_permissions(
+    provider_name: &str,
+    enabled: bool,
+    already_confirmed: bool,
+    output: &str,
+) -> bool {
+    provider_name == "claude"
+        && enabled
+        && !already_confirmed
+        && claude_output_has_bypass_permissions_consent_prompt(output)
+}
+
 impl AntigravityUserTurnReceiptTracker {
     /// Positions restored agents at their existing history while allowing a
     /// fresh conversation to acknowledge a user step already present by the
@@ -624,18 +733,17 @@ pub async fn spawn_agent(
     crate::providers::readiness::ensure_provider_available_for_launch(&config.provider)?;
 
     let cwd = crate::utils::fs::resolve_cwd(&config.folder, &config.session_id);
-    let antigravity_workspace_before = if config.provider == "antigravity"
+    let antigravity_database_baseline = if config.provider == "antigravity"
         && config
             .resume_session
             .as_deref()
             .is_none_or(|value| value.trim().is_empty())
     {
-        let excluded = config.antigravity_config().cleared_conversations;
-        AntigravityProvider::antigravity_home().and_then(|home| {
-            AntigravityProvider::verified_conversation_for_workspace(&home, &cwd, &excluded)
-        })
+        AntigravityProvider::antigravity_home()
+            .map(|home| AntigravityProvider::conversation_database_ids(&home))
+            .unwrap_or_default()
     } else {
-        None
+        Default::default()
     };
 
     let expected_folder = if config.folder.is_empty() {
@@ -805,6 +913,23 @@ pub async fn spawn_agent(
     }
     let provider_cwd =
         interactive_provider_cwd(&config.provider, &cwd, habitat_root.as_deref(), None);
+    let antigravity_workspace_before = if config.provider == "antigravity"
+        && config
+            .resume_session
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        let excluded = config.antigravity_config().cleared_conversations;
+        AntigravityProvider::antigravity_home().and_then(|home| {
+            AntigravityProvider::verified_conversation_for_workspace(
+                &home,
+                &provider_cwd,
+                &excluded,
+            )
+        })
+    } else {
+        None
+    };
     let fresh_claude_log_paths =
         if config.provider == "claude" && config.fresh_provider_session_id.is_some() {
             dirs::home_dir()
@@ -1093,6 +1218,14 @@ pub async fn spawn_agent(
     let terminal_sessions = app_state.terminal_sessions.clone();
     let reader_runtime_generation = runtime_generation;
     let pty_config = config_lock.clone();
+    let auto_confirm_antigravity_workspace_trust = config.provider == "antigravity"
+        && config
+            .antigravity_config()
+            .dangerously_skip_permissions
+            .unwrap_or(true);
+    let auto_confirm_claude_bypass_permissions = config.provider == "claude"
+        && effective_claude_permission_mode(config.claude_config().permission_mode.as_deref())
+            == "bypassPermissions";
     let mut pending_memory_injection = memory_setup
         .map(|(store, brief)| (store, brief, expected_folder.clone(), memory_process_key));
     std::thread::spawn(move || {
@@ -1103,7 +1236,10 @@ pub async fn spawn_agent(
         let mut codex_terminal_theme_responder = CodexTerminalThemeProbeResponder::default();
         let mut antigravity_turn_completion_gate = AntigravityTurnCompletionGate::default();
         let mut opencode_startup_memory_transition = OpenCodeStartupMemoryTransition::default();
+        let mut claude_startup_readiness = ClaudeStartupReadiness::default();
         let mut startup_prompt_pending = true;
+        let mut antigravity_workspace_trust_confirmed = false;
+        let mut claude_bypass_permissions_confirmed = false;
         let mut pty_decoder = PtyUtf8Decoder::new();
         let output_ready_emit_gate =
             std::sync::Arc::new(std::sync::Mutex::new(OutputReadyEmitGate::default()));
@@ -1196,12 +1332,17 @@ pub async fn spawn_agent(
                     } else {
                         None
                     };
-                    if startup_output.as_deref().is_some_and(|output| {
-                        crate::control::provider_output_has_startup_ready_prompt(
-                            &provider_name_for_pty,
-                            output,
-                        )
-                    }) {
+                    let startup_ready = if provider_name_for_pty == "claude" {
+                        claude_startup_readiness.observe(&text)
+                    } else {
+                        startup_output.as_deref().is_some_and(|output| {
+                            crate::control::provider_output_has_startup_ready_prompt(
+                                &provider_name_for_pty,
+                                output,
+                            )
+                        })
+                    };
+                    if startup_ready {
                         startup_prompt_pending = false;
                         record_pending_memory_injection(
                             &mut pending_memory_injection,
@@ -1224,6 +1365,60 @@ pub async fn spawn_agent(
                                 "Idle",
                             );
                         });
+                    } else if startup_output.as_deref().is_some_and(|output| {
+                        should_auto_confirm_claude_bypass_permissions(
+                            &provider_name_for_pty,
+                            auto_confirm_claude_bypass_permissions,
+                            claude_bypass_permissions_confirmed,
+                            output,
+                        )
+                    }) {
+                        match terminal_sessions.send_privileged_input_blocking(
+                            &sid_for_pty,
+                            reader_runtime_generation,
+                            b"\x1b[B\r".to_vec(),
+                        ) {
+                            Ok(()) => claude_bypass_permissions_confirmed = true,
+                            Err(error) => {
+                                log_debug(&format!(
+                                    "[WARDIAN] Failed to confirm Claude bypass-permissions consent for {}: {}",
+                                    sid_for_pty, error
+                                ));
+                                set_agent_status(
+                                    &pty_app,
+                                    &sid_for_pty,
+                                    &current_status_clone,
+                                    "Action Needed",
+                                );
+                            }
+                        }
+                    } else if startup_output.as_deref().is_some_and(|output| {
+                        should_auto_confirm_antigravity_workspace_trust(
+                            &provider_name_for_pty,
+                            auto_confirm_antigravity_workspace_trust,
+                            antigravity_workspace_trust_confirmed,
+                            output,
+                        )
+                    }) {
+                        match terminal_sessions.send_privileged_input_blocking(
+                            &sid_for_pty,
+                            reader_runtime_generation,
+                            vec![b'\r'],
+                        ) {
+                            Ok(()) => antigravity_workspace_trust_confirmed = true,
+                            Err(error) => {
+                                log_debug(&format!(
+                                    "[WARDIAN] Failed to confirm Antigravity workspace trust for {}: {}",
+                                    sid_for_pty, error
+                                ));
+                                set_agent_status(
+                                    &pty_app,
+                                    &sid_for_pty,
+                                    &current_status_clone,
+                                    "Action Needed",
+                                );
+                            }
+                        }
                     } else if startup_output.as_deref().is_some_and(|output| {
                         crate::control::provider_output_requires_startup_action(
                             &provider_name_for_pty,
@@ -2022,14 +2217,16 @@ pub async fn spawn_agent(
         let watcher_config = config_lock.clone();
         let watcher_watch_state = watch_state.clone();
         let watcher_skip_existing_log = is_restored;
-        let watcher_workspace = cwd.clone();
+        let watcher_workspace = provider_cwd.clone();
         let watcher_workspace_before = antigravity_workspace_before.clone();
+        let watcher_database_baseline = antigravity_database_baseline;
 
         std::thread::spawn(move || {
             let mut offset: u64 = 0;
             let mut positioned_initial_log = !watcher_skip_existing_log;
             let mut last_conversation_id = String::new();
             let mut user_turn_receipt_tracker = AntigravityUserTurnReceiptTracker::default();
+            let mut transcript_tracker = AntigravityTranscriptTracker::default();
             loop {
                 let current = watcher_current_status
                     .lock()
@@ -2049,11 +2246,19 @@ pub async fn spawn_agent(
                         .filter(|value| !value.is_empty());
                     let excluded = cfg.antigravity_config().cleared_conversations;
                     let discovered = home.as_ref().and_then(|home| {
-                        AntigravityProvider::verified_conversation_for_workspace(
+                        AntigravityProvider::fresh_database_conversation_for_workspace(
                             home,
                             &watcher_workspace,
+                            &watcher_database_baseline,
                             &excluded,
                         )
+                        .or_else(|| {
+                            AntigravityProvider::verified_conversation_for_workspace(
+                                home,
+                                &watcher_workspace,
+                                &excluded,
+                            )
+                        })
                     });
                     let (conversation_id, capture_identity) = antigravity_watcher_conversation(
                         existing,
@@ -2098,6 +2303,7 @@ pub async fn spawn_agent(
                         offset = 0;
                         positioned_initial_log = !watcher_skip_existing_log;
                         user_turn_receipt_tracker = AntigravityUserTurnReceiptTracker::default();
+                        transcript_tracker = AntigravityTranscriptTracker::default();
                         last_conversation_id = conversation_id.to_string();
                     }
                 }
@@ -2121,9 +2327,9 @@ pub async fn spawn_agent(
                     None
                 };
 
-                if let Some(database_path) = database_path {
+                if let Some(database_path) = database_path.as_ref() {
                     if let Ok(latest_step_index) =
-                        AntigravityProvider::latest_user_message_step_index(&database_path)
+                        AntigravityProvider::latest_user_message_step_index(database_path)
                     {
                         if user_turn_receipt_tracker
                             .observe(latest_step_index, watcher_skip_existing_log)
@@ -2138,15 +2344,28 @@ pub async fn spawn_agent(
                             );
                         }
                     }
+                    if let Ok(messages) =
+                        AntigravityProvider::conversation_messages_from_database(database_path)
+                    {
+                        let projected =
+                            transcript_tracker.observe(&messages, watcher_skip_existing_log);
+                        if !projected.is_empty() {
+                            if let Ok(mut watch_state) = watcher_watch_state.lock() {
+                                for message in projected {
+                                    watch_state.push_transcript(message);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if let (Some(_conversation_id), Some(path)) = (conversation_id, path) {
                     if let Ok(mut out) = watcher_log_path.lock() {
                         *out = Some(path.clone());
                     }
-                    // Antigravity 1.1.7 keeps interactive history in SQLite.
-                    // Chat reads that database directly; the streaming watcher
-                    // below remains for the legacy JSONL format.
+                    // Current Antigravity keeps interactive history in SQLite.
+                    // The database projection above feeds live watch state; the
+                    // streaming watcher below remains for legacy JSONL logs.
                     if path.extension().is_some_and(|extension| extension == "db") {
                         std::thread::sleep(std::time::Duration::from_millis(250));
                         continue;
@@ -2646,6 +2865,79 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_workspace_trust_auto_confirmation_is_exact_and_one_shot() {
+        let prompt = "Do you trust the contents of this project?\nAntigravity CLI requires permission to read, edit, and execute files here.";
+        assert!(should_auto_confirm_antigravity_workspace_trust(
+            "antigravity",
+            true,
+            false,
+            prompt,
+        ));
+        assert!(!should_auto_confirm_antigravity_workspace_trust(
+            "antigravity",
+            false,
+            false,
+            prompt,
+        ));
+        assert!(!should_auto_confirm_antigravity_workspace_trust(
+            "antigravity",
+            true,
+            true,
+            prompt,
+        ));
+        assert!(!should_auto_confirm_antigravity_workspace_trust(
+            "antigravity",
+            true,
+            false,
+            "Requesting permission for: run_shell_command",
+        ));
+    }
+
+    #[test]
+    fn claude_bypass_permissions_consent_auto_confirmation_is_exact_and_one_shot() {
+        let prompt = "WARNING: Claude Code running in Bypass Permissions mode\nBy proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode.\nNo, exit\nYes, I accept";
+        assert!(should_auto_confirm_claude_bypass_permissions(
+            "claude", true, false, prompt,
+        ));
+        assert!(!should_auto_confirm_claude_bypass_permissions(
+            "claude", false, false, prompt,
+        ));
+        assert!(!should_auto_confirm_claude_bypass_permissions(
+            "claude", true, true, prompt,
+        ));
+        assert!(!should_auto_confirm_claude_bypass_permissions(
+            "antigravity",
+            true,
+            false,
+            prompt,
+        ));
+        assert!(!should_auto_confirm_claude_bypass_permissions(
+            "claude",
+            true,
+            false,
+            "Allow Bash command? Yes / No",
+        ));
+    }
+
+    #[test]
+    fn claude_startup_readiness_waits_for_pending_remote_connection() {
+        let mut readiness = ClaudeStartupReadiness::default();
+        assert!(!readiness.observe(
+            "Claude Code v2.1.251\r\n❯ Try ask Claude\r\nshift+tab to cycle ·\x1b[174G/rc\x1b[178Gconnecting…",
+        ));
+        assert!(!readiness.observe("weekly limit resets at midnight"));
+        assert!(readiness.observe("https://claude.ai/code/session_01ABC?from=cli /rc",));
+    }
+
+    #[test]
+    fn claude_startup_readiness_accepts_local_compose_prompt_without_connection_wait() {
+        let mut readiness = ClaudeStartupReadiness::default();
+        assert!(
+            readiness.observe("Claude Code v2.1.251\r\n❯ Try ask Claude\r\nshift+tab to cycle",)
+        );
+    }
+
+    #[test]
     fn antigravity_user_turn_receipt_tracker_skips_restored_history_and_deduplicates() {
         let mut tracker = AntigravityUserTurnReceiptTracker::default();
 
@@ -2662,6 +2954,61 @@ mod tests {
         assert!(!tracker.observe(None, false));
         assert!(tracker.observe(Some(4), false));
         assert!(!tracker.observe(Some(4), false));
+    }
+
+    fn antigravity_message(
+        step_index: u64,
+        role: AgentChatRole,
+        text: &str,
+    ) -> AntigravityConversationMessage {
+        AntigravityConversationMessage {
+            step_index,
+            role,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn antigravity_transcript_tracker_projects_fresh_messages_and_changed_steps_once() {
+        let mut tracker = AntigravityTranscriptTracker::default();
+        let initial = vec![
+            antigravity_message(2, AgentChatRole::User, "Run the check."),
+            antigravity_message(3, AgentChatRole::Assistant, "Working."),
+        ];
+
+        let projected = tracker.observe(&initial, false);
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[0].role, "user");
+        assert_eq!(projected[1].text, "Working.");
+        assert!(tracker.observe(&initial, false).is_empty());
+
+        let changed = vec![
+            initial[0].clone(),
+            antigravity_message(3, AgentChatRole::Assistant, "Finished."),
+        ];
+        let projected = tracker.observe(&changed, false);
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].text, "Finished.");
+        assert_eq!(projected[0].source.as_deref(), Some("antigravity_sqlite"));
+    }
+
+    #[test]
+    fn antigravity_transcript_tracker_positions_restored_history_before_projecting_new_rows() {
+        let mut tracker = AntigravityTranscriptTracker::default();
+        let history = vec![antigravity_message(
+            8,
+            AgentChatRole::Assistant,
+            "Historical answer.",
+        )];
+
+        assert!(tracker.observe(&history, true).is_empty());
+        let current = vec![
+            history[0].clone(),
+            antigravity_message(9, AgentChatRole::User, "New request."),
+        ];
+        let projected = tracker.observe(&current, true);
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].text, "New request.");
     }
 
     #[test]

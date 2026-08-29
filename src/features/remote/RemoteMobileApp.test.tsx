@@ -495,6 +495,7 @@ describe("RemoteMobileApp", () => {
     });
 
     render(<RemoteMobileApp />);
+    await vi.dynamicImportSettled();
 
     const detail = await screen.findByTestId("remote-agent-detail");
     const transcriptText = within(screen.getByLabelText("assistant message")).getByText("Select this transcript text.");

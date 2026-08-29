@@ -14,6 +14,7 @@ Delegate work to an agent; returns structured output.
 ### Fields
 
 - `agent` — Agent [agentref (required)]
+  Help: Agent or role to run this task.
 - `prompt` — Prompt [prompt (required)]
 - `output_schema` — Output schema [jsonschema]
 
@@ -33,6 +34,7 @@ Agent chooses one of the declared outgoing branches.
 - `agent` — Agent [agentref (required)]
 - `prompt` — Prompt [prompt (required)]
 - `choices` — Choices [branchport (required), multiple]
+  Help: Unique non-empty port ids the agent may choose between; each must connect to an outgoing edge.
 
 Outgoing ports are derived from the `choices` field.
 
@@ -48,6 +50,7 @@ Deterministic condition on run state.
 ### Fields
 
 - `condition` — Condition [text (required)]
+  Help: A dot-separated registry path such as nodes.agent-1.output.ready. Operators and comparisons are not supported.
 
 Outgoing ports: on_true, on_false
 
@@ -64,6 +67,7 @@ Container: repeats its body subgraph until a bound is hit.
 
 - `max_iterations` — Max iterations [number]
 - `until` — Until condition [text]
+  Help: A dot-separated registry path such as nodes.agent-1.output.ready. Operators and comparisons are not supported.
 
 Outgoing ports: body, done
 
@@ -92,6 +96,7 @@ Human-in-the-loop gate; parks the run until a person approves.
 ### Fields
 
 - `prompt` — Approval prompt [prompt]
+  Help: What the approver is signing off on.
 
 Outgoing ports: out
 
@@ -134,11 +139,11 @@ Outgoing ports: out
 - **category:** State
 - **version:** 1
 
-Read or write run or shared storage.
+Read or write storage scoped to the current workflow run.
 
 ### Fields
 
-- `op` — Operation [enum:get|set|delete (required)]
+- `op` — Operation [enum:get|set|merge|delete (required)]
 - `entries` — Entries [kvmap]
 
 Outgoing ports: out
@@ -156,6 +161,7 @@ Validate and atomically commit structured agent-memory changes.
 
 - `source_node` — Source node [text (required)]
 - `agent_id` — Memory agent [text (required)]
+  Help: Engine-owned invocation agent; only &#123;&#123;trigger.output.agent_id&#125;&#125; is accepted.
 
 Outgoing ports: out
 
@@ -180,8 +186,9 @@ Outgoing ports: out
 - **kind:** engine
 - **category:** Action
 - **version:** 1
+- **status:** unsupported
 
-Call another workflow blueprint.
+Reserved for durable child workflow runs; not available for execution yet.
 
 ### Fields
 

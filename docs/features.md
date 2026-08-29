@@ -83,7 +83,7 @@ Related docs:
 - Visual node-based builder with variable assistant
 - Manual, scheduled, and listener-style trigger behaviors
 - Scheduled run management and run-time role assignment
-- Deterministic Rust workflow engine with pulse-driven candidate-node execution, branch/loop/wait control, agent execution modes, shared storage, and live telemetry
+- Deterministic Rust workflow engine with pulse-driven candidate-node execution, branch/loop/wait control, agent execution modes, run-scoped storage, and live telemetry
 
 Related docs:
 

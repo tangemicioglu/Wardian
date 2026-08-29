@@ -32,6 +32,8 @@ mod tests {
             .unwrap()
             .iter()
             .any(|f| f["id"] == "prompt"));
+        let sub_workflow = types.iter().find(|t| t["id"] == "sub_workflow").unwrap();
+        assert_eq!(sub_workflow["supported"], false);
     }
 
     #[test]

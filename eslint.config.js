@@ -26,6 +26,13 @@ export default tseslint.config(
       "docs/.vitepress/cache/**",
       "node_modules/**",
       "target/**",
+      // Linked worktrees commonly keep Cargo outputs outside `target/` so
+      // parallel native runs do not contend for one directory. These are
+      // generated artifacts, not source files for the frontend lint gate.
+      ".cargo-target/**",
+      "**/.cargo-target/**",
+      ".tmp/**",
+      "**/target/**",
       "vendor/**",
       "tools/**",
       "test-results/**",

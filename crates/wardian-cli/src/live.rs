@@ -13,11 +13,13 @@ use wardian_core::control::{
     AgentWorktreeListResponse, AgentWorktreeMutationResponse, AgentWorktreeSummary, ApprovalAction,
     AskManyResponse, AskResponse, ControlRequest, ConversationListResponse,
     ConversationShowResponse, DeliveryDetail, InboxListResponse, InboxNotificationPayload,
-    InboxNotificationResponse, MessageInputMode, MessageOrigin, QueuePolicy, ReplyResponse,
+    InboxNotificationResponse, MessageInputMode, MessageOrigin, NativeDeliveryCapabilitiesResponse,
+    NativeDeliveryInspectResponse, OrchestrationDeliveryOptions, QueuePolicy, ReplyResponse,
     ReplyStatus, SendMessageResponse, StructuredReply, WatchEvent, WatchEvidenceError,
     WorkflowRunResponse,
 };
 use wardian_core::identity::AgentIdentity;
+use wardian_core::native_transport::NativeDeliveryPhase;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
 const CONTROL_GIT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -46,6 +48,7 @@ struct SendAndWatchRequest<'a> {
     timeout: Duration,
     output_echo_guard: Option<&'a str>,
     target_scope: Option<&'a str>,
+    orchestration: Option<OrchestrationDeliveryOptions>,
 }
 
 pub struct SendMessageAndWatchOptions<'a> {
@@ -56,6 +59,7 @@ pub struct SendMessageAndWatchOptions<'a> {
     pub until: &'a str,
     pub timeout: Duration,
     pub target_scope: Option<&'a str>,
+    pub orchestration: Option<OrchestrationDeliveryOptions>,
 }
 
 pub struct SendMessageAndWatchConditionOptions<'a> {
@@ -67,6 +71,7 @@ pub struct SendMessageAndWatchConditionOptions<'a> {
     pub tail_bytes: Option<usize>,
     pub timeout: Duration,
     pub target_scope: Option<&'a str>,
+    pub orchestration: Option<OrchestrationDeliveryOptions>,
 }
 
 pub struct SendMessageDeliveryOptions<'a> {
@@ -76,6 +81,7 @@ pub struct SendMessageDeliveryOptions<'a> {
     pub approval_action: Option<ApprovalAction>,
     pub target_scope: Option<&'a str>,
     pub timeout: Duration,
+    pub orchestration: Option<OrchestrationDeliveryOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +108,7 @@ enum ControlOperation {
     ArtifactShow,
     ArtifactReviewShow,
     WatchlistsChanged,
+    TopologyMutate,
     WorkflowRun,
     SendMessage {
         requested: Duration,
@@ -282,6 +289,68 @@ pub fn list_agents() -> io::Result<Vec<AgentIdentity>> {
     let response: AgentListResponse =
         serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))?;
     Ok(response.agents)
+}
+
+/// Topology is the control plane's single writer: every mutation is
+/// authorized and persisted by the app, never by the CLI directly.
+pub fn topology_link(
+    a: &str,
+    b: &str,
+    caller_session_id: Option<&str>,
+) -> io::Result<wardian_core::control::TopologyMutationResponse> {
+    topology_mutate(ControlRequest::TopologyLink {
+        a: a.to_string(),
+        b: b.to_string(),
+        caller_session_id: caller_session_id.map(str::to_string),
+    })
+}
+
+pub fn topology_unlink(
+    a: &str,
+    b: &str,
+    caller_session_id: Option<&str>,
+) -> io::Result<wardian_core::control::TopologyMutationResponse> {
+    topology_mutate(ControlRequest::TopologyUnlink {
+        a: a.to_string(),
+        b: b.to_string(),
+        caller_session_id: caller_session_id.map(str::to_string),
+    })
+}
+
+pub fn topology_ignore(
+    a: &str,
+    b: &str,
+    caller_session_id: Option<&str>,
+) -> io::Result<wardian_core::control::TopologyMutationResponse> {
+    topology_mutate(ControlRequest::TopologyIgnore {
+        a: a.to_string(),
+        b: b.to_string(),
+        caller_session_id: caller_session_id.map(str::to_string),
+    })
+}
+
+pub fn topology_unignore(
+    a: &str,
+    b: &str,
+    caller_session_id: Option<&str>,
+) -> io::Result<wardian_core::control::TopologyMutationResponse> {
+    topology_mutate(ControlRequest::TopologyUnignore {
+        a: a.to_string(),
+        b: b.to_string(),
+        caller_session_id: caller_session_id.map(str::to_string),
+    })
+}
+
+fn topology_mutate(
+    request: ControlRequest,
+) -> io::Result<wardian_core::control::TopologyMutationResponse> {
+    let runtime = build_runtime()?;
+    let value = timeout_block(
+        &runtime,
+        ControlOperation::TopologyMutate,
+        send_request(request),
+    )?;
+    serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))
 }
 
 pub fn agent_doctor(target: &str) -> io::Result<AgentDoctorResponse> {
@@ -638,6 +707,7 @@ pub fn send_message_with_delivery_and_scope_options(
         approval_action,
         target_scope,
         timeout,
+        orchestration,
     } = options;
     let runtime = build_runtime()?;
     let value = timeout_block(
@@ -653,6 +723,7 @@ pub fn send_message_with_delivery_and_scope_options(
             origin: current_message_origin(),
             target_scope: target_scope.map(str::to_string),
             headless_timeout_ms: Some(timeout.as_millis().try_into().unwrap_or(u64::MAX)),
+            orchestration,
         }),
     )?;
     serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))
@@ -724,6 +795,68 @@ pub fn submit_reply(
         }),
     )?;
     serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))
+}
+
+pub fn delivery_get(
+    interaction_id: &str,
+    evidence_limit: usize,
+) -> io::Result<NativeDeliveryInspectResponse> {
+    send_delivery_request(ControlRequest::DeliveryGet {
+        interaction_id: interaction_id.to_string(),
+        evidence_limit: Some(evidence_limit),
+    })
+}
+
+pub fn delivery_cancel(interaction_id: &str) -> io::Result<NativeDeliveryInspectResponse> {
+    send_delivery_request(ControlRequest::DeliveryCancel {
+        interaction_id: interaction_id.to_string(),
+    })
+}
+
+pub fn delivery_withdraw(interaction_id: &str) -> io::Result<NativeDeliveryInspectResponse> {
+    send_delivery_request(ControlRequest::DeliveryWithdraw {
+        interaction_id: interaction_id.to_string(),
+    })
+}
+
+pub fn delivery_replace(
+    interaction_id: &str,
+    message: &str,
+    idempotency_key: &str,
+    deadline_at: Option<String>,
+) -> io::Result<NativeDeliveryInspectResponse> {
+    send_delivery_request(ControlRequest::DeliveryReplace {
+        interaction_id: interaction_id.to_string(),
+        message: message.to_string(),
+        idempotency_key: idempotency_key.to_string(),
+        deadline_at,
+    })
+}
+
+pub fn delivery_capabilities(target: &str) -> io::Result<NativeDeliveryCapabilitiesResponse> {
+    let runtime = build_runtime()?;
+    let value = timeout_block(
+        &runtime,
+        ControlOperation::SendMessage {
+            requested: CONTROL_MUTATION_TIMEOUT,
+        },
+        send_request(ControlRequest::DeliveryCapabilities {
+            target: target.to_string(),
+        }),
+    )?;
+    serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))
+}
+
+fn send_delivery_request(request: ControlRequest) -> io::Result<NativeDeliveryInspectResponse> {
+    let runtime = build_runtime()?;
+    let value = timeout_block(
+        &runtime,
+        ControlOperation::SendMessage {
+            requested: CONTROL_MUTATION_TIMEOUT,
+        },
+        send_request(request),
+    )?;
+    serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))
 }
 
 pub fn wait_agent_until(target: &str, until: &str, timeout: Duration) -> io::Result<AgentIdentity> {
@@ -818,6 +951,7 @@ pub fn send_message_and_watch(
             tail_bytes: Some(4096),
             timeout: options.timeout,
             target_scope: options.target_scope,
+            orchestration: options.orchestration,
         },
     )
 }
@@ -829,9 +963,10 @@ pub fn ask_agent(
     condition: &str,
     tail_bytes: Option<usize>,
     timeout: Duration,
+    orchestration: Option<OrchestrationDeliveryOptions>,
 ) -> io::Result<AskAgentResponse> {
     if condition == "reply" {
-        return ask_agent_structured(target, message, thread, tail_bytes, timeout);
+        return ask_agent_structured(target, message, thread, tail_bytes, timeout, orchestration);
     }
     send_message_and_watch_condition_with_output_echo_guard(SendAndWatchRequest {
         target,
@@ -845,6 +980,7 @@ pub fn ask_agent(
         timeout,
         output_echo_guard: ask_prompt_echo_guard(condition, message),
         target_scope: None,
+        orchestration,
     })
 }
 
@@ -854,6 +990,7 @@ pub fn ask_agents(
     thread: Option<&str>,
     tail_bytes: Option<usize>,
     timeout: Duration,
+    orchestration: Option<OrchestrationDeliveryOptions>,
 ) -> io::Result<AskManyResponse> {
     let runtime = build_runtime()?;
     let value = timeout_block(
@@ -869,6 +1006,7 @@ pub fn ask_agents(
             tail_bytes,
             timeout_ms: Some(timeout.as_millis().try_into().unwrap_or(u64::MAX)),
             origin: current_message_origin(),
+            orchestration,
         }),
     )?;
     serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))
@@ -880,6 +1018,7 @@ fn ask_agent_structured(
     thread: Option<&str>,
     tail_bytes: Option<usize>,
     timeout: Duration,
+    orchestration: Option<OrchestrationDeliveryOptions>,
 ) -> io::Result<AskAgentResponse> {
     let runtime = build_runtime()?;
     let value = timeout_block(
@@ -895,6 +1034,7 @@ fn ask_agent_structured(
             tail_bytes,
             timeout_ms: Some(timeout.as_millis().try_into().unwrap_or(u64::MAX)),
             origin: current_message_origin(),
+            orchestration,
         }),
     )?;
     let response: AskResponse =
@@ -925,13 +1065,14 @@ fn send_message_and_watch_condition(
         timeout: options.timeout,
         output_echo_guard: None,
         target_scope: options.target_scope,
+        orchestration: options.orchestration,
     })
 }
 
 fn send_message_and_watch_condition_with_output_echo_guard(
     request: SendAndWatchRequest<'_>,
 ) -> io::Result<AskAgentResponse> {
-    let initial = agent_watch(
+    let mut initial = agent_watch(
         request.target,
         None,
         None,
@@ -945,7 +1086,7 @@ fn send_message_and_watch_condition_with_output_echo_guard(
         false,
         Duration::from_secs(5),
     )?;
-    let sent = send_message_with_delivery_and_scope_options(
+    let mut sent = send_message_with_delivery_and_scope_options(
         request.target,
         request.message,
         SendMessageDeliveryOptions {
@@ -955,9 +1096,44 @@ fn send_message_and_watch_condition_with_output_echo_guard(
             approval_action: request.approval_action,
             target_scope: request.target_scope,
             timeout: request.timeout,
+            orchestration: request.orchestration,
         },
     )?;
     let started_at = Instant::now();
+    if request.condition == "status:idle" {
+        if let Some(interaction_id) = native_provider_message_id(&sent.delivery).map(str::to_string)
+        {
+            let completed = wait_for_native_delivery(
+                &interaction_id,
+                remaining_watch_timeout(
+                    request.timeout,
+                    started_at,
+                    request.target,
+                    "native:completed",
+                )?,
+            )?;
+            for detail in &mut sent.delivery {
+                if detail.message_id.as_deref() == Some(interaction_id.as_str()) {
+                    detail.delivery_state = "provider_applied".to_string();
+                    detail.delivery_phase = Some("completed".to_string());
+                    detail.observed_state = Some("provider_turn_completed".to_string());
+                    detail.reason = Some(format!(
+                        "provider-confirmed native completion via {}",
+                        completed.record.transport
+                    ));
+                }
+            }
+            initial.agent.status = "idle".to_string();
+            initial.delivery.delivery = sent.delivery.clone();
+            return Ok(AskAgentResponse {
+                request_id: None,
+                reply: None,
+                delivery: sent.delivery,
+                watch_error: None,
+                watch: initial,
+            });
+        }
+    }
     let condition = effective_send_watch_condition(request.condition, &sent.delivery);
     let delivery_message_ids = live_delivery_message_ids(&sent.delivery);
     let condition_since =
@@ -994,6 +1170,46 @@ fn send_message_and_watch_condition_with_output_echo_guard(
         watch_error: None,
         watch,
     })
+}
+
+fn native_provider_message_id(delivery: &[DeliveryDetail]) -> Option<&str> {
+    delivery.iter().find_map(|detail| {
+        (detail.runtime_state == "native_provider_session"
+            && detail.delivery_state == "provider_accepted")
+            .then_some(detail.message_id.as_deref())
+            .flatten()
+    })
+}
+
+fn wait_for_native_delivery(
+    interaction_id: &str,
+    timeout: Duration,
+) -> io::Result<NativeDeliveryInspectResponse> {
+    let started_at = Instant::now();
+    loop {
+        let delivery = delivery_get(interaction_id, 64)?;
+        if delivery.record.phase == NativeDeliveryPhase::Completed {
+            return Ok(delivery);
+        }
+        if delivery.record.phase.is_terminal() {
+            return Err(io::Error::other(format!(
+                "native delivery {interaction_id} ended as {:?}: {}",
+                delivery.record.phase,
+                delivery
+                    .record
+                    .detail
+                    .as_deref()
+                    .unwrap_or("no provider detail")
+            )));
+        }
+        if started_at.elapsed() >= timeout {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                WatchTimeoutError::new(interaction_id, "native:completed", "unknown"),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1057,7 +1273,8 @@ fn operation_timeout(operation: &ControlOperation) -> Duration {
         | ControlOperation::WorkflowRun
         | ControlOperation::ArtifactPresent
         | ControlOperation::SubmitReply
-        | ControlOperation::NotifyCreate => CONTROL_MUTATION_TIMEOUT,
+        | ControlOperation::NotifyCreate
+        | ControlOperation::TopologyMutate => CONTROL_MUTATION_TIMEOUT,
         ControlOperation::SendMessage { requested } => watch_timeout_for(*requested),
         ControlOperation::AgentWorktreeList => CONTROL_GIT_DISCOVERY_TIMEOUT,
         ControlOperation::Ask { requested, .. } => watch_timeout_for(*requested),
@@ -1778,6 +1995,25 @@ mod tests {
         ];
 
         assert_eq!(live_delivery_message_ids(&delivery), vec!["msg_1", "int_2"]);
+    }
+
+    #[test]
+    fn native_provider_wait_anchors_to_the_exact_interaction() {
+        let delivery = vec![DeliveryDetail {
+            runtime_state: "native_provider_session".to_string(),
+            delivery_state: "provider_accepted".to_string(),
+            ..delivery_detail("ignored", Some("int_native"))
+        }];
+
+        assert_eq!(native_provider_message_id(&delivery), Some("int_native"));
+        assert_eq!(
+            native_provider_message_id(&[DeliveryDetail {
+                runtime_state: "headless_process".to_string(),
+                delivery_state: "provider_applied".to_string(),
+                ..delivery_detail("ignored", Some("int_headless"))
+            }]),
+            None
+        );
     }
 
     #[test]

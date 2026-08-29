@@ -11,8 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::Emitter;
 use wardian_core::engine::event::{Event, EventKind};
-use wardian_core::engine::store::{append_event, read_checkpoint, read_events, write_checkpoint};
-use wardian_core::engine::{Engine, RunStatus};
+use wardian_core::engine::store::{
+    append_event, read_blueprint_snapshot, read_checkpoint, read_events, write_checkpoint,
+};
+use wardian_core::engine::{Engine, RunState, RunStatus};
 use wardian_core::models::{
     AgentConfig, InvocationKind, WorkflowAssignments, WorkflowRoleAssignment,
 };
@@ -75,10 +77,12 @@ pub fn workflow_inbox_update_with_name(
 
     let events = read_events(run_root).unwrap_or_default();
     let summary = events.iter().rev().find_map(|event| match &event.kind {
-        EventKind::NodeCompleted { output, .. } => output
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .map(ToString::to_string),
+        EventKind::NodeCompleted { output, .. } | EventKind::DecisionCompleted { output, .. } => {
+            output
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
+        }
         _ => None,
     });
     let updated_at = events.last().map(|event| event.ts.clone());
@@ -106,6 +110,60 @@ pub fn emit_workflow_inbox_update_with_name(
     if let Some(update) = workflow_inbox_update_with_name(workflow_name, run_root) {
         let _ = app.emit(WORKFLOW_INBOX_UPDATED_EVENT, update);
     }
+}
+
+/// Persist a terminal failure when a detached execution task cannot start.
+///
+/// This path intentionally does not require a blueprint: the run has already
+/// recorded its startup event, and the failure must remain inspectable even if
+/// the execution lock is unavailable because a managed worktree is changing.
+pub fn mark_run_failed(run_root: &Path, message: impl Into<String>) -> Result<RunState, String> {
+    let message = message.into();
+    let mut state = read_checkpoint(run_root)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "workflow checkpoint is missing".to_string())?;
+    if state.status == RunStatus::Completed {
+        return Err("workflow run is already completed".to_string());
+    }
+    if state.status == RunStatus::Failed {
+        return Ok(state);
+    }
+    if state.status == RunStatus::AwaitingApproval {
+        return Ok(state);
+    }
+
+    let events = read_events(run_root).map_err(|error| error.to_string())?;
+    let event_next_seq =
+        Engine::validate_event_sequence(&events).map_err(|error| error.to_string())?;
+    if state.next_seq > event_next_seq {
+        return Err(format!(
+            "workflow checkpoint expects sequence {}, event log ends at {}",
+            state.next_seq,
+            event_next_seq.saturating_sub(1)
+        ));
+    }
+    if !events
+        .iter()
+        .any(|event| matches!(&event.kind, EventKind::RunFailed { error } if error == &message))
+    {
+        append_event(
+            run_root,
+            &Event::new(
+                event_next_seq,
+                EventKind::RunFailed {
+                    error: message.clone(),
+                },
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+        state.next_seq = event_next_seq + 1;
+    } else {
+        state.next_seq = event_next_seq;
+    }
+    state.status = RunStatus::Failed;
+    state.failure = Some(message);
+    write_checkpoint(run_root, &state).map_err(|error| error.to_string())?;
+    Ok(state)
 }
 
 /// Scan `<runs_dir>/<id>/<run>/state.json` for runs still marked Running.
@@ -146,19 +204,27 @@ pub fn fail_interrupted_runs(runs_dir: &Path) -> Vec<(String, String)> {
 
         for run in runs.flatten().filter(|entry| entry.path().is_dir()) {
             let run_root = run.path();
-            let Ok(Some(mut state)) = read_checkpoint(&run_root) else {
+            let Ok(Some(checkpoint)) = read_checkpoint(&run_root) else {
                 continue;
             };
-            if state.status != RunStatus::Running {
+            if checkpoint.status != RunStatus::Running {
                 continue;
             }
             let message = "workflow run interrupted by application restart".to_string();
-            let events = read_events(&run_root).unwrap_or_default();
-            let event_next_seq = events
-                .iter()
-                .map(|event| event.seq + 1)
-                .max()
-                .unwrap_or(state.next_seq);
+            let Ok(events) = read_events(&run_root) else {
+                continue;
+            };
+            let Some(mut state) = recover_interrupted_state(&checkpoint, &run_root, &events) else {
+                // Do not rewrite a run whose event log cannot be validated or
+                // whose immutable graph snapshot cannot be recovered.
+                continue;
+            };
+            if matches!(state.status, RunStatus::Completed | RunStatus::Failed) {
+                if write_checkpoint(&run_root, &state).is_ok() {
+                    interrupted.push((state.blueprint_id, state.run_id));
+                }
+                continue;
+            }
             let already_recorded = events.iter().any(|event| {
                 matches!(
                     &event.kind,
@@ -166,8 +232,11 @@ pub fn fail_interrupted_runs(runs_dir: &Path) -> Vec<(String, String)> {
                 )
             });
             if !already_recorded {
+                let Ok(event_next_seq) = Engine::validate_event_sequence(&events) else {
+                    continue;
+                };
                 let event = Event::new(
-                    state.next_seq,
+                    event_next_seq,
                     EventKind::RunFailed {
                         error: message.clone(),
                     },
@@ -177,7 +246,10 @@ pub fn fail_interrupted_runs(runs_dir: &Path) -> Vec<(String, String)> {
                 }
                 state.next_seq = event.seq + 1;
             } else {
-                state.next_seq = state.next_seq.max(event_next_seq);
+                let Ok(event_next_seq) = Engine::validate_event_sequence(&events) else {
+                    continue;
+                };
+                state.next_seq = event_next_seq;
             }
             state.status = RunStatus::Failed;
             state.failure = Some(message);
@@ -189,6 +261,36 @@ pub fn fail_interrupted_runs(runs_dir: &Path) -> Vec<(String, String)> {
     }
 
     interrupted
+}
+
+fn recover_interrupted_state(
+    checkpoint: &wardian_core::engine::RunState,
+    run_root: &Path,
+    events: &[Event],
+) -> Option<wardian_core::engine::RunState> {
+    if let Ok(Some(snapshot)) = read_blueprint_snapshot(run_root) {
+        return Engine::replay(&snapshot, run_root).ok();
+    }
+    if run_root.join("blueprint.json").exists() {
+        return None;
+    }
+    if let Some(path) = wardian_core::workflow::resolve_blueprint_path(&checkpoint.blueprint_id) {
+        if let Ok(blueprint) = wardian_core::workflow::parse_file(&path) {
+            return Engine::replay(&blueprint, run_root).ok();
+        }
+        return None;
+    }
+
+    // Pre-snapshot runs may have no graph available. Preserve their checkpoint
+    // state, but still validate the append-only sequence and advance to the
+    // actual log tail before appending the restart failure.
+    let event_next_seq = Engine::validate_event_sequence(events).ok()?;
+    if checkpoint.next_seq > event_next_seq {
+        return None;
+    }
+    let mut state = checkpoint.clone();
+    state.next_seq = event_next_seq;
+    Some(state)
 }
 
 /// Build the live executor for a run in `workspace` with `default_provider`.
@@ -242,12 +344,13 @@ pub fn live_executor_with_catalog_and_app(
 ) -> LiveStepExecutor {
     LiveStepExecutor::new_with_live_runner(
         Arc::new(TauriHeadlessAgentRunner::new(app.clone())),
-        Some(Arc::new(TauriLiveAgentRunner::new(app))),
+        Some(Arc::new(TauriLiveAgentRunner::new(app.clone()))),
         workspace,
         default_provider,
         bindings,
         agent_catalog,
     )
+    .with_notification_app(app)
 }
 
 pub fn live_executor_with_catalog_assignments_and_app(
@@ -260,13 +363,14 @@ pub fn live_executor_with_catalog_assignments_and_app(
 ) -> LiveStepExecutor {
     LiveStepExecutor::new_with_assignments_and_live_runner(
         Arc::new(TauriHeadlessAgentRunner::new(app.clone())),
-        Some(Arc::new(TauriLiveAgentRunner::new(app))),
+        Some(Arc::new(TauriLiveAgentRunner::new(app.clone()))),
         workspace,
         default_provider,
         bindings,
         assignments,
         agent_catalog,
     )
+    .with_notification_app(app)
 }
 
 fn invocation_path(run_root: &Path) -> PathBuf {
@@ -674,7 +778,18 @@ pub async fn drive_started_run_with_catalog_assignments_and_memory_principal(
     memory_principal: Option<String>,
 ) -> Result<(), String> {
     let _headless_execution =
-        wardian_core::workflow_execution_lock::acquire_headless_execution_guard()?;
+        match wardian_core::workflow_execution_lock::acquire_headless_execution_guard() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let message = format!("workflow execution could not start: {error}");
+                if let Err(persist_error) = mark_run_failed(&run_root, &message) {
+                    return Err(format!(
+                        "{message}; failed to persist terminal failure: {persist_error}"
+                    ));
+                }
+                return Err(message);
+            }
+        };
     let owner_id = format!("{}/{}", blueprint.id, state.run_id);
     let exec = if let Some(app) = app {
         live_executor_with_catalog_assignments_and_app(
@@ -735,7 +850,18 @@ pub async fn drive_resume_with_catalog(
     agent_catalog: HashMap<String, AgentBinding>,
 ) -> Result<(), String> {
     let _headless_execution =
-        wardian_core::workflow_execution_lock::acquire_headless_execution_guard()?;
+        match wardian_core::workflow_execution_lock::acquire_headless_execution_guard() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let message = format!("workflow resume could not start: {error}");
+                if let Err(persist_error) = mark_run_failed(&run_root, &message) {
+                    return Err(format!(
+                        "{message}; failed to persist terminal failure: {persist_error}"
+                    ));
+                }
+                return Err(message);
+            }
+        };
     let assignments = wardian_core::workflow::assignment::normalize_assignments(
         None,
         &bindings,
@@ -775,7 +901,11 @@ pub async fn drive_resume_with_catalog(
 mod tests {
     use super::*;
     use std::sync::MutexGuard;
-    use wardian_core::engine::{event::EventKind, store::read_events, RunState, RunStatus};
+    use wardian_core::engine::{
+        event::EventKind,
+        store::{read_checkpoint, read_events},
+        RunState, RunStatus,
+    };
     use wardian_core::models::{AgentConversationMode, BusyPolicy, WorkflowRoleAssignment};
 
     const INVOKER_BLUEPRINT: &str = r#"---
@@ -856,6 +986,26 @@ edges:
         script
     }
 
+    const EXECUTOR_BLUEPRINT: &str = r#"---
+schema: 2
+id: executor
+name: Executor
+nodes:
+  - id: trigger-1
+    type: manual_trigger
+  - id: plan
+    type: task
+    fields:
+      agent: role:coder
+      prompt: Return a tiny plan
+edges:
+  - from: trigger-1
+    to: plan
+---
+
+# Executor
+"#;
+
     #[test]
     fn scan_interrupted_marks_running_runs() {
         let dir = tempfile::tempdir().unwrap();
@@ -915,6 +1065,28 @@ edges:
         let update = workflow_inbox_update(&blueprint, &run_root).unwrap();
         assert_eq!(update.status, "failed");
         assert_eq!(update.error.as_deref(), Some("approval rejected"));
+    }
+
+    #[test]
+    fn mark_run_failed_persists_detached_start_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_root = dir.path().join("wf").join("run-1");
+        let blueprint = wardian_core::workflow::parse::parse_str(INVOKER_BLUEPRINT).unwrap();
+        Engine::initialize_with_id(&blueprint, "run-1", serde_json::json!({}), &run_root).unwrap();
+
+        let state =
+            mark_run_failed(&run_root, "workflow execution could not start: lock busy").unwrap();
+
+        assert_eq!(state.status, RunStatus::Failed);
+        assert_eq!(state.next_seq, 2);
+        assert_eq!(
+            state.failure.as_deref(),
+            Some("workflow execution could not start: lock busy")
+        );
+        assert!(matches!(
+            read_events(&run_root).unwrap().last().map(|event| &event.kind),
+            Some(EventKind::RunFailed { error }) if error == "workflow execution could not start: lock busy"
+        ));
     }
 
     #[test]
@@ -979,6 +1151,57 @@ edges:
             .unwrap();
         assert_eq!(state.next_seq, 1);
         assert_eq!(state.status, RunStatus::Failed);
+    }
+
+    #[test]
+    fn fail_interrupted_runs_folds_event_tail_before_appending_restart_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_root = dir.path().join("wf").join("run-1");
+        let blueprint = wardian_core::workflow::parse::parse_str(
+            r#"---
+schema: 2
+id: wf
+name: Workflow
+nodes:
+  - id: trigger
+    type: manual_trigger
+edges: []
+---
+
+# Workflow
+"#,
+        )
+        .unwrap();
+        Engine::initialize_with_id(&blueprint, "run-1", serde_json::json!({}), &run_root).unwrap();
+        append_event(
+            &run_root,
+            &Event::new(
+                1,
+                EventKind::NodeCompleted {
+                    node: "trigger".into(),
+                    output: serde_json::json!({"recovered": true}),
+                },
+            ),
+        )
+        .unwrap();
+
+        let interrupted = fail_interrupted_runs(dir.path());
+
+        assert_eq!(interrupted, vec![("wf".to_string(), "run-1".to_string())]);
+        let state = wardian_core::engine::store::read_checkpoint(&run_root)
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.status, RunStatus::Failed);
+        assert_eq!(state.next_seq, 3);
+        assert_eq!(
+            state.registry["nodes"]["trigger"]["output"]["recovered"],
+            true
+        );
+        let events = read_events(&run_root).unwrap();
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
     }
 
     #[test]
@@ -1048,6 +1271,43 @@ edges:
             events.first().map(|event| &event.kind),
             Some(EventKind::RunStarted { .. })
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_provider_drives_a_workflow_run_to_completion() {
+        let home = tempfile::tempdir().unwrap();
+        let workflows_dir = home.path().join("library").join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        let blueprint_path = workflows_dir.join("executor.md");
+        std::fs::write(&blueprint_path, EXECUTOR_BLUEPRINT).unwrap();
+
+        let _env = EnvGuard::set(home.path(), &mock_script_path());
+        let blueprint = wardian_core::workflow::parse_file(&blueprint_path).unwrap();
+        let report = wardian_core::workflow::validate(&blueprint);
+        assert!(report.is_valid(), "diagnostics: {:?}", report.diagnostics);
+
+        let run_id = wardian_core::engine::driver::new_run_id();
+        let run_root = wardian_core::paths::workflow_run_dir(&blueprint.id, &run_id).unwrap();
+        drive_new_run(
+            blueprint,
+            run_id,
+            run_root.clone(),
+            home.path().to_path_buf(),
+            "mock".into(),
+            serde_json::json!({}),
+            HashMap::new(),
+        )
+        .await
+        .unwrap();
+
+        let state = read_checkpoint(&run_root).unwrap().unwrap();
+        assert_eq!(state.status, RunStatus::Completed);
+        assert!(run_root.join("events.jsonl").is_file());
+        assert!(state.node_output("plan").is_some());
+        assert!(read_events(&run_root)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::NodeCompleted { ref node, .. } if node == "plan")));
     }
 
     #[tokio::test(flavor = "current_thread")]

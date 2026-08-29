@@ -17,6 +17,6 @@ pub use error::{EngineError, Result, StepError};
 pub use event::{Event, EventKind};
 pub use executor::{
     AgentTaskRequest, ChosenPort, DecisionRequest, MemoryCommitRequest, MockExecutor,
-    NotifyRequest, ScriptRequest, ShellRequest, StateRequest, StepExecutor, StepOutput,
+    NotifyRequest, ScriptRequest, ShellRequest, StepExecutor, StepOutput,
 };
 pub use state::{NodeStatus, RunState, RunStatus};

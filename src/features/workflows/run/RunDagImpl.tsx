@@ -188,7 +188,8 @@ function outputPorts(node: BlueprintNode, ports: PortDef[], dynamicField?: strin
   if (!dynamicField) return portsFor(ports);
   const dynamic = node.fields?.[dynamicField];
   if (!Array.isArray(dynamic)) return portsFor(ports);
-  return dynamic.map((port) => ({ id: String(port), label: String(port) }));
+  return [...new Set(dynamic.filter((port): port is string => typeof port === 'string' && port.length > 0))]
+    .map((port) => ({ id: port, label: port }));
 }
 
 function renderHandles(type: 'source' | 'target', ports: { id: string; label: string }[], position: Position) {

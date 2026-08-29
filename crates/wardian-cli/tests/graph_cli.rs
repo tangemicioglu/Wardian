@@ -232,96 +232,25 @@ fn show_pretty_is_human_readable() {
 
 use wardian_core::topology::load_topology;
 
-#[test]
-fn link_in_session_defaults_to_self_and_persists() {
-    let home = seed_home();
-    let body = stdout_json(&run_graph(&home, Some("uuid-1"), &["link", "fork-coder"]));
-
-    assert_eq!(body["action"], "link");
-    assert_eq!(body["changed"], true);
-    assert_eq!(body["a"], "uuid-1");
-    assert_eq!(body["b"], "uuid-3");
-
-    let topology = load_topology(home.path());
-    assert!(topology.neighbors("uuid-1").contains(&"uuid-3".to_string()));
-}
-
-#[test]
-fn link_is_idempotent_with_changed_false() {
-    let home = seed_home();
-    // uuid-1 <-> uuid-2 already exists from seeding.
-    let body = stdout_json(&run_graph(&home, Some("uuid-1"), &["link", "architect-a1"]));
-    assert_eq!(body["changed"], false);
-}
-
-#[test]
-fn link_in_session_rejects_foreign_pair() {
-    let home = seed_home();
-    let output = run_graph(&home, Some("uuid-1"), &["link", "uuid-2", "uuid-3"]);
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("self_serve_required"));
-    // Nothing was written.
-    assert_eq!(load_topology(home.path()).edges.len(), 1);
-}
-
-#[test]
-fn link_outside_session_allows_any_pair_but_requires_two_args() {
-    let home = seed_home();
-    let output = run_graph(&home, None, &["link", "uuid-2"]);
-    assert_eq!(output.status.code(), Some(1));
-
-    let body = stdout_json(&run_graph(&home, None, &["link", "uuid-2", "uuid-3"]));
-    assert_eq!(body["changed"], true);
-    assert_eq!(load_topology(home.path()).edges.len(), 2);
-}
-
-#[test]
-fn stale_session_fails_closed() {
-    let home = seed_home();
-    let output = run_graph(&home, Some("uuid-gone"), &["link", "uuid-2", "uuid-3"]);
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(load_topology(home.path()).edges.len(), 1);
-}
-
-#[test]
-fn unlink_removes_edge_and_reports_not_linked_as_unchanged() {
-    let home = seed_home();
-    let body = stdout_json(&run_graph(
-        &home,
-        Some("uuid-1"),
-        &["unlink", "architect-a1"],
-    ));
-    assert_eq!(body["changed"], true);
-    assert!(load_topology(home.path()).edges.is_empty());
-
-    let body = stdout_json(&run_graph(
-        &home,
-        Some("uuid-1"),
-        &["unlink", "architect-a1"],
-    ));
-    assert_eq!(body["changed"], false);
-}
-
-#[test]
-fn ignore_and_unignore_roundtrip() {
-    let home = seed_home();
-    let body = stdout_json(&run_graph(&home, Some("uuid-1"), &["ignore", "fork-coder"]));
-    assert_eq!(body["changed"], true);
-    assert!(load_topology(home.path()).is_ignored("uuid-1", "uuid-3"));
-
-    // Ignored pair no longer appears as unmapped.
-    let show = stdout_json(&run_graph(&home, None, &["show"]));
-    assert_eq!(show["unmapped_pairs"].as_array().unwrap().len(), 0);
-
-    let body = stdout_json(&run_graph(
-        &home,
-        Some("uuid-1"),
-        &["unignore", "fork-coder"],
-    ));
-    assert_eq!(body["changed"], true);
-    assert!(!load_topology(home.path()).is_ignored("uuid-1", "uuid-3"));
-}
+// Mutations (link/unlink/ignore/unignore) now route through the control
+// plane: topology.json's sole writer is the running Wardian app, and it is
+// the sole authority on whether a caller may edit a given pair (see
+// crates/wardian-core/src/topology.rs's `authorize_topology_mutation_v1` and
+// crate::commands::topology::dispatch_topology_mutation in src-tauri). These
+// CLI-subprocess tests can no longer exercise a real mutation or the
+// self-serve/stale-session authorization decision, because there is no
+// running app for the CLI to connect to here — the same reason
+// `agent delete` is only tested for its `app_not_running` path at this layer
+// (see forced_delete_without_app_running_exits_six in agent_cli.rs).
+//
+// What's covered where:
+// - Argument/name resolution and other purely local validation: below.
+// - Authorization (self-serve, stale session, operator, team coordinator)
+//   and the #1032 unlink/team-reseed regression: src-tauri/src/control.rs's
+//   `topology_control_*` tests, which exercise the exact same dispatcher
+//   function through an in-process mock app.
+// - End-to-end CLI mutation against a real running app:
+//   e2e-native/tests/topology-cli-native.test.mjs.
 
 #[test]
 fn link_unknown_agent_exits_two() {
@@ -338,14 +267,78 @@ fn link_self_exits_one() {
 }
 
 #[test]
-fn link_creates_topology_file_on_fresh_home() {
-    let dir = TempDir::new().unwrap();
-    let conn = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
-    run_migrations(&conn).unwrap();
-    seed_agent(&conn, "uuid-1", "coder-a1", "D:/ws");
-    seed_agent(&conn, "uuid-2", "architect-a1", "D:/ws");
+fn link_outside_session_requires_two_args() {
+    let home = seed_home();
+    let output = run_graph(&home, None, &["link", "uuid-2"]);
+    assert_eq!(output.status.code(), Some(1));
+    // Nothing was written; the missing-arg error is purely local.
+    assert_eq!(load_topology(home.path()).edges.len(), 1);
+}
 
-    let body = stdout_json(&run_graph(&dir, None, &["link", "uuid-1", "uuid-2"]));
-    assert_eq!(body["changed"], true);
-    assert!(dir.path().join("topology.json").exists());
+#[test]
+fn stale_session_fails_closed_without_reaching_the_app() {
+    let home = seed_home();
+    let output = run_graph(&home, Some("uuid-gone"), &["link", "uuid-2", "uuid-3"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains(r#""code":"not_found""#), "stderr: {stderr}");
+    // Nothing was written.
+    assert_eq!(load_topology(home.path()).edges.len(), 1);
+}
+
+#[test]
+fn link_without_running_app_reports_app_not_running() {
+    let home = seed_home();
+    let output = run_graph(&home, Some("uuid-1"), &["link", "fork-coder"]);
+    assert_eq!(output.status.code(), Some(6));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(r#""code":"app_not_running""#),
+        "stderr: {stderr}"
+    );
+    assert_eq!(load_topology(home.path()).edges.len(), 1);
+}
+
+#[test]
+fn unlink_without_running_app_reports_app_not_running() {
+    let home = seed_home();
+    let output = run_graph(&home, Some("uuid-1"), &["unlink", "architect-a1"]);
+    assert_eq!(output.status.code(), Some(6));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(r#""code":"app_not_running""#),
+        "stderr: {stderr}"
+    );
+    assert_eq!(load_topology(home.path()).edges.len(), 1);
+}
+
+#[test]
+fn ignore_without_running_app_reports_app_not_running() {
+    let home = seed_home();
+    let output = run_graph(&home, Some("uuid-1"), &["ignore", "fork-coder"]);
+    assert_eq!(output.status.code(), Some(6));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(r#""code":"app_not_running""#),
+        "stderr: {stderr}"
+    );
+    assert!(!load_topology(home.path()).is_ignored("uuid-1", "uuid-3"));
+}
+
+#[test]
+fn unignore_without_running_app_reports_app_not_running() {
+    let home = seed_home();
+    let mut topology = Topology::default();
+    topology.add_edge("uuid-1", "uuid-2", "2026-07-03T08:00:00Z");
+    topology.ignore_pair("uuid-1", "uuid-3");
+    save_topology(home.path(), &topology).unwrap();
+
+    let output = run_graph(&home, Some("uuid-1"), &["unignore", "fork-coder"]);
+    assert_eq!(output.status.code(), Some(6));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(r#""code":"app_not_running""#),
+        "stderr: {stderr}"
+    );
+    assert!(load_topology(home.path()).is_ignored("uuid-1", "uuid-3"));
 }

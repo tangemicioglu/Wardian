@@ -10,6 +10,9 @@ use crate::control::{
     MessageInputMode, MessageOrigin, ProviderInputReadiness, ProviderInputState,
     ProviderReadyEvidence, QueuePolicy, ReplyStatus, StructuredReply,
 };
+use crate::native_transport::{
+    NativeDeliveryEvidence, NativeDeliveryRecord, NativeMessageOperation, NativeSessionBinding,
+};
 
 static DB_CONN: Lazy<Arc<Mutex<Option<Connection>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
 
@@ -224,6 +227,63 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             source_session_id TEXT,
             replied_at TEXT NOT NULL
         )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS native_deliveries (
+            interaction_id TEXT PRIMARY KEY,
+            target_agent_id TEXT NOT NULL,
+            sender_agent_id TEXT,
+            operation TEXT NOT NULL,
+            caller_idempotency_key TEXT,
+            canonical_hash TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            phase TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_native_delivery_idempotency
+         ON native_deliveries(
+            COALESCE(sender_agent_id, ''), target_agent_id, operation, caller_idempotency_key
+         )
+         WHERE caller_idempotency_key IS NOT NULL",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_native_delivery_queue
+         ON native_deliveries(target_agent_id, phase, created_at, interaction_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS native_session_bindings (
+            target_agent_id TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            transport TEXT NOT NULL,
+            binding_json TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY(target_agent_id, generation)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS native_delivery_evidence (
+            event_id TEXT PRIMARY KEY,
+            interaction_id TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            FOREIGN KEY(interaction_id) REFERENCES native_deliveries(interaction_id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_native_delivery_evidence_interaction
+         ON native_delivery_evidence(interaction_id, observed_at, event_id)",
         [],
     )?;
 
@@ -512,6 +572,20 @@ fn delete_agent_with_conn(conn: &mut Connection, session_id: &str) -> rusqlite::
         "DELETE FROM interaction_events WHERE session_id = ?1",
         params![session_id],
     )?;
+    transaction.execute(
+        "DELETE FROM native_delivery_evidence WHERE interaction_id IN (
+            SELECT interaction_id FROM native_deliveries WHERE target_agent_id = ?1 OR sender_agent_id = ?1
+         )",
+        params![session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM native_deliveries WHERE target_agent_id = ?1 OR sender_agent_id = ?1",
+        params![session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM native_session_bindings WHERE target_agent_id = ?1",
+        params![session_id],
+    )?;
     for interaction_id in interaction_ids {
         transaction.execute(
             "DELETE FROM mailbox_messages WHERE interaction_id = ?1",
@@ -527,6 +601,14 @@ fn delete_agent_with_conn(conn: &mut Connection, session_id: &str) -> rusqlite::
         )?;
         transaction.execute(
             "DELETE FROM interaction_events WHERE interaction_id = ?1",
+            params![interaction_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM native_delivery_evidence WHERE interaction_id = ?1",
+            params![interaction_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM native_deliveries WHERE interaction_id = ?1",
             params![interaction_id],
         )?;
         transaction.execute(
@@ -1188,6 +1270,233 @@ pub fn delete_provider_input_state(session_id: &str) -> Result<(), Box<dyn std::
     })
 }
 
+pub fn upsert_native_delivery(
+    record: &NativeDeliveryRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+    get_db_conn(|conn| upsert_native_delivery_with_conn(conn, record).map_err(Into::into))
+}
+
+pub fn upsert_native_delivery_with_conn(
+    conn: &Connection,
+    record: &NativeDeliveryRecord,
+) -> rusqlite::Result<()> {
+    let record_json = serde_json::to_string(record).map_err(to_sql_error)?;
+    conn.execute(
+        "INSERT INTO native_deliveries (
+            interaction_id, target_agent_id, sender_agent_id, operation,
+            caller_idempotency_key, canonical_hash, generation, phase,
+            record_json, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(interaction_id) DO UPDATE SET
+            target_agent_id = excluded.target_agent_id,
+            sender_agent_id = excluded.sender_agent_id,
+            operation = excluded.operation,
+            caller_idempotency_key = excluded.caller_idempotency_key,
+            canonical_hash = excluded.canonical_hash,
+            generation = excluded.generation,
+            phase = excluded.phase,
+            record_json = excluded.record_json,
+            updated_at = excluded.updated_at",
+        params![
+            record.envelope.interaction_id,
+            record.envelope.target_agent_id,
+            record.envelope.sender_agent_id,
+            enum_value(&record.envelope.operation)?,
+            record.envelope.caller_idempotency_key,
+            record.canonical_hash,
+            record.envelope.generation as i64,
+            enum_value(&record.phase)?,
+            record_json,
+            record.created_at,
+            record.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn replace_native_delivery(
+    superseded: &NativeDeliveryRecord,
+    replacement: &NativeDeliveryRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        let transaction = conn.unchecked_transaction()?;
+        upsert_native_delivery_with_conn(&transaction, superseded)?;
+        upsert_native_delivery_with_conn(&transaction, replacement)?;
+        transaction.commit()?;
+        Ok(())
+    })
+}
+
+pub fn native_delivery(
+    interaction_id: &str,
+) -> Result<Option<NativeDeliveryRecord>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| native_delivery_with_conn(conn, interaction_id).map_err(Into::into))
+}
+
+pub fn native_delivery_with_conn(
+    conn: &Connection,
+    interaction_id: &str,
+) -> rusqlite::Result<Option<NativeDeliveryRecord>> {
+    conn.query_row(
+        "SELECT record_json FROM native_deliveries WHERE interaction_id = ?1",
+        params![interaction_id],
+        |row| {
+            let json: String = row.get(0)?;
+            serde_json::from_str(&json).map_err(to_sql_error)
+        },
+    )
+    .optional()
+}
+
+pub fn native_delivery_by_idempotency(
+    sender_agent_id: Option<&str>,
+    target_agent_id: &str,
+    operation: NativeMessageOperation,
+    caller_idempotency_key: &str,
+) -> Result<Option<NativeDeliveryRecord>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        let operation = enum_value(&operation)?;
+        conn.query_row(
+            "SELECT record_json FROM native_deliveries
+             WHERE COALESCE(sender_agent_id, '') = COALESCE(?1, '')
+               AND target_agent_id = ?2
+               AND operation = ?3
+               AND caller_idempotency_key = ?4",
+            params![
+                sender_agent_id,
+                target_agent_id,
+                operation,
+                caller_idempotency_key
+            ],
+            |row| {
+                let json: String = row.get(0)?;
+                serde_json::from_str(&json).map_err(to_sql_error)
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    })
+}
+
+pub fn list_native_deliveries_for_target(
+    target_agent_id: &str,
+    limit: usize,
+) -> Result<Vec<NativeDeliveryRecord>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT record_json FROM native_deliveries
+             WHERE target_agent_id = ?1
+             ORDER BY created_at DESC, interaction_id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![target_agent_id, limit as i64], |row| {
+            let json: String = row.get(0)?;
+            serde_json::from_str(&json).map_err(to_sql_error)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+pub fn list_native_deliveries(
+    limit: usize,
+) -> Result<Vec<NativeDeliveryRecord>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT record_json FROM native_deliveries
+             ORDER BY created_at ASC, interaction_id ASC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            let json: String = row.get(0)?;
+            serde_json::from_str(&json).map_err(to_sql_error)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+pub fn upsert_native_session_binding(
+    binding: &NativeSessionBinding,
+) -> Result<(), Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        let json = serde_json::to_string(binding).map_err(to_sql_error)?;
+        conn.execute(
+            "INSERT INTO native_session_bindings (
+                target_agent_id, generation, provider, transport, binding_json, observed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(target_agent_id, generation) DO UPDATE SET
+                provider = excluded.provider,
+                transport = excluded.transport,
+                binding_json = excluded.binding_json,
+                observed_at = excluded.observed_at",
+            params![
+                binding.target_agent_id,
+                binding.generation as i64,
+                binding.provider,
+                binding.transport,
+                json,
+                binding.observed_at,
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn latest_native_session_binding(
+    target_agent_id: &str,
+) -> Result<Option<NativeSessionBinding>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        conn.query_row(
+            "SELECT binding_json FROM native_session_bindings
+             WHERE target_agent_id = ?1 ORDER BY generation DESC LIMIT 1",
+            params![target_agent_id],
+            |row| {
+                let json: String = row.get(0)?;
+                serde_json::from_str(&json).map_err(to_sql_error)
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    })
+}
+
+pub fn append_native_delivery_evidence(
+    event_id: &str,
+    evidence: &NativeDeliveryEvidence,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        let json = serde_json::to_string(evidence).map_err(to_sql_error)?;
+        let inserted = conn.execute(
+            "INSERT OR IGNORE INTO native_delivery_evidence (
+                event_id, interaction_id, phase, evidence_json, observed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                event_id,
+                evidence.interaction_id,
+                enum_value(&evidence.phase)?,
+                json,
+                evidence.observed_at,
+            ],
+        )?;
+        Ok(inserted == 1)
+    })
+}
+
+pub fn list_native_delivery_evidence(
+    interaction_id: &str,
+    limit: usize,
+) -> Result<Vec<NativeDeliveryEvidence>, Box<dyn std::error::Error>> {
+    get_db_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT evidence_json FROM native_delivery_evidence
+             WHERE interaction_id = ?1
+             ORDER BY observed_at ASC, event_id ASC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![interaction_id, limit as i64], |row| {
+            let json: String = row.get(0)?;
+            serde_json::from_str(&json).map_err(to_sql_error)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
 fn enum_value<T: serde::Serialize>(value: &T) -> rusqlite::Result<String> {
     serde_json::to_value(value)
         .map_err(to_sql_error)?
@@ -1788,6 +2097,9 @@ mod tests {
             "interaction_events",
             "provider_input_state",
             "structured_replies",
+            "native_deliveries",
+            "native_session_bindings",
+            "native_delivery_evidence",
         ] {
             let count: i64 = conn
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -1817,6 +2129,9 @@ mod interaction_tests {
             "interaction_events",
             "provider_input_state",
             "structured_replies",
+            "native_deliveries",
+            "native_session_bindings",
+            "native_delivery_evidence",
         ] {
             let count: i64 = conn
                 .query_row(

@@ -38,7 +38,7 @@ New module `src-tauri/src/workflow/` with `LiveStepExecutor` implementing `wardi
 - **`run_shell`** — run `command` in the run workspace cwd via the existing shell util; return `{exit_code, stdout, stderr}`. (No sandbox — local, author-controlled; documented.)
 - **`run_script`** — run `runtime` (`python`/`node`/`sh`) on `path` in the workspace; capture output like shell.
 - **`notify`** — fire an app notification (`tauri-plugin-notification`) and write a run-log line.
-- **`state_op`** — apply `op` (`set`/`merge`/`delete`) with `entries` to the run's `{{storage}}` in the engine `RunState` registry that interpolation reads. (Exact op set pinned in the plan against the engine's storage model.)
+- **`state`** — the deterministic engine applies `get`/`set`/`merge`/`delete` to the run's `{{storage}}` registry and records mutations as replayable events. It is not delegated to the live executor.
 
 **Testability boundary:** the executor calls agents through a small internal `AgentRunner` trait (one method: run a prompt headlessly → response). The real impl wraps `run_headless`; unit tests inject a fake so they never spawn a provider. This keeps the executor logic (resolution, parsing, decision constraint) unit-testable in isolation.
 
@@ -51,7 +51,7 @@ New module `src-tauri/src/workflow/` with `LiveStepExecutor` implementing `wardi
 - **`workflow_run(path)`** — load + validate the blueprint (refuse to run if invalid), build a `LiveStepExecutor`, generate a `run_id`, set `run_root = paths::workflow_run_dir(bp.id, run_id)`, and drive `Engine::start_with_id` in a **background tokio task**. Returns the `run_id` immediately; the run proceeds async, writing `events.jsonl` + `state.json` that **Run View (3b) already observes live**.
 - **Approval** — when the engine reaches `AwaitingApproval` it returns and the status persists. `workflow_approve(id, run, granted, note)` resumes via `Engine::grant_approval` / `reject_approval` in a new background task.
 - **`workflow_resume(id, run)`** — resume an explicitly selected durable run via `Engine::resume` (completed nodes skipped).
-- **`workflow_cancel(id, run)`** — abort a live run (cancel the background task; mark the run failed/stopped with a reason).
+- **`workflow_cancel(id, run)`** — write a durable cancellation marker. The driver consumes it at the next dispatch boundary and records the run as failed with a cancellation reason; a provider call already in progress completes first.
 - **Crash recovery** — on app start, scan `logs/workflows/**` for runs still marked `Running` and mark them **failed** with an interruption reason. The new app process no longer owns the old background tasks or provider processes, so startup does not silently resume or leave those runs displayed as active.
 
 ## 6. Testing

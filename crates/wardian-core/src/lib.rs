@@ -14,6 +14,7 @@ pub mod library;
 pub mod limits;
 pub mod memory;
 pub mod models;
+pub mod native_transport;
 pub mod paths;
 pub mod queue;
 pub mod schedule;

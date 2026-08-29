@@ -79,6 +79,17 @@ const blueprint: Blueprint = {
   edges: [{ from: 'task-1', to: 'branch-1', from_port: 'out', to_port: 'in' }],
 };
 
+const decisionBlueprint: Blueprint = {
+  schema: 2,
+  id: 'decision-wf',
+  name: 'Decision workflow',
+  nodes: [
+    { id: 'choose', type: 'decision', fields: { choices: ['yes', 'yes', 'no', 42] } },
+    { id: 'next', type: 'task', fields: {} },
+  ],
+  edges: [{ from: 'choose', to: 'next', from_port: 'yes', to_port: 'in' }],
+};
+
 describe('BuilderCanvas', () => {
   beforeEach(() => {
     fitViewMock.mockClear();
@@ -158,5 +169,21 @@ describe('BuilderCanvas', () => {
 
     fireEvent.contextMenu(screen.getByTestId('flow-edge-e0'), { clientX: 64, clientY: 96 });
     expect(onEdgeContextMenu).toHaveBeenCalledWith('e0', 64, 96);
+  });
+
+  it('deduplicates valid dynamic output handles while editing invalid choices', () => {
+    render(
+      <BuilderCanvas
+        blueprint={decisionBlueprint}
+        diagnostics={[]}
+        selectedNodeId={null}
+        onSelectNode={() => {}}
+        theme="dark"
+      />,
+    );
+
+    expect(screen.getAllByTestId('handle-yes')).toHaveLength(1);
+    expect(screen.getByTestId('handle-no')).toBeInTheDocument();
+    expect(screen.queryByTestId('handle-42')).toBeNull();
   });
 });

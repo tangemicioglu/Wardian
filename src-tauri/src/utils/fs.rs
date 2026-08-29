@@ -305,7 +305,29 @@ fn materialize_antigravity_include_projection(
     if target.exists() || target.symlink_metadata().is_ok() {
         remove_existing_projection_path(target)?;
     }
-    copy_dir_all_following_links(source, target).map_err(|e| e.to_string())
+    std::fs::create_dir_all(target).map_err(|error| error.to_string())?;
+
+    // Antigravity needs the instruction files at the include root and a real
+    // (non-junction) skills tree. Copying the whole agent root is unsafe: it
+    // contains `habitat/workspace`, which is a junction back to the workspace
+    // and can recursively copy the repository into its own projection.
+    let entries = std::fs::read_dir(source).map_err(|error| error.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let source_path = entry.path();
+        if source_path.is_file() {
+            std::fs::copy(&source_path, target.join(entry.file_name()))
+                .map_err(|error| error.to_string())?;
+        }
+    }
+
+    let skills_source = source.join(".agents").join("skills");
+    if skills_source.is_dir() {
+        let skills_target = target.join(".agents").join("skills");
+        copy_dir_all_following_links(&skills_source, &skills_target)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn path_has_hidden_component(path: &std::path::Path) -> bool {
@@ -1107,18 +1129,70 @@ fn copy_dir_all_following_links(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,
 ) -> std::io::Result<()> {
-    std::fs::create_dir_all(&dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let source = entry.path();
-        let target = dst.as_ref().join(entry.file_name());
-        if source.is_dir() {
-            copy_dir_all_following_links(&source, &target)?;
-        } else if source.is_file() {
-            std::fs::copy(&source, &target)?;
-        }
+    const MAX_DEPTH: usize = 32;
+    const MAX_ENTRIES: usize = 20_000;
+    const MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+    struct CopyState {
+        visited: std::collections::HashSet<std::path::PathBuf>,
+        entries: usize,
+        bytes: u64,
     }
-    Ok(())
+
+    fn copy_inner(
+        src: &std::path::Path,
+        dst: &std::path::Path,
+        depth: usize,
+        state: &mut CopyState,
+    ) -> std::io::Result<()> {
+        if depth > MAX_DEPTH {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Antigravity skill projection exceeded its directory depth limit",
+            ));
+        }
+        let canonical = std::fs::canonicalize(src)?;
+        if !state.visited.insert(canonical) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Antigravity skill projection contains a directory cycle",
+            ));
+        }
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            state.entries = state.entries.saturating_add(1);
+            if state.entries > MAX_ENTRIES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Antigravity skill projection exceeded its entry limit",
+                ));
+            }
+            let source = entry.path();
+            let target = dst.join(entry.file_name());
+            let metadata = std::fs::metadata(&source)?;
+            if metadata.is_dir() {
+                copy_inner(&source, &target, depth + 1, state)?;
+            } else if metadata.is_file() {
+                state.bytes = state.bytes.saturating_add(metadata.len());
+                if state.bytes > MAX_BYTES {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Antigravity skill projection exceeded its byte limit",
+                    ));
+                }
+                std::fs::copy(&source, &target)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut state = CopyState {
+        visited: std::collections::HashSet::new(),
+        entries: 0,
+        bytes: 0,
+    };
+    copy_inner(src.as_ref(), dst.as_ref(), 0, &mut state)
 }
 
 fn project_file(source: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
@@ -2087,6 +2161,38 @@ mod tests {
         assert!(
             std::fs::read_link(&projected_skill).is_err(),
             "projected skill must be a materialized directory, not a link back into hidden storage"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        if let Some(parent) = projected_path.parent().and_then(|path| path.parent()) {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn antigravity_include_projection_never_traverses_workspace_links() {
+        let root = unique_temp_dir("antigravity-workspace-link");
+        let hidden = root.join(".wardian");
+        let source = hidden.join("agents").join("agent-1");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(source.join(".agents").join("skills")).expect("create skills root");
+        std::fs::create_dir_all(source.join("habitat")).expect("create habitat root");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(workspace.join("must-not-copy.txt"), "workspace payload")
+            .expect("write workspace payload");
+        create_directory_link(&workspace, &source.join("habitat").join("workspace"))
+            .expect("link workspace into agent habitat");
+
+        let projected = project_antigravity_include_directories(
+            "session-workspace-link",
+            vec![source.to_string_lossy().to_string()],
+        );
+
+        let projected_path = PathBuf::from(&projected[0]);
+        assert!(projected_path.join(".agents").join("skills").is_dir());
+        assert!(
+            !projected_path.join("habitat").exists(),
+            "the projection must not copy or traverse the habitat workspace link"
         );
 
         let _ = std::fs::remove_dir_all(&root);

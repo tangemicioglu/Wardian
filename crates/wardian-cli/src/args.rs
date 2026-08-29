@@ -22,6 +22,7 @@ pub enum Command {
     Telemetry(TelemetryArgs),
     Graph(GraphArgs),
     Send(SendArgs),
+    Delivery(DeliveryArgs),
     Notify(NotifyArgs),
     Ask(AskArgs),
     Reply(ReplyArgs),
@@ -1045,6 +1046,67 @@ pub struct SendArgs {
     /// Target resolution scope for broadcast/class targets: neighbors (default) or all
     #[arg(long, value_parser = ["neighbors", "all"], default_value = "neighbors")]
     pub scope: String,
+
+    /// Caller-owned key used to make a delivery request idempotent.
+    #[arg(long = "idempotency-key")]
+    pub idempotency_key: Option<String>,
+
+    /// Absolute RFC3339 deadline after which queued delivery expires.
+    #[arg(long, conflicts_with = "expires_in")]
+    pub deadline: Option<String>,
+
+    /// Relative delivery lifetime, for example 30s or 5m.
+    #[arg(long = "expires-in", conflicts_with = "deadline")]
+    pub expires_in: Option<String>,
+
+    /// Reject delivery unless the target is still on this Wardian generation.
+    #[arg(long = "expected-generation")]
+    pub expected_generation: Option<u64>,
+
+    /// Exceptionally steer an active turn because its premise is invalid.
+    #[arg(long = "invalidate-premise")]
+    pub invalidate_premise: bool,
+}
+
+// ---------------------------------------------------------------------------
+// wardian delivery
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Args)]
+pub struct DeliveryArgs {
+    #[command(subcommand)]
+    pub command: DeliveryCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DeliveryCommand {
+    /// Show the durable delivery projection and bounded evidence history.
+    Show {
+        interaction_id: String,
+        #[arg(long, default_value_t = 100)]
+        evidence_limit: usize,
+    },
+    /// Request provider cancellation for submitted work.
+    Cancel { interaction_id: String },
+    /// Withdraw work that has not crossed the provider submission boundary.
+    Withdraw { interaction_id: String },
+    /// Atomically supersede queued work with a new message.
+    Replace {
+        interaction_id: String,
+        message: Option<String>,
+        #[arg(long, conflicts_with = "message")]
+        stdin: bool,
+        #[arg(long, conflicts_with_all = ["message", "stdin"])]
+        file: Option<String>,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: String,
+        #[arg(long, conflicts_with = "expires_in")]
+        deadline: Option<String>,
+        #[arg(long = "expires-in", conflicts_with = "deadline")]
+        expires_in: Option<String>,
+    },
+    /// Show native transport capabilities for a Wardian agent.
+    Capabilities { target: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1099,6 +1161,26 @@ pub struct AskArgs {
     /// Thread name for grouped conversations
     #[arg(long)]
     pub thread: Option<String>,
+
+    /// Caller-owned key used to make a delivery request idempotent.
+    #[arg(long = "idempotency-key")]
+    pub idempotency_key: Option<String>,
+
+    /// Absolute RFC3339 deadline after which queued delivery expires.
+    #[arg(long, conflicts_with = "expires_in")]
+    pub deadline: Option<String>,
+
+    /// Relative delivery lifetime, for example 30s or 5m.
+    #[arg(long = "expires-in", conflicts_with = "deadline")]
+    pub expires_in: Option<String>,
+
+    /// Reject delivery unless the target is still on this Wardian generation.
+    #[arg(long = "expected-generation")]
+    pub expected_generation: Option<u64>,
+
+    /// Exceptionally steer an active turn because its premise is invalid.
+    #[arg(long = "invalidate-premise")]
+    pub invalidate_premise: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -2618,6 +2700,75 @@ mod tests {
         assert_eq!(args.message.as_deref(), Some("review this"));
         assert_eq!(args.wait_until.as_deref(), Some("idle"));
         assert_eq!(args.timeout, "10m");
+    }
+
+    #[test]
+    fn parses_native_delivery_policy_on_send() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "send",
+            "premise changed",
+            "--to",
+            "reviewer-a1",
+            "--idempotency-key",
+            "request-7",
+            "--expires-in",
+            "5m",
+            "--expected-generation",
+            "3",
+            "--invalidate-premise",
+        ])
+        .unwrap();
+        let Command::Send(args) = cli.command else {
+            panic!("expected Send command")
+        };
+        assert_eq!(args.idempotency_key.as_deref(), Some("request-7"));
+        assert_eq!(args.expires_in.as_deref(), Some("5m"));
+        assert_eq!(args.expected_generation, Some(3));
+        assert!(args.invalidate_premise);
+    }
+
+    #[test]
+    fn parses_delivery_inspection_and_replacement() {
+        let show = Cli::try_parse_from([
+            "wardian",
+            "delivery",
+            "show",
+            "interaction-1",
+            "--evidence-limit",
+            "25",
+        ])
+        .unwrap();
+        assert!(matches!(
+            show.command,
+            Command::Delivery(DeliveryArgs {
+                command: DeliveryCommand::Show {
+                    ref interaction_id,
+                    evidence_limit: 25
+                }
+            }) if interaction_id == "interaction-1"
+        ));
+
+        let replace = Cli::try_parse_from([
+            "wardian",
+            "delivery",
+            "replace",
+            "interaction-1",
+            "corrected",
+            "--idempotency-key",
+            "replacement-1",
+        ])
+        .unwrap();
+        assert!(matches!(
+            replace.command,
+            Command::Delivery(DeliveryArgs {
+                command: DeliveryCommand::Replace {
+                    ref interaction_id,
+                    ref idempotency_key,
+                    ..
+                }
+            }) if interaction_id == "interaction-1" && idempotency_key == "replacement-1"
+        ));
     }
 
     #[test]

@@ -42,5 +42,7 @@ For complex workflows involving `loop` nodes, the IVA distinguishes between:
 #### 4. One-Click Interpolation
 Users can click any variable in the IVA tree (e.g., `gatekeeper.decision`). The IVA automatically wraps it in the correct Handlebars syntax (`\{\{nodes.gatekeeper.output.decision\}\}`) and copies it to the clipboard, ready to be pasted into prompt fields, file paths, or shell commands within the selected node's configuration.
 
-### Shared Storage
-The IVA also constantly displays the `storage.*` namespace, allowing easy access to the persistent Key-Value store shared across all workflows and agents.
+### Run Storage
+The IVA also constantly displays the `storage.*` namespace, allowing easy access
+to the persistent key-value store scoped to the current workflow run. Cross-run
+or cross-agent shared storage is not implemented by the workflow engine.

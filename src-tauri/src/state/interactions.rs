@@ -44,6 +44,9 @@ impl InteractionState {
         body_ref: InteractionBodyRef,
     ) -> InteractionRecord {
         let _mutation = self.mutation_lock.lock().await;
+        if let Some(existing) = self.records.lock().await.get(&id).cloned() {
+            return existing;
+        }
         if self
             .deleted_sessions
             .lock()
@@ -116,6 +119,32 @@ impl InteractionState {
             target_session_ids,
             body_ref,
         );
+        wardian_core::db::upsert_interaction_record(&record)
+            .map_err(|error| format!("failed to persist interaction: {error}"))?;
+        self.records
+            .lock()
+            .await
+            .insert(record.id.clone(), record.clone());
+        Ok(record)
+    }
+
+    pub async fn create_message_durable_with_id(
+        &self,
+        id: String,
+        sender_session_id: Option<String>,
+        target_session_ids: Vec<String>,
+        body_ref: InteractionBodyRef,
+    ) -> Result<InteractionRecord, String> {
+        let _mutation = self.mutation_lock.lock().await;
+        let deleted_sessions = self.deleted_sessions.lock().await;
+        if let Some(target_session_id) = target_session_ids
+            .iter()
+            .find(|target| deleted_sessions.contains(*target))
+        {
+            return Err(format!("agent has been deleted: {target_session_id}"));
+        }
+        drop(deleted_sessions);
+        let record = message_record(id, sender_session_id, target_session_ids, body_ref);
         wardian_core::db::upsert_interaction_record(&record)
             .map_err(|error| format!("failed to persist interaction: {error}"))?;
         self.records

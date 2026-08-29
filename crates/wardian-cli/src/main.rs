@@ -11,11 +11,13 @@ mod memory;
 mod output;
 mod telemetry;
 mod watchlist;
+mod workflow_replay;
+
 use args::{
     AgentArgs, AgentCommand, AgentWorktreeCommand, ApprovalArg, AskArgs, Cli, Command,
-    ConversationArgs, ConversationCommand, NotifyArgs, NotifyCommand, QueuePolicyArg, ReplyArgs,
-    ReplyStatusArg, ScheduleDefinitionArgs, SendArgs, WorkflowArgs, WorkflowCommand,
-    WorkflowScheduleCommand, WorkflowSessionCloseCommand,
+    ConversationArgs, ConversationCommand, DeliveryArgs, DeliveryCommand, NotifyArgs,
+    NotifyCommand, QueuePolicyArg, ReplyArgs, ReplyStatusArg, ScheduleDefinitionArgs, SendArgs,
+    WorkflowArgs, WorkflowCommand, WorkflowScheduleCommand, WorkflowSessionCloseCommand,
 };
 use clap::Parser;
 use errors::{CliError, ExitCode};
@@ -27,14 +29,22 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use std::{
+    collections::HashMap,
+    fs,
+    io::Read as _,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use wardian_core::control::{
-    ApprovalAction, InboxNotificationKind, InboxNotificationPayload, MessageInputMode, QueuePolicy,
-    WorkflowRunResponse,
+    ApprovalAction, InboxNotificationKind, InboxNotificationPayload, MessageInputMode,
+    OrchestrationDeliveryOptions, QueuePolicy, WorkflowRunResponse,
 };
 use wardian_core::identity::{self, ListFilters, Scope};
 use wardian_core::models::{
     LibraryEntry, LibraryIndexNode, ScheduleDefinition, WorkflowAssignments,
 };
+use wardian_core::native_transport::NativeMessageOperation;
 
 fn main() {
     std::process::exit(run());
@@ -69,6 +79,7 @@ fn run() -> i32 {
         Command::Telemetry(args) => telemetry::handle_telemetry(args),
         Command::Graph(args) => graph::handle_graph(args),
         Command::Send(args) => handle_send(args),
+        Command::Delivery(args) => handle_delivery(args),
         Command::Notify(args) => handle_notify(args),
         Command::Ask(args) => handle_ask(args),
         Command::Reply(args) => handle_reply(args),
@@ -514,7 +525,7 @@ fn handle_workflow(args: WorkflowArgs) -> Result<String, CliError> {
         WorkflowCommand::Replay {
             blueprint_id,
             run_id,
-        } => render_workflow_replay(&blueprint_id, &run_id),
+        } => workflow_replay::render(&blueprint_id, &run_id),
         WorkflowCommand::Parse { path } => render_workflow_parse(&path),
         WorkflowCommand::Normalize { path, write } => render_workflow_normalize(&path, write),
         WorkflowCommand::GenSchema { out, check } => {
@@ -533,11 +544,13 @@ fn render_workflow_node_types(json: bool) -> Result<String, CliError> {
     // Human summary: one line per node type.
     let mut lines = String::from("NODE TYPES\n");
     for def in wardian_core::workflow::node_types() {
+        let status = if def.supported { "" } else { " [unsupported]" };
         lines.push_str(&format!(
-            "  {:<18} {:<8} {}\n",
+            "  {:<18} {:<8} {}{}\n",
             def.id,
             format!("{:?}", def.kind).to_lowercase(),
-            def.description
+            def.description,
+            status
         ));
     }
     Ok(lines)
@@ -839,21 +852,6 @@ fn render_workflow_run_show(blueprint_id: &str, run_id: &str) -> Result<String, 
         "schema": 1,
         "state": state,
         "events": events,
-    }))
-}
-
-fn render_workflow_replay(blueprint_id: &str, run_id: &str) -> Result<String, CliError> {
-    let blueprint = find_library_blueprint(blueprint_id)?.ok_or_else(|| {
-        CliError::generic(format!(
-            "blueprint {blueprint_id} not found in library/workflows"
-        ))
-    })?;
-    let run_root = workflow_run_root(blueprint_id, run_id)?;
-    let state = wardian_core::engine::Engine::replay(&blueprint, &run_root)
-        .map_err(|e| CliError::generic(e.to_string()))?;
-    render_json(serde_json::json!({
-        "schema": 1,
-        "state": state,
     }))
 }
 
@@ -1644,6 +1642,13 @@ fn handle_send(args: SendArgs) -> Result<String, CliError> {
         args.approval,
     )?;
     let queue_policy = queue_policy_arg_to_control(args.queue_policy);
+    let orchestration = orchestration_options(
+        args.idempotency_key.clone(),
+        args.deadline.as_deref(),
+        args.expires_in.as_deref(),
+        args.expected_generation,
+        args.invalidate_premise,
+    )?;
     let input_mode = if approval_action.is_some() {
         MessageInputMode::ApprovalAction
     } else if args.as_command {
@@ -1668,6 +1673,7 @@ fn handle_send(args: SendArgs) -> Result<String, CliError> {
                 until,
                 timeout,
                 target_scope: Some(args.scope.as_str()),
+                orchestration: orchestration.clone(),
             },
         )
         .map_err(control_error)?;
@@ -1693,6 +1699,7 @@ fn handle_send(args: SendArgs) -> Result<String, CliError> {
                 approval_action,
                 target_scope: Some(args.scope.as_str()),
                 timeout,
+                orchestration,
             },
         )
         .map_err(control_error)?;
@@ -1711,6 +1718,40 @@ fn handle_send(args: SendArgs) -> Result<String, CliError> {
     ))
 }
 
+fn handle_delivery(args: DeliveryArgs) -> Result<String, CliError> {
+    let value = match args.command {
+        DeliveryCommand::Show {
+            interaction_id,
+            evidence_limit,
+        } => live::delivery_get(&interaction_id, evidence_limit)
+            .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other)),
+        DeliveryCommand::Cancel { interaction_id } => live::delivery_cancel(&interaction_id)
+            .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other)),
+        DeliveryCommand::Withdraw { interaction_id } => live::delivery_withdraw(&interaction_id)
+            .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other)),
+        DeliveryCommand::Replace {
+            interaction_id,
+            message,
+            stdin,
+            file,
+            idempotency_key,
+            deadline,
+            expires_in,
+        } => {
+            let message = read_message_input(message.as_deref(), stdin, file.as_deref())?;
+            let deadline_at = delivery_deadline(deadline.as_deref(), expires_in.as_deref())?;
+            live::delivery_replace(&interaction_id, &message, &idempotency_key, deadline_at)
+                .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other))
+        }
+        DeliveryCommand::Capabilities { target } => live::delivery_capabilities(&target)
+            .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other)),
+    }
+    .map_err(control_error)?;
+    serde_json::to_string_pretty(&value)
+        .map(|json| format!("{json}\n"))
+        .map_err(|error| CliError::generic(error.to_string()))
+}
+
 fn handle_ask(args: AskArgs) -> Result<String, CliError> {
     validate_single_agent_target(&args.target, "ask")?;
     for target in &args.targets {
@@ -1720,6 +1761,13 @@ fn handle_ask(args: AskArgs) -> Result<String, CliError> {
     let message = read_message_input(args.message.as_deref(), args.stdin, args.file.as_deref())?;
     let timeout = parse_timeout(&args.timeout)?;
     let condition = normalize_ask_condition(args.until.as_deref().unwrap_or("status:idle"))?;
+    let orchestration = orchestration_options(
+        args.idempotency_key,
+        args.deadline.as_deref(),
+        args.expires_in.as_deref(),
+        args.expected_generation,
+        args.invalidate_premise,
+    )?;
     let mut targets = vec![args.target.clone()];
     targets.extend(args.targets);
     targets.sort();
@@ -1732,6 +1780,7 @@ fn handle_ask(args: AskArgs) -> Result<String, CliError> {
             args.thread.as_deref(),
             Some(args.tail),
             timeout,
+            orchestration,
         )
         .map_err(control_error)?;
         return render_ask_many_response(&response);
@@ -1750,9 +1799,60 @@ fn handle_ask(args: AskArgs) -> Result<String, CliError> {
         &condition,
         Some(args.tail),
         timeout,
+        orchestration,
     )
     .map_err(control_error)?;
     render_ask_response(&targets[0], &condition, response)
+}
+
+fn orchestration_options(
+    idempotency_key: Option<String>,
+    deadline: Option<&str>,
+    expires_in: Option<&str>,
+    expected_generation: Option<u64>,
+    invalidate_premise: bool,
+) -> Result<Option<OrchestrationDeliveryOptions>, CliError> {
+    let deadline_at = delivery_deadline(deadline, expires_in)?;
+    if idempotency_key.is_none()
+        && deadline_at.is_none()
+        && expected_generation.is_none()
+        && !invalidate_premise
+    {
+        return Ok(None);
+    }
+    Ok(Some(OrchestrationDeliveryOptions {
+        idempotency_key,
+        deadline_at,
+        expected_generation,
+        operation: if invalidate_premise {
+            NativeMessageOperation::InvalidatePremise
+        } else {
+            NativeMessageOperation::StartTurn
+        },
+    }))
+}
+
+fn delivery_deadline(
+    deadline: Option<&str>,
+    expires_in: Option<&str>,
+) -> Result<Option<String>, CliError> {
+    if let Some(deadline) = deadline {
+        let parsed = chrono::DateTime::parse_from_rfc3339(deadline).map_err(|error| {
+            CliError::generic(format!("invalid --deadline RFC3339 value: {error}"))
+        })?;
+        return Ok(Some(
+            parsed
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        ));
+    }
+    expires_in.map(parse_timeout).transpose().map(|duration| {
+        duration.map(|duration| {
+            (chrono::Utc::now()
+                + chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::MAX))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        })
+    })
 }
 
 fn handle_reply(args: ReplyArgs) -> Result<String, CliError> {
@@ -1998,6 +2098,7 @@ pub(crate) fn control_error(e: std::io::Error) -> CliError {
             "gap_detected" => backend_error(ExitCode::Generic, "gap_detected"),
             "invalid_cursor" => backend_error(ExitCode::Generic, "invalid_cursor"),
             "invalid_origin" => backend_error(ExitCode::NotInSession, "invalid_origin"),
+            "self_serve_required" => backend_error(ExitCode::Generic, "self_serve_required"),
             "unauthorized_path" => backend_error(ExitCode::Generic, "unauthorized_path"),
             "unreadable_file" => backend_error(ExitCode::Generic, "unreadable_file"),
             "unstable_file_timeout" => backend_error(ExitCode::Generic, "unstable_file_timeout"),
@@ -2312,6 +2413,7 @@ fn identity_error(error: identity::IdentityError) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("tests/workflow_snapshot_tests.rs");
 
     struct TestWardianHome {
         _lock: std::sync::MutexGuard<'static, ()>,

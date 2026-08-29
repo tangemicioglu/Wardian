@@ -75,6 +75,31 @@ pub enum ControlRequest {
     AgentWorktreeDisable {
         target: String,
     },
+    /// `a`/`b` are pre-resolved agent UUIDs (name resolution happens
+    /// client-side); `caller_session_id` is the caller's `WARDIAN_SESSION_ID`,
+    /// or `None` outside a managed session. The control plane is the sole
+    /// writer of `topology.json` and decides authorization from this field
+    /// rather than trusting a client-side check.
+    TopologyLink {
+        a: String,
+        b: String,
+        caller_session_id: Option<String>,
+    },
+    TopologyUnlink {
+        a: String,
+        b: String,
+        caller_session_id: Option<String>,
+    },
+    TopologyIgnore {
+        a: String,
+        b: String,
+        caller_session_id: Option<String>,
+    },
+    TopologyUnignore {
+        a: String,
+        b: String,
+        caller_session_id: Option<String>,
+    },
     ConversationList {
         agent: Option<String>,
         #[serde(default)]
@@ -135,6 +160,8 @@ pub enum ControlRequest {
         /// Upper bound for a provider process started for an offline target.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         headless_timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orchestration: Option<OrchestrationDeliveryOptions>,
     },
     NotifyCreate {
         notification: InboxNotificationPayload,
@@ -153,6 +180,8 @@ pub enum ControlRequest {
         timeout_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin: Option<MessageOrigin>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orchestration: Option<OrchestrationDeliveryOptions>,
     },
     AskMany {
         targets: Vec<String>,
@@ -162,6 +191,8 @@ pub enum ControlRequest {
         timeout_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin: Option<MessageOrigin>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orchestration: Option<OrchestrationDeliveryOptions>,
     },
     SubmitReply {
         request_id: String,
@@ -169,6 +200,27 @@ pub enum ControlRequest {
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin: Option<MessageOrigin>,
+    },
+    DeliveryGet {
+        interaction_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evidence_limit: Option<usize>,
+    },
+    DeliveryCancel {
+        interaction_id: String,
+    },
+    DeliveryWithdraw {
+        interaction_id: String,
+    },
+    DeliveryReplace {
+        interaction_id: String,
+        message: String,
+        idempotency_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_at: Option<String>,
+    },
+    DeliveryCapabilities {
+        target: String,
     },
     AgentWatch {
         target: String,
@@ -346,6 +398,40 @@ impl QueuePolicy {
     pub fn is_queue_if_busy(&self) -> bool {
         matches!(self, Self::QueueIfBusy)
     }
+}
+
+/// Provider-neutral delivery controls shared by ask and notify/send. These
+/// fields are owned by Wardian and never projected as provider topology.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrchestrationDeliveryOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_generation: Option<u64>,
+    #[serde(default)]
+    pub operation: crate::native_transport::NativeMessageOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeDeliveryInspectResponse {
+    pub schema: u8,
+    pub record: crate::native_transport::NativeDeliveryRecord,
+    pub evidence: Vec<crate::native_transport::NativeDeliveryEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeDeliveryCapabilitiesResponse {
+    pub schema: u8,
+    pub target_agent_id: String,
+    pub broker_queue_withdrawal: bool,
+    pub broker_queue_replacement: bool,
+    pub native_negotiated: bool,
+    pub capabilities: crate::native_transport::NativeTransportCapabilities,
+    pub candidate_capabilities: crate::native_transport::NativeTransportCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<crate::native_transport::NativeSessionBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -527,6 +613,16 @@ impl ConversationShowResponse {
             conversation,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopologyMutationResponse {
+    pub schema: u8,
+    pub ok: bool,
+    pub action: String,
+    pub a: String,
+    pub b: String,
+    pub changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -750,6 +846,7 @@ pub struct InteractionRecord {
 pub enum DeliveryTransportKind {
     LiveSurface,
     HeadlessProcess,
+    NativeProvider,
     ProviderHook,
     ProviderPlugin,
     LocalControl,
@@ -1120,6 +1217,43 @@ mod tests {
     }
 
     #[test]
+    fn topology_link_request_serializes_optional_caller() {
+        let req = ControlRequest::TopologyLink {
+            a: "uuid-1".to_string(),
+            b: "uuid-2".to_string(),
+            caller_session_id: Some("uuid-1".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""command":"topology_link""#));
+        assert!(json.contains(r#""caller_session_id":"uuid-1""#));
+        assert_eq!(serde_json::from_str::<ControlRequest>(&json).unwrap(), req);
+
+        let operator_req = ControlRequest::TopologyUnlink {
+            a: "uuid-1".to_string(),
+            b: "uuid-2".to_string(),
+            caller_session_id: None,
+        };
+        let operator_json = serde_json::to_string(&operator_req).unwrap();
+        assert!(operator_json.contains(r#""command":"topology_unlink""#));
+        assert!(operator_json.contains(r#""caller_session_id":null"#));
+    }
+
+    #[test]
+    fn topology_mutation_response_serializes_current_schema() {
+        let response = TopologyMutationResponse {
+            schema: CONTROL_SCHEMA,
+            ok: true,
+            action: "ignore".to_string(),
+            a: "uuid-1".to_string(),
+            b: "uuid-2".to_string(),
+            changed: true,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains(r#""action":"ignore""#));
+        assert!(json.contains(r#""changed":true"#));
+    }
+
+    #[test]
     fn agent_restart_request_serializes_with_target() {
         let req = ControlRequest::AgentRestart {
             target: "coder-a1".to_string(),
@@ -1294,6 +1428,7 @@ mod tests {
             origin: None,
             target_scope: None,
             headless_timeout_ms: None,
+            orchestration: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains(r#""command":"send_message""#));
@@ -1315,6 +1450,7 @@ mod tests {
             }),
             target_scope: None,
             headless_timeout_ms: None,
+            orchestration: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1338,6 +1474,7 @@ mod tests {
             }),
             target_scope: None,
             headless_timeout_ms: None,
+            orchestration: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1359,6 +1496,7 @@ mod tests {
             origin: None,
             target_scope: None,
             headless_timeout_ms: None,
+            orchestration: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1388,6 +1526,7 @@ mod tests {
                 origin: None,
                 target_scope: None,
                 headless_timeout_ms: None,
+                orchestration: None,
             }
         );
     }
@@ -1526,6 +1665,7 @@ mod tests {
             origin: Some(MessageOrigin::WardianAgent {
                 session_id: "source-1".to_string(),
             }),
+            orchestration: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -1548,6 +1688,7 @@ mod tests {
             tail_bytes: Some(65_536),
             timeout_ms: Some(30_000),
             origin: None,
+            orchestration: None,
         };
         let request_json = serde_json::to_string(&req).unwrap();
         assert!(request_json.contains(r#""command":"ask_many""#));
