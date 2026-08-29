@@ -15,7 +15,7 @@ use wardian_core::control::{
 };
 use wardian_core::engine::{EventKind, RunStatus};
 
-const MAX_INBOX_SOURCE_ITEMS: usize = 200;
+const MAX_INBOX_SOURCE_ITEMS: usize = wardian_core::control::MAX_INBOX_PAGE_LIMIT;
 const QUEUE_MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 struct InboxProjection {
@@ -68,6 +68,16 @@ pub fn handle_inbox(args: InboxArgs) -> Result<String, CliError> {
                     ExitCode::Generic,
                     "invalid_limit",
                     format!("--limit must not exceed {MAX_INBOX_SOURCE_ITEMS}"),
+                ));
+            }
+            if offset > wardian_core::control::MAX_INBOX_OFFSET {
+                return Err(CliError::backend(
+                    ExitCode::Generic,
+                    "invalid_offset",
+                    format!(
+                        "--offset must not exceed {}",
+                        wardian_core::control::MAX_INBOX_OFFSET
+                    ),
                 ));
             }
             let types = normalize_filter(types, "--type")?;
@@ -200,16 +210,15 @@ fn load_persisted_items(
     let read_notification_ids = metadata.read_notification_ids;
     let persisted_workflow_runs = metadata.workflow_runs;
     let conn = match wardian_core::paths::state_db_path() {
-        Some(path) if path.exists() => Some(
-            Connection::open(path).map_err(|error| CliError::db_unavailable(error.to_string()))?,
-        ),
+        Some(path) if path.exists() => {
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+        }
         _ => None,
     };
     let agent_names = conn
         .as_ref()
         .map(wardian_core::db::get_all_agents_with_conn)
-        .transpose()
-        .map_err(|error| CliError::db_unavailable(error.to_string()))?
+        .and_then(Result::ok)
         .unwrap_or_default()
         .into_iter()
         .map(|agent| (agent.session_id, agent.session_name))
@@ -282,16 +291,22 @@ fn load_persisted_source_page(
                     truncated: false,
                 });
             };
-            let mut records = wardian_core::db::list_recent_interaction_records_by_kind_with_conn(
-                conn,
-                "notification",
-                MAX_INBOX_SOURCE_ITEMS + 1,
-                offset,
-            )
-            .map_err(|error| CliError::db_unavailable(error.to_string()))?;
+            let Ok(mut records) =
+                wardian_core::db::list_recent_interaction_records_by_kind_with_conn(
+                    conn,
+                    "notification",
+                    MAX_INBOX_SOURCE_ITEMS + 1,
+                    offset,
+                )
+            else {
+                return Ok(InboxSourcePage {
+                    items: Vec::new(),
+                    truncated: false,
+                });
+            };
             let truncated = records.len() > MAX_INBOX_SOURCE_ITEMS;
             records.truncate(MAX_INBOX_SOURCE_ITEMS);
-            let decisions = notification_decisions(conn, &records)?;
+            let decisions = notification_decisions(conn, &records);
             Ok(InboxSourcePage {
                 items: sort_items(notification_items(
                     &records,
@@ -341,14 +356,13 @@ fn load_persisted_source_page(
 fn notification_decisions(
     conn: &Connection,
     records: &[InteractionRecord],
-) -> Result<HashMap<String, InboxNotificationDecision>, CliError> {
+) -> HashMap<String, InboxNotificationDecision> {
     let mut decisions = HashMap::new();
     for record in records {
         let Some(reply) =
             wardian_core::db::list_interaction_replies_for_parent_with_conn(conn, &record.id)
-                .map_err(|error| CliError::db_unavailable(error.to_string()))?
-                .into_iter()
-                .next()
+                .ok()
+                .and_then(|replies| replies.into_iter().next())
         else {
             continue;
         };
@@ -359,7 +373,7 @@ fn notification_decisions(
             decisions.insert(record.id.clone(), decision);
         }
     }
-    Ok(decisions)
+    decisions
 }
 
 fn merge_persisted_pages<F>(

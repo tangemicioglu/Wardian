@@ -73,6 +73,12 @@ fn seed_queue() -> TempDir {
     home
 }
 
+fn seed_queue_with_empty_db() -> TempDir {
+    let home = seed_queue();
+    fs::File::create(home.path().join("state.db")).unwrap();
+    home
+}
+
 fn seed_notification() -> TempDir {
     let home = TempDir::new().unwrap();
     let conn = rusqlite::Connection::open(home.path().join("state.db")).unwrap();
@@ -257,6 +263,38 @@ fn list_paginates_after_filtering() {
     assert_eq!(response["items"].as_array().unwrap().len(), 1);
     assert_eq!(response["items"][0]["id"], "middle-approval");
     assert_eq!(response["truncated"], false);
+}
+
+#[test]
+fn list_falls_back_to_queue_when_existing_db_is_unmigrated() {
+    let home = seed_queue_with_empty_db();
+    let output = Command::new(bin())
+        .args(["inbox", "list", "--type", "action_needed"])
+        .env("WARDIAN_HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["items"][0]["id"], "new-update");
+}
+
+#[test]
+fn list_rejects_unbounded_offsets() {
+    let home = seed_queue();
+    let output = Command::new(bin())
+        .args(["inbox", "list", "--offset", "100001"])
+        .env("WARDIAN_HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let response: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(response["error"]["code"], "invalid_offset");
 }
 
 #[test]

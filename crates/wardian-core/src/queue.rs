@@ -65,12 +65,17 @@ impl<'de> Visitor<'de> for QueueVisitor {
                 projection.read_notification_ids.insert(notification_id);
                 continue;
             }
+            let dismissed = item.get("dismissed").and_then(Value::as_bool) == Some(true);
             if let Some(workflow_run) = workflow_run_identity(&item) {
-                projection.workflow_runs.insert(workflow_run);
+                // A dismissal marker is durable triage metadata. Ordinary
+                // workflow completions follow the legacy queue retention
+                // window, so an expired completion must not suppress a fresh
+                // checkpoint projection.
+                if dismissed || is_recent(&item, self.cutoff) {
+                    projection.workflow_runs.insert(workflow_run);
+                }
             }
-            if item.get("dismissed").and_then(Value::as_bool) == Some(true)
-                || item.get("workflow_approval").is_some()
-            {
+            if dismissed || item.get("workflow_approval").is_some() {
                 continue;
             }
             if !is_recent(&item, self.cutoff) {
@@ -154,7 +159,8 @@ mod tests {
                 { "id": "old-visible", "type": "agent_completed", "timestamp": 1 },
                 { "id": "new-visible", "type": "action_needed", "timestamp": 3 },
                 { "id": "read-ack", "type": "agent_update", "read": true, "inbox_notification_id": "notification-1", "timestamp": 0 },
-                { "id": "dismissed", "type": "workflow_completed", "workflow_id": "deploy", "workflow_run_id": "run-1", "dismissed": true, "timestamp": 0 }
+                { "id": "dismissed", "type": "workflow_completed", "workflow_id": "deploy", "workflow_run_id": "run-1", "dismissed": true, "timestamp": 0 },
+                { "id": "expired-workflow", "type": "workflow_completed", "workflow_id": "deploy", "workflow_run_id": "run-2", "timestamp": -1 }
             ])
             .to_string(),
         )
@@ -167,6 +173,9 @@ mod tests {
         assert!(first
             .workflow_runs
             .contains(&("deploy".to_string(), "run-1".to_string())));
+        assert!(!first
+            .workflow_runs
+            .contains(&("deploy".to_string(), "run-2".to_string())));
 
         let second = read_recent_items(file.path(), 1, 1, 0);
         assert_eq!(second.items[0]["id"], "old-visible");

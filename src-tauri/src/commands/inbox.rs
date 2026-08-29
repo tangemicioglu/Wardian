@@ -109,20 +109,49 @@ pub async fn list_inbox_notifications_for_state_with_offset(
     state: &AppState,
     offset: usize,
 ) -> Result<InboxNotificationListResult, String> {
+    list_inbox_notifications_for_state_with_offset_internal(state, offset, true).await
+}
+
+/// Reads notification projections without expiring or otherwise mutating
+/// durable records. This is used by read-only agent and remote Inbox paths.
+pub async fn list_inbox_notifications_for_state_with_offset_read_only(
+    state: &AppState,
+    offset: usize,
+) -> Result<InboxNotificationListResult, String> {
+    list_inbox_notifications_for_state_with_offset_internal(state, offset, false).await
+}
+
+async fn list_inbox_notifications_for_state_with_offset_internal(
+    state: &AppState,
+    offset: usize,
+    expire_records: bool,
+) -> Result<InboxNotificationListResult, String> {
     let (records, truncated) = state
         .interactions
         .inbox_notifications_page(offset, MAX_INBOX_NOTIFICATIONS)
         .await;
     let mut notifications = Vec::new();
     for record in records {
-        let record = state
-            .interactions
-            .expire_notification_if_needed(&record.id)
-            .await
-            .unwrap_or(record);
+        let mut record = if expire_records {
+            state
+                .interactions
+                .expire_notification_if_needed(&record.id)
+                .await
+                .unwrap_or(record)
+        } else {
+            record
+        };
         let Some(payload) = notification_payload(&record) else {
             continue;
         };
+        if !expire_records
+            && record.status == InteractionStatus::AwaitingReply
+            && notification_expired(&payload)
+        {
+            // Preserve the projection users would see after normal expiry,
+            // without persisting a mutation from a read-only command.
+            record.status = InteractionStatus::Expired;
+        }
         let Some(sender_session_id) = record.sender_session_id.clone() else {
             continue;
         };
@@ -265,6 +294,16 @@ fn notification_payload(
         return None;
     };
     serde_json::from_str(body).ok()
+}
+
+fn notification_expired(payload: &InboxNotificationPayload) -> bool {
+    let Some(expires_at) = payload.expires_at.as_deref() else {
+        return false;
+    };
+    let Ok(expires_at) = chrono::DateTime::parse_from_rfc3339(expires_at) else {
+        return true;
+    };
+    expires_at <= chrono::Utc::now()
 }
 
 fn notification_error(error: &'static str) -> String {

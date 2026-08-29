@@ -241,7 +241,7 @@ async fn remote_inbox_source_page(
     match source {
         InboxSource::Notifications => {
             let notification_page =
-                crate::commands::inbox::list_inbox_notifications_for_state_with_offset(
+                crate::commands::inbox::list_inbox_notifications_for_state_with_offset_read_only(
                     state, offset,
                 )
                 .await;
@@ -453,8 +453,10 @@ async fn remote_queue_items_page_internal(
             && item.get("workflow_approval").is_none()
             && item.get("dismissed").is_none()
     });
-    let notification_page =
-        crate::commands::inbox::list_inbox_notifications_for_state_with_offset(state, offset).await;
+    let notification_page = crate::commands::inbox::list_inbox_notifications_for_state_with_offset_read_only(
+        state, offset,
+    )
+    .await;
     let (notifications, truncated, next_offset) = match notification_page {
         Ok(result) => (result.notifications, result.truncated, result.next_offset),
         Err(_) => (Vec::new(), false, None),

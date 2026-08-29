@@ -479,6 +479,12 @@ pub struct InboxListResponse {
     pub next_offset: Option<usize>,
 }
 
+/// Maximum Inbox cursor accepted by live control requests. Keeping the cursor
+/// bounded prevents source projections from allocating based on untrusted
+/// offsets while still allowing agents to page through a large Inbox.
+pub const MAX_INBOX_OFFSET: usize = 100_000;
+pub const MAX_INBOX_PAGE_LIMIT: usize = 200;
+
 impl InboxListResponse {
     pub fn new(items: Vec<serde_json::Value>, truncated: bool, next_offset: Option<usize>) -> Self {
         Self {
@@ -491,7 +497,7 @@ impl InboxListResponse {
 }
 
 fn default_inbox_page_limit() -> usize {
-    200
+    MAX_INBOX_PAGE_LIMIT
 }
 
 impl ConversationListResponse {

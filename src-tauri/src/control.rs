@@ -653,6 +653,17 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             unread,
             limit,
         } => {
+            if offset > wardian_core::control::MAX_INBOX_OFFSET {
+                return Err(ControlError::bad_request(format!(
+                    "Inbox offset must not exceed {}",
+                    wardian_core::control::MAX_INBOX_OFFSET
+                )));
+            }
+            if limit == 0 || limit > wardian_core::control::MAX_INBOX_PAGE_LIMIT {
+                return Err(ControlError::bad_request(
+                    "Inbox limit must be between 1 and 200",
+                ));
+            }
             let state = app.state::<AppState>();
             let (items, truncated, next_offset) = crate::remote::operations::remote_inbox_list_page(
                 state.inner(),
