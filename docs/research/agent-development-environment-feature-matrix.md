@@ -13,11 +13,12 @@ Human-readable companion to the [backing CSV](./agent-development-environment-fe
 The four-product comparison cohort (Orca ADE, cmux, Conductor, and T3 Code) was
 named by the user; Wardian is included as the first-party baseline. The cohort
 was not sampled from the market. The selection criterion was verifiability:
-these are the open-source ADEs that can be checked against first-party source.
-Cursor and Devin are serious competitors, but they are excluded because they
-cannot be verified on that same source basis. This file is therefore not a
-survey of the field; a Cursor/Devin comparison would belong in a separately
-scoped, claims-based tier.
+the open-source products in this cohort can be checked against first-party
+source, while Conductor is retained because it was named by the user and has a
+public first-party documentation corpus. Cursor and Devin are serious
+competitors, but they are excluded because they cannot be verified on that same
+source basis. This file is therefore not a survey of the field; a Cursor/Devin
+comparison would belong in a separately scoped, claims-based tier.
 
 The evidence corpus differs by product. The original Wardian assessment was
 documentation-first; this correction pass adds repository source and metadata.
@@ -26,9 +27,9 @@ pages; cmux against its product site/documentation and public repository pages;
 Conductor against its public product documentation; and T3 Code against its
 documentation and public repository pages. The source-inclusive Wardian recheck
 moved four of the 19 previously `NOT EVIDENCED` rows: License and openness and
-Agent Client Protocol provider transport moved to `YES`, while Custom agent registration
-and fork/resume templates and AI versus human line attribution moved to
-`PARTIAL`; 15 remain `NOT EVIDENCED` at the claimed scope.
+Agent Client Protocol provider transport moved to `YES`, while Custom agent
+registration and fork/resume templates and AI versus human line attribution
+moved to `PARTIAL`; 15 remain `NOT EVIDENCED` at the claimed scope.
 
 ## Count analytics
 
@@ -579,7 +580,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [PARTIAL] - multiple threads/background tasks; no dedicated broadcast command evidenced |
 
 **Comparison note:** Wardian has a named broadcast/prompt-injection feature; Orca has fan-out.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/features.md), [source 2](https://www.onorca.dev/docs/model/worktrees), [source 3](https://cmux.com/docs/cli), [source 4](https://www.conductor.build/), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/features.md), [source 2](https://www.onorca.dev/docs/model/worktrees), [source 3](https://github.com/manaflow-ai/cmux/blob/main/docs/cli-contract.md), [source 4](https://www.conductor.build/), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
 
 #### Structured ask and reply handoff
 
@@ -774,7 +775,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [YES] - transactional command queue, provider/runtime/checkpoint reactors, outstanding-work drain, and projection transaction boundaries |
 
 **Comparison note:** T3 and Wardian both make execution ordering and durable work state explicit.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/developer/workflow-engine.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://github.com/manaflow-ai/cmux/blob/main/docs/events.md), [source 4](https://www.conductor.build/docs), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/developer/automation-engine.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://github.com/manaflow-ai/cmux/blob/main/docs/events.md), [source 4](https://www.conductor.build/docs), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
 
 ### Coverage
 
@@ -895,7 +896,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [PARTIAL] - GitHub/GitLab/Bitbucket/Azure DevOps source-control integrations |
 
 **Comparison note:** Orca's native issue/project integration is a notable gap for the others.
-**Sources:** [source 1](https://www.onorca.dev/docs/review/github), [source 2](https://www.onorca.dev/docs/cli/orca-linear), [source 3](https://github.com/wardian-app/Wardian/blob/main/docs/guide/source-control.md), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/user/source-control.md)
+**Sources:** [source 1](https://www.onorca.dev/docs/review/github), [source 2](https://www.onorca.dev/docs/review/linear), [source 3](https://github.com/wardian-app/Wardian/blob/main/docs/guide/source-control.md), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/user/source-control.md)
 
 #### Provider adapter or driver abstraction
 
@@ -1068,7 +1069,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [NOT EVIDENCED] as a native issue/project-board integration |
 
 **Comparison note:** Orca has the strongest explicit issue/project integrations.
-**Sources:** [source 1](https://www.onorca.dev/docs/review/github), [source 2](https://www.onorca.dev/docs/cli/orca-linear), [source 3](https://www.conductor.build/docs), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/user/source-control.md)
+**Sources:** [source 1](https://www.onorca.dev/docs/review/github), [source 2](https://www.onorca.dev/docs/review/linear), [source 3](https://www.conductor.build/docs), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/user/source-control.md)
 
 ### Notifications
 
@@ -1150,7 +1151,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [YES] - canonical event log, orchestration projections, provider runtime ingestion, trace/diagnostic surfaces |
 
 **Comparison note:** Wardian/T3 have the most explicit event/projection evidence models.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/developer/ipc-events.md), [source 2](https://www.onorca.dev/docs/agents/session-history), [source 3](https://cmux.com/docs/cli), [source 4](https://www.conductor.build/docs/cloud/collaboration), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/developer/ipc-events.md), [source 2](https://www.onorca.dev/docs/agents/session-history), [source 3](https://github.com/manaflow-ai/cmux/blob/main/docs/cli-contract.md), [source 4](https://www.conductor.build/docs/cloud/collaboration), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
 
 #### Anonymous telemetry controls and privacy
 
@@ -1256,7 +1257,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [PARTIAL] - terminal and server-side commands; project run scripts not a headline documented feature |
 
 **Comparison note:** Conductor and T3 both expose project/runtime setup, but Conductor documents the convention more explicitly.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/workflows.md), [source 2](https://www.onorca.dev/docs/ssh), [source 3](https://github.com/manaflow-ai/cmux-skills), [source 4](https://www.conductor.build/docs/concepts/testing), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/user/source-control.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/automations.md), [source 2](https://www.onorca.dev/docs/ssh), [source 3](https://github.com/manaflow-ai/cmux-skills), [source 4](https://www.conductor.build/docs/concepts/testing), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/user/source-control.md)
 
 #### Workspace environment variables
 
@@ -1269,7 +1270,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [YES] - server/environment variables, T3 environment IDs, and provider-scoped secrets |
 
 **Comparison note:** All have environment context, but Conductor and T3 document product-specific variable contracts.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/cli.md), [source 2](https://www.onorca.dev/docs/ssh), [source 3](https://cmux.com/docs/cli), [source 4](https://www.conductor.build/docs/cloud/environment-variables), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/cli.md), [source 2](https://www.onorca.dev/docs/ssh), [source 3](https://github.com/manaflow-ai/cmux/blob/main/docs/cli-contract.md), [source 4](https://www.conductor.build/docs/cloud/environment-variables), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md)
 
 #### File copies symlinks and generated setup
 
@@ -1729,7 +1730,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [YES] - drives provider CLIs installed and authenticated on the server |
 
 **Comparison note:** Orca and T3 explicitly document any CLI/provider-CLI use; cmux is the most provider-agnostic.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/features.md), [source 2](https://www.onorca.dev/docs/agents/supported), [source 3](https://cmux.com/), [source 4](https://www.conductor.build/docs/agent-behavior), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/user/install.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/features.md), [source 2](https://www.onorca.dev/docs/agents/supported), [source 3](https://cmux.com/), [source 4](https://www.conductor.build/docs/reference/agent-behavior), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/user/install.md)
 
 #### Web desktop and mobile client surfaces
 
@@ -2244,7 +2245,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [PARTIAL] - orchestration layers and checkpoints; no end-user visual builder evidenced |
 
 **Comparison note:** Wardian is the only product in this set with a documented visual workflow view.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/workflows.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://www.conductor.build/docs/concepts/workflow), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/automations.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://www.conductor.build/docs/concepts/workflow), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
 
 #### DAG tasks dependencies and dispatches
 
@@ -2257,7 +2258,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [YES] - orchestration commands, reactors, projections, checkpoints, and thread turns; public DAG task UX not evidenced |
 
 **Comparison note:** Orca and T3 have orchestration layers; Wardian exposes a user-facing deterministic workflow engine.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/developer/workflow-engine.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://www.conductor.build/docs/concepts/workflow), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/developer/automation-engine.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://www.conductor.build/docs/concepts/workflow), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
 
 #### Branch loop and wait control flow
 
@@ -2270,7 +2271,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [NOT EVIDENCED] as an end-user workflow control-flow surface |
 
 **Comparison note:** This is a deep workflow-engine comparison; absent means no first-party evidence found.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/developer/workflow-engine.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://www.conductor.build/docs/concepts/workflow), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/developer/automation-engine.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://www.conductor.build/docs/concepts/workflow), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
 
 #### Manual scheduled and listener triggers
 
@@ -2283,7 +2284,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [PARTIAL] - background service and server commands; scheduled workflow trigger not evidenced |
 
 **Comparison note:** Orca has a strong documented automation scheduler; Wardian combines schedule and listener triggers.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/workflows.md), [source 2](https://www.onorca.dev/docs/cli/automations), [source 3](https://www.conductor.build/docs/concepts/workflow), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/user/background-service.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/automations.md), [source 2](https://www.onorca.dev/docs/cli/automations), [source 3](https://www.conductor.build/docs/concepts/workflow), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/user/background-service.md)
 
 #### Workflow parameters and shared storage
 
@@ -2296,7 +2297,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [PARTIAL] - thread composer attachments and orchestration commands; public workflow storage not evidenced |
 
 **Comparison note:** Wardian's workflow runtime is the most explicit application-level shared state model.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/developer/workflow-engine.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://www.conductor.build/docs/cloud/environment-variables), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/developer/automation-engine.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://www.conductor.build/docs/cloud/environment-variables), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
 
 #### Run monitoring and workflow outcome triage
 
@@ -2309,7 +2310,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [PARTIAL] - projections/subscriptions, thread status, and diagnostics; no workflow monitor UI evidenced |
 
 **Comparison note:** Wardian has a dedicated run observer; Conductor has workspace-level checks and testing.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/workflows.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://www.conductor.build/docs/reference/checks), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/automations.md), [source 2](https://www.onorca.dev/docs/cli/orchestration), [source 3](https://www.conductor.build/docs/reference/checks), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
 
 #### Workflow approvals and gates
 
@@ -2335,7 +2336,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [YES] - checkpoint reactor captures turn start/completion and supports checkpoint revert; transactional event projections |
 
 **Comparison note:** T3's checkpoint reactor and Orca's worktree checkpoints are the clearest matches.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/workflows.md), [source 2](https://www.onorca.dev/docs/cli/worktree-checkpoints), [source 3](https://www.conductor.build/docs/reference/diff-viewer), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/providers.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/automations.md), [source 2](https://www.onorca.dev/docs/cli/worktree-checkpoints), [source 3](https://www.conductor.build/docs/reference/diff-viewer), [source 4](https://github.com/pingdotgg/t3code/blob/main/docs/internals/providers.md)
 
 #### Workflow node catalog for agent and non-agent actions
 
@@ -2348,7 +2349,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [PARTIAL] - orchestration commands/reactors; no public end-user node catalog |
 
 **Comparison note:** Wardian is the only product with a documented end-user workflow node reference in this set.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/workflows/node-reference-v2.md), [source 2](https://github.com/wardian-app/Wardian/blob/main/docs/developer/workflow-engine.md), [source 3](https://www.onorca.dev/docs/cli/orchestration), [source 4](https://www.conductor.build/docs/concepts/workflow), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/automations/node-reference-v2.md), [source 2](https://github.com/wardian-app/Wardian/blob/main/docs/developer/automation-engine.md), [source 3](https://www.onorca.dev/docs/cli/orchestration), [source 4](https://www.conductor.build/docs/concepts/workflow), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)
 
 #### Session-close memory consolidation automation
 
@@ -2361,7 +2362,7 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [NOT EVIDENCED]  |
 
 **Comparison note:** This is an optional Wardian workflow, not the default memory behavior.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/agent-memory.md), [source 2](https://github.com/wardian-app/Wardian/blob/main/docs/workflows/samples.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/agent-memory.md), [source 2](https://github.com/wardian-app/Wardian/blob/main/docs/automations/samples.md)
 
 #### Spotlight testing and per-workspace verification
 
@@ -2374,5 +2375,5 @@ matrix with uneven coverage, not a leaderboard.
 | T3 Code | [PARTIAL] - tests/diagnostics and project scripts; no Spotlight-branded testing surface |
 
 **Comparison note:** Conductor names a dedicated testing workflow; the others expose underlying verification primitives.
-**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/workflows.md), [source 2](https://www.onorca.dev/docs/browser/design-mode), [source 3](https://cmux.com/docs/browser-automation), [source 4](https://www.conductor.build/docs/concepts/testing), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/operations/observability.md)
+**Sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/docs/guide/automations.md), [source 2](https://www.onorca.dev/docs/browser/design-mode), [source 3](https://cmux.com/docs/browser-automation), [source 4](https://www.conductor.build/docs/concepts/testing), [source 5](https://github.com/pingdotgg/t3code/blob/main/docs/operations/observability.md)
 
