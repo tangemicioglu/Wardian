@@ -13,9 +13,9 @@ use wardian_core::control::{
     AgentWorktreeListResponse, AgentWorktreeMutationResponse, AgentWorktreeSummary, ApprovalAction,
     AskManyResponse, AskResponse, ControlRequest, ConversationListResponse,
     ConversationShowResponse, DeliveryDetail, InboxListResponse, InboxNotificationPayload,
-    InboxNotificationResponse,
-    MessageInputMode, MessageOrigin, QueuePolicy, ReplyResponse, ReplyStatus, SendMessageResponse,
-    StructuredReply, WatchEvent, WatchEvidenceError, WorkflowRunResponse,
+    InboxNotificationResponse, MessageInputMode, MessageOrigin, QueuePolicy, ReplyResponse,
+    ReplyStatus, SendMessageResponse, StructuredReply, WatchEvent, WatchEvidenceError,
+    WorkflowRunResponse,
 };
 use wardian_core::identity::AgentIdentity;
 

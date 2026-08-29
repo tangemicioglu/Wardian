@@ -1,8 +1,8 @@
-use crate::manager;
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
 };
 use crate::state::{AppState, MailboxMessageDraft, MailboxMessageRecord};
+use crate::{manager, remote::operations::inbox_list_control};
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -17,8 +17,7 @@ use wardian_core::control::{
     AskManyResponse, AskResponse, AskTargetOutcome, AskTargetResponse, CodexPluginDiagnostic,
     ControlRequest, ConversationListResponse, ConversationShowResponse, DeliveryDetail,
     DeliveryErrorDetail, DeliveryTransportKind, InboxNotificationKind, InboxNotificationPayload,
-    InboxListResponse, InboxNotificationResponse, InteractionBodyRef, InteractionStatus,
-    MessageInputMode,
+    InboxNotificationResponse, InteractionBodyRef, InteractionStatus, MessageInputMode,
     MessageOrigin, OkResponse, ProviderInputReadiness, ProviderReadyEvidence, QueuePolicy,
     ReplyResponse, ReplyStatus, SendMessageResponse, StructuredReply, WatchAgentSnapshot,
     WatchDeliverySnapshot, WatchEvidenceError,
@@ -646,37 +645,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             ok_json(&response)
         }
 
-        ControlRequest::InboxList {
-            offset,
-            types,
-            sources,
-            unread,
-            limit,
-        } => {
-            if offset > wardian_core::control::MAX_INBOX_OFFSET {
-                return Err(ControlError::bad_request(format!(
-                    "Inbox offset must not exceed {}",
-                    wardian_core::control::MAX_INBOX_OFFSET
-                )));
-            }
-            if limit == 0 || limit > wardian_core::control::MAX_INBOX_PAGE_LIMIT {
-                return Err(ControlError::bad_request(
-                    "Inbox limit must be between 1 and 200",
-                ));
-            }
-            let state = app.state::<AppState>();
-            let (items, truncated, next_offset) = crate::remote::operations::remote_inbox_list_page(
-                state.inner(),
-                offset,
-                &types,
-                &sources,
-                unread,
-                limit,
-            )
-            .await;
-            ok_json(&InboxListResponse::new(items, truncated, next_offset))
-        }
-
+        request @ ControlRequest::InboxList { .. } => inbox_list_control(app, request).await,
         ControlRequest::ArtifactPresent {
             path,
             title,
@@ -5132,7 +5101,7 @@ pub(crate) struct ControlError {
 }
 
 impl ControlError {
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             code: "bad_request",
             message: message.into(),
@@ -5156,7 +5125,7 @@ impl ControlError {
         }
     }
 
-    fn request_failed(message: impl ToString) -> Self {
+    pub(crate) fn request_failed(message: impl ToString) -> Self {
         Self {
             code: "request_failed",
             message: message.to_string(),

@@ -12,14 +12,6 @@ mod output;
 mod telemetry;
 mod watchlist;
 
-use std::{
-    collections::HashMap,
-    fs,
-    io::Read as _,
-    path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
-
 use args::{
     AgentArgs, AgentCommand, AgentWorktreeCommand, ApprovalArg, AskArgs, Cli, Command,
     ConversationArgs, ConversationCommand, NotifyArgs, NotifyCommand, QueuePolicyArg, ReplyArgs,
@@ -29,6 +21,13 @@ use args::{
 use clap::Parser;
 use errors::{CliError, ExitCode};
 use output::{render_list, render_show, RenderOptions};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Read as _,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use wardian_core::control::{
     ApprovalAction, InboxNotificationKind, InboxNotificationPayload, MessageInputMode, QueuePolicy,
     WorkflowRunResponse,

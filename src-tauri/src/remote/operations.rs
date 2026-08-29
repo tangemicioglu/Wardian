@@ -5,7 +5,9 @@ use crate::remote::models::{
 use crate::state::AppState;
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter, Manager};
-use wardian_core::control::{InboxNotificationKind, InteractionStatus, MessageInputMode};
+use wardian_core::control::{
+    ControlRequest, InboxListResponse, InboxNotificationKind, InteractionStatus, MessageInputMode,
+};
 use wardian_core::models::chat::AgentChatEvent;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -144,11 +146,7 @@ pub async fn remote_inbox_list_page(
         return (Vec::new(), false, None);
     }
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
-    let queue_metadata = wardian_core::queue::load_recent_items(
-        MAX_INBOX_SOURCE_ITEMS,
-        0,
-        cutoff,
-    );
+    let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
     let read_notification_ids = queue_metadata.read_notification_ids;
     let persisted_workflow_runs = queue_metadata.workflow_runs;
     let source_kinds = [
@@ -218,16 +216,46 @@ pub async fn remote_inbox_list_page(
             continue;
         }
         if items.len() >= limit {
-            return (
-                items,
-                true,
-                Some(offset.saturating_add(limit)),
-            );
+            return (items, true, Some(offset.saturating_add(limit)));
         }
         items.push(item);
     }
 
     (items, false, None)
+}
+
+pub(crate) async fn inbox_list_control(
+    app: &AppHandle,
+    request: ControlRequest,
+) -> Result<String, crate::control::ControlError> {
+    let ControlRequest::InboxList {
+        offset,
+        types,
+        sources,
+        unread,
+        limit,
+    } = request
+    else {
+        return Err(crate::control::ControlError::bad_request(
+            "invalid Inbox control request",
+        ));
+    };
+    if offset > wardian_core::control::MAX_INBOX_OFFSET {
+        return Err(crate::control::ControlError::bad_request(format!(
+            "Inbox offset must not exceed {}",
+            wardian_core::control::MAX_INBOX_OFFSET
+        )));
+    }
+    if limit == 0 || limit > wardian_core::control::MAX_INBOX_PAGE_LIMIT {
+        return Err(crate::control::ControlError::bad_request(
+            "Inbox limit must be between 1 and 200",
+        ));
+    }
+    let state = app.state::<AppState>();
+    let (items, truncated, next_offset) =
+        remote_inbox_list_page(state.inner(), offset, &types, &sources, unread, limit).await;
+    serde_json::to_string(&InboxListResponse::new(items, truncated, next_offset))
+        .map_err(crate::control::ControlError::request_failed)
 }
 
 async fn remote_inbox_source_page(
@@ -278,11 +306,10 @@ async fn remote_inbox_source_page(
             }
         }
         InboxSource::WorkflowApprovals => {
-            let (approvals, truncated) = crate::commands::inbox::list_workflow_inbox_approvals_page(
-                offset,
-            )
-            .await
-            .unwrap_or_default();
+            let (approvals, truncated) =
+                crate::commands::inbox::list_workflow_inbox_approvals_page(offset)
+                    .await
+                    .unwrap_or_default();
             InboxSourcePage {
                 items: approvals
                     .into_iter()
@@ -340,11 +367,8 @@ async fn remote_inbox_source_page(
             }
         }
         InboxSource::LegacyQueue => {
-            let persisted = wardian_core::queue::load_recent_items(
-                MAX_INBOX_SOURCE_ITEMS,
-                offset,
-                cutoff,
-            );
+            let persisted =
+                wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, offset, cutoff);
             InboxSourcePage {
                 items: persisted
                     .items
@@ -383,8 +407,7 @@ fn inbox_item_matches(
         });
     type_matches
         && source_matches
-        && (!unread
-            || item.get("read").and_then(serde_json::Value::as_bool) != Some(true))
+        && (!unread || item.get("read").and_then(serde_json::Value::as_bool) != Some(true))
 }
 
 fn item_timestamp(item: &serde_json::Value) -> i64 {
@@ -412,11 +435,8 @@ async fn remote_queue_items_page_internal(
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
     let (persisted_items, read_notification_ids, persisted_workflow_runs, persisted_truncated) =
         if bounded {
-            let persisted = wardian_core::queue::load_recent_items(
-                MAX_INBOX_SOURCE_ITEMS,
-                offset,
-                cutoff,
-            );
+            let persisted =
+                wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, offset, cutoff);
             (
                 persisted.items,
                 persisted.read_notification_ids,
@@ -453,10 +473,11 @@ async fn remote_queue_items_page_internal(
             && item.get("workflow_approval").is_none()
             && item.get("dismissed").is_none()
     });
-    let notification_page = crate::commands::inbox::list_inbox_notifications_for_state_with_offset_read_only(
-        state, offset,
-    )
-    .await;
+    let notification_page =
+        crate::commands::inbox::list_inbox_notifications_for_state_with_offset_read_only(
+            state, offset,
+        )
+        .await;
     let (notifications, truncated, next_offset) = match notification_page {
         Ok(result) => (result.notifications, result.truncated, result.next_offset),
         Err(_) => (Vec::new(), false, None),
@@ -1543,10 +1564,10 @@ mod tests {
 
         assert_eq!(marker["id"], "workflow-dismissed:release:run-1");
         assert_eq!(marker["dismissed"], true);
-        assert_eq!(workflow_identity(&marker), Some((
-            "release".to_string(),
-            "run-1".to_string(),
-        )));
+        assert_eq!(
+            workflow_identity(&marker),
+            Some(("release".to_string(), "run-1".to_string(),))
+        );
     }
 
     #[tokio::test]
