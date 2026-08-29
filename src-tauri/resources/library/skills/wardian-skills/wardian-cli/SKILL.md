@@ -27,6 +27,7 @@ Do not infer agent state from UI, terminal titles, or files such as
 | Need | Start with | Read for details |
 | --- | --- | --- |
 | Inspect, create, update, or assign workspaces to agents | `wardian agent` | [agents](references/agents.md) |
+| Read Inbox events or filter cross-fleet signals | `wardian inbox list` | [Inbox](references/inbox.md) |
 | Control a live task, wait, watch output, or delegate work | `wardian agent wait`, `wardian agent watch` | [orchestration](references/orchestration.md) |
 | Inspect or change communication boundaries | `wardian graph` | [topology](references/topology.md) |
 | Send work, request an accountable reply, respond, or inspect conversations | `wardian send`, `wardian ask`, `wardian reply`, `wardian conversation` | [messaging](references/messaging.md) |
@@ -93,3 +94,12 @@ wardian agent models --provider <provider> --refresh
 Read the linked reference before using a conditional command shape or relying
 on command-specific behavior. Keep prompts bounded, verify delivery or replies,
 and report provider/runtime failures plainly.
+
+## Inbox Read and Write
+
+Use `wardian inbox list` to inspect the shared Inbox projection, including
+`--type`, `--source`, `--unread`, `--limit`, and `--offset` filters. Use the
+write path, `wardian notify update` or `wardian notify approval`, when a result
+materially affects the user or a consequential decision is required. Keep
+routine progress in the transcript. Read [Inbox](references/inbox.md) for the
+event types, evidence sources, and examples.

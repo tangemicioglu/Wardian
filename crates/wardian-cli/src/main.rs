@@ -5,21 +5,13 @@ mod browser;
 mod disk;
 mod errors;
 mod graph;
+mod inbox;
 mod library;
 mod live;
 mod memory;
 mod output;
 mod telemetry;
 mod watchlist;
-
-use std::{
-    collections::HashMap,
-    fs,
-    io::Read as _,
-    path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
-
 use args::{
     AgentArgs, AgentCommand, AgentWorktreeCommand, ApprovalArg, AskArgs, AutomationArgs,
     AutomationCommand, AutomationScheduleCommand, AutomationSessionCloseCommand, Cli, Command,
@@ -29,6 +21,13 @@ use args::{
 use clap::Parser;
 use errors::{CliError, ExitCode};
 use output::{render_list, render_show, RenderOptions};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Read as _,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use wardian_core::control::{
     ApprovalAction, AutomationRunResponse, InboxNotificationKind, InboxNotificationPayload,
     MessageInputMode, OrchestrationDeliveryOptions, QueuePolicy,
@@ -70,6 +69,7 @@ fn run() -> i32 {
         Command::Artifact(args) => artifact::handle_artifact(args),
         Command::Browser(args) => browser::handle_browser(args),
         Command::Conversation(args) => handle_conversation(args),
+        Command::Inbox(args) => inbox::handle_inbox(args),
         Command::Memory(args) => memory::handle_memory(args),
         Command::Library(args) => library::handle_library(args),
         Command::Automation(args) => handle_automation(args),

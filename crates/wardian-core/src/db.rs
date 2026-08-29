@@ -777,6 +777,49 @@ pub fn list_recent_interaction_records_page(
     })
 }
 
+/// Lists a bounded page of interaction records of one kind, newest first.
+///
+/// Callers that project a specific interaction kind should use this helper
+/// instead of loading the complete interaction table into memory.
+pub fn list_recent_interaction_records_by_kind_with_conn(
+    conn: &Connection,
+    kind: &str,
+    limit: usize,
+    offset: usize,
+) -> rusqlite::Result<Vec<InteractionRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, sender_session_id, target_session_ids, status, trigger_policy,
+            body_ref, parent_interaction_id, created_at, updated_at, completed_at
+         FROM interactions
+         WHERE kind = ?1
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![kind, limit as i64, offset as i64],
+        row_to_interaction_record,
+    )?;
+    rows.collect()
+}
+
+/// Lists replies for one notification without loading unrelated interaction
+/// history. The first reply is the durable decision for that notification.
+pub fn list_interaction_replies_for_parent_with_conn(
+    conn: &Connection,
+    parent_interaction_id: &str,
+) -> rusqlite::Result<Vec<InteractionRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, sender_session_id, target_session_ids, status, trigger_policy,
+            body_ref, parent_interaction_id, created_at, updated_at, completed_at
+         FROM interactions
+         WHERE kind = 'reply' AND parent_interaction_id = ?1
+         ORDER BY created_at ASC, id ASC
+         LIMIT 1",
+    )?;
+    let rows = stmt.query_map([parent_interaction_id], row_to_interaction_record)?;
+    rows.collect()
+}
+
 pub fn list_interaction_records_with_conn(
     conn: &Connection,
 ) -> rusqlite::Result<Vec<InteractionRecord>> {

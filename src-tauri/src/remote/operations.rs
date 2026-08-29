@@ -5,7 +5,9 @@ use crate::remote::models::{
 use crate::state::AppState;
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter, Manager};
-use wardian_core::control::{InboxNotificationKind, InteractionStatus, MessageInputMode};
+use wardian_core::control::{
+    ControlRequest, InboxListResponse, InboxNotificationKind, InteractionStatus, MessageInputMode,
+};
 use wardian_core::models::chat::AgentChatEvent;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -100,79 +102,512 @@ pub fn remote_watchlist_state() -> Result<RemoteWatchlistResponse, String> {
 
 /// Builds the same Inbox projection as the desktop queue store.
 pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
-    let persisted_items = crate::utils::queue::load_items();
-    let read_notification_ids = persisted_items
-        .iter()
-        .filter(|item| {
-            item.get("type").and_then(serde_json::Value::as_str) == Some("agent_update")
-                && item.get("read").and_then(serde_json::Value::as_bool) == Some(true)
-        })
-        .filter_map(|item| {
-            item.get("inbox_notification_id")
-                .and_then(serde_json::Value::as_str)
-        })
-        .map(str::to_string)
-        .collect::<std::collections::HashSet<_>>();
-    let legacy_items = persisted_items.into_iter().filter(|item| {
-        item.get("inbox_notification_id").is_none()
-            && item.get("automation_approval").is_none()
-            && item.get("dismissed").is_none()
-    });
-    let notifications = crate::commands::inbox::list_inbox_notifications_for_state(state)
-        .await
-        .map(|result| result.notifications)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|notification| {
-            let is_approval = matches!(&notification.kind, InboxNotificationKind::Approval);
-            serde_json::json!({
-                "id": format!("notification:{}", notification.id),
-                "type": if is_approval { "approval_request" } else { "agent_update" },
-                "timestamp": queue_timestamp(&notification.created_at),
-                "read": if is_approval { notification.status != InteractionStatus::AwaitingReply } else { read_notification_ids.contains(notification.id.as_str()) },
-                "agent_session_id": notification.sender_session_id,
-                "notification_title": notification.title,
-                "inbox_notification_id": notification.id,
-                "notification_status": notification.status,
-                "summary": notification.body,
-                "proposed_action": notification.proposed_action,
-                "risk": notification.risk,
-                "approval_choices": notification.choices,
-                "approval_decision": notification.decision.map(|decision| decision.choice),
-                "expires_at": notification.expires_at,
-            })
-        });
-    let automation_approvals = crate::commands::inbox::list_automation_inbox_approvals()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|approval| serde_json::json!({
-            "id": format!("automation-approval:{}:{}:{}", approval.blueprint_id, approval.run_id, approval.node),
-            "type": "approval_request",
-            "timestamp": approval.created_at.as_deref().map(queue_timestamp).unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
-            "read": false,
-            "automation_id": approval.blueprint_id,
-            "automation_run_id": approval.run_id,
-            "automation_name": approval.title,
-            "notification_title": approval.title,
-            "summary": approval.prompt,
-            "proposed_action": "Continue this automation beyond its approval gate",
-            "risk": "The automation will execute the next authored steps after approval.",
-            "approval_choices": ["Approve", "Reject"],
-            "automation_approval": { "blueprint_id": approval.blueprint_id, "blueprint_path": approval.blueprint_path, "run_id": approval.run_id, "node": approval.node },
-        }));
-    let mut items = notifications
-        .chain(automation_approvals)
-        .chain(legacy_items)
-        .collect::<Vec<_>>();
-    items.sort_by_key(|item| {
-        std::cmp::Reverse(
-            item.get("timestamp")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or_default(),
-        )
+    let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
+    let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
+    let read_notification_ids = queue_metadata.read_notification_ids;
+    let persisted_automation_runs = queue_metadata.automation_runs;
+    let source_kinds = [
+        InboxSource::Notifications,
+        InboxSource::AutomationApprovals,
+        InboxSource::AutomationTerminals,
+        InboxSource::LegacyQueue,
+    ];
+    let context = InboxProjectionContext {
+        cutoff,
+        read_notification_ids: &read_notification_ids,
+        persisted_automation_runs: &persisted_automation_runs,
+        types: &[],
+        sources: &[],
+        unread: false,
+    };
+    let mut items = Vec::new();
+    for source in source_kinds.into_iter().take(3) {
+        let Ok(page) =
+            remote_inbox_source_page(state, source, 0, MAX_INBOX_SOURCE_ITEMS, &context).await
+        else {
+            // The compatibility endpoint has no cursor or error field.
+            // Preserve readable sources when an automation directory changes
+            // during a refresh instead of returning an empty Inbox. Callers
+            // that need older records use the bounded Inbox control path.
+            continue;
+        };
+        items.extend(page.items);
+    }
+    items.extend(persisted_queue_items().into_iter().filter(|item| {
+        item_timestamp(item) > cutoff
+            && is_legacy_queue_item(item)
+            && item.get("dismissed").and_then(serde_json::Value::as_bool) != Some(true)
+    }));
+    items.sort_by(|left, right| {
+        item_timestamp(left)
+            .cmp(&item_timestamp(right))
+            .then_with(|| item_id(left).cmp(item_id(right)))
+            .reverse()
     });
     items
+}
+
+/// Builds one bounded page of the Inbox projection while preserving the
+/// durable-notification pagination boundary for callers that need to continue
+/// reading older events.
+const MAX_INBOX_SOURCE_ITEMS: usize = 200;
+const QUEUE_MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+pub async fn remote_queue_items_page(
+    state: &AppState,
+    offset: usize,
+) -> (Vec<serde_json::Value>, bool, Option<usize>) {
+    remote_inbox_list_page(state, offset, &[], &[], false, MAX_INBOX_SOURCE_ITEMS)
+        .await
+        .unwrap_or_default()
+}
+
+#[derive(Clone, Copy)]
+enum InboxSource {
+    Notifications,
+    AutomationApprovals,
+    AutomationTerminals,
+    LegacyQueue,
+}
+
+struct InboxSourcePage {
+    items: Vec<serde_json::Value>,
+    truncated: bool,
+}
+
+struct InboxProjectionContext<'a> {
+    cutoff: i64,
+    read_notification_ids: &'a std::collections::HashSet<String>,
+    persisted_automation_runs: &'a std::collections::HashSet<(String, String)>,
+    types: &'a [String],
+    sources: &'a [String],
+    unread: bool,
+}
+
+/// Builds one globally ordered, filter-aware Inbox page. Each source is
+/// advanced independently behind a single merged cursor so filtering and
+/// pagination cannot skip records from another source.
+pub async fn remote_inbox_list_page(
+    state: &AppState,
+    offset: usize,
+    types: &[String],
+    sources: &[String],
+    unread: bool,
+    limit: usize,
+) -> Result<(Vec<serde_json::Value>, bool, Option<usize>), String> {
+    if limit == 0 {
+        return Ok((Vec::new(), false, None));
+    }
+    if offset > wardian_core::control::MAX_INBOX_OFFSET
+        || limit > wardian_core::control::MAX_INBOX_PAGE_LIMIT
+        || offset.saturating_add(limit) > wardian_core::control::MAX_INBOX_OFFSET
+    {
+        return Err("Inbox page exceeds the accepted offset or limit bounds".to_string());
+    }
+    let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
+    let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
+    let read_notification_ids = queue_metadata.read_notification_ids;
+    let persisted_automation_runs = queue_metadata.automation_runs;
+    let source_kinds = [
+        InboxSource::Notifications,
+        InboxSource::AutomationApprovals,
+        InboxSource::AutomationTerminals,
+        InboxSource::LegacyQueue,
+    ];
+    let context = InboxProjectionContext {
+        cutoff,
+        read_notification_ids: &read_notification_ids,
+        persisted_automation_runs: &persisted_automation_runs,
+        types,
+        sources,
+        unread,
+    };
+    let source_page_limit = offset.saturating_add(limit).saturating_add(1);
+    let mut pages = Vec::with_capacity(source_kinds.len());
+    for source in source_kinds {
+        pages.push(
+            remote_inbox_source_page(state, source, 0, source_page_limit, &context)
+                .await
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    let mut offsets = [0usize; 4];
+    let mut skipped = 0usize;
+    let mut items = Vec::with_capacity(limit);
+    loop {
+        for index in 0..pages.len() {
+            if pages[index].items.is_empty() && pages[index].truncated {
+                offsets[index] = offsets[index].saturating_add(source_page_limit);
+                pages[index] = remote_inbox_source_page(
+                    state,
+                    source_kinds[index],
+                    offsets[index],
+                    source_page_limit,
+                    &context,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+        }
+        let Some(source_index) = pages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, page)| {
+                page.items
+                    .first()
+                    .map(|item| (index, item_timestamp(item), item_id(item)))
+            })
+            .max_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(right.2)))
+            .map(|candidate| candidate.0)
+        else {
+            break;
+        };
+
+        let item = pages[source_index].items.remove(0);
+        if !inbox_item_matches(&item, types, sources, unread) {
+            continue;
+        }
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+        if items.len() >= limit {
+            return Ok(page_after_lookahead(items, offset, limit));
+        }
+        items.push(item);
+    }
+
+    Ok((items, false, None))
+}
+
+fn next_inbox_offset(offset: usize, limit: usize) -> Option<usize> {
+    let next_offset = offset.saturating_add(limit);
+    (next_offset < wardian_core::control::MAX_INBOX_OFFSET).then_some(next_offset)
+}
+
+fn page_after_lookahead(
+    items: Vec<serde_json::Value>,
+    offset: usize,
+    limit: usize,
+) -> (Vec<serde_json::Value>, bool, Option<usize>) {
+    (items, true, next_inbox_offset(offset, limit))
+}
+
+pub(crate) async fn inbox_list_control(
+    app: &AppHandle,
+    request: ControlRequest,
+) -> Result<String, crate::control::ControlError> {
+    let ControlRequest::InboxList {
+        offset,
+        types,
+        sources,
+        unread,
+        limit,
+    } = request
+    else {
+        return Err(crate::control::ControlError::bad_request(
+            "invalid Inbox control request",
+        ));
+    };
+    if offset > wardian_core::control::MAX_INBOX_OFFSET {
+        return Err(crate::control::ControlError::bad_request(format!(
+            "Inbox offset must not exceed {}",
+            wardian_core::control::MAX_INBOX_OFFSET
+        )));
+    }
+    if limit == 0 || limit > wardian_core::control::MAX_INBOX_PAGE_LIMIT {
+        return Err(crate::control::ControlError::bad_request(
+            "Inbox limit must be between 1 and 200",
+        ));
+    }
+    if offset.saturating_add(limit) > wardian_core::control::MAX_INBOX_OFFSET {
+        return Err(crate::control::ControlError::bad_request(format!(
+            "Inbox offset plus limit must not exceed {}",
+            wardian_core::control::MAX_INBOX_OFFSET
+        )));
+    }
+    let state = app.state::<AppState>();
+    let (items, truncated, next_offset) =
+        remote_inbox_list_page(state.inner(), offset, &types, &sources, unread, limit)
+            .await
+            .map_err(crate::control::ControlError::request_failed)?;
+    serde_json::to_string(&InboxListResponse::new(items, truncated, next_offset))
+        .map_err(crate::control::ControlError::request_failed)
+}
+
+fn inbox_source_name(source: InboxSource) -> &'static str {
+    match source {
+        InboxSource::Notifications => "interaction_store",
+        InboxSource::AutomationApprovals | InboxSource::AutomationTerminals => "live_runtime",
+        InboxSource::LegacyQueue => "provider_runtime",
+    }
+}
+
+fn source_may_match(source: InboxSource, types: &[String], sources: &[String]) -> bool {
+    (sources.is_empty()
+        || matches!(source, InboxSource::LegacyQueue)
+        || sources
+            .iter()
+            .any(|value| value == inbox_source_name(source)))
+        && (types.is_empty()
+            || match source {
+                InboxSource::Notifications => types
+                    .iter()
+                    .any(|value| matches!(value.as_str(), "agent_update" | "approval_request")),
+                InboxSource::AutomationApprovals => {
+                    types.iter().any(|value| value == "approval_request")
+                }
+                InboxSource::AutomationTerminals => types.iter().any(|value| {
+                    matches!(
+                        value.as_str(),
+                        "automation_completed"
+                            | "automation_failed"
+                            | "workflow_completed"
+                            | "workflow_failed"
+                    )
+                }),
+                InboxSource::LegacyQueue => true,
+            })
+}
+
+async fn remote_inbox_source_page(
+    state: &AppState,
+    source: InboxSource,
+    offset: usize,
+    page_limit: usize,
+    context: &InboxProjectionContext<'_>,
+) -> Result<InboxSourcePage, String> {
+    if !source_may_match(source, context.types, context.sources) {
+        return Ok(InboxSourcePage {
+            items: Vec::new(),
+            truncated: false,
+        });
+    }
+
+    if matches!(source, InboxSource::LegacyQueue) {
+        let persisted = wardian_core::queue::load_recent_items_matching(
+            page_limit,
+            offset,
+            context.cutoff,
+            |item| {
+                item.get("inbox_notification_id").is_none()
+                    && item.get("workflow_approval").is_none()
+                    && item.get("automation_approval").is_none()
+                    && item.get("dismissed").and_then(serde_json::Value::as_bool) != Some(true)
+                    && inbox_item_matches(item, context.types, context.sources, context.unread)
+            },
+        );
+        return Ok(InboxSourcePage {
+            items: persisted.items,
+            truncated: persisted.truncated,
+        });
+    }
+
+    let page_end = offset.saturating_add(page_limit);
+    let mut raw_offset = 0usize;
+    let mut matching = Vec::new();
+    let mut truncated = false;
+    loop {
+        let page = remote_inbox_source_page_raw(
+            state,
+            source,
+            raw_offset,
+            context.cutoff,
+            context.read_notification_ids,
+        )
+        .await?;
+        matching.extend(page.items.into_iter().filter(|item| {
+            let persisted_automation_duplicate = matches!(source, InboxSource::AutomationTerminals)
+                && !context.sources.iter().any(|value| value == "live_runtime")
+                && automation_identity(item)
+                    .is_some_and(|key| context.persisted_automation_runs.contains(&key));
+            !persisted_automation_duplicate
+                && inbox_item_matches(item, context.types, context.sources, context.unread)
+        }));
+        if matching.len() > page_end {
+            truncated = true;
+            break;
+        }
+        if !page.truncated {
+            break;
+        }
+        raw_offset = raw_offset.saturating_add(MAX_INBOX_SOURCE_ITEMS);
+    }
+    matching.sort_by(|left, right| {
+        item_timestamp(left)
+            .cmp(&item_timestamp(right))
+            .then_with(|| item_id(left).cmp(item_id(right)))
+            .reverse()
+    });
+    Ok(InboxSourcePage {
+        items: matching.into_iter().skip(offset).take(page_limit).collect(),
+        truncated,
+    })
+}
+
+async fn remote_inbox_source_page_raw(
+    state: &AppState,
+    source: InboxSource,
+    offset: usize,
+    cutoff: i64,
+    read_notification_ids: &std::collections::HashSet<String>,
+) -> Result<InboxSourcePage, String> {
+    match source {
+        InboxSource::Notifications => {
+            let notification_page =
+                crate::commands::inbox::list_inbox_notifications_for_state_with_offset_read_only(
+                    state, offset,
+                )
+                .await;
+            let (notifications, truncated) = match notification_page {
+                Ok(result) => (result.notifications, result.truncated),
+                Err(_) => (Vec::new(), false),
+            };
+            Ok(InboxSourcePage {
+                items: notifications
+                    .into_iter()
+                    .map(|notification| {
+                        let is_approval =
+                            matches!(&notification.kind, InboxNotificationKind::Approval);
+                        serde_json::json!({
+                            "id": format!("notification:{}", notification.id),
+                            "type": if is_approval { "approval_request" } else { "agent_update" },
+                            "timestamp": queue_timestamp(&notification.created_at),
+                            "read": if is_approval { notification.status != InteractionStatus::AwaitingReply } else { read_notification_ids.contains(notification.id.as_str()) },
+                            "agent_session_id": notification.sender_session_id,
+                            "evidence_source": "interaction_store",
+                            "inbox_notification_id": notification.id,
+                            "notification_status": notification.status,
+                            "summary": notification.body,
+                            "notification_title": notification.title,
+                            "proposed_action": notification.proposed_action,
+                            "risk": notification.risk,
+                            "approval_choices": notification.choices,
+                            "approval_decision": notification.decision.map(|decision| decision.choice),
+                            "expires_at": notification.expires_at,
+                        })
+                    })
+                    .collect(),
+                truncated,
+            })
+        }
+        InboxSource::AutomationApprovals => {
+            let (approvals, truncated) =
+                crate::commands::inbox::list_automation_inbox_approvals_page(offset).await?;
+            Ok(InboxSourcePage {
+                items: approvals
+                    .into_iter()
+                    .map(|approval| {
+                        serde_json::json!({
+                            "id": format!("automation-approval:{}:{}:{}", approval.blueprint_id, approval.run_id, approval.node),
+                            "type": "approval_request",
+                            "timestamp": approval.created_at.as_deref().map(queue_timestamp).unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
+                            "read": false,
+                            "evidence_source": "live_runtime",
+                            "automation_id": approval.blueprint_id,
+                            "automation_run_id": approval.run_id,
+                            "automation_name": approval.title,
+                            "notification_title": approval.title,
+                            "summary": approval.prompt,
+                            "proposed_action": "Continue this automation beyond its approval gate",
+                            "risk": "The automation will execute the next authored steps after approval.",
+                            "approval_choices": ["Approve", "Reject"],
+                            "automation_approval": { "blueprint_id": approval.blueprint_id, "blueprint_path": approval.blueprint_path, "run_id": approval.run_id, "node": approval.node },
+                        })
+                    })
+                    .collect(),
+                truncated,
+            })
+        }
+        InboxSource::AutomationTerminals => {
+            let (terminals, truncated) =
+                crate::commands::inbox::list_automation_inbox_terminal_runs_page(offset).await?;
+            Ok(InboxSourcePage {
+                items: terminals
+                    .into_iter()
+                    .map(|run| {
+                        serde_json::json!({
+                            "id": format!("automation-completion:{}:{}", run.automation_id, run.run_instance_id),
+                            "type": "automation_completed",
+                            "timestamp": run.updated_at.as_deref().map(queue_timestamp).unwrap_or_default(),
+                            "read": false,
+                            "evidence_source": "live_runtime",
+                            "automation_id": run.automation_id,
+                            "automation_run_id": run.run_instance_id,
+                            "automation_name": run.automation_name,
+                            "status": run.status,
+                            "error": run.error,
+                            "summary": run.summary,
+                        })
+                    })
+                    .collect(),
+                truncated,
+            })
+        }
+        InboxSource::LegacyQueue => {
+            let persisted =
+                wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, offset, cutoff);
+            Ok(InboxSourcePage {
+                items: persisted
+                    .items
+                    .into_iter()
+                    .filter(|item| {
+                        item.get("inbox_notification_id").is_none()
+                            && item.get("workflow_approval").is_none()
+                            && item.get("automation_approval").is_none()
+                            && item.get("dismissed").and_then(serde_json::Value::as_bool)
+                                != Some(true)
+                    })
+                    .collect(),
+                truncated: persisted.truncated,
+            })
+        }
+    }
+}
+
+fn inbox_item_matches(
+    item: &serde_json::Value,
+    types: &[String],
+    sources: &[String],
+    unread: bool,
+) -> bool {
+    let type_matches = types.is_empty()
+        || types.iter().any(|kind| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some(kind.as_str())
+                || ((kind == "automation_failed" || kind == "workflow_failed")
+                    && item
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|item_type| {
+                            item_type == "automation_completed" || item_type == "workflow_completed"
+                        })
+                    && item.get("status").and_then(serde_json::Value::as_str) == Some("failed"))
+        });
+    let item_source = item
+        .get("evidence_source")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("provider_runtime");
+    let source_matches = sources.is_empty() || sources.iter().any(|source| source == item_source);
+    type_matches
+        && source_matches
+        && (!unread || item.get("read").and_then(serde_json::Value::as_bool) != Some(true))
+}
+
+fn item_timestamp(item: &serde_json::Value) -> i64 {
+    item.get("timestamp")
+        .and_then(serde_json::Value::as_i64)
+        .or_else(|| {
+            item.get("timestamp")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| i64::try_from(value).ok())
+        })
+        .unwrap_or_default()
+}
+
+fn item_id(item: &serde_json::Value) -> &str {
+    item.get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
 }
 
 fn persisted_queue_items() -> Vec<serde_json::Value> {
@@ -189,7 +624,7 @@ fn is_legacy_queue_item(item: &serde_json::Value) -> bool {
 
 fn is_clearable_legacy_completion(item: &serde_json::Value) -> bool {
     is_legacy_queue_item(item)
-        && item.get("dismissed").is_none()
+        && item.get("dismissed").and_then(serde_json::Value::as_bool) != Some(true)
         && !provider_choice_acknowledgement_unresolved(item)
         && matches!(
             item.get("type").and_then(serde_json::Value::as_str),
@@ -230,6 +665,51 @@ fn current_queue_item<'a>(
         .iter()
         .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(item_id))
         .ok_or_else(|| "inbox_item_not_found".to_string())
+}
+
+fn automation_identity(item: &serde_json::Value) -> Option<(String, String)> {
+    if !matches!(
+        item.get("type").and_then(serde_json::Value::as_str),
+        Some("automation_completed" | "workflow_completed")
+    ) {
+        return None;
+    }
+    Some((
+        item.get("automation_id")
+            .or_else(|| item.get("workflow_id"))
+            .and_then(serde_json::Value::as_str)?
+            .to_string(),
+        item.get("automation_run_id")
+            .or_else(|| item.get("workflow_run_id"))
+            .and_then(serde_json::Value::as_str)?
+            .to_string(),
+    ))
+}
+
+fn automation_dismissal_marker(item: &serde_json::Value) -> Option<serde_json::Value> {
+    let (automation_id, run_id) = automation_identity(item)?;
+    let legacy = item.get("automation_id").is_none();
+    Some(if legacy {
+        serde_json::json!({
+            "id": format!("workflow-dismissed:{automation_id}:{run_id}"),
+            "type": "workflow_completed",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+            "read": true,
+            "dismissed": true,
+            "workflow_id": automation_id,
+            "workflow_run_id": run_id,
+        })
+    } else {
+        serde_json::json!({
+            "id": format!("automation-dismissed:{automation_id}:{run_id}"),
+            "type": "automation_completed",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+            "read": true,
+            "dismissed": true,
+            "automation_id": automation_id,
+            "automation_run_id": run_id,
+        })
+    })
 }
 
 fn validate_remote_mark_read(item: &serde_json::Value) -> Result<(), String> {
@@ -277,6 +757,10 @@ pub async fn apply_remote_inbox_action(
                 candidate.get("id").and_then(serde_json::Value::as_str) == Some(item_id)
             }) {
                 candidate["read"] = serde_json::Value::Bool(true);
+            } else if automation_identity(item).is_some() {
+                let mut persisted_item = item.clone();
+                persisted_item["read"] = serde_json::Value::Bool(true);
+                persisted.push(persisted_item);
             } else {
                 return Err("inbox_item_not_persisted".to_string());
             }
@@ -310,17 +794,48 @@ pub async fn apply_remote_inbox_action(
                     }
                 }
             }
+            let known_automation_runs = persisted
+                .iter()
+                .filter_map(automation_identity)
+                .collect::<std::collections::HashSet<_>>();
+            for item in projected_items.iter().filter(|item| {
+                matches!(
+                    item.get("type").and_then(serde_json::Value::as_str),
+                    Some("automation_completed" | "workflow_completed")
+                )
+            }) {
+                let Some(identity) = automation_identity(item) else {
+                    continue;
+                };
+                if known_automation_runs.contains(&identity) {
+                    continue;
+                }
+                let mut persisted_item = item.clone();
+                persisted_item["read"] = serde_json::Value::Bool(true);
+                persisted.push(persisted_item);
+            }
             save_persisted_queue_items(&persisted)?;
         }
         "clear_read" => {
             let persisted = persisted_queue_items();
+            let mut automation_dismissals = Vec::new();
             let next = persisted
                 .into_iter()
-                .filter(|item| {
-                    !(is_clearable_legacy_completion(item)
-                        && item.get("read").and_then(serde_json::Value::as_bool) == Some(true))
+                .filter_map(|item| {
+                    let clear = is_clearable_legacy_completion(&item)
+                        && item.get("read").and_then(serde_json::Value::as_bool) == Some(true);
+                    if clear {
+                        if let Some(marker) = automation_dismissal_marker(&item) {
+                            automation_dismissals.push(marker);
+                        }
+                        None
+                    } else {
+                        Some(item)
+                    }
                 })
                 .collect::<Vec<_>>();
+            let mut next = next;
+            next.extend(automation_dismissals);
             save_persisted_queue_items(&next)?;
         }
         "dismiss" => {
@@ -341,6 +856,7 @@ pub async fn apply_remote_inbox_action(
                 .filter(|candidate| {
                     candidate.get("id").and_then(serde_json::Value::as_str) != Some(item_id)
                 })
+                .chain(automation_dismissal_marker(item))
                 .collect::<Vec<_>>();
             save_persisted_queue_items(&next)?;
         }
@@ -860,8 +1376,12 @@ mod tests {
         std::fs::create_dir_all(&queue_dir).expect("queue dir");
         std::fs::write(
             queue_dir.join("items.json"),
-            serde_json::json!([{ "id": "desktop-inbox-1", "type": "approval_request" }])
-                .to_string(),
+            serde_json::json!([{
+                "id": "desktop-inbox-1",
+                "type": "approval_request",
+                "timestamp": chrono::Utc::now().timestamp_millis(),
+            }])
+            .to_string(),
         )
         .expect("queue json");
 
@@ -873,6 +1393,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_queue_items_keeps_persisted_workflow_completions() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        crate::utils::queue::save_items(&[serde_json::json!({
+            "id": "workflow-completion:release:run-1",
+            "type": "workflow_completed",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+            "workflow_id": "release",
+            "workflow_run_id": "run-1",
+            "status": "completed",
+        })])
+        .expect("workflow completion");
+
+        let items = remote_queue_items(&AppState::new()).await;
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+
+        assert_eq!(items[0]["id"], "workflow-completion:release:run-1");
+    }
+
+    #[test]
+    fn inbox_page_reports_more_items_at_the_cursor_cap() {
+        let (items, truncated, next_offset) = page_after_lookahead(
+            vec![serde_json::json!({ "id": "lookahead" })],
+            wardian_core::control::MAX_INBOX_OFFSET - 200,
+            200,
+        );
+
+        assert_eq!(items[0]["id"], "lookahead");
+        assert!(truncated);
+        assert!(next_offset.is_none());
+    }
+
+    #[tokio::test]
     async fn pending_provider_choice_survives_reload_as_uncertain() {
         let _guard = crate::utils::wardian_test_env_lock();
         let temp = tempfile::tempdir().expect("temp home");
@@ -880,6 +1434,7 @@ mod tests {
         crate::utils::queue::save_items(&[serde_json::json!({
             "id": "action-1",
             "type": "action_needed",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
             "read": false,
             "agent_session_id": "agent-1",
             "summary": "Proceed?\n1. Yes",
@@ -1099,6 +1654,23 @@ mod tests {
         })));
     }
 
+    #[test]
+    fn automation_dismissal_marker_preserves_run_identity() {
+        let marker = automation_dismissal_marker(&serde_json::json!({
+            "type": "workflow_completed",
+            "workflow_id": "release",
+            "workflow_run_id": "run-1",
+        }))
+        .expect("workflow item should produce a dismissal marker");
+
+        assert_eq!(marker["id"], "workflow-dismissed:release:run-1");
+        assert_eq!(marker["dismissed"], true);
+        assert_eq!(
+            automation_identity(&marker),
+            Some(("release".to_string(), "run-1".to_string(),))
+        );
+    }
+
     #[tokio::test]
     async fn remote_queue_items_projects_live_inbox_notifications() {
         let _guard = crate::utils::wardian_test_env_lock();
@@ -1132,6 +1704,7 @@ mod tests {
             .find(|item| item["inbox_notification_id"] == notification.id)
             .expect("live inbox notification");
         assert_eq!(item["type"], "approval_request");
+        assert_eq!(item["evidence_source"], "interaction_store");
         assert_eq!(item["notification_title"], "Approve deployment");
         assert_eq!(
             item["approval_choices"],

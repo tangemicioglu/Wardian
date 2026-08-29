@@ -13,6 +13,7 @@ pub enum Command {
     Artifact(ArtifactArgs),
     Browser(BrowserArgs),
     Conversation(ConversationArgs),
+    Inbox(InboxArgs),
     Memory(MemoryArgs),
     Library(LibraryArgs),
     Automation(AutomationArgs),
@@ -454,6 +455,38 @@ pub enum ConversationCommand {
     },
     Show {
         conversation_id: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// wardian inbox
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Args)]
+pub struct InboxArgs {
+    #[command(subcommand)]
+    pub command: InboxCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum InboxCommand {
+    /// Read the assembled Inbox projection, newest first.
+    List {
+        /// Match one or more Inbox item types, separated by commas.
+        #[arg(long = "type", value_delimiter = ',')]
+        types: Vec<String>,
+        /// Match one or more evidence sources, separated by commas.
+        #[arg(long = "source", value_delimiter = ',')]
+        sources: Vec<String>,
+        /// Return only items that have not been acknowledged.
+        #[arg(long)]
+        unread: bool,
+        /// Number of items to return after filtering.
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        /// Number of matching items to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
     },
 }
 
@@ -1814,6 +1847,39 @@ mod tests {
         assert!(matches!(
             args.command,
             AutomationCommand::Validate { ref path } if path == "wf.md"
+        ));
+    }
+
+    #[test]
+    fn parses_inbox_list_filters_and_paging() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "inbox",
+            "list",
+            "--type",
+            "action_needed,approval_request",
+            "--source",
+            "provider_runtime,interaction_store",
+            "--unread",
+            "--limit",
+            "25",
+            "--offset",
+            "10",
+        ])
+        .unwrap();
+        let Command::Inbox(args) = cli.command else {
+            panic!("expected Inbox")
+        };
+        assert!(matches!(
+            args.command,
+            InboxCommand::List {
+                ref types,
+                ref sources,
+                unread: true,
+                limit: 25,
+                offset: 10,
+            } if types == &["action_needed", "approval_request"]
+                && sources == &["provider_runtime", "interaction_store"]
         ));
     }
 

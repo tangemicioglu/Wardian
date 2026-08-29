@@ -12,8 +12,8 @@ use wardian_core::control::{
     AgentDoctorResponse, AgentListResponse, AgentResponse, AgentUpdateResponse, AgentWatchResponse,
     AgentWorktreeListResponse, AgentWorktreeMutationResponse, AgentWorktreeSummary, ApprovalAction,
     AskManyResponse, AskResponse, AutomationRunResponse, ControlRequest, ConversationListResponse,
-    ConversationShowResponse, DeliveryDetail, InboxNotificationPayload, InboxNotificationResponse,
-    MessageInputMode, MessageOrigin, NativeDeliveryCapabilitiesResponse,
+    ConversationShowResponse, DeliveryDetail, InboxListResponse, InboxNotificationPayload,
+    InboxNotificationResponse, MessageInputMode, MessageOrigin, NativeDeliveryCapabilitiesResponse,
     NativeDeliveryInspectResponse, OrchestrationDeliveryOptions, QueuePolicy, ReplyResponse,
     ReplyStatus, SendMessageResponse, StructuredReply, WatchEvent, WatchEvidenceError,
 };
@@ -102,6 +102,7 @@ enum ControlOperation {
     AgentWorktreeDisable,
     ConversationList,
     ConversationShow,
+    InboxList,
     ArtifactPresent,
     ArtifactShow,
     ArtifactReviewShow,
@@ -585,6 +586,28 @@ pub fn conversation_show(conversation_id: &str) -> io::Result<ConversationShowRe
         }),
     )?;
     serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))
+}
+
+pub fn inbox_list_page(
+    offset: usize,
+    types: Vec<String>,
+    sources: Vec<String>,
+    unread: bool,
+    limit: usize,
+) -> io::Result<InboxListResponse> {
+    let runtime = build_runtime()?;
+    let value = timeout_block(
+        &runtime,
+        ControlOperation::InboxList,
+        send_request(ControlRequest::InboxList {
+            offset,
+            types,
+            sources,
+            unread,
+            limit,
+        }),
+    )?;
+    serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1230,6 +1253,7 @@ fn operation_timeout(operation: &ControlOperation) -> Duration {
         ControlOperation::AgentList | ControlOperation::AgentDoctor => CONTROL_TIMEOUT,
         ControlOperation::ConversationList
         | ControlOperation::ConversationShow
+        | ControlOperation::InboxList
         | ControlOperation::ArtifactShow
         | ControlOperation::ArtifactReviewShow
         | ControlOperation::WatchlistsChanged => CONTROL_TIMEOUT,

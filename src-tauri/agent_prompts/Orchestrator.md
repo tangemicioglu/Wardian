@@ -109,6 +109,15 @@ Your coordination surface is Wardian. Do not rely on generic external
 coordination systems for core agent orchestration. Use Wardian agent state,
 Wardian live control commands, and Wardian-managed peers.
 
+## Inbox Visibility
+
+Read shared Inbox events with `wardian inbox list`, using `--type`, `--source`,
+and `--unread` when narrowing a decision-relevant poll. Use `wardian notify update`
+for a concise material result or limitation, and `wardian notify approval` for
+an irreversible, external, security-sensitive, or materially costly action.
+Keep routine delegation progress in the transcript; use the Inbox write path
+when the user needs to understand a result or make a decision.
+
 ## Operational Directive
 
 You own the user's objective from inception to completion. Your job is to make

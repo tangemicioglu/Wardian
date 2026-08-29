@@ -108,6 +108,18 @@ pub enum ControlRequest {
     ConversationShow {
         conversation_id: String,
     },
+    InboxList {
+        #[serde(default)]
+        offset: usize,
+        #[serde(default)]
+        types: Vec<String>,
+        #[serde(default)]
+        sources: Vec<String>,
+        #[serde(default)]
+        unread: bool,
+        #[serde(default = "default_inbox_page_limit")]
+        limit: usize,
+    },
     ArtifactPresent {
         path: String,
         title: Option<String>,
@@ -543,6 +555,35 @@ impl AgentListResponse {
 pub struct ConversationListResponse {
     pub schema: u8,
     pub conversations: Vec<ConversationIndexEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InboxListResponse {
+    pub schema: u8,
+    pub items: Vec<serde_json::Value>,
+    pub truncated: bool,
+    pub next_offset: Option<usize>,
+}
+
+/// Maximum Inbox cursor accepted by live control requests. Keeping the cursor
+/// bounded prevents source projections from allocating based on untrusted
+/// offsets while still allowing agents to page through a large Inbox.
+pub const MAX_INBOX_OFFSET: usize = 100_000;
+pub const MAX_INBOX_PAGE_LIMIT: usize = 200;
+
+impl InboxListResponse {
+    pub fn new(items: Vec<serde_json::Value>, truncated: bool, next_offset: Option<usize>) -> Self {
+        Self {
+            schema: CONTROL_SCHEMA,
+            items,
+            truncated,
+            next_offset,
+        }
+    }
+}
+
+fn default_inbox_page_limit() -> usize {
+    MAX_INBOX_PAGE_LIMIT
 }
 
 impl ConversationListResponse {
@@ -1878,6 +1919,38 @@ mod tests {
                 conversation_id: "conv_20260615_agent_1".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn inbox_list_request_and_response_use_current_schema() {
+        let request = ControlRequest::InboxList {
+            offset: 200,
+            types: vec!["agent_update".to_string()],
+            sources: vec!["interaction_store".to_string()],
+            unread: true,
+            limit: 25,
+        };
+        let value = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(value["command"], "inbox_list");
+        assert_eq!(value["offset"], 200);
+        assert_eq!(value["limit"], 25);
+        assert_eq!(
+            serde_json::from_value::<ControlRequest>(value).expect("roundtrip"),
+            request
+        );
+
+        let response = InboxListResponse::new(
+            vec![serde_json::json!({
+                "id": "item-1",
+                "type": "agent_update",
+            })],
+            true,
+            Some(400),
+        );
+        assert_eq!(response.schema, CONTROL_SCHEMA);
+        assert_eq!(response.items[0]["id"], "item-1");
+        assert!(response.truncated);
+        assert_eq!(response.next_offset, Some(400));
     }
 
     #[test]
