@@ -8,8 +8,9 @@
  *
  * These rules check that a decision was recorded, not that it was the right
  * decision — a reviewer still has to read the reason. The related count-based
- * limits (ignored Rust tests, `#[cfg(test)]` seams) live in `budgets.json`,
- * because those cannot be driven to zero in one change.
+ * limits (ignored Rust tests, `#[cfg(test)]` seams) are compared by
+ * verify-budgets.mjs with the base revision because they cannot be driven to
+ * zero in one change.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";

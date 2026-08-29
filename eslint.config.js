@@ -12,7 +12,7 @@ import reactHooks from "eslint-plugin-react-hooks";
  *
  * Rules land as `error` only where the codebase is already clean, so the gate
  * starts green and a violation always means a new one. Everything else is a
- * `warn` with its count frozen in `budgets.json`.
+ * `warn` with its count compared against the base revision by the debt gate.
  */
 
 /** Tailwind palette classes that bypass the semantic theme tokens. */
@@ -49,7 +49,7 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   {
     // Rules that carry real signal but are not yet at zero. They stay visible
-    // as warnings and their counts are frozen in `budgets.json`, so the total
+    // as warnings and their counts are compared against the base revision, so the total
     // can fall but never rise. Promote one to `error` when it reaches zero.
     rules: {
       // Terminal, ANSI, and PTY parsing match control characters deliberately.
