@@ -292,6 +292,28 @@ test.describe("Agent Spawn Form", () => {
     await expect(input).toHaveValue("C:/projects/test");
   });
 
+  test("managed providers bypass first-use workspace permission prompts by default", async () => {
+    const provider = page.locator('[data-testid="spawn-provider"]');
+    await provider.selectOption("claude");
+    await page.getByRole("button", { name: "Advanced Settings" }).click();
+    await expect(page.getByLabel("Permission Mode")).toHaveValue("bypassPermissions");
+
+    await provider.selectOption("antigravity");
+    await expect(page.getByLabel("Skip Permissions")).toBeChecked();
+    await page.getByTestId("advanced-settings-content").screenshot({
+      path: path.join(
+        "e2e",
+        "screenshots",
+        "provider-permission-defaults",
+        "2026-08-28",
+        "antigravity-skip-permissions-default.png",
+      ),
+      animations: "disabled",
+    });
+
+    await page.getByRole("button", { name: "Advanced Settings" }).click();
+  });
+
   test("shows provider-specific advanced configuration", async () => {
     await page.locator('[data-testid="spawn-provider"]').selectOption("codex");
     await page.getByRole("button", { name: "Advanced Settings" }).click();

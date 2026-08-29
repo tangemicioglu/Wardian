@@ -1,8 +1,11 @@
 use crate::manager;
+use crate::providers::claude::claude_output_has_bypass_permissions_consent_prompt;
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
 };
 use crate::state::{AppState, MailboxMessageDraft, MailboxMessageRecord};
+use crate::utils::strip_ansi_controls;
+use sha2::{Digest, Sha256};
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -17,10 +20,10 @@ use wardian_core::control::{
     AskManyResponse, AskResponse, AskTargetOutcome, AskTargetResponse, CodexPluginDiagnostic,
     ControlRequest, ConversationListResponse, ConversationShowResponse, DeliveryDetail,
     DeliveryErrorDetail, DeliveryTransportKind, InboxNotificationKind, InboxNotificationPayload,
-    InboxNotificationResponse, InteractionBodyRef, InteractionStatus, MessageInputMode,
-    MessageOrigin, OkResponse, ProviderInputReadiness, ProviderReadyEvidence, QueuePolicy,
-    ReplyResponse, ReplyStatus, SendMessageResponse, StructuredReply, WatchAgentSnapshot,
-    WatchDeliverySnapshot, WatchEvidenceError,
+    InboxNotificationResponse, InteractionBodyRef, InteractionKind, InteractionStatus,
+    MessageInputMode, MessageOrigin, OkResponse, ProviderInputReadiness, ProviderReadyEvidence,
+    QueuePolicy, ReplyResponse, ReplyStatus, SendMessageResponse, StructuredReply,
+    WatchAgentSnapshot, WatchDeliverySnapshot, WatchEvidenceError,
 };
 use wardian_core::conversations::ConversationLoggingSetting;
 use wardian_core::identity::{normalize_status, AgentIdentity, StatusSource};
@@ -801,10 +804,11 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             origin,
             target_scope,
             headless_timeout_ms,
+            orchestration,
         } => {
             let state = app.state::<AppState>();
             let scope_all = target_scope.as_deref() == Some("all");
-            let delivery = deliver_message_to_target_with_headless_timeout(
+            let delivery = deliver_message_to_target_with_delivery_options(
                 Some(app),
                 &state,
                 &target,
@@ -816,6 +820,8 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 origin.as_ref(),
                 scope_all,
                 bounded_headless_delivery_timeout(headless_timeout_ms),
+                orchestration.as_ref(),
+                None,
             )
             .await?;
             record_conversation_delivery(&state, &delivery, &message, origin.as_ref()).await;
@@ -912,6 +918,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             tail_bytes,
             timeout_ms,
             origin,
+            orchestration,
         } => {
             handle_structured_ask(
                 app,
@@ -921,6 +928,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 tail_bytes,
                 Duration::from_millis(timeout_ms.unwrap_or(30_000)),
                 origin.as_ref(),
+                orchestration.as_ref(),
             )
             .await
         }
@@ -932,6 +940,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
             tail_bytes,
             timeout_ms,
             origin,
+            orchestration,
         } => {
             handle_structured_ask_many(
                 app,
@@ -941,6 +950,7 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 tail_bytes,
                 Duration::from_millis(timeout_ms.unwrap_or(30_000)),
                 origin.as_ref(),
+                orchestration.as_ref(),
             )
             .await
         }
@@ -966,6 +976,175 @@ async fn dispatch_request(line: &str, app: &AppHandle) -> Result<String, Control
                 ok: true,
                 request_id,
                 reply,
+            })
+        }
+
+        ControlRequest::DeliveryGet {
+            interaction_id,
+            evidence_limit,
+        } => {
+            let state = app.state::<AppState>();
+            let record = state
+                .native_delivery
+                .get(&interaction_id)
+                .map_err(native_broker_control_error)?;
+            let evidence = state
+                .native_delivery
+                .evidence(&interaction_id, evidence_limit.unwrap_or(100).min(500))
+                .map_err(native_broker_control_error)?;
+            ok_json(&wardian_core::control::NativeDeliveryInspectResponse {
+                schema: wardian_core::control::CONTROL_SCHEMA,
+                record,
+                evidence,
+            })
+        }
+
+        ControlRequest::DeliveryCancel { interaction_id } => {
+            let state = app.state::<AppState>();
+            let record = state
+                .native_delivery
+                .cancel(&interaction_id)
+                .await
+                .map_err(native_broker_control_error)?;
+            let evidence = state
+                .native_delivery
+                .evidence(&interaction_id, 100)
+                .map_err(native_broker_control_error)?;
+            ok_json(&wardian_core::control::NativeDeliveryInspectResponse {
+                schema: wardian_core::control::CONTROL_SCHEMA,
+                record,
+                evidence,
+            })
+        }
+
+        ControlRequest::DeliveryWithdraw { interaction_id } => {
+            let state = app.state::<AppState>();
+            let record = state
+                .native_delivery
+                .withdraw(&interaction_id)
+                .await
+                .map_err(native_broker_control_error)?;
+            let _ = state
+                .interactions
+                .update_message_status_durable(&interaction_id, InteractionStatus::Failed)
+                .await;
+            let evidence = state
+                .native_delivery
+                .evidence(&interaction_id, 100)
+                .map_err(native_broker_control_error)?;
+            ok_json(&wardian_core::control::NativeDeliveryInspectResponse {
+                schema: wardian_core::control::CONTROL_SCHEMA,
+                record,
+                evidence,
+            })
+        }
+
+        ControlRequest::DeliveryReplace {
+            interaction_id,
+            message,
+            idempotency_key,
+            deadline_at,
+        } => {
+            let state = app.state::<AppState>();
+            let old_interaction = state
+                .interactions
+                .interaction(&interaction_id)
+                .await
+                .ok_or_else(|| ControlError::not_found("interaction not found"))?;
+            if old_interaction.kind != InteractionKind::Message {
+                return Err(ControlError::not_supported(
+                    "replacement currently applies only to queued notify/send interactions",
+                ));
+            }
+            let replacement = state
+                .native_delivery
+                .replace(
+                    &interaction_id,
+                    message.clone(),
+                    idempotency_key,
+                    deadline_at,
+                )
+                .await
+                .map_err(native_broker_control_error)?;
+            let _ = state
+                .interactions
+                .update_message_status_durable(&interaction_id, InteractionStatus::Failed)
+                .await;
+            state
+                .interactions
+                .create_message_durable_with_id(
+                    replacement.envelope.interaction_id.clone(),
+                    replacement.envelope.sender_agent_id.clone(),
+                    vec![replacement.envelope.target_agent_id.clone()],
+                    InteractionBodyRef::Inline { body: message },
+                )
+                .await
+                .map_err(ControlError::request_failed)?;
+            let info = delivery_target_info(&state, &replacement.envelope.target_agent_id).await?;
+            state
+                .native_delivery
+                .dispatch(
+                    crate::delivery::native_broker::NativeSessionSpec {
+                        target_agent_id: info.uuid,
+                        provider: info.provider,
+                        generation: replacement.envelope.generation,
+                        workspace: info.cwd,
+                        config: info.config,
+                    },
+                    replacement.clone(),
+                )
+                .await
+                .map_err(native_broker_control_error)?;
+            let record = state
+                .native_delivery
+                .get(&replacement.envelope.interaction_id)
+                .map_err(native_broker_control_error)?;
+            let evidence = state
+                .native_delivery
+                .evidence(&record.envelope.interaction_id, 100)
+                .map_err(native_broker_control_error)?;
+            ok_json(&wardian_core::control::NativeDeliveryInspectResponse {
+                schema: wardian_core::control::CONTROL_SCHEMA,
+                record,
+                evidence,
+            })
+        }
+
+        ControlRequest::DeliveryCapabilities { target } => {
+            let state = app.state::<AppState>();
+            let target_agent_id = resolve_target_uuid_in_state(&state, &target)
+                .await
+                .ok_or_else(|| ControlError::not_found(format!("agent not found: {target}")))?;
+            let info = delivery_target_info(&state, &target_agent_id).await?;
+            let protocol = crate::delivery::native_session::NativeProviderProtocol::for_provider(
+                &info.provider,
+            )
+            .ok_or_else(|| {
+                ControlError::not_supported(format!(
+                    "{} has no Wardian native transport",
+                    info.provider
+                ))
+            })?;
+            let binding = wardian_core::db::latest_native_session_binding(&target_agent_id)
+                .map_err(|error| ControlError::request_failed(error.to_string()))?;
+            let candidate_capabilities = protocol.capabilities("unverified");
+            ok_json(&wardian_core::control::NativeDeliveryCapabilitiesResponse {
+                schema: wardian_core::control::CONTROL_SCHEMA,
+                target_agent_id,
+                broker_queue_withdrawal: true,
+                broker_queue_replacement: true,
+                native_negotiated: binding.is_some(),
+                capabilities: binding
+                    .as_ref()
+                    .map(|binding| binding.capabilities.clone())
+                    .unwrap_or_else(|| {
+                        wardian_core::native_transport::NativeTransportCapabilities::degraded(
+                            &info.provider,
+                            "headless_fallback",
+                        )
+                    }),
+                candidate_capabilities,
+                binding,
             })
         }
 
@@ -1630,6 +1809,40 @@ async fn deliver_message_to_target_with_headless_timeout(
     scope_all: bool,
     headless_timeout: Duration,
 ) -> Result<Vec<DeliveryDetail>, ControlError> {
+    deliver_message_to_target_with_delivery_options(
+        app,
+        state,
+        target,
+        message,
+        thread,
+        input_mode,
+        queue_policy,
+        approval_action,
+        origin,
+        scope_all,
+        headless_timeout,
+        None,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn deliver_message_to_target_with_delivery_options(
+    app: Option<&AppHandle>,
+    state: &AppState,
+    target: &str,
+    message: &str,
+    thread: Option<&str>,
+    input_mode: MessageInputMode,
+    queue_policy: QueuePolicy,
+    approval_action: Option<&ApprovalAction>,
+    origin: Option<&MessageOrigin>,
+    scope_all: bool,
+    headless_timeout: Duration,
+    orchestration: Option<&wardian_core::control::OrchestrationDeliveryOptions>,
+    parent_interaction_id: Option<&str>,
+) -> Result<Vec<DeliveryDetail>, ControlError> {
     validate_send_message_options(target, thread, input_mode)?;
     let sender_session_id = origin
         .as_ref()
@@ -1664,21 +1877,11 @@ async fn deliver_message_to_target_with_headless_timeout(
         .await;
         let sender_session_id =
             origin.map(|MessageOrigin::WardianAgent { session_id }| session_id.clone());
-        let interaction = state
-            .interactions
-            .create_message_durable(
-                sender_session_id,
-                vec![info.uuid.clone()],
-                InteractionBodyRef::Inline {
-                    body: outbound_message.clone(),
-                },
-            )
+        let live_surface_available = state
+            .terminal_sessions
+            .broker_state(&info.uuid)
             .await
-            .map_err(ControlError::request_failed)?;
-        let interaction_id = interaction.id.clone();
-        if let Some(app) = app {
-            let _ = app.emit("pair-activity-changed", ());
-        }
+            .is_ok();
         let route = if input_mode != MessageInputMode::ApprovalAction
             && matches!(queue_policy, QueuePolicy::QueueIfBusy)
             && lifecycle_was_busy
@@ -1690,6 +1893,13 @@ async fn deliver_message_to_target_with_headless_timeout(
             || matches!(queue_policy, QueuePolicy::MailboxOnly)
         {
             decide_delivery_route(&info.status, input_mode, queue_policy, approval_action)
+        } else if should_route_native_without_live_surface(
+            &info.provider,
+            input_mode,
+            queue_policy,
+            live_surface_available,
+        ) {
+            DeliveryRoute::Headless
         } else if !status_uses_headless_delivery(&info.status)
             && provider_input_has_known_not_ready_state(state, &info.uuid).await
             && !provider_idle_status_allows_live_delivery(&info, queue_policy)
@@ -1716,6 +1926,51 @@ async fn deliver_message_to_target_with_headless_timeout(
         } else {
             decide_delivery_route(&info.status, input_mode, queue_policy, approval_action)
         };
+        let existing_native_interaction_id = if matches!(route, DeliveryRoute::Headless)
+            && input_mode == MessageInputMode::Message
+            && crate::delivery::native_session::NativeProviderProtocol::for_provider(&info.provider)
+                .is_some()
+        {
+            orchestration
+                .and_then(|options| options.idempotency_key.as_deref())
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(|key| {
+                    wardian_core::db::native_delivery_by_idempotency(
+                        sender_session_id.as_deref(),
+                        &info.uuid,
+                        orchestration
+                            .map(|options| options.operation)
+                            .unwrap_or_default(),
+                        key,
+                    )
+                    .map_err(|error| ControlError::request_failed(error.to_string()))
+                    .map(|record| record.map(|record| record.envelope.interaction_id))
+                })
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        let interaction_id = if let Some(interaction_id) = existing_native_interaction_id {
+            interaction_id
+        } else {
+            state
+                .interactions
+                .create_message_durable(
+                    sender_session_id,
+                    vec![info.uuid.clone()],
+                    InteractionBodyRef::Inline {
+                        body: outbound_message.clone(),
+                    },
+                )
+                .await
+                .map_err(ControlError::request_failed)?
+                .id
+        };
+        if let Some(app) = app {
+            let _ = app.emit("pair-activity-changed", ());
+        }
         match route {
             DeliveryRoute::Mailbox { runtime_state } => {
                 queued += 1;
@@ -1817,6 +2072,59 @@ async fn deliver_message_to_target_with_headless_timeout(
                 }
             }
             DeliveryRoute::Headless => {
+                if input_mode == MessageInputMode::Message
+                    && crate::delivery::native_session::NativeProviderProtocol::for_provider(
+                        &info.provider,
+                    )
+                    .is_some()
+                {
+                    match deliver_native_message(
+                        state,
+                        &info,
+                        &interaction_id,
+                        &outbound_message,
+                        input_mode,
+                        queue_policy,
+                        origin,
+                        orchestration,
+                        parent_interaction_id,
+                    )
+                    .await
+                    {
+                        Ok(detail) => {
+                            delivered += 1;
+                            record_delivery_attempt(state, &detail).await;
+                            delivery.push(detail);
+                            continue;
+                        }
+                        Err(failure) if failure.provider_boundary_crossed => {
+                            failures.push(format!("{}: {}", info.uuid, failure.message));
+                            let detail = native_delivery_failure_detail(
+                                &info,
+                                &interaction_id,
+                                input_mode,
+                                queue_policy,
+                                &failure,
+                            );
+                            persist_interaction_delivery_attempt(
+                                state,
+                                &interaction_id,
+                                &info.uuid,
+                                DeliveryTransportKind::NativeProvider,
+                                &detail,
+                            )
+                            .await;
+                            record_delivery_attempt(state, &detail).await;
+                            delivery.push(detail);
+                            continue;
+                        }
+                        Err(_) => {
+                            // Native negotiation/startup failed before the
+                            // provider message boundary. The explicit reduced
+                            // headless fallback remains safe here.
+                        }
+                    }
+                }
                 match deliver_headless_message(
                     state,
                     HeadlessMessageDeliveryRequest {
@@ -1906,6 +2214,192 @@ async fn deliver_message_to_target_with_headless_timeout(
         .with_details(delivery_details_json(&delivery)));
     }
     Ok(delivery)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn deliver_native_message(
+    state: &AppState,
+    info: &DeliveryTargetInfo,
+    interaction_id: &str,
+    message: &str,
+    input_mode: MessageInputMode,
+    queue_policy: QueuePolicy,
+    origin: Option<&MessageOrigin>,
+    orchestration: Option<&wardian_core::control::OrchestrationDeliveryOptions>,
+    parent_interaction_id: Option<&str>,
+) -> Result<DeliveryDetail, crate::delivery::native_broker::NativeBrokerError> {
+    let latest_binding = wardian_core::db::latest_native_session_binding(&info.uuid)
+        .map_err(|error| crate::delivery::native_broker::NativeBrokerError {
+            code: wardian_core::native_transport::NativeDeliveryErrorCode::TransportUnavailable,
+            message: format!("failed to read native session binding: {error}"),
+            provider_boundary_crossed: false,
+        })?
+        .filter(|binding| binding.provider == info.provider);
+    let current_generation = state
+        .interactions
+        .current_provider_input_generation(&info.uuid)
+        .await;
+    let generation = match latest_binding.as_ref() {
+        Some(binding)
+            if current_generation.is_none() || current_generation == Some(binding.generation) =>
+        {
+            binding.generation
+        }
+        _ => {
+            state
+                .interactions
+                .start_provider_input_generation(&info.uuid, ProviderInputReadiness::Booting, None)
+                .await
+                .generation
+        }
+    };
+    if let Some(expected) = orchestration.and_then(|options| options.expected_generation) {
+        if expected != generation {
+            return Err(crate::delivery::native_broker::NativeBrokerError {
+                code: wardian_core::native_transport::NativeDeliveryErrorCode::StaleGeneration,
+                message: format!(
+                    "expected generation {expected}, but target {} is generation {generation}",
+                    info.uuid
+                ),
+                provider_boundary_crossed: false,
+            });
+        }
+    }
+    let sender_agent_id =
+        origin.map(|MessageOrigin::WardianAgent { session_id }| session_id.clone());
+    let options = orchestration.cloned().unwrap_or_default();
+    let record = state
+        .native_delivery
+        .admit(crate::delivery::native_broker::NativeDeliveryAdmission {
+            interaction_id: interaction_id.to_string(),
+            message_id: interaction_id.to_string(),
+            target_agent_id: info.uuid.clone(),
+            sender_agent_id,
+            provider: info.provider.clone(),
+            generation,
+            operation: options.operation,
+            caller_idempotency_key: options.idempotency_key,
+            parent_interaction_id: parent_interaction_id.map(str::to_string),
+            deadline_at: options.deadline_at,
+            body: message.to_string(),
+        })
+        .await?;
+    let receipt = state
+        .native_delivery
+        .dispatch(
+            crate::delivery::native_broker::NativeSessionSpec {
+                target_agent_id: info.uuid.clone(),
+                provider: info.provider.clone(),
+                generation,
+                workspace: info.cwd.clone(),
+                config: info.config.clone(),
+            },
+            record,
+        )
+        .await?;
+    let detail = DeliveryDetail {
+        uuid: info.uuid.clone(),
+        name: info.name.clone(),
+        provider: info.provider.clone(),
+        runtime_state: "native_provider_session".to_string(),
+        delivery_state: "provider_accepted".to_string(),
+        input_mode,
+        queue_policy,
+        message_id: Some(receipt.record.envelope.interaction_id.clone()),
+        delivery_phase: Some("turn_started".to_string()),
+        observed_state: Some("turn_started".to_string()),
+        reason: Some(format!(
+            "positive provider turn-start evidence via {}",
+            receipt.capabilities.transport
+        )),
+        profile: Some(receipt.capabilities.provider.clone()),
+        error: None,
+    };
+    state
+        .interactions
+        .record_delivery_attempt_durable(
+            &receipt.record.envelope.interaction_id,
+            &info.uuid,
+            DeliveryTransportKind::NativeProvider,
+            generation,
+            &detail.runtime_state,
+            &detail.delivery_state,
+            detail.delivery_phase.clone(),
+            detail.observed_state.clone(),
+            detail.reason.clone(),
+            None,
+        )
+        .await
+        .map_err(
+            |message| crate::delivery::native_broker::NativeBrokerError {
+                code: wardian_core::native_transport::NativeDeliveryErrorCode::TransportUnavailable,
+                message,
+                provider_boundary_crossed: true,
+            },
+        )?;
+    let _ = state
+        .interactions
+        .update_message_status_durable(
+            &receipt.record.envelope.interaction_id,
+            InteractionStatus::Delivered,
+        )
+        .await;
+    Ok(detail)
+}
+
+fn native_delivery_failure_detail(
+    info: &DeliveryTargetInfo,
+    interaction_id: &str,
+    input_mode: MessageInputMode,
+    queue_policy: QueuePolicy,
+    failure: &crate::delivery::native_broker::NativeBrokerError,
+) -> DeliveryDetail {
+    DeliveryDetail {
+        uuid: info.uuid.clone(),
+        name: info.name.clone(),
+        provider: info.provider.clone(),
+        runtime_state: "native_provider_session".to_string(),
+        delivery_state: if failure.provider_boundary_crossed {
+            "submitted_unconfirmed".to_string()
+        } else {
+            "failed".to_string()
+        },
+        input_mode,
+        queue_policy,
+        message_id: Some(interaction_id.to_string()),
+        delivery_phase: Some(if failure.provider_boundary_crossed {
+            "submitted_unconfirmed".to_string()
+        } else {
+            "failed_before_submit".to_string()
+        }),
+        observed_state: None,
+        reason: Some(if failure.provider_boundary_crossed {
+            "provider boundary may have been crossed; automatic retry and fallback are disabled"
+                .to_string()
+        } else {
+            "native transport failed before provider submission".to_string()
+        }),
+        profile: Some(info.provider.clone()),
+        error: Some(DeliveryErrorDetail {
+            code: serde_json::to_value(&failure.code)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_else(|| "native_delivery_failed".to_string()),
+            message: failure.message.clone(),
+        }),
+    }
+}
+
+fn should_route_native_without_live_surface(
+    provider: &str,
+    input_mode: MessageInputMode,
+    queue_policy: QueuePolicy,
+    live_surface_available: bool,
+) -> bool {
+    !live_surface_available
+        && input_mode == MessageInputMode::Message
+        && matches!(queue_policy, QueuePolicy::QueueIfBusy)
+        && crate::delivery::native_session::NativeProviderProtocol::for_provider(provider).is_some()
 }
 
 fn provider_idle_status_allows_live_delivery(
@@ -3097,7 +3591,9 @@ pub(crate) fn provider_output_has_startup_ready_prompt(provider: &str, output: &
     let cleaned = strip_ansi_controls(output).replace('\r', "\n");
     match provider {
         "codex" => !codex_output_has_workspace_trust_prompt(&cleaned) && cleaned.contains('›'),
-        "claude" => cleaned.contains('❯'),
+        "claude" => {
+            !claude_output_has_bypass_permissions_consent_prompt(&cleaned) && cleaned.contains('❯')
+        }
         "gemini" => {
             !gemini_output_has_api_key_prompt(&cleaned)
                 && cleaned.contains("Type your message or @path/to/file")
@@ -3151,6 +3647,7 @@ pub(crate) async fn mark_delivered_agents_prompt_started(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_structured_ask(
     app: &AppHandle,
     target: &str,
@@ -3159,6 +3656,7 @@ async fn handle_structured_ask(
     tail_bytes: Option<usize>,
     timeout: Duration,
     origin: Option<&MessageOrigin>,
+    orchestration: Option<&wardian_core::control::OrchestrationDeliveryOptions>,
 ) -> Result<String, ControlError> {
     validate_send_message_thread(thread)?;
     validate_watch_target(target)?;
@@ -3171,13 +3669,14 @@ async fn handle_structured_ask(
         .lock()
         .map_err(|_| ControlError::request_failed("watch state lock poisoned"))?
         .latest_cursor();
-    let request_id = new_ask_request_id();
+    let sender_session_id =
+        origin.map(|MessageOrigin::WardianAgent { session_id }| session_id.clone());
+    let request_id =
+        structured_ask_request_id(orchestration, sender_session_id.as_deref(), &target_uuid);
     let wardian_home = crate::utils::fs::get_wardian_home()
         .ok_or_else(|| ControlError::request_failed("could not resolve Wardian home"))?;
     let structured_delivery =
         build_structured_ask_delivery_message(&wardian_home, &target_uuid, message, &request_id)?;
-    let sender_session_id =
-        origin.map(|MessageOrigin::WardianAgent { session_id }| session_id.clone());
     let body_ref = structured_delivery
         .body_file
         .as_ref()
@@ -3196,7 +3695,7 @@ async fn handle_structured_ask(
             body_ref,
         )
         .await;
-    if task.status != InteractionStatus::AwaitingReply {
+    if task.status == InteractionStatus::Failed {
         return Err(ControlError::not_found(format!(
             "agent not found: {target}"
         )));
@@ -3217,7 +3716,7 @@ async fn handle_structured_ask(
         }
     }
     push_watch_event_for_agent(&state, &target_uuid, "request", payload).await?;
-    let delivery = match deliver_message_to_target_with_headless_timeout(
+    let delivery = match deliver_message_to_target_with_delivery_options(
         Some(app),
         &state,
         target,
@@ -3229,6 +3728,8 @@ async fn handle_structured_ask(
         origin,
         false,
         timeout.min(MAX_HEADLESS_DELIVERY_TIMEOUT),
+        orchestration,
+        Some(&request_id),
     )
     .await
     {
@@ -3266,6 +3767,7 @@ async fn handle_structured_ask(
 /// Delivers every valid request before waiting for any reply. Each pending request
 /// shares one deadline; a timeout is recorded as a terminal failed reply so a
 /// later `wardian reply` cannot revive an expired correlation.
+#[allow(clippy::too_many_arguments)]
 async fn handle_structured_ask_many(
     app: &AppHandle,
     targets: &[String],
@@ -3274,6 +3776,7 @@ async fn handle_structured_ask_many(
     tail_bytes: Option<usize>,
     timeout: Duration,
     origin: Option<&MessageOrigin>,
+    orchestration: Option<&wardian_core::control::OrchestrationDeliveryOptions>,
 ) -> Result<String, ControlError> {
     validate_send_message_thread(thread)?;
     if targets.len() < 2 {
@@ -3325,7 +3828,8 @@ async fn handle_structured_ask_many(
                 continue;
             }
         };
-        let request_id = new_ask_request_id();
+        let request_id =
+            structured_ask_request_id(orchestration, sender_session_id.as_deref(), &target_uuid);
         let structured_delivery = match build_structured_ask_delivery_message(
             &wardian_home,
             &target_uuid,
@@ -3361,7 +3865,7 @@ async fn handle_structured_ask_many(
                 body_ref,
             )
             .await;
-        if task.status != InteractionStatus::AwaitingReply {
+        if task.status == InteractionStatus::Failed {
             results.push(ask_target_failure(
                 target,
                 AskTargetOutcome::DeliveryFailed,
@@ -3387,7 +3891,7 @@ async fn handle_structured_ask_many(
         }
         push_watch_event_for_agent(&state, &target_uuid, "request", payload).await?;
 
-        match deliver_message_to_target_with_headless_timeout(
+        match deliver_message_to_target_with_delivery_options(
             Some(app),
             &state,
             target,
@@ -3399,6 +3903,8 @@ async fn handle_structured_ask_many(
             origin,
             false,
             timeout.min(MAX_HEADLESS_DELIVERY_TIMEOUT),
+            orchestration,
+            Some(&request_id),
         )
         .await
         {
@@ -3699,12 +4205,13 @@ fn build_structured_ask_delivery_message(
         });
     }
 
+    let body_digest = format!("{:x}", Sha256::digest(message.as_bytes()));
     let body_file = wardian_home
         .join("agents")
         .join(target_session_id)
         .join("habitat")
         .join(STRUCTURED_ASK_REQUESTS_DIR)
-        .join(format!("{request_id}.md"));
+        .join(format!("{request_id}-{}.md", &body_digest[..16]));
     if let Some(parent) = body_file.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             ControlError::request_failed(format!("failed to create ask request directory: {error}"))
@@ -3717,8 +4224,8 @@ fn build_structured_ask_delivery_message(
     Ok(StructuredAskDeliveryMessage {
         prompt: message_with_structured_reply_instruction(
             &format!(
-                "Wardian structured request {request_id} is too large to paste safely.\nRead the full request body from:\n{}",
-                body_file.display()
+                "Wardian structured request {request_id} is too large to paste safely.\nBody SHA-256: {body_digest}\nRead the full request body from:\n{}",
+                body_file.display(),
             ),
             request_id,
         ),
@@ -3734,6 +4241,29 @@ fn new_ask_request_id() -> String {
         .map(|duration| duration.as_nanos() as u64)
         .unwrap_or(0);
     format!("ask_{:016x}", nanos ^ counter)
+}
+
+fn structured_ask_request_id(
+    orchestration: Option<&wardian_core::control::OrchestrationDeliveryOptions>,
+    sender_session_id: Option<&str>,
+    target_session_id: &str,
+) -> String {
+    let Some(key) = orchestration
+        .and_then(|options| options.idempotency_key.as_deref())
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    else {
+        return new_ask_request_id();
+    };
+    let operation = orchestration
+        .map(|options| options.operation)
+        .unwrap_or_default();
+    let canonical = format!(
+        "wardian-ask-v1\0{}\0{target_session_id}\0{operation:?}\0{key}",
+        sender_session_id.unwrap_or_default()
+    );
+    let digest = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+    format!("ask_{}", &digest[..32])
 }
 
 #[cfg(test)]
@@ -4356,24 +4886,6 @@ fn is_prompt_prefix_char(ch: char) -> bool {
         )
 }
 
-fn strip_ansi_controls(text: &str) -> String {
-    let mut stripped = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for code in chars.by_ref() {
-                if ('@'..='~').contains(&code) {
-                    break;
-                }
-            }
-        } else {
-            stripped.push(ch);
-        }
-    }
-    stripped
-}
-
 fn control_error_from_watch_state(
     error: crate::state::agent_watch::WatchStateError,
 ) -> ControlError {
@@ -4793,6 +5305,71 @@ pub(crate) fn spawn_mailbox_drain_after_restore(app: &AppHandle, session_id: &st
     });
 }
 
+pub(crate) fn spawn_native_delivery_recovery(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let queued = match state.native_delivery.recover_after_restart(10_000).await {
+            Ok(queued) => queued,
+            Err(error) => {
+                crate::manager::log_debug(&format!(
+                    "[WARDIAN] native delivery recovery failed: {error}"
+                ));
+                return;
+            }
+        };
+        for record in queued {
+            let target = record.envelope.target_agent_id.clone();
+            let recovered = {
+                let agents = state.agents.lock().await;
+                agents.get(&target).and_then(|agent| {
+                    let status = agent.current_status.lock().ok()?.clone();
+                    let config = agent.config.lock().ok()?.clone();
+                    (status.eq_ignore_ascii_case("headless") && config.provider == record.provider)
+                        .then_some(config)
+                })
+            };
+            let Some(config) = recovered else {
+                continue;
+            };
+            let generation = state
+                .interactions
+                .current_provider_input_generation(&target)
+                .await
+                .unwrap_or(record.envelope.generation);
+            let workspace = crate::utils::fs::resolve_cwd(&config.folder, "");
+            let app_for_result = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let state = app_for_result.state::<AppState>();
+                let _lifecycle = state.lock_agent_lifecycle(&target).await;
+                let result = state
+                    .native_delivery
+                    .dispatch(
+                        crate::delivery::native_broker::NativeSessionSpec {
+                            target_agent_id: target.clone(),
+                            provider: config.provider.clone(),
+                            generation,
+                            workspace,
+                            config,
+                        },
+                        record.clone(),
+                    )
+                    .await;
+                if result.is_ok() {
+                    let _ = state
+                        .interactions
+                        .update_message_status_durable(
+                            &record.envelope.interaction_id,
+                            InteractionStatus::Delivered,
+                        )
+                        .await;
+                }
+                let _ = app_for_result.emit("pair-activity-changed", ());
+            });
+        }
+    });
+}
+
 pub(crate) async fn drain_mailbox_for_idle_agent_from_status_observation(
     app: Option<&AppHandle>,
     state: &AppState,
@@ -5130,6 +5707,47 @@ async fn topology_mutation(
 /// signal that tells an agent to re-snapshot rather than retry.
 fn browser_control_error(error: crate::state::browser_session::BrowserError) -> ControlError {
     ControlError::coded(error.code(), error.to_string())
+}
+
+fn native_broker_control_error(
+    error: crate::delivery::native_broker::NativeBrokerError,
+) -> ControlError {
+    let code = match error.code {
+        wardian_core::native_transport::NativeDeliveryErrorCode::UnsupportedProvider => {
+            "native_transport_unsupported"
+        }
+        wardian_core::native_transport::NativeDeliveryErrorCode::IdempotencyConflict => {
+            "idempotency_conflict"
+        }
+        wardian_core::native_transport::NativeDeliveryErrorCode::StaleGeneration => {
+            "stale_generation"
+        }
+        wardian_core::native_transport::NativeDeliveryErrorCode::DeadlineExpired => {
+            "deadline_expired"
+        }
+        wardian_core::native_transport::NativeDeliveryErrorCode::UnsupportedOperation => {
+            "native_operation_unsupported"
+        }
+        wardian_core::native_transport::NativeDeliveryErrorCode::CapabilityUnavailable => {
+            "native_capability_unavailable"
+        }
+        wardian_core::native_transport::NativeDeliveryErrorCode::TransportUnavailable => {
+            "native_session_unavailable"
+        }
+        wardian_core::native_transport::NativeDeliveryErrorCode::FailedBeforeSubmit => {
+            "native_failed_before_submit"
+        }
+        wardian_core::native_transport::NativeDeliveryErrorCode::SubmittedUnconfirmed => {
+            "native_submitted_unconfirmed"
+        }
+        wardian_core::native_transport::NativeDeliveryErrorCode::InvalidTransition => {
+            "invalid_delivery_transition"
+        }
+        wardian_core::native_transport::NativeDeliveryErrorCode::NotFound => "not_found",
+    };
+    ControlError::coded(code, error.message).with_details(serde_json::json!({
+        "provider_boundary_crossed": error.provider_boundary_crossed,
+    }))
 }
 
 fn artifact_store() -> Result<wardian_core::artifacts::ArtifactStore, ControlError> {
@@ -6719,6 +7337,28 @@ mod tests {
 
             assert_eq!(route, DeliveryRoute::Headless, "status={status}");
         }
+    }
+
+    #[test]
+    fn restored_native_agent_without_live_surface_reuses_native_transport() {
+        assert!(should_route_native_without_live_surface(
+            "claude",
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            false,
+        ));
+        assert!(!should_route_native_without_live_surface(
+            "claude",
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            true,
+        ));
+        assert!(!should_route_native_without_live_surface(
+            "gemini",
+            MessageInputMode::Message,
+            QueuePolicy::QueueIfBusy,
+            false,
+        ));
     }
 
     #[test]
@@ -8635,6 +9275,7 @@ mod tests {
         let body_file = delivery
             .body_file
             .expect("long ask body should be materialized");
+        let digest = format!("{:x}", Sha256::digest(message.as_bytes()));
         assert_eq!(
             body_file,
             temp.path()
@@ -8642,10 +9283,11 @@ mod tests {
                 .join("agent-1")
                 .join("habitat")
                 .join("requests")
-                .join(format!("{request_id}.md"))
+                .join(format!("{request_id}-{}.md", &digest[..16]))
         );
         assert_eq!(std::fs::read_to_string(&body_file).unwrap(), message);
         assert!(delivery.prompt.contains(request_id));
+        assert!(delivery.prompt.contains(&digest));
         assert!(delivery.prompt.contains("Read the full request body from:"));
         assert!(delivery
             .prompt
@@ -8658,6 +9300,21 @@ mod tests {
                 .contains("investigate this line\ninvestigate this line"),
             "large body should not be pasted into the terminal prompt"
         );
+    }
+
+    #[test]
+    fn ask_idempotency_key_stabilizes_correlation_per_sender_and_target() {
+        let options = wardian_core::control::OrchestrationDeliveryOptions {
+            idempotency_key: Some("caller-key".to_string()),
+            ..Default::default()
+        };
+        let first = structured_ask_request_id(Some(&options), Some("sender-1"), "target-1");
+        let replay = structured_ask_request_id(Some(&options), Some("sender-1"), "target-1");
+        let other_target = structured_ask_request_id(Some(&options), Some("sender-1"), "target-2");
+
+        assert_eq!(first, replay);
+        assert_ne!(first, other_target);
+        assert_eq!(first.len(), 36);
     }
 
     #[tokio::test]

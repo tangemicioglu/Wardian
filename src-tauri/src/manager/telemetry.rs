@@ -12,8 +12,7 @@ use super::codex::{codex_log_lookup_session_id, codex_session_file_path, codex_s
 use super::display_log_path;
 use super::opencode::{
     apply_opencode_log_metrics, opencode_last_assistant_text, opencode_log_dirs,
-    opencode_log_path_in, opencode_session_diff_path,
-    provider_should_fallback_to_idle_after_quiet_period,
+    opencode_log_path_in, provider_should_fallback_to_idle_after_quiet_period,
 };
 use crate::providers::antigravity::AntigravityProvider;
 use crate::providers::pi::PiProvider;
@@ -1530,8 +1529,7 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                                 }
                             }
                         }
-                        *log_path_lock = discovered_log
-                            .or_else(|| opencode_session_id.map(opencode_session_diff_path));
+                        *log_path_lock = discovered_log;
                     } else if snap.provider == "antigravity" {
                         let conversation_id = snap
                             .resume_session
@@ -1541,9 +1539,10 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                         if let (Some(home), Some(conversation_id)) =
                             (AntigravityProvider::antigravity_home(), conversation_id)
                         {
-                            if let Some(candidate) =
-                                AntigravityProvider::conversation_log_path(&home, &conversation_id)
-                            {
+                            if let Some(candidate) = AntigravityProvider::conversation_status_path(
+                                &home,
+                                &conversation_id,
+                            ) {
                                 *log_path_lock = Some(candidate);
                             }
                         }

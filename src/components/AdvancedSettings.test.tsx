@@ -63,18 +63,22 @@ describe("AdvancedSettings", () => {
 
     expect(updateField).toHaveBeenNthCalledWith(1, "provider_config", {
       type: "antigravity",
+      dangerously_skip_permissions: true,
       sandbox: true,
     });
     expect(updateField).toHaveBeenNthCalledWith(2, "provider_config", {
       type: "antigravity",
+      dangerously_skip_permissions: true,
       mode: "plan",
     });
     expect(updateField).toHaveBeenNthCalledWith(3, "provider_config", {
       type: "antigravity",
+      dangerously_skip_permissions: true,
       agent: "reviewer",
     });
     expect(updateField).toHaveBeenNthCalledWith(4, "provider_config", {
       type: "antigravity",
+      dangerously_skip_permissions: true,
       print_timeout: "90s",
     });
   });

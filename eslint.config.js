@@ -32,6 +32,7 @@ export default tseslint.config(
       ".cargo-target/**",
       "**/.cargo-target/**",
       ".tmp/**",
+      "**/target/**",
       "vendor/**",
       "tools/**",
       "test-results/**",

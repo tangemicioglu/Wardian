@@ -45,9 +45,27 @@ impl PtyUtf8Decoder {
     }
 }
 
+pub fn strip_ansi_controls(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for code in chars.by_ref() {
+                if ('@'..='~').contains(&code) {
+                    break;
+                }
+            }
+        } else {
+            stripped.push(ch);
+        }
+    }
+    stripped
+}
+
 #[cfg(test)]
 mod tests {
-    use super::PtyUtf8Decoder;
+    use super::{strip_ansi_controls, PtyUtf8Decoder};
 
     #[test]
     fn preserves_utf8_codepoints_split_across_pty_reads() {
@@ -67,5 +85,13 @@ mod tests {
 
         assert_eq!(decoder.decode_chunk(&bytes[..2]), "A");
         assert_eq!(decoder.decode_chunk(&bytes[2..]), "▐B");
+    }
+
+    #[test]
+    fn strips_csi_layout_controls_without_removing_terminal_text() {
+        assert_eq!(
+            strip_ansi_controls("Claude\x1b[19GCode\x1b[24Grunning"),
+            "ClaudeCoderunning",
+        );
     }
 }

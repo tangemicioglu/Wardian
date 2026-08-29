@@ -71,6 +71,9 @@ pub struct AppState {
     // Live-only structured ask/reply requests keyed by backend-owned request id.
     pub ask_requests: Mutex<HashMap<String, AskRequestRecord>>,
     pub interactions: InteractionState,
+    /// Wardian-owned persistent provider-session actors. Provider identities
+    /// remain generation-bound diagnostics behind this broker.
+    pub native_delivery: Arc<crate::delivery::native_broker::NativeDeliveryBroker>,
     pub conversation_archive: ConversationArchiveState,
     // Serializes and coalesces per-turn change snapshots, one slot per workspace.
     pub change_snapshots: ChangeSnapshotRuntime,
@@ -187,6 +190,7 @@ impl AppState {
         self.interactions
             .clear_provider_input_state_in_memory(target_session_id)
             .await;
+        self.native_delivery.dispose_agent(target_session_id).await;
     }
 
     /// Restores durable mailbox work after interaction state has been hydrated.
@@ -361,6 +365,7 @@ impl Default for AppState {
             user_terminal: Mutex::new(None),
             ask_requests: Mutex::new(HashMap::new()),
             interactions: InteractionState::default(),
+            native_delivery: Arc::new(crate::delivery::native_broker::NativeDeliveryBroker::new()),
             conversation_archive: ConversationArchiveState::default(),
             change_snapshots: ChangeSnapshotRuntime::new(),
             remote_runtime: Mutex::new(crate::remote::models::RemoteRuntimeState::default()),

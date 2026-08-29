@@ -3170,6 +3170,7 @@ pub async fn resume_agent(
         acquire_agent_lifecycle_transition_lease_for_session(&state, &session_id, "resume").await?;
     let lifecycle_heartbeat = LifecycleLeaseHeartbeat::start(_lifecycle_lease.owner().clone());
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
+    state.native_delivery.dispose_agent(&session_id).await;
     let snapshot = {
         let agents = state.agents.lock().await;
         let agent = agents
@@ -4035,6 +4036,7 @@ async fn clear_agent_session_inner(
         .unwrap_or_else(|| LifecycleLeaseHeartbeat::start(lifecycle_lease.owner().clone()));
     let _lifecycle_guard =
         acquire_agent_lifecycle_guard(&state, &session_id, lifecycle.guard).await;
+    state.native_delivery.dispose_agent(&session_id).await;
     let original_config = {
         let agents = state.agents.lock().await;
         let agent = agents
@@ -10520,10 +10522,10 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         restore_antigravity_workspace_conversation_from_home(&mut config, home)
             .expect("restore workspace conversation");
         assert_eq!(config.resume_session.as_deref(), Some(conversation_id));
-        assert_eq!(
-            AntigravityProvider::new().get_spawn_args(&config, true),
-            vec!["--conversation", conversation_id]
-        );
+        let resume_args = AntigravityProvider::new().get_spawn_args(&config, true);
+        assert_eq!(resume_args[0], "--dangerously-skip-permissions");
+        assert_eq!(resume_args[1], "--conversation");
+        assert_eq!(resume_args[2], conversation_id);
 
         config.resume_session = None;
         config

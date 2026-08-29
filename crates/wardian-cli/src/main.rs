@@ -23,20 +23,21 @@ use std::{
 use args::{
     AgentArgs, AgentCommand, AgentWorktreeCommand, ApprovalArg, AskArgs, AutomationArgs,
     AutomationCommand, AutomationScheduleCommand, AutomationSessionCloseCommand, Cli, Command,
-    ConversationArgs, ConversationCommand, NotifyArgs, NotifyCommand, QueuePolicyArg, ReplyArgs,
-    ReplyStatusArg, ScheduleDefinitionArgs, SendArgs,
+    ConversationArgs, ConversationCommand, DeliveryArgs, DeliveryCommand, NotifyArgs,
+    NotifyCommand, QueuePolicyArg, ReplyArgs, ReplyStatusArg, ScheduleDefinitionArgs, SendArgs,
 };
 use clap::Parser;
 use errors::{CliError, ExitCode};
 use output::{render_list, render_show, RenderOptions};
 use wardian_core::control::{
     ApprovalAction, AutomationRunResponse, InboxNotificationKind, InboxNotificationPayload,
-    MessageInputMode, QueuePolicy,
+    MessageInputMode, OrchestrationDeliveryOptions, QueuePolicy,
 };
 use wardian_core::identity::{self, ListFilters, Scope};
 use wardian_core::models::{
     AutomationAssignments, LibraryEntry, LibraryIndexNode, ScheduleDefinition,
 };
+use wardian_core::native_transport::NativeMessageOperation;
 
 fn main() {
     std::process::exit(run());
@@ -77,6 +78,7 @@ fn run() -> i32 {
         Command::Telemetry(args) => telemetry::handle_telemetry(args),
         Command::Graph(args) => graph::handle_graph(args),
         Command::Send(args) => handle_send(args),
+        Command::Delivery(args) => handle_delivery(args),
         Command::Notify(args) => handle_notify(args),
         Command::Ask(args) => handle_ask(args),
         Command::Reply(args) => handle_reply(args),
@@ -1648,6 +1650,13 @@ fn handle_send(args: SendArgs) -> Result<String, CliError> {
         args.approval,
     )?;
     let queue_policy = queue_policy_arg_to_control(args.queue_policy);
+    let orchestration = orchestration_options(
+        args.idempotency_key.clone(),
+        args.deadline.as_deref(),
+        args.expires_in.as_deref(),
+        args.expected_generation,
+        args.invalidate_premise,
+    )?;
     let input_mode = if approval_action.is_some() {
         MessageInputMode::ApprovalAction
     } else if args.as_command {
@@ -1672,6 +1681,7 @@ fn handle_send(args: SendArgs) -> Result<String, CliError> {
                 until,
                 timeout,
                 target_scope: Some(args.scope.as_str()),
+                orchestration: orchestration.clone(),
             },
         )
         .map_err(control_error)?;
@@ -1697,6 +1707,7 @@ fn handle_send(args: SendArgs) -> Result<String, CliError> {
                 approval_action,
                 target_scope: Some(args.scope.as_str()),
                 timeout,
+                orchestration,
             },
         )
         .map_err(control_error)?;
@@ -1715,6 +1726,40 @@ fn handle_send(args: SendArgs) -> Result<String, CliError> {
     ))
 }
 
+fn handle_delivery(args: DeliveryArgs) -> Result<String, CliError> {
+    let value = match args.command {
+        DeliveryCommand::Show {
+            interaction_id,
+            evidence_limit,
+        } => live::delivery_get(&interaction_id, evidence_limit)
+            .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other)),
+        DeliveryCommand::Cancel { interaction_id } => live::delivery_cancel(&interaction_id)
+            .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other)),
+        DeliveryCommand::Withdraw { interaction_id } => live::delivery_withdraw(&interaction_id)
+            .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other)),
+        DeliveryCommand::Replace {
+            interaction_id,
+            message,
+            stdin,
+            file,
+            idempotency_key,
+            deadline,
+            expires_in,
+        } => {
+            let message = read_message_input(message.as_deref(), stdin, file.as_deref())?;
+            let deadline_at = delivery_deadline(deadline.as_deref(), expires_in.as_deref())?;
+            live::delivery_replace(&interaction_id, &message, &idempotency_key, deadline_at)
+                .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other))
+        }
+        DeliveryCommand::Capabilities { target } => live::delivery_capabilities(&target)
+            .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other)),
+    }
+    .map_err(control_error)?;
+    serde_json::to_string_pretty(&value)
+        .map(|json| format!("{json}\n"))
+        .map_err(|error| CliError::generic(error.to_string()))
+}
+
 fn handle_ask(args: AskArgs) -> Result<String, CliError> {
     validate_single_agent_target(&args.target, "ask")?;
     for target in &args.targets {
@@ -1724,6 +1769,13 @@ fn handle_ask(args: AskArgs) -> Result<String, CliError> {
     let message = read_message_input(args.message.as_deref(), args.stdin, args.file.as_deref())?;
     let timeout = parse_timeout(&args.timeout)?;
     let condition = normalize_ask_condition(args.until.as_deref().unwrap_or("status:idle"))?;
+    let orchestration = orchestration_options(
+        args.idempotency_key,
+        args.deadline.as_deref(),
+        args.expires_in.as_deref(),
+        args.expected_generation,
+        args.invalidate_premise,
+    )?;
     let mut targets = vec![args.target.clone()];
     targets.extend(args.targets);
     targets.sort();
@@ -1736,6 +1788,7 @@ fn handle_ask(args: AskArgs) -> Result<String, CliError> {
             args.thread.as_deref(),
             Some(args.tail),
             timeout,
+            orchestration,
         )
         .map_err(control_error)?;
         return render_ask_many_response(&response);
@@ -1754,9 +1807,60 @@ fn handle_ask(args: AskArgs) -> Result<String, CliError> {
         &condition,
         Some(args.tail),
         timeout,
+        orchestration,
     )
     .map_err(control_error)?;
     render_ask_response(&targets[0], &condition, response)
+}
+
+fn orchestration_options(
+    idempotency_key: Option<String>,
+    deadline: Option<&str>,
+    expires_in: Option<&str>,
+    expected_generation: Option<u64>,
+    invalidate_premise: bool,
+) -> Result<Option<OrchestrationDeliveryOptions>, CliError> {
+    let deadline_at = delivery_deadline(deadline, expires_in)?;
+    if idempotency_key.is_none()
+        && deadline_at.is_none()
+        && expected_generation.is_none()
+        && !invalidate_premise
+    {
+        return Ok(None);
+    }
+    Ok(Some(OrchestrationDeliveryOptions {
+        idempotency_key,
+        deadline_at,
+        expected_generation,
+        operation: if invalidate_premise {
+            NativeMessageOperation::InvalidatePremise
+        } else {
+            NativeMessageOperation::StartTurn
+        },
+    }))
+}
+
+fn delivery_deadline(
+    deadline: Option<&str>,
+    expires_in: Option<&str>,
+) -> Result<Option<String>, CliError> {
+    if let Some(deadline) = deadline {
+        let parsed = chrono::DateTime::parse_from_rfc3339(deadline).map_err(|error| {
+            CliError::generic(format!("invalid --deadline RFC3339 value: {error}"))
+        })?;
+        return Ok(Some(
+            parsed
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        ));
+    }
+    expires_in.map(parse_timeout).transpose().map(|duration| {
+        duration.map(|duration| {
+            (chrono::Utc::now()
+                + chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::MAX))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        })
+    })
 }
 
 fn handle_reply(args: ReplyArgs) -> Result<String, CliError> {

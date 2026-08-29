@@ -49,12 +49,14 @@ Antigravity runs directly in the real target workspace. Wardian does not use a p
 
 - Visible launches use `agy --prompt-interactive`.
 - Headless launches use `agy --print <prompt>`.
+- Antigravity presents an interactive first-use folder-trust modal even with its tool-permission bypass flag. Wardian confirms only that exact startup modal once when managed permission bypass is enabled. This keeps Antigravity's normal workspace-to-conversation mapping intact for strict provider identity capture.
+- Wardian-managed launches separately pass `--dangerously-skip-permissions` by default to auto-approve tool permission requests. Set `dangerously_skip_permissions` to `false` explicitly to retain both folder-trust and per-tool operator approval prompts.
 - Resume launches pass `--conversation <conversation-id>`.
-- Antigravity may write the useful assistant response only to `brain/<conversation-id>/.system_generated/logs/transcript.jsonl`.
-- New Session starts Antigravity fresh without sending a bootstrap prompt. Wardian records the first conversation mapping that differs from the pre-launch workspace mapping, then stores it as `resume_session`.
+- Current Antigravity releases persist interactive user and assistant steps in `conversations/<conversation-id>.db`; Wardian projects newly observed provider-authored rows into live watch state. The older `brain/<conversation-id>/.system_generated/logs/transcript.jsonl` remains a compatibility fallback.
+- New Session starts Antigravity fresh without sending a bootstrap prompt. Wardian first accepts Antigravity's changed workspace cache mapping when available. Antigravity 1.1.22 can leave that cache stale, so Wardian can instead bind the sole post-launch conversation DB whose provider-authored trajectory metadata contains the exact workspace URI. Ambiguous or pre-launch databases are rejected. The verified ID is then stored as `resume_session`.
 - Until a real prompt creates that mapping, no provider identity exists to resume; a restart starts a fresh conversation again.
 - Wardian verifies Antigravity's exact workspace-cache mapping against `conversation_metadata.json`, then resumes that conversation with `--conversation`. A conversation explicitly detached by **Clear** is excluded from recovery.
-- Antigravity 1.1.7 persists interactive turns in `conversations/<conversation-id>.db`; Wardian reads its user and completed planner-response steps for Chat. The older `brain/<conversation-id>/.system_generated/logs/transcript.jsonl` remains a legacy fallback.
+- Antigravity 1.1.7 and later persist interactive turns in `conversations/<conversation-id>.db`; Wardian binds a known conversation's database for live status as soon as its `steps` schema exists, while Chat waits for a real user-message step before preferring it over the older `brain/<conversation-id>/.system_generated/logs/transcript.jsonl` fallback. Fresh identity discovery still requires exact post-launch workspace metadata and an unambiguous database candidate. Restored agents position the watch cursor after existing rows instead of replaying history as live output.
 - The Chat view also replays Wardian's durable conversation archive before the bounded live provider data, so already captured rows remain visible when a provider artifact is temporarily unavailable.
 - The real-provider rendering audit uses a short exact marker prompt for Antigravity, submits it through Wardian's provider-aware prompt delivery path, and treats the post-clear respawn as marker-optional. This avoids mistaking echoed prompt text for the model response while still proving initial live rendering, resize, pause, and resume behavior.
 
@@ -86,6 +88,7 @@ Claude also runs directly in the real target workspace. Wardian does not use a p
 
 ### Approval handling
 
+- Wardian-managed launches use Claude's `bypassPermissions` mode by default. Claude can present a separate first-run safety-consent selector for that mode; Wardian rejects the selector as readiness evidence and confirms only that exact startup modal once. Delivery remains queued until Claude's real compose surface is available and any visible `/rc connecting…` transition has completed. Set an explicit mode such as `manual`, `acceptEdits`, or `plan` to opt back into provider approval behavior.
 - Claude permission requests are surfaced through a generated hook under `.wardian/agents/<session_id>/claude/`.
 - The hook writes permission request events to a JSONL file that Wardian watches.
 - If Claude appears stuck in approval state, inspect the hook output before changing status code.

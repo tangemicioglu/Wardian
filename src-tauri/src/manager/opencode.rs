@@ -34,16 +34,6 @@ fn opencode_loop_line_session_id(line: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-pub(crate) fn opencode_session_diff_path(session_id: &str) -> std::path::PathBuf {
-    let base = dirs::data_local_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")));
-    let base = base.unwrap_or_else(|| std::path::PathBuf::from("."));
-    base.join("opencode")
-        .join("storage")
-        .join("session_diff")
-        .join(format!("{session_id}.json"))
-}
-
 fn opencode_data_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs = Vec::new();
     if let Some(d) = dirs::data_local_dir() {
@@ -310,9 +300,10 @@ fn opencode_log_timestamp_to_rfc3339(timestamp: &str) -> Option<String> {
     )
 }
 
-/// Find the OpenCode log file for a session by content-searching for the
-/// Wardian session UUID.  The UUID appears in log entries because
-/// `OPENCODE_CONFIG` points to a config file whose path embeds the UUID.
+/// Find the OpenCode status log for a provider session. Current OpenCode
+/// versions append to `opencode.log`; prefer that rolling file even before the
+/// resumed session emits its first marker. Older builds used dated log files,
+/// which still require exact provider-session evidence in their contents.
 ///
 /// Used for sessions recovered after an app restart (where no live watcher
 /// is running).
@@ -320,6 +311,11 @@ pub(crate) fn opencode_log_path_in(
     base: &std::path::Path,
     session_id: &str,
 ) -> Option<std::path::PathBuf> {
+    let rolling = base.join("opencode.log");
+    if rolling.is_file() {
+        return Some(rolling);
+    }
+
     let mut candidates = std::fs::read_dir(base)
         .ok()?
         .flatten()
@@ -673,6 +669,20 @@ mod tests {
         let found = opencode_log_path_in(&log_dir, "ses_target").expect("matching log path");
 
         assert_eq!(found, newer);
+    }
+
+    #[test]
+    fn opencode_log_path_prefers_active_rolling_log_before_session_marker() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let log_dir = temp.path().join("log");
+        std::fs::create_dir_all(&log_dir).expect("create log dir");
+
+        let archived = log_dir.join("2026-08-21T051619.log");
+        let rolling = log_dir.join("opencode.log");
+        std::fs::write(&archived, "session.id=ses_target").expect("write archive");
+        std::fs::write(&rolling, "service=default message=booting").expect("write rolling log");
+
+        assert_eq!(opencode_log_path_in(&log_dir, "ses_target"), Some(rolling));
     }
 
     #[test]
