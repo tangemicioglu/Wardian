@@ -8,6 +8,8 @@ export interface Metrics {
   eslint_warnings?: number;
 }
 
+export function changedLintPolicyFiles(changedFiles: string[]): string[];
+export function assertLintPolicyUnchanged(changedFiles: string[]): void;
 export function compareMetrics(current: Metrics, base: Metrics): {
   over: Array<[string, number, number]>;
   under: Array<[string, number, number]>;
