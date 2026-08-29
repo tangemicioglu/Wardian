@@ -6,11 +6,12 @@ interface NodeInspectorProps {
   state: RunState | null;
   currentStatuses: Record<string, NodeStatusKind>;
   events: RunEvent[];
+  scrubIndex: number;
 }
 
-function nodePayload(events: RunEvent[], nodeId: string): { output?: unknown; error?: string } {
+function nodePayload(events: RunEvent[], nodeId: string, scrubIndex: number): { output?: unknown; error?: string } {
   const payload: { output?: unknown; error?: string } = {};
-  for (const event of events) {
+  for (const event of events.slice(0, scrubIndex + 1)) {
     if (!('node' in event) || event.node !== nodeId) {
       continue;
     }
@@ -48,7 +49,7 @@ function inspectorDisplayValue(value: unknown, key?: string): unknown {
   return value;
 }
 
-export function NodeInspector({ selectedNodeId, state, currentStatuses, events }: NodeInspectorProps) {
+export function NodeInspector({ selectedNodeId, state, currentStatuses, events, scrubIndex }: NodeInspectorProps) {
   if (!selectedNodeId) {
     return (
       <div className="rounded-lg border border-dashed border-wardian-border p-4 text-center text-xs text-[var(--color-wardian-text-muted)]">
@@ -58,7 +59,7 @@ export function NodeInspector({ selectedNodeId, state, currentStatuses, events }
   }
 
   const status = currentStatuses[selectedNodeId] ?? state?.nodes[selectedNodeId] ?? 'pending';
-  const payload = nodePayload(events, selectedNodeId);
+  const payload = nodePayload(events, selectedNodeId, scrubIndex);
   const output = payload.output === undefined ? null : JSON.stringify(inspectorDisplayValue(payload.output), null, 2);
 
   return (

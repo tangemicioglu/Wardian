@@ -247,6 +247,63 @@ pub fn validate(blueprint: &Blueprint) -> ValidationReport {
         }
     }
 
+    // Every loop body must be reachable from the container's body port. A
+    // parent annotation alone does not provide an execution transition.
+    for loop_node in blueprint.nodes.iter().filter(|node| node.r#type == "loop") {
+        let body: HashSet<&str> = blueprint
+            .nodes
+            .iter()
+            .filter(|node| node.parent.as_deref() == Some(loop_node.id.as_str()))
+            .map(|node| node.id.as_str())
+            .collect();
+        if body.is_empty() {
+            continue;
+        }
+        let mut reachable = HashSet::new();
+        let mut frontier: Vec<&str> = blueprint
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.from == loop_node.id
+                    && edge.from_port == "body"
+                    && body.contains(edge.to.as_str())
+            })
+            .map(|edge| edge.to.as_str())
+            .collect();
+        while let Some(node_id) = frontier.pop() {
+            if !reachable.insert(node_id) {
+                continue;
+            }
+            frontier.extend(
+                blueprint
+                    .edges
+                    .iter()
+                    .filter(|edge| edge.from == node_id && body.contains(edge.to.as_str()))
+                    .map(|edge| edge.to.as_str()),
+            );
+        }
+        if reachable.is_empty() {
+            report.diagnostics.push(Diagnostic::error(
+                "missing_loop_body_entry",
+                format!(
+                    "loop node `{}` must connect its `body` port to a body node",
+                    loop_node.id
+                ),
+                Some(&loop_node.id),
+            ));
+        }
+        for node_id in body.difference(&reachable) {
+            report.diagnostics.push(Diagnostic::error(
+                "unreachable_loop_body",
+                format!(
+                    "loop body node `{node_id}` is not reachable from loop `{}` body port",
+                    loop_node.id
+                ),
+                Some(node_id),
+            ));
+        }
+    }
+
     // The top-level graph must be a DAG (loops are containers, not back-edges).
     if has_cycle(blueprint) {
         report.diagnostics.push(Diagnostic::error(
@@ -610,7 +667,17 @@ mod tests {
             "until".into(),
             serde_json::json!("nodes.worker.output.count > 2"),
         );
-        let report = validate(&base(vec![loop_node], vec![]));
+        let mut body = task("body");
+        body.parent = Some("lp".into());
+        let report = validate(&base(
+            vec![loop_node, body],
+            vec![Edge {
+                from: "lp".into(),
+                to: "body".into(),
+                from_port: "body".into(),
+                to_port: "in".into(),
+            }],
+        ));
         assert!(report.errors().iter().any(|diagnostic| {
             diagnostic.code == "invalid_condition" && diagnostic.node.as_deref() == Some("lp")
         }));
@@ -807,7 +874,12 @@ mod tests {
                 loop_node(serde_json::json!("{{trigger.output.max_cycles}}")),
                 child,
             ],
-            vec![],
+            vec![Edge {
+                from: "lp".into(),
+                to: "body".into(),
+                from_port: "body".into(),
+                to_port: "in".into(),
+            }],
         );
 
         let report = validate(&bp);
@@ -832,7 +904,12 @@ mod tests {
                 loop_node(serde_json::json!("{{trigger.output.max_cycles")),
                 child,
             ],
-            vec![],
+            vec![Edge {
+                from: "lp".into(),
+                to: "body".into(),
+                from_port: "body".into(),
+                to_port: "in".into(),
+            }],
         );
 
         let report = validate(&bp);
@@ -849,7 +926,15 @@ mod tests {
     fn loop_max_iterations_warns_for_non_positive_literal() {
         let mut child = task("body");
         child.parent = Some("lp".into());
-        let bp = base(vec![loop_node(serde_json::json!(0)), child], vec![]);
+        let bp = base(
+            vec![loop_node(serde_json::json!(0)), child],
+            vec![Edge {
+                from: "lp".into(),
+                to: "body".into(),
+                from_port: "body".into(),
+                to_port: "in".into(),
+            }],
+        );
 
         let report = validate(&bp);
 
@@ -859,5 +944,19 @@ mod tests {
                 && d.node.as_deref() == Some("lp")
         }));
         assert!(report.is_valid());
+    }
+
+    #[test]
+    fn loop_body_must_be_reachable_from_body_port() {
+        let mut body = task("body");
+        body.parent = Some("lp".into());
+        let report = validate(&base(vec![loop_node(serde_json::json!(2)), body], vec![]));
+        assert!(report
+            .errors()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "missing_loop_body_entry"));
+        assert!(report.errors().iter().any(|diagnostic| {
+            diagnostic.code == "unreachable_loop_body" && diagnostic.node.as_deref() == Some("body")
+        }));
     }
 }

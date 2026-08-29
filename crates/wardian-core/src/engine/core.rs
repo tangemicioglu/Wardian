@@ -17,6 +17,13 @@ pub fn step(g: &Graph, s: &RunState) -> Vec<String> {
         }
         let inbound = g.inbound(&nd.id);
         if inbound.is_empty() {
+            // Loop members enter only through their container's `body` port.
+            // Treating a parented node with no inbound edge as a top-level
+            // entry would execute it outside the loop before the first
+            // iteration.
+            if nd.parent.is_some() {
+                continue;
+            }
             out.push(nd.id.clone()); // entry node
             continue;
         }
@@ -39,10 +46,16 @@ pub fn step(g: &Graph, s: &RunState) -> Vec<String> {
 pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<()> {
     match &ev.kind {
         EventKind::RunStarted {
-            run_id, trigger, ..
+            run_id,
+            blueprint_hash,
+            trigger,
+            ..
         } => {
             if let Some(run_id) = run_id {
                 s.run_id = run_id.clone();
+            }
+            if let Some(blueprint_hash) = blueprint_hash {
+                s.blueprint_hash = Some(blueprint_hash.clone());
             }
             s.set_trigger(runtime_trigger_output(trigger, &ev.ts));
         }

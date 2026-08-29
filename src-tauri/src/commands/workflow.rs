@@ -619,6 +619,7 @@ pub async fn workflow_resume(
     assignments: Option<WorkflowAssignments>,
 ) -> Result<serde_json::Value, String> {
     let blueprint = parse_blueprint_for_run(&blueprint_id, &blueprint_path)?;
+    validate_blueprint_for_execution(&blueprint)?;
     let run_root =
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
     let invocation = runs::read_run_invocation(&run_root)?;
@@ -750,6 +751,7 @@ pub async fn approve_workflow_for_surface(
     assignments: Option<WorkflowAssignments>,
 ) -> Result<serde_json::Value, String> {
     let blueprint = parse_blueprint_for_run(&blueprint_id, &blueprint_path)?;
+    validate_blueprint_for_execution(&blueprint)?;
     let run_root =
         wardian_core::paths::workflow_run_dir(&blueprint_id, &run_id).ok_or("no wardian home")?;
 
@@ -852,6 +854,11 @@ pub fn workflow_cancel(blueprint_id: String, run_id: String) -> Result<serde_jso
         }
         if matches!(state.status, RunStatus::Completed | RunStatus::Failed) {
             let _ = std::fs::remove_file(run_root.join("cancel.marker"));
+            return Ok(serde_json::json!({ "ok": true, "status": state.status }));
+        }
+        if state.status == RunStatus::AwaitingApproval {
+            let state = wardian_core::engine::Engine::cancel_awaiting(&run_root)
+                .map_err(|error| error.to_string())?;
             return Ok(serde_json::json!({ "ok": true, "status": state.status }));
         }
     }
@@ -1136,6 +1143,16 @@ fn parse_blueprint_for_run(blueprint_id: &str, blueprint_path: &str) -> Result<B
     parse_blueprint_file_for_id(&resolved, blueprint_id)
 }
 
+fn validate_blueprint_for_execution(blueprint: &Blueprint) -> Result<(), String> {
+    let report = workflow::validate(blueprint);
+    if report.is_valid() {
+        return Ok(());
+    }
+    let diagnostics =
+        serde_json::to_string(&report.diagnostics).map_err(|error| error.to_string())?;
+    Err(format!("workflow blueprint is invalid: {diagnostics}"))
+}
+
 fn parse_blueprint_file_for_id(
     path: &std::path::Path,
     blueprint_id: &str,
@@ -1319,6 +1336,7 @@ edges:
                 "2026-05-31T12:00:00Z".into(),
                 EventKind::RunStarted {
                     run_id: None,
+                    blueprint_hash: None,
                     blueprint_id: "wf".into(),
                     schema: 2,
                     trigger: serde_json::json!({}),

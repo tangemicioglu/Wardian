@@ -95,6 +95,7 @@ export function WorkflowObserveMode({ theme }: WorkflowObserveModeProps) {
               state={state}
               currentStatuses={statuses}
               events={events}
+              scrubIndex={scrubIndex}
             />
           </aside>
         ) : null}

@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::Emitter;
 use wardian_core::engine::event::{Event, EventKind};
-use wardian_core::engine::store::{append_event, read_checkpoint, read_events, write_checkpoint};
+use wardian_core::engine::store::{
+    append_event, read_blueprint_snapshot, read_checkpoint, read_events, write_checkpoint,
+};
 use wardian_core::engine::{Engine, RunStatus};
 use wardian_core::models::{
     AgentConfig, InvocationKind, WorkflowAssignments, WorkflowRoleAssignment,
@@ -148,19 +150,27 @@ pub fn fail_interrupted_runs(runs_dir: &Path) -> Vec<(String, String)> {
 
         for run in runs.flatten().filter(|entry| entry.path().is_dir()) {
             let run_root = run.path();
-            let Ok(Some(mut state)) = read_checkpoint(&run_root) else {
+            let Ok(Some(checkpoint)) = read_checkpoint(&run_root) else {
                 continue;
             };
-            if state.status != RunStatus::Running {
+            if checkpoint.status != RunStatus::Running {
                 continue;
             }
             let message = "workflow run interrupted by application restart".to_string();
-            let events = read_events(&run_root).unwrap_or_default();
-            let event_next_seq = events
-                .iter()
-                .map(|event| event.seq + 1)
-                .max()
-                .unwrap_or(state.next_seq);
+            let Ok(events) = read_events(&run_root) else {
+                continue;
+            };
+            let Some(mut state) = recover_interrupted_state(&checkpoint, &run_root, &events) else {
+                // Do not rewrite a run whose event log cannot be validated or
+                // whose immutable graph snapshot cannot be recovered.
+                continue;
+            };
+            if matches!(state.status, RunStatus::Completed | RunStatus::Failed) {
+                if write_checkpoint(&run_root, &state).is_ok() {
+                    interrupted.push((state.blueprint_id, state.run_id));
+                }
+                continue;
+            }
             let already_recorded = events.iter().any(|event| {
                 matches!(
                     &event.kind,
@@ -168,8 +178,11 @@ pub fn fail_interrupted_runs(runs_dir: &Path) -> Vec<(String, String)> {
                 )
             });
             if !already_recorded {
+                let Ok(event_next_seq) = Engine::validate_event_sequence(&events) else {
+                    continue;
+                };
                 let event = Event::new(
-                    state.next_seq,
+                    event_next_seq,
                     EventKind::RunFailed {
                         error: message.clone(),
                     },
@@ -179,7 +192,10 @@ pub fn fail_interrupted_runs(runs_dir: &Path) -> Vec<(String, String)> {
                 }
                 state.next_seq = event.seq + 1;
             } else {
-                state.next_seq = state.next_seq.max(event_next_seq);
+                let Ok(event_next_seq) = Engine::validate_event_sequence(&events) else {
+                    continue;
+                };
+                state.next_seq = event_next_seq;
             }
             state.status = RunStatus::Failed;
             state.failure = Some(message);
@@ -191,6 +207,36 @@ pub fn fail_interrupted_runs(runs_dir: &Path) -> Vec<(String, String)> {
     }
 
     interrupted
+}
+
+fn recover_interrupted_state(
+    checkpoint: &wardian_core::engine::RunState,
+    run_root: &Path,
+    events: &[Event],
+) -> Option<wardian_core::engine::RunState> {
+    if let Ok(Some(snapshot)) = read_blueprint_snapshot(run_root) {
+        return Engine::replay(&snapshot, run_root).ok();
+    }
+    if run_root.join("blueprint.json").exists() {
+        return None;
+    }
+    if let Some(path) = wardian_core::workflow::resolve_blueprint_path(&checkpoint.blueprint_id) {
+        if let Ok(blueprint) = wardian_core::workflow::parse_file(&path) {
+            return Engine::replay(&blueprint, run_root).ok();
+        }
+        return None;
+    }
+
+    // Pre-snapshot runs may have no graph available. Preserve their checkpoint
+    // state, but still validate the append-only sequence and advance to the
+    // actual log tail before appending the restart failure.
+    let event_next_seq = Engine::validate_event_sequence(events).ok()?;
+    if checkpoint.next_seq > event_next_seq {
+        return None;
+    }
+    let mut state = checkpoint.clone();
+    state.next_seq = event_next_seq;
+    Some(state)
 }
 
 /// Build the live executor for a run in `workspace` with `default_provider`.
@@ -1007,6 +1053,57 @@ edges:
             .unwrap();
         assert_eq!(state.next_seq, 1);
         assert_eq!(state.status, RunStatus::Failed);
+    }
+
+    #[test]
+    fn fail_interrupted_runs_folds_event_tail_before_appending_restart_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_root = dir.path().join("wf").join("run-1");
+        let blueprint = wardian_core::workflow::parse::parse_str(
+            r#"---
+schema: 2
+id: wf
+name: Workflow
+nodes:
+  - id: trigger
+    type: manual_trigger
+edges: []
+---
+
+# Workflow
+"#,
+        )
+        .unwrap();
+        Engine::initialize_with_id(&blueprint, "run-1", serde_json::json!({}), &run_root).unwrap();
+        append_event(
+            &run_root,
+            &Event::new(
+                1,
+                EventKind::NodeCompleted {
+                    node: "trigger".into(),
+                    output: serde_json::json!({"recovered": true}),
+                },
+            ),
+        )
+        .unwrap();
+
+        let interrupted = fail_interrupted_runs(dir.path());
+
+        assert_eq!(interrupted, vec![("wf".to_string(), "run-1".to_string())]);
+        let state = wardian_core::engine::store::read_checkpoint(&run_root)
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.status, RunStatus::Failed);
+        assert_eq!(state.next_seq, 3);
+        assert_eq!(
+            state.registry["nodes"]["trigger"]["output"]["recovered"],
+            true
+        );
+        let events = read_events(&run_root).unwrap();
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
     }
 
     #[test]

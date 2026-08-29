@@ -4,9 +4,12 @@ use crate::engine::executor::*;
 use crate::engine::graph::Graph;
 use crate::engine::interpolate::resolve;
 use crate::engine::state::{NodeStatus, RunState, RunStatus};
-use crate::engine::store::{append_event, read_checkpoint, read_events, write_checkpoint};
+use crate::engine::store::{
+    append_event, read_checkpoint, read_events, write_blueprint_snapshot, write_checkpoint,
+};
 use crate::engine::{EngineError, StepError};
 use crate::workflow::{Blueprint, Node};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 /// The async engine: drives a run by repeatedly consulting the pure core,
@@ -51,6 +54,8 @@ impl Engine {
     ) -> crate::engine::Result<RunState> {
         let g = Graph::new(bp);
         let mut s = RunState::new(run_id.into(), &bp.id);
+        let blueprint_hash = blueprint_hash(bp);
+        write_blueprint_snapshot(run_root, bp)?;
         let started_run_id = s.run_id.clone();
         emit(
             run_root,
@@ -58,6 +63,7 @@ impl Engine {
             &mut s,
             EventKind::RunStarted {
                 run_id: Some(started_run_id),
+                blueprint_hash: Some(blueprint_hash),
                 blueprint_id: bp.id.clone(),
                 schema: bp.schema,
                 trigger,
@@ -86,6 +92,8 @@ impl Engine {
     ) -> crate::engine::Result<RunState> {
         let g = Graph::new(bp);
         let mut s = load_state(&g, run_root)?;
+        ensure_valid_blueprint(bp)?;
+        ensure_blueprint_matches(bp, &s)?;
         if s.status == RunStatus::AwaitingApproval {
             return Ok(s); // still needs a human; grant_approval drives it onward
         }
@@ -116,6 +124,7 @@ impl Engine {
         let _approval_decision = acquire_approval_decision_guard(run_root)?;
         let g = Graph::new(bp);
         let mut s = load_state(&g, run_root)?;
+        ensure_blueprint_matches(bp, &s)?;
         match s.status {
             RunStatus::AwaitingApproval => {
                 emit(
@@ -142,7 +151,13 @@ impl Engine {
         let mut s = RunState::new("replay", &bp.id);
         let events = read_events(run_root)?;
         fold_event_log(&g, &mut s, &events)?;
+        ensure_blueprint_matches(bp, &s)?;
         Ok(s)
+    }
+
+    /// Validate a run event sequence without requiring a blueprint graph.
+    pub fn validate_event_sequence(events: &[Event]) -> crate::engine::Result<u64> {
+        validate_event_sequence(events)
     }
 
     /// Grant approval on a parked run, then continue driving.
@@ -171,9 +186,12 @@ impl Engine {
         let _approval_decision = acquire_approval_decision_guard(run_root)?;
         let g = Graph::new(bp);
         let mut s = load_state(&g, run_root)?;
+        ensure_valid_blueprint(bp)?;
+        ensure_blueprint_matches(bp, &s)?;
         if s.status != RunStatus::AwaitingApproval {
             return Err(EngineError::NotAwaitingApproval(node.into()));
         }
+        ensure_approval_node(&g, run_root, node)?;
         emit(
             run_root,
             &g,
@@ -198,9 +216,12 @@ impl Engine {
         let _approval_decision = acquire_approval_decision_guard(run_root)?;
         let g = Graph::new(bp);
         let mut s = load_state(&g, run_root)?;
+        ensure_valid_blueprint(bp)?;
+        ensure_blueprint_matches(bp, &s)?;
         if s.status != RunStatus::AwaitingApproval {
             return Err(EngineError::NotAwaitingApproval(node.into()));
         }
+        ensure_approval_node(&g, run_root, node)?;
         emit(
             run_root,
             &g,
@@ -211,6 +232,51 @@ impl Engine {
                 note,
             },
         )?;
+        Ok(s)
+    }
+
+    /// Cancel an approval-parked run using only its durable checkpoint and
+    /// event log. This remains available when the mutable library blueprint
+    /// has been deleted or moved.
+    pub fn cancel_awaiting(run_root: &Path) -> crate::engine::Result<RunState> {
+        let _approval_decision = acquire_approval_decision_guard(run_root)?;
+        let Some(mut s) = read_checkpoint(run_root)? else {
+            return Err(EngineError::InvalidState(
+                "workflow checkpoint is missing".into(),
+            ));
+        };
+        if s.status != RunStatus::AwaitingApproval {
+            return Err(EngineError::NotAwaitingApproval("unknown".into()));
+        }
+        let events = read_events(run_root)?;
+        let event_next_seq = validate_event_sequence(&events)?;
+        if s.next_seq > event_next_seq {
+            return Err(EngineError::InvalidState(format!(
+                "workflow checkpoint expects sequence {}, event log ends at {}",
+                s.next_seq,
+                event_next_seq.saturating_sub(1)
+            )));
+        }
+        if !events.iter().any(|event| {
+            matches!(&event.kind, EventKind::RunFailed { error } if error == "workflow cancelled by operator")
+        }) {
+            append_event(
+                run_root,
+                &Event::new(
+                    event_next_seq,
+                    EventKind::RunFailed {
+                        error: "workflow cancelled by operator".into(),
+                    },
+                ),
+            )?;
+            s.next_seq = event_next_seq + 1;
+        } else {
+            s.next_seq = event_next_seq;
+        }
+        s.status = RunStatus::Failed;
+        s.failure = Some("workflow cancelled by operator".into());
+        write_checkpoint(run_root, &s)?;
+        clear_cancellation_request(run_root)?;
         Ok(s)
     }
 }
@@ -247,6 +313,71 @@ fn load_state(g: &Graph<'_>, run_root: &Path) -> crate::engine::Result<RunState>
     Ok(s)
 }
 
+/// Stable hash of the parsed workflow graph. The markdown body is skipped by
+/// `Blueprint` serialization, so documentation-only edits do not invalidate a
+/// parked run while graph or field edits do.
+pub fn blueprint_hash(bp: &Blueprint) -> String {
+    let bytes = serde_json::to_vec(bp).expect("workflow blueprints are serializable");
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn ensure_valid_blueprint(bp: &Blueprint) -> crate::engine::Result<()> {
+    let report = crate::workflow::validate(bp);
+    if report.is_valid() {
+        return Ok(());
+    }
+    let diagnostics = report
+        .errors()
+        .into_iter()
+        .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(EngineError::InvalidState(format!(
+        "workflow blueprint is invalid: {diagnostics}"
+    )))
+}
+
+fn ensure_blueprint_matches(bp: &Blueprint, state: &RunState) -> crate::engine::Result<()> {
+    if let Some(expected) = state.blueprint_hash.as_deref() {
+        let actual = blueprint_hash(bp);
+        if expected != actual {
+            return Err(EngineError::InvalidState(format!(
+                "workflow blueprint changed after run start: expected {expected}, found {actual}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_approval_node(
+    g: &Graph<'_>,
+    run_root: &Path,
+    requested: &str,
+) -> crate::engine::Result<()> {
+    if !is_approval(g, requested) {
+        return Err(EngineError::InvalidState(format!(
+            "approval decision targets non-approval node `{requested}`"
+        )));
+    }
+    let events = read_events(run_root)?;
+    let expected = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::AwaitingApproval { node } => Some(node.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            EngineError::InvalidState("awaiting approval node is missing from the event log".into())
+        })?;
+    if expected != requested {
+        return Err(EngineError::InvalidState(format!(
+            "approval decision targets `{requested}`, but run is awaiting approval at `{expected}`"
+        )));
+    }
+    Ok(())
+}
+
 /// Validate the append-only event sequence once for both replay and resume,
 /// then fold only the portion not already represented by the checkpoint.
 fn fold_event_log(g: &Graph<'_>, s: &mut RunState, events: &[Event]) -> crate::engine::Result<()> {
@@ -256,6 +387,7 @@ fn fold_event_log(g: &Graph<'_>, s: &mut RunState, events: &[Event]) -> crate::e
         ));
     }
     let checkpoint_next_seq = s.next_seq;
+    let event_next_seq = validate_event_sequence(events)?;
     let mut expected = 0u64;
     for ev in events {
         if ev.seq != expected {
@@ -275,7 +407,7 @@ fn fold_event_log(g: &Graph<'_>, s: &mut RunState, events: &[Event]) -> crate::e
         }
         expected += 1;
     }
-    if expected < checkpoint_next_seq {
+    if event_next_seq < checkpoint_next_seq {
         return Err(EngineError::InvalidState(format!(
             "workflow event log ends at sequence {}, checkpoint expects {}",
             expected.saturating_sub(1),
@@ -283,6 +415,21 @@ fn fold_event_log(g: &Graph<'_>, s: &mut RunState, events: &[Event]) -> crate::e
         )));
     }
     Ok(())
+}
+
+/// Validate that an event log starts at zero and has no gaps or reordering.
+pub fn validate_event_sequence(events: &[Event]) -> crate::engine::Result<u64> {
+    let mut expected = 0u64;
+    for ev in events {
+        if ev.seq != expected {
+            return Err(EngineError::InvalidState(format!(
+                "workflow event sequence gap: expected {expected}, got {}",
+                ev.seq
+            )));
+        }
+        expected += 1;
+    }
+    Ok(expected)
 }
 
 /// Emit: stamp seq, fold via `apply`, append to log, checkpoint.
@@ -1171,7 +1318,7 @@ mod tests {
                     fields: serde_json::json!({
                         "agent": "role:arbiter",
                         "prompt": "choose",
-                        "choices": ["approve", "deny"]
+                        "choices": ["deny"]
                     })
                     .as_object()
                     .unwrap()
@@ -2148,6 +2295,90 @@ mod tests {
             RunStatus::Running
         );
         assert!(!exec.calls().contains(&"task:work".to_string()));
+    }
+
+    #[tokio::test]
+    async fn approval_decision_must_target_the_parked_approval_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = approval_blueprint();
+
+        let parked = Engine::start_with_id(
+            &blueprint,
+            "run-approval-target",
+            serde_json::json!({}),
+            dir.path(),
+            &MockExecutor::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(parked.status, RunStatus::AwaitingApproval);
+
+        let error = Engine::record_approval_granted(&blueprint, dir.path(), "task", "user", None)
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("approval decision targets non-approval node `task`"));
+        assert_eq!(
+            read_checkpoint(dir.path()).unwrap().unwrap().status,
+            RunStatus::AwaitingApproval
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_a_blueprint_changed_after_run_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = sequence_blueprint();
+        Engine::initialize_with_id(
+            &blueprint,
+            "run-blueprint-immutable",
+            serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+
+        let mut changed = blueprint.clone();
+        changed.name = "Edited after start".into();
+        let error = Engine::resume(&changed, dir.path(), &MockExecutor::new())
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("workflow blueprint changed after run start"));
+        assert_eq!(
+            read_checkpoint(dir.path()).unwrap().unwrap().status,
+            RunStatus::Running
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_cancellation_uses_durable_state_without_blueprint_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let blueprint = approval_blueprint();
+        let parked = Engine::start_with_id(
+            &blueprint,
+            "run-cancel-without-blueprint",
+            serde_json::json!({}),
+            dir.path(),
+            &MockExecutor::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(parked.status, RunStatus::AwaitingApproval);
+        std::fs::remove_file(dir.path().join("blueprint.json")).unwrap();
+
+        let cancelled = Engine::cancel_awaiting(dir.path()).unwrap();
+
+        assert_eq!(cancelled.status, RunStatus::Failed);
+        assert_eq!(
+            cancelled.failure.as_deref(),
+            Some("workflow cancelled by operator")
+        );
+        assert!(read_events(dir.path()).unwrap().iter().any(|event| {
+            matches!(&event.kind, EventKind::RunFailed { error }
+                if error == "workflow cancelled by operator")
+        }));
     }
 
     #[tokio::test]

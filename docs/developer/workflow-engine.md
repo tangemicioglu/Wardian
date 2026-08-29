@@ -92,6 +92,21 @@ New `run_started` events carry the durable run id, allowing recovery to retain
 identity when a checkpoint is missing. Observe mode folds branch, decision,
 loop, and approval transitions from the same event stream.
 
+New runs persist the parsed blueprint beside the checkpoint and record its
+content hash in `run_started`. Resume, replay, and approval continuation reject
+invalid or changed graphs, preventing a mutable library edit from changing an
+existing run's routing. Approval decisions are bound to the node named by the
+durable `awaiting_approval` event. Cancellation of an approval-parked run can
+be committed from the checkpoint and event log without loading the library
+blueprint.
+
+Startup recovery replays the immutable snapshot before appending its
+interruption failure. This folds any valid event-log tail, preserves the
+correct next sequence, and refuses to rewrite malformed or unrecoverable runs.
+Loop body nodes enter only through the container's `body` port; validation
+rejects body nodes that are not reachable from that port. Observe's node
+inspector receives the selected event index and does not display future output.
+
 ## Agent Execution
 
 Task and decision nodes resolve their `agent` field through the workflow

@@ -26,6 +26,10 @@ pub enum NodeStatus {
 pub struct RunState {
     pub run_id: String,
     pub blueprint_id: String,
+    /// Hash of the parsed blueprint that created this run, when available.
+    /// Legacy checkpoints leave this unset and remain replay-compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blueprint_hash: Option<String>,
     pub status: RunStatus,
     /// Node id -> status. Absent = Pending (never reached yet).
     pub nodes: BTreeMap<String, NodeStatus>,
@@ -46,6 +50,7 @@ impl RunState {
         Self {
             run_id: run_id.into(),
             blueprint_id: blueprint_id.into(),
+            blueprint_hash: None,
             status: RunStatus::Running,
             nodes: BTreeMap::new(),
             registry: serde_json::json!({ "nodes": {}, "trigger": { "output": {} }, "storage": {} }),

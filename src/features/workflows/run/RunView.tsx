@@ -70,6 +70,7 @@ export function RunView({ theme }: RunViewProps) {
           state={state}
           currentStatuses={statuses}
           events={events}
+          scrubIndex={scrubIndex}
         />
       </aside>
     </div>

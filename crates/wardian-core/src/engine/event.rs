@@ -35,6 +35,10 @@ pub enum EventKind {
         /// the identity chosen by the caller.
         #[serde(default)]
         run_id: Option<String>,
+        /// Hash of the parsed blueprint that owns this run. Optional for
+        /// compatibility with pre-contract event logs.
+        #[serde(default)]
+        blueprint_hash: Option<String>,
         blueprint_id: String,
         schema: u32,
         trigger: serde_json::Value,
@@ -128,6 +132,7 @@ mod tests {
             1,
             EventKind::RunStarted {
                 run_id: Some("run-1".into()),
+                blueprint_hash: None,
                 blueprint_id: "wf".into(),
                 schema: 2,
                 trigger: serde_json::json!({"x":1}),

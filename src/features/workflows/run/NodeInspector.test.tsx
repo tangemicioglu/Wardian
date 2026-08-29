@@ -19,13 +19,13 @@ const events: RunEvent[] = [
 
 describe('NodeInspector', () => {
   it('shows an empty state without a selected node', () => {
-    render(<NodeInspector selectedNodeId={null} state={state} currentStatuses={{}} events={events} />);
+    render(<NodeInspector selectedNodeId={null} state={state} currentStatuses={{}} events={events} scrubIndex={events.length - 1} />);
 
     expect(screen.getByText('Select a node to inspect it.')).toBeInTheDocument();
   });
 
   it('shows status, output, and failure for the selected node', () => {
-    render(<NodeInspector selectedNodeId="a" state={state} currentStatuses={{ a: 'failed' }} events={events} />);
+    render(<NodeInspector selectedNodeId="a" state={state} currentStatuses={{ a: 'failed' }} events={events} scrubIndex={events.length - 1} />);
 
     expect(screen.getByText('a')).toBeInTheDocument();
     expect(screen.getByText('Failed')).toBeInTheDocument();
@@ -44,6 +44,7 @@ describe('NodeInspector', () => {
         events={[
           { seq: 0, ts: 't0', kind: 'node_completed', node: 'a', output: { timestamp } },
         ]}
+        scrubIndex={0}
       />,
     );
 
@@ -67,6 +68,7 @@ describe('NodeInspector', () => {
             port: 'yes',
           },
         ]}
+        scrubIndex={0}
       />,
     );
 
@@ -75,16 +77,23 @@ describe('NodeInspector', () => {
   });
 
   it('allows selecting text in the inspector', () => {
-    render(<NodeInspector selectedNodeId="a" state={state} currentStatuses={{ a: 'failed' }} events={events} />);
+    render(<NodeInspector selectedNodeId="a" state={state} currentStatuses={{ a: 'failed' }} events={events} scrubIndex={events.length - 1} />);
 
     expect(screen.getByText('boom').closest('.select-text')).not.toBeNull();
   });
 
   it('uses regular capitalization for inspector headings', () => {
-    render(<NodeInspector selectedNodeId="a" state={state} currentStatuses={{ a: 'failed' }} events={events} />);
+    render(<NodeInspector selectedNodeId="a" state={state} currentStatuses={{ a: 'failed' }} events={events} scrubIndex={events.length - 1} />);
 
     expect(screen.getByText('Node')).not.toHaveClass('uppercase');
     expect(screen.getByText('Output')).not.toHaveClass('uppercase');
     expect(screen.getByText('Failure')).not.toHaveClass('uppercase');
+  });
+
+  it('hides output from events after the scrub point', () => {
+    render(<NodeInspector selectedNodeId="a" state={state} currentStatuses={{ a: 'pending' }} events={events} scrubIndex={0} />);
+
+    expect(screen.getByText('No output recorded.')).toBeInTheDocument();
+    expect(screen.queryByText(/"ok": true/)).toBeNull();
   });
 });

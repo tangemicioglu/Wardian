@@ -82,9 +82,22 @@ event but fails before writing its checkpoint, recovery folds that event log and
 keeps the original run identity. Replay and resume share strict contiguous
 sequence validation; a missing or reordered event is rejected by both paths.
 
+Each new run also stores an immutable parsed blueprint snapshot and its
+content hash. Resume, replay, and approval continuation reject a changed graph
+or invalid blueprint rather than silently applying new routing to an old run.
+Approval decisions must name the approval node recorded by the latest durable
+`awaiting_approval` event. Cancellation of an approval-parked run uses its
+checkpoint and event log directly, so it remains terminal even when the
+mutable library blueprint is unavailable.
+
 Loop containers must contain at least one body node. The direct engine boundary
 also emits an immediate `loop_completed` transition for an empty loop so a
-legacy or bypassed blueprint cannot leave a run permanently active.
+legacy or bypassed blueprint cannot leave a run permanently active. Every
+parented body node must also be reachable from the loop's `body` port; a parent
+annotation alone is not an execution edge.
+
+Observe's node inspector limits output and error evidence to the selected
+timeline position, so scrubbing cannot reveal events from the future.
 
 Notifications continue to write the workflow run log and, for app-owned runs,
 are now sent through `tauri-plugin-notification`. Headless/CLI execution keeps
