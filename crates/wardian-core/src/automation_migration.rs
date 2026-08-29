@@ -31,6 +31,10 @@ pub fn migrate_home(home: &Path) -> io::Result<AutomationStorageMigrationReport>
     let old_logs = home.join("logs").join("workflows");
     let new_logs = home.join("logs").join("automations");
 
+    validate_reconciliation(&old_library, &new_library)?;
+    validate_reconciliation(&old_root_logs, &new_logs)?;
+    validate_reconciliation(&old_logs, &new_logs)?;
+
     if reconcile_directory(&old_library, &new_library)? {
         report.library_moved = true;
     }
@@ -441,6 +445,34 @@ mod tests {
         assert_eq!(
             fs::read_to_string(current.join("z-conflict.jsonl")).unwrap(),
             "new conflict"
+        );
+    }
+
+    #[test]
+    fn home_conflict_is_preflighted_before_other_trees_migrate() {
+        let home = home();
+        let legacy_library = home.path().join("library/workflows");
+        let legacy_logs = home.path().join("logs/workflows");
+        let current_logs = home.path().join("logs/automations");
+        fs::create_dir_all(&legacy_library).unwrap();
+        fs::create_dir_all(&legacy_logs).unwrap();
+        fs::create_dir_all(&current_logs).unwrap();
+        fs::write(legacy_library.join("movable.md"), "library").unwrap();
+        fs::write(legacy_logs.join("conflict.jsonl"), "old log").unwrap();
+        fs::write(current_logs.join("conflict.jsonl"), "new log").unwrap();
+
+        let error = migrate_home(home.path()).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(legacy_library.join("movable.md").exists());
+        assert!(!home.path().join("library/automations/movable.md").exists());
+        assert_eq!(
+            fs::read_to_string(legacy_logs.join("conflict.jsonl")).unwrap(),
+            "old log"
+        );
+        assert_eq!(
+            fs::read_to_string(current_logs.join("conflict.jsonl")).unwrap(),
+            "new log"
         );
     }
 

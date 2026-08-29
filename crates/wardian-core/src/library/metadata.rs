@@ -24,7 +24,15 @@ impl MetadataStore {
         let mut items = BTreeMap::new();
         let mut migrated = false;
         for (key, value) in raw {
-            if SECTION_PREFIXES
+            if let Some(suffix) = key.strip_prefix("workflows/") {
+                migrated = true;
+                let automation_key = format!("automations/{suffix}");
+                if let Some(existing) = items.get_mut(&automation_key) {
+                    merge_metadata(existing, value);
+                } else {
+                    items.insert(automation_key, value);
+                }
+            } else if SECTION_PREFIXES
                 .iter()
                 .any(|prefix| key.starts_with(prefix))
             {
@@ -66,6 +74,27 @@ impl MetadataStore {
         let path = library_metadata_path_for_home(home);
         crate::atomic_file::write_json_atomic(&path, &self.items).map_err(|e| e.to_string())
     }
+}
+
+/// Merge metadata when both legacy and canonical keys describe the same
+/// automation. Canonical identity wins, while user-visible collections and
+/// activity state retain information from both entries.
+fn merge_metadata(canonical: &mut LibraryItemMetadata, legacy: LibraryItemMetadata) {
+    if canonical.id.is_empty() {
+        canonical.id = legacy.id;
+    }
+    for tag in legacy.tags {
+        if !canonical.tags.contains(&tag) {
+            canonical.tags.push(tag);
+        }
+    }
+    canonical.is_starred |= legacy.is_starred;
+    canonical.last_used = match (canonical.last_used.take(), legacy.last_used) {
+        (Some(current), Some(previous)) => Some(current.max(previous)),
+        (Some(current), None) => Some(current),
+        (None, Some(previous)) => Some(previous),
+        (None, None) => None,
+    };
 }
 
 fn qualify_legacy_key(home: &Path, key: &str) -> Option<String> {
@@ -133,6 +162,74 @@ mod tests {
         // Migration writes back once: reloading needs no probing.
         let raw = fs::read_to_string(home.join("library").join("library.json")).unwrap();
         assert!(raw.contains("skills/dev/planner"));
+    }
+
+    #[test]
+    fn migrates_workflow_metadata_to_automation_keys() {
+        let temp = tempfile::tempdir().expect("temp");
+        let home = temp.path();
+        let legacy = serde_json::json!({
+            "workflows/review.md": {
+                "id": "review",
+                "tags": ["release", "nightly"],
+                "is_starred": true,
+                "last_used": "2026-08-29T10:00:00Z"
+            }
+        });
+        fs::create_dir_all(home.join("library")).unwrap();
+        fs::write(
+            home.join("library").join("library.json"),
+            legacy.to_string(),
+        )
+        .unwrap();
+
+        let store = MetadataStore::load(home);
+        let metadata = store
+            .get("automations/review.md")
+            .expect("automation metadata migrated");
+        assert_eq!(metadata.tags, ["release", "nightly"]);
+        assert!(metadata.is_starred);
+        assert_eq!(metadata.last_used.as_deref(), Some("2026-08-29T10:00:00Z"));
+
+        let persisted = fs::read_to_string(home.join("library").join("library.json")).unwrap();
+        assert!(persisted.contains("automations/review.md"));
+        assert!(!persisted.contains("workflows/review.md"));
+    }
+
+    #[test]
+    fn canonical_metadata_wins_identity_and_merges_legacy_activity() {
+        let temp = tempfile::tempdir().expect("temp");
+        let home = temp.path();
+        let metadata = serde_json::json!({
+            "automations/review.md": {
+                "id": "canonical",
+                "tags": ["canonical"],
+                "is_starred": false,
+                "last_used": "2026-08-28T10:00:00Z"
+            },
+            "workflows/review.md": {
+                "id": "legacy",
+                "tags": ["legacy"],
+                "is_starred": true,
+                "last_used": "2026-08-29T10:00:00Z"
+            }
+        });
+        fs::create_dir_all(home.join("library")).unwrap();
+        fs::write(
+            home.join("library").join("library.json"),
+            metadata.to_string(),
+        )
+        .unwrap();
+
+        let store = MetadataStore::load(home);
+        let merged = store
+            .get("automations/review.md")
+            .expect("canonical metadata remains");
+        assert_eq!(merged.id, "canonical");
+        assert_eq!(merged.tags, ["canonical", "legacy"]);
+        assert!(merged.is_starred);
+        assert_eq!(merged.last_used.as_deref(), Some("2026-08-29T10:00:00Z"));
+        assert!(store.get("workflows/review.md").is_none());
     }
 
     #[test]
