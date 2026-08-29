@@ -84,7 +84,7 @@ When you create a team or add a team member, Wardian automatically wires up edge
 
 ## Graph
 
-`wardian graph` is the CLI control surface for the communication topology — the same graph the app's Graph view edits. Agents can inspect their neighborhood and wire themselves into collaborations without the app running.
+`wardian graph` is the CLI control surface for the communication topology — the same graph the app's Graph view edits. Agents can inspect their neighborhood without the app running; mutating the graph (`link`/`unlink`/`ignore`/`unignore`) requires it, because the running app is topology.json's sole writer (see below).
 
 Observe:
 
@@ -106,11 +106,19 @@ wardian graph unignore fork-coder
 
 - **Self-serve rule**: inside a Wardian agent terminal (`WARDIAN_SESSION_ID` set), edits must involve the calling agent — `link <other>` connects you to `<other>`; `link <a> <b>` works only if one endpoint is you. Outside a session you are the operator: `link <a> <b>` connects any pair.
 - **Unmapped (ghost) pairs**: recent communication between unconnected agents. There is no separate approval verb — `link` formalizes, `ignore` dismisses.
-- Mutations are idempotent: re-running reports `"changed": false` and exits 0. Errors use the standard JSON error envelope (unknown agent → exit 2, no session where one is required → exit 3, ambiguous name → exit 5, permission/self-link → exit 1).
+- Mutations are idempotent: re-running reports `"changed": false` and exits 0. Errors use the standard JSON error envelope (unknown agent → exit 2, no session where one is required → exit 3, ambiguous name → exit 5, permission/self-link → exit 1, app not running → exit 6).
 - Targets accept agent names or UUIDs; duplicated names require a UUID.
 - Add `--pretty` to any subcommand for human-readable output instead of JSON.
 
-Edits are written to `<WARDIAN_HOME>/topology.json`; a running app picks them up immediately (the backend watches the file) and an open Graph view refreshes live. See the [Graph](./graph.md) guide for the visual surface.
+Mutations are routed through the running app's control endpoint — the same
+single writer the app's own Graph view uses — rather than written to
+`topology.json` directly, so the app must be running for `link`/`unlink`/
+`ignore`/`unignore` (reads still work without it). An open Graph view refreshes
+live because the app updates its own state directly; the filesystem watcher on
+`topology.json` remains as a fallback for a hand edit or any other writer. See
+the [Graph](./graph.md) guide for the visual surface, and
+[topology-authority](../specs/2026-08-28-topology-authority.md) for why this
+changed and what it means for self-serve authority.
 
 ## Commands
 
